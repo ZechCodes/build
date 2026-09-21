@@ -413,6 +413,8 @@ fn a_notice_starts_the_tracking_agents_turn() {
         json!({ "issue_id": id, "status": "ready" }),
     ));
 
+    // It waits out the settle window first (#67), so a burst wakes it once.
+    state.delivery_queue.lapse_settle_windows();
     let queued = state.delivery_queue.take_ready(|_| false);
     assert_eq!(queued.len(), 1, "one turn for one change");
     let turn = &queued[0];
@@ -427,6 +429,177 @@ fn a_notice_starts_the_tracking_agents_turn() {
         !turn.interrupt,
         "a notice does not cut a turn in flight short"
     );
+}
+
+/// A watcher tracking `title`, as `(watcher, issue_id)`, with nothing queued.
+fn watching(state: &mut AppState, project_id: &str, title: &str) -> ((String, String), String) {
+    let watcher = coding_agent(state, project_id, "watcher");
+    let id = issue_id(&filed(state, project_id, title));
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+    state.delivery_queue.take_ready(|_| false);
+    (watcher, id)
+}
+
+fn move_to(state: &mut AppState, issue_id: &str, status: &str) {
+    state.handle(req(
+        "issues.update",
+        json!({ "issue_id": issue_id, "status": status }),
+    ));
+}
+
+/// The lines the agent's next catch-up turn hands it, read off its thread.
+fn unread_lines(state: &AppState, entity_id: &str, agent_id: &str) -> Vec<String> {
+    state
+        .legacy_delivery_payload(entity_id, agent_id)
+        .expect("the thread reads")
+        .map(|payload| payload.messages)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|message| message.body)
+        .collect()
+}
+
+/// Every turn re-reads the agent's whole context, so a burst of changes wakes
+/// a tracker once (#67): each line lands on the thread when it happens, and
+/// one turn after the settle window carries all of them.
+#[test]
+fn changes_inside_the_settle_window_wake_the_tracker_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watching(&mut state, &project_id, "one");
+
+    move_to(&mut state, &id, "ready");
+    move_to(&mut state, &id, "in_progress");
+    state.handle(req(
+        "issues.comment",
+        json!({ "issue_id": id, "body": "Half done." }),
+    ));
+
+    let told = notices(&mut state, &watcher.0, &watcher.1);
+    assert_eq!(told.len(), 3, "the thread shows every notice: {told:?}");
+    assert!(
+        state.delivery_queue.take_ready(|_| false).is_empty(),
+        "nothing wakes it inside the window"
+    );
+
+    state.delivery_queue.lapse_settle_windows();
+    let woken = state.delivery_queue.take_ready(|_| false);
+    assert_eq!(woken.len(), 1, "three notices, one turn");
+    assert_eq!(woken[0].phase, "issue_notice");
+    assert!(woken[0].reads_unread_thread());
+    let carried = unread_lines(&state, &watcher.0, &watcher.1);
+    for notice in &told {
+        let line = notice["body"].as_str().unwrap();
+        assert!(
+            carried.iter().any(|body| body == line),
+            "{line} in {carried:?}"
+        );
+    }
+}
+
+/// A change after the turn went is news again, with a window of its own.
+#[test]
+fn a_change_after_the_notice_turn_went_wakes_the_tracker_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (_watcher, id) = watching(&mut state, &project_id, "one");
+
+    move_to(&mut state, &id, "ready");
+    state.delivery_queue.lapse_settle_windows();
+    assert_eq!(state.delivery_queue.take_ready(|_| false).len(), 1);
+
+    move_to(&mut state, &id, "in_progress");
+    assert!(state.delivery_queue.take_ready(|_| false).is_empty());
+    state.delivery_queue.lapse_settle_windows();
+    assert_eq!(state.delivery_queue.take_ready(|_| false).len(), 1);
+}
+
+/// Nothing else would drain the queue when an idle tracker's window ends, so
+/// the drain that leaves a notice settling asks a timer to come back for it —
+/// once, however many drains pass before it fires.
+#[tokio::test]
+async fn a_drain_leaving_a_notice_settling_asks_for_a_wake() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (_watcher, id) = watching(&mut state, &project_id, "one");
+    move_to(&mut state, &id, "ready");
+
+    let state = state.shared();
+    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    DeliveryRunner::drain(&state, &clock.frame("test"));
+    assert_eq!(
+        state.lock().unwrap().delivery_queue.settle_wake_due(),
+        None,
+        "the drain already asked for the window's end"
+    );
+}
+
+/// The user speaking to a tracker does not wait on its settling notice, and
+/// the notice goes with it rather than waking the agent later on its own.
+#[test]
+fn a_message_from_the_user_goes_now_and_takes_the_settling_notice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watching(&mut state, &project_id, "one");
+    move_to(&mut state, &id, "ready");
+
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": watcher.0, "agent_id": watcher.1, "body": "status?" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+
+    let woken = state.delivery_queue.take_ready(|_| false);
+    assert_eq!(woken.len(), 1, "one turn carries both: {:?}", woken.len());
+    assert_eq!(woken[0].phase, "revive", "the user's turn, sent now");
+    let carried = unread_lines(&state, &watcher.0, &watcher.1);
+    assert!(carried.iter().any(|body| body == "status?"), "{carried:?}");
+    assert!(
+        carried.iter().any(|body| body.starts_with("#1 moved")),
+        "{carried:?}"
+    );
+
+    state.delivery_queue.lapse_settle_windows();
+    assert!(
+        state.delivery_queue.take_ready(|_| false).is_empty(),
+        "no second wake when the window would have ended"
+    );
+}
+
+/// An assignment is work handed over: it goes at once, whatever is settling.
+#[test]
+fn an_assignment_goes_now_and_takes_the_settling_notice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watching(&mut state, &project_id, "one");
+    move_to(&mut state, &id, "ready");
+
+    let work = issue_id(&filed(&mut state, &project_id, "two"));
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": work, "assignee": { "kind": "agent", "agent_id": watcher.1 } }),
+    ));
+    assert_eq!(handed["ok"], true, "{handed:?}");
+
+    let woken = state.delivery_queue.take_ready(|_| false);
+    assert!(
+        woken.iter().any(|turn| turn.operation_id.is_some()),
+        "the assignment is not held by the window"
+    );
+    assert!(
+        woken.iter().any(|turn| turn.phase == "issue_notice"),
+        "the settling notice goes with it, not thirty seconds later"
+    );
+    state.delivery_queue.lapse_settle_windows();
+    assert!(state.delivery_queue.take_ready(|_| false).is_empty());
 }
 
 /// A write that changes nothing delivers nothing: it is not news, for the same
@@ -647,6 +820,46 @@ fn complete_with_open_issues_lists_every_one_of_them() {
         body.contains("2 issues assigned to you are still open"),
         "{body}"
     );
+}
+
+/// The reminder does not start a turn of its own (#67): the agent just ended
+/// one, and waking it again only to read a list costs its whole context. The
+/// list waits on the thread and rides the agent's next delivery.
+#[test]
+fn the_reminder_rides_the_agents_next_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (entity_id, agent_id) = reported(
+        &mut state,
+        &project_id,
+        DoneStatus::Completed,
+        &[("first", "in_progress"), ("just finished", "in_progress")],
+    );
+    assert_eq!(reminders(&mut state, &entity_id, &agent_id).len(), 1);
+
+    state.delivery_queue.lapse_settle_windows();
+    let woken = state.delivery_queue.take_ready(|_| false);
+    assert!(
+        woken.iter().all(|turn| turn.phase != "issue_reminder"),
+        "the reminder wakes nobody: {:?}",
+        woken.iter().map(|turn| turn.phase).collect::<Vec<_>>()
+    );
+
+    state.handle(req(
+        "thread.post",
+        json!({ "entity_id": entity_id, "agent_id": agent_id, "body": "one more thing" }),
+    ));
+    let next = state.delivery_queue.take_ready(|_| false);
+    assert_eq!(next.len(), 1, "one delivery");
+    let carried = unread_lines(&state, &entity_id, &agent_id);
+    assert!(
+        carried
+            .iter()
+            .any(|body| body.starts_with("You reported Complete")),
+        "the reminder rides it: {carried:?}"
+    );
+    assert!(state.delivery_queue.take_ready(|_| false).is_empty());
 }
 
 /// In review means the agent has said the work is ready to be looked at, and

@@ -23,9 +23,51 @@ impl DeliveryRunner {
     /// Take whatever the verbs that just ran queued, under one acquisition
     /// charged to `timer`, and deliver it off this thread. The one call every
     /// path that queues a turn makes once its own state change is durable.
+    ///
+    /// A turn left settling (an issue notice waiting out its window) has
+    /// nothing else to drain it when the window ends, so the same acquisition
+    /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
-        let turns = timer.lock(state).take_pending_turns();
+        let (turns, settle_wake) = {
+            let mut app = timer.lock(state);
+            (
+                app.take_pending_turns(),
+                app.delivery_queue.settle_wake_due(),
+            )
+        };
+        if let Some(at) = settle_wake {
+            DeliveryRunner::wake_at(state, timer, at);
+        }
         DeliveryRunner::spawn(state, turns);
+    }
+
+    /// Drain again at `at`, on a timer of the runtime's. Holds the state
+    /// weakly: a daemon shutting down is not kept alive for a notice.
+    ///
+    /// With no runtime under it there is no timer to set, and the synchronous
+    /// tests end the window by hand instead.
+    fn wake_at(state: &Arc<Mutex<AppState>>, timer: &FrameTimer, at: std::time::Instant) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let state = Arc::downgrade(state);
+        let clock = Arc::clone(timer.clock());
+        runtime.spawn(async move {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
+            // The app mutex is a blocking lock, and a runtime worker must not
+            // wait on it behind a slow frame.
+            let drained = tokio::task::spawn_blocking(move || {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let timer = clock.frame(SETTLE_WAKE_METHOD);
+                timer.lock(&state).delivery_queue.settle_wake_fired(at);
+                DeliveryRunner::drain(&state, &timer);
+            });
+            if let Err(joined) = drained.await {
+                eprintln!("settle wake failed: {joined}");
+            }
+        });
     }
 
     /// Deliver `turns` on a thread of the runtime's, and return at once.
@@ -152,3 +194,6 @@ impl DeliveryRunner {
 /// for it, and counting it there would make every verb that speaks to an agent
 /// look like the daemon's slowest.
 pub(in crate::app) const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
+
+/// Where a settle window's wake is charged: a timer, not any client's frame.
+pub(in crate::app) const SETTLE_WAKE_METHOD: &str = "agent.settle_wake";

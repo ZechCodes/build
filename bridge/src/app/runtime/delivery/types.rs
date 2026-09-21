@@ -104,6 +104,22 @@ impl PendingAgentTurn {
         self.say.is_some()
     }
 
+    /// Whether this turn reads the agent's unread thread messages when it is
+    /// sent — every line posted before it goes, not a snapshot taken when it
+    /// was queued.
+    pub(in crate::app) fn reads_unread_thread(&self) -> bool {
+        self.operation_id.is_none() && self.wants_catch_up
+    }
+
+    /// Whether sending this turn also delivers what `other` was queued to
+    /// say: both read the same agent's unread thread, so one is enough.
+    pub(in crate::app) fn carries(&self, other: &PendingAgentTurn) -> bool {
+        self.reads_unread_thread()
+            && other.reads_unread_thread()
+            && self.owner == other.owner
+            && self.tab_key() == other.tab_key()
+    }
+
     /// The registry entry this turn is on its way to. The same key
     /// [`ensure_agent_tab`] will reserve, so a turn in the queue, a turn
     /// mid-delivery and a spawn in flight are all one agent's under one name.

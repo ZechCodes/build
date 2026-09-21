@@ -254,7 +254,7 @@ pub(in crate::app) fn deliver(
                 },
             );
         }
-        let legacy_payload = if turn.operation_id.is_none() && turn.wants_catch_up {
+        let legacy_payload = if turn.reads_unread_thread() {
             s.legacy_delivery_payload(owner, agent_id)?
         } else {
             None

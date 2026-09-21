@@ -2,20 +2,32 @@
 //! preparation and the per-turn SettlingHandle guard remain in the runtime adapter.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::types::PendingAgentTurn;
 use crate::app::TabKey;
 use crate::operation::OperationReceipt;
 
+mod settling;
+
+pub(in crate::app) use settling::NOTICE_SETTLE_WINDOW;
+
 #[derive(Default)]
 pub(in crate::app) struct DeliveryQueue {
     queued: Vec<PendingAgentTurn>,
+    /// Turns that do not wake their agent yet. Not "on their way" to anyone:
+    /// [`Self::holds_owner`] and [`Self::holds_agent`] do not count them, so no
+    /// verb skips a turn of its own because one of these is waiting.
+    settling: settling::SettlingTurns,
     owners_in_flight: HashMap<String, usize>,
     agents_in_flight: HashMap<TabKey, usize>,
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::app) struct DeliveryCheckpoint(usize);
+pub(in crate::app) struct DeliveryCheckpoint {
+    queued: usize,
+    settling: usize,
+}
 
 /// An exact pair of counters owed by one turn.
 ///
@@ -32,31 +44,73 @@ impl DeliveryQueue {
         self.queued.push(turn);
     }
 
+    /// Queue a turn that waits out [`NOTICE_SETTLE_WINDOW`] before it wakes
+    /// its agent, so whatever else lands in the window rides the same turn.
+    pub(in crate::app) fn enqueue_after_settle_window(&mut self, turn: PendingAgentTurn) {
+        self.enqueue_waiting(turn, Some(Instant::now() + NOTICE_SETTLE_WINDOW));
+    }
+
+    /// Queue a turn that never wakes its agent on its own: it goes with the
+    /// next turn that does.
+    pub(in crate::app) fn enqueue_with_next_delivery(&mut self, turn: PendingAgentTurn) {
+        self.enqueue_waiting(turn, None);
+    }
+
+    fn enqueue_waiting(&mut self, turn: PendingAgentTurn, until: Option<Instant>) {
+        if self.queued.iter().any(|queued| queued.carries(&turn)) {
+            return;
+        }
+        self.settling.add(turn, until);
+    }
+
     pub(in crate::app) fn checkpoint(&self) -> DeliveryCheckpoint {
-        DeliveryCheckpoint(self.queued.len())
+        DeliveryCheckpoint {
+            queued: self.queued.len(),
+            settling: self.settling.len(),
+        }
     }
 
     pub(in crate::app) fn refuse_since(&mut self, checkpoint: DeliveryCheckpoint) {
-        let earlier_len = checkpoint.0.min(self.queued.len());
+        let earlier_len = checkpoint.queued.min(self.queued.len());
         let mut appended = self.queued.split_off(earlier_len);
         appended.retain(|turn| turn.survives_refusal);
         self.queued.append(&mut appended);
+        self.settling.refuse_since(checkpoint.settling);
     }
 
     /// Partition under the caller's existing AppState guard.
     ///
     /// The caller must prepare all returned turns before calling `start` and
     /// must not release the guard between this call and ticket creation.
+    ///
+    /// A settling turn comes too once its window has ended, or at once when
+    /// another turn to its agent is going.
     pub(in crate::app) fn take_ready(
         &mut self,
         mut hold: impl FnMut(&PendingAgentTurn) -> bool,
     ) -> Vec<PendingAgentTurn> {
         let agents_in_flight = &self.agents_in_flight;
-        let (held, ready) = std::mem::take(&mut self.queued)
+        let (held, mut ready) = std::mem::take(&mut self.queued)
             .into_iter()
             .partition(|turn| hold(turn) || agents_in_flight.contains_key(&turn.tab_key()));
         self.queued = held;
+        self.settling.release(
+            &mut ready,
+            |turn| !hold(turn) && !agents_in_flight.contains_key(&turn.tab_key()),
+            Instant::now(),
+        );
         ready
+    }
+
+    /// When a timer should drain the queue for a settle window that ends, if
+    /// one is open that no timer has been asked to wake yet.
+    pub(in crate::app) fn settle_wake_due(&mut self) -> Option<Instant> {
+        self.settling.wake_due(Instant::now())
+    }
+
+    /// The timer asked for at `at` has fired.
+    pub(in crate::app) fn settle_wake_fired(&mut self, at: Instant) {
+        self.settling.wake_fired(at);
     }
 
     /// Mint accounting only after AppState-dependent preparation is complete.
@@ -110,6 +164,7 @@ impl DeliveryQueue {
         mut keep: impl FnMut(&PendingAgentTurn) -> bool,
     ) {
         self.queued.retain(|turn| keep(turn));
+        self.settling.retain(keep);
     }
 
     /// Attach an accepted plan operation to the newest unassigned turn for its
@@ -195,9 +250,16 @@ impl DeliveryQueue {
         self.queued.clear();
     }
 
+    /// End every open settle window now.
+    #[cfg(test)]
+    pub(in crate::app) fn lapse_settle_windows(&mut self) {
+        self.settling.lapse(Instant::now());
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn is_idle(&self) -> bool {
         self.queued.is_empty()
+            && self.settling.is_empty()
             && self.owners_in_flight.is_empty()
             && self.agents_in_flight.is_empty()
     }

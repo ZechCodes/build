@@ -4,19 +4,23 @@
 //! An agent reports Complete and walks away from three open issues assigned to
 //! it. Nobody is told, the issues sit in In progress forever, and whoever
 //! assigned them finds out by going to look. So on Complete — and only on
-//! Complete — Build says what is still open and hands the turn back.
+//! Complete — Build says what is still open.
 //!
 //! Not on Blocked and not on Waiting. Both of those are the agent saying it
 //! cannot finish, which is already an answer about the work; adding a list of
 //! what it has not finished would be telling it what it just told us.
 //!
-//! Said once per set, not once per Complete. The reminder is delivered as a
-//! TURN, so an agent that answers it reports Complete again — which is another
-//! reminder, which is another answer. That loop ran five times on #27 in three
-//! minutes before the agent worked out what was happening and stopped
-//! replying. So the same list is not sent twice: a Complete holding what the
-//! agent was last told about says nothing, and a set that has changed is news
-//! again.
+//! It does not start a turn of its own (#67). The agent has just ended one, and
+//! every turn re-reads its whole context; the list waits on the thread and
+//! rides the agent's next delivery, whatever wakes it.
+//!
+//! Said once per set, not once per Complete. The reminder used to be a TURN
+//! of its own, so an agent that answered it reported Complete again — which
+//! was another reminder, which was another answer. That loop ran five times on
+//! #27 in three minutes before the agent worked out what was happening and
+//! stopped replying. So the same list is not sent twice: a Complete holding
+//! what the agent was last told about says nothing, and a set that has changed
+//! is news again.
 //!
 //! The way out is to finish them, say something on them, or hand them back,
 //! and all three are one tool call.
@@ -106,23 +110,24 @@ impl AppState {
             thread.post_user_from_build(body, &now);
             Ok(serde_json::Value::Null)
         })?;
-        self.delivery_queue.enqueue(PendingAgentTurn {
-            operation_id: None,
-            root: addressed.root.clone(),
-            owner: addressed.entity_id.clone(),
-            agent_id: addressed.agent_id.clone(),
-            conversation_id: addressed.conversation_id.clone(),
-            model_choice: addressed.model_choice.clone(),
-            choice_revision: addressed.choice_revision,
-            interrupt: false,
-            say: Some(TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
-            phase: "issue_reminder",
-            wants_catch_up: true,
-            survives_refusal: false,
-        });
+        self.delivery_queue
+            .enqueue_with_next_delivery(PendingAgentTurn {
+                operation_id: None,
+                root: addressed.root.clone(),
+                owner: addressed.entity_id.clone(),
+                agent_id: addressed.agent_id.clone(),
+                conversation_id: addressed.conversation_id.clone(),
+                model_choice: addressed.model_choice.clone(),
+                choice_revision: addressed.choice_revision,
+                interrupt: false,
+                say: Some(TurnText {
+                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+                }),
+                phase: "issue_reminder",
+                wants_catch_up: true,
+                survives_refusal: false,
+            });
         Ok(())
     }
 }

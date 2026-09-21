@@ -5,6 +5,10 @@
 //! tracker's conversation and starts its turn, so an agent collaborating on an
 //! issue neither polls for it nor has to stay awake.
 //!
+//! The turn waits out a short settle window first (#67). Every turn re-reads
+//! the agent's whole context, so a burst of changes wakes it once: each line is
+//! on the thread the moment it happens, and one turn carries them all.
+//!
 //! Three rules hold the whole thing up, and each is a test:
 //!
 //! 1. **Never to the actor.** An agent woken to be told what it just did would
@@ -113,7 +117,8 @@ impl AppState {
         }
     }
 
-    /// Put one notice on one agent's conversation and start its turn.
+    /// Put one notice on one agent's conversation and start its turn once the
+    /// settle window ends — or join the turn already waiting to.
     ///
     /// The same two steps the restart notice takes: the message goes on the
     /// thread BEFORE the turn is queued, so a cold session's catch-up packet
@@ -145,25 +150,26 @@ impl AppState {
             thread.wear_issue_notice(notice);
             Ok(serde_json::Value::Null)
         })?;
-        self.delivery_queue.enqueue(PendingAgentTurn {
-            operation_id: None,
-            root: addressed.root.clone(),
-            owner: addressed.entity_id.clone(),
-            agent_id: addressed.agent_id.clone(),
-            conversation_id: addressed.conversation_id.clone(),
-            model_choice: addressed.model_choice.clone(),
-            choice_revision: addressed.choice_revision,
-            interrupt: false,
-            // The notice is already on the thread, so the turn says what every
-            // other unread message says: go and read it.
-            say: Some(TurnText {
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-            }),
-            phase: "issue_notice",
-            wants_catch_up: true,
-            survives_refusal: false,
-        });
+        self.delivery_queue
+            .enqueue_after_settle_window(PendingAgentTurn {
+                operation_id: None,
+                root: addressed.root.clone(),
+                owner: addressed.entity_id.clone(),
+                agent_id: addressed.agent_id.clone(),
+                conversation_id: addressed.conversation_id.clone(),
+                model_choice: addressed.model_choice.clone(),
+                choice_revision: addressed.choice_revision,
+                interrupt: false,
+                // The notice is already on the thread, so the turn says what every
+                // other unread message says: go and read it.
+                say: Some(TurnText {
+                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+                }),
+                phase: "issue_notice",
+                wants_catch_up: true,
+                survives_refusal: false,
+            });
         Ok(())
     }
 }

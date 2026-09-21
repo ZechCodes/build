@@ -197,3 +197,179 @@ fn an_in_flight_agent_holds_its_followup_while_another_agent_proceeds() {
 // cannot itself prove SettlingHandle behavior:
 // - a_delivery_that_panics_gives_its_in_flight_marks_back
 // - requeue-before-settle on Store claim error and DeliveryOutcome::Deferred
+
+/// A turn that reads the agent's unread thread when it is sent, the way an
+/// issue notice's does.
+fn catch_up(owner: &str, agent: &str) -> PendingAgentTurn {
+    PendingAgentTurn {
+        wants_catch_up: true,
+        ..turn(owner, agent, true, false)
+    }
+}
+
+fn operation_turn(owner: &str, agent: &str) -> PendingAgentTurn {
+    PendingAgentTurn {
+        operation_id: Some(format!("op-{agent}")),
+        ..turn(owner, agent, true, true)
+    }
+}
+
+fn agents(turns: &[PendingAgentTurn]) -> Vec<&str> {
+    turns.iter().map(|turn| turn.agent_id.as_str()).collect()
+}
+
+#[test]
+fn notices_inside_the_settle_window_ride_one_turn() {
+    let mut queue = DeliveryQueue::default();
+    for _ in 0..3 {
+        queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    }
+    assert!(
+        queue.take_ready(|_| false).is_empty(),
+        "an idle tracker's notice waits the window out"
+    );
+
+    queue.lapse_settle_windows();
+    let ready = queue.take_ready(|_| false);
+    assert_eq!(agents(&ready), ["agent-a"], "three notices, one turn");
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn a_notice_after_its_turn_went_starts_a_new_one() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.lapse_settle_windows();
+    assert_eq!(queue.take_ready(|_| false).len(), 1);
+
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    assert!(queue.take_ready(|_| false).is_empty(), "a new window opens");
+    queue.lapse_settle_windows();
+    assert_eq!(queue.take_ready(|_| false).len(), 1);
+}
+
+#[test]
+fn a_settling_turn_does_not_hold_up_another_agent() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.enqueue(catch_up("other", "agent-b"));
+    assert_eq!(agents(&queue.take_ready(|_| false)), ["agent-b"]);
+}
+
+#[test]
+fn an_operation_turn_goes_now_and_takes_the_settling_notice_with_it() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.enqueue(operation_turn("tracker", "agent-a"));
+
+    let ready = queue.take_ready(|_| false);
+    assert_eq!(ready.len(), 2, "neither waits the window");
+    assert_eq!(ready[0].operation_id.as_deref(), Some("op-agent-a"));
+    assert!(ready[1].operation_id.is_none());
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn a_turn_that_reads_the_thread_carries_the_settling_notice() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    let mut dispatch = catch_up("tracker", "agent-a");
+    dispatch.phase = "dispatch";
+    queue.enqueue(dispatch);
+
+    let ready = queue.take_ready(|_| false);
+    assert_eq!(
+        ready.len(),
+        1,
+        "the dispatch reads the notice off the thread"
+    );
+    assert_eq!(ready[0].phase, "dispatch");
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn a_notice_joins_a_catch_up_turn_already_queued() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue(catch_up("tracker", "agent-a"));
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    assert_eq!(queue.take_ready(|_| false).len(), 1, "one turn reads both");
+}
+
+#[test]
+fn a_rider_never_wakes_its_agent_alone() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_with_next_delivery(catch_up("worker", "agent-a"));
+    queue.lapse_settle_windows();
+    assert!(queue.take_ready(|_| false).is_empty());
+    assert!(
+        !queue.holds_agent(&catch_up("worker", "agent-a").tab_key()),
+        "a rider is not a turn on its way"
+    );
+    assert!(!queue.holds_owner("worker"));
+
+    queue.enqueue(catch_up("worker", "agent-a"));
+    assert_eq!(
+        queue.take_ready(|_| false).len(),
+        1,
+        "the next delivery reads the rider off the thread"
+    );
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn a_notice_for_an_agent_with_a_rider_wakes_it_once_after_the_window() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_with_next_delivery(catch_up("worker", "agent-a"));
+    queue.enqueue_after_settle_window(catch_up("worker", "agent-a"));
+    assert!(queue.take_ready(|_| false).is_empty());
+    queue.lapse_settle_windows();
+    assert_eq!(queue.take_ready(|_| false).len(), 1);
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn an_in_flight_agent_keeps_its_settled_notice_until_it_is_free() {
+    let mut queue = DeliveryQueue::default();
+    let delivering = catch_up("tracker", "agent-a");
+    let ticket = queue.start(&delivering);
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.lapse_settle_windows();
+    assert!(queue.take_ready(|_| false).is_empty());
+    assert_eq!(queue.settle_wake_due(), None, "no wake for a lapsed window");
+
+    queue.settle(ticket);
+    assert_eq!(queue.take_ready(|_| false).len(), 1);
+}
+
+#[test]
+fn a_settle_window_asks_for_one_wake_at_its_end() {
+    let mut queue = DeliveryQueue::default();
+    assert_eq!(queue.settle_wake_due(), None);
+    let before = std::time::Instant::now();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    let wake = queue.settle_wake_due().expect("the window's end is a wake");
+    assert!(wake >= before + NOTICE_SETTLE_WINDOW);
+    assert_eq!(queue.settle_wake_due(), None, "already asked for");
+
+    queue.settle_wake_fired(wake);
+    assert_eq!(queue.settle_wake_due(), Some(wake), "asked for again");
+}
+
+#[test]
+fn a_refused_request_drops_the_notice_it_deferred() {
+    let mut queue = DeliveryQueue::default();
+    let checkpoint = queue.checkpoint();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.refuse_since(checkpoint);
+    queue.lapse_settle_windows();
+    assert!(queue.take_ready(|_| false).is_empty());
+}
+
+#[test]
+fn removing_an_agent_removes_its_settling_turn() {
+    let mut queue = DeliveryQueue::default();
+    queue.enqueue_after_settle_window(catch_up("tracker", "agent-a"));
+    queue.retain_queued(|turn| turn.agent_id != "agent-a");
+    queue.lapse_settle_windows();
+    assert!(queue.take_ready(|_| false).is_empty());
+}

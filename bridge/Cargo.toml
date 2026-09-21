@@ -47,6 +47,9 @@ rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] 
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 webrtc = "0.20"
+# The facade webrtc reports TURN and STUN gathering failures through; `rtc.rs`
+# forwards those records, and only those, to stderr.
+log = "0.4"
 # The sans-io core `webrtc` is built on, as a direct dependency for one
 # reason: `SettingEngine`'s setters take `MulticastDnsMode` and `NetworkType`,
 # and `webrtc` re-exports the engine but not those two enums, so the ICE

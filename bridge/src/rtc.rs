@@ -31,9 +31,9 @@ use tokio::sync::mpsc;
 use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfiguration,
-    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState, RTCIceServer,
-    RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription, RTCStatsReport,
-    RTCStatsReportEntry, StatsSelector,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState, RTCIceGatheringState,
+    RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState, RTCSessionDescription,
+    RTCStatsReport, RTCStatsReportEntry, StatsSelector,
 };
 
 use rtc::ice::mdns::MulticastDnsMode;
@@ -325,6 +325,7 @@ impl WebrtcPeerFactory {
     /// them gathers under — resolved once at startup, so every session of a
     /// run reaches its browser the same way.
     pub fn new(intake: Arc<FrameIntake>, policy: IcePolicy) -> Arc<Self> {
+        install_gatherer_log();
         Arc::new(WebrtcPeerFactory {
             intake,
             policy: Arc::new(policy),
@@ -377,9 +378,18 @@ impl SessionPeer for WebrtcPeer {
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
         self.signaling.hold(signaling);
-        let allowed = self.policy.allowed_ice_servers(ice_servers);
+        let allowed: Vec<RTCIceServer> = self
+            .policy
+            .allowed_ice_servers(ice_servers)
+            .iter()
+            .map(offered_server)
+            .collect();
+        diagnostic(
+            &self.session_id,
+            &configured_servers(ice_servers.len(), &allowed),
+        );
         let configuration = RTCConfigurationBuilder::new()
-            .with_ice_servers(allowed.iter().map(offered_server).collect())
+            .with_ice_servers(allowed)
             .build();
         let mut negotiation = self.negotiation.lock().await;
         let connection = match negotiation.as_ref() {
@@ -444,6 +454,7 @@ impl WebrtcPeer {
             session_id: self.session_id.clone(),
             signaling: self.signaling.clone(),
             connected,
+            gathered: Mutex::new(GatheredTypes::default()),
         });
         let udp_addrs = self.policy.gather_from()?;
         let connection: Arc<dyn PeerConnection> = Arc::new(
@@ -594,11 +605,18 @@ struct PeerEvents {
     session_id: String,
     signaling: Arc<Trickling>,
     connected: mpsc::UnboundedSender<()>,
+    /// The kinds of candidate this gathering has produced so far, said and
+    /// cleared when it completes.
+    gathered: Mutex<GatheredTypes>,
 }
 
 #[async_trait]
 impl PeerConnectionEventHandler for PeerEvents {
     async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        self.gathered
+            .lock()
+            .unwrap()
+            .count(&event.candidate.typ.to_string());
         match event.candidate.to_json() {
             Ok(candidate) => self.signaling.trickle(json!(candidate)),
             Err(e) => eprintln!(
@@ -617,6 +635,110 @@ impl PeerConnectionEventHandler for PeerEvents {
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
         diagnostic(&self.session_id, &format!("ice_state={state}"));
+    }
+
+    async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
+        if state == RTCIceGatheringState::Complete {
+            let gathered = std::mem::take(&mut *self.gathered.lock().unwrap());
+            diagnostic(&self.session_id, &gathered.to_string());
+        }
+    }
+}
+
+/// The line that says which ICE servers this peer's own agent was built with:
+/// what survived [`IcePolicy::allowed_ice_servers`] out of what the browser
+/// offered, and whether each carries a credential — a `turn:` url without one
+/// allocates nothing. Never the credential itself. Urls are Debug-formatted
+/// for the same reason session ids are: they are wire values.
+fn configured_servers(offered: usize, configured: &[RTCIceServer]) -> String {
+    let servers: Vec<String> = configured
+        .iter()
+        .map(|server| {
+            let credential = !server.username.is_empty() && !server.credential.is_empty();
+            format!(
+                "{{urls={:?} credential={}}}",
+                server.urls,
+                if credential { "yes" } else { "no" }
+            )
+        })
+        .collect();
+    format!(
+        "ice_servers offered={offered} configured=[{}]",
+        servers.join(", ")
+    )
+}
+
+/// How many candidates of each kind one gathering produced. `host`, `srflx`
+/// and `relay` are always named, so a gathering that produced no relay
+/// candidate says `relay=0` rather than leaving it to be noticed missing.
+struct GatheredTypes(std::collections::BTreeMap<String, usize>);
+
+impl Default for GatheredTypes {
+    fn default() -> Self {
+        GatheredTypes(
+            ["host", "srflx", RELAY_CANDIDATE]
+                .into_iter()
+                .map(|typ| (typ.to_string(), 0))
+                .collect(),
+        )
+    }
+}
+
+impl GatheredTypes {
+    fn count(&mut self, typ: &str) {
+        *self.0.entry(typ.to_string()).or_default() += 1;
+    }
+}
+
+impl std::fmt::Display for GatheredTypes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "gathered")?;
+        for (typ, count) in &self.0 {
+            write!(f, " {typ}={count}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The webrtc crate says why a TURN allocation or a STUN query failed —
+/// unresolvable, unsupported scheme, timed out, refused — only through the
+/// `log` facade, and a daemon with no logger installed drops every word of
+/// it. This forwards those, and nothing else the crate logs, to the same
+/// stderr stream as the `rtc:` lines around them.
+struct GathererLog;
+
+/// The modules that gather: webrtc's STUN and TURN gatherers, and the TURN
+/// client they allocate through.
+const GATHERER_LOG_TARGETS: [&str; 2] = ["webrtc::peer_connection::transports", "rtc_turn"];
+
+impl log::Log for GathererLog {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+            && GATHERER_LOG_TARGETS
+                .iter()
+                .any(|target| metadata.target().starts_with(target))
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!(
+                "rtc: {} {}: {}",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+/// Install [`GathererLog`] as the process logger, once. A process that has
+/// one already keeps it.
+fn install_gatherer_log() {
+    static GATHERER_LOG: GathererLog = GathererLog;
+    if log::set_logger(&GATHERER_LOG).is_ok() {
+        log::set_max_level(log::LevelFilter::Warn);
     }
 }
 
@@ -1711,5 +1833,73 @@ mod stall_tests {
         send.took(800);
 
         assert_eq!(send.handed(), 2000);
+    }
+}
+
+#[cfg(test)]
+mod ice_diagnostic_tests {
+    use super::*;
+    use log::Log;
+
+    /// The setup line names what the agent was built with, after policy, and
+    /// says whether each server can authenticate an allocation — without ever
+    /// printing the credential.
+    #[test]
+    fn the_setup_line_names_every_configured_server_and_never_its_credential() {
+        let configured = [
+            offered_server(&json!({
+                "urls": ["turn:172.18.0.1:3478?transport=udp"],
+                "username": "build",
+                "credential": "relay-wins",
+            })),
+            offered_server(&json!({ "urls": "stun:stun.example:3478" })),
+        ];
+        let line = configured_servers(2, &configured);
+        assert_eq!(
+            line,
+            "ice_servers offered=2 configured=[\
+             {urls=[\"turn:172.18.0.1:3478?transport=udp\"] credential=yes}, \
+             {urls=[\"stun:stun.example:3478\"] credential=no}]"
+        );
+        assert!(!line.contains("relay-wins"));
+    }
+
+    /// Direct-only strips every TURN server, and the line shows the gap
+    /// between what was offered and what the agent got.
+    #[test]
+    fn a_policy_that_dropped_everything_configures_nothing() {
+        assert_eq!(
+            configured_servers(1, &[]),
+            "ice_servers offered=1 configured=[]"
+        );
+    }
+
+    /// The gather-end line names the three kinds a gathering can produce even
+    /// when it produced none of one, so a missing relay candidate reads as
+    /// `relay=0`.
+    #[test]
+    fn the_gather_line_says_zero_for_a_kind_it_never_saw() {
+        let mut gathered = GatheredTypes::default();
+        gathered.count("host");
+        gathered.count("host");
+        assert_eq!(gathered.to_string(), "gathered host=2 relay=0 srflx=0");
+        gathered.count("relay");
+        assert_eq!(gathered.to_string(), "gathered host=2 relay=1 srflx=0");
+    }
+
+    /// Only the gatherers' warnings and errors reach stderr: the rest of what
+    /// webrtc logs is not this line's business.
+    #[test]
+    fn only_gatherer_warnings_are_forwarded() {
+        let at = |target: &str, level| {
+            GathererLog.enabled(&log::Metadata::builder().target(target).level(level).build())
+        };
+        let relayer = "webrtc::peer_connection::transports::turn_relayer";
+        assert!(at(relayer, log::Level::Error));
+        assert!(at(relayer, log::Level::Warn));
+        assert!(!at(relayer, log::Level::Debug));
+        assert!(at("rtc_turn::client", log::Level::Warn));
+        assert!(!at("webrtc::peer_connection::driver", log::Level::Error));
+        assert!(!at("rtc_sctp::association", log::Level::Warn));
     }
 }

@@ -25,6 +25,8 @@ import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { referenceLinks } from "./referenceTargets.js";
+import { carriesWatch, readThrough, watchStateOf } from "./trackerWatch.js";
+import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 
@@ -49,6 +51,62 @@ export function mountIssuePage(host, options) {
   };
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
+
+  /** Whether this bridge can be asked about watching at all (#65). Read once
+   *  at mount: a greeting arrives before any surface paints, and a bridge does
+   *  not gain a verb without a new one. */
+  const offersWatch = carriesWatch(state.deviceId);
+
+  /**
+   * The watch switch, or nothing where the bridge cannot serve it.
+   *
+   * The rule about how the switch behaves is the shell agent's
+   * (core/watchToggle.js): it moves under the finger and a refusal puts it
+   * back. What is this page's is where the state comes from — the issue record
+   * — and that a press repaints the BUTTON rather than the page: a full
+   * repaint here would take the reader's caret out of a half-written comment.
+   */
+  const watch = offersWatch
+    ? createWatchToggle({
+      issueId: state.issueId,
+      call: (method, params) => state.callRpc(method, params),
+      onChange: (next) => syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next),
+      onFailure: () => notifyError("Could not change whether you are watching this issue"),
+    })
+    : null;
+
+  /** The newest row this reader has been shown, as last told to the bridge.
+   *  Held so a scroll that reaches the end twice is one call, not one a frame:
+   *  the mark only ever moves forward, and re-sending the same point says
+   *  nothing. */
+  let markedThrough = "";
+
+  /**
+   * Say how far this reader has read.
+   *
+   * Quiet on both sides: nothing is drawn from the answer, and a refusal is
+   * swallowed rather than toasted — a read mark is housekeeping the reader did
+   * not ask for, and a page that shouts about failing to keep its own notes is
+   * worse than one that quietly re-sends on the next scroll.
+   */
+  function markRead() {
+    if (!offersWatch || !state.issue) return;
+    const through = readThrough(state.rows);
+    if (!through || through === markedThrough) return;
+    markedThrough = through;
+    void Promise.resolve(state.callRpc("issues.read_through", { issue_id: state.issueId, event_id: through }))
+      .catch(() => { markedThrough = ""; });
+  }
+
+  /** The reader reached the end of the timeline, which is the only thing that
+   *  says they have seen what is at the bottom of it. A few pixels of slack:
+   *  a scroller rounded by the browser's own subpixel maths can stop a hair
+   *  short of its end and never say so. */
+  const AT_THE_END = 8;
+  const onScroll = () => {
+    if (host.scrollTop + host.clientHeight >= host.scrollHeight - AT_THE_END) markRead();
+  };
+  host.addEventListener("scroll", onScroll, { passive: true });
 
   const place = () => ({ projectId: state.projectId, deviceId: state.deviceId, projectKey: state.projectKey });
 
@@ -103,6 +161,7 @@ export function mountIssuePage(host, options) {
       }),
       rows: state.rows,
       links: issueLinkRows(state.issue, place(), state.feed()),
+      watch: watch?.state() || null,
       draft: state.draft,
       labelsDraft: state.labelsDraft,
       busy: state.busy,
@@ -134,6 +193,11 @@ export function mountIssuePage(host, options) {
     state.rows = timelineRows(answer.timeline);
     if (!keepDrafts) state.labelsDraft = (answer.issue.labels || []).join(", ");
     state.loaded = true;
+    // What the record says outranks anything the switch guessed, and opening
+    // an issue is reading it: the mark moves on open as well as on the scroll
+    // that reaches the end (#65).
+    watch?.settle(watchStateOf(answer.issue));
+    markRead();
   }
 
   async function paintFromCache() {
@@ -307,6 +371,12 @@ export function mountIssuePage(host, options) {
     wireRail();
     wireComposer();
     wireAttachments();
+    wireWatch();
+  }
+
+  function wireWatch() {
+    const button = host.querySelector(WATCH_BUTTON_SELECTOR);
+    if (button && watch) button.onclick = () => void watch.press();
   }
 
   // ---- lifecycle -----------------------------------------------------------
@@ -336,6 +406,7 @@ export function mountIssuePage(host, options) {
     feedMoved: paint,
     dispose() {
       state.disposed = true;
+      host.removeEventListener("scroll", onScroll);
       watcher.dispose();
       listWatcher?.();
       reads.dispose();

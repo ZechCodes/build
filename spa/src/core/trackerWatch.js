@@ -41,3 +41,35 @@ import { bridgeCapabilities } from "./changeEvents.js";
 export function carriesWatching(deviceId) {
   return bridgeCapabilities(deviceId)?.issues?.watching === true;
 }
+
+/**
+ * What the switch shows for one issue: whether the reader watches it, and how
+ * many OTHERS do (which is what `watchTitle` counts).
+ *
+ * `watched` is the reader's own watch and `trackers` is the agents following
+ * it — two fields rather than one mixed list, settled on #64 at 00:38Z: the
+ * tracker array is live at 1.5.0 as agent-id strings and
+ * `core/trackerAgentIssues.js` matches on it with `includes`, so putting actor
+ * objects in it would have stopped matching silently. The two also mean
+ * different deliveries — an agent tracker gets a turn started, the reader's
+ * watch gets a row in a list.
+ *
+ * A record carrying neither reads as not watching, the same safe direction the
+ * gate takes.
+ */
+export function watchStateOf(issue) {
+  const trackers = Array.isArray(issue?.trackers) ? issue.trackers : [];
+  return {
+    watching: Boolean(issue?.watched),
+    watchers: issue?.watchers === undefined ? trackers.length : Number(issue.watchers) || 0,
+  };
+}
+
+/**
+ * How far this reader has read, out of the timeline as the page holds it.
+ *
+ * The newest row, whatever kind it is: the mark names a point in one ordering
+ * that comments and events share, and the page cannot know which of the two
+ * the bridge last wrote. Nothing to mark on an empty timeline.
+ */
+export const readThrough = (rows) => (rows || []).at(-1)?.key || "";

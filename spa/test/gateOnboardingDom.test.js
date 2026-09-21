@@ -69,7 +69,10 @@ vi.mock("../src/devices.js", () => ({
 // hand-over test below is what fails if a greeting — or a claim on home —
 // creeps back in.
 vi.mock("../src/connection.js", () => ({
-  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
+  syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   openDeviceSessions: (...args) => openDeviceSessions(...args),

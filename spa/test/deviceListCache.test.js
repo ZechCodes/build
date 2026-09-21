@@ -21,6 +21,9 @@ vi.mock("../src/connection.js", () => ({
   deviceWentAway: () => {},
   syncHome: () => {},
   syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {},
   chooseCreationDevice: () => {},
   connectDevice: () => Promise.resolve(null),
   goOffline: () => {},

@@ -20,7 +20,10 @@ const { App, openSession, openBrowser, openNewRepo, openSetRemote, refreshModelC
   }));
 vi.mock("../src/app.js", () => ({ App, render: () => {} }));
 vi.mock("../src/connection.js", () => ({
-  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
+  syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   chooseCreationDevice: () => {},
   retireDevice: (...args) => retireDevice(...args),
   openDeviceSettingsSession: openSession,

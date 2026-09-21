@@ -1,4 +1,13 @@
-const BACKOFF_MS = [2000, 4000, 8000, 16000, 30000];
+/** How long a device waits between dials, by how many have failed.
+ *
+ *  The ceiling is ten seconds, not thirty. A phone is the device this ladder is
+ *  really for, and a phone's failures are almost never the machine being
+ *  unreachable — they are the phone itself having been asleep. Zech's had climbed
+ *  to the old thirty-second step across two earlier failures and was still there
+ *  when he picked it up, so waking the screen bought a half-minute of nothing
+ *  (issue #60). Ten seconds is still a real back-off for a machine that is
+ *  genuinely gone, and a tenth of the wait for the case that actually happens. */
+const BACKOFF_MS = [2000, 4000, 8000, 10000];
 const JITTER_FRACTION = 0.1;
 
 /**
@@ -68,6 +77,32 @@ export function createDeviceRecoverySupervisor({
       for (const deviceId of previouslyTracked) {
         if (!nextOnline.has(deviceId)) forget(deviceId, { cancel: true });
       }
+    },
+
+    /**
+     * Something changed that makes the current wait pointless: retry now, from
+     * the floor.
+     *
+     * The screen came back, the network came back, the radio changed. None of
+     * those is evidence about the machine on the other end, but all of them mean
+     * the reason the last dial failed has probably gone — and a ladder climbed
+     * while the phone was asleep is a ladder built out of the phone's own
+     * absence. So the failure count is dropped as well as the timer: waiting
+     * longer each time is only sound when each failure told us something.
+     *
+     * Devices mid-attempt are left alone. One is already dialling, and starting a
+     * second would be the double mint this issue also asks about.
+     *
+     * Returns the devices it woke, which is what the test reads and what the
+     * diagnostics record.
+     */
+    wake(reason = "wake") {
+      const waiting = [...records.values()].filter((record) => record.status === "waiting");
+      for (const record of waiting) {
+        const epoch = nextEpoch(record.deviceId);
+        start(record.deviceId, 0, epoch, { defer: true });
+      }
+      return { reason, woke: waiting.map((record) => record.deviceId) };
     },
 
     recoverNow(deviceId) {

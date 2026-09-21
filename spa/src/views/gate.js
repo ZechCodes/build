@@ -17,7 +17,7 @@ import {
   waitingForDeviceText,
 } from "../core/text.js";
 import { App, render, unmountView } from "../app.js";
-import { connectDevice, openDeviceSessions, securityStopText } from "../connection.js";
+import { connectDevice, openDeviceSessions, securityStopText, stopWatchingForWake, watchForWake } from "../connection.js";
 import { deviceAwayText, deviceAwayWord } from "../core/deviceAway.js";
 import { contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
@@ -52,6 +52,7 @@ function setGate(on) {
     // The account's presence is the app's cadence (spec rule 6); a gated page
     // has its own, quicker one below, and two of them would read twice.
     stopWatchingPresence();
+    stopWatchingForWake();
   }
 }
 
@@ -186,6 +187,9 @@ function handBackToReader() {
   // api from here on: a late device joins on it, and a machine whose bridge has
   // gone is marked away on it (spec rule 6).
   watchPresence();
+  // And the wake signals, which drop the reconnect back-off to its floor when the
+  // screen or the network comes back (#60).
+  watchForWake();
 }
 
 /**

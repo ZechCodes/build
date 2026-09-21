@@ -43,7 +43,10 @@ vi.mock("../src/devices.js", () => ({
   readPresence: async () => App.devices,
 }));
 vi.mock("../src/connection.js", () => ({
-  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
+  syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {}, deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
   openDeviceSettingsSession: async () => ({}),
   chooseCreationDevice: () => {},

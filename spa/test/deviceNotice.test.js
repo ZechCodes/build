@@ -10,7 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // again, and running the sequence is the connection layer's (rule 3).
 const connection = vi.hoisted(() => ({ connectDevice: vi.fn(async () => null), recovery: new Map(), listeners: new Set() }));
 vi.mock("../src/connection.js", () => ({
-  syncDeviceRecoveryPresence: () => {}, deviceRecoverySnapshot: (id) => connection.recovery.get(id) || null,
+  syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {}, deviceRecoverySnapshot: (id) => connection.recovery.get(id) || null,
   onDeviceRecoveryChanged: (listener) => { connection.listeners.add(listener); return () => connection.listeners.delete(listener); },
   connectDevice: (...args) => connection.connectDevice(...args),
   chooseCreationDevice: () => {},

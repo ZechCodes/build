@@ -96,6 +96,71 @@ const deviceRecovery = createDeviceRecoverySupervisor({
   cancelAttempt: (deviceId) => connectionAttempts.forDevice(deviceId).cancel(),
 });
 
+/**
+ * What the app listens to for "the reason the last dial failed has probably gone".
+ *
+ * Three signals, none of which is evidence about the machine on the other end,
+ * all of which mean the wait is now pointless: the screen came back, the network
+ * came back, the radio changed. A phone asleep for twenty minutes climbs the
+ * back-off ladder out of its OWN absence, and Zech's was still sitting on the top
+ * step when he picked it up — half a minute of nothing on a device that was ready
+ * to connect (issue #60).
+ *
+ * `visibilitychange` is the one that matters most and the one the app already had
+ * for other purposes; `online` and the Network Information `change` are cheap and
+ * cover a radio handover the screen never noticed. Each is recorded, so a report
+ * carries the wake as well as the dials it caused.
+ */
+const WAKE_SIGNALS = Object.freeze([
+  ["visible", () => document.visibilityState !== "hidden"],
+  ["online", () => true],
+  ["network-change", () => true],
+]);
+
+let stopWakeWatch = null;
+
+/** Retry every waiting device now, from the floor, because something changed. */
+function wakeRecovery(reason) {
+  const woken = deviceRecovery.wake(reason);
+  // Only worth a line when it did something: a visibility flip on a healthy app
+  // happens all day and says nothing.
+  if (woken.woke.length) {
+    recordConnectionDiagnostic("recovery", "woken", { reason, devices: woken.woke.length });
+  }
+  return woken;
+}
+
+/**
+ * Listen for the three wake signals while the app is up. Re-entrant: asking
+ * again re-arms the one set rather than adding a second.
+ */
+export function watchForWake() {
+  stopWatchingForWake();
+  const [visible] = WAKE_SIGNALS;
+  const onVisible = () => {
+    if (visible[1]()) wakeRecovery("visible");
+  };
+  const onOnline = () => wakeRecovery("online");
+  const onNetworkChange = () => wakeRecovery("network-change");
+  // `navigator.connection` is absent on Safari and on desktop Firefox; a missing
+  // signal costs nothing here because the other two still fire.
+  const radio = globalThis.navigator?.connection;
+  document.addEventListener("visibilitychange", onVisible);
+  globalThis.addEventListener?.("online", onOnline);
+  radio?.addEventListener?.("change", onNetworkChange);
+  stopWakeWatch = () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    globalThis.removeEventListener?.("online", onOnline);
+    radio?.removeEventListener?.("change", onNetworkChange);
+  };
+}
+
+/** Stop listening (the gate took the app back, the account signed out). */
+export function stopWatchingForWake() {
+  stopWakeWatch?.();
+  stopWakeWatch = null;
+}
+
 export const syncDeviceRecoveryPresence = (devices) => deviceRecovery.syncPresence(devices);
 export const deviceRecoverySnapshot = (deviceId) => deviceRecovery.snapshot(deviceId);
 export const onDeviceRecoveryChanged = (listener) => deviceRecovery.subscribe(listener);

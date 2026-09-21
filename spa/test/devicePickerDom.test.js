@@ -11,6 +11,8 @@ vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilte
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
 vi.mock("../src/connection.js", () => ({
   syncDeviceRecoveryPresence: vi.fn(), deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: vi.fn(), stopWatchingForWake: vi.fn(),
   chooseCreationDevice: () => {},
   retireDevice: () => {},
   openDeviceSessions: vi.fn(),

@@ -29,7 +29,10 @@ vi.mock("../src/connection.js", () => ({
   forgetHomeFollow: () => {}, forgetRendezvousSockets: () => {}, forgetSecurityStops: () => {},
   connectDevice: async () => null, deviceWentAway: () => {},
   openDeviceSessions: () => ({ first: Promise.resolve(null), settled: Promise.resolve([]) }),
-  syncDeviceRecoveryPresence: () => {}, syncHome: () => {},
+  syncDeviceRecoveryPresence: () => {},
+  // The wake listeners the gate arms and disarms (#60).
+  watchForWake: () => {},
+  stopWatchingForWake: () => {}, syncHome: () => {},
   openDeviceSettingsSession: async () => ({}), retireDevice: () => {},
   securityStopText: () => "", chooseCreationDevice: () => {},
 }));

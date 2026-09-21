@@ -18,8 +18,13 @@
 //
 // So nothing is mocked here but the reconnect watcher: a real greeting goes
 // into the real store, the real gate reads it, and the real page is mounted on
-// top. Mutation-checked — forcing `carriesWatching` to true fails four of
-// these, and the page and the gate are each named by at least one.
+// top.
+//
+// Since ea3de439 the gate is a capability rather than a version compare, so
+// the greetings here come in both shapes the adapter answers for: a bridge
+// that STATES `issues.watching`, and one that says nothing and is answered for
+// by its minor. The stated-below-the-floor case is the only one that can tell
+// a flag read where the bridge writes it from a flag read nowhere.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -33,13 +38,26 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 const { bridgeApiVersion, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-const { carriesWatching, WATCH_SINCE } = await import("../src/core/trackerWatch.js");
+const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { mountIssuePage } = await import("../src/core/trackerIssuePage.js");
 const { writeIssuesRecord } = await import("../src/core/trackerCache.js");
 
-/** One machine saying what it is, through the real greeting path. */
-const greet = (apiVersion, deviceId = "dev-1") =>
-  greetBridge(async () => ({ push_events: true, api_version: apiVersion }), { deviceId });
+/** One machine saying what it is, through the real greeting path.
+ *
+ *  `states` is what the bridge claims outright about watching; leaving it out
+ *  is a bridge that says nothing, which the adapter answers for by its minor
+ *  (`capabilitiesOf`, floor 9). Both shapes are greeted below because they are
+ *  two different ways to answer the same question, and only one of them was
+ *  ever exercised before the gate became a capability. */
+const greet = (apiVersion, { deviceId = "dev-1", states } = {}) =>
+  greetBridge(
+    async () => ({
+      push_events: true,
+      api_version: apiVersion,
+      ...(states === undefined ? {} : { issues: { watching: states } }),
+    }),
+    { deviceId },
+  );
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -82,9 +100,9 @@ afterEach(() => {
 });
 
 describe("the gate, asked of a bridge that actually greeted", () => {
-  it("offers watching to a machine that said the minor it ships in", async () => {
-    await greet(WATCH_SINCE);
-    expect(bridgeApiVersion("dev-1")).toBe(WATCH_SINCE);
+  it("offers watching to a machine on the minor it ships in", async () => {
+    await greet("1.9.0");
+    expect(bridgeApiVersion("dev-1")).toBe("1.9.0");
     expect(carriesWatching("dev-1")).toBe(true);
   });
 
@@ -100,11 +118,23 @@ describe("the gate, asked of a bridge that actually greeted", () => {
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
+  // The case that tells a flag read where the bridge writes it from one read
+  // nowhere: below the floor, the minor says no and only the stated flag can
+  // say yes. Under the wrong key this case is the one that fails, and every
+  // other case on this page passes either way.
+  it("takes a stated flag over the minor, in both directions", async () => {
+    await greet("1.8.0", { states: true });
+    expect(carriesWatching("dev-1")).toBe(true);
+
+    await greet("1.9.0", { deviceId: "dev-withdrawn", states: false });
+    expect(carriesWatching("dev-withdrawn")).toBe(false);
+  });
+
   // A phone is paired to more than one machine. The answer is per machine, or
   // the switch appears on a bridge that cannot serve it.
   it("answers per machine when two are paired at once", async () => {
-    await greet(WATCH_SINCE, "dev-new");
-    await greet("1.8.0", "dev-old");
+    await greet("1.9.0", { deviceId: "dev-new" });
+    await greet("1.8.0", { deviceId: "dev-old" });
     expect([carriesWatching("dev-new"), carriesWatching("dev-old")]).toEqual([true, false]);
   });
 });
@@ -118,24 +148,30 @@ describe("the page, on top of that gate", () => {
   });
 
   it("draws the switch and marks its read once the machine carries it", async () => {
-    await greet(WATCH_SINCE);
+    await greet("1.9.0");
     await mount();
     expect(host.querySelector(".rail-watch")).not.toBeNull();
     expect(listed("issues.read_through")[0][1]).toEqual({ issue_id: "issue-1", event_id: "ic-1" });
   });
 
   it("and presses through to the verb itself", async () => {
-    await greet(WATCH_SINCE);
+    await greet("1.9.0");
     await mount();
     host.querySelector(".rail-watch").click();
     await flush();
     expect(listed("issues.watch")[0][1]).toEqual({ issue_id: "issue-1" });
   });
 
+  it("draws the switch for a bridge below the floor that states the flag", async () => {
+    await greet("1.8.0", { states: true });
+    await mount();
+    expect(host.querySelector(".rail-watch")).not.toBeNull();
+  });
+
   // The same page mounted against the older of two paired machines.
   it("is dark on the older machine while the newer one has it", async () => {
-    await greet(WATCH_SINCE, "dev-1");
-    await greet("1.8.0", "dev-old");
+    await greet("1.9.0");
+    await greet("1.8.0", { deviceId: "dev-old" });
     await mount("dev-old");
     expect(host.querySelector(".rail-watch")).toBeNull();
   });

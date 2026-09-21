@@ -900,11 +900,20 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 /* The watch switch in the panel head (#65). Its on state was carried only by
    aria-pressed, which is an answer for a screen reader and nothing at all for
-   everyone else. Dim at rest, accent when the reader is watching — the same
-   two weights the pin beside it uses. */
+   everyone else: dim at rest, accent when the reader is watching.
+
+   --accent, NOT --accent-fill. The fill is #51ffb4 in BOTH themes because it is
+   a background, worn with --accent-ink on top; as a colour on the light panel
+   it measures 1.29:1, fainter than the dim it replaces, so watching would have
+   turned the icon OFF in daylight. --accent is the foreground of the pair:
+   6.42:1 light, 14.41:1 dark.
+
+   17px because that is what the pin next to it wears. The pin's own on state is
+   --ink2 rather than accent, and deliberately so: the pin remembers a layout
+   choice, while this says the reader is being told about something. */
 .rail-watch { flex:none; display:grid; place-items:center; }
-.rail-watch svg { display:block; width:15px; height:15px; }
-.rail-watch.watching { color:var(--accent-fill, var(--accent)); }
+.rail-watch svg { display:block; width:17px; height:17px; }
+.rail-watch.watching { color:var(--accent); }
 .rail-watch[disabled] { opacity:.55; cursor:default; }
 .rail-harness-icon { flex:none; width:20px; height:20px; display:grid; place-items:center;
   color:var(--ink); }

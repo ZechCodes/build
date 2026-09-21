@@ -281,6 +281,17 @@ pub struct Issue {
     /// and an empty list is the right answer for them.
     #[serde(default)]
     pub trackers: Vec<String>,
+    /// The files filed WITH the issue (spec: Issues → Attachments).
+    ///
+    /// The same record a message carries, because they are the same thing seen
+    /// twice: a screenshot handed to an agent in a conversation and one handed
+    /// to it on an issue are one kind of object, and two shapes for it would be
+    /// two readers, two renders and two ways to get the mime wrong.
+    ///
+    /// `default` because every issue filed before attachments existed has none,
+    /// and an empty list is the right answer for them.
+    #[serde(default)]
+    pub attachments: Vec<crate::thread::MessageAttachment>,
     pub created_by: Actor,
     pub created_at: String,
     pub updated_at: String,
@@ -351,6 +362,7 @@ impl Issue {
             assignee: None,
             links: IssueLinks::default(),
             trackers: Vec::new(),
+            attachments: Vec::new(),
             created_by,
             created_at: now.to_string(),
             updated_at: now.to_string(),
@@ -374,6 +386,10 @@ pub struct IssueComment {
     /// ownership by the issue. See the spec's "Typed references".
     #[serde(default)]
     pub refs: Vec<crate::thread::ThreadLink>,
+    /// The files said WITH the comment. `default` for the same reason the
+    /// issue's are: every comment written before attachments existed has none.
+    #[serde(default)]
+    pub attachments: Vec<crate::thread::MessageAttachment>,
     pub created_at: String,
 }
 

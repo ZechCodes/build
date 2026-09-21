@@ -14,6 +14,11 @@ mod senders;
 pub(in crate::app) use agent_to_agent::AgentSender;
 pub use attachments::ATTACHMENT_MAX_BYTES;
 pub(in crate::app) use attachments::{media_mime_hint, mime_hint};
+// The tracker files the same kind of object under the same rules, so it reads
+// them from here rather than keeping a second copy of what an attachment is.
+pub(in crate::app) use attachments::{
+    sanitize_attachment_name, write_attachment, ATTACHMENTS_PER_MESSAGE_MAX,
+};
 pub(in crate::app) use inputs::{
     append_user_thread_messages, apply_thread_action, parse_thread_inputs, parse_viewing_context,
     with_post_receipt,

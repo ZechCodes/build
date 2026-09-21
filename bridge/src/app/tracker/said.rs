@@ -170,6 +170,7 @@ mod tests {
                 author: write.actor.clone(),
                 body: "said".into(),
                 refs: Vec::new(),
+                attachments: Vec::new(),
                 created_at: "2026-09-20T15:01:00Z".into(),
             });
         }

@@ -12,6 +12,7 @@ const NONE = {
   requests: { priority: false },
   errors: { codes: false },
   diffs: { perFile: false },
+  issues: { attachments: false },
 };
 
 const greeting11 = () => ({
@@ -52,6 +53,8 @@ describe("the adapter a greeting selects", () => {
       requests: { priority: true },
       errors: { codes: true },
       diffs: { perFile: false },
+      // Files on an issue arrived in 1.8; a 1.2 bridge carries none.
+      issues: { attachments: false },
     });
   });
 

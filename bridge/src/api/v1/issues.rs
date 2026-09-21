@@ -76,6 +76,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             ProjectIdParams,
             IssueColumns
         ),
+        v1_method!(
+            "issues.attach",
+            issues_attach,
+            IssuesAttachParams,
+            IssueAttachment
+        ),
+        v1_method!(
+            "issues.attachment",
+            issues_attachment,
+            IssuesAttachmentParams,
+            IssueAttachmentBytes
+        ),
     ]
 }
 
@@ -111,6 +123,29 @@ pub struct IssuesListParams {
     pub label: Option<String>,
 }
 
+/// One file, filed with an issue and BEFORE it.
+///
+/// Separate from the create for the reason `thread.attach` is separate from the
+/// post: the bytes are on disk and verified before the record that names them
+/// exists, so an issue can never point at an upload that failed halfway.
+///
+/// A project and not a conversation: an issue being created has neither, and
+/// one filed unassigned never gets one.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesAttachParams {
+    pub project_id: String,
+    pub filename: String,
+    pub content_b64: String,
+}
+
+/// What an issue's attachment reads back as. Addressed through the ISSUE, so
+/// no caller has to know (or can get wrong) where the file landed.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesAttachmentParams {
+    pub issue_id: String,
+    pub path: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssuesCreateParams {
     pub project_id: String,
@@ -128,6 +163,10 @@ pub struct IssuesCreateParams {
     /// same consequence: filing an issue for somebody starts them on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<Value>,
+    /// The files filed with it, each naming a path `issues.attach` answered.
+    /// The same shape a message carries, because they are the same object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<IssueAttachmentRef>>,
     /// Extra instruction delivered under the issue, when it is assigned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -159,6 +198,19 @@ pub struct IssuesCommentParams {
     /// Typed references, fenced by shape and then by what this issue is about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refs: Option<Vec<crate::thread::ThreadLink>>,
+    /// The files said with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<IssueAttachmentRef>>,
+}
+
+/// One attachment as a REQUEST names it: the path it was stored at, and
+/// optionally what to call it. Name, mime and size are re-read from disk when
+/// the record is written — the client's copy is a display hint.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueAttachmentRef {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// One or more of the five link keys. Naming none is refused.
@@ -257,12 +309,38 @@ pub struct IssueView {
     /// nobody watches, so a client tells "nobody" from "this bridge is too old
     /// to answer it".
     pub trackers: Vec<String>,
+    /// The files filed with it. Always present for the same reason `trackers`
+    /// is: a client that sent files and got no key back is looking at a bridge
+    /// that dropped them, and `[]` says it carried none.
+    #[serde(default)]
+    pub attachments: Vec<IssueAttachment>,
     /// `{"kind":"user"}` or `{"kind":"agent","agent_id":…}`.
     pub created_by: Value,
     pub created_at: String,
     pub updated_at: String,
     /// `null` while the issue is open.
     pub closed_at: Option<String>,
+}
+
+/// One attachment as every ANSWER carries it — what `issues.attach` says it
+/// stored, and what an issue or a comment says it holds.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueAttachment {
+    pub name: String,
+    /// Where the bytes are. Opaque to a browser, which reads them back with
+    /// `issues.attachment`; an agent opens it.
+    pub path: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// One attachment's bytes, for a surface that cannot reach the disk.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssueAttachmentBytes {
+    pub path: String,
+    pub size: u64,
+    pub mime: String,
+    pub content_b64: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -285,6 +363,8 @@ pub struct IssueCommentView {
     pub author: Value,
     pub body: String,
     pub refs: Vec<crate::thread::ThreadLink>,
+    #[serde(default)]
+    pub attachments: Vec<IssueAttachment>,
     pub created_at: String,
 }
 
@@ -384,7 +464,7 @@ const CONFLICT: [&str; 7] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 15] = [
+const INVALID: [&str; 18] = [
     "unknown assignee kind:",
     "assignee: name a kind",
     "assignee new_agent: name a",
@@ -400,6 +480,10 @@ const INVALID: [&str; 15] = [
     "labels must be strings",
     "an issue cannot be its own parent",
     "an issue carries at most",
+    // Attachments: a file too big, an empty one, and a list that is not one.
+    "attachments must be an array",
+    "each attachment needs a path",
+    "attachment is empty",
 ];
 
 /// The store is not there, or a reference did not survive its fencing. Neither
@@ -448,6 +532,20 @@ fn issues_create(
             .map(super::deferral_placeholder),
     )
     .map_err(refine)
+}
+
+fn issues_attach(
+    app: &mut AppState,
+    params: IssuesAttachParams,
+) -> Result<Answer<IssueAttachment>, ApiError> {
+    answer(app.issues_attach(&params.wire())).map_err(refine)
+}
+
+fn issues_attachment(
+    app: &mut AppState,
+    params: IssuesAttachmentParams,
+) -> Result<Answer<IssueAttachmentBytes>, ApiError> {
+    answer(app.issues_attachment(&params.wire())).map_err(refine)
 }
 
 fn issues_update(

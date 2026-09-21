@@ -12,6 +12,7 @@
 //! [`refs`].
 
 mod activity;
+mod attachments;
 mod dispatch;
 mod edits;
 mod notices;
@@ -151,7 +152,11 @@ impl AppState {
         let project_path = self.tracker_project_path(&project_id)?;
         let actor = Actor::User;
         let now = crate::store::now_rfc3339();
-        let draft = edits::drafted_issue(params, &project_path, actor.clone(), &now)?;
+        let mut draft = edits::drafted_issue(params, &project_path, actor.clone(), &now)?;
+        // Before the write, like the assignee below it: a file this bridge
+        // cannot resolve must refuse the whole call rather than leave a filed
+        // issue whose reason for being filed is missing from it.
+        draft.attachments = self.parse_issue_attachments(params)?;
         // Read BEFORE the issue is written: an assignee this bridge cannot make
         // sense of must refuse the whole call rather than leave a filed issue
         // nobody asked for.
@@ -201,6 +206,7 @@ impl AppState {
         let (project_id, issue) = self.tracker_issue(&issue_id)?;
         let body = edits::required_text(params, "body", MAX_BODY_BYTES)?;
         let refs = refs::fenced_refs(params, &issue, &self.issue_checkout_ids(&issue))?;
+        let attachments = self.parse_issue_attachments(params)?;
         let now = crate::store::now_rfc3339();
         let comment = IssueComment {
             id: crate::tracker::new_comment_id(),
@@ -208,6 +214,7 @@ impl AppState {
             author: Actor::User,
             body,
             refs,
+            attachments,
             created_at: now.clone(),
         };
         let mut write = IssueWrite::by(Actor::User, issue);

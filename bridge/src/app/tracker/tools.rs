@@ -56,14 +56,24 @@ impl AppState {
                 status,
                 labels,
                 priority,
+                attachments,
                 ..
-            } => self.create_issue_as_agent(&scope, title, body, status, labels, priority),
+            } => self.create_issue_as_agent(
+                &scope,
+                title,
+                body,
+                status,
+                labels,
+                priority,
+                attachments,
+            ),
             BridgeAction::TrackerCommentIssue {
                 issue_id,
                 body,
                 refs,
+                attachments,
                 ..
-            } => self.comment_issue_as_agent(&scope, issue_id, body, refs),
+            } => self.comment_issue_as_agent(&scope, issue_id, body, refs, attachments),
             BridgeAction::TrackerAssignIssue {
                 issue_id,
                 assignee,
@@ -221,6 +231,7 @@ impl AppState {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn create_issue_as_agent(
         &mut self,
         scope: &IssueScope,
@@ -229,13 +240,16 @@ impl AppState {
         status: &Option<String>,
         labels: &[String],
         priority: &Option<String>,
+        attachments: &[Value],
     ) -> Result<Value, String> {
         let project_path = self.tracker_project_path(&scope.project_id)?;
         let now = crate::store::now_rfc3339();
         let mut params = asked(&[("body", body), ("status", status), ("priority", priority)]);
         params["title"] = json!(title);
         params["labels"] = json!(labels);
-        let draft = edits::drafted_issue(&params, &project_path, scope.actor.clone(), &now)?;
+        params["attachments"] = json!(attachments);
+        let mut draft = edits::drafted_issue(&params, &project_path, scope.actor.clone(), &now)?;
+        draft.attachments = self.parse_issue_attachments(&params)?;
         let created = crate::tracker::IssueEvent::new(
             &draft.id,
             scope.actor.clone(),
@@ -265,11 +279,13 @@ impl AppState {
         issue_id: &str,
         body: &str,
         refs: &[crate::thread::ThreadLink],
+        attachments: &[Value],
     ) -> Result<Value, String> {
         let issue = self.issue_of_this_agents_project(scope, issue_id)?;
-        let params = json!({ "body": body, "refs": refs });
+        let params = json!({ "body": body, "refs": refs, "attachments": attachments });
         let body = edits::required_text(&params, "body", MAX_BODY_BYTES)?;
         let refs = super::refs::fenced_refs(&params, &issue, &self.issue_checkout_ids(&issue))?;
+        let attachments = self.parse_issue_attachments(&params)?;
         let now = crate::store::now_rfc3339();
         let comment = crate::tracker::IssueComment {
             id: crate::tracker::new_comment_id(),
@@ -277,6 +293,7 @@ impl AppState {
             author: scope.actor.clone(),
             body,
             refs,
+            attachments,
             created_at: now.clone(),
         };
         let mut write = IssueWrite::by(scope.actor.clone(), issue);

@@ -261,6 +261,11 @@ pub(in crate::app) fn session_hello(
             "items": "bodies",
             "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
         },
+        // Whether this bridge can carry files on an issue (spec: Issues →
+        // Attachments). Stated outright rather than left to the minor, because
+        // a composer that offers a paperclip against a bridge with no
+        // `issues.attach` offers a press that cannot work.
+        "issues": { "attachments": true },
         "thread_post_operations": {
             "version": 1,
             "status_method": "thread.operation",

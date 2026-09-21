@@ -86,8 +86,9 @@ describe("adapter selection", () => {
       requests: { priority: true },
       errors: { codes: true },
       // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
-      // whole patches.
+      // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
+      issues: { attachments: false },
     });
   });
 
@@ -156,6 +157,7 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
+        issues: { attachments: false },
       });
     }
   });

@@ -40,6 +40,7 @@
       "trackers": [
         "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
       ],
+      "attachments": [],
       "created_by": {
         "kind": "user"
       },
@@ -92,6 +93,7 @@
             "line_end": 94
           }
         ],
+        "attachments": [],
         "created_at": "2026-09-19T10:11:00Z"
       }
     ]

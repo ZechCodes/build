@@ -583,3 +583,284 @@ fn the_tracker_does_not_reach_the_retired_plan_flow() {
     let retired = state.handle(req("issue.create", json!({ "goal": "x" })));
     assert_eq!(retired["ok"], false, "{retired:?}");
 }
+
+// ------------------------------------------------- attachments (#57) ---
+//
+// Files filed WITH an issue. The bytes go up first and the issue names them,
+// exactly as a message's do — so a filed issue can never point at an upload
+// that failed halfway, and a file that will not land is refused on its own
+// rather than failing the filing.
+
+/// One file up, as the composer sends it. Answers the descriptor.
+fn attached(state: &mut AppState, project_id: &str, filename: &str, bytes: &[u8]) -> Value {
+    let answered = state.handle(req(
+        "issues.attach",
+        json!({
+            "project_id": project_id,
+            "filename": filename,
+            "content_b64": crate::encoding::b64encode(bytes),
+        }),
+    ));
+    assert_eq!(answered["ok"], true, "{answered:?}");
+    answered["result"].clone()
+}
+
+/// The upload names the file, types it, sizes it, and puts it somewhere that
+/// exists — content-addressed, so the same bytes twice cost one copy.
+#[test]
+fn a_file_filed_with_an_issue_lands_named_typed_and_sized() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
+    assert_eq!(stored["name"], "board.png");
+    assert_eq!(stored["mime"], "image/png");
+    assert_eq!(stored["size"], 10);
+    let path = stored["path"].as_str().unwrap();
+    assert!(
+        std::path::Path::new(path).is_file(),
+        "the bytes are on disk before anything names them: {path}"
+    );
+
+    // The same bytes again are the same leaf: one screenshot on three issues
+    // costs one copy.
+    let again = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
+    assert_eq!(again["path"], stored["path"]);
+}
+
+/// A name from another machine is a NAME here, never a location.
+#[test]
+fn a_filename_that_means_a_path_is_flattened_to_a_leaf() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let stored = attached(&mut state, &project_id, "../../etc/passwd", b"root:x:0:0");
+    assert_eq!(stored["name"], "passwd");
+    let path = stored["path"].as_str().unwrap();
+    assert!(
+        path.contains("attachments"),
+        "it landed in the store and nowhere else: {path}"
+    );
+}
+
+/// The issue carries what was filed with it, described from the bytes on disk
+/// rather than from what the client said about them.
+#[test]
+fn an_issue_carries_the_files_it_was_filed_with() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
+    let created = state.handle(req(
+        "issues.create",
+        json!({
+            "project_id": project_id,
+            "title": "Kanban drag does not persist",
+            "attachments": [{ "path": stored["path"], "name": "board.png" }],
+        }),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let files = created["result"]["issue"]["attachments"]
+        .as_array()
+        .unwrap();
+    assert_eq!(files.len(), 1, "{created:?}");
+    assert_eq!(files[0]["name"], "board.png");
+    assert_eq!(files[0]["mime"], "image/png");
+    assert_eq!(files[0]["size"], 10);
+
+    // And it is still there on the next read — the record holds it, not the call.
+    let read = state.handle(req(
+        "issues.get",
+        json!({ "issue_id": created["result"]["issue"]["id"] }),
+    ));
+    assert_eq!(read["result"]["issue"]["attachments"], json!(files.clone()));
+}
+
+/// An issue filed with nothing says so with an empty list rather than with a
+/// missing key: a client that sent files and got no key back is looking at a
+/// bridge that dropped them.
+#[test]
+fn an_issue_with_no_files_answers_an_empty_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let issue = filed(&mut state, &project_id, "one");
+    assert_eq!(issue["attachments"], json!([]));
+}
+
+/// A comment carries them too, which is how a file reaches an issue that was
+/// filed before anybody had it.
+#[test]
+fn a_comment_carries_the_files_said_with_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let issue = filed(&mut state, &project_id, "one");
+
+    let stored = attached(&mut state, &project_id, "trace.log", b"thread panicked");
+    let said = state.handle(req(
+        "issues.comment",
+        json!({
+            "issue_id": issue["id"],
+            "body": "Here is the trace.",
+            "attachments": [{ "path": stored["path"] }],
+        }),
+    ));
+    assert_eq!(said["ok"], true, "{said:?}");
+    let files = said["result"]["comment"]["attachments"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "{said:?}");
+    assert_eq!(files[0]["size"], 15);
+    // A caller that said no name gets the STORED leaf, hash and all — the same
+    // fallback `thread.post` makes, kept the same on purpose. Every composer
+    // sends the name `issues.attach` answered, so this is the shape of a caller
+    // that passed a bare path.
+    let named = files[0]["name"].as_str().unwrap();
+    assert!(named.ends_with("-trace.log"), "{named}");
+
+    // And on the timeline, where a reader meets it.
+    let read = state.handle(req("issues.get", json!({ "issue_id": issue["id"] })));
+    let commented = read["result"]["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["type"] == "comment")
+        .expect("the comment is on the timeline");
+    assert_eq!(commented["attachments"], json!(files.clone()));
+}
+
+/// The bytes come back to a surface that cannot reach the disk.
+#[test]
+fn an_issues_attachment_reads_back_through_the_issue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
+    let created = state.handle(req(
+        "issues.create",
+        json!({
+            "project_id": project_id,
+            "title": "one",
+            "attachments": [{ "path": stored["path"] }],
+        }),
+    ));
+    let issue_id = created["result"]["issue"]["id"].clone();
+
+    let read = state.handle(req(
+        "issues.attachment",
+        json!({ "issue_id": issue_id, "path": stored["path"] }),
+    ));
+    assert_eq!(read["ok"], true, "{read:?}");
+    assert_eq!(read["result"]["mime"], "image/png");
+    assert_eq!(read["result"]["size"], 10);
+    assert_eq!(
+        crate::encoding::b64decode(read["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        b"\x89PNG\r\n\x1a\nxx".to_vec(),
+        "the bytes that went up are the bytes that come back"
+    );
+}
+
+/// Over the cap is refused with the number, before the write — a composer can
+/// say why on the chip rather than after a slow encode and a round trip.
+#[test]
+fn a_file_over_the_cap_is_refused_with_its_size() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let huge = vec![0u8; (crate::app::ATTACHMENT_MAX_BYTES + 1) as usize];
+    let refusal = refused(
+        &mut state,
+        "issues.attach",
+        json!({
+            "project_id": project_id,
+            "filename": "huge.bin",
+            "content_b64": crate::encoding::b64encode(&huge),
+        }),
+    );
+    assert!(refusal.contains("the limit is"), "{refusal}");
+
+    let empty = refused(
+        &mut state,
+        "issues.attach",
+        json!({ "project_id": project_id, "filename": "nothing.txt", "content_b64": "" }),
+    );
+    assert!(empty.contains("attachment is empty"), "{empty}");
+}
+
+/// A path outside the store is not an attachment, whatever it is called.
+///
+/// The fence is containment after canonicalisation: a prefix check on the
+/// string lets `..` walk straight out, and an "attachment" that reads any file
+/// on the disk is an arbitrary-file read with a nice name.
+#[test]
+fn a_path_outside_the_store_is_not_an_attachment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let issue = filed(&mut state, &project_id, "one");
+
+    let outsider = state_root.join("secret.txt");
+    std::fs::write(&outsider, b"not yours").unwrap();
+
+    // Filing with it refuses the whole call rather than filing an issue whose
+    // reason for being filed is missing from it.
+    let refusal = refused(
+        &mut state,
+        "issues.create",
+        json!({
+            "project_id": project_id,
+            "title": "sneaky",
+            "attachments": [{ "path": outsider.display().to_string() }],
+        }),
+    );
+    assert!(refusal.contains("not an attachment"), "{refusal}");
+
+    // And reading one back refuses too, including the `..` spelling of it.
+    for path in [
+        outsider.display().to_string(),
+        "../../../etc/passwd".to_string(),
+    ] {
+        let refusal = refused(
+            &mut state,
+            "issues.attachment",
+            json!({ "issue_id": issue["id"], "path": path }),
+        );
+        assert!(refusal.contains("not an attachment"), "{path}: {refusal}");
+    }
+}
+
+/// An agent attaches what the user sent IT: its copy is named relative to a
+/// checkout, and the durable copy under the store answers for it.
+#[test]
+fn a_worktree_relative_path_resolves_to_the_durable_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+
+    let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
+    let leaf = std::path::Path::new(stored["path"].as_str().unwrap())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+
+    let created = state.handle(req(
+        "issues.create",
+        json!({
+            "project_id": project_id,
+            "title": "one",
+            "attachments": [{ "path": format!(".build/attachments/{leaf}") }],
+        }),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let files = created["result"]["issue"]["attachments"]
+        .as_array()
+        .unwrap();
+    assert_eq!(files.len(), 1, "{created:?}");
+    assert_eq!(files[0]["size"], 10);
+}

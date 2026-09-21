@@ -115,6 +115,7 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
             labels: vec!["bug".into()],
             priority: Some("high".into()),
             track: None,
+            attachments: Vec::new(),
         },
     )
     .expect("an agent files an issue in its own project");
@@ -157,6 +158,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
             body: "Reproduced it.".into(),
             refs: Vec::new(),
             track: None,
+            attachments: Vec::new(),
         },
     )
     .expect("an agent comments");
@@ -233,6 +235,7 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
             body: "mine now".into(),
             refs: Vec::new(),
             track: None,
+            attachments: Vec::new(),
         },
     ] {
         let name = action.tool_name();
@@ -305,6 +308,7 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
             labels: Vec::new(),
             priority: None,
             track: None,
+            attachments: Vec::new(),
         },
     )
     .expect("the project agent files an issue");

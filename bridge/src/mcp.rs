@@ -286,6 +286,10 @@ pub enum BridgeAction {
         status: Option<String>,
         labels: Vec<String>,
         priority: Option<String>,
+        /// Files to file WITH the issue, as `{path, name?}` — the same shape a
+        /// message carries them in, so an agent hands on what the user sent it
+        /// by passing the path it was given.
+        attachments: Vec<Value>,
         /// And put the caller on the issue's trackers. Absent means YES here
         /// and nowhere else: an agent that files an issue almost always wants
         /// to know how it goes.
@@ -295,6 +299,8 @@ pub enum BridgeAction {
     TrackerCommentIssue {
         issue_id: String,
         body: String,
+        /// The same, said with the comment.
+        attachments: Vec<Value>,
         refs: Vec<crate::thread::ThreadLink>,
         track: Option<bool>,
     },
@@ -843,6 +849,22 @@ impl DoneServer {
             "type": "boolean",
             "description": "And follow this issue from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
         });
+        // Files the user already sent you: pass back the `path` an attachment
+        // arrived on, and it is filed with the issue. You cannot make one up —
+        // a path that is not an attachment is refused.
+        let attachments = json!({
+            "type": "array",
+            "maxItems": 10,
+            "description": "Files to file with this issue. Each is the `path` of an attachment you were sent; pass it through unchanged. Use this to put the screenshot, log or document the user gave you where the issue can be read with it, instead of describing it in words.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The attachment's path, exactly as you received it." },
+                    "name": { "type": "string", "description": "What to call it. Optional; the stored name is used otherwise." }
+                },
+                "required": ["path"]
+            }
+        });
         vec![
             json!({
                 "name": "list_issues",
@@ -887,6 +909,7 @@ impl DoneServer {
                         "status": status,
                         "labels": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
                         "priority": { "type": "string", "enum": ["none", "low", "medium", "high", "urgent"] },
+                        "attachments": attachments.clone(),
                         "track": {
                             "type": "boolean",
                             "description": "Follow this issue: every later change to it arrives as a message here. Defaults to TRUE — an issue you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
@@ -904,6 +927,7 @@ impl DoneServer {
                         "issue_id": issue_id,
                         "body": { "type": "string", "description": "Markdown." },
                         "track": track,
+                        "attachments": attachments,
                         "refs": {
                             "type": "array",
                             "maxItems": 20,
@@ -1037,6 +1061,7 @@ impl DoneServer {
                         status: optional_argument(params, "status"),
                         labels: string_list_argument(params, "labels"),
                         priority: optional_argument(params, "priority"),
+                        attachments: value_list_argument(params, "attachments"),
                         track: optional_flag(params, "track"),
                     },
                 ),
@@ -1053,6 +1078,7 @@ impl DoneServer {
                                 issue_id,
                                 body,
                                 refs,
+                                attachments: value_list_argument(params, "attachments"),
                                 track: optional_flag(params, "track"),
                             },
                         ),
@@ -1936,6 +1962,19 @@ fn argument(params: Option<&Value>, field: &str) -> Option<Value> {
 
 /// A list of words, with anything that is not one dropped. Absent is empty:
 /// a tool that was given no labels was given no labels.
+/// A list of objects an argument carries through untouched — the attachment
+/// descriptors, which the tracker resolves and re-reads from disk. Nothing is
+/// validated here: a path is a fence question, and the fence is where the file
+/// is opened.
+fn value_list_argument(params: Option<&Value>, field: &str) -> Vec<Value> {
+    argument(params, field)
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|entry| entry.is_object())
+        .collect()
+}
+
 fn string_list_argument(params: Option<&Value>, field: &str) -> Vec<String> {
     argument(params, field)
         .and_then(|value| value.as_array().cloned())

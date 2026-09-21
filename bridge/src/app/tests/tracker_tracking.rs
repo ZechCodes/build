@@ -874,6 +874,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 labels: Vec::new(),
                 priority: None,
                 track: None,
+                attachments: Vec::new(),
             },
         )
         .expect("an agent files an issue");
@@ -894,6 +895,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
                 track: None,
+                attachments: Vec::new(),
             },
             "commented_on",
         ),
@@ -952,6 +954,7 @@ fn a_comment_message_carries_its_comment_id() {
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
                 track: None,
+                attachments: Vec::new(),
             },
         )
         .expect("an agent comments");
@@ -1051,6 +1054,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 labels: Vec::new(),
                 priority: None,
                 track: None,
+                attachments: Vec::new(),
             },
         )
         .expect("an agent may file an issue");
@@ -1074,6 +1078,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 labels: Vec::new(),
                 priority: None,
                 track: Some(false),
+                attachments: Vec::new(),
             },
         )
         .expect("an agent may file one it does not want to hear about");
@@ -1132,6 +1137,7 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
                 body: "still on it".into(),
                 refs: Vec::new(),
                 track: Some(true),
+                attachments: Vec::new(),
             },
         )
         .expect("a comment that follows");

@@ -366,6 +366,7 @@ mod tests {
             },
             body: "Reproduced it on the compose stack.".into(),
             refs: Vec::new(),
+            attachments: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
         });
         let notice = notice_of(&write, None).unwrap();

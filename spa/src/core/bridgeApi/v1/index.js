@@ -124,6 +124,7 @@ function statedGreeting(greeting) {
     changes: greeting.changes || {},
     requests: greeting.requests || {},
     errors: greeting.errors || {},
+    issues: greeting.issues || {},
   };
 }
 
@@ -164,6 +165,7 @@ export function capabilitiesOf(greeting, version) {
       requests: { priority: false },
       errors: { codes: false },
       diffs: { perFile: false },
+      issues: { attachments: false },
     };
   const minor = minorOf(version);
   return {
@@ -175,6 +177,9 @@ export function capabilitiesOf(greeting, version) {
     // minor is the whole of the answer — and a surface that asked a 1.3 bridge
     // for hunks per file would draw a stack of files that never load.
     diffs: { perFile: minor >= 4 },
+    // Files on an issue (1.8). A bridge that has them says so outright; the
+    // minor answers for one that predates the flag but not the verbs.
+    issues: { attachments: capability(stated.issues.attachments, 8, minor) },
   };
 }
 

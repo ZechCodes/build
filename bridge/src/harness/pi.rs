@@ -17,6 +17,8 @@ pub const PI_TUI_SUBMIT_DELAY: Duration = Duration::from_millis(750);
 
 const EXTENSION_SOURCE: &[u8] = include_bytes!("build-tools.ts");
 
+/// What Pi says when it runs out of usage is not known yet (issue #58): no Pi
+/// agent has hit a limit, so nothing maps one to `usage_limit::UsageLimited`.
 pub struct PiHarness;
 
 impl Harness for PiHarness {

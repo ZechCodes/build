@@ -76,7 +76,7 @@ const NO_CAPABILITIES = Object.freeze({
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
-  issues: Object.freeze({ attachments: false }),
+  issues: Object.freeze({ attachments: false, watching: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine
@@ -164,7 +164,12 @@ const armedFor = (deviceId) => armed.get(deviceKeyOf(deviceId)) === true;
 
 /** The `api_version` this device's last greeting reported — `0.0.0` for a bridge
  *  that reported none, refused the greeting, or has never been greeted.
- *  Diagnostics only: a surface asks `bridgeCapabilities(deviceId)`. */
+ *
+ *  Diagnostics and version GATES only — a surface asking "can this bridge do X"
+ *  asks `bridgeCapabilities(deviceId)`, which is where the minor is already
+ *  weighed (`bridgeApi/v1` `capabilitiesOf`). Comparing a version here instead
+ *  puts that judgement in two places; #65 moved the watch gate off it, and
+ *  `carriesIssueContext` (#21) is the one still to move. */
 export function bridgeApiVersion(deviceId = null) {
   return bridgeFor(deviceId)?.apiVersion || PRE_ALPHA_API_VERSION;
 }

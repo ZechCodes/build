@@ -1,50 +1,66 @@
 // The watch gate (#65): does this machine's bridge know what watching is?
 //
-// Same shape as #21's issue-context gate, and refused by default for the same
-// reason — a verb a bridge has never heard of is a refusal, not a polite no,
-// and the read mark would produce one per glance at an issue.
+// A capability, not a version compare. The v1 adapter's own header states the
+// rule — "a surface never asks what version the bridge reports, it asks the
+// adapter's capabilities" — and #64 states `watching` in the greeting. The
+// minor is the adapter's fallback for a bridge that has the verbs but not the
+// flag, which is a judgement that belongs there and not in this file.
+//
+// Refused by default for the same reason as #21's issue-context gate: a verb a
+// bridge has never heard of is a refusal, not a polite no, and the read mark
+// would produce one per glance at an issue.
+//
+// These cases mock the capability read to pin the CONTRACT this file depends
+// on. That the contract is really wired — that a greeting reaches it and the
+// flag is spelled the way the bridge spells it — is railWatchSwitch.test.js,
+// which greets a real bridge and asks the real gate.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const version = vi.fn();
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeApiVersion: (...args) => version(...args) }));
+const capabilities = vi.fn();
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: (...args) => capabilities(...args) }));
 
-const { WATCH_SINCE, carriesWatching } = await import("../src/core/trackerWatch.js");
+const { carriesWatching } = await import("../src/core/trackerWatch.js");
 
-beforeEach(() => version.mockReset());
+beforeEach(() => capabilities.mockReset());
 
 describe("when watching is offered", () => {
-  it("lands at the minor #64 named, not one guessed", () => {
-    expect(WATCH_SINCE).toBe("1.9.0");
+  it("is offered to a bridge whose capabilities say issues.watching", () => {
+    capabilities.mockReturnValue({ issues: { watching: true } });
+    expect(carriesWatching("dev-1")).toBe(true);
   });
 
-  it("is offered at that minor and above", () => {
-    for (const said of ["1.9.0", "1.9.1", "1.10.0", "2.0.0"]) {
-      version.mockReturnValue(said);
-      expect([said, carriesWatching("dev-1")]).toEqual([said, true]);
-    }
-  });
-
-  // 1.8.0 is the roll BEFORE watching — the exact bridge a guessed-low gate
-  // would have shipped a refusing switch onto.
-  it("is refused below it, including the roll just before", () => {
-    for (const said of ["1.8.0", "1.5.0", "0.9.0"]) {
-      version.mockReturnValue(said);
-      expect([said, carriesWatching("dev-1")]).toEqual([said, false]);
-    }
+  it("asks about the machine it was given", () => {
+    capabilities.mockReturnValue({ issues: { watching: true } });
+    carriesWatching("dev-7");
+    expect(capabilities).toHaveBeenCalledWith("dev-7");
   });
 });
 
 describe("what it does when it cannot tell", () => {
-  it("says no to every unknown", () => {
-    version.mockReturnValue("1.9.0");
+  // Every one of these is a real answer the capability read can give: a bridge
+  // that stated the flag false, one that predates it, one no adapter claims.
+  it("says no to a flag that is absent, false, or not a boolean at all", () => {
+    const shapes = [
+      {},
+      { issues: {} },
+      { issues: { watching: false } },
+      { issues: { watching: "yes" } },
+      { issues: { watching: 1 } },
+      { issues: { watching: null } },
+    ];
+    for (const said of shapes) {
+      capabilities.mockReturnValue(said);
+      expect([said, carriesWatching("dev-1")]).toEqual([said, false]);
+    }
+  });
+
+  // `bridgeCapabilities` answers every unknown with a capabilities object of
+  // its own, so there is no device this can be asked about that throws — and an
+  // adapter older than the flag has no `issues` group at all.
+  it("says no for no device at all", () => {
+    capabilities.mockReturnValue({ issues: { watching: false } });
     expect(carriesWatching(null)).toBe(false);
-    expect(carriesWatching("dev-1", "")).toBe(false);
-
-    version.mockReturnValue(null);
-    expect(carriesWatching("dev-1")).toBe(false);
-
-    version.mockReturnValue("not a version");
-    expect(carriesWatching("dev-1")).toBe(false);
+    expect(carriesWatching(undefined)).toBe(false);
   });
 });

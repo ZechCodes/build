@@ -12,9 +12,15 @@
 import { describe, it, expect, vi } from "vitest";
 
 // These rows only exist on a bridge that carries watching (#65), so the fixture
-// says which bridge answered for the machine they are on.
-const bridgeVersion = vi.fn(() => "1.9.0");
-vi.mock("../src/core/changeEvents.js", () => ({ bridgeApiVersion: (...args) => bridgeVersion(...args) }));
+// says what the machine they are on can do.
+//
+// Mocking the capability read rather than a version: the gate moved onto
+// `capabilities.issues.watching`, and a fixture that kept answering with a
+// version would have gone on passing while the gate read `undefined` — which
+// looks exactly like the gate working. railWatchSwitch.test.js is where a real
+// greeting proves the wiring.
+const capabilities = vi.fn(() => ({ issues: { watching: true } }));
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: (...args) => capabilities(...args) }));
 
 const { inboxEntries, entryRoute, entryKeyOf } = await import("../src/core/inbox.js");
 
@@ -158,21 +164,30 @@ describe("when the row says it moved", () => {
 });
 
 describe("the bridge that has never heard of watching", () => {
-  // A machine below 1.9.0 pushes no such row, and one arriving from anywhere
-  // else is not something this client can act on: Mute and Done on it would
-  // call verbs that bridge refuses.
+  // Such a machine pushes no such row, and one arriving from anywhere else is
+  // not something this client can act on: Mute and Done on it would call verbs
+  // that bridge refuses.
+  const withoutWatching = () => capabilities.mockReturnValue({ issues: { attachments: true, watching: false } });
+
   it("lists no issue rows at all", () => {
-    bridgeVersion.mockReturnValue("1.8.0");
+    withoutWatching();
     expect(listed([issueRow()])).toEqual([]);
   });
 
   it("leaves its conversation rows alone", () => {
-    bridgeVersion.mockReturnValue("1.8.0");
+    withoutWatching();
     expect(listed([branchRow(), issueRow()]).map((row) => row.kind)).toEqual(["branch"]);
   });
 
+  // An adapter older than the flag has no `issues` group at all, which must
+  // read as no rather than throw on the way past.
+  it("lists none for an adapter that predates the flag entirely", () => {
+    capabilities.mockReturnValue({});
+    expect(listed([issueRow()])).toEqual([]);
+  });
+
   it("lists them again on a bridge that does carry it", () => {
-    bridgeVersion.mockReturnValue("1.9.0");
+    capabilities.mockReturnValue({ issues: { watching: true } });
     expect(listed([issueRow()]).map((row) => row.kind)).toEqual(["tracker_issue"]);
   });
 });

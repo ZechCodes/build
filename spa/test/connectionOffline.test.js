@@ -211,6 +211,10 @@ function fakeSession(deviceId, onLost = () => {}) {
       return carrier ? carrierChanged() : undefined;
     }),
     fail: vi.fn(),
+    // The deliberate path probe another channel's verdict is checked against
+    // (#60). A live path by default: the terminals being wrong about the app
+    // channel is the ordinary case.
+    probePath: vi.fn(async () => "alive"),
     installAdapter: vi.fn((selection) => selection?.create?.(session.call) || null),
     adapter: vi.fn(() => null),
     onPush: () => () => {},
@@ -1441,18 +1445,46 @@ describe("per-device connections", () => {
   });
 
   // And the judgement that IS about the path still costs the connection.
-  it("loses the device when the terminal channel says nothing was carrying", async () => {
+  // #60: the terminals ride one channel and judge one channel. This used to
+  // escalate straight to losing the device, and a phone's healthy direct session
+  // was closed at 49 s because the terminal probe timed out while the app channel
+  // was carrying fine. The verdict is now the app session's own probe.
+  it("keeps the device when the terminal channel says nothing was carrying but the app path answers", async () => {
     await connectEveryDevice();
     const link = linksFor.get("dev-a");
     const before = lastSession("dev-a");
+    before.probePath = vi.fn(async () => "alive");
 
     link.term.drop("liveness-timeout");
     await flush();
 
-    // The connection went and recovery dialled again: a fresh session on the
-    // same machine, which is what that judgement is supposed to cost.
+    // The shells are re-established and the session is untouched: the terminals
+    // were wrong about a channel they cannot see.
+    expect(before.probePath).toHaveBeenCalledWith("term.liveness");
+    expect(lastSession("dev-a")).toBe(before);
+    expect(before.close).not.toHaveBeenCalled();
+    expect(contextFor("dev-a").offline).toBe(false);
+  });
+
+  it("loses the device when the terminal channel says nothing was carrying and the app probe agrees", async () => {
+    await connectEveryDevice();
+    const link = linksFor.get("dev-a");
+    const before = lastSession("dev-a");
+    // The real probe severs the session itself on a dead verdict, which is what
+    // ends the connection — and it logs the verdict on its way, which is what
+    // makes this the only way a live session is closed from the client.
+    before.probePath = vi.fn(async () => {
+      // The real probe severs the session itself on a dead verdict; handing the
+      // carrier back is how this fake reports that loss.
+      before.peer(null);
+      return "dead";
+    });
+
+    link.term.drop("liveness-timeout");
+    await flush();
+
+    expect(before.probePath).toHaveBeenCalledWith("term.liveness");
     expect(lastSession("dev-a")).not.toBe(before);
-    expect(before.close).toHaveBeenCalled();
   });
 
   it("does not close a replacement rendezvous when the established link is lost mid-dial", async () => {

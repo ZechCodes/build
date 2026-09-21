@@ -411,9 +411,52 @@ function loseTerminalWire(deviceId, lifetime, reason) {
   // The connection has already gone — the app channel went with the path, and
   // its own handler is what said so.
   if (!lifetime.current()) return false;
-  if (reason === LIVENESS_TIMEOUT) return loseEstablishedConnection(deviceId, lifetime);
+  if (reason === LIVENESS_TIMEOUT) {
+    askTheAppSideBeforeBelievingIt(deviceId, lifetime);
+    return false;
+  }
   followTerminalsIfTheirs(contextFor(deviceId), { freshSession: true });
   return false;
+}
+
+/**
+ * The terminals say nothing is carrying anywhere. Check it against the channel
+ * they cannot see before ending the connection over it.
+ *
+ * This used to escalate straight to `loseEstablishedConnection`, on the reasoning
+ * that a terminal liveness timeout means the whole path is dead. The reasoning is
+ * sound and the inference is not: on 2026-09-20 a phone's terminal probe timed out
+ * while the app channel was carrying perfectly well on a host/host pair, and a
+ * healthy direct session was closed at 49 seconds for it (issue #60). The terminals
+ * ride one channel and judge one channel; only the app session can speak for the
+ * other.
+ *
+ * So the verdict is now the app session's own probe, which already asks exactly
+ * the right question: it treats a frame on EITHER channel inside the proof window
+ * as proof of life, and only pings when neither has carried. If it finds the path
+ * dead it severs the session itself, with its own logged verdict — which is what
+ * makes this the "failed probe with a logged verdict" the issue asks for rather
+ * than a second, quieter way to close a connection.
+ *
+ * Either way the terminals are re-established immediately: that is the one thing
+ * that is certainly needed, and it is what the non-timeout branch already does.
+ */
+function askTheAppSideBeforeBelievingIt(deviceId, lifetime) {
+  const context = contextFor(deviceId);
+  followTerminalsIfTheirs(context, { freshSession: true });
+  const session = context?.session;
+  recordConnectionDiagnostic(`${deviceId}:${session?.sessionId || "session"}`, "terminal-escalation", {
+    state: "asking",
+  });
+  void Promise.resolve(session?.probePath?.("term.liveness") ?? "no-wire").then((verdict) => {
+    if (!lifetime.current()) return;
+    recordConnectionDiagnostic(`${deviceId}:${session?.sessionId || "session"}`, "terminal-escalation", {
+      // "kept" is the case this fix exists for: the terminals were wrong about
+      // the app channel, the shells are back, and the session was never touched.
+      state: verdict === "dead" ? "escalated" : "kept",
+      verdict,
+    });
+  });
 }
 
 function loseEstablishedConnection(deviceId, lifetime) {

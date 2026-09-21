@@ -425,7 +425,11 @@ describe("a connection that goes after it was live", () => {
   // Unless what the terminal half reports is about the PATH: its liveness
   // probe judging that nothing carried anywhere is the one reason a terminal
   // channel speaks for the connection.
-  it("reconnects the whole device when the terminal half says nothing was carrying", async () => {
+  // #60: a terminal liveness verdict no longer ends the connection on its own.
+  // The terminals ride one channel and judge one channel; the app session's own
+  // probe is what decides, and until it answers the device is left alone. A phone
+  // lost a healthy direct session at 49 s to the old unconditional escalation.
+  it("does not reconnect the whole device on a terminal verdict the app side has not confirmed", async () => {
     const link = fakeLink();
     linkOpensWith(link);
     await connect("dev-a");
@@ -434,9 +438,12 @@ describe("a connection that goes after it was live", () => {
     link.term.drop("liveness-timeout");
     await settle();
 
-    expect(sockets()).toHaveLength(dialled + 1);
+    // The probe is still out — it pings and waits — so nothing has been decided,
+    // and deciding nothing means keeping what works.
+    expect(sockets()).toHaveLength(dialled);
+    expect(link.close).not.toHaveBeenCalled();
     expect(contextFor("dev-a").blocked).toBe(null);
-    expect(link.close).toHaveBeenCalledTimes(1);
+    expect(contextFor("dev-a").offline).toBe(false);
   });
 
   it("does not redial a version-incompatible device when its established link goes", async () => {

@@ -231,6 +231,21 @@ export async function openSession({
     peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
 
     /**
+     * Ask this session whether its path is still there, deliberately.
+     *
+     * The same probe an RPC deadline arms (core/pathProbe.js), reachable by name
+     * so another channel's verdict can be checked against the app side rather
+     * than believed about a wire it cannot see. `asked` names the caller in the
+     * diagnostic, because "who wanted to know" is the first thing a reader of the
+     * record needs.
+     *
+     * Answers `"alive"`, `"dead"` or `"no-wire"`. A dead verdict has already
+     * severed the session by the time this resolves — the probe owns that — so a
+     * caller acts on the answer only to record it.
+     */
+    probePath: (asked = "asked") => pathProbe?.judge(asked) ?? Promise.resolve("no-wire"),
+
+    /**
      * Tell this session when its peer is renegotiating (core/peerLink.js's
      * recovery status).
      *

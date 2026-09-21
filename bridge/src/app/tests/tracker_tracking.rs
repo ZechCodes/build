@@ -327,8 +327,8 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     assert_eq!(notice["from_issue"]["title"], "Kanban drag");
     let body = notice["body"].as_str().unwrap();
     assert_eq!(
-        body, "The actor agent moved #1 Kanban drag to In review",
-        "one line: who did what to which issue"
+        body, "#1 moved to In review by the actor agent.",
+        "one line, no title: the number is what an issue is called"
     );
 
     // And the same thing structured, so a client draws that line with a link
@@ -350,10 +350,14 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     );
 }
 
-/// A comment's body rides the notice — the point of hearing about a comment is
-/// reading it.
+/// A comment's body does NOT ride the notice (#61).
+///
+/// A notice is a notification: an agent watching an issue for a column move
+/// used to pay for every comment anybody wrote on it. Now it pays for a line
+/// naming the comment, and reads the words with `read_comment` if it decides
+/// it cares.
 #[test]
-fn a_comments_body_rides_the_notice() {
+fn a_comment_notice_names_the_comment_and_carries_none_of_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -372,11 +376,21 @@ fn a_comments_body_rides_the_notice() {
     let told = notices(&mut state, &watcher.0, &watcher.1);
     assert_eq!(told.len(), 1, "{told:?}");
     let body = told[0]["body"].as_str().unwrap();
-    assert!(body.contains("commented"), "{body}");
+    assert!(body.starts_with("New comment ic-"), "{body}");
+    assert!(body.contains("on #1 from the user"), "{body}");
+    assert!(body.ends_with("read_comment for their message."), "{body}");
     assert!(
-        body.contains("The drop handler races the column read."),
-        "the words themselves: {body}"
+        !body.contains("The drop handler races the column read."),
+        "the comment's words are not in the notice: {body}"
     );
+    assert_eq!(body.lines().count(), 1, "one line: {body}");
+
+    // And the id on the line is the one `read_comment` answers to.
+    let named = body
+        .split_whitespace()
+        .nth(2)
+        .expect("the line names the comment");
+    assert_eq!(told[0]["issue_notice"]["comment_id"], named, "{told:?}");
 }
 
 /// The notice starts the tracker's turn, so an idle agent wakes to it.
@@ -1212,4 +1226,88 @@ fn an_assignment_the_agent_made_records_who_got_it() {
         "nobody has it: {handed_back:?}"
     );
     assert_eq!(handed_back["body"], "Unassigned #1 Kanban drag");
+}
+
+/// `read_comment` is what a notice does not carry: the words, on request.
+#[test]
+fn read_comment_answers_the_one_comment_a_notice_named() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+
+    let said = state.handle(req(
+        "issues.comment",
+        json!({ "issue_id": id, "body": "The drop handler races the column read." }),
+    ));
+    assert_eq!(said["ok"], true, "{said:?}");
+    let comment_id = said["result"]["comment"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let read = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerReadComment {
+                comment_id: comment_id.clone(),
+            },
+        )
+        .expect("an agent may read a comment of its own project");
+    assert_eq!(read["comment_id"], comment_id.as_str());
+    assert_eq!(read["body"], "The drop handler races the column read.");
+    assert_eq!(read["author"], json!({ "kind": "user" }));
+    assert!(read["created_at"].is_string(), "{read:?}");
+    // Enough of the issue to answer about it: the notice gave a number.
+    assert_eq!(read["number"], 1);
+    assert_eq!(read["title"], "Kanban drag");
+    assert_eq!(read["issue_id"], id.as_str());
+
+    // An id nobody answers to is refused in a sentence.
+    let refused = state
+        .on_agent_mcp_action(
+            &caller.0,
+            &caller.1,
+            crate::mcp::BridgeAction::TrackerReadComment {
+                comment_id: "ic-nobody".into(),
+            },
+        )
+        .expect_err("no such comment");
+    assert_eq!(
+        refused,
+        "There is no comment ic-nobody on this project's issues."
+    );
+}
+
+/// The prompt says what a notice is, and where a question on your own issue
+/// is answered.
+#[test]
+fn the_prompt_says_a_notice_is_one_line_and_where_to_answer() {
+    let templates = crate::templates::Templates::default();
+    let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+    for (name, text) in [
+        ("build", &templates.build),
+        ("plan", &templates.plan),
+        ("project_agent", &templates.project_agent),
+    ] {
+        let text = flat(text);
+        assert!(
+            text.contains("arrives here as ONE LINE"),
+            "{name} does not say what arrives"
+        );
+        assert!(
+            text.contains("Read the words with `read_comment` when you care"),
+            "{name} does not say how to read it"
+        );
+        assert!(
+            text.contains("ignore the line entirely when it is not about what you are waiting for"),
+            "{name} does not say it may be ignored"
+        );
+        assert!(
+            text.contains("answered on the issue with `comment_issue`, not in this conversation"),
+            "{name} does not say where to answer"
+        );
+    }
 }

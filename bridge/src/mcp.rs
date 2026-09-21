@@ -274,6 +274,11 @@ pub enum BridgeAction {
     TrackerGetIssue {
         issue_id: String,
     },
+    /// One comment, by the id a notice named. What a notice deliberately does
+    /// not carry, for an agent that decides it cares.
+    TrackerReadComment {
+        comment_id: String,
+    },
     /// File one.
     TrackerCreateIssue {
         title: String,
@@ -390,6 +395,7 @@ impl BridgeAction {
             // The issue tracker's eight, on both working surfaces.
             BridgeAction::TrackerListIssues { .. } => "list_issues",
             BridgeAction::TrackerGetIssue { .. } => "get_issue",
+            BridgeAction::TrackerReadComment { .. } => "read_comment",
             BridgeAction::TrackerCreateIssue { .. } => "create_issue",
             BridgeAction::TrackerCommentIssue { .. } => "comment_issue",
             BridgeAction::TrackerAssignIssue { .. } => "assign_issue",
@@ -449,6 +455,7 @@ impl BridgeAction {
             // agent runs the board. The router has no project to be scoped to.
             BridgeAction::TrackerListIssues { .. }
             | BridgeAction::TrackerGetIssue { .. }
+            | BridgeAction::TrackerReadComment { .. }
             | BridgeAction::TrackerCreateIssue { .. }
             | BridgeAction::TrackerCommentIssue { .. }
             | BridgeAction::TrackerAssignIssue { .. }
@@ -811,9 +818,9 @@ impl DoneServer {
     // -------------------------------------------------- issue tracker ---
     // The per-project issue tracker (spec: Issues). One block, shown by both
     // working surfaces, so a coding agent and a project agent are offered the
-    // same ten tools with the same words.
+    // same eleven tools with the same words.
 
-    /// The tracker's ten, appended to whichever surface is being built.
+    /// The tracker's eleven, appended to whichever surface is being built.
     ///
     /// None takes a project: the scope is the calling agent's own, read off
     /// the session, so there is nothing to pass and no other project reachable.
@@ -859,6 +866,17 @@ impl DoneServer {
                 }
             }),
             json!({
+                "name": "read_comment",
+                "description": "One comment on one issue, by the id a notice gave you. A notice is one line and carries no comment text on purpose — this is how you read the words when you decide you care, and not reading it costs nothing. Use get_issue instead when you want the whole timeline rather than the one comment.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "comment_id": { "type": "string", "description": "From a notice, or from an issue's timeline." }
+                    },
+                    "required": ["comment_id"]
+                }
+            }),
+            json!({
                 "name": "create_issue",
                 "description": "File an issue in your project. Two things it is for: work you have found and are NOT doing — an issue is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included.",
                 "inputSchema": {
@@ -879,7 +897,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ASK: a question about an issue that came from outside your conversation goes here rather than in your own thread or a message to whoever assigned it, because the assigner and the user both read the issue and the answer comes back to you here.",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1000,6 +1018,12 @@ impl DoneServer {
                     label: optional_argument(params, "label"),
                 },
             ),
+            "read_comment" => match required_argument(params, "comment_id") {
+                Ok(comment_id) => {
+                    acted(id.clone(), BridgeAction::TrackerReadComment { comment_id })
+                }
+                Err(message) => refused(id.clone(), message),
+            },
             "get_issue" => match issue() {
                 Ok(issue_id) => acted(id.clone(), BridgeAction::TrackerGetIssue { issue_id }),
                 Err(message) => refused(id.clone(), message),
@@ -2566,12 +2590,13 @@ mod tests {
         "remove_workspace_directory",
     ];
 
-    /// The issue tracker's ten, the OTHER inventory shared between the two
+    /// The issue tracker's eleven, the OTHER inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const ISSUE_TOOLS: [&str; 10] = [
+    const ISSUE_TOOLS: [&str; 11] = [
         "list_issues",
         "get_issue",
+        "read_comment",
         "create_issue",
         "comment_issue",
         "assign_issue",

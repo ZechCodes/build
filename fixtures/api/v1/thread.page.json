@@ -104,7 +104,7 @@
             "from": "in_progress",
             "to": "in_review"
           },
-          "body": "Rail scroll moved #13 Kanban drag does not persist to In review",
+          "body": "#13 moved to In review by Rail scroll.",
           "created_at": "2026-09-20T15:04:00Z"
         }
       },

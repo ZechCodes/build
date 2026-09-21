@@ -34,14 +34,24 @@ impl AppState {
             // A write that changed nothing the timeline records is not news.
             return;
         };
-        let body = notice_body(
-            &notice,
-            &write.issue,
-            &self.actor_label(&write.actor),
-            write.comments.first().map(|comment| comment.body.as_str()),
-        );
+        let who = self.actor_said_as(&write.actor);
         let envelope = notice_envelope(&write.issue);
+        let holder = write
+            .issue
+            .assignee
+            .as_ref()
+            .and_then(crate::tracker::Assignee::agent_id)
+            .map(str::to_string);
         for agent_id in told {
+            // The line differs for the one agent that HOLDS the issue: a
+            // comment on your own issue is a question, and a comment on one
+            // you are watching is news. Everyone else gets the same words.
+            let body = notice_body(
+                &notice,
+                &write.issue,
+                &who,
+                holder.as_deref() == Some(&agent_id),
+            );
             if let Err(why) = self.deliver_notice(&agent_id, &envelope, &notice, &body) {
                 eprintln!(
                     "notify {agent_id} about issue #{}: {why}",
@@ -64,30 +74,29 @@ impl AppState {
             .and_then(|agent| agent.name.clone())
     }
 
-    /// Who a notice says did it, in the words the conversation uses.
+    /// Who a notice says did it, in the words the conversation uses, and
+    /// phrased to sit mid-sentence: "…by the user", "…from Rail scroll".
     ///
-    /// The same naming an assignment notice uses: an agent is named by the
-    /// workspace it works in, because the reader wants to know which of its
-    /// colleagues moved the card and an id is something to go and look up.
-    fn actor_label(&self, actor: &Actor) -> String {
+    /// An agent is named the way its conversation is named — by the name it
+    /// was given, else the workspace it works in — because the reader wants to
+    /// know which of its colleagues it was and an id is something to go and
+    /// look up.
+    fn actor_said_as(&self, actor: &Actor) -> String {
         let Actor::Agent { agent_id } = actor else {
-            return "The user".to_string();
+            return "the user".to_string();
         };
-        // A name is what the agent is called, so it is what the line says.
-        // The workspace is the fallback, and the id the fallback's fallback.
         if let Some(name) = self.agent_display_name(actor) {
             return name;
         }
         let Some(entity_id) = self.entity_of_agent(agent_id) else {
-            return format!("Agent {agent_id}");
+            return format!("agent {agent_id}");
         };
-        let identity = self.agent_identity(&entity_id, agent_id);
-        match identity.owner {
+        match self.agent_identity(&entity_id, agent_id).owner {
             Some(owner) if owner.kind == crate::thread::AgentOwnerKind::Project => {
-                format!("The {} project's agent", owner.name)
+                format!("the {} project's agent", owner.name)
             }
-            Some(owner) => format!("The {} agent", owner.name),
-            None => format!("Agent {agent_id}"),
+            Some(owner) => format!("the {} agent", owner.name),
+            None => format!("agent {agent_id}"),
         }
     }
 
@@ -218,35 +227,53 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
     })
 }
 
-/// The same thing in one line of prose, for a harness — which gets the body or
-/// nothing — and as the fallback for a client that has not learned
-/// `issue_notice` yet.
+/// The notice, as one line and nothing else.
 ///
-/// Reads as "X did Y on #N Title", with a comment's words under it: the point
-/// of hearing about a comment is reading it, and a notice that made the reader
-/// go and fetch it would have cost them the trip it exists to save.
-fn notice_body(notice: &IssueNotice, issue: &Issue, who: &str, comment: Option<&str>) -> String {
-    let issue_named = format!("#{} {}", issue.number, issue.title);
-    let line = match notice.action.as_str() {
-        "commented" => format!("{who} commented on {issue_named}"),
+/// A notification, not the thing itself (Zech, 2026-09-20: "Least context
+/// necessary so if the agent is watching for a status change not a comment it
+/// knows to ignore"). The comment's words are NOT here: an agent watching an
+/// issue for a column move paid for every comment anybody wrote on it, and the
+/// one that cares reads it with `read_comment` for the same cost it used to
+/// pay whether it cared or not.
+///
+/// No title either. The number is what the issue is called between agents, and
+/// the envelope carries the title for a client that draws a card.
+///
+/// `holds_it` is the one agent this issue is assigned to. A comment on your
+/// own issue is a question and the line says where to answer it; the same
+/// comment to a watcher is news.
+fn notice_body(notice: &IssueNotice, issue: &Issue, who: &str, holds_it: bool) -> String {
+    let number = issue.number;
+    match notice.action.as_str() {
+        "commented" => {
+            let comment = notice.comment_id.as_deref().unwrap_or("");
+            if holds_it {
+                format!(
+                    "New comment {comment} on #{number} from {who} — read_comment for their \
+                     message, answer on the issue with comment_issue."
+                )
+            } else {
+                format!(
+                    "New comment {comment} on #{number} from {who} — read_comment for their \
+                     message."
+                )
+            }
+        }
         "moved" => match notice.to.as_deref() {
-            Some(to) => format!("{who} moved {issue_named} to {}", column_name(to)),
-            None => format!("{who} moved {issue_named}"),
+            Some(to) => format!("#{number} moved to {} by {who}.", column_name(to)),
+            None => format!("#{number} moved by {who}."),
         },
+        "assigned" if holds_it => format!("#{number} assigned to you by {who}."),
         "assigned" => match notice.assignee.as_ref().map(assignee_name) {
-            Some(to) => format!("{who} assigned {issue_named} to {to}"),
-            None => format!("{who} assigned {issue_named}"),
+            Some(to) => format!("#{number} assigned to {to} by {who}."),
+            None => format!("#{number} assigned by {who}."),
         },
-        "unassigned" => format!("{who} unassigned {issue_named}"),
-        "created" => format!("{who} created {issue_named}"),
-        "closed" => format!("{who} closed {issue_named}"),
-        "reopened" => format!("{who} reopened {issue_named}"),
-        "linked" => format!("{who} linked {issue_named}"),
-        _ => format!("{who} edited {issue_named}"),
-    };
-    match comment.map(str::trim).filter(|body| !body.is_empty()) {
-        Some(body) => format!("{line}\n\n{body}"),
-        None => line,
+        "unassigned" => format!("#{number} unassigned by {who}."),
+        "created" => format!("#{number} created by {who}."),
+        "closed" => format!("#{number} closed by {who}."),
+        "reopened" => format!("#{number} reopened by {who}."),
+        "linked" => format!("#{number} linked by {who}."),
+        _ => format!("#{number} edited by {who}."),
     }
 }
 
@@ -288,20 +315,22 @@ mod tests {
         }
     }
 
+    /// The line a watcher gets.
     fn body_of(write: &IssueWrite, who: &str) -> String {
         let notice = notice_of(write, None).unwrap();
-        notice_body(
-            &notice,
-            &write.issue,
-            who,
-            write.comments.first().map(|comment| comment.body.as_str()),
-        )
+        notice_body(&notice, &write.issue, who, false)
+    }
+
+    /// And the line the agent HOLDING it gets.
+    fn body_for_holder(write: &IssueWrite, who: &str) -> String {
+        let notice = notice_of(write, None).unwrap();
+        notice_body(&notice, &write.issue, who, true)
     }
 
     /// A move carries both columns as slugs for a client to render, and reads
-    /// as the column's NAME in the line a harness gets.
+    /// as one line naming the column it landed in.
     #[test]
-    fn a_move_carries_both_columns_and_names_the_one_it_landed_in() {
+    fn a_move_is_one_line_naming_the_column_it_landed_in() {
         let mut write = write_by(Actor::User);
         write.event(
             &Actor::User,
@@ -313,18 +342,19 @@ mod tests {
         assert_eq!(notice.action, "moved");
         assert_eq!(notice.from.as_deref(), Some("backlog"));
         assert_eq!(notice.to.as_deref(), Some("in_review"));
-        assert_eq!(notice.actor.who, Actor::User);
-        assert_eq!(notice.actor.name, None, "nobody has named the user");
         assert_eq!(
-            body_of(&write, "The user"),
-            "The user moved #13 Kanban drag to In review"
+            body_of(&write, "the user"),
+            "#13 moved to In review by the user."
         );
     }
 
-    /// A comment's words ride the notice: the point of hearing about a comment
-    /// is reading it.
+    /// A comment notice carries the comment's ID and NOT its words.
+    ///
+    /// The whole point of #61: an agent watching an issue for a column move
+    /// paid for every comment anybody wrote on it. Now it pays for a line, and
+    /// reads the words with `read_comment` only if it decides it cares.
     #[test]
-    fn a_comment_carries_its_body_into_the_notice() {
+    fn a_comment_notice_names_the_comment_and_carries_none_of_it() {
         let mut write = write_by(Actor::Agent {
             agent_id: "agent-1".into(),
         });
@@ -334,23 +364,36 @@ mod tests {
             author: Actor::Agent {
                 agent_id: "agent-1".into(),
             },
-            body: "  Reproduced it.  ".into(),
+            body: "Reproduced it on the compose stack.".into(),
             refs: Vec::new(),
             created_at: "2026-09-20T15:01:00Z".into(),
         });
         let notice = notice_of(&write, None).unwrap();
         assert_eq!(notice.action, "commented");
+        assert_eq!(notice.comment_id.as_deref(), Some("ic-1"));
+
+        let watching = body_of(&write, "Rail scroll");
         assert_eq!(
-            notice.comment_id.as_deref(),
-            Some("ic-1"),
-            "so a client links the comment and not the issue"
+            watching,
+            "New comment ic-1 on #13 from Rail scroll — read_comment for their message."
         );
-        let body = body_of(&write, "The wire-facade agent");
         assert!(
-            body.starts_with("The wire-facade agent commented on #13 Kanban drag"),
-            "{body}"
+            !watching.contains("Reproduced it"),
+            "the comment's words are not in the notice: {watching}"
         );
-        assert!(body.ends_with("Reproduced it."), "{body}");
+
+        // The agent that HOLDS the issue is being asked something, and the
+        // line says where to answer.
+        let holding = body_for_holder(&write, "the user");
+        assert!(
+            holding.starts_with("New comment ic-1 on #13 from the user"),
+            "{holding}"
+        );
+        assert!(
+            holding.ends_with("answer on the issue with comment_issue."),
+            "{holding}"
+        );
+        assert!(!holding.contains("Reproduced it"), "{holding}");
     }
 
     /// Somebody else starting to watch is not a change to the issue, so it is
@@ -367,33 +410,56 @@ mod tests {
         assert!(notice_of(&write, None).is_none());
     }
 
-    /// An assignment names who got it, including the two assignee kinds that
-    /// are not an agent id.
+    /// An assignment names who got it — and tells the one who got it that they
+    /// got it, which is the fact they most need off that line.
     #[test]
-    fn an_assignment_names_whoever_got_it() {
+    fn an_assignment_names_whoever_got_it_and_says_when_it_is_you() {
         for (assignee, expected) in [
             (json!({ "kind": "user" }), "the user"),
             (json!({ "kind": "project_agent" }), "the project's agent"),
             (json!({ "kind": "agent", "agent_id": "agent-9" }), "agent-9"),
         ] {
             let mut write = write_by(Actor::User);
+            write.issue.assignee = serde_json::from_value(assignee.clone()).ok();
             write.event(
                 &Actor::User,
                 IssueEventKind::Assigned,
                 json!({ "assignee": assignee }),
                 "2026-09-20T15:01:00Z",
             );
-            let notice = notice_of(&write, None).unwrap();
-            assert_eq!(notice.action, "assigned");
             assert_eq!(
-                notice.assignee,
-                Some(serde_json::from_value(assignee).unwrap()),
-                "a client draws who got it without parsing the line"
+                body_of(&write, "the user"),
+                format!("#13 assigned to {expected} by the user.")
             );
             assert_eq!(
-                body_of(&write, "The user"),
-                format!("The user assigned #13 Kanban drag to {expected}")
+                body_for_holder(&write, "the user"),
+                "#13 assigned to you by the user."
             );
+        }
+    }
+
+    /// Every other kind is one line, and none of them carries a title: the
+    /// number is what an issue is called between agents, and the envelope
+    /// carries the title for a client drawing a card.
+    #[test]
+    fn every_other_kind_is_one_line_with_no_title() {
+        for (kind, expected) in [
+            (IssueEventKind::Closed, "#13 closed by the user."),
+            (IssueEventKind::Reopened, "#13 reopened by the user."),
+            (IssueEventKind::Linked, "#13 linked by the user."),
+            (IssueEventKind::Labelled, "#13 edited by the user."),
+            (IssueEventKind::Unassigned, "#13 unassigned by the user."),
+            (IssueEventKind::Created, "#13 created by the user."),
+        ] {
+            let mut write = write_by(Actor::User);
+            write.event(&Actor::User, kind, json!({}), "2026-09-20T15:01:00Z");
+            let said = body_of(&write, "the user");
+            assert_eq!(said, expected, "{kind:?}");
+            assert!(
+                !said.contains("Kanban drag"),
+                "no title on the line: {said}"
+            );
+            assert_eq!(said.lines().count(), 1, "one line: {said}");
         }
     }
 

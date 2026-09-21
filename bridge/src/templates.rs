@@ -429,8 +429,14 @@ File an issue for follow-up work you find and do not do. An issue is cheap, and
 something you noticed and did not write down exists only in this conversation.
 
 `track_issue` makes an issue tell you when it moves: every later change to it
-arrives as a message here, and starts your turn if you are idle. Track the ones
-you depend on rather than going back to look. An issue you file tracks you
+arrives here as ONE LINE and starts your turn if you are idle. That line is a
+notification and nothing more: it names the comment or the change, who did it,
+and which issue. It does not carry the comment. Read the words with
+`read_comment` when you care, or the whole timeline with `get_issue`; ignore
+the line entirely when it is not about what you are waiting for. A comment on
+an issue YOU hold is a question: the line says so, and it is answered on the
+issue with `comment_issue`, not in this conversation — the user reads the
+issue. Track the ones you depend on rather than going back to look. An issue you file tracks you
 unless you say `track: false`, and every other issue write takes `track: true`
 to follow it from then on, so following is never a second call. You are tracked automatically on
 anything assigned to you, your own changes are never sent back to you, and

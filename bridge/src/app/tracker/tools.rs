@@ -47,6 +47,9 @@ impl AppState {
             BridgeAction::TrackerGetIssue { issue_id } => {
                 self.scoped_issue_call(&scope, issue_id, json!({}), AppState::issues_get)
             }
+            BridgeAction::TrackerReadComment { comment_id } => {
+                self.read_comment_as_agent(&scope, comment_id)
+            }
             BridgeAction::TrackerCreateIssue {
                 title,
                 body,
@@ -180,6 +183,42 @@ impl AppState {
             return Err(format!("unknown issue_id: {issue_id}"));
         }
         Ok(issue)
+    }
+
+    /// One comment, with enough of its issue to know what it is about.
+    ///
+    /// Scoped like every other read here: a comment on another project's issue
+    /// is refused by the same words an unknown id gets, because to this agent
+    /// those are the same thing.
+    fn read_comment_as_agent(
+        &mut self,
+        scope: &IssueScope,
+        comment_id: &str,
+    ) -> Result<Value, String> {
+        let unknown = || format!("There is no comment {comment_id} on this project's issues.");
+        let comment = self
+            .tracker_store()?
+            .load_tracker_comment(comment_id)
+            .stored()?
+            .ok_or_else(unknown)?;
+        let (project_id, issue) = self
+            .tracker_issue(&comment.issue_id)
+            .map_err(|_| unknown())?;
+        if project_id != scope.project_id {
+            return Err(unknown());
+        }
+        Ok(json!({
+            "comment_id": comment.id,
+            "issue_id": issue.id,
+            // The number and title, because the notice gave a number and the
+            // reader is about to answer about it.
+            "number": issue.number,
+            "title": issue.title,
+            "author": comment.author,
+            "created_at": comment.created_at,
+            "body": comment.body,
+            "refs": comment.refs,
+        }))
     }
 
     fn create_issue_as_agent(
@@ -394,6 +433,7 @@ fn is_an_issue_tool(action: &BridgeAction) -> bool {
         action,
         BridgeAction::TrackerListIssues { .. }
             | BridgeAction::TrackerGetIssue { .. }
+            | BridgeAction::TrackerReadComment { .. }
             | BridgeAction::TrackerCreateIssue { .. }
             | BridgeAction::TrackerCommentIssue { .. }
             | BridgeAction::TrackerAssignIssue { .. }

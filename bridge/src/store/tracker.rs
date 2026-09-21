@@ -126,6 +126,27 @@ impl Store {
             .collect()
     }
 
+    /// One comment by its id, and the issue it is on.
+    ///
+    /// A read of its own because a notice names one comment: an agent told
+    /// "new comment ic-… on #53" that had to load the whole timeline to find
+    /// it would be paying for the thing the notice exists to avoid.
+    pub fn load_tracker_comment(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<IssueComment>, StoreError> {
+        let conn = self.connection();
+        let mut statement =
+            conn.prepare("SELECT id, record FROM tracker_comments WHERE id = ?1")?;
+        let mut rows = statement.query([comment_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let id: String = row.get(0)?;
+        let raw: String = row.get(1)?;
+        decode(&raw, "tracker_comments", &id).map(Some)
+    }
+
     /// One issue's comments and events as a single ascending timeline.
     ///
     /// Merged here rather than by the caller because the ordering rule is a

@@ -369,7 +369,7 @@ fn the_name_travels_with_everything_the_agent_is_named_on() {
         "beside the id, not instead of it"
     );
     assert_eq!(
-        notice["body"], "Rail scroll moved #1 Kanban drag to In review",
-        "and the line a harness reads says the name too"
+        notice["body"], "#1 moved to In review by Rail scroll.",
+        "and the one line a harness reads names it too"
     );
 }

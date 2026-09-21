@@ -176,6 +176,82 @@ fn a_complete_from_the_agent_holding_an_issue_moves_it_and_says_nothing() {
     );
 }
 
+/// An agent whose turn stopped at a usage limit mid-issue (#58) is still working
+/// that issue: through the hold, the lift and the resume turn, the marker the
+/// dispatch set stays put, so the Complete the resumed turn reports moves the
+/// card it was dispatched for. Pinned so a later change to WHEN the marker is
+/// taken cannot drop it on the way through a limit.
+#[test]
+fn a_complete_after_a_usage_limit_still_moves_the_issue_the_turn_was_dispatched_under() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ws = workspace(&mut state, &project_id, "here");
+    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let handed = state.handle(req(
+        "issues.assign",
+        json!({
+            "issue_id": id,
+            "assignee": { "kind": "new_agent", "workspace_id": ws }
+        }),
+    ));
+    assert_eq!(handed["ok"], true, "{handed:?}");
+    let dispatch = &handed["result"]["dispatch"];
+    let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
+    let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+    // The dispatch's own turn goes out and runs.
+    let mut started = state.take_pending_turns();
+    while let Some((_, mark)) = started.next_turn() {
+        mark.settle(&mut state);
+    }
+
+    // It stops at the limit, the human says something meanwhile, and it waits.
+    let resets_at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let limited = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Waiting)
+        .limited(crate::harness::usage_limit::UsageLimited {
+            said: "You've hit your session limit · resets 6:20pm (America/New_York)".into(),
+            resets_at: Some(resets_at),
+        })
+        .unwrap();
+    let mut recorded = None;
+    state.record_usage_limit(&entity_id, &agent_id, &limited, &mut recorded);
+    let posted = state.handle(req(
+        "thread.post",
+        json!({ "entity_id": entity_id, "agent_id": agent_id, "body": "how is it going?" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    assert!(state.take_pending_turns().is_empty(), "held");
+    assert_eq!(
+        state.dispatched_issue.get(&agent_id),
+        Some(&id),
+        "through the hold"
+    );
+
+    // The limit lifts; the turn that resumes it runs.
+    state.release_usage_limits_due_at(resets_at);
+    let mut resumed = state.take_pending_turns();
+    assert!(resumed.next_turn().is_some(), "the resumed turn goes");
+    let running = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Working);
+    state.record_usage_limit(&entity_id, &agent_id, &running, &mut recorded);
+    assert_eq!(
+        state.dispatched_issue.get(&agent_id),
+        Some(&id),
+        "through the resume turn"
+    );
+
+    state.done_deferring_for_agent(
+        &entity_id,
+        &agent_id,
+        report(DoneStatus::Completed, "Fixed the drop handler race."),
+    );
+
+    let read = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(
+        read["result"]["issue"]["status"], "in_review",
+        "the Complete after the limit moves the dispatched issue"
+    );
+}
+
 /// Blocked leaves the card where it is: blocked is not ready to be looked at,
 /// and a board that said it was would waste a reviewer's time. It writes no
 /// comment either, so a Blocked report touches the issue not at all.

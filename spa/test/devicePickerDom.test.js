@@ -31,6 +31,7 @@ import { initDevicePicker, markNothingAnswers, paintDevicePicker } from "../src/
 import { rememberDeviceFilter } from "../src/core/deviceFilter.js";
 import { nothingAnswersMark } from "../src/core/text.js";
 import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
+import { resetUsageLimits, setUsageLimits } from "../src/core/usageLimits.js";
 
 const choices = () => [...document.querySelectorAll(".device-picker-choice")];
 const labelOf = (button) => button.querySelector("span").textContent;
@@ -47,6 +48,7 @@ beforeEach(() => {
     { id: "a", name: "Laptop", status: "online" }, { id: "b", name: "Desktop", status: "offline" },
   ] });
   resetDeviceContexts();
+  resetUsageLimits();
   markNothingAnswers(false);
   initDevicePicker();
   paintDevicePicker();
@@ -244,5 +246,61 @@ describe("the picker while no device answers", () => {
   it("keeps the toggle saying which machines the rail is showing", () => {
     markNothingAnswers(true);
     expect(toggleLabel()).toBe("All devices");
+  });
+});
+
+// Issue #58: a harness out of usage on a machine says so on that machine's row
+// in the picker, in the banner's own words, and the toggle wears a mark while
+// any machine it stands for is limited — the way it wears the unreachable one.
+describe("a device out of usage", () => {
+  const limit = (minutes) => ({
+    harness: "claude_adk",
+    since: new Date().toISOString(),
+    resets_at: new Date(Date.now() + minutes * 60_000).toISOString(),
+    said: "You've hit your session limit · resets 6:20pm (America/New_York)",
+  });
+  const limitLine = (deviceId) => document.querySelector(`.device-picker-limit[data-limit-device="${deviceId}"]`);
+  const limitMark = () => document.querySelector(".device-picker-limited");
+
+  it("says so under that machine's row, and marks the toggle", () => {
+    setUsageLimits("a", [limit(34)]);
+    document.querySelector(".device-picker-toggle").click();
+    expect(limitLine("a").textContent).toBe("Claude session limit reached · resets in 34 min");
+    expect(limitLine("b")).toBeNull();
+    expect(limitMark().getAttribute("aria-label")).toBe("Laptop: Claude session limit reached · resets in 34 min");
+    expect(limitMark().getAttribute("title")).toBe(limitMark().getAttribute("aria-label"));
+    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+  });
+
+  it("marks the toggle only for the machines it stands for", () => {
+    setUsageLimits("a", [limit(34)]);
+    rememberDeviceFilter("b");
+    paintDevicePicker();
+    expect(limitMark()).toBeNull();
+    rememberDeviceFilter("a");
+    paintDevicePicker();
+    expect(limitMark()).not.toBeNull();
+  });
+
+  it("goes when the bridge clears it", () => {
+    setUsageLimits("a", [limit(34)]);
+    expect(limitMark()).not.toBeNull();
+    setUsageLimits("a", []);
+    expect(limitMark()).toBeNull();
+    document.querySelector(".device-picker-toggle").click();
+    expect(limitLine("a")).toBeNull();
+  });
+
+  it("counts down with the banner, a minute at a time", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse("2026-09-20T21:46:00Z"));
+      setUsageLimits("a", [{ ...limit(0), resets_at: "2026-09-20T22:20:00Z" }]);
+      expect(limitMark().getAttribute("title")).toBe("Laptop: Claude session limit reached · resets in 34 min");
+      vi.advanceTimersByTime(60_000);
+      expect(limitMark().getAttribute("title")).toBe("Laptop: Claude session limit reached · resets in 33 min");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

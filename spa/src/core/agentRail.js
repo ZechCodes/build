@@ -70,6 +70,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
+import { applyQueuedReason, mountUsageLimitBanner, queuedReason } from "./usageLimits.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
@@ -851,6 +852,9 @@ function watchStateFor(context) {
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the
  *  other, and is null for a rail that has only one. */
 function mountRailOnContext(host, context, swap) {
+  // Stood up once the rail's own painters exist (below); until then a panel
+  // paint has no limit to say anything about.
+  let usageLimitBanner = { sync() {}, dispose() {} };
   const completionTracker = createTaskCompletionTracker();
   const completionToast = mountTaskCompletionToast(host);
   const railContext = createAgentRailContext(context);
@@ -1871,6 +1875,14 @@ function mountRailOnContext(host, context, swap) {
       paintChat();
       paintRailStatus();
     }
+    usageLimitBanner.sync();
+  };
+
+  /** The reason a message still queued for the agent in focus gives on hover,
+   *  when that is its harness being out of usage on this machine (#58). */
+  const paintQueuedReasons = () => {
+    const body = host.querySelector("#rail-body");
+    if (body) applyQueuedReason(body, queuedReason(context.deviceId, agentInFocus()?.provider));
   };
 
   const wireHead = (panel) => {
@@ -2264,6 +2276,7 @@ function mountRailOnContext(host, context, swap) {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
+        paintQueuedReasons();
       }, { olderItemsPrepended }),
     );
   };
@@ -3302,6 +3315,11 @@ function mountRailOnContext(host, context, swap) {
   // The elapsed-time clock: the one timer left on the rail, and it says nothing
   // about the wire — it is the "working for 4m" line counting.
   statusTicker = setInterval(paintRailStatus, 1000);
+  // A harness out of usage on this machine (#58): a strip at the top of the
+  // conversation, counting down to its reset, whichever agent is open.
+  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector("#rail-panel"), context.deviceId, {
+    onPaint: paintQueuedReasons,
+  });
   const visibilityChanged = () => {
     if (document.hidden) leaveUnreadMarker();
     else paintChat();
@@ -3332,6 +3350,7 @@ function mountRailOnContext(host, context, swap) {
       unwatchCache();
       clearInterval(statusTicker);
       statusTicker = null;
+      usageLimitBanner.dispose();
       unsubscribePending();
       unsubscribeFeed();
       disposeTitleMotion();

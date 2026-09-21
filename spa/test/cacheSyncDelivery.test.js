@@ -172,6 +172,29 @@ describe("a flush arriving at the real subscriptions", () => {
     expect(calls("fs.tree").filter(([, params]) => params.path === "src")).toHaveLength(1);
   });
 
+  // Issue #58: the harnesses out of usage on the device, from the whole read
+  // and from the board item that says the list moved — through the real sync
+  // path, so a key read from the wrong place fails here.
+  it("holds the usage limits the board lists, and the ones a board item carries", async () => {
+    const limit = {
+      harness: "claude_adk",
+      since: "2026-09-20T21:30:47Z",
+      resets_at: "2026-09-20T22:20:00Z",
+      said: "You've hit your session limit · resets 6:20pm (America/New_York)",
+    };
+    bridge.call = vi.fn(async (method, params) =>
+      method === "board.list" ? { items: board, usage_limits: [limit] } : answer(method, params));
+    await boot();
+    const limits = await import("../src/core/usageLimits.js");
+    expect(limits.usageLimitsOf("dev-1")).toEqual([limit]);
+
+    await flush([{ entity_id: "board", state: { revision: 6, removed: ["run-9"] } }]);
+    expect(limits.usageLimitsOf("dev-1")).toEqual([limit]);
+
+    await flush([{ entity_id: "board", state: { revision: 7, usage_limits: [] } }]);
+    expect(limits.usageLimitsOf("dev-1")).toEqual([]);
+  });
+
   it("writes the lists a board item carries", async () => {
     await boot();
     await flush([{ entity_id: "board", state: { revision: 5, projects: [{ project_id: "p2", name: "relaydb" }] } }]);

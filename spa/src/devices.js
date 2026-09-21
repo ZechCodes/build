@@ -13,7 +13,8 @@ import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
 import { canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
-import { ICON_CHEVRON_DOWN, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
+import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
+import { onUsageLimitsChanged, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
@@ -160,13 +161,43 @@ export function paintDevicePicker() {
   const label = deviceNameOf(App.devices, App.deviceFilter) || ALL_DEVICES;
   picker.innerHTML = `
     <button class="device-picker-toggle" type="button" aria-expanded="false" aria-controls="device-picker-menu" title="Which devices the inbox shows">
-      <span>${esc(label)}</span>${unreachableMarkHtml()}<span aria-hidden="true">${ICON_CHEVRON_DOWN}</span>
+      <span>${esc(label)}</span>${limitedMarkHtml()}${unreachableMarkHtml()}<span aria-hidden="true">${ICON_CHEVRON_DOWN}</span>
     </button>
     <div class="device-picker-menu" id="device-picker-menu" aria-label="Devices" hidden>
       ${pickerRowsHtml()}
     </div>`;
   setPickerOpen(picker, wasOpen);
   restorePickerFocus(picker, focused);
+  scheduleLimitCountdown();
+}
+
+/** The machines the toggle stands for: the one the rail is filtered to, or all
+ *  of them. */
+const pickedDeviceIds = () => (App.deviceFilter ? [App.deviceFilter] : App.devices.map((device) => device.id));
+
+/** The mark on the toggle while a machine it stands for has a harness out of
+ *  usage (#58), beside the unreachable one and for the same reason: it is about
+ *  the machines the toggle names, whose rows are behind a press. It says the
+ *  first such limit in full, naming whose it is. */
+function limitedMarkHtml() {
+  const device = App.devices.find((candidate) =>
+    pickedDeviceIds().includes(candidate.id) && usageLimitsOf(candidate.id).length);
+  if (!device) return "";
+  const words = `${device.name}: ${usageLimitText(usageLimitsOf(device.id)[0])}`;
+  return `<span class="device-picker-limited" role="img" aria-label="${esc(words)}" title="${esc(words)}">${ICON_HOURGLASS}</span>`;
+}
+
+/** A machine's limits under its row, in the banner's words. */
+const limitLinesHtml = (deviceId) => usageLimitsOf(deviceId)
+  .map((limit) => `<div class="device-picker-limit" data-limit-device="${esc(deviceId)}">${esc(usageLimitText(limit))}</div>`)
+  .join("");
+
+/** The countdown: the picker repaints on the minute any line it shows moves. */
+let limitCountdown = null;
+function scheduleLimitCountdown() {
+  clearTimeout(limitCountdown);
+  const wait = untilAnyTextChanges(App.devices.map((device) => device.id));
+  limitCountdown = wait === null ? null : setTimeout(paintDevicePicker, wait);
 }
 
 /** The mark on the toggle while nothing can answer. Inside the toggle, because
@@ -223,7 +254,7 @@ function deviceRowHtml(device, filter) {
     ${offline
       ? `<span class="device-picker-offline" role="img" aria-label="Device offline" title="Device offline">${ICON_WIFI_OFF}</span>`
       : `<button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>`}
-  </div>`;
+  </div>${limitLinesHtml(device.id)}`;
 }
 
 /** What every row is picked by: the device the rail is to show, with the
@@ -320,9 +351,11 @@ export function initDevicePicker() {
   document.addEventListener("click", dismiss);
   document.addEventListener("focusin", dismiss);
   const stopWatchingDeviceState = onDeviceStateChanged(paintDevicePicker);
+  const stopWatchingLimits = onUsageLimitsChanged(paintDevicePicker);
   removePickerListeners = () => {
     document.removeEventListener("click", dismiss);
     document.removeEventListener("focusin", dismiss);
     stopWatchingDeviceState();
+    stopWatchingLimits();
   };
 }

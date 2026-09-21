@@ -42,6 +42,17 @@ pub(crate) const DONE_CALL: &str = r#"{"type":"assistant","message":{"role":"ass
 pub(crate) const DONE_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_done","content":"recorded"}]},"parent_tool_use_id":null}"#;
 pub(crate) const SUBAGENT_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"parent_tool_use_id":"toolu_1"}"#;
 pub(crate) const FAILED_RESULT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the tool call was refused","session_id":"sess-adk"}"#;
+/// A top-level reply whose request held 1,000 fresh, 30,000 cache-read and
+/// 2,000 cache-written tokens: 33,000 in context.
+pub(crate) const NARRATION_WITH_USAGE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"dropped the index"}],"usage":{"input_tokens":1000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":2000,"output_tokens":40}},"parent_tool_use_id":null}"#;
+/// A subagent's reply: its context is its own, not the session's.
+pub(crate) const SUBAGENT_TEXT_WITH_USAGE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}],"usage":{"input_tokens":5,"cache_read_input_tokens":900000,"cache_creation_input_tokens":0,"output_tokens":7}},"parent_tool_use_id":"toolu_1"}"#;
+/// A turn boundary whose turn read 45,000 tokens from the cache.
+pub(crate) const RESULT_WITH_USAGE: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"dropped the index","session_id":"sess-adk","usage":{"input_tokens":1200,"cache_read_input_tokens":45000,"cache_creation_input_tokens":2000,"output_tokens":90}}"#;
+/// The context was just compacted down to 8,000 tokens.
+pub(crate) const COMPACT_BOUNDARY_WITH_POST_TOKENS: &str = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":180000,"post_tokens":8000}}"#;
+/// A compaction as claude code reports it today: no post-compaction size.
+pub(crate) const COMPACT_BOUNDARY: &str = r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"auto","pre_tokens":180000}}"#;
 
 /// The background-task lines, recorded from a live probe against claude
 /// 2.1.236 on 2026-08-29: one headless turn that put `sleep 12 && echo

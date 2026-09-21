@@ -40,10 +40,11 @@ pub(crate) mod stream_fixtures;
 pub mod surfaces;
 pub(crate) mod transcript_activity;
 
+pub(crate) use session::publish_context;
 pub use session::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, FrozenTurnChoice, HarnessError,
     SessionOutput, SessionStatusSnapshot, TerminalView, ToolOutcome, Turn, TurnChoiceSupport,
-    TurnReceiptSnapshot, TurnReceiptSupport,
+    TurnContext, TurnReceiptSnapshot, TurnReceiptSupport,
 };
 
 /// How long a real harness TUI must stop painting before its input is live.

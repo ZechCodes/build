@@ -8,7 +8,8 @@ use super::translation::{
 };
 use crate::harness::surfaces::SurfaceRevision;
 use crate::harness::{
-    ActivityReport, AgentActivity, AgentStatus, SessionStatusSnapshot, ToolOutcome,
+    publish_context, ActivityReport, AgentActivity, AgentStatus, SessionStatusSnapshot,
+    ToolOutcome, TurnContext,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,6 +26,9 @@ pub(super) struct ProtocolReader {
     pub(super) calls: HashMap<String, RecordedCall>,
     pub(super) revision: SurfaceRevision,
     pub(super) shell_poller: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// The context the newest top-level request held, and the cache reads of
+    /// every turn so far — published whole when a turn ends.
+    context: TurnContext,
     /// The child this reader is reading, for the one thing a reader may do
     /// to it: end it when its `init` line says it is running a model Build
     /// did not ask for. `None` for a reader driven from a recording.
@@ -45,6 +49,7 @@ impl ProtocolReader {
             calls: HashMap::new(),
             revision,
             shell_poller: Arc::new(Mutex::new(None)),
+            context: TurnContext::default(),
             child: None,
         }
     }
@@ -105,11 +110,7 @@ impl ProtocolReader {
                     completed: false,
                 }));
             }
-            "compact_boundary" => {
-                self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
-                    completed: true,
-                }));
-            }
+            "compact_boundary" => self.read_compact_boundary(event),
             "background_tasks_changed" => self.read_task_roster(event),
             "task_started" => self.read_task_started(event),
             "task_updated" => self.read_task_updated(event),
@@ -119,6 +120,19 @@ impl ProtocolReader {
         if SURFACE_TASK_SUBTYPES.contains(&subtype) {
             self.read_surface_task_event(subtype, event);
         }
+    }
+
+    /// A compaction finished. What the context held before it is gone, so the
+    /// reading is replaced by what survived — nothing, when the boundary does
+    /// not say — rather than left standing over a context that shrank.
+    fn read_compact_boundary(&mut self, event: &Value) {
+        self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
+            completed: true,
+        }));
+        self.context.context_tokens = event["compact_metadata"]["post_tokens"]
+            .as_u64()
+            .unwrap_or(0);
+        publish_context(&self.status_updates, self.context);
     }
 
     fn read_surface_task_event(&mut self, subtype: &str, event: &Value) {
@@ -436,6 +450,11 @@ impl ProtocolReader {
             } else if !state.closed {
                 state.reported_error = None;
             }
+            // The context first, so the snapshot that says the turn is over
+            // already says what it cost.
+            self.context.cache_read_tokens +=
+                usage_tokens(&event["usage"], "cache_read_input_tokens");
+            publish_context(&self.status_updates, self.context);
             publish_status(&self.status_updates, state.live_status());
         }
         // Outside the lock, because emitting is the broadcast channel's
@@ -454,6 +473,9 @@ impl ProtocolReader {
     fn read_message(&mut self, event: &Value, voice: Voice) {
         let parent_call_id = event["parent_tool_use_id"].as_str();
         if voice == Voice::Assistant {
+            if parent_call_id.is_none() {
+                self.remember_context(&event["message"]["usage"]);
+            }
             if let Some(call_id) = parent_call_id {
                 let moved = self
                     .state
@@ -485,6 +507,18 @@ impl ProtocolReader {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// The context one top-level request held: everything it sent, fresh or
+    /// cached. Every event of one message repeats the same usage, and the
+    /// turn's last request is the one that counts, so the newest wins.
+    fn remember_context(&mut self, usage: &Value) {
+        if usage.is_object() {
+            self.context.context_tokens = CONTEXT_USAGE_FIELDS
+                .iter()
+                .map(|field| usage_tokens(usage, field))
+                .sum();
         }
     }
 
@@ -605,4 +639,15 @@ impl ProtocolReader {
             let _ = sender.send(report);
         }
     }
+}
+
+/// The usage fields that together make up what one request put in context.
+const CONTEXT_USAGE_FIELDS: [&str; 3] = [
+    "input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
+
+fn usage_tokens(usage: &Value, field: &str) -> u64 {
+    usage[field].as_u64().unwrap_or(0)
 }

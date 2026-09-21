@@ -142,6 +142,18 @@ pub enum AgentStatus {
     Ended { code: Option<i32> },
 }
 
+/// What the last completed turn cost in context, as the harness reported it.
+///
+/// Only a session protocol that reports token usage publishes one; a terminal
+/// has no usage stream to read it from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TurnContext {
+    /// Tokens in the model's context on the turn's last top-level request.
+    pub context_tokens: u64,
+    /// Cache-read tokens summed over every turn this session process has run.
+    pub cache_read_tokens: u64,
+}
+
 /// Cumulative protocol status. A watch receiver may coalesce intermediate
 /// values, so `last_worked_at` preserves the newest completed-turn boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +161,9 @@ pub struct SessionStatusSnapshot {
     pub status: AgentStatus,
     pub changed_at: String,
     pub last_worked_at: Option<String>,
+    /// The newest turn context the harness reported, carried across status
+    /// changes; `None` until it reports one.
+    pub context: Option<TurnContext>,
 }
 
 impl SessionStatusSnapshot {
@@ -159,6 +174,7 @@ impl SessionStatusSnapshot {
             status,
             changed_at,
             last_worked_at,
+            context: None,
         }
     }
 
@@ -175,9 +191,23 @@ impl SessionStatusSnapshot {
                 status,
                 changed_at,
                 last_worked_at,
+                context: self.context,
             }
         })
     }
+}
+
+/// Record the harness's newest turn context on its status watch. Watchers wake
+/// only when the context differs, and the status is left as it is.
+pub(crate) fn publish_context(
+    updates: &watch::Sender<SessionStatusSnapshot>,
+    context: TurnContext,
+) {
+    updates.send_if_modified(|snapshot| {
+        let changed = snapshot.context != Some(context);
+        snapshot.context = Some(context);
+        changed
+    });
 }
 
 fn status_time() -> String {
@@ -584,6 +614,38 @@ mod tests {
         assert!(ended.last_worked_at.is_some());
         let resumed = ended.transition(AgentStatus::Working).unwrap();
         assert_eq!(resumed.last_worked_at, ended.last_worked_at);
+    }
+
+    #[test]
+    fn a_turn_context_rides_every_later_status_transition() {
+        let context = TurnContext {
+            context_tokens: 120_000,
+            cache_read_tokens: 4_000,
+        };
+        let starting = SessionStatusSnapshot::new(AgentStatus::Starting);
+        assert_eq!(starting.context, None);
+        let working = SessionStatusSnapshot {
+            context: Some(context),
+            ..starting.transition(AgentStatus::Working).unwrap()
+        };
+        let waiting = working.transition(AgentStatus::Waiting).unwrap();
+        assert_eq!(waiting.context, Some(context));
+    }
+
+    #[test]
+    fn publishing_a_turn_context_wakes_watchers_only_when_it_changes() {
+        let (updates, mut changed) =
+            watch::channel(SessionStatusSnapshot::new(AgentStatus::Working));
+        let context = TurnContext {
+            context_tokens: 9,
+            cache_read_tokens: 3,
+        };
+        publish_context(&updates, context);
+        assert!(changed.has_changed().unwrap());
+        assert_eq!(changed.borrow_and_update().context, Some(context));
+        assert_eq!(changed.borrow().status, AgentStatus::Working);
+        publish_context(&updates, context);
+        assert!(!changed.has_changed().unwrap());
     }
 
     /// A session that reports its own turn boundaries and has nothing to escape

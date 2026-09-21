@@ -31,7 +31,7 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this issue b
  * keyboard needs. The card is not a link — it holds a link — because a
  * draggable anchor fights the browser's own drag of its href.
  */
-export const issueCardHtml = (issue, { columns, agentLabels, href }) =>
+export const issueCardHtml = (issue, { columns, href, ...reading }) =>
   `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
@@ -39,7 +39,7 @@ export const issueCardHtml = (issue, { columns, agentLabels, href }) =>
     <a class="issue-card-title" href="${esc(href(issue))}">${esc(issue.title)}</a>
     ${issue.labels?.length ? `<div class="issue-card-labels">${labelsHtml(issue.labels)}</div>` : ""}
     <button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">
-      ${assigneeHtml(issue.assignee, agentLabels)}
+      ${assigneeHtml(issue.assignee, reading)}
     </button>
   </li>`;
 

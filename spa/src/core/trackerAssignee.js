@@ -65,9 +65,9 @@ export function workspaceAgents(feed, projectKey) {
     });
 }
 
-/** Every agent of the project by id, named. What core/trackerModel.js's
- *  `actorLabel` is handed so an assignee, a comment's author and an event's
- *  actor all read as the same agent. */
+/** Every agent of the project by id, named. What `actorName`
+ *  (core/trackerLineWords.js) is handed so an assignee, a comment's author and
+ *  an event's actor all read as the same agent. */
 export function agentLabels(groups) {
   const labels = {};
   for (const group of groups || []) {
@@ -75,6 +75,15 @@ export function agentLabels(groups) {
   }
   return labels;
 }
+
+/** What this project is called on this device, for the surfaces that name its
+ *  own agent after it (`actorName`) and draw its face (core/issueAvatar.js).
+ *
+ *  Matched on the account-wide key and never the bare `proj-N`: two machines
+ *  both mint one, and naming an agent after the wrong project is worse than
+ *  naming it after none. */
+export const projectName = (feed, projectKey) =>
+  (feed?.projects || []).find((project) => project.projectKey === projectKey)?.name || "";
 
 /** Every agent of the project by the harness it runs on, for the pictures the
  *  issue page draws beside comments (core/issueAvatar.js). Off the same list

@@ -163,34 +163,11 @@ export function assigneeFromKey(key) {
   return null;
 }
 
-/** How much of an agent's id a label can hold when nothing else names it. The
- *  same four characters a message's sender chip wears (core/thread.js), so one
- *  agent reads as one agent wherever it appears. */
-const AGENT_LABEL_CHARS = 4;
-
-const shortAgentLabel = (agentId) => {
-  const trimmed = String(agentId || "").trim();
-  const body = trimmed.includes("-") ? trimmed.slice(trimmed.indexOf("-") + 1) : trimmed;
-  const short = body.replace(/[^a-z0-9]/gi, "").slice(0, AGENT_LABEL_CHARS).toUpperCase();
-  return short ? `Agent ${short}` : "Agent";
-};
-
-/**
- * What to call an actor.
- *
- * `labels` is what the caller knows about the agents of this project — the
- * picker builds it from the workspaces and their agent digests
- * (core/trackerAssignee.js), so an agent is called what the picker calls it.
- * An agent nobody can name is called by four characters of its id rather than
- * by nothing: a timeline entry with no actor on it reads as an accident.
- */
-export function actorLabel(actor, labels = {}) {
-  if (!actor || !actor.kind) return "Unassigned";
-  if (actor.kind === "user") return "You";
-  if (actor.kind === "project_agent") return "Project agent";
-  if (actor.kind !== "agent") return String(actor.kind);
-  return labels[actor.agent_id] || shortAgentLabel(actor.agent_id);
-}
+/* What to call an actor lives in core/trackerLineWords.js, with the rest of the
+   tracker's vocabulary: `actorName(actor, { agentLabels, projectName })`. It
+   was here as well for a while, and the two drifted — the copy here had never
+   heard of the project's own agent, so the same actor read "Build agent" on a
+   notice line and "Agent 01M2" on its own comment (#63). */
 
 /** The initials an avatar wears for an actor: the human's, the project agent's,
  *  and an agent's own. Never more than two characters — it sits in a circle. */

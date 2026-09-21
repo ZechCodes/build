@@ -24,7 +24,8 @@
 import { esc } from "./text.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { projectInitial } from "./agentRailModel.js";
-import { actorInitials, actorLabel } from "./trackerModel.js";
+import { actorInitials } from "./trackerModel.js";
+import { actorName } from "./trackerLineWords.js";
 
 /** The id a project's own agent is minted under. The bridge writes it as an
  *  ordinary agent actor on some paths and as its own actor kind on others, so
@@ -48,7 +49,7 @@ export const isProjectActor = (actor) =>
 export function issueAvatarHtml(actor, context = {}) {
   // The label the card already shows in its head, as hover text: the picture
   // is a hint, and a hint nobody can resolve is a worse one.
-  const title = ` title="${esc(actorLabel(actor, context.agentLabels || {}))}"`;
+  const title = ` title="${esc(actorName(actor, context))}"`;
   if (isProjectActor(actor)) return projectMarkHtml(actor, title, context.projectName);
   const provider = harnessOf(actor, context.agentProviders || {});
   if (provider) return `<span class="issue-avatar is-harness"${title} aria-hidden="true">${harnessIconHtml(provider)}</span>`;

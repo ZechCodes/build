@@ -27,9 +27,10 @@ import {
   narrowsTheRead,
   sortIssues,
 } from "./trackerFilters.js";
-import { actorLabel, columnsOf } from "./trackerModel.js";
+import { columnsOf } from "./trackerModel.js";
+import { actorName } from "./trackerLineWords.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
-import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintIssueBoard, paintIssueRows } from "./trackerIssuesBody.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -55,7 +56,10 @@ export function mountIssuesPane(host, options) {
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
   const labelsOfAgents = () => agentLabels(groups());
-  const nameActor = (actor) => actorLabel(actor, labelsOfAgents());
+  /** What every row on this tab names an actor from: the project's agents, and
+   *  the project itself, which its own agent is named after (#63). */
+  const reading = () => ({ agentLabels: labelsOfAgents(), projectName: projectName(state.feed(), state.projectKey) });
+  const nameActor = (actor) => actorName(actor, reading());
 
   /**
    * Which issues this tab is about.
@@ -121,7 +125,7 @@ export function mountIssuesPane(host, options) {
 
   const paintContext = () => ({
     columns: state.columns,
-    agentLabels: labelsOfAgents(),
+    ...reading(),
     filters: state.filters,
     href: hrefOf,
   });

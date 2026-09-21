@@ -12,7 +12,8 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
-import { actorLabel, columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
+import { columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
+import { actorName } from "./trackerLineWords.js";
 import { issueAvatarHtml } from "./issueAvatar.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
@@ -84,7 +85,7 @@ const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.a
 const commentHtml = (row, context) => `<li class="issue-entry issue-comment" id="comment-${esc(row.key)}">
     ${issueAvatarHtml(row.actor, context)}
     <div class="issue-comment-card">
-      <div class="issue-entry-head"><strong>${esc(actorLabel(row.actor, context.agentLabels))}</strong>${whenHtml(row)}</div>
+      <div class="issue-entry-head"><strong>${esc(actorName(row.actor, context))}</strong>${whenHtml(row)}</div>
       <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body)}</div>
     </div>
   </li>`;
@@ -92,9 +93,9 @@ const commentHtml = (row, context) => `<li class="issue-entry issue-comment" id=
 /** An event is one line: who, what they did, and when. It is history, so it is
  *  drawn quieter than a comment — but never hidden, because "the board moved
  *  and nobody said anything" is exactly what a timeline is for. */
-const eventHtml = (row, { agentLabels, columns }) => `<li class="issue-entry issue-event">
+const eventHtml = (row, context) => `<li class="issue-entry issue-event">
     <span class="issue-event-dot" aria-hidden="true"></span>
-    <span class="issue-event-text"><strong>${esc(actorLabel(row.actor, agentLabels))}</strong> ${esc(eventSentence(row, { columns, agentLabels }))}</span>
+    <span class="issue-event-text"><strong>${esc(actorName(row.actor, context))}</strong> ${esc(eventSentence(row, context))}</span>
     ${whenHtml(row)}
   </li>`;
 
@@ -160,14 +161,14 @@ const linksHtml = (rows) =>
  * `issues.assign` for who holds it. The page never sends a whole record.
  */
 export function issueRailHtml(issue, context) {
-  const { columns, agentLabels, links, labelsDraft, busy } = context;
+  const { columns, links, labelsDraft, busy } = context;
   return `<aside class="issue-rail" aria-label="About this issue">
     ${stateControlHtml(issue, busy)}
     ${railSection("Column", selectRow("issue-status", "Column", columnOptionsHtml(columns, issue.status), busy))}
     ${railSection("Labels", `<input id="issue-labels" type="text" autocomplete="off" placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
       <p class="sub">Comma separated. Enter saves.</p>`)}
     ${railSection("Priority", selectRow("issue-priority", "Priority", priorityOptionsHtml(issue.priority), busy))}
-    ${railSection("Assignee", `<button class="btn issue-assign-open" type="button" data-issue-assign="${esc(issue.id)}"${busy ? " disabled" : ""}>${assigneeHtml(issue.assignee, agentLabels)}</button>
+    ${railSection("Assignee", `<button class="btn issue-assign-open" type="button" data-issue-assign="${esc(issue.id)}"${busy ? " disabled" : ""}>${assigneeHtml(issue.assignee, context)}</button>
       <p class="sub">Assigning hands the issue to an agent and starts it.</p>`)}
     ${railSection("Links", linksHtml(links))}
   </aside>`;

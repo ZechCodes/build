@@ -21,7 +21,7 @@ import { deviceWatch } from "./deviceReconnect.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
-import { agentLabels, agentProviders, assigneeOptions, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
@@ -46,11 +46,7 @@ export function mountIssuePage(host, options) {
   };
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
-  /** What this project is called, for the face the project's own agent wears
-   *  beside its comments (#54). Matched on the account-wide key, never the
-   *  bare `proj-N` — two machines both mint one. */
-  const projectName = () =>
-    (state.feed()?.projects || []).find((project) => project.projectKey === state.projectKey)?.name || "";
+
   const place = () => ({ projectId: state.projectId, deviceId: state.deviceId, projectKey: state.projectKey });
 
   /** What this page does when a read fails because the wire went away rather
@@ -95,7 +91,7 @@ export function mountIssuePage(host, options) {
       columns: state.columns,
       agentLabels: agentLabels(groups()),
       agentProviders: agentProviders(groups()),
-      projectName: projectName(),
+      projectName: projectName(state.feed(), state.projectKey),
       rows: state.rows,
       links: issueLinkRows(state.issue, place(), state.feed()),
       draft: state.draft,

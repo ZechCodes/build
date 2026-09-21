@@ -12,7 +12,8 @@
 //
 // No DOM, no app imports.
 
-import { actorLabel, columnName } from "./trackerModel.js";
+import { columnName } from "./trackerModel.js";
+import { actorName } from "./trackerLineWords.js";
 
 const COMMENT = "comment";
 const EVENT = "event";
@@ -89,7 +90,7 @@ const movedSentence = (payload, columns) => {
 
 const SENTENCES = Object.freeze({
   created: () => "filed this",
-  assigned: (payload, _columns, labels) => `assigned this to ${actorLabel(payload.assignee, labels)}`,
+  assigned: (payload, _columns, reading) => `assigned this to ${actorName(payload.assignee, reading) || "nobody"}`,
   unassigned: () => "unassigned this",
   moved: movedSentence,
   labelled: (payload) => labelChange(payload),
@@ -107,8 +108,11 @@ const SENTENCES = Object.freeze({
  * nothing — a later minor adding one leaves a reader with a row they can at
  * least recognize.
  */
-export function eventSentence(row, { columns = null, agentLabels = {} } = {}) {
+export function eventSentence(row, reading = {}) {
   const write = SENTENCES[row?.kind];
   if (!write) return String(row?.kind || "did something");
-  return write(row.payload || {}, columns, agentLabels);
+  // The whole reading goes through, not the labels alone: an actor named in a
+  // sentence is named by the tracker's one naming function, which needs the
+  // project as well as its agents (#63).
+  return write(row.payload || {}, reading.columns || null, reading);
 }

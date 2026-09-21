@@ -7,7 +7,6 @@ import {
   FALLBACK_COLUMNS,
   UNASSIGNED,
   actorInitials,
-  actorLabel,
   assigneeFromKey,
   assigneeKey,
   columnName,
@@ -104,20 +103,9 @@ describe("the tagged actor shape", () => {
     expect(assigneeFromKey("none")).toBeNull();
   });
 
-  it("names an actor, using what the caller knows about this project's agents", () => {
-    expect(actorLabel({ kind: "user" })).toBe("You");
-    expect(actorLabel({ kind: "project_agent" })).toBe("Project agent");
-    expect(actorLabel({ kind: "agent", agent_id: "agent-7" }, { "agent-7": "wire-facade · Agent 1" }))
-      .toBe("wire-facade · Agent 1");
-    expect(actorLabel(null)).toBe("Unassigned");
-  });
-
-  // An agent nobody can name still reads as an agent: a timeline entry with no
-  // actor on it reads as an accident.
-  it("falls back to four characters of an unnamed agent's id", () => {
-    expect(actorLabel({ kind: "agent", agent_id: "agent-01K5ZABCDEF" })).toBe("Agent 01K5");
-    expect(actorLabel({ kind: "agent", agent_id: "" })).toBe("Agent");
-  });
+  // What to call an actor moved to core/trackerLineWords.js with the rest of
+  // the tracker's vocabulary (#63) — test/trackerActorName.test.js holds it,
+  // and holds every surface that prints one to agreeing with it.
 
   it("wears one initial in a circle", () => {
     expect(actorInitials({ kind: "user" })).toBe("Y");

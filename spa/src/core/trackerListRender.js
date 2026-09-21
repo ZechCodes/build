@@ -77,10 +77,10 @@ const factsHtml = (issue, columns, nowMs) =>
  * the facts because it says how to READ the title, and the eye going down a
  * column of titles meets it on the way in (#45).
  */
-export const issueRowHtml = (issue, { columns, agentLabels, href, nowMs = Date.now() }) =>
+export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...reading }) =>
   `<li class="issue-row" data-issue="${esc(issue.id)}">
     <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span></a>
-    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, agentLabels))}" title="Assign this issue">${rowAssigneeHtml(issue.assignee, agentLabels)}</button></span>
+    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, reading))}" title="Assign this issue">${rowAssigneeHtml(issue.assignee, reading)}</button></span>
   </li>`;
 
 /** Nothing to show, said two ways: a project with no issues at all is at its

@@ -89,8 +89,12 @@ describe("what an event says", () => {
       .toBe("moved this from In progress to In review on reporting Complete");
   });
 
+  // Through the tracker's one naming function since #63, so the sentence here
+  // and the notice line in the conversation call the same actor the same
+  // thing — the project's own agent is named after its project.
   it("names who an assign handed it to", () => {
-    expect(sentenceOf("assigned", { assignee: { kind: "project_agent" } })).toBe("assigned this to Project agent");
+    expect(sentenceOf("assigned", { assignee: { kind: "project_agent" } }, { projectName: "Build" }))
+      .toBe("assigned this to Build agent");
     expect(sentenceOf("assigned", { assignee: { kind: "agent", agent_id: "agent-7" } }, {
       agentLabels: { "agent-7": "wire-facade · Agent 1" },
     })).toBe("assigned this to wire-facade · Agent 1");

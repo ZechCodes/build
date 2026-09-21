@@ -12,13 +12,13 @@
 import { esc, humanAge } from "./text.js";
 import {
   COLUMN_NOTE_SHARED,
-  actorLabel,
   columnName,
   priorityIsMarked,
   priorityIsPressing,
   priorityLabel,
   stateLabel,
 } from "./trackerModel.js";
+import { actorName } from "./trackerLineWords.js";
 
 /** Open or closed, as a dot and its accessible name. A closed issue is drawn
  *  quiet rather than absent: it is still the project's history. */
@@ -114,8 +114,8 @@ export const priorityChipHtml = (priority) =>
 /** Who holds it. Unassigned is a state worth showing rather than a blank: on a
  *  card and on the issue's own page, where one issue is the subject and "who
  *  has this" is a question being answered. */
-export const assigneeHtml = (assignee, agentLabels) => {
-  const label = assignee ? actorLabel(assignee, agentLabels) : "Unassigned";
+export const assigneeHtml = (assignee, reading) => {
+  const label = assignee ? actorName(assignee, reading) : "Unassigned";
   return `<span class="issue-assignee${assignee ? "" : " issue-unassigned"}">${esc(label)}</span>`;
 };
 
@@ -128,18 +128,18 @@ export const assigneeHtml = (assignee, agentLabels) => {
  * than this: an affordance that is not in the markup is one the keyboard and
  * a screen reader cannot find either.
  */
-export const rowAssigneeHtml = (assignee, agentLabels) =>
+export const rowAssigneeHtml = (assignee, reading) =>
   assignee
-    ? `<span class="issue-assignee">${esc(actorLabel(assignee, agentLabels))}</span>`
+    ? `<span class="issue-assignee">${esc(actorName(assignee, reading))}</span>`
     : `<span class="issue-assign-cue">Assign</span>`;
 
 /** What the press is called where it cannot be seen. It names the holder when
  *  there is one, because a control whose visible words are missing from its
  *  accessible name is one a speech-control user cannot say out loud. */
-export const assignPressLabel = (issue, agentLabels) => {
+export const assignPressLabel = (issue, reading) => {
   const named = `#${issue?.number ?? ""}`;
   if (!issue?.assignee) return `Assign ${named}`;
-  return `${named} is assigned to ${actorLabel(issue.assignee, agentLabels)}. Assign it to somebody else`;
+  return `${named} is assigned to ${actorName(issue.assignee, reading)}. Assign it to somebody else`;
 };
 
 /** When it last moved, in the app's own human scale. An unparseable or absent

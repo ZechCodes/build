@@ -11,9 +11,12 @@
 // "Agent 01M2" — it is not an agent of any workspace, so the feed had no label
 // for it and it fell through to four characters of its id.
 //
+// Since #63 this is also the tracker's only naming function: the issue page,
+// the board, the list and the rail all read an actor through `actorName`, so
+// the project's agent cannot be "Build agent" on a notice line and "Agent
+// 01M2" on its own comment two panes away.
+//
 // Pure: no DOM, no app imports.
-
-import { actorLabel } from "./trackerModel.js";
 
 /**
  * What the bridge's verb is called on screen.
@@ -77,6 +80,27 @@ const BUILD = "Build";
 
 const projectAgentName = (projectName) => `${String(projectName || "").trim() || BUILD} agent`;
 
+/** The id a project's own agent is minted under. The wire writes it as its own
+ *  actor kind on some paths and as an ordinary agent actor on others, so the
+ *  id is asked about as well as the kind: one agent, one name (#63). */
+const PROJECT_AGENT_PREFIX = "project-";
+
+/** The four characters an agent wears wherever nothing can name it — the same
+ *  four a message's sender chip wears (core/thread.js), so one agent reads as
+ *  one agent on every surface. */
+const AGENT_LABEL_CHARS = 4;
+
+const shortAgentLabel = (agentId) => {
+  const trimmed = String(agentId || "").trim();
+  const body = trimmed.includes("-") ? trimmed.slice(trimmed.indexOf("-") + 1) : trimmed;
+  const short = body.replace(/[^a-z0-9]/gi, "").slice(0, AGENT_LABEL_CHARS).toUpperCase();
+  return short ? `Agent ${short}` : "Agent";
+};
+
+/** An agent of a workspace: what the rest of the project calls it, or the
+ *  four characters it wears where nothing can. */
+const agentName = (agentId, agentLabels) => agentLabels[agentId] || shortAgentLabel(agentId);
+
 /**
  * Who did it, as a reader knows them.
  *
@@ -97,7 +121,10 @@ export function actorName(actor, reading = {}) {
 /** The wire's tagged shape, which every field but a notice's actor uses. */
 function taggedActorName(actor, { agentLabels = {}, projectName = "" }) {
   if (actor.kind === "project_agent") return projectAgentName(projectName);
-  return actorLabel(actor, agentLabels);
+  if (actor.kind === "user") return "You";
+  if (actor.kind !== "agent") return String(actor.kind || "");
+  const id = String(actor.agent_id || "");
+  return id.startsWith(PROJECT_AGENT_PREFIX) ? projectAgentName(projectName) : agentName(id, agentLabels);
 }
 
 /** A bare string: an id off the structured field, or a word out of the body's
@@ -106,7 +133,7 @@ function taggedActorName(actor, { agentLabels = {}, projectName = "" }) {
 function writtenActorName(said, { agentLabels = {}, projectName = "" }) {
   if (!said) return "";
   if (said.startsWith("project-")) return projectAgentName(projectName);
-  if (said.startsWith("agent-")) return actorLabel({ kind: "agent", agent_id: said }, agentLabels);
+  if (said.startsWith("agent-")) return agentName(said, agentLabels);
   if (said === "user" || said === "you") return "You";
   return said;
 }

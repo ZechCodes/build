@@ -133,7 +133,7 @@ function retryControl(deviceId) {
     // However it settles, the registry says what became of that machine: a
     // machine that answered takes its own strip down, and one that could not be
     // reached again repaints this one with the new reason.
-    connectDevice(deviceId).catch(() => {}).finally(() => {
+    connectDevice(deviceId, { reason: "row-retry" }).catch(() => {}).finally(() => {
       button.disabled = false;
     });
   };

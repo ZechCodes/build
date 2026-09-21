@@ -476,7 +476,7 @@ function waitingRowHtml(device) {
  *  hold hands the app back by itself the moment that machine answers; one that
  *  could not be reached again wears its new reason here. */
 function retryOneDevice(deviceId) {
-  connectDevice(deviceId).catch(() => paintWaiting(App.devices));
+  connectDevice(deviceId, { reason: "gate" }).catch(() => paintWaiting(App.devices));
 }
 
 /** Why the page is waiting, one sentence per situation. A machine the account

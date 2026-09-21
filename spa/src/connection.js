@@ -338,9 +338,21 @@ async function connectOverChannels(deviceId, attempt) {
  * controls, and presence when the machine comes back all call this same one
  * attempt owner.
  */
-export function connectDevice(deviceId, { recoveryEpoch = null } = {}) {
+export function connectDevice(deviceId, { recoveryEpoch = null, reason = "unnamed" } = {}) {
   handTerminalsTheirMint();
   const attemptOwner = connectionAttempts.forDevice(deviceId);
+  // Who asked, and whether they started a dial or joined one. Five callers can
+  // reach here — recovery's timer, the gate, a row's Retry, presence coming back,
+  // and the stale-device guess — and when a phone woke on 2026-09-20 two dials
+  // overlapped: the first completed, paid for a TURN allocation, and was discarded
+  // as superseded the instant its channels opened (issue #60 point 3). The attempt
+  // owner single-flights on its own `active`, so whichever two callers raced did
+  // so around that guard rather than through it, and nothing in the record said
+  // which they were. Now it does.
+  recordConnectionDiagnostic(`${deviceId}:dial`, "dial", {
+    reason,
+    joined: attemptOwner.connecting,
+  });
   // Callers converge on the attempt owner's exact promise. Only the caller that
   // starts it reports its outcome to recovery, or one failure would advance the
   // backoff once per observer rather than once per dial.
@@ -362,7 +374,7 @@ export function connectDevice(deviceId, { recoveryEpoch = null } = {}) {
 
 function attemptRecoveryDevice(deviceId, epoch) {
   retryDeviceConnection(deviceId);
-  connectDevice(deviceId, { recoveryEpoch: epoch }).catch(() => {});
+  connectDevice(deviceId, { recoveryEpoch: epoch, reason: "recovery" }).catch(() => {});
 }
 
 function retryableConnectionFailure(deviceId, error) {
@@ -883,7 +895,7 @@ export function openDeviceSessions({ retry = false } = {}) {
 
 /** Dial each of these machines once, however many of the lists above named it. */
 function dialEach(deviceIds) {
-  return [...new Set(deviceIds)].map((deviceId) => connectDevice(deviceId));
+  return [...new Set(deviceIds)].map((deviceId) => connectDevice(deviceId, { reason: "presence" }));
 }
 
 /**
@@ -931,7 +943,7 @@ function askBlockedMachinesAgain() {
  */
 function guessAtStaleDevices() {
   if (liveContexts().length) return []; // something is answering; the poll will hear the rest
-  return App.devices.filter(worthGuessingAt).map((device) => connectDevice(device.id));
+  return App.devices.filter(worthGuessingAt).map((device) => connectDevice(device.id, { reason: "stale-guess" }));
 }
 
 /** A machine nobody has asked for, whose listing this call has a reason to

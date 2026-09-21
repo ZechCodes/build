@@ -293,7 +293,7 @@ describe("asking a blocked machine again", () => {
 
     retry.click();
 
-    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1");
+    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1", { reason: "row-retry" });
   });
 
   // The frozen sentence is about a machine that is away; a blocked one has a
@@ -329,7 +329,7 @@ describe("asking a blocked machine again", () => {
     expect(root.textContent).toContain(blockedText("failed", "workshop"));
     root.querySelector("[data-retry-device]").click();
 
-    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1");
+    expect(connection.connectDevice).toHaveBeenCalledWith("dev-1", { reason: "row-retry" });
     App.viewDispose?.();
     App.viewDispose = null;
   });

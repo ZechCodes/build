@@ -159,6 +159,25 @@ describe("the watch switch", () => {
     expect(notifyError).toHaveBeenCalledWith("Could not change whether you are watching this issue");
   });
 
+  // The helper draws `pending` as disabled (the shell agent's 4c4fb8a3). This
+  // page is the reason that matters: the feed moves on its own and repaints
+  // the whole head from state, so markup written mid-flight would otherwise
+  // come back offering a press the switch is going to ignore.
+  it("offers no press while the verb is in flight, through a repaint", async () => {
+    let settle;
+    call = vi.fn((method) => (method === "issues.get"
+      ? Promise.resolve(answer)
+      : new Promise((done) => { settle = done; })));
+    await mount();
+    button().click();
+    page.feedMoved();
+    await flush();
+    expect(button().hasAttribute("disabled")).toBe(true);
+    settle({});
+    await flush();
+    expect(button().hasAttribute("disabled")).toBe(false);
+  });
+
   // A press repaints the button and nothing else: a full repaint would take
   // the caret out of a half-written comment.
   it("keeps what the reader is typing", async () => {

@@ -9,9 +9,14 @@
 // by these names: if the bridge lands something different, this file changes
 // and `trackerIssueItem` is the only thing that has to.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
-import { inboxEntries, entryRoute, entryKeyOf } from "../src/core/inbox.js";
+// These rows only exist on a bridge that carries watching (#65), so the fixture
+// says which bridge answered for the machine they are on.
+const bridgeVersion = vi.fn(() => "1.9.0");
+vi.mock("../src/core/changeEvents.js", () => ({ bridgeApiVersion: (...args) => bridgeVersion(...args) }));
+
+const { inboxEntries, entryRoute, entryKeyOf } = await import("../src/core/inbox.js");
 
 /** One watched issue, as #64 will push it. */
 const issueRow = (over = {}) => ({
@@ -149,5 +154,25 @@ describe("when the row says it moved", () => {
     const [entry] = listed([row]);
     expect(entry.anchorMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
     expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
+  });
+});
+
+describe("the bridge that has never heard of watching", () => {
+  // A machine below 1.9.0 pushes no such row, and one arriving from anywhere
+  // else is not something this client can act on: Mute and Done on it would
+  // call verbs that bridge refuses.
+  it("lists no issue rows at all", () => {
+    bridgeVersion.mockReturnValue("1.8.0");
+    expect(listed([issueRow()])).toEqual([]);
+  });
+
+  it("leaves its conversation rows alone", () => {
+    bridgeVersion.mockReturnValue("1.8.0");
+    expect(listed([branchRow(), issueRow()]).map((row) => row.kind)).toEqual(["branch"]);
+  });
+
+  it("lists them again on a bridge that does carry it", () => {
+    bridgeVersion.mockReturnValue("1.9.0");
+    expect(listed([issueRow()]).map((row) => row.kind)).toEqual(["tracker_issue"]);
   });
 });

@@ -28,6 +28,7 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
+import { carriesWatching } from "./trackerWatch.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
@@ -610,7 +611,11 @@ function isListed(item) {
   // A watched issue is listed because it is watched. The rules below are the
   // legacy issue's — a state machine and a branch implementing it — and a
   // tracker issue has neither; `status` here is a board column, not a state.
-  if (item.kind === TRACKER_ISSUE) return true;
+  //
+  // Gated on the bridge that pushes it (#65): a machine below 1.9.0 sends no
+  // such row, and one arriving from anywhere else is not something this client
+  // can act on — Mute and Done on it would call verbs that bridge refuses.
+  if (item.kind === TRACKER_ISSUE) return carriesWatching(item.deviceId);
   if (FINISHED_STATES.has(item.state)) return false;
   return !(item.kind === "issue" && item.implementation_active);
 }

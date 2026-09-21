@@ -1568,6 +1568,9 @@ impl DoneServer {
         if name == "set_topic" {
             return topic_action(id, params);
         }
+        if name == "set_name" {
+            return name_action(id, params);
+        }
         if name == "compact_self" {
             return compaction::compact_self_action(id, params);
         }
@@ -3372,6 +3375,59 @@ mod tests {
             );
             assert!(refused.action.is_none(), "{tool}");
         }
+    }
+
+    /// A tool a surface lists is a tool its dispatcher routes. `set_name` sat
+    /// on the coding surface's list for a whole release answering "unknown
+    /// tool", because the list and the dispatcher are two places to add it.
+    #[test]
+    fn every_listed_tool_is_one_its_surface_dispatches() {
+        for (surface, server) in [
+            ("coding", server as fn() -> DoneServer),
+            ("project", project),
+            ("router", router),
+        ] {
+            for tool in tool_names(&server()) {
+                let called = server().handle_message(&format!(
+                    r#"{{"jsonrpc":"2.0","id":63,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+                ));
+                if let Some(reply) = called.reply {
+                    let text = parse(&reply)["result"]["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    assert!(
+                        !text.starts_with("unknown tool"),
+                        "{surface} lists {tool} but does not route it"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A workspace agent names itself from the coding surface, and the name
+    /// is shaped there the way it is on the project surface.
+    #[test]
+    fn set_name_on_the_coding_surface_is_a_rename() {
+        let named = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":64,"method":"tools/call","params":{"name":"set_name","arguments":{"name":"  Rail   scroll "}}}"#,
+        );
+        assert!(named.reply.is_none());
+        let Some(BridgeAction::SetName { name }) = named.action else {
+            panic!("expected a rename");
+        };
+        assert_eq!(name, "Rail scroll");
+
+        let empty = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":65,"method":"tools/call","params":{"name":"set_name","arguments":{"name":""}}}"#,
+        );
+        assert!(empty.action.is_none());
+        let refused = parse(&empty.reply.unwrap());
+        assert_eq!(refused["result"]["isError"], true);
+        assert!(refused["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("An agent's name needs at least"));
     }
 
     /// The socket enforces the same split on the frames themselves, so it needs

@@ -133,7 +133,14 @@ async fn compact_self_waits_for_the_turn_and_goes_ahead_of_the_queued_one() {
     agent.becomes(AgentStatus::Waiting).await;
 
     assert_eq!(agent.heard(1).await, vec!["/compact".to_string()]);
-    assert_eq!(agent.still_queued(), 1, "the turn waits for the compaction");
+    // The compaction is heard from inside the pump's drain, before that drain
+    // puts the deferred turn back; wait for it to land rather than race it.
+    wait_for(Duration::from_secs(2), || {
+        (agent.still_queued() == 1).then_some(())
+    })
+    .await
+    .expect("the turn waits for the compaction");
+    assert_eq!(agent.log.turns(), vec!["/compact".to_string()]);
 
     agent.becomes(AgentStatus::Working).await;
     agent.becomes(AgentStatus::Waiting).await;

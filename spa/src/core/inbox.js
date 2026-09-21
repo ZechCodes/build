@@ -280,6 +280,11 @@ export function mergePendingRows(items = [], pending = []) {
  *  names. Until it is routed it opens its own decision page: what to do with it
  *  is a question, and a question deserves a surface. One this client is still
  *  holding has no record to decide about, so it opens nowhere. */
+/// A watched issue of the tracker (#65). NOT `issue`, which is the legacy
+/// multi-stage issue and opens the plan/stages page — two different things
+/// that would otherwise share a word and a row.
+export const TRACKER_ISSUE = "tracker_issue";
+
 const OPENS_AT = {
   capture: (item) => {
     if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
@@ -287,6 +292,10 @@ const OPENS_AT = {
   },
   issue: (item) =>
     item.issue_id ? { name: "issue", deviceId: item.deviceId, projectId: item.project_id, id: item.issue_id } : null,
+  [TRACKER_ISSUE]: (item) =>
+    item.issue_id
+      ? { name: "trackerIssue", deviceId: item.deviceId, projectId: item.project_id, issueId: item.issue_id }
+      : null,
   branch: (item) =>
     item.branch ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" } : null,
 };
@@ -318,6 +327,8 @@ const ms = (iso) => {
  *  had. Exported so the wiring can match a feed row to the keys it is holding. */
 export const entryKeyOf = (item) => {
   if (item.kind === "capture") return `capture:${item.capture_id}`;
+  // An issue is one issue wherever it is listed: its own id names the row.
+  if (item.kind === TRACKER_ISSUE) return `${TRACKER_ISSUE}:${item.issue_id}`;
   return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.projectKey}` : `branch:${item.projectKey}:${item.branch}`);
 };
 
@@ -444,10 +455,89 @@ function toCaptureEntry(item) {
   };
 }
 
+/**
+ * A watched issue as a row (#65).
+ *
+ * Its own shape rather than a detour through the branch/issue mapping below:
+ * a tracker issue has no state machine, no checkout and no agent working in
+ * it, and the fields that row is built from are all about those. What it has
+ * is a number, a title, and the last thing that happened to it.
+ *
+ * The subtitle arrives composed (#61's form) and is shown as given. The bridge
+ * knows the event; a second sentence assembled here would be free to drift
+ * from the one the issue's own timeline shows.
+ */
+const issueTitleOf = (item) => item.title || "(untitled)";
+
+/** The number is how a person says which issue, so it leads the line. */
+const issueNameOf = (item) => (item.number ? `#${item.number} ${issueTitleOf(item)}` : issueTitleOf(item));
+
+/** Where the row is, which every kind of row says the same way. */
+const issuePlaceOf = (item) => ({
+  deviceId: item.deviceId,
+  projectKey: item.projectKey,
+  projectId: item.project_id,
+  project: item.project || item.project_id || "",
+  deviceName: item.deviceName || null,
+});
+
+/** The fields a row carries about a checkout, which an issue has none of. A
+ *  tracker issue has no branch, no agent working in it and nothing to finish. */
+const NOT_A_CHECKOUT = Object.freeze({
+  branch: null,
+  working: false,
+  reason: "",
+  pending: null,
+  placeholder: false,
+  canFinish: false,
+  merged: false,
+  warnings: [],
+});
+
+function toTrackerIssueEntry(item) {
+  const at = ms(item.last_event?.at);
+  const unread = item.unread || 0;
+  return {
+    ...NOT_A_CHECKOUT,
+    ...issuePlaceOf(item),
+    key: entryKeyOf(item),
+    entityId: item.issue_id || null,
+    kind: TRACKER_ISSUE,
+    issueId: item.issue_id || null,
+    number: item.number ?? null,
+    name: issueNameOf(item),
+    title: issueTitleOf(item),
+    status: item.status || null,
+    // An issue handed to the reader outranks one that merely moved — the one
+    // departure from activity order, and only among the issue rows.
+    assignedToUser: !!item.assigned_to_user,
+    state: unread ? "unread" : "idle",
+    unreadCount: unread,
+    muted: !!item.muted,
+    // Done on an issue row means the same as on a conversation: cleared until
+    // the next event.
+    dismissed: !!item.done_until_next,
+    facts: item.last_event?.text || "",
+    route: entryRoute(item),
+    anchorMs: at,
+    lastActivityMs: at,
+  };
+}
+
+/// The kinds that are their own kind of row. Everything else is a checkout —
+/// a branch or a legacy issue — which `toEntry` builds below. A table rather
+/// than a chain of `if`s because each new kind would otherwise be one more
+/// branch in a function that is already over the cap.
+const ENTRY_BUILDERS = {
+  capture: toCaptureEntry,
+  [TRACKER_ISSUE]: toTrackerIssueEntry,
+};
+
 /** One board.list row, as the inbox reads it. */
-// eslint-disable-next-line complexity -- ratchet: toEntry is at 15, cap 10 — reduce it, then drop this line
+// eslint-disable-next-line complexity -- ratchet: toEntry is at 14, cap 10 — reduce it, then drop this line
 function toEntry(item) {
-  if (item.kind === "capture") return toCaptureEntry(item);
+  const ownKind = ENTRY_BUILDERS[item.kind];
+  if (ownKind) return ownKind(item);
   const state = entryState(item);
   const entityId = entityIdOf(item);
   // Line one is what the thing is CALLED: a branch by its branch name, an issue
@@ -505,6 +595,10 @@ function toEntry(item) {
 /** Whether this feed row is inbox business at all: not over, and not an issue
  *  whose work is being done on a branch that has its own row. */
 function isListed(item) {
+  // A watched issue is listed because it is watched. The rules below are the
+  // legacy issue's — a state machine and a branch implementing it — and a
+  // tracker issue has neither; `status` here is a board column, not a state.
+  if (item.kind === TRACKER_ISSUE) return true;
   if (FINISHED_STATES.has(item.state)) return false;
   return !(item.kind === "issue" && item.implementation_active);
 }
@@ -519,6 +613,28 @@ export function captureEntries(items = []) {
     .filter((item) => item.kind === "capture" && isListed(item))
     .map(toCaptureEntry)
     .sort(byAnchor);
+}
+
+/**
+ * Issues the reader was handed, above the issues that merely moved (#65).
+ *
+ * Only among the ISSUE rows, and it keeps their places: the assigned ones take
+ * the positions the issue rows already occupy, in their own activity order, and
+ * every conversation row stays exactly where it was. An assignment is a reason
+ * to look at one issue before another — it is not a reason to lift an issue
+ * over a conversation that moved a minute ago.
+ */
+function pinAssignedIssues(rows) {
+  const issueAt = rows.map((row, index) => (row.kind === TRACKER_ISSUE ? index : -1)).filter((index) => index >= 0);
+  if (issueAt.length < 2) return rows;
+  const issues = issueAt.map((index) => rows[index]);
+  const ordered = [...issues.filter((row) => row.assignedToUser), ...issues.filter((row) => !row.assignedToUser)];
+  if (ordered.every((row, index) => row === issues[index])) return rows;
+  const out = [...rows];
+  issueAt.forEach((index, which) => {
+    out[index] = ordered[which];
+  });
+  return out;
 }
 
 /** Oldest anchor first. A row nobody can date sorts under the ones somebody
@@ -540,10 +656,12 @@ function byAnchor(left, right) {
  * missing data is not evidence that a row is stale.
  */
 export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
-  const rows = items
-    .filter(isListed)
-    .map(toEntry)
-    .sort(byAnchor);
+  const rows = pinAssignedIssues(
+    items
+      .filter(isListed)
+      .map(toEntry)
+      .sort(byAnchor),
+  );
   const quiet = (entry) =>
     entry.dismissed || (!entry.working && entry.lastActivityMs !== null && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS);
   const entries = rows.filter((entry) => !quiet(entry));

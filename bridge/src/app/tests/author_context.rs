@@ -13,7 +13,7 @@ use super::*;
 use crate::harness::TurnContext;
 use crate::mcp::BridgeAction;
 
-const LINE: &str = "Rail scroll is at 612k of 1M (61%).";
+const LINE: &str = "Rail scroll is at 190k of 200k (95%, compacts at 200k).";
 
 /// A project with a project agent and one workspace agent it handed work to,
 /// over a task store so issues can be filed and commented on.
@@ -24,9 +24,9 @@ fn staffed(state_root: &Path) -> (tempfile::TempDir, AppState, String, HandedOve
     (home, state, project_id, handed)
 }
 
-/// Name an agent, and give it a reading of 612k on a model whose window is
-/// known.
-fn rail_scroll_at_612k(state: &mut AppState, entity_id: &str, agent_id: &str) {
+/// Name an agent, and give it a reading of 190k on a model whose window is
+/// known, under the device's default threshold of 200k.
+fn rail_scroll_at_190k(state: &mut AppState, entity_id: &str, agent_id: &str) {
     named_rail_scroll(state, entity_id, agent_id);
     state
         .set_agent_model_choice(
@@ -43,7 +43,7 @@ fn rail_scroll_at_612k(state: &mut AppState, entity_id: &str, agent_id: &str) {
         entity_id,
         agent_id,
         TurnContext {
-            context_tokens: 612_000,
+            context_tokens: 190_000,
             cache_read_tokens: 0,
         },
     );
@@ -90,14 +90,15 @@ fn a_message_wears_its_authors_context_and_the_project_agent_is_told_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, _project_id, handed) = staffed(&state_root);
-    rail_scroll_at_612k(&mut state, &handed.entity_id, &handed.worker);
+    rail_scroll_at_190k(&mut state, &handed.entity_id, &handed.worker);
 
     worker_messages_the_project_agent(&mut state, &handed, "the router reads top to bottom");
 
     let sent = sent_by(&mut state, &handed.owner, &handed.agent_id, &handed.worker);
     let context = &sent[0]["data"]["from_agent"]["context"];
-    assert_eq!(context["tokens"], 612_000, "{:?}", sent[0]);
+    assert_eq!(context["tokens"], 190_000, "{:?}", sent[0]);
     assert_eq!(context["window"], 1_000_000, "{:?}", sent[0]);
+    assert_eq!(context["compact_at"], 200_000, "{:?}", sent[0]);
     assert!(context["at"].as_str().is_some(), "{:?}", sent[0]);
 
     let prompts = prompts_to(&mut state, &handed.agent_id);
@@ -129,7 +130,7 @@ fn only_the_project_agent_is_told_the_line() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, _project_id, handed) = staffed(&state_root);
-    rail_scroll_at_612k(&mut state, &handed.owner, &handed.agent_id);
+    rail_scroll_at_190k(&mut state, &handed.owner, &handed.agent_id);
 
     state
         .agent_action(
@@ -144,7 +145,7 @@ fn only_the_project_agent_is_told_the_line() {
 
     let prompts = prompts_to(&mut state, &handed.worker);
     assert_eq!(prompts.len(), 1, "{prompts:?}");
-    assert!(!prompts[0].contains("is at 612k"), "{}", prompts[0]);
+    assert!(!prompts[0].contains("is at 190k"), "{}", prompts[0]);
 }
 
 fn worker_comments(state: &mut AppState, handed: &HandedOver, issue_id: &str) -> String {
@@ -181,7 +182,7 @@ fn a_comment_wears_its_authors_context_and_read_comment_says_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id, handed) = staffed(&state_root);
-    rail_scroll_at_612k(&mut state, &handed.entity_id, &handed.worker);
+    rail_scroll_at_190k(&mut state, &handed.entity_id, &handed.worker);
     let issue_id = filed(&mut state, &project_id, "rail")["id"]
         .as_str()
         .unwrap()
@@ -199,9 +200,13 @@ fn a_comment_wears_its_authors_context_and_read_comment_says_it() {
     let comment_id = worker_comments(&mut state, &handed, &issue_id);
 
     let comment = timeline_comment(&mut state, &issue_id);
-    assert_eq!(comment["author_context"]["tokens"], 612_000, "{comment:?}");
+    assert_eq!(comment["author_context"]["tokens"], 190_000, "{comment:?}");
     assert_eq!(
         comment["author_context"]["window"], 1_000_000,
+        "{comment:?}"
+    );
+    assert_eq!(
+        comment["author_context"]["compact_at"], 200_000,
         "{comment:?}"
     );
 

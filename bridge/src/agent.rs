@@ -373,10 +373,11 @@ impl Agent {
     }
 
     /// The context this agent last reported, as what it writes carries it:
-    /// the tokens, when they were recorded, and the window of the model it
-    /// runs — the one running now, else the one chosen. `None` without a
+    /// the tokens, when they were recorded, the window of the model it runs —
+    /// the one running now, else the one chosen — and where its chat compacts
+    /// under `device_threshold`, absent when it never does. `None` without a
     /// recorded reading, which includes one cleared by a compaction.
-    pub fn context_reading(&self) -> Option<crate::thread::ContextReading> {
+    pub fn context_reading(&self, device_threshold: u64) -> Option<crate::thread::ContextReading> {
         let tokens = self.last_context_tokens?;
         let at = self.last_context_at.clone()?;
         let window = self
@@ -384,7 +385,14 @@ impl Agent {
             .as_deref()
             .or(self.choice.model.as_deref())
             .and_then(|model| crate::models::context_window_of(self.choice.provider, model));
-        Some(crate::thread::ContextReading { tokens, window, at })
+        let compact_at =
+            Some(self.compact_at_tokens(device_threshold)).filter(|threshold| *threshold > 0);
+        Some(crate::thread::ContextReading {
+            tokens,
+            window,
+            compact_at,
+            at,
+        })
     }
 
     /// The durable storage identity of this agent's conversation.
@@ -1331,28 +1339,48 @@ mod context_tests {
         agent.last_context_at = Some("2026-09-21T09:30:00Z".to_string());
         agent.active_model = Some("claude-opus-5[1m]".to_string());
         assert_eq!(
-            agent.context_reading(),
+            agent.context_reading(0),
             Some(crate::thread::ContextReading {
                 tokens: 612_000,
                 window: Some(1_000_000),
+                compact_at: None,
                 at: "2026-09-21T09:30:00Z".to_string(),
             })
         );
         agent.active_model = None;
         assert_eq!(
-            agent.context_reading().and_then(|reading| reading.window),
+            agent.context_reading(0).and_then(|reading| reading.window),
             None,
             "a default model is no model whose window Build knows"
         );
+    }
+
+    /// Where the chat compacts rides the reading: the chat's own limit, else
+    /// the device's, and none when neither compacts.
+    #[test]
+    fn a_reading_carries_where_the_chat_compacts() {
+        let mut agent = with_context(Some(190_000), None);
+        agent.last_context_at = Some("2026-09-21T09:30:00Z".to_string());
+        let compact_at = |agent: &Agent, device| {
+            agent
+                .context_reading(device)
+                .and_then(|reading| reading.compact_at)
+        };
+        assert_eq!(compact_at(&agent, 200_000), Some(200_000));
+        assert_eq!(compact_at(&agent, 0), None);
+        agent.max_context_tokens = Some(150_000);
+        assert_eq!(compact_at(&agent, 200_000), Some(150_000));
+        agent.max_context_tokens = Some(0);
+        assert_eq!(compact_at(&agent, 200_000), None);
     }
 
     #[test]
     fn there_is_no_reading_without_tokens_or_a_time() {
         let mut agent = with_context(None, None);
         agent.last_context_at = Some("2026-09-21T09:30:00Z".to_string());
-        assert_eq!(agent.context_reading(), None);
+        assert_eq!(agent.context_reading(200_000), None);
         let untimed = with_context(Some(612_000), None);
-        assert_eq!(untimed.context_reading(), None);
+        assert_eq!(untimed.context_reading(200_000), None);
     }
 
     #[test]

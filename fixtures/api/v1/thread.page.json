@@ -53,8 +53,9 @@
             "topic": "Staffing the rail",
             "name": "Build",
             "context": {
-              "tokens": 612000,
+              "tokens": 190000,
               "window": 1000000,
+              "compact_at": 200000,
               "at": "2026-09-13T10:04:02Z"
             }
           },

@@ -8,22 +8,34 @@
 use serde::{Deserialize, Serialize};
 
 /// One agent's context as its harness last reported it: `tokens` in context,
-/// the `window` of the model it runs when Build knows it, and `at`, the
+/// the `window` of the model it runs when Build knows it, `compact_at`, the
+/// threshold its chat compacts at when it compacts at all, and `at`, the
 /// RFC3339 time the reading was recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextReading {
     pub tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_at: Option<u64>,
     pub at: String,
 }
 
 impl ContextReading {
-    /// The one line a reader is given about its author: "Rail scroll is at
-    /// 612k of 1M (61%)." — or "Rail scroll is at 612k." when the window is
-    /// not known.
+    /// The one line a reader is given about its author, measured against
+    /// where its chat compacts — "Rail scroll is at 190k of 200k (95%,
+    /// compacts at 200k)." A chat that never compacts is measured against the
+    /// window instead — "Rail scroll is at 612k of 1M (61%)." — and one with
+    /// neither says only its size: "Rail scroll is at 612k."
     pub fn sentence(&self, author: &str) -> String {
         let tokens = rounded_tokens(self.tokens);
+        if let Some(compact_at) = self.compact_at.filter(|threshold| *threshold > 0) {
+            let threshold = rounded_tokens(compact_at);
+            let percent = percent_of(self.tokens, compact_at);
+            return format!(
+                "{author} is at {tokens} of {threshold} ({percent}%, compacts at {threshold})."
+            );
+        }
         match self.window.filter(|window| *window > 0) {
             Some(window) => format!(
                 "{author} is at {tokens} of {} ({}%).",

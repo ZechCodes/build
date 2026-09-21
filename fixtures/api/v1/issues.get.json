@@ -96,8 +96,9 @@
         "attachments": [],
         "created_at": "2026-09-19T10:11:00Z",
         "author_context": {
-          "tokens": 612000,
+          "tokens": 190000,
           "window": 1000000,
+          "compact_at": 200000,
           "at": "2026-09-19T10:10:40Z"
         }
       }

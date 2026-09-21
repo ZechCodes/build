@@ -173,7 +173,7 @@ impl OperationPayload {
     }
 
     /// One line per sending agent saying how full its context was when it
-    /// wrote — "Rail scroll is at 612k of 1M (61%)." — for the project agent,
+    /// wrote — "Rail scroll is at 190k of 200k (95%, compacts at 200k)." — for the project agent,
     /// which is choosing who takes the next issue. Empty for every other
     /// reader, for a notice Build wrote, and for a sender with no reading.
     fn sender_context_note(&self) -> String {
@@ -461,13 +461,15 @@ mod tests {
         }
     }
 
-    /// A message from an agent at 612k of a known 1M window, named Rail scroll.
+    /// A message from an agent at 190k of a chat that compacts at 200k, on a
+    /// known 1M window, named Rail scroll.
     fn from_rail_scroll(from_build: bool) -> ThreadMessage {
         let mut sender = crate::thread::AgentIdentity::new("agent-9");
         sender.name = Some("Rail scroll".to_string());
         sender.context = Some(crate::thread::ContextReading {
-            tokens: 612_000,
+            tokens: 190_000,
             window: Some(1_000_000),
+            compact_at: Some(200_000),
             at: "2026-09-21T12:00:00Z".to_string(),
         });
         ThreadMessage {
@@ -488,7 +490,7 @@ mod tests {
         };
         let prompt = told.delivery_prompt("post-1", false, AgentProvider::Claude);
         assert!(
-            prompt.contains("\nRail scroll is at 612k of 1M (61%).\n"),
+            prompt.contains("\nRail scroll is at 190k of 200k (95%, compacts at 200k).\n"),
             "{prompt}"
         );
 

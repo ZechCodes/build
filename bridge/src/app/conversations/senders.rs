@@ -46,7 +46,7 @@ impl AppState {
         self.entity_agents(entity_id).ok().and_then(|agents| {
             agents
                 .by_id(agent_id)
-                .and_then(crate::agent::Agent::context_reading)
+                .and_then(|agent| agent.context_reading(self.compact_above_tokens))
         })
     }
 

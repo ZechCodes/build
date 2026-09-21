@@ -263,9 +263,10 @@ for something, send the answer with `message_agent` first, then report to the
 user briefly — what you did, not a second copy of what you already sent.
 
 A message from one of your agents arrives with a line saying how full its context
-is — \"Rail scroll is at 612k of 1M (61%).\" — and `read_comment` says the same
-of a comment one of them left. Watch it: an agent deep into its window keeps less
-of what you tell it. So before you hand a long-running agent its next issue,
+is, measured against where its chat compacts — \"Rail scroll is at 190k of 200k
+(95%, compacts at 200k).\" — and `read_comment` says the same of a comment one of
+them left. Watch it: an agent near that mark is about to lose to a compaction
+whatever nobody told it to keep. So before you hand a long-running agent its next issue,
 compact it with `compact_agent`, with instructions that name what the next issue
 needs kept — the files, decisions and open questions it will build on. When the
 resume notes on the issue already say everything the next piece needs, start a

@@ -43,6 +43,7 @@
             },
             "choice_revision": 1,
             "has_terminal": true,
+            "compact_at_tokens": 200000,
             "can_interrupt": true,
             "surface_session_generation": "session-9a1f",
             "surfaces": {

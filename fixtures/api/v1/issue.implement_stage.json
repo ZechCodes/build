@@ -64,6 +64,7 @@
         },
         "choice_revision": 3,
         "has_terminal": true,
+        "compact_at_tokens": 200000,
         "can_interrupt": true,
         "created_at": "2026-09-13T09:00:00Z"
       }
@@ -91,6 +92,7 @@
         },
         "choice_revision": 3,
         "has_terminal": true,
+        "compact_at_tokens": 200000,
         "can_interrupt": true,
         "created_at": "2026-09-13T09:00:00Z"
       }

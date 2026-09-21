@@ -300,3 +300,86 @@ async fn one_compaction_per_reading_and_the_turn_follows_it() {
         "the stale reading is never written back"
     );
 }
+
+impl CompactingAgent {
+    fn handle(&self, method: &str, params: Value) -> Value {
+        self.state.lock().unwrap().handle(req(method, params))
+    }
+
+    /// The agent as `agent.list` shows it — the same list the project agent
+    /// reads through `list_workspace_agents`.
+    fn listed(&self) -> Value {
+        let listed = self.handle("agent.list", json!({ "entity_id": RUN }));
+        assert_eq!(listed["ok"], true, "{listed:?}");
+        listed["result"]["agents"][0].clone()
+    }
+
+    fn set_limit(&self, max_context_tokens: Value) -> Value {
+        self.handle(
+            "conversation.settings",
+            json!({
+                "entity_id": RUN,
+                "agent_id": self.agent_id,
+                "max_context_tokens": max_context_tokens,
+            }),
+        )
+    }
+}
+
+#[test]
+fn the_digest_carries_the_context_and_the_threshold_in_effect() {
+    let agent = CompactingAgent::new();
+    let unmeasured = agent.listed();
+    assert_eq!(unmeasured["last_context_tokens"], Value::Null);
+    assert_eq!(unmeasured["session_cache_read_tokens"], Value::Null);
+    assert_eq!(unmeasured["max_context_tokens"], Value::Null);
+    assert_eq!(unmeasured["compact_at_tokens"], 200_000);
+
+    let agent = agent.with_context(123_456);
+    let measured = agent.listed();
+    assert_eq!(measured["last_context_tokens"], 123_456);
+    assert_eq!(measured["session_cache_read_tokens"], 7);
+}
+
+#[test]
+fn conversation_settings_sets_and_clears_the_conversations_own_limit() {
+    let agent = CompactingAgent::new();
+
+    let set = agent.set_limit(json!(50_000));
+    assert_eq!(set["ok"], true, "{set:?}");
+    assert_eq!(set["result"]["agent_id"], json!(agent.agent_id));
+    assert_eq!(set["result"]["max_context_tokens"], 50_000);
+    assert_eq!(set["result"]["compact_at_tokens"], 50_000);
+    assert_eq!(agent.agent().max_context_tokens, Some(50_000));
+    assert_eq!(agent.listed()["compact_at_tokens"], 50_000);
+
+    let never = agent.set_limit(json!(0));
+    assert_eq!(never["result"]["compact_at_tokens"], 0, "{never:?}");
+
+    let cleared = agent.set_limit(Value::Null);
+    assert_eq!(cleared["ok"], true, "{cleared:?}");
+    assert_eq!(cleared["result"]["max_context_tokens"], Value::Null);
+    assert_eq!(cleared["result"]["compact_at_tokens"], 200_000);
+    assert_eq!(agent.agent().max_context_tokens, None);
+}
+
+#[test]
+fn conversation_settings_refuses_what_it_cannot_honour() {
+    let agent = CompactingAgent::new();
+
+    let unnamed = agent.handle(
+        "conversation.settings",
+        json!({ "entity_id": RUN, "agent_id": agent.agent_id }),
+    );
+    assert_eq!(unnamed["error_code"], "invalid_params", "{unnamed:?}");
+
+    let negative = agent.set_limit(json!(-1));
+    assert_eq!(negative["error_code"], "invalid_params", "{negative:?}");
+
+    let nobody = agent.handle(
+        "conversation.settings",
+        json!({ "entity_id": RUN, "agent_id": "agent-nobody", "max_context_tokens": 1 }),
+    );
+    assert_eq!(nobody["ok"], false, "{nobody:?}");
+    assert_eq!(agent.agent().max_context_tokens, None);
+}

@@ -21,6 +21,10 @@
         "working_time": { "since": "2026-09-13T10:02:11Z", "seconds": 74 },
         "choice_revision": 4,
         "has_terminal": true,
+        "last_context_tokens": 148210,
+        "session_cache_read_tokens": 912004,
+        "max_context_tokens": 150000,
+        "compact_at_tokens": 150000,
         "can_interrupt": true,
         "created_at": "2026-09-13T09:40:00Z",
         "title": "Fix the flaky login test"

@@ -552,6 +552,31 @@ impl AppState {
         Ok(serde_json::json!({ "agent_id": agent_id, "watched": watching }))
     }
 
+    /// `conversation.settings` — the context size this conversation compacts
+    /// at: `None` follows the device's `compact_above_tokens`, `Some(0)` never
+    /// compacts. Answers the limit as stored and the threshold in effect.
+    pub(crate) fn set_conversation_context_limit(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        max_context_tokens: Option<u64>,
+    ) -> Result<serde_json::Value, String> {
+        let device_threshold = self.compact_above_tokens;
+        let mut compact_at_tokens = None;
+        self.edit_agent_record("set_conversation_context_limit", owner, agent_id, |agent| {
+            agent.max_context_tokens = max_context_tokens;
+            compact_at_tokens = Some(agent.compact_at_tokens(device_threshold));
+        });
+        let Some(compact_at_tokens) = compact_at_tokens else {
+            return Err(format!("agent {agent_id} is not on {owner}"));
+        };
+        Ok(serde_json::json!({
+            "agent_id": agent_id,
+            "max_context_tokens": max_context_tokens,
+            "compact_at_tokens": compact_at_tokens,
+        }))
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn record_agent_active_model(
         &mut self,

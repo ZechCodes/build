@@ -1490,6 +1490,14 @@ impl AppState {
             // field — or is looking at an agent that has no name yet — falls
             // back to the ordinal, which has not moved.
             "name": agent.name,
+            // What the last turn left in context and what the session's cache
+            // reads have come to, as the harness reported them; null until it
+            // has. The threshold is the conversation's own when it set one,
+            // and `compact_at_tokens` is the one in effect (0: never).
+            "last_context_tokens": agent.last_context_tokens,
+            "session_cache_read_tokens": agent.session_cache_read_tokens,
+            "max_context_tokens": agent.max_context_tokens,
+            "compact_at_tokens": agent.compact_at_tokens(self.compact_above_tokens),
             // What to CALL this conversation in a list: the agent's own topic,
             // or — until it sets one — the first line the human opened with.
             // Null for a conversation with neither, which is one nothing has

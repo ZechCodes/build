@@ -20,6 +20,7 @@
         "working": false,
         "choice_revision": 4,
         "has_terminal": true,
+        "compact_at_tokens": 200000,
         "can_interrupt": false,
         "created_at": "2026-09-13T09:40:00Z"
       }

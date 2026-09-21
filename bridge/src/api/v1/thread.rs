@@ -84,6 +84,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             AgentRemoveParams,
             ConversationWatch
         ),
+        v1_method!(
+            "conversation.settings",
+            conversation_settings,
+            ConversationSettingsParams,
+            ConversationSettings
+        ),
         v1_method!("agent.list", agent_list, AgentListParams, AgentRoster),
     ]
 }
@@ -321,6 +327,20 @@ pub struct AgentRemoveParams {
     pub agent_id: String,
 }
 
+/// `conversation.settings`. `max_context_tokens` must be named: a number of
+/// tokens (0 never compacts), or `null` to follow the device again.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationSettingsParams {
+    pub entity_id: String,
+    pub agent_id: String,
+    #[serde(
+        default,
+        deserialize_with = "super::board::named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_context_tokens: super::board::Named<u64>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentListParams {
     pub entity_id: String,
@@ -532,6 +552,20 @@ pub struct AgentDigest {
     /// that long.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Tokens in context on the agent's last reported turn. Absent until a
+    /// harness reports one, and again once a compaction has been asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_context_tokens: Option<u64>,
+    /// Cache-read tokens the agent's current session has spent in all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_cache_read_tokens: Option<u64>,
+    /// The conversation's own compaction threshold; absent follows the
+    /// device's, 0 never compacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+    /// The threshold in effect: the conversation's, else the device's. 0 is
+    /// never.
+    pub compact_at_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surfaces: Option<AgentSurfaces>,
 }
@@ -541,6 +575,17 @@ pub struct AgentDigest {
 pub struct ConversationWatch {
     pub agent_id: String,
     pub watched: bool,
+}
+
+/// `conversation.settings`: the context size one conversation compacts at.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationSettings {
+    pub agent_id: String,
+    /// The conversation's own threshold as stored; absent follows the device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_context_tokens: Option<u64>,
+    /// The threshold in effect. 0 is never.
+    pub compact_at_tokens: u64,
 }
 
 /// `agent.add`. `created` is false when a `creation_id` matched an agent this
@@ -714,6 +759,23 @@ fn conversation_unwatch(
     answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, false)).map_err(refine)
 }
 
+fn conversation_settings(
+    app: &mut AppState,
+    params: ConversationSettingsParams,
+) -> Result<Answer<ConversationSettings>, ApiError> {
+    let Some(max_context_tokens) = params.max_context_tokens else {
+        return Err(ApiError::invalid_params(
+            "missing required param: max_context_tokens (a number of tokens, or null for the device's)",
+        ));
+    };
+    answer(app.set_conversation_context_limit(
+        &params.entity_id,
+        &params.agent_id,
+        max_context_tokens,
+    ))
+    .map_err(refine)
+}
+
 fn agent_remove(
     app: &mut AppState,
     params: AgentRemoveParams,
@@ -791,6 +853,11 @@ mod tests {
     #[test]
     fn the_agent_list_fixture_round_trips() {
         round_trips("agent.list");
+    }
+
+    #[test]
+    fn the_conversation_settings_fixture_round_trips() {
+        round_trips("conversation.settings");
     }
 
     /// `fixtures/chat_operation_contract.json` folded in here, under

@@ -462,7 +462,7 @@ pub type Named<T> = Option<Option<T>>;
 /// The read [`Named`] needs: a `deserialize_with` field is required unless it
 /// carries a default, so the default is what says "not mentioned" and this is
 /// only ever called on a field that WAS mentioned.
-fn named<'de, D, T>(deserializer: D) -> Result<Named<T>, D::Error>
+pub(super) fn named<'de, D, T>(deserializer: D) -> Result<Named<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

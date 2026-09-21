@@ -107,6 +107,10 @@ impl Harness for ClaudeHarness {
         )
     }
 
+    fn compacts_on_command(&self) -> bool {
+        true
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

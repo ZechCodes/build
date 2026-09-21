@@ -96,6 +96,10 @@ impl Harness for CodexAppServerHarness {
         CodexHarness.starts_compaction(prompt)
     }
 
+    fn compacts_on_command(&self) -> bool {
+        CodexHarness.compacts_on_command()
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

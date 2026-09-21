@@ -14,8 +14,13 @@ use crate::timing::FrameTimer;
 use std::sync::{Arc, Mutex};
 
 /// What a compaction is asked for with. Every harness that compacts on a
-/// command spells it this way, and says so through `starts_compaction`.
+/// command spells it this way, and says so through `compacts_on_command`.
 pub(in crate::app) const COMPACT_COMMAND: &str = "/compact";
+
+/// Whether `prompt` is itself a compaction, focus instructions and all.
+fn is_compaction(prompt: &str) -> bool {
+    prompt.split_whitespace().next() == Some(COMPACT_COMMAND)
+}
 
 impl AppState {
     /// Whether `turn`, about to be said as `prompt` to a session that was
@@ -37,8 +42,8 @@ impl AppState {
         let harness = harness_for(turn.model_choice.provider);
         spawned == Spawned::Warm
             && !turn.interrupt
-            && harness.starts_compaction(COMPACT_COMMAND)
-            && !harness.starts_compaction(prompt)
+            && harness.compacts_on_command()
+            && !is_compaction(prompt)
             && self
                 .entity_agents(&turn.owner)
                 .ok()

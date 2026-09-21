@@ -171,6 +171,13 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// Whether a session compacts its context when told `/compact` between
+    /// turns. Distinct from [`Harness::starts_compaction`]: Claude compacts on
+    /// the command but reports the start through its own hook.
+    fn compacts_on_command(&self) -> bool {
+        false
+    }
+
     /// The command that opens an interactive session for `options`.
     ///
     /// The prompt is never part of this: every turn travels through the session

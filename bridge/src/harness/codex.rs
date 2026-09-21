@@ -119,6 +119,10 @@ impl Harness for CodexHarness {
             .is_some_and(|line| line.trim() == "/compact")
     }
 
+    fn compacts_on_command(&self) -> bool {
+        true
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,

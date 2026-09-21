@@ -220,6 +220,27 @@ fn only_a_warm_session_is_compacted() {
     );
 }
 
+/// Claude reports its compaction's start through a hook rather than through
+/// `starts_compaction`, and still compacts on `/compact`.
+#[test]
+fn a_claude_session_past_its_threshold_is_compacted() {
+    let agent = CompactingAgent::new().with_context(900_000);
+    for provider in [AgentProvider::ClaudeAdk, AgentProvider::Claude] {
+        let mut turn = agent.turn(false);
+        turn.model_choice.provider = provider;
+        let app = agent.state.lock().unwrap();
+
+        assert!(
+            app.compaction_due_before(&turn, Spawned::Warm, "warm"),
+            "{provider:?} compacts on /compact"
+        );
+        assert!(
+            !app.compaction_due_before(&turn, Spawned::Warm, "/compact focus on the API"),
+            "{provider:?}: a turn that is itself a compaction is not preceded by another"
+        );
+    }
+}
+
 #[test]
 fn a_harness_that_cannot_compact_is_never_asked_to() {
     let agent = CompactingAgent::new().with_context(900_000);

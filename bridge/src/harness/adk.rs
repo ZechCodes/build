@@ -72,6 +72,10 @@ impl Harness for AdkHarness {
         ClaudeHarness.requires_unadorned_command(prompt)
     }
 
+    fn compacts_on_command(&self) -> bool {
+        ClaudeHarness.compacts_on_command()
+    }
+
     /// The interactive argv with the TUI swapped for the protocol, and nothing
     /// else moved.
     ///

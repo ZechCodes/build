@@ -8,7 +8,7 @@
 // about the stack.
 //
 // Exit 0 the hold won the race, 1 it did not, 3 this machine cannot host the
-// experiment at all — see the next section, which is what it does here today.
+// experiment at all (the control could not hand the race to the relay pair).
 //
 // # Why the measurement in #31 could not settle anything
 //
@@ -24,37 +24,23 @@
 // direct ones arriving LATE, which is the condition Zech's Wi-Fi produces and
 // this machine does not.
 //
-// # What this machine turned out not to be able to do
+// # Why it once exited 3 here (#55)
 //
-// The control below fails here, and that is the harness reporting a fact about
-// the environment rather than about the product. Exit 3 says so distinctly from
-// exit 1, because the two mean opposite things.
-//
-// The bridge and the browser sit on one docker bridge network with direct
-// reachability, and two things follow that no amount of candidate-ordering can
-// undo. The bridge offers exactly ONE remote candidate kind — host; it does not
-// gather a relay candidate against a coturn on the host, so the browser has no
-// early remote relay candidate to pair with, and both the direct and the relayed
-// pair become available on the same remote candidate at the same instant. And ICE
-// forms a valid direct pair from PEER-REFLEXIVE candidates learned from the
-// connectivity checks themselves — the bridge's own log says `carrying over
-// host/prflx candidates` — so a pair can succeed with no signalled candidate
-// involved at all.
-//
-// Candidate signalling order is therefore not what decides the race here, which
-// is precisely what Zech's network does decide it on: there a host pair waits for
-// mDNS resolution and consent while a TURN allocation is ready at once.
-//
-// Making this machine lose the race needs the direct PATH to be slow rather than
-// the direct CANDIDATE to be late: `tc netem` on the docker bridge interface, or a
-// second bridge container behind a NAT'd namespace — both root, and both more
-// than a harness. Worth doing if the ratio ever needs to be measured rather than
-// reasoned about; until then the unit tests carry the ordering rules and
-// `relayed-path.mjs` carries "TURN still works".
+// coturn used to run with `--net=host` and be handed out at the compose gateway.
+// The browser reached it — it runs on the host — but this host's firewall drops
+// inbound traffic from containers by default, so every Allocate the bridge sent
+// was dropped and the bridge gathered only host candidates. With one remote
+// candidate kind, a direct and a relayed pair became available at the same
+// instant and no skew could bias the race. coturn now sits on the compose
+// network, the bridge logs `gathered host=1 relay=1`, and the control hands the
+// race to the relay pair as designed. An exit 3 again most likely means the
+// bridge's own relay candidate is missing: read its `rtc: … gathered` line and
+// any `rtc: WARN|ERROR` line from webrtc's TURN client in bridge.err.log.
 //
 // # The experiment, and its control
 //
-// A coturn on the host so both ends really gather relay candidates, and an init
+// A coturn on the compose network so both ends really gather relay candidates
+// (the bridge's own `rtc:` line reads `gathered … relay=N`), and an init
 // script that delays every non-relay candidate on its way into
 // `addIceCandidate` — the browser's own check list is where nomination is
 // decided, so that is where the skew has to go.
@@ -132,19 +118,26 @@ const record = (name, ok, detail = "") => {
 
 // ── coturn, so both ends really gather relay candidates ─────────────────────
 const TURN = { container: "build-relay-wins-turn", port: 3478, user: "build", password: "relay-wins", realm: "build.test" };
-/** The address BOTH ends can reach coturn at: the compose network's gateway is
- *  the host as a container sees it, and the host answers there too. Not
- *  127.0.0.1, which inside the bridge's container is the bridge. */
+/** The address BOTH ends can reach coturn at: its own address on the compose
+ *  network. The bridge sits on that network, and the host routes to it over the
+ *  docker bridge interface, so neither end's packets cross the host's INPUT
+ *  firewall. The compose gateway looks like the same thing and is not: on a
+ *  host whose firewall drops inbound traffic by default (ufw here), the browser
+ *  reaches the gateway because it IS the host, and every Allocate the bridge
+ *  sends there is dropped — the bridge then gathers no relay candidate and the
+ *  race below has only one kind of remote candidate in it (#55). */
+const COMPOSE_NETWORK = process.env.COMPOSE_NETWORK || "deploy_default";
+let turnAddress = null;
 const turnHost = () => {
   if (process.env.TURN_HOST) return process.env.TURN_HOST;
-  try {
-    const [inspected] = JSON.parse(docker(`docker network inspect ${process.env.COMPOSE_NETWORK || "deploy_default"}`));
-    const gateway = (inspected?.IPAM?.Config || []).map((entry) => entry.Gateway).find(Boolean);
-    if (gateway) return gateway;
-  } catch {
-    /* fall through to docker's default bridge */
+  if (!turnAddress) {
+    // Parsed from the JSON rather than asked for with a template: `docker()`
+    // wraps the whole command in single quotes, which a template cannot survive.
+    const [inspected] = JSON.parse(docker(`docker inspect ${TURN.container}`));
+    turnAddress = inspected?.NetworkSettings?.Networks?.[COMPOSE_NETWORK]?.IPAddress ?? "";
   }
-  return "172.17.0.1";
+  if (!/^[0-9.]+$/.test(turnAddress)) throw new Error(`coturn has no address on ${COMPOSE_NETWORK}: ${turnAddress}`);
+  return turnAddress;
 };
 const iceServers = () => [
   { urls: [`turn:${turnHost()}:${TURN.port}?transport=udp`], username: TURN.user, credential: TURN.password },
@@ -162,11 +155,12 @@ for (const signal of ["exit", "SIGINT", "SIGTERM"]) process.on(signal, stopTurn)
 
 const startTurn = () => {
   docker(`docker rm -f ${TURN.container}`, { quiet: true });
-  // `--net=host` so the candidates it hands out carry the host's own address: a
-  // bridged container would advertise one the browser cannot reach and every
-  // pair would fail rather than relay.
+  // On the compose network, so the relay addresses it hands out are its own
+  // address there — reachable from the bridge beside it and from the host's
+  // browser alike (see turnHost).
+  turnAddress = null;
   docker(
-    `docker run -d --name ${TURN.container} --net=host coturn/coturn:latest ` +
+    `docker run -d --name ${TURN.container} --network ${COMPOSE_NETWORK} coturn/coturn:latest ` +
       `-n --listening-port=${TURN.port} --fingerprint --lt-cred-mech ` +
       `--user=${TURN.user}:${TURN.password} --realm=${TURN.realm} --no-tls --no-cli --log-file=stdout`,
   );
@@ -259,12 +253,17 @@ async function openBrowser(delayMs) {
 const route = `${APP}/app/#/project/${seed.projectId}/workspace/${workspace.workspaceId}`;
 const carryingNow = (page) =>
   page.evaluate(() => {
-    const history = globalThis.buildConnectionDiagnostics?.() || [];
+    // The report is `{ since, dropped, events }` since #60; a bare array before.
+    const report = globalThis.buildConnectionDiagnostics?.();
+    const history = (Array.isArray(report) ? report : report?.events) || [];
     return history.filter((entry) => entry.event === "carrying").map((entry) => entry.path).pop() ?? null;
   });
 const directPairStates = (page) =>
-  page.evaluate(() =>
-    (globalThis.buildConnectionDiagnostics?.() || []).filter((e) => e.event === "direct-pair").map((e) => e.state));
+  page.evaluate(() => {
+    const report = globalThis.buildConnectionDiagnostics?.();
+    const history = (Array.isArray(report) ? report : report?.events) || [];
+    return history.filter((e) => e.event === "direct-pair").map((e) => e.state);
+  });
 
 /** What one session landed on, under a given skew. */
 async function landings(delayMs, runs, label) {
@@ -302,11 +301,9 @@ if (relayWon === 0) {
   // run can tell "this machine cannot host the experiment" from "the hold is
   // broken".
   console.log(`\nINCONCLUSIVE  the skew did not hand the race to the relay pair: ${JSON.stringify(tally(control))}`);
-  console.log("  This machine reaches the bridge directly and the bridge offers only host candidates,");
-  console.log("  so a direct pair is available as soon as any remote candidate is — and ICE will also");
-  console.log("  form one from peer-reflexive candidates the checks discover by themselves. Delaying");
-  console.log("  signalled candidates cannot bias that. See the header: making the direct PATH slow");
-  console.log("  (tc netem, or a NAT'd second bridge) is what this needs, and both want root.");
+  console.log("  Most likely the bridge gathered no relay candidate of its own: check its");
+  console.log("  `rtc: … gathered host=… relay=…` line and any `rtc: WARN`/`ERROR` line from the");
+  console.log("  TURN client in the bridge's stderr. See the header (#55).");
   stopTurn();
   process.exit(3);
 }

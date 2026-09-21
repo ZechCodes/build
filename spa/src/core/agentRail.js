@@ -126,6 +126,7 @@ import { runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
+import { referenceLinks } from "./referenceTargets.js";
 import { ISSUES_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
@@ -2016,6 +2017,31 @@ function mountRailOnContext(host, context, swap) {
     return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
+  /** What a reference written in a message points at (#56, wired in #63): the
+   *  project's issues as this rail has already read them, its workspaces, and
+   *  the agents standing in them. Nothing is fetched for this — a reference to
+   *  something this client has not read stays the words the agent typed. */
+  const conversationRefLinks = () => {
+    const place = conversationPlace();
+    if (!place.projectId || !place.deviceId) return null;
+    const key = deviceKey(place.deviceId, place.projectId);
+    return referenceLinks({
+      place,
+      issues: issuesBlock?.issues() || [],
+      workspaces: (feedView?.workspaces || []).filter((workspace) => workspace.projectKey === key),
+      agentGroups: workspaceAgents(feedView, key),
+    });
+  };
+
+  /** What the resolver can answer for, as the paint sees it: how many issues
+   *  have been read and how far they reach. In the fingerprint because a list
+   *  landing after the paint turns prose into links, and nothing else on the
+   *  row would have moved. */
+  const refLinksSignature = () => {
+    const issues = issuesBlock?.issues() || [];
+    return `${issues.length}:${issues.reduce((highest, issue) => Math.max(highest, issue.number || 0), 0)}`;
+  };
+
   /** The names as the paint sees them. In the fingerprint because a feed that
    *  renames an agent has to repaint a line already on screen, and out of it
    *  nothing else would notice. */
@@ -2039,6 +2065,7 @@ function mountRailOnContext(host, context, swap) {
       unreadFrom,
       detailLevel: detailLevel(),
       agentLabels: agentLabelsSignature(),
+      refLinks: refLinksSignature(),
       ...threadOfferState(threadState),
     });
   };
@@ -2072,6 +2099,7 @@ function mountRailOnContext(host, context, swap) {
       unreadFrom,
       place: conversationPlace(),
       agentLabels: conversationAgentLabels(),
+      refLinks: conversationRefLinks(),
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,

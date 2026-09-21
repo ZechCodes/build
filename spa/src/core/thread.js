@@ -854,7 +854,7 @@ function messageCardHtml(message, agentLabel, context) {
       ${anchorLabel(message.anchor)}
       ${messageContextHtml(message)}
       ${handedIssueHtml(message, context)}
-      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body)}</div>` : ""}
+      ${body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body, { links: context.refLinks })}</div>` : ""}
       ${attachmentsHtml(message.attachments, threadState)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, live, offer, threadState)}
@@ -942,7 +942,7 @@ const sentPressHtml = (key, bodyId, open, preview) =>
 ///
 /// Open, the second line is the press that shuts it again rather than the first
 /// line a second time: the body underneath already starts with those words.
-function sentMessageHtml(message, { place, threadState }) {
+function sentMessageHtml(message, { place, threadState, refLinks }) {
   const key = messageKey(message);
   const bodyId = `thread-sent-${esc(key)}`;
   const open = threadState.sentIsOpen(key);
@@ -954,7 +954,7 @@ function sentMessageHtml(message, { place, threadState }) {
       ${timeHtml(message.created_at)}
     </div>
     ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
-    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body)}</div>
+    <div class="thread-body markdown" id="${bodyId}"${open ? "" : " hidden"}>${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(body, { links: refLinks })}</div>
   </article>`;
 }
 
@@ -995,7 +995,7 @@ function noticeMessageHtml(message, context) {
   }
   return row(`<details class="thread-notice-more">
       <summary class="thread-issue-notice"><span class="thread-issue-said">${esc(summary)}</span></summary>
-      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "")}</div>
+      <div class="thread-notice-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body || "", { links: context.refLinks })}</div>
     </details>`);
 }
 
@@ -1489,7 +1489,7 @@ function activityRow(item, index, agentLabel, folding) {
 ///
 /// `spoken` is whether this is the last thing said, which is the whole of
 /// whether its offer can still be answered.
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, refLinks }) {
   const message = item.data || {};
   // Old bridges persisted the noisy structured handoff as a chat message.
   if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
@@ -1498,7 +1498,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
   if (message.answers_options_of) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place, agentLabels };
+  const context = { live, offer, threadState, place, agentLabels, refLinks };
   return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, context) }];
 }
 
@@ -1509,7 +1509,7 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
 /// message are drawn on other rows instead. Used for the conversation itself
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
-function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place, agentLabels }) {
+function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place, agentLabels, refLinks }) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const folding = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
@@ -1519,7 +1519,7 @@ function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place,
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
   return topLevelItems.flatMap((item, index) =>
     item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, refLinks })
       : [activityRow(item, index, agentLabel, folding)],
   );
 }
@@ -1556,12 +1556,17 @@ export function timelineEntries(
     // What this project's agents are called. Only one row reads them — a
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
+    // What a written reference points at (core/referenceTargets.js): the
+    // resolver #56 left injectable, so `#42` and `@workspace:build` in a
+    // message open the thing they name. None, and they stay prose (#63).
+    refLinks = null,
     hiddenByLevel = 0,
   } = {},
 ) {
   const view = {
     agentLabel,
     agentLabels,
+    refLinks,
     threadId,
     threadState,
     place,
@@ -1732,6 +1737,7 @@ export function chatPaintFingerprint({
   unreadFrom,
   detailLevel,
   agentLabels,
+  refLinks,
 }) {
   return [
     deliveredSequence,
@@ -1748,6 +1754,9 @@ export function chatPaintFingerprint({
     // A tracking notice names an agent, and that name comes off the feed: a
     // rename has to repaint a line that is already on screen.
     agentLabels || "",
+    // What the reference resolver can answer for (#63). The list lands after
+    // the first paint, and when it does, prose becomes links.
+    refLinks || "",
   ].join("|");
 }
 

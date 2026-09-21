@@ -33,10 +33,10 @@ export const issueHeadHtml = (issue, columns) => `<header class="issue-page-head
 
 /** The body, as markdown. An issue with an empty body says so rather than
  *  leaving a gap a reader has to interpret. */
-export const issueBodyHtml = (issue) =>
+export const issueBodyHtml = (issue, refLinks = null) =>
   issue.body
     // renderMarkdown escapes all input before adding its fixed safe tag set.
-    ? `<div class="issue-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(issue.body)}</div>`
+    ? `<div class="issue-page-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(issue.body, { links: refLinks })}</div>`
     : `<p class="issue-page-body empty">No description.</p>`;
 
 /**
@@ -86,7 +86,7 @@ const commentHtml = (row, context) => `<li class="issue-entry issue-comment" id=
     ${issueAvatarHtml(row.actor, context)}
     <div class="issue-comment-card">
       <div class="issue-entry-head"><strong>${esc(actorName(row.actor, context))}</strong>${whenHtml(row)}</div>
-      <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body)}</div>
+      <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body, { links: context.refLinks })}</div>
     </div>
   </li>`;
 
@@ -179,7 +179,7 @@ export function issuePageHtml(issue, context) {
   return `<div class="issue-page">
     <div class="issue-page-main">
       ${issueHeadHtml(issue, context.columns)}
-      ${issueBodyHtml(issue)}
+      ${issueBodyHtml(issue, context.refLinks)}
       ${issueAttachmentsHtml(issue.attachments)}
       ${timelineHtml(context.rows, context)}
       ${composerHtml(context.draft, context.sending)}

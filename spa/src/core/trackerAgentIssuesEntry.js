@@ -53,6 +53,12 @@ export function mountAgentIssues({ deviceId, projectId, onChanged } = {}) {
   void reread();
 
   return {
+    /** The project's issues as this rail has read them. What a `#42` written
+     *  in a message is resolved against (core/referenceTargets.js): the list
+     *  is already here, and reading it twice would be two answers to one
+     *  question (#63). */
+    issues: () => state.issues,
+
     /** This agent's issues as surface entries, or none at all — which is what
      *  keeps the pill away from an agent holding and tracking nothing. */
     entriesFor(agentId) {

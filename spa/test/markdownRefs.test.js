@@ -40,6 +40,23 @@ describe("what a reference is", () => {
     expect(found("[[ws:src/a.js#L10-L20]]").map((r) => r.line)).toEqual([10]);
   });
 
+  // Both of these were wrong when the first caller wired a resolver to this
+  // (#63), and neither could be seen from here: with nothing resolving, every
+  // reference rendered as its own words either way.
+  it("ends a name before the sentence's full stop, not after it", () => {
+    expect(found("cut on @workspace:issues-spa.").map((r) => r.name)).toEqual(["issues-spa"]);
+    expect(found("ask @agent:agent-01M2ZQ.").map((r) => r.id)).toEqual(["agent-01M2ZQ"]);
+    // A dot INSIDE a name is part of it — a workspace may be called one.
+    expect(found("@workspace:build.web is cut").map((r) => r.name)).toEqual(["build.web"]);
+  });
+
+  // The positions are what a caller splices at, so a start that is off by the
+  // length of the workspace name cuts the anchor out of the middle of the line.
+  it("starts a bracketed reference at its brackets", () => {
+    const [reference] = referencesIn("see [[issues-spa:src/a.js]] for it");
+    expect([reference.start, reference.raw]).toEqual([4, "[[issues-spa:src/a.js]]"]);
+  });
+
   it("finds several in one line, in the order they were written", () => {
     expect(found("#1 then @workspace:w then [[w:a.js]]").map((r) => r.kind))
       .toEqual(["issue", "workspace", "file"]);

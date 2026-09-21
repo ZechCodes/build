@@ -45,7 +45,13 @@ const ISSUE = /(^|[^\w#&])#(\d+)\b/g;
 /// `@`) and of npm scopes (a slash, no colon). The value runs to whitespace or
 /// a character that ends a sentence, so `@workspace:build.` links the
 /// workspace and leaves the full stop.
-const NAMED = /(^|[^\w@/])@(workspace|agent):([A-Za-z0-9._-]+)/g;
+/// A name may hold a dot but may not END on one: `@workspace:build.` is a
+/// workspace and a full stop, which is what this file's own comment above
+/// promised and what the character class quietly did not do — it was greedy to
+/// the end of the word, so the reference named "build." and nothing answered
+/// for it (#63).
+const NAME = "[A-Za-z0-9_-]+(?:[.][A-Za-z0-9_-]+)*";
+const NAMED = new RegExp(`(^|[^\\w@/])@(workspace|agent):(${NAME})`, "g");
 
 /// Something inside a workspace: `[[<workspace>:<path>]]`, with an optional
 /// `#L10` or `#L10-L20`.
@@ -81,14 +87,19 @@ function bracketed(workspace, rest) {
   return place ? { kind: "file", workspace, ...place } : null;
 }
 
-/** Every match of one form, as `{ index, length, fields }`. `lead` is how many
- *  characters of the match belong to the boundary in front rather than to the
- *  reference itself. */
-function matchesOf(text, pattern, read) {
+/** Every match of one form, as `{ start, end, fields }`.
+ *
+ *  `boundary` says whether the form's first group is the character in front of
+ *  the reference rather than part of it — how many characters to skip before
+ *  the reference itself starts. Asked for, never guessed: it was read off
+ *  "group 1 exists", and `[[ws:path]]` has a group 1 that is the WORKSPACE, so
+ *  every bracketed reference started ten characters late and the anchor ate
+ *  the wrong slice of the line (#63). */
+function matchesOf(text, pattern, read, { boundary = true } = {}) {
   const found = [];
   pattern.lastIndex = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    const lead = match[1] === undefined ? 0 : match[1].length;
+    const lead = boundary && match[1] !== undefined ? match[1].length : 0;
     const fields = read(match);
     if (fields) found.push({ start: match.index + lead, end: match.index + match[0].length, ...fields });
   }
@@ -109,7 +120,7 @@ export function referencesIn(text) {
     ...matchesOf(source, ISSUE, (match) => ({ kind: "issue", number: Number(match[2]) })),
     ...matchesOf(source, NAMED, (match) =>
       match[2] === "workspace" ? { kind: "workspace", name: match[3] } : { kind: "agent", id: match[3] }),
-    ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim())),
+    ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim()), { boundary: false }),
   ].sort((one, other) => one.start - other.start);
   return found.map((reference) => ({ ...reference, raw: source.slice(reference.start, reference.end) }));
 }

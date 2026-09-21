@@ -15,7 +15,8 @@ import { messageOf } from "./text.js";
 import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
-import { issueRecord, issueRecordAt, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
+import { issueRecord, issueRecordAt, issuesAddress, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
+import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
@@ -23,6 +24,7 @@ import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
+import { referenceLinks } from "./referenceTargets.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 
@@ -41,6 +43,7 @@ export function mountIssuePage(host, options) {
     busy: false,
     sending: false,
     loaded: false,
+    issues: [],
     disposed: false,
     picker: null,
   };
@@ -92,6 +95,12 @@ export function mountIssuePage(host, options) {
       agentLabels: agentLabels(groups()),
       agentProviders: agentProviders(groups()),
       projectName: projectName(state.feed(), state.projectKey),
+      refLinks: referenceLinks({
+        place: place(),
+        issues: state.issues,
+        workspaces: (state.feed()?.workspaces || []).filter((workspace) => workspace.projectKey === state.projectKey),
+        agentGroups: groups(),
+      }),
       rows: state.rows,
       links: issueLinkRows(state.issue, place(), state.feed()),
       draft: state.draft,
@@ -135,12 +144,34 @@ export function mountIssuePage(host, options) {
     ]);
     if (state.disposed) return;
     state.columns = columnsOf(list?.columns);
+    takeList(list);
     if (!cached?.issue || state.issue) return;
     take(cached);
     state.loaded = false; // a cached paint is not an answer about what exists
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
+
+  /** The project's list, which is what a `#42` written in a comment is
+   *  resolved against (#63).
+   *
+   *  Kept up with rather than read once: this page is often the FIRST thing
+   *  opened on a device, and the list lands behind it — read once at mount, an
+   *  issue number rendered as prose and stayed prose while the issue it names
+   *  sat one press away. The record is the cache's own, so this costs a read
+   *  when the list moves and nothing at all when it does not. */
+  function takeList(list) {
+    const issues = list?.issues || [];
+    if (issues.length === state.issues.length && issues.every((issue, at) => issue.id === state.issues[at]?.id)) return false;
+    state.issues = issues;
+    return true;
+  }
+
+  const listWatcher = subscribeCache(issuesAddress(state.deviceId, state.projectId), async () => {
+    const list = await readIssuesRecord(state.deviceId, state.projectId);
+    if (state.disposed) return;
+    if (takeList(list)) paint();
+  });
 
   async function refresh({ keepDrafts = false } = {}) {
     if (state.disposed) return;
@@ -306,6 +337,7 @@ export function mountIssuePage(host, options) {
     dispose() {
       state.disposed = true;
       watcher.dispose();
+      listWatcher?.();
       reads.dispose();
       state.picker?.close?.();
     },

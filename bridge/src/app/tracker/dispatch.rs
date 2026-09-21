@@ -71,6 +71,9 @@ pub(in crate::app) struct OwnedChoice {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// What the agent is to be, for the device's own choice to answer.
+    pub role: Option<String>,
+    pub capability: Option<String>,
 }
 
 impl OwnedChoice {
@@ -79,6 +82,8 @@ impl OwnedChoice {
             harness: self.provider.as_deref(),
             model: self.model.as_deref(),
             effort: self.effort.as_deref(),
+            role: self.role.as_deref(),
+            capability: self.capability.as_deref(),
         }
     }
 
@@ -98,6 +103,8 @@ impl OwnedChoice {
             provider: word("provider"),
             model: word("model"),
             effort: word("effort"),
+            role: word("role"),
+            capability: word("capability"),
         }
     }
 }
@@ -539,6 +546,8 @@ impl AgentChoiceArgs<'_> {
             ("provider", self.harness),
             ("model", self.model),
             ("effort", self.effort),
+            ("role", self.role),
+            ("capability", self.capability),
         ] {
             if let Some(value) = value {
                 params[key] = json!(value);

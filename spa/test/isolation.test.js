@@ -438,7 +438,7 @@ describe("the device's settings page", () => {
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Work isolation")).toBe(at("Project agent") + 1);
+    expect(at("Work isolation")).toBe(at("Models and roles") + 1);
     expect(document.querySelector("#root [data-isolation=select]").value).toBe("rift");
     expect(document.querySelector("#root [data-isolation=select]").disabled).toBe(false);
   }, SLOW_IMPORT_MS);

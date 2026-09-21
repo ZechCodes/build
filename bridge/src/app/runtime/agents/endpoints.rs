@@ -335,6 +335,21 @@ pub(in crate::app) fn agent_is_working(tab: &Tab) -> bool {
         && matches!(tab.session.status(), AgentStatus::Working)
 }
 
+/// A set of words as a sentence says them: "a, b or c".
+pub(in crate::app) fn listed<const N: usize>(words: [&str; N]) -> String {
+    match words.split_last() {
+        None => String::new(),
+        Some((last, [])) => format!("{last:?}"),
+        Some((last, rest)) => format!(
+            "{} or {last:?}",
+            rest.iter()
+                .map(|word| format!("{word:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 pub(in crate::app) fn has_agent_choice(params: &Value) -> bool {
     ["provider", "model", "effort"]
         .iter()
@@ -352,24 +367,45 @@ pub(in crate::app) fn model_choice_from(
     params: &Value,
     default: AgentProvider,
 ) -> Result<ModelChoice, String> {
+    model_choice_over(
+        params,
+        ModelChoice {
+            provider: default,
+            model: None,
+            effort: None,
+        },
+    )
+}
+
+/// The same parse, over a choice something else already resolved — the
+/// device's grid for this (task, scope), or the entity's own selection.
+///
+/// Field by field, so a caller that names only an effort keeps the model the
+/// grid chose. What is named wins; what is not named is inherited; and a
+/// caller that names nothing gets `beneath` unchanged.
+pub(in crate::app) fn model_choice_over(
+    params: &Value,
+    beneath: ModelChoice,
+) -> Result<ModelChoice, String> {
+    let named = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|word| !word.is_empty())
+            .map(str::to_string)
+    };
     let provider = match params.get("provider").and_then(Value::as_str) {
-        // No preference means the account's answer; a named one means itself.
-        None | Some("") => default,
+        // No preference means what was resolved beneath; a named one means
+        // itself.
+        None | Some("") => beneath.provider,
         Some(named) => AgentProvider::from_wire(named)
             .ok_or_else(|| format!("unknown agent provider: {named}"))?,
     };
     let choice = ModelChoice {
         provider,
-        model: params
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|m| !m.is_empty())
-            .map(str::to_string),
-        effort: params
-            .get("effort")
-            .and_then(Value::as_str)
-            .filter(|e| !e.is_empty())
-            .map(str::to_string),
+        model: named("model").or(beneath.model),
+        effort: named("effort").or(beneath.effort),
     };
     choice.validate()?;
     Ok(choice)
@@ -851,6 +887,94 @@ impl AppState {
     /// default. That field is only a creation template after migration: every
     /// existing agent keeps and edits its own settings, including agents on the
     /// same provider.
+    /// What this device says a role runs on, when the caller asked for one.
+    ///
+    /// `None` when the caller named no role, and when the user has declared no
+    /// model for the role they named — in both cases whatever the caller said
+    /// itself, or the device default, stands. A role or capability word this
+    /// bridge does not know is refused by name rather than ignored: a caller
+    /// that asked for `"reviewing"` and silently got the default would never
+    /// find out it had asked for nothing.
+    ///
+    /// Effort is deliberately absent. Which model fills a role is the user's
+    /// call; how hard it thinks about one piece of work is the creating
+    /// agent's, and it passes `effort` itself when it has a view.
+    pub(in crate::app) fn role_choice_for(
+        &self,
+        params: &Value,
+    ) -> Result<Option<(ModelChoice, crate::models::AgentCapability)>, String> {
+        let word = |key: &str| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|word| !word.is_empty())
+        };
+        let Some(named) = word("role") else {
+            return Ok(None);
+        };
+        let role = crate::models::AgentRole::from_wire(named).ok_or_else(|| {
+            format!(
+                "There is no {named:?} role. The roles are {}.",
+                listed(crate::models::AgentRole::ALL.map(|role| role.wire_id()))
+            )
+        })?;
+        let capability = match word("capability") {
+            Some(named) => Some(crate::models::AgentCapability::from_wire(named).ok_or_else(
+                || {
+                    format!(
+                        "There is no {named:?} capability. They are {}.",
+                        listed(
+                            crate::models::AgentCapability::ALL
+                                .map(|capability| capability.wire_id())
+                        )
+                    )
+                },
+            )?),
+            None => None,
+        };
+        let Some(entry) = self.role_models.for_role(role, capability) else {
+            // Asked for something this device has nobody for. Saying so beats
+            // quietly starting a model the user did not choose for the job.
+            if let Some(wanted) = capability {
+                return Err(format!(
+                    "No model on this device is a {} {}. {}",
+                    wanted.wire_id(),
+                    role.wire_id(),
+                    self.roles_on_offer()
+                ));
+            }
+            return Ok(None);
+        };
+        Ok(Some((
+            ModelChoice {
+                provider: entry.provider.unwrap_or(self.default_harness),
+                model: Some(entry.model.clone()),
+                // The user chose the model; the creating agent chooses how
+                // hard it thinks.
+                effort: None,
+            },
+            entry.capability,
+        )))
+    }
+
+    /// What this device HAS said, for a refusal that has to leave the caller
+    /// somewhere to go.
+    fn roles_on_offer(&self) -> String {
+        let offered = self.role_models.roles_offered();
+        if offered.is_empty() {
+            return "No models have been given roles on this device yet; choose a model yourself, or leave it to the default.".to_string();
+        }
+        format!(
+            "Roles with a model: {}.",
+            offered
+                .iter()
+                .map(|role| role.wire_id())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+
     pub(crate) fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         // Named at creation when the caller knows what it is making, which is
@@ -885,10 +1009,28 @@ impl AppState {
         let retried_choice = existing_creation
             .as_ref()
             .and_then(|agent| agent.creation_choice.clone());
+        // What the device says this ROLE runs on, when the caller asked for
+        // one. It is the floor an explicit provider/model/effort is laid over,
+        // so naming an effort does not discard the model the user chose.
+        let (asked_for, direction) = match self.role_choice_for(params)? {
+            Some((choice, capability)) => (Some(choice), Some(capability)),
+            None => (None, None),
+        };
         let choice = if has_agent_choice(params) {
-            model_choice_from(params, self.default_harness)?
+            let beneath = match asked_for {
+                Some(resolved) => resolved,
+                None => ModelChoice {
+                    provider: self.default_harness,
+                    model: None,
+                    effort: None,
+                },
+            };
+            model_choice_over(params, beneath)?
         } else {
-            retried_choice.unwrap_or(self.mint_model_choice(&entity_id)?)
+            match asked_for {
+                Some(resolved) => resolved,
+                None => retried_choice.unwrap_or(self.mint_model_choice(&entity_id)?),
+            }
         };
         if let Some(existing) = existing_creation {
             if existing.creation_choice.as_ref() != Some(&choice) {
@@ -966,11 +1108,20 @@ impl AppState {
         }
         self.touch_attention(&entity_id);
         let root = self.entity_agent_root(&entity_id).ok();
-        Ok(json!({
+        let mut answered = json!({
             "entity_id": entity_id,
             "created": created,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref(), DigestScope::List),
-        }))
+        });
+        // How much direction the model this role resolved to wants. The point
+        // of asking for a role: the caller is about to write this agent's
+        // brief, and a one-line brief to a step-by-step model is the mistake
+        // the answer exists to stop.
+        if let Some(capability) = direction {
+            answered["capability"] = json!(capability);
+            answered["direction"] = json!(capability.describes());
+        }
+        Ok(answered)
     }
 
     /// `agent.choose` — set the model and reasoning effort one exact agent runs

@@ -385,6 +385,8 @@ fn a_coding_agent_works_the_workspaces_of_its_own_project_and_no_others() {
             model: None,
             effort: None,
             name: None,
+            role: None,
+            capability: None,
         },
         BridgeAction::MessageWorkspaceAgent {
             workspace_id: elsewhere.clone(),
@@ -764,6 +766,8 @@ fn a_project_agent_puts_an_agent_on_a_workspace_and_takes_it_off() {
                 model: None,
                 effort: None,
                 name: None,
+                role: None,
+                capability: None,
             },
         )
         .expect("a project agent puts an agent on its workspace");
@@ -823,6 +827,8 @@ fn a_project_agent_writes_no_workspace_outside_its_project() {
                 model: None,
                 effort: None,
                 name: None,
+                role: None,
+                capability: None,
             },
         )
         .expect("the workspace's own project agent puts an agent on it");
@@ -836,6 +842,8 @@ fn a_project_agent_writes_no_workspace_outside_its_project() {
             model: None,
             effort: None,
             name: None,
+            role: None,
+            capability: None,
         },
         BridgeAction::RemoveWorkspaceAgent {
             workspace_id: elsewhere.clone(),
@@ -889,6 +897,8 @@ fn a_project_agent_messages_a_workspace_agent_as_itself() {
                 model: None,
                 effort: None,
                 name: None,
+                role: None,
+                capability: None,
             },
         )
         .expect("a project agent staffs its workspace");
@@ -991,6 +1001,8 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
                 model: None,
                 effort: None,
                 name: None,
+                role: None,
+                capability: None,
             },
         )
         .expect("the other project staffs its own workspace");
@@ -1038,6 +1050,8 @@ fn handed_over(state: &mut AppState, project_id: &str, body: &str) -> HandedOver
                 model: None,
                 effort: None,
                 name: None,
+                role: None,
+                capability: None,
             },
         )
         .expect("a project agent staffs its workspace");

@@ -312,7 +312,11 @@ describe("the device's settings page", () => {
     // The project agent is this machine's too, and it is the fallback's
     // neighbour: both say what an agent nobody configured starts on.
     expect(at("Project agent")).toBe(at("Fallback agent") + 1);
-    expect(at("Work isolation")).toBe(at("Project agent") + 1);
+    // Which models fill which roles is the last of the agent panels: it is
+    // about agents nobody has made yet, where the three above it are about
+    // what an agent nobody configured falls back to.
+    expect(at("Models and roles")).toBe(at("Project agent") + 1);
+    expect(at("Work isolation")).toBe(at("Models and roles") + 1);
     expect(at("Diff triage")).toBe(-1);
   }, SLOW_IMPORT_MS);
 

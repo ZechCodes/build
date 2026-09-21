@@ -367,6 +367,15 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_modes: Named<AgentModesPatch>,
+    /// The whole list, replacing whatever stood before. Not a patch of one
+    /// row: the ORDER is the user's preference, and a merge rule that had to
+    /// preserve an order across two lists is one nobody could guess.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub role_models: Named<serde_json::Value>,
     /// Deprecated alias: names the concrete harness the Claude family opens
     /// on. Read after `default_harness`, so the newer word wins.
     #[serde(
@@ -783,6 +792,27 @@ pub struct SettingsResult {
     pub codex_mode: String,
     pub isolation: String,
     pub isolation_available: IsolationAvailabilityView,
+    /// Which models this device has declared for which roles, in the user's
+    /// own preference order. Empty is a device that has chosen nothing, and
+    /// then every create falls to `default_harness` as it always did.
+    #[serde(default)]
+    pub role_models: Vec<RoleModelView>,
+}
+
+/// One model the user has declared, and what they declared it for.
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct RoleModelView {
+    /// Absent means the device's default harness runs it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    pub model: String,
+    /// `planner`, `implementer`, `reviewer`, `executor`. A model declared for
+    /// none stays in the list and is never chosen by role.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// `generalist`, `scoped` or `step_by_step` — how much direction this
+    /// model needs from whoever hands it work.
+    pub capability: String,
 }
 
 /// What a project's agent starts on, as this device chose it. Every word may
@@ -814,6 +844,13 @@ pub struct ProviderCatalog {
     pub label: String,
     pub efforts: Vec<String>,
     pub models: Vec<ModelRow>,
+    /// The program this harness runs, and whether it is on this machine's
+    /// PATH. A client that offers a harness nothing can start is offering a
+    /// failure minutes later with nothing to point at.
+    #[serde(default)]
+    pub binary: String,
+    #[serde(default)]
+    pub installed: bool,
 }
 
 /// What a new agent can be started on. `models`/`efforts` are the default
@@ -824,6 +861,11 @@ pub struct ModelsListResult {
     pub models: Vec<ModelRow>,
     pub efforts: Vec<String>,
     pub default_provider: String,
+    /// Which models this device has declared for which roles, in the user's
+    /// preference order — beside the catalog because every surface offering a
+    /// model already reads this one.
+    #[serde(default)]
+    pub role_models: Vec<RoleModelView>,
     pub agent_modes: AgentModesView,
     pub providers: Vec<ProviderCatalog>,
 }

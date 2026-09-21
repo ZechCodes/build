@@ -138,6 +138,14 @@ pub trait Harness: Send + Sync {
     /// What a human sees this provider called.
     fn label(&self) -> &'static str;
 
+    /// The program this harness execs, as it is looked up on `PATH`.
+    ///
+    /// Stated rather than read back out of [`Harness::spec`]: whether a
+    /// harness can run here is a question worth answering before anybody
+    /// tries, and building a whole spec to find out would need a checkout, a
+    /// model choice and a session that does not exist yet.
+    fn binary(&self) -> &'static str;
+
     /// The curated model catalog, most capable first.
     fn models(&self) -> Vec<ModelOption>;
 
@@ -805,6 +813,10 @@ mod tests {
 
             fn label(&self) -> &'static str {
                 "mute"
+            }
+
+            fn binary(&self) -> &'static str {
+                "sh"
             }
 
             fn models(&self) -> Vec<ModelOption> {

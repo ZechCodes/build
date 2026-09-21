@@ -382,6 +382,7 @@ impl AppState {
         action: &BridgeAction,
     ) -> Option<Result<Value, String>> {
         Some(match action {
+            BridgeAction::ListHarnesses => Ok(self.harness_table()),
             BridgeAction::ListWorkspaces => self.project_agent_workspaces(entity_id),
             BridgeAction::ListWorkspaceAgents { workspace_id } => {
                 self.project_agent_workspace_agents(entity_id, workspace_id)
@@ -398,6 +399,8 @@ impl AppState {
                 model,
                 effort,
                 name,
+                role,
+                capability,
             } => self.project_agent_add_workspace_agent(
                 entity_id,
                 workspace_id,
@@ -405,6 +408,8 @@ impl AppState {
                     harness: harness.as_deref(),
                     model: model.as_deref(),
                     effort: effort.as_deref(),
+                    role: role.as_deref(),
+                    capability: capability.as_deref(),
                 },
                 name.as_deref(),
             ),

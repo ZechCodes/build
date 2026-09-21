@@ -26,6 +26,7 @@
 // page leaving the workspace. The rail is on one of the two at a time and reads
 // the other beside it, so the strip says what both are doing.
 
+import { AGENT_CAPABILITIES, AGENT_ROLES, modelForRole } from "./agentRoles.js";
 import { wireReaderMotion } from "./paintKeepingPlace.js";
 import { chatOverlaysPage, panelDocksByDefault } from "./railLayout.js";
 import { App, go } from "../app.js";
@@ -1094,8 +1095,29 @@ function mountRailOnContext(host, context, swap) {
     // Omitted when the reader typed nothing, so the bridge's own rule stands:
     // an unnamed agent is asked to name itself the first time it is written to.
     const name = newAgentName();
-    return name ? { ...params, name } : params;
+    const work = newAgentWork();
+    return {
+      ...params,
+      ...(name ? { name } : {}),
+      // Omitted when the reader chose no role, so the device default stands
+      // rather than being spelled out here.
+      ...(work.role ? { role: work.role } : {}),
+    };
   };
+
+  /** What the reader said this agent is for. Kept beside the name, and for the
+   *  same reason: it belongs to the one agent about to be made. */
+  let pendingWork = { role: "" };
+  const newAgentWork = () => pendingWork;
+  const writeNewAgentWork = (field, value) => {
+    pendingWork = { ...pendingWork, [field]: String(value || "") };
+  };
+
+  /** What the machine says its models are for, for the picker's preview. It
+   *  rides the catalog (`models.list`), which this rail already reads, so the
+   *  preview costs no call of its own — and a rail opening a cached
+   *  conversation still asks the bridge for nothing but that. */
+  const roleModelsOf = (offered) => (Array.isArray(offered?.role_models) ? offered.role_models : []);
 
   /** What the reader typed into the new-agent name field, if anything. Kept on
    *  the rail rather than in the choice, because it belongs to the one agent
@@ -1927,6 +1949,14 @@ function mountRailOnContext(host, context, swap) {
         <input type="text" data-new-agent-name maxlength="24" autocomplete="off"
           placeholder="Rail scroll" aria-label="What to call this agent" value="${esc(newAgentName())}">
       </label>
+      <div class="rail-newagent-work">
+        <label><span>Role <em>optional</em></span>
+          <select data-new-agent-role aria-label="What this agent is to be">
+            <option value="">No particular role</option>
+            ${AGENT_ROLES.map((role) => `<option value="${esc(role.id)}"${role.id === newAgentWork().role ? " selected" : ""}>${esc(role.label)}</option>`).join("")}
+          </select></label>
+      </div>
+      <p class="dim rail-newagent-resolved" data-new-agent-resolved></p>
     </div>`;
     body.dataset.newAgent = chosen;
     // Held outside the repaint: the picker rewrites itself when the harness
@@ -1934,6 +1964,31 @@ function mountRailOnContext(host, context, swap) {
     body.querySelector("[data-new-agent-name]").oninput = (event) => {
       writeNewAgentName(event.target.value);
     };
+    // The reader is told what "coding / deep" will actually start, before they
+    // press: the device's grid answers it, and the answer is not guessable
+    // from two words in a select.
+    // What the chosen role will actually start, and how much direction it
+    // will want — neither is guessable from a word in a select.
+    const previewHost = body.querySelector("[data-new-agent-resolved]");
+    const preview = () => {
+      const role = newAgentWork().role;
+      const chosen = role ? modelForRole(roleModelsOf(catalog), role) : null;
+      if (!role) {
+        previewHost.textContent = "";
+        return;
+      }
+      if (!chosen) {
+        previewHost.textContent = "No model is set for that role; the device default starts.";
+        return;
+      }
+      const direction = AGENT_CAPABILITIES.find((entry) => entry.id === chosen.capability);
+      previewHost.textContent = `Starts ${chosen.model} — ${direction?.direction || chosen.capability}`;
+    };
+    body.querySelector("[data-new-agent-role]").onchange = (event) => {
+      writeNewAgentWork("role", event.target.value);
+      preview();
+    };
+    preview();
     body.querySelector(".rail-newagent").onclick = (event) => {
       const card = event.target.closest(".rail-harness-choice");
       if (!card) return;

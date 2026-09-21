@@ -275,6 +275,10 @@ pub struct AppState {
     /// mint on a project's conversation owner, so moving it moves what the next
     /// project agent opens on and leaves the ones already running alone.
     project_agent: crate::models::ProjectAgentChoice,
+    /// What a new agent runs on, by what it is doing and how big the job is
+    /// (spec: Agent choices). Empty until the user fills a cell in, and then
+    /// what every create path resolves through.
+    role_models: crate::models::RoleModels,
     /// Independent launch presentation for each agent family.
     agent_modes: AgentModes,
     /// How a new checkout is isolated from the project it comes from, for
@@ -520,6 +524,7 @@ impl AppState {
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
             project_agent: crate::models::ProjectAgentChoice::default(),
+            role_models: crate::models::RoleModels::default(),
             agent_modes: AgentModes::from_legacy_default(DEFAULT_HARNESS),
             isolation: Isolation::default(),
             config_path: None,

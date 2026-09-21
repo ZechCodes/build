@@ -148,6 +148,14 @@ pub struct ProviderCatalog {
     pub label: &'static str,
     pub models: Vec<ModelOption>,
     pub efforts: &'static [&'static str],
+    /// The program this harness runs, as it is looked up on `PATH`.
+    pub binary: &'static str,
+    /// Whether that program is on this machine's `PATH` right now.
+    ///
+    /// Advertising every harness whether or not it can run is how an agent
+    /// picks one that fails at spawn, minutes later, with nothing to say about
+    /// why. The same question `isolation_available` answers for checkouts.
+    pub installed: bool,
 }
 
 /// Every provider's catalog, for the picker that has to show them all.
@@ -161,9 +169,42 @@ pub fn provider_catalogs() -> Vec<ProviderCatalog> {
                 label: harness.label(),
                 models: harness.models(),
                 efforts: harness.effort_levels(),
+                binary: harness.binary(),
+                installed: binary_is_on_path(harness.binary()),
             }
         })
         .collect()
+}
+
+/// Whether a program can be found on `PATH`.
+///
+/// Answered once per program and remembered. This is asked every time a tool
+/// list is built — which is every session open — and a harness that was
+/// installed a moment ago is not going to be uninstalled between two of them.
+/// A bridge restart asks again, which is when the answer could have changed.
+///
+/// No execution: existence and the executable bit, nothing run. Probing by
+/// running `--version` is what the codex harness does to read a version, and
+/// it costs a process per ask; this question does not need one.
+pub fn binary_is_on_path(program: &str) -> bool {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some(found) = seen.lock().ok().and_then(|seen| seen.get(program).copied()) {
+        return found;
+    }
+    let found = std::env::var_os("PATH")
+        .map(|path| {
+            std::env::split_paths(&path).any(|directory| {
+                let candidate = directory.join(program);
+                std::fs::metadata(&candidate).is_ok_and(|found| found.is_file())
+            })
+        })
+        .unwrap_or(false);
+    if let Ok(mut seen) = seen.lock() {
+        seen.insert(program.to_string(), found);
+    }
+    found
 }
 
 /// An agent's model selection (chosen at plan or run dispatch). `None` means
@@ -248,6 +289,13 @@ pub struct ProjectAgentChoice {
 }
 
 impl ProjectAgentChoice {
+    /// Whether this cell names anything at all. An empty cell is not written
+    /// to the config and not sent on the wire: it is the absence of a choice,
+    /// and a grid full of `{}` would be noise in a file a human reads.
+    pub fn says_nothing(&self) -> bool {
+        self.provider.is_none() && self.model.is_none() && self.effort.is_none()
+    }
+
     /// The concrete selection a mint spends: what this device said, with
     /// `default` — the device's default harness — standing where it said
     /// nothing about the harness.
@@ -257,6 +305,165 @@ impl ProjectAgentChoice {
             model: self.model.clone(),
             effort: self.effort.clone(),
         }
+    }
+}
+
+/// What an agent is being made to be. The user declares which of these each
+/// model can fill, and an agent making an agent asks for one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRole {
+    Planner,
+    Implementer,
+    Reviewer,
+    Executor,
+}
+
+impl AgentRole {
+    pub const ALL: [AgentRole; 4] = [
+        AgentRole::Planner,
+        AgentRole::Implementer,
+        AgentRole::Reviewer,
+        AgentRole::Executor,
+    ];
+
+    pub fn wire_id(self) -> &'static str {
+        match self {
+            AgentRole::Planner => "planner",
+            AgentRole::Implementer => "implementer",
+            AgentRole::Reviewer => "reviewer",
+            AgentRole::Executor => "executor",
+        }
+    }
+
+    pub fn describes(self) -> &'static str {
+        match self {
+            AgentRole::Planner => "works out what to do and how to split it",
+            AgentRole::Implementer => "writes and changes the code",
+            AgentRole::Reviewer => "reads a change and says what is wrong with it",
+            AgentRole::Executor => "carries out a plan that already exists, step by step",
+        }
+    }
+
+    pub fn from_wire(word: &str) -> Option<AgentRole> {
+        AgentRole::ALL
+            .into_iter()
+            .find(|role| role.wire_id() == word.trim())
+    }
+}
+
+/// How much direction a model needs from whoever is handing it work.
+///
+/// An output of the choice, not an input to it: the orchestrator asks for a
+/// reviewer, is told which model it got and how much direction that model
+/// wants, and writes the brief accordingly. A one-line brief to a
+/// step-by-step model is the mistake this exists to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCapability {
+    Generalist,
+    Scoped,
+    StepByStep,
+}
+
+impl AgentCapability {
+    pub const ALL: [AgentCapability; 3] = [
+        AgentCapability::Generalist,
+        AgentCapability::Scoped,
+        AgentCapability::StepByStep,
+    ];
+
+    pub fn wire_id(self) -> &'static str {
+        match self {
+            AgentCapability::Generalist => "generalist",
+            AgentCapability::Scoped => "scoped",
+            AgentCapability::StepByStep => "step_by_step",
+        }
+    }
+
+    /// What to DO about it, said as the instruction it is. This is what the
+    /// creating agent reads off the answer.
+    pub fn describes(self) -> &'static str {
+        match self {
+            AgentCapability::Generalist => {
+                "give it the goal and let it work out the rest; it needs little direction"
+            }
+            AgentCapability::Scoped => {
+                "give it a clear scope and the constraints, then leave it to the how"
+            }
+            AgentCapability::StepByStep => {
+                "give it the steps; it does what it is told well and infers little"
+            }
+        }
+    }
+
+    pub fn from_wire(word: &str) -> Option<AgentCapability> {
+        AgentCapability::ALL
+            .into_iter()
+            .find(|capability| capability.wire_id() == word.trim())
+    }
+}
+
+/// One model the user has declared, and what they have declared it for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleModel {
+    /// Which harness runs it. Absent means the device's default harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<AgentProvider>,
+    pub model: String,
+    /// The roles this model can fill. A model declared for none is in the list
+    /// but never chosen by role, which is a legible thing to want: it stays
+    /// there, dimmed, rather than having to be deleted and typed again.
+    #[serde(default)]
+    pub roles: Vec<AgentRole>,
+    pub capability: AgentCapability,
+}
+
+/// What this device says its models are for (spec: Agent roles).
+///
+/// A list and not a map, because the ORDER is the user's preference: when two
+/// models can both review, the one they put first is the one that reviews.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RoleModels(pub Vec<RoleModel>);
+
+impl RoleModels {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The model this device would use for a role, and how much direction it
+    /// wants. `None` when the user has declared nothing for that role — and
+    /// then the caller's own choice, or the harness's default, stands.
+    ///
+    /// First match wins, because the list is in the user's preference order.
+    /// A `capability` narrows it: an orchestrator that knows it can only write
+    /// a one-line brief can ask for a generalist and be told plainly that
+    /// there is not one.
+    pub fn for_role(
+        &self,
+        role: AgentRole,
+        capability: Option<AgentCapability>,
+    ) -> Option<&RoleModel> {
+        self.0.iter().find(|entry| {
+            entry.roles.contains(&role)
+                && capability.is_none_or(|wanted| entry.capability == wanted)
+        })
+    }
+
+    /// Every role any declared model can fill, for a refusal that has to say
+    /// what IS on offer.
+    pub fn roles_offered(&self) -> Vec<AgentRole> {
+        let mut offered = Vec::new();
+        for entry in &self.0 {
+            for role in &entry.roles {
+                if !offered.contains(role) {
+                    offered.push(*role);
+                }
+            }
+        }
+        offered.sort();
+        offered
     }
 }
 
@@ -583,5 +790,147 @@ mod tests {
         let choice: ModelChoice =
             serde_json::from_str(r#"{"model":"claude-opus-4-8","effort":"high"}"#).unwrap();
         assert_eq!(choice.provider, AgentProvider::Claude);
+    }
+}
+
+#[cfg(test)]
+mod role_model_tests {
+    use super::*;
+
+    /// Zech's own example, written down.
+    fn declared() -> RoleModels {
+        RoleModels(vec![
+            RoleModel {
+                provider: None,
+                model: "claude-fable-5-1".into(),
+                roles: vec![AgentRole::Planner, AgentRole::Reviewer],
+                capability: AgentCapability::Generalist,
+            },
+            RoleModel {
+                provider: None,
+                model: "claude-opus-5".into(),
+                roles: vec![
+                    AgentRole::Planner,
+                    AgentRole::Reviewer,
+                    AgentRole::Implementer,
+                ],
+                capability: AgentCapability::Scoped,
+            },
+            RoleModel {
+                provider: Some(AgentProvider::Codex),
+                model: "gpt-5".into(),
+                roles: vec![AgentRole::Implementer, AgentRole::Executor],
+                capability: AgentCapability::StepByStep,
+            },
+        ])
+    }
+
+    /// The list is in the user's preference order, so the first model that can
+    /// fill a role is the one that does.
+    #[test]
+    fn the_first_model_that_can_fill_a_role_is_the_one_that_does() {
+        let declared = declared();
+        let reviewer = declared.for_role(AgentRole::Reviewer, None).unwrap();
+        assert_eq!(reviewer.model, "claude-fable-5-1");
+        assert_eq!(reviewer.capability, AgentCapability::Generalist);
+
+        // Two models implement; the earlier one wins.
+        let implementer = declared.for_role(AgentRole::Implementer, None).unwrap();
+        assert_eq!(implementer.model, "claude-opus-5");
+    }
+
+    /// A capability narrows it, which is how an orchestrator that can only
+    /// write a short brief asks for a model that needs a short brief.
+    #[test]
+    fn a_capability_narrows_the_choice() {
+        let declared = declared();
+        let stepwise = declared
+            .for_role(AgentRole::Implementer, Some(AgentCapability::StepByStep))
+            .unwrap();
+        assert_eq!(stepwise.model, "gpt-5");
+        assert_eq!(stepwise.provider, Some(AgentProvider::Codex));
+
+        // And asking for one nobody is answers nothing rather than something
+        // close enough.
+        assert!(declared
+            .for_role(AgentRole::Executor, Some(AgentCapability::Generalist))
+            .is_none());
+    }
+
+    /// A role nobody was declared for answers nothing, and the caller's own
+    /// choice stands.
+    #[test]
+    fn a_role_with_no_model_answers_nothing() {
+        let none = RoleModels::default();
+        assert!(none.for_role(AgentRole::Planner, None).is_none());
+        assert!(none.is_empty());
+        assert_eq!(none.roles_offered(), Vec::new());
+    }
+
+    /// What IS on offer, for a refusal that has to leave the caller somewhere
+    /// to go. Deduplicated: three models that all plan is one role.
+    #[test]
+    fn the_roles_on_offer_are_said_once_each() {
+        assert_eq!(
+            declared().roles_offered(),
+            vec![
+                AgentRole::Planner,
+                AgentRole::Implementer,
+                AgentRole::Reviewer,
+                AgentRole::Executor
+            ]
+        );
+    }
+
+    /// A model declared for no role stays in the list and is never chosen —
+    /// which is a legible thing to want, rather than having to delete it.
+    #[test]
+    fn a_model_with_no_roles_is_kept_and_never_chosen() {
+        let parked = RoleModels(vec![RoleModel {
+            provider: None,
+            model: "claude-haiku-4-5".into(),
+            roles: Vec::new(),
+            capability: AgentCapability::StepByStep,
+        }]);
+        assert!(!parked.is_empty());
+        assert_eq!(parked.roles_offered(), Vec::new());
+        for role in AgentRole::ALL {
+            assert!(parked.for_role(role, None).is_none());
+        }
+    }
+
+    /// Both words round-trip, and each says something a reader can act on —
+    /// a capability's words being the instruction the orchestrator follows.
+    #[test]
+    fn the_words_read_back_and_say_what_to_do() {
+        for role in AgentRole::ALL {
+            assert_eq!(AgentRole::from_wire(role.wire_id()), Some(role));
+            assert!(!role.describes().is_empty());
+        }
+        for capability in AgentCapability::ALL {
+            assert_eq!(
+                AgentCapability::from_wire(capability.wire_id()),
+                Some(capability)
+            );
+            assert!(!capability.describes().is_empty());
+        }
+        assert_eq!(
+            AgentCapability::from_wire("step_by_step"),
+            Some(AgentCapability::StepByStep)
+        );
+        assert_eq!(
+            AgentRole::from_wire("  reviewer "),
+            Some(AgentRole::Reviewer)
+        );
+        assert_eq!(AgentRole::from_wire("reviewing"), None);
+    }
+
+    /// An empty list is not written down.
+    #[test]
+    fn an_empty_list_serializes_to_an_empty_list() {
+        assert_eq!(
+            serde_json::to_value(RoleModels::default()).unwrap(),
+            serde_json::json!([])
+        );
     }
 }

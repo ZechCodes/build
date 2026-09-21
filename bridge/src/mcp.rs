@@ -133,6 +133,10 @@ pub enum BridgeAction {
     SetName {
         name: String,
     },
+    /// Every harness this bridge can run, with its models and efforts, and
+    /// which of them are installed here. The lookup an agent asked for a model
+    /// by name reads.
+    ListHarnesses,
     /// Every project on this device. Router only.
     ListProjects,
     /// The branches and issues in flight, as a digest. Router only.
@@ -194,6 +198,11 @@ pub enum BridgeAction {
         /// What to call it. Whoever cuts an agent for a piece of work can name
         /// that work better than the agent can before it has read anything.
         name: Option<String>,
+        /// What the agent is to BE, and — when it matters — how much
+        /// direction it should need. The user has chosen a model for each
+        /// role, so asking for one is how a caller gets that choice.
+        role: Option<String>,
+        capability: Option<String>,
     },
     /// Take an agent off one of this project's workspaces. Project only.
     RemoveWorkspaceAgent {
@@ -358,6 +367,7 @@ impl BridgeAction {
             BridgeAction::SearchConversation { .. } => "search_conversation",
             BridgeAction::SetTopic { .. } => "set_topic",
             BridgeAction::SetName { .. } => "set_name",
+            BridgeAction::ListHarnesses => "list_harnesses",
             BridgeAction::ListProjects => "list_projects",
             BridgeAction::ListWork => "list_work",
             BridgeAction::ReadConversation { .. } => "read_conversation",
@@ -408,6 +418,7 @@ impl BridgeAction {
             | BridgeAction::SearchConversation { .. }
             | BridgeAction::SetTopic { .. }
             | BridgeAction::SetName { .. }
+            | BridgeAction::ListHarnesses
             | BridgeAction::MessageAgent { .. } => &[McpSurface::Coding, McpSurface::Project],
             BridgeAction::ListProjects
             | BridgeAction::ListWork
@@ -700,6 +711,87 @@ impl DoneServer {
                 "topic": { "type": "string", "description": "The objective, in 2-4 words. Title-case the first word, no trailing period. Examples: \"Unify prompt delivery\", \"Fix login redirect\"." }
             },
             "required": ["topic"]
+        })
+    }
+
+    /// The registry as a tool schema reads it: every harness this bridge can
+    /// run, named by its wire id, with its label and whether it is installed
+    /// here in the one line an agent sees beside the value.
+    ///
+    /// Built here rather than written down, so a harness added to the registry
+    /// shows up in the schema without anybody remembering to copy it across.
+    fn harness_enum() -> Value {
+        let catalogs = crate::models::provider_catalogs();
+        let described = catalogs
+            .iter()
+            .map(|catalog| {
+                let installed = if catalog.installed {
+                    String::new()
+                } else {
+                    format!(
+                        " (not installed on this machine — `{}` is not on PATH)",
+                        catalog.binary
+                    )
+                };
+                format!("{} — {}{installed}", catalog.id.wire_id(), catalog.label)
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        json!({
+            "type": "string",
+            "enum": catalogs.iter().map(|catalog| catalog.id.wire_id()).collect::<Vec<_>>(),
+            "description": format!("What the agent runs on. {described}. Omit to use the device's choice for this task and scope."),
+        })
+    }
+
+    /// The roles the user can have declared a model for, as a schema.
+    fn role_enum() -> Value {
+        json!({
+            "type": "string",
+            "enum": crate::models::AgentRole::ALL.map(|role| role.wire_id()),
+            "description": format!(
+                "What this agent is to be. The user has chosen which model fills each role, so asking for one is how you get their choice instead of guessing. {}. The answer tells you how much direction that model needs.",
+                crate::models::AgentRole::ALL
+                    .map(|role| format!("{} — {}", role.wire_id(), role.describes()))
+                    .join("; ")
+            ),
+        })
+    }
+
+    /// How much direction the created agent should need. An input only when
+    /// the caller knows what kind of brief it can write.
+    fn capability_enum() -> Value {
+        json!({
+            "type": "string",
+            "enum": crate::models::AgentCapability::ALL.map(|capability| capability.wire_id()),
+            "description": format!(
+                "Only when you need a particular kind: {}. Omit and you get the user's first choice for the role, whatever its capability — and are told which it is.",
+                crate::models::AgentCapability::ALL
+                    .map(|capability| format!("{} — {}", capability.wire_id(), capability.describes()))
+                    .join("; ")
+            ),
+        })
+    }
+
+    /// Every effort any harness accepts. Not per harness: one schema is shown
+    /// before the harness is chosen, and a value the chosen one does not take
+    /// is refused by name when the call is made.
+    fn effort_enum() -> Value {
+        let mut efforts: Vec<&'static str> = crate::models::provider_catalogs()
+            .iter()
+            .flat_map(|catalog| catalog.efforts.iter().copied())
+            .collect();
+        efforts.dedup();
+        let mut seen = Vec::new();
+        for effort in efforts {
+            if !seen.contains(&effort) {
+                seen.push(effort);
+            }
+        }
+        json!({
+            "type": "string",
+            "enum": seen,
+            "description": "The reasoning effort, for a harness that takes one. This one is YOURS to judge — the user chooses the model for a role, you choose how hard it thinks about this piece of work. Not every harness accepts every value; list_harnesses says which.",
         })
     }
 
@@ -1105,13 +1197,20 @@ impl DoneServer {
                     "type": "object",
                     "properties": {
                         "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." },
-                        "harness": { "type": "string", "description": "What the agent runs on. Omit for the user's default." },
-                        "model": { "type": "string", "description": "The model, for a harness that takes one. Omit for its default." },
-                        "effort": { "type": "string", "description": "The reasoning effort, for a model that takes one. Omit for its default." },
+                        "role": Self::role_enum(),
+                        "capability": Self::capability_enum(),
+                        "harness": Self::harness_enum(),
+                        "model": { "type": "string", "description": "A model id, when the user named one. list_harnesses is where the ids are. Omit to take the user's own choice for the role." },
+                        "effort": Self::effort_enum(),
                         "name": { "type": "string", "description": "What to call this agent: one or two meaningful words for the work you are putting it on, like \"Rail scroll\". It is what you and the user will see instead of \"Agent 2\". Omit and the agent names itself when the user first writes to it." }
                     },
                     "required": ["workspace_id"]
                 }
+            }),
+            json!({
+                "name": "list_harnesses",
+                "description": "Every harness this device can run an agent on, with its models, its reasoning efforts, which of them are installed here, and what the user has chosen for each kind of task. Read it when the user names a model — the ids are here — or when you want to know what you are choosing between. Prefer passing `task` and `scope` to a create tool over picking a model yourself: those are the user's own choices.",
+                "inputSchema": { "type": "object", "properties": {} }
             }),
             json!({
                 "name": "remove_workspace_agent",
@@ -1726,6 +1825,7 @@ fn workspace_tool_action(
 ) -> Option<Result<BridgeAction, String>> {
     let parsed = match name {
         "list_workspaces" => Ok(BridgeAction::ListWorkspaces),
+        "list_harnesses" => Ok(BridgeAction::ListHarnesses),
         "list_workspace_agents" => required_argument(params, "workspace_id")
             .map(|workspace_id| BridgeAction::ListWorkspaceAgents { workspace_id }),
         "create_workspace" => {
@@ -1741,6 +1841,8 @@ fn workspace_tool_action(
                 model: optional_argument(params, "model"),
                 effort: optional_argument(params, "effort"),
                 name: optional_argument(params, "name"),
+                role: optional_argument(params, "role"),
+                capability: optional_argument(params, "capability"),
             }
         }),
         "remove_workspace_agent" => {
@@ -2451,11 +2553,12 @@ mod tests {
     /// surface's own — a coding agent never sees a router tool, a router never
     /// sees a coding one, and the two verbs that change what a project is made
     /// of are the project agent's alone.
-    const WORKSPACE_TOOLS: [&str; 9] = [
+    const WORKSPACE_TOOLS: [&str; 10] = [
         "list_workspaces",
         "list_workspace_agents",
         "create_workspace",
         "add_workspace_agent",
+        "list_harnesses",
         "remove_workspace_agent",
         "message_workspace_agent",
         "delete_workspace",
@@ -2817,7 +2920,7 @@ mod tests {
         ));
         assert!(matches!(
             call("add_workspace_agent", r#"{"workspace_id":"ws-1","harness":"codex","project_id":"proj-9"}"#).action,
-            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None, name: None })
+            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None, name: None, .. })
                 if workspace_id == "ws-1" && harness.as_deref() == Some("codex")
         ));
     }

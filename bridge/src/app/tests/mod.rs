@@ -199,6 +199,7 @@ use support::*;
 
 mod agent_messages;
 mod agent_names;
+mod agent_roles;
 mod api_facade;
 mod board;
 mod configuration;

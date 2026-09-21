@@ -15,6 +15,7 @@ impl AppState {
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
             "project_agent": self.project_agent,
+            "role_models": self.role_models,
             "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
@@ -34,6 +35,49 @@ impl AppState {
             "default_provider": self.default_harness,
             "agent_modes": self.agent_modes,
             "providers": models::provider_catalogs(),
+            // What this device says its models are FOR. It rides the catalog
+            // because every surface that offers a model already reads this,
+            // and a second call for three lines would be a second call on
+            // every rail that paints a new-agent picker.
+            "role_models": self.role_models,
+        })
+    }
+
+    /// What `list_harnesses` answers: every harness this bridge can run, what
+    /// it can be asked for, whether it is here, and what this device has
+    /// declared each model to be FOR.
+    ///
+    /// The roles are answered resolved — which model fills each one, and how
+    /// much direction it wants — so an agent choosing a reviewer reads the
+    /// answer rather than the rule.
+    pub(in crate::app) fn harness_table(&self) -> Value {
+        let by_role = crate::models::AgentRole::ALL
+            .into_iter()
+            .map(|role| {
+                let filled = self.role_models.for_role(role, None).map(|entry| {
+                    json!({
+                        "provider": entry.provider.unwrap_or(self.default_harness),
+                        "model": entry.model,
+                        "capability": entry.capability,
+                        "direction": entry.capability.describes(),
+                    })
+                });
+                (role.wire_id().to_string(), json!(filled))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        json!({
+            "harnesses": models::provider_catalogs(),
+            "default_harness": self.default_harness,
+            "roles": crate::models::AgentRole::ALL
+                .map(|role| json!({ "id": role.wire_id(), "describes": role.describes() })),
+            "capabilities": crate::models::AgentCapability::ALL.map(|capability| json!({
+                "id": capability.wire_id(),
+                "direction": capability.describes(),
+            })),
+            // What this device has declared, in the user's own order.
+            "role_models": self.role_models,
+            // And which model answers each role right now.
+            "roles_in_effect": by_role,
         })
     }
 
@@ -84,15 +128,21 @@ impl AppState {
         let isolation = patch.isolation.unwrap_or(self.isolation);
         let project_agent =
             self.accepted_project_agent(patch.project_agent.as_ref(), default_harness)?;
+        let role_models = patch
+            .role_models
+            .clone()
+            .unwrap_or_else(|| self.role_models.clone());
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
+        config["role_models"] = json!(role_models);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
         self.agent_modes = agent_modes;
         self.isolation = isolation;
         self.project_agent = project_agent;
+        self.role_models = role_models;
         Ok(self.settings_get())
     }
 }

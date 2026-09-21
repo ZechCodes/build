@@ -38,6 +38,11 @@ pub(in crate::app) struct AgentChoiceArgs<'a> {
     pub(in crate::app) harness: Option<&'a str>,
     pub(in crate::app) model: Option<&'a str>,
     pub(in crate::app) effort: Option<&'a str>,
+    /// What the agent is to BE, and how much direction it should need. The
+    /// user has chosen a model for each role; naming one is how a caller gets
+    /// that choice instead of guessing at a model.
+    pub(in crate::app) role: Option<&'a str>,
+    pub(in crate::app) capability: Option<&'a str>,
 }
 
 impl AgentChoiceArgs<'_> {
@@ -47,6 +52,8 @@ impl AgentChoiceArgs<'_> {
             ("provider", self.harness),
             ("model", self.model),
             ("effort", self.effort),
+            ("role", self.role),
+            ("capability", self.capability),
         ] {
             if let Some(value) = value {
                 params[key] = json!(value);

@@ -693,6 +693,57 @@ bridge at POST time, from what it knew then: a workspace can be renamed, a topic
 changes with the work, and what the message says is what was true when it was
 sent.
 
+### Agent roles and capability (1.7.0)
+
+Every create path took free-text `harness`, `model` and `effort`, with no list
+of what was accepted — so an agent guessed, and a wrong guess was a refused
+call or a silently defaulted agent.
+
+**The device declares which models are for which roles.** `settings.role_models`
+is a list, and the ORDER is the user's preference: when two models can both
+review, the one nearer the top reviews.
+
+```json
+"role_models": [
+  { "model": "claude-fable-5-1", "roles": ["planner", "reviewer"], "capability": "generalist" },
+  { "model": "claude-opus-5", "roles": ["planner", "reviewer", "implementer"], "capability": "scoped" },
+  { "provider": "codex", "model": "gpt-5", "roles": ["implementer", "executor"], "capability": "step_by_step" }
+]
+```
+
+Roles are `planner`, `implementer`, `reviewer`, `executor`. `provider` absent
+means the device's `default_harness`. A model declared for no roles stays in
+the list and is never chosen, which is a legible thing to want.
+
+**Capability is an output, not an input.** It says how much direction that
+model needs from whoever hands it work — `generalist`, `scoped`,
+`step_by_step` — and the create path answers it back so the agent writing the
+brief knows whether to write a goal, a scope or a list of steps.
+
+**Asking.** `agent.add`, `add_workspace_agent` and `issues.assign`'s creating
+kinds take `role`, and optionally `capability` when the caller needs a
+particular kind. The answer carries `capability` and `direction`, the latter
+being the instruction in words. An explicit `harness`/`model`/`effort` is laid
+over the role's answer **field by field**, so naming an effort does not discard
+the model the user chose.
+
+**Effort is never configured.** Which model fills a role is the user's standing
+decision; how hard it thinks about one piece of work is the creating agent's,
+and it passes `effort` itself.
+
+**Nothing gates the model id.** A model outside this bridge's catalog is passed
+through with only a shape check, so a model newer than the bridge is usable
+(Zech, 2026-09-20: "Don't gate"). The **harness** is a closed set — Build can
+only run what it implements — and an **effort** must be one that harness
+accepts; both are refused by name with the accepted values in the sentence.
+
+**`list_harnesses`** (MCP, both working surfaces) is the lookup: every harness
+with its models and efforts, **whether its binary is on this machine's PATH**,
+the roles and capabilities there are, the declared list, and which model
+answers each role right now. `models.list` carries `role_models` and each
+provider's `binary`/`installed` too, so a client reading the catalog needs no
+second call.
+
 ### Agent names (1.7.0)
 
 Every agent was labelled by ordinal — "Agent 1", "Agent 2" — which says where it

@@ -62,13 +62,55 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) agent_modes: Option<Value>,
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
+    pub(in crate::app) role_models: Option<crate::models::RoleModels>,
+}
+
+/// The list a `settings.set` asks for, refused before anything is written if
+/// it names a harness or a model this bridge cannot honour.
+///
+/// Two refusals of its own. A model declared twice for the same harness is a
+/// list where the second entry can never be reached, and the user would have
+/// no way to tell which one they were editing. A model with no roles is
+/// allowed — it sits in the list unused, which is a legible thing to want.
+fn accepted_role_models(value: &Value) -> Result<crate::models::RoleModels, String> {
+    let models: crate::models::RoleModels = serde_json::from_value(value.clone())
+        .map_err(|why| format!("role_models: {}", plainly(&why.to_string())))?;
+    let mut seen: Vec<(Option<AgentProvider>, &str)> = Vec::new();
+    for entry in &models.0 {
+        if entry.model.trim().is_empty() {
+            return Err("Every model in the list needs an id.".to_string());
+        }
+        let key = (entry.provider, entry.model.as_str());
+        if seen.contains(&key) {
+            return Err(format!(
+                "{} is in the list twice. A model appears once, with all of its roles.",
+                entry.model
+            ));
+        }
+        seen.push(key);
+        crate::models::ProjectAgentChoice {
+            provider: entry.provider,
+            model: Some(entry.model.clone()),
+            effort: None,
+        }
+        .resolved(DEFAULT_HARNESS)
+        .validate()?;
+    }
+    Ok(models)
+}
+
+/// A serde message a person can read. Serde says "unknown variant `codeing`,
+/// expected one of ..." which is most of a sentence already; what it is not is
+/// one that starts like the rest of this bridge's refusals.
+fn plainly(said: &str) -> String {
+    said.split(" at line ").next().unwrap_or(said).to_string()
 }
 
 impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 7] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 8] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -115,6 +157,13 @@ impl SettingsPatch {
         }),
         ("project_agent", |patch, value, _| {
             patch.project_agent = Some(ProjectAgentPatch::parse(value)?);
+            Ok(())
+        }),
+        // The whole grid, not a patch of one cell: it is small, a client that
+        // draws it holds all of it, and a merge rule for a two-level map of
+        // optional triples is a rule nobody could predict from the wire.
+        ("role_models", |patch, value, _| {
+            patch.role_models = Some(accepted_role_models(value)?);
             Ok(())
         }),
     ];
@@ -310,6 +359,7 @@ impl AppState {
         }
         self.apply_default_harness_config(config);
         self.apply_project_agent_config(config);
+        self.apply_role_models_config(config);
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;
@@ -349,6 +399,19 @@ impl AppState {
         match serde_json::from_value::<ProjectAgentChoice>(value.clone()) {
             Ok(choice) => self.project_agent = choice,
             Err(error) => eprintln!("config project_agent: {error}; using the default"),
+        }
+    }
+
+    /// A grid this bridge cannot read is logged and skipped, the way every
+    /// other configured value is: a config file written by a newer bridge must
+    /// not stop this one from starting.
+    fn apply_role_models_config(&mut self, config: &Value) {
+        let Some(value) = config.get("role_models") else {
+            return;
+        };
+        match serde_json::from_value::<crate::models::RoleModels>(value.clone()) {
+            Ok(choices) => self.role_models = choices,
+            Err(error) => eprintln!("config role_models: {error}; using no grid"),
         }
     }
 

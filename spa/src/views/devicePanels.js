@@ -13,6 +13,7 @@ import { agentModesPanelHtml, mountAgentModes } from "../core/agentModes.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
 import { DEVICE_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/isolation.js";
 import { mountProjectAgentSetting, projectAgentPanelHtml } from "../core/projectAgentSetting.js";
+import { agentRolesPanelHtml, mountAgentRoles } from "../core/agentRolesPanel.js";
 
 /** The panels this machine's bridge owns: each states its own markup and mounts
  *  itself on the page's connection, so they are stood up in one pass. */
@@ -20,6 +21,7 @@ const BRIDGE_PANELS = [
   { html: agentModesPanelHtml, mount: mountAgentModes },
   { html: defaultHarnessPanelHtml, mount: mountDefaultHarness },
   { html: projectAgentPanelHtml, mount: mountProjectAgentSetting },
+  { html: agentRolesPanelHtml, mount: mountAgentRoles },
   { html: isolationPanelHtml, mount: (host, options) => mountIsolation(host, { ...options, target: DEVICE_ISOLATION }) },
 ];
 

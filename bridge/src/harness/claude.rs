@@ -38,6 +38,10 @@ impl Harness for ClaudeHarness {
     }
 
     /// The curated catalog, most capable first. (cached: 2026-07)
+    fn binary(&self) -> &'static str {
+        "claude"
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         vec![
             ModelOption {

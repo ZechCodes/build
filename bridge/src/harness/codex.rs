@@ -80,6 +80,10 @@ impl Harness for CodexHarness {
     /// Codex has an experimental debug catalog command, but Build cannot assume
     /// every installed CLI version exposes it; shipping the catalog keeps the
     /// web contract deterministic.
+    fn binary(&self) -> &'static str {
+        "codex"
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         models()
     }

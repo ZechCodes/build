@@ -268,6 +268,14 @@ pub struct AgentAddParams {
     /// another agent on the conversation already has it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// What the agent is to BE. The device has a model declared for each
+    /// role; anything named in `choice` is laid over that answer field by
+    /// field, and the effort is always the caller's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// How much direction it should need, when that matters to the caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
     #[serde(flatten)]
     pub choice: ModelChoiceParams,
 }
@@ -514,6 +522,15 @@ pub struct AgentAdded {
     pub entity_id: String,
     pub created: bool,
     pub agent: AgentDigest,
+    /// How much direction the model this role resolved to wants, when the
+    /// caller asked for a role. Absent when it named the model itself, or
+    /// when the device has declared nothing for that role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<String>,
+    /// The same thing said as the instruction it is, for the agent about to
+    /// write this one's brief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

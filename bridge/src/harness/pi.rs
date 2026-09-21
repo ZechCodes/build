@@ -28,6 +28,10 @@ impl Harness for PiHarness {
         "Pi"
     }
 
+    fn binary(&self) -> &'static str {
+        "pi"
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         Vec::new()
     }

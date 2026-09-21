@@ -52,6 +52,10 @@ impl Harness for AdkHarness {
         "Claude Code"
     }
 
+    fn binary(&self) -> &'static str {
+        "claude"
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         ClaudeHarness.models()
     }

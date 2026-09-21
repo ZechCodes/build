@@ -35,6 +35,7 @@ impl AppState {
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
             "project_agent": self.project_agent,
+            "role_models": self.role_models,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,

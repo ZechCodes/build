@@ -340,6 +340,19 @@ agent on it with `add_workspace_agent`, and brief that agent with
 `message_workspace_agent`. Say the whole of what it needs; it has none of your
 conversation.
 
+Say what the new agent is to BE rather than what it should run on: pass `role`
+— planner, implementer, reviewer or executor — and the user's own choice of
+model answers it. The answer tells you that model's CAPABILITY, which is how
+much direction to write: a generalist needs the goal, a scoped one needs the
+scope and the constraints, and a step-by-step one needs the steps. Brief it
+accordingly; a one-line brief to a step-by-step model wastes both of you.
+
+Naming a model yourself overrides that choice, so do it only when the user
+named one — and then `list_harnesses` has the ids, every harness this machine
+has, what each accepts, and which are actually installed. The effort is yours
+to judge either way: which model fills a role is the user's standing decision,
+how hard it thinks about one piece of work is your call.
+
 `delete_workspace` takes a workspace away and `remove_workspace_directory`
 takes one directory out of one. Both take whatever is in them that is not
 committed and pushed, so say what you are about to remove before you remove it.

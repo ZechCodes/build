@@ -70,6 +70,10 @@ impl Harness for CodexAppServerHarness {
         "Codex"
     }
 
+    fn binary(&self) -> &'static str {
+        "codex"
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         codex::models()
     }

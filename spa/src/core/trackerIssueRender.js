@@ -15,18 +15,24 @@ import { hashFromRoute } from "./router.js";
 import { columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
 import { issueAvatarHtml } from "./issueAvatar.js";
+import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
 import { attachmentGlyphHtml, composerPartIds, formatAttachmentSize, isImageAttachment } from "./composer.js";
 import { ICON_PAPERCLIP } from "./icons.js";
 
 /** The head: what the issue is called, and the two facts that are independent
- *  of each other — is it still open, and where does it stand on the board. */
-export const issueHeadHtml = (issue, columns) => `<header class="issue-page-head">
+ *  of each other — is it still open, and where does it stand on the board.
+ *
+ *  `watch` is the switch's state when this device's bridge can be asked about
+ *  watching (#65) and nothing at all when it cannot: a control that refuses
+ *  every press is worse than one the reader has not been given yet. */
+export const issueHeadHtml = (issue, { watch = null } = {}) => `<header class="issue-page-head">
     <div class="issue-page-marks">
       ${stateDotHtml(issue.state)}<span class="issue-page-state">${esc(stateLabel(issue.state))}</span>
       ${numberHtml(issue)}
       ${ageHtml(issue.updated_at)}
+      ${watch ? watchButtonHtml(watch) : ""}
     </div>
     <h1 class="issue-page-title">${esc(issue.title)}</h1>
     ${issue.labels?.length ? `<div class="issue-page-labels">${labelsHtml(issue.labels)}</div>` : ""}
@@ -223,7 +229,7 @@ export function issueRailHtml(issue, context) {
 export function issuePageHtml(issue, context) {
   return `<div class="issue-page">
     <div class="issue-page-main">
-      ${issueHeadHtml(issue, context.columns)}
+      ${issueHeadHtml(issue, context)}
       ${issueBodyHtml(issue, context.refLinks)}
       ${issueAttachmentsHtml(issue.attachments)}
       ${timelineHtml(context.rows, context)}

@@ -353,6 +353,18 @@
 .issue-page-main { min-width:0; }
 
 .issue-page-marks { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+/* The watch switch (#65) sits among the marks and not in the rail of controls:
+   whether the reader is watching is a fact about them, like the issue's state
+   and its age, rather than something they are changing about the issue. Far
+   right, because it is the only thing in the row that can be pressed.
+
+   Scoped to this row rather than written against `.rail-watch` itself: the
+   same control stands in the conversation's panel head, which is the shell's
+   surface to dress. */
+.issue-page-marks .rail-watch { margin-left:auto; padding:2px 5px; }
+.issue-page-marks .rail-watch svg { display:block; width:15px; height:15px; }
+.issue-page-marks .rail-watch.watching { color:var(--accent); }
+.issue-page-marks .rail-watch[disabled] { opacity:.55; cursor:default; }
 .issue-page-state { font-size:11px; font-weight:650; color:var(--ink2); }
 .issue-page-title { margin:0 0 8px; font-size:20px; line-height:1.25; color:var(--ink); }
 .issue-page-labels { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:12px; }

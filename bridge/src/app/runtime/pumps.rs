@@ -60,6 +60,7 @@ pub(in crate::app) fn spawn_status_pump(
     let session = Arc::downgrade(&session);
     tokio::spawn(async move {
         let mut recorded_context = None;
+        let mut recorded_limit = None;
         loop {
             let snapshot = changed.borrow_and_update().clone();
             let (ended, retry_deferred, clock, delivery_state) = {
@@ -79,8 +80,17 @@ pub(in crate::app) fn spawn_status_pump(
                 let owner = &instance.entity_id;
                 app.record_agent_status_snapshot(owner, &instance.agent_id, &snapshot);
                 record_new_turn_context(&mut app, instance, &snapshot, &mut recorded_context);
-                let retry_deferred = !matches!(snapshot.status, AgentStatus::Working)
-                    && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
+                // A limit recorded wants its reset waited for, and one cleared
+                // may have left agents to start again: either is a drain.
+                let usage_limit_moved = app.record_usage_limit(
+                    owner,
+                    &instance.agent_id,
+                    &snapshot,
+                    &mut recorded_limit,
+                );
+                let retry_deferred = usage_limit_moved
+                    || !matches!(snapshot.status, AgentStatus::Working)
+                        && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
                 (
                     matches!(snapshot.status, AgentStatus::Ended { .. }),
                     retry_deferred,

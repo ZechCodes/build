@@ -8,3 +8,4 @@ pub(in crate::app) mod resume;
 pub(in crate::app) mod sessions;
 pub(in crate::app) mod spawning;
 pub(in crate::app) mod terminals;
+pub(in crate::app) mod usage_limits;

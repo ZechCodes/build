@@ -29,7 +29,7 @@ impl DeliveryRunner {
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
-        let (compactions, turns, settle_wake) = {
+        let (compactions, turns, settle_wake, usage_limit_wake) = {
             let mut app = timer.lock(state);
             // Before the turns are taken: an agent with a turn queued has
             // its compaction sent ahead of that turn, by the turn's delivery.
@@ -38,10 +38,25 @@ impl DeliveryRunner {
                 compactions,
                 app.take_pending_turns(),
                 app.delivery_queue.settle_wake_due(),
+                app.usage_limit_wake_due(),
             )
         };
         if let Some(at) = settle_wake {
-            DeliveryRunner::wake_at(state, timer, at);
+            DeliveryRunner::wake_at(state, timer, at, SETTLE_WAKE_METHOD, |app, at| {
+                app.delivery_queue.settle_wake_fired(at)
+            });
+        }
+        // A limit's reset has nothing else to wake the queue it is holding.
+        if let Some(at) = usage_limit_wake {
+            let wait = at - time::OffsetDateTime::now_utc();
+            let wait = std::time::Duration::try_from(wait).unwrap_or_default();
+            DeliveryRunner::wake_at(
+                state,
+                timer,
+                std::time::Instant::now() + wait,
+                USAGE_LIMIT_WAKE_METHOD,
+                |_, _| {},
+            );
         }
         DeliveryRunner::spawn_compactions(state, timer, compactions);
         DeliveryRunner::spawn(state, turns);
@@ -85,7 +100,13 @@ impl DeliveryRunner {
     ///
     /// With no runtime under it there is no timer to set, and the synchronous
     /// tests end the window by hand instead.
-    fn wake_at(state: &Arc<Mutex<AppState>>, timer: &FrameTimer, at: std::time::Instant) {
+    fn wake_at(
+        state: &Arc<Mutex<AppState>>,
+        timer: &FrameTimer,
+        at: std::time::Instant,
+        method: &'static str,
+        fired: fn(&mut AppState, std::time::Instant),
+    ) {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
@@ -99,12 +120,12 @@ impl DeliveryRunner {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let timer = clock.frame(SETTLE_WAKE_METHOD);
-                timer.lock(&state).delivery_queue.settle_wake_fired(at);
+                let timer = clock.frame(method);
+                fired(&mut timer.lock(&state), at);
                 DeliveryRunner::drain(&state, &timer);
             });
             if let Err(joined) = drained.await {
-                eprintln!("settle wake failed: {joined}");
+                eprintln!("{method} failed: {joined}");
             }
         });
     }
@@ -236,3 +257,5 @@ pub(in crate::app) const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
 
 /// Where a settle window's wake is charged: a timer, not any client's frame.
 pub(in crate::app) const SETTLE_WAKE_METHOD: &str = "agent.settle_wake";
+/// The frame a usage limit's reset wakes the delivery queue under (issue #58).
+pub(in crate::app) const USAGE_LIMIT_WAKE_METHOD: &str = "agent.usage_limit_wake";

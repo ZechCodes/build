@@ -752,6 +752,7 @@ impl AppState {
             .plans
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
+            .filter(|(id, a)| !self.stopped_at_usage_limit(id, &a.agents))
             .filter_map(|(id, a)| {
                 let root = a
                     .workspace
@@ -771,6 +772,7 @@ impl AppState {
             .runs
             .iter()
             .filter(|(_, a)| a.run.state.is_working())
+            .filter(|(id, a)| !self.stopped_at_usage_limit(id, &a.agents))
             .filter_map(|(id, a)| {
                 let root = Self::canonical_root(&a.worktree.path);
                 idle_check(
@@ -838,6 +840,16 @@ impl AppState {
             }
         }
         idle_ids
+    }
+
+    /// Whether an entity's agent went quiet because its harness ran out of
+    /// usage (issue #58). That is not an agent walking off without reporting:
+    /// it is idle with the limit as its reason, which the wire already says,
+    /// and it is started again when the limit lifts.
+    fn stopped_at_usage_limit(&self, entity_id: &str, agents: &crate::agent::AgentRoster) -> bool {
+        agents
+            .primary()
+            .is_some_and(|agent| self.usage_limits.stopped(entity_id, &agent.id))
     }
 
     /// Watch every working task's harness and demote crashed/quiet ones to

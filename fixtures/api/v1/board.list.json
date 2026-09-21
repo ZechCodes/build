@@ -271,6 +271,14 @@
           "unknown"
         ]
       }
+    ],
+    "usage_limits": [
+      {
+        "harness": "claude_adk",
+        "since": "2026-09-20T21:30:47Z",
+        "resets_at": "2026-09-20T22:20:00Z",
+        "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+      }
     ]
   },
   "errors": [

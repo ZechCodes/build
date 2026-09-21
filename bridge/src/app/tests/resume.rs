@@ -11,7 +11,7 @@ use crate::resume::{ResumeRoster, OPT_OUT_FILE};
 
 /// A project with one workspace, a conversation on it, and one agent standing
 /// in it. The shape every roll actually finds.
-struct Standing {
+pub(super) struct Standing {
     state: AppState,
     state_root: std::path::PathBuf,
     run_id: String,
@@ -20,7 +20,7 @@ struct Standing {
     _tmp: tempfile::TempDir,
 }
 
-fn standing() -> Standing {
+pub(super) fn standing() -> Standing {
     let (home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -49,7 +49,7 @@ impl Standing {
     /// The four things every test here works with, with the tempdirs left on
     /// the struct: destructuring would drop them, and the state root would go
     /// out from under the roster mid-test.
-    fn parts(&mut self) -> (&mut AppState, std::path::PathBuf, String, String) {
+    pub(super) fn parts(&mut self) -> (&mut AppState, std::path::PathBuf, String, String) {
         (
             &mut self.state,
             self.state_root.clone(),

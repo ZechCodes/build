@@ -250,6 +250,7 @@ impl AppState {
         self.note_board_lists_changed(crate::changes::BoardLists {
             projects: true,
             workspaces: true,
+            usage_limits: false,
         });
         Ok(())
     }

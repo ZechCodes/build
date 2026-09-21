@@ -760,3 +760,64 @@ async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
     );
     session.end();
 }
+
+/// The sentence as the Claude ADK emitted it on 2026-09-20, in the shape it
+/// arrives in: an ordinary assistant text block.
+fn limit_sentence_line() -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "content": [{
+                "type": "text",
+                "text": "You've hit your session limit · resets 6:20pm (America/New_York)",
+            }],
+        },
+    })
+    .to_string()
+}
+
+/// #58: a turn that ends on the limit sentence leaves the session idle WITH A
+/// REASON. Before this the turn simply stopped and the agent was indistinguishable
+/// from one waiting for the human, which is how one sat with an uncommitted tree
+/// for fifty-five minutes and nothing said why.
+#[tokio::test]
+async fn a_turn_that_ends_on_the_limit_sentence_says_so_on_the_wire() {
+    let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
+    let (mut reader, status) = reader_and_its_status(Arc::new(Mutex::new(Some(sender))));
+
+    reader.read_line(&limit_sentence_line());
+    reader.end_stream();
+
+    let limit = status
+        .borrow()
+        .usage_limit
+        .clone()
+        .expect("the session says why it is idle");
+    assert_eq!(
+        limit.said, "You've hit your session limit · resets 6:20pm (America/New_York)",
+        "the harness's own words, kept whole for the reader"
+    );
+    assert!(
+        limit.resets_at.is_some(),
+        "and the reset resolved in the zone it named, so the banner can count down"
+    );
+}
+
+/// The negative, and the one that matters: an agent that merely TALKS about a
+/// limit and carries on working has not hit one. A substring match would have put
+/// a banner over every conversation because somebody described the feature.
+#[tokio::test]
+async fn an_agent_that_quotes_the_sentence_and_keeps_working_is_not_limited() {
+    let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
+    let (mut reader, status) = reader_and_its_status(Arc::new(Mutex::new(Some(sender))));
+
+    reader.read_line(&limit_sentence_line());
+    // Anything reported afterwards means the turn kept going.
+    reader.read_line(&todo_write_call("todo-1", "carry on"));
+    reader.end_stream();
+
+    assert!(
+        status.borrow().usage_limit.is_none(),
+        "the sentence was a quote, not a verdict"
+    );
+}

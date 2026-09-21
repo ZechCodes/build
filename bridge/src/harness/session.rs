@@ -164,6 +164,16 @@ pub struct SessionStatusSnapshot {
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
+    /// Why this session is idle, when the reason is that its harness has run out
+    /// of usage (issue #58).
+    ///
+    /// Carried beside the status rather than as a status of its own: the agent
+    /// genuinely IS idle, and every reader that only asks "is it working" is
+    /// right to go on asking that. What was missing was the reason — a limited
+    /// harness looked exactly like an agent waiting for the human, which is how
+    /// one sat with an uncommitted tree for fifty-five minutes and nothing said
+    /// why. Cleared when a turn runs again.
+    pub usage_limit: Option<crate::harness::usage_limit::UsageLimited>,
 }
 
 impl SessionStatusSnapshot {
@@ -175,6 +185,7 @@ impl SessionStatusSnapshot {
             changed_at,
             last_worked_at,
             context: None,
+            usage_limit: None,
         }
     }
 
@@ -192,7 +203,30 @@ impl SessionStatusSnapshot {
                 changed_at,
                 last_worked_at,
                 context: self.context,
+                // A turn running again is the harness answering again, so the
+                // limit is over whatever its stated reset said. Anything else
+                // keeps it: going from Waiting to Waiting must not quietly clear
+                // a banner the reader still needs.
+                usage_limit: match status {
+                    AgentStatus::Working => None,
+                    _ => self.usage_limit.clone(),
+                },
             }
+        })
+    }
+
+    /// Record that this session is idle because its harness has no usage left.
+    ///
+    /// `None` when nothing changed, matching `transition`, so a caller can hand
+    /// the result straight to `send_if_modified` — a limit re-reported by a second
+    /// reader must not wake every subscriber again.
+    pub fn limited(&self, limit: crate::harness::usage_limit::UsageLimited) -> Option<Self> {
+        (self.usage_limit.as_ref() != Some(&limit)).then(|| Self {
+            status: self.status,
+            changed_at: status_time(),
+            last_worked_at: self.last_worked_at.clone(),
+            context: self.context,
+            usage_limit: Some(limit),
         })
     }
 }

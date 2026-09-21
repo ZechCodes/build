@@ -62,6 +62,31 @@ pub struct ResetClock {
     pub zone: Option<String>,
 }
 
+/// A harness that has run out of usage, as everything above the adapter reads it:
+/// what it said, and when it lifts.
+///
+/// The resolved form of [`UsageLimitSaid`] — the clock and zone turned into an
+/// instant — because nothing above this module should be doing zone arithmetic,
+/// and because `resets_at: None` is a state the banner has words for ("reset time
+/// unknown") rather than a gap to paper over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageLimited {
+    /// The harness's own sentence, shown to the reader behind the banner.
+    pub said: String,
+    /// When the limit lifts, when it could be known.
+    pub resets_at: Option<OffsetDateTime>,
+}
+
+impl UsageLimitSaid {
+    /// This limit as the rest of the bridge reads it, with the reset resolved.
+    pub fn resolved(&self, now: OffsetDateTime) -> UsageLimited {
+        UsageLimited {
+            said: self.said.clone(),
+            resets_at: resolved_reset(self, now),
+        }
+    }
+}
+
 /// The two nouns seen or plausible for the same thing.
 const LIMIT_NOUNS: [&str; 2] = ["session limit", "usage limit"];
 

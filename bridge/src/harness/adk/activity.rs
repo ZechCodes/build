@@ -94,6 +94,21 @@ pub(super) fn reports_already_sent(
     reported
 }
 
+/// A reader whose published status a test can watch. The ordinary fixture drops
+/// the receiver, which is fine until what a case is about IS the status — a
+/// session that went idle because its harness ran out of usage, say (issue #58).
+#[cfg(test)]
+pub(super) fn reader_and_its_status(
+    activity: ActivitySlot,
+) -> (ProtocolReader, watch::Receiver<SessionStatusSnapshot>) {
+    let (status_updates, watching) =
+        watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
+    (
+        reader_publishing_status_into(activity, status_updates),
+        watching,
+    )
+}
+
 #[cfg(test)]
 pub(super) fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
     let (status_updates, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));

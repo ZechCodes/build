@@ -1,6 +1,6 @@
 use super::activity::{
-    reader_publishing_status_into, reader_reporting_into, reports_already_sent,
-    running_shell_outputs,
+    reader_and_its_status, reader_publishing_status_into, reader_reporting_into,
+    reports_already_sent, running_shell_outputs,
 };
 use super::fake::*;
 use super::protocol::{RecordedCall, ACTIVITY_BACKLOG};

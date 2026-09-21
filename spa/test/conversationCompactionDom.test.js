@@ -160,13 +160,22 @@ afterEach(() => {
 describe("the context gauge beside the paperclip", () => {
   const gauge = () => panel().querySelector("#railinputgauge");
 
-  it("shows the agent's share of its window off the digest", async () => {
+  it("shows how near the chat is to compacting, off the digest", async () => {
     await mountWorkspaceRail();
 
     expect(gauge().hidden).toBe(false);
+    expect(gauge().textContent).toBe("60%");
+    expect(gauge().dataset.step).toBe("accent");
+    expect(gauge().title).toBe("120k of 200k tokens (compacts at 200k), as of its last turn");
+  });
+
+  it("measures a chat that never compacts against the model's window", async () => {
+    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+    await mountWorkspaceRail();
+
     expect(gauge().textContent).toBe("12%");
     expect(gauge().dataset.step).toBe("dim");
-    expect(gauge().title).toBe("120k of 1M tokens in this agent's context, as of its last turn");
+    expect(gauge().title).toBe("120k of 1M window, as of its last turn");
   });
 
   it("moves with a new record and leaves the box being typed in alone", async () => {
@@ -176,11 +185,11 @@ describe("the context gauge beside the paperclip", () => {
     input.focus();
     input.setSelectionRange(4, 4);
 
-    digestCompaction = { ...digestCompaction, last_context_tokens: 850000 };
+    digestCompaction = { ...digestCompaction, last_context_tokens: 190000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
 
-    expect(gauge().textContent).toBe("85%");
+    expect(gauge().textContent).toBe("95%");
     expect(gauge().dataset.step).toBe("warning");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(document.activeElement).toBe(input);

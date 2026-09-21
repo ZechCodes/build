@@ -2,7 +2,8 @@
 // How full the agent's context is, beside the paperclip.
 //
 // The figure comes off the agent's digest (`last_context_tokens`, wire 1.10)
-// against the window its model has. It takes no space when either is missing,
+// against where the chat compacts (`compact_at_tokens`), or the window its
+// model has when it never does. It takes no space when either is missing,
 // and it is written onto a node of its own: the textarea beside it is never
 // touched, so a push of the agent record mid-sentence keeps the caret.
 
@@ -42,6 +43,23 @@ describe("contextWindowOf", () => {
 });
 
 describe("contextGauge", () => {
+  it("measures against the compaction threshold when the chat compacts", () => {
+    const gauge = contextGauge(claude(190000, { compact_at_tokens: 200000 }), CATALOG);
+    expect(gauge).toMatchObject({ text: "95%", percent: 95, step: "warning" });
+    expect(gauge.title).toBe("190k of 200k tokens (compacts at 200k), as of its last turn");
+  });
+
+  it("measures against the model's window when the chat never compacts", () => {
+    const gauge = contextGauge(claude(612000, { compact_at_tokens: 0 }), CATALOG);
+    expect(gauge).toMatchObject({ text: "61%", step: "accent" });
+    expect(gauge.title).toBe("612k of 1M window, as of its last turn");
+  });
+
+  it("names a threshold the context has passed", () => {
+    expect(contextGauge(claude(1200000), CATALOG).title).toBe("1.2M of 1M window, as of its last turn");
+    expect(contextGauge(claude(210000, { compact_at_tokens: 200000 }), CATALOG).text).toBe("105%");
+  });
+
   it("reads the percentage off the record", () => {
     expect(contextGauge(claude(612000), CATALOG)).toMatchObject({ text: "61%", percent: 61 });
   });
@@ -53,16 +71,15 @@ describe("contextGauge", () => {
     expect(contextGauge(claude(810000), CATALOG).step).toBe("warning");
   });
 
-  it("says what the figure is in its hover text", () => {
-    expect(contextGauge(claude(612000), CATALOG).title).toBe(
-      "612k of 1M tokens in this agent's context, as of its last turn",
-    );
+  it("falls back to the window for a digest from before compaction", () => {
+    expect(contextGauge(claude(612000), CATALOG).title).toBe("612k of 1M window, as of its last turn");
   });
 
   it("is absent without the field, before a turn, or without a window", () => {
     expect(contextGauge({ id: "a1", provider: "claude_adk" }, CATALOG)).toBeNull();
     expect(contextGauge(claude(null), CATALOG)).toBeNull();
     expect(contextGauge({ provider: "codex", last_context_tokens: 5000 }, CATALOG)).toBeNull();
+    expect(contextGauge({ provider: "codex", last_context_tokens: 5000, compact_at_tokens: 0 }, CATALOG)).toBeNull();
     expect(contextGauge(null, CATALOG)).toBeNull();
   });
 });
@@ -88,11 +105,11 @@ describe("the gauge on the composer", () => {
   });
 
   it("shows the figure, its step and its hover text", () => {
-    gauge.set(claude(612000), CATALOG);
+    gauge.set(claude(130000, { compact_at_tokens: 200000 }), CATALOG);
     expect(gaugeNode().hidden).toBe(false);
-    expect(gaugeNode().textContent).toBe("61%");
+    expect(gaugeNode().textContent).toBe("65%");
     expect(gaugeNode().dataset.step).toBe("accent");
-    expect(gaugeNode().title).toBe("612k of 1M tokens in this agent's context, as of its last turn");
+    expect(gaugeNode().title).toBe("130k of 200k tokens (compacts at 200k), as of its last turn");
   });
 
   it("hides again when the record stops carrying a figure", () => {

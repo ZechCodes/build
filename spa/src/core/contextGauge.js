@@ -2,8 +2,10 @@
 //
 // The tokens are the digest's `last_context_tokens` (wire 1.10) — what the last
 // turn the agent's session reported held, null before one and again once a
-// compaction is asked for. The window they are a share of is the model's. The
-// catalog names it where it can (`context_window` on a model); until the bridge
+// compaction is asked for. What they are a share of is where the chat compacts:
+// the digest's `compact_at_tokens`, the threshold in effect. A chat that never
+// compacts (0) is measured against the model's window instead. The catalog
+// names that where it can (`context_window` on a model); until the bridge
 // carries one, the harness says it, and a harness with no known window shows no
 // figure rather than a guessed one.
 //
@@ -18,8 +20,8 @@ import { composerPartIds } from "./composer.js";
 const PROVIDER_WINDOWS = { claude: 1000000, claude_adk: 1000000 };
 
 /** Where the steps change: dim below the first, the accent up to and including
- *  the second, the warning colour past it — where auto-compaction is near and
- *  every turn is expensive. */
+ *  the second, the warning colour past it — where compaction is near and every
+ *  turn is expensive. */
 const ACCENT_FROM = 50;
 const WARNING_ABOVE = 80;
 
@@ -41,25 +43,38 @@ export function contextWindowOf(agent, catalog) {
 const tokenWord = (tokens) =>
   tokens >= 1000000 ? `${Number((tokens / 1000000).toFixed(1))}M` : `${Math.round(tokens / 1000)}k`;
 
+/** What the tokens are measured against, and how the hover says it: the
+ *  compaction threshold while the chat compacts, the window when it never
+ *  does. Null when there is neither. */
+function measureOf(agent, catalog) {
+  const threshold = agent.compact_at_tokens;
+  if (Number.isFinite(threshold) && threshold > 0) {
+    const word = tokenWord(threshold);
+    return { tokens: threshold, words: `${word} tokens (compacts at ${word})` };
+  }
+  const window = contextWindowOf(agent, catalog);
+  return window ? { tokens: window, words: `${tokenWord(window)} window` } : null;
+}
+
 function stepOf(percent) {
   if (percent > WARNING_ABOVE) return "warning";
   return percent >= ACCENT_FROM ? "accent" : "dim";
 }
 
 /** What the gauge says for one agent record, or null when it has nothing to
- *  say: no record, no turn yet (or a bridge from before the field), or no
- *  window to measure against. */
+ *  say: no record, no turn yet (or a bridge from before the field), or
+ *  nothing to measure against. */
 export function contextGauge(agent, catalog) {
   const tokens = agent?.last_context_tokens;
   if (!Number.isFinite(tokens)) return null;
-  const window = contextWindowOf(agent, catalog);
-  if (!window) return null;
-  const percent = Math.round((tokens / window) * 100);
+  const measure = measureOf(agent, catalog);
+  if (!measure) return null;
+  const percent = Math.round((tokens / measure.tokens) * 100);
   return {
     percent,
     text: `${percent}%`,
     step: stepOf(percent),
-    title: `${tokenWord(tokens)} of ${tokenWord(window)} tokens in this agent's context, as of its last turn`,
+    title: `${tokenWord(tokens)} of ${measure.words}, as of its last turn`,
   };
 }
 

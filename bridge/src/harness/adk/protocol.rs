@@ -219,6 +219,22 @@ pub(super) fn publish_status(updates: &watch::Sender<SessionStatusSnapshot>, sta
     });
 }
 
+/// Tell everything above that this session is idle because its harness has no
+/// usage left. Quiet when it already says so, so a limit two readers both notice
+/// wakes the subscribers once.
+pub(super) fn publish_usage_limit(
+    updates: &watch::Sender<SessionStatusSnapshot>,
+    limit: crate::harness::usage_limit::UsageLimited,
+) {
+    updates.send_if_modified(|snapshot| match snapshot.limited(limit.clone()) {
+        Some(next) => {
+            *snapshot = next;
+            true
+        }
+        None => false,
+    });
+}
+
 /// What became of one tool call, kept until its result arrives so the answer
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer

@@ -1,6 +1,7 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
-    publish_status, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
+    publish_status, publish_usage_limit, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX,
+    SURFACE_TASK_SUBTYPES,
 };
 use super::translation::{
     bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
@@ -95,22 +96,23 @@ impl ProtocolReader {
         let (changed, limited) = {
             let mut state = self.state.lock().unwrap();
             let limited = state.limit_said_last.take().map(|said| {
-                let resets_at = crate::harness::usage_limit::resolved_reset(
-                    &said,
-                    time::OffsetDateTime::now_utc(),
-                );
+                let resolved = said.resolved(time::OffsetDateTime::now_utc());
                 let session = state.session_id.clone();
                 state.usage_limited = Some(said.clone());
-                (session, said, resets_at)
+                (session, said, resolved)
             });
             (state.surfaces.mark_retained_checklist_stale(), limited)
         };
         // Written with the lock released, for the same reason as above.
-        if let Some((session, said, resets_at)) = limited {
+        if let Some((session, said, resolved)) = limited {
             eprintln!(
-                "harness usage_limited: session={session:?} said={:?} reset_clock={:?} resets_at={resets_at:?}",
-                said.said, said.reset_clock
+                "harness usage_limited: session={session:?} said={:?} reset_clock={:?} resets_at={:?}",
+                said.said, said.reset_clock, resolved.resets_at
             );
+            // And said on the wire, so the agent reads as idle-because-limited
+            // rather than as idle-and-unexplained. Without this the turn still
+            // just stops, which is the whole of #58.
+            publish_usage_limit(&self.status_updates, resolved);
         }
         self.bump_revision_when(changed);
     }

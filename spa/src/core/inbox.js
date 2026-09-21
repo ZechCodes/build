@@ -494,8 +494,21 @@ const NOT_A_CHECKOUT = Object.freeze({
   warnings: [],
 });
 
+/**
+ * When a watched issue last moved.
+ *
+ * The row's own `anchor` and `last_activity`, as every other row in this feed
+ * carries them (#64, settled). The event it carries is the fallback: the two
+ * say the same thing, and a row that dated neither would sort under everything
+ * rather than where it belongs.
+ */
+function issueTimesOf(item) {
+  const anchorMs = ms(item.anchor) ?? ms(item.last_event?.at);
+  return { anchorMs, lastActivityMs: ms(item.last_activity) ?? anchorMs };
+}
+
 function toTrackerIssueEntry(item) {
-  const at = ms(item.last_event?.at);
+  const times = issueTimesOf(item);
   const unread = item.unread || 0;
   return {
     ...NOT_A_CHECKOUT,
@@ -519,8 +532,7 @@ function toTrackerIssueEntry(item) {
     dismissed: !!item.done_until_next,
     facts: item.last_event?.text || "",
     route: entryRoute(item),
-    anchorMs: at,
-    lastActivityMs: at,
+    ...times,
   };
 }
 

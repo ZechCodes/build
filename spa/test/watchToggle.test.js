@@ -136,4 +136,12 @@ describe("the control it wears", () => {
     syncWatchButton(node, { watching: true, watchers: 1, pending: false });
     expect(node.disabled).toBe(false);
   });
+
+  // The two ways of drawing the control have to agree. A surface that renders
+  // the markup for a state already in flight and does not sync afterwards
+  // would otherwise offer a press the switch is going to ignore.
+  it("is drawn unpressable too, when the markup is written mid-flight", () => {
+    expect(button(watchButtonHtml({ watching: true, watchers: 1, pending: true })).disabled).toBe(true);
+    expect(button(watchButtonHtml({ watching: true, watchers: 1 })).disabled).toBe(false);
+  });
 });

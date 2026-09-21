@@ -125,12 +125,16 @@ export const WATCH_BUTTON_SELECTOR = `.${WATCH_BUTTON_CLASS}`;
  * what says whether it is on — the icon alone is not an answer to a reader who
  * cannot see it — and the title carries the count, which is the whole reason
  * the control is worth hovering.
+ *
+ * Draws the same states `syncWatchButton` writes, `pending` included: a head
+ * rebuilt mid-flight must not come back offering a press the switch will
+ * ignore.
  */
 export function watchButtonHtml(state = {}) {
   const label = esc(watchTitle(state));
   const on = Boolean(state.watching);
   return `<button type="button" class="iconbtn ${WATCH_BUTTON_CLASS}${on ? " watching" : ""}"
-    aria-pressed="${on}" title="${label}" aria-label="${label}">${ICON_EYE}</button>`;
+    aria-pressed="${on}" title="${label}" aria-label="${label}"${state.pending ? " disabled" : ""}>${ICON_EYE}</button>`;
 }
 
 /** …and the same state written onto a button already standing, so a press does

@@ -15,7 +15,7 @@
 //
 // Regenerate with: ISSUE_LINE_FIXTURE=write npx vitest run test/issueLineFixture.test.js
 
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { threadHtml } from "../src/core/thread.js";
@@ -97,6 +97,15 @@ export const ISSUE_LINE_ITEMS = [
 ];
 
 const rendered = () => threadHtml({ id: "c-1", items: ISSUE_LINE_ITEMS }, { place, agentLabels });
+
+// The fixture carries relative times ("1 hour ago") rendered against the
+// clock, so the clock is frozen here or the committed markup rots by the hour.
+const FROZEN_NOW = new Date("2026-09-20T22:30:00Z");
+beforeAll(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FROZEN_NOW);
+});
+afterAll(() => vi.useRealTimers());
 
 describe("the markup the browser measurement is taken over", () => {
   it("is what the renderer produces", () => {

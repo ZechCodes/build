@@ -25,7 +25,7 @@ import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
 import { referenceLinks } from "./referenceTargets.js";
-import { carriesWatch, readThrough, watchStateOf } from "./trackerWatch.js";
+import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
@@ -55,7 +55,7 @@ export function mountIssuePage(host, options) {
   /** Whether this bridge can be asked about watching at all (#65). Read once
    *  at mount: a greeting arrives before any surface paints, and a bridge does
    *  not gain a verb without a new one. */
-  const offersWatch = carriesWatch(state.deviceId);
+  const offersWatch = carriesWatching(state.deviceId);
 
   /**
    * The watch switch, or nothing where the bridge cannot serve it.

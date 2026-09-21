@@ -1,50 +1,14 @@
-// #65: whether this bridge can be asked about watching, and what it says.
+// #65: what an issue's record says about watching, and how far it has been read.
 //
-// The gate is the whole of why this module exists. The issue page makes two
-// calls a bridge that predates #64 refuses — the watch verb and the read mark
-// — and the read mark fires on every open and every scroll to the end, so an
-// ungated one is an error toast per glance at an issue. Refused by default,
-// the way the viewing context's gate is (#21): every unknown answers no.
+// The gate itself is NOT here. It moved to a capability at `ea3de439`
+// (`bridgeCapabilities(deviceId)?.issues?.watching === true`) and the shell
+// agent's test/trackerWatchGate.test.js holds it, with
+// test/issueWatchGate.test.js holding this page on top of a real greeting.
+// What is left here is the reading of the record — the two functions only this
+// page uses.
 
-import { describe, expect, it, vi, beforeEach } from "vitest";
-
-let version = null;
-vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeApiVersion: (deviceId) => (deviceId ? version : null),
-}));
-
-const { carriesWatch, readThrough, WATCH_SINCE, watchStateOf } = await import("../src/core/trackerWatch.js");
-
-beforeEach(() => {
-  version = "1.7.0";
-});
-
-describe("whether the bridge carries watching", () => {
-  // The number #64 will name. Until it does, the switch is dark everywhere,
-  // which is the one line that changes when it lands.
-  it("is refused everywhere while the minor is not known", () => {
-    expect(WATCH_SINCE).toBe("");
-    expect(carriesWatch("dev-1")).toBe(false);
-  });
-
-  const CASES = [
-    { name: "a bridge at the minor", version: "1.7.0", since: "1.7.0", carries: true },
-    { name: "a bridge past it", version: "1.9.2", since: "1.7.0", carries: true },
-    { name: "a bridge below it", version: "1.6.9", since: "1.7.0", carries: false },
-    { name: "a bridge that said nothing readable", version: "not a version", since: "1.7.0", carries: false },
-    { name: "a bridge that has not greeted yet", version: null, since: "1.7.0", carries: false },
-  ];
-  for (const one of CASES) {
-    it(`${one.name} ${one.carries ? "carries" : "does not carry"} it`, () => {
-      version = one.version;
-      expect(carriesWatch("dev-1", one.since)).toBe(one.carries);
-    });
-  }
-
-  it("is refused with no device to ask about", () => {
-    expect(carriesWatch("", "1.7.0")).toBe(false);
-  });
-});
+import { describe, expect, it } from "vitest";
+import { readThrough, watchStateOf } from "../src/core/trackerWatch.js";
 
 describe("what the record says about watching", () => {
   // Settled on #64 at 00:38Z: `watched` is the reader's own watch, `trackers`

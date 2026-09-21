@@ -43,7 +43,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 let carries = true;
 vi.mock("../src/core/trackerWatch.js", async (original) => ({
   ...(await original()),
-  carriesWatch: () => carries,
+  carriesWatching: () => carries,
 }));
 
 const PROJECT_KEY = "dev-1|proj-1";

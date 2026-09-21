@@ -951,6 +951,20 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   padding:calc(var(--surface-head) + 14px) 16px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
   scroll-padding-top:var(--surface-head);
   scroll-padding-bottom:calc(var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px)); }
+/* A harness out of usage on this machine (#58, core/usageLimits.js): one line
+   per harness, under the head, amber like the device strip because it is the
+   same kind of news — about the machine, not the conversation. It sits in the
+   column rather than under the glass head, so the body below it starts after
+   it instead of scrolling beneath the head. The harness's own sentence is
+   behind the press. */
+.usage-limit-banners { flex:none; margin-top:var(--surface-head); }
+.usage-limit-banner { background:var(--amber-bg); color:var(--amber);
+  padding:8px 16px; font-size:12.5px; }
+.usage-limit-banner summary { cursor:pointer; list-style:none; }
+.usage-limit-banner summary::-webkit-details-marker { display:none; }
+.usage-limit-said { margin:6px 0 0; color:var(--ink2); overflow-wrap:anywhere; }
+.usage-limit-banners + .rail-body { padding-top:14px; scroll-padding-top:0; }
+.usage-limit-banners + .rail-body-tui { margin-top:0; }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the

@@ -100,6 +100,7 @@ const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfa
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
+const { resetUsageLimits, setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 const { pushRailThreadItems, writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
@@ -3661,6 +3662,38 @@ describe("sending to an agent that is already there", () => {
     railHost().querySelector("#railsend").click();
     await flush();
   };
+
+  // Issue #58, through the rail as a surface mounts it: the device's limit is a
+  // strip at the top of the conversation, the message sent meanwhile is Queued
+  // with the same reason on hover, and both go when the bridge clears it.
+  it("says a harness is out of usage over the conversation, and why a message is still queued", async () => {
+    resetUsageLimits();
+    const resetsAt = new Date(Date.now() + 34 * 60_000).toISOString();
+    setUsageLimits("dev-1", [{
+      harness: "claude_adk",
+      since: new Date().toISOString(),
+      resets_at: resetsAt,
+      said: "You've hit your session limit · resets 6:20pm (America/New_York)",
+    }]);
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+
+    const banner = panel().querySelector(".usage-limit-banner");
+    expect(banner.textContent).toContain("Claude session limit reached · resets in 34 min");
+    expect(banner.querySelector(".usage-limit-said").textContent).toContain("You've hit your session limit");
+    expect(composer().disabled).toBe(false);
+
+    const release = holdThreadPost();
+    await press("are you still on this?");
+    const queued = timeline().querySelector('[data-delivery-status="queued"]');
+    expect(queued.title).toBe("Claude session limit reached · resets in 34 min");
+
+    setUsageLimits("dev-1", []);
+    expect(panel().querySelector(".usage-limit-banner")).toBeNull();
+    expect(timeline().querySelector('[data-delivery-status="queued"]').hasAttribute("title")).toBe(false);
+    release();
+    await flush();
+  });
 
   it("shows the message and clears the box before thread.post answers", async () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });

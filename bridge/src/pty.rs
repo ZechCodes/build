@@ -181,6 +181,9 @@ pub struct HarnessSpec {
     pub submit_delay: Duration,
     pub known_session_id: Option<String>,
     pub compaction_sidecar: Option<PathBuf>,
+    /// The Build agent this spec starts, when the harness logs anything that
+    /// must name it (issue #58: a usage limit in bridge.log says whose turn).
+    pub agent_id: Option<String>,
 }
 
 impl HarnessSpec {
@@ -196,7 +199,14 @@ impl HarnessSpec {
             submit_delay: Duration::ZERO,
             known_session_id: None,
             compaction_sidecar: None,
+            agent_id: None,
         }
+    }
+
+    /// Name the Build agent this spec starts, for the harness's own log lines.
+    pub fn for_agent(mut self, agent_id: impl Into<String>) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self
     }
 
     /// Declare how long this harness's submit key must trail the prompt text.

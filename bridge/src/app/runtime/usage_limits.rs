@@ -297,19 +297,27 @@ impl AppState {
         let Some(harness) = self.agent_harness(owner, agent_id) else {
             return false;
         };
-        if matches!(snapshot.status, crate::harness::AgentStatus::Working) {
-            *recorded = None;
-            let (cleared, resumes) = self.usage_limits.turn_ran(harness, owner, agent_id);
-            if cleared {
-                eprintln!("usage limit cleared: harness={}", harness.wire_id());
-                self.note_usage_limits_changed();
+        // The limit first: a turn that stops at it says so while its status
+        // still reads Working, and that is not a turn running. A turn that
+        // really starts clears the limit off its own snapshot.
+        match (&snapshot.usage_limit, snapshot.status) {
+            (Some(limit), _) => self.record_limit_seen(harness, owner, agent_id, limit, recorded),
+            (None, crate::harness::AgentStatus::Working) => {
+                *recorded = None;
+                self.record_turn_ran(harness, owner, agent_id)
             }
-            let resumed = self.resume_after_usage_limit(resumes);
-            return resumed;
+            (None, _) => false,
         }
-        let Some(limit) = snapshot.usage_limit.as_ref() else {
-            return false;
-        };
+    }
+
+    fn record_limit_seen(
+        &mut self,
+        harness: AgentProvider,
+        owner: &str,
+        agent_id: &str,
+        limit: &UsageLimited,
+        recorded: &mut Option<UsageLimited>,
+    ) -> bool {
         if recorded.as_ref() == Some(limit) {
             return false;
         }
@@ -327,6 +335,18 @@ impl AppState {
             self.note_usage_limits_changed();
         }
         true
+    }
+
+    fn record_turn_ran(&mut self, harness: AgentProvider, owner: &str, agent_id: &str) -> bool {
+        let (cleared, resumes) = self.usage_limits.turn_ran(harness, owner, agent_id);
+        if cleared {
+            eprintln!(
+                "usage limit cleared: harness={} agent={agent_id}",
+                harness.wire_id()
+            );
+            self.note_usage_limits_changed();
+        }
+        self.resume_after_usage_limit(resumes)
     }
 
     /// Before a drain takes its turns: lift every limit whose reset has passed

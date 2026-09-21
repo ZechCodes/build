@@ -34,7 +34,7 @@ impl AppState {
             // A write that changed nothing the timeline records is not news.
             return;
         };
-        let who = self.actor_said_as(&write.actor);
+        let who = self.actor_words(&write.actor);
         let envelope = notice_envelope(&write.issue);
         let holder = write
             .issue
@@ -46,11 +46,13 @@ impl AppState {
             // The line differs for the one agent that HOLDS the issue: a
             // comment on your own issue is a question, and a comment on one
             // you are watching is news. Everyone else gets the same words.
-            let body = notice_body(
+            let body = notice_line(
                 &notice,
                 &write.issue,
                 &who,
-                holder.as_deref() == Some(&agent_id),
+                NoticeVoice::Agent {
+                    holds_it: holder.as_deref() == Some(&agent_id),
+                },
             );
             if let Err(why) = self.deliver_notice(&agent_id, &envelope, &notice, &body) {
                 eprintln!(
@@ -81,6 +83,17 @@ impl AppState {
     /// was given, else the workspace it works in — because the reader wants to
     /// know which of its colleagues it was and an id is something to go and
     /// look up.
+    pub(in crate::app) fn actor_words(&self, actor: &Actor) -> ActorWords {
+        ActorWords {
+            to_agent: self.actor_said_as(actor),
+            // To the person reading their own inbox, the user is "you".
+            to_reader: match actor {
+                Actor::User => "you".to_string(),
+                _ => self.actor_said_as(actor),
+            },
+        }
+    }
+
     fn actor_said_as(&self, actor: &Actor) -> String {
         let Actor::Agent { agent_id } = actor else {
             return "the user".to_string();
@@ -222,9 +235,99 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
         IssueEventKind::Closed => Some(plain("closed")),
         IssueEventKind::Reopened => Some(plain("reopened")),
         IssueEventKind::Dispatched => Some(plain("assigned")),
-        // Who else is watching is not a change to the issue.
-        IssueEventKind::Tracked | IssueEventKind::Untracked => None,
+        // Who else is watching is not a change to the issue — including the
+        // user starting to watch it, which is the user's own doing.
+        IssueEventKind::Tracked
+        | IssueEventKind::Untracked
+        | IssueEventKind::Watched
+        | IssueEventKind::Unwatched => None,
     })
+}
+
+/// One timeline entry as a notice, for a reader looking at a row rather than
+/// an agent being told about a write.
+///
+/// The same vocabulary `notice_of` derives from a write, reached from the
+/// stored record instead — which is what the inbox has. `None` for an entry
+/// the vocabulary has no word for, which is a tracking change.
+pub(in crate::app) fn notice_of_entry(
+    entry: &crate::tracker::TimelineEntry,
+) -> Option<IssueNotice> {
+    let actor = match entry {
+        crate::tracker::TimelineEntry::Comment(comment) => comment.author.clone(),
+        crate::tracker::TimelineEntry::Event(event) => event.actor.clone(),
+    };
+    let plain = |action: &str| IssueNotice {
+        actor: crate::thread::NoticeActor {
+            who: actor.clone(),
+            name: None,
+        },
+        action: action.to_string(),
+        comment_id: None,
+        from: None,
+        to: None,
+        assignee: None,
+    };
+    match entry {
+        crate::tracker::TimelineEntry::Comment(comment) => Some(IssueNotice {
+            comment_id: Some(comment.id.clone()),
+            ..plain("commented")
+        }),
+        crate::tracker::TimelineEntry::Event(event) => {
+            let named = |key: &str| {
+                event
+                    .payload
+                    .get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            };
+            match event.kind {
+                IssueEventKind::Created => Some(plain("created")),
+                IssueEventKind::Moved => Some(IssueNotice {
+                    from: named("from"),
+                    to: named("to"),
+                    ..plain("moved")
+                }),
+                IssueEventKind::Assigned | IssueEventKind::Dispatched => Some(IssueNotice {
+                    assignee: event
+                        .payload
+                        .get("assignee")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok()),
+                    ..plain("assigned")
+                }),
+                IssueEventKind::Unassigned => Some(plain("unassigned")),
+                IssueEventKind::Labelled => Some(plain("edited")),
+                IssueEventKind::Linked => Some(plain("linked")),
+                IssueEventKind::Closed => Some(plain("closed")),
+                IssueEventKind::Reopened => Some(plain("reopened")),
+                IssueEventKind::Tracked
+                | IssueEventKind::Untracked
+                | IssueEventKind::Watched
+                | IssueEventKind::Unwatched => None,
+            }
+        }
+    }
+}
+
+/// Who to say did it, in each of the two voices.
+///
+/// An agent reading about its colleague wants that colleague named; the user
+/// reading their own inbox wants to be called "you". Same fact, two audiences.
+#[derive(Debug, Clone)]
+pub(in crate::app) struct ActorWords {
+    pub to_agent: String,
+    pub to_reader: String,
+}
+
+/// Who the line is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::app) enum NoticeVoice {
+    /// An agent's conversation. Carries the comment id and the tool that reads
+    /// it, and tells the agent HOLDING the issue where to answer.
+    Agent { holds_it: bool },
+    /// The user's inbox. The same facts with none of the tooling: a person
+    /// does not call `read_comment`, they click the row.
+    Reader,
 }
 
 /// The notice, as one line and nothing else.
@@ -236,13 +339,24 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
 /// one that cares reads it with `read_comment` for the same cost it used to
 /// pay whether it cared or not.
 ///
-/// No title either. The number is what the issue is called between agents, and
-/// the envelope carries the title for a client that draws a card.
-///
-/// `holds_it` is the one agent this issue is assigned to. A comment on your
-/// own issue is a question and the line says where to answer it; the same
-/// comment to a watcher is news.
-fn notice_body(notice: &IssueNotice, issue: &Issue, who: &str, holds_it: bool) -> String {
+/// One function and two voices, so the agent's line and the inbox's cannot
+/// drift apart about what happened. What differs between them is only who is
+/// being spoken to: the agent's keeps the comment id and the tool hint and
+/// leads with `#N`, the reader's drops both — their row already says which
+/// issue it is.
+pub(in crate::app) fn notice_line(
+    notice: &IssueNotice,
+    issue: &Issue,
+    who: &ActorWords,
+    voice: NoticeVoice,
+) -> String {
+    match voice {
+        NoticeVoice::Agent { holds_it } => agent_line(notice, issue, &who.to_agent, holds_it),
+        NoticeVoice::Reader => reader_line(notice, &who.to_reader),
+    }
+}
+
+fn agent_line(notice: &IssueNotice, issue: &Issue, who: &str, holds_it: bool) -> String {
     let number = issue.number;
     match notice.action.as_str() {
         "commented" => {
@@ -277,6 +391,31 @@ fn notice_body(notice: &IssueNotice, issue: &Issue, who: &str, holds_it: bool) -
     }
 }
 
+/// The same facts for the person whose inbox it is.
+///
+/// No number and no title: the row carries both already, and repeating them in
+/// the subtitle is the line saying nothing twice. No comment id and no tool
+/// name: a reader clicks the row.
+fn reader_line(notice: &IssueNotice, who: &str) -> String {
+    match notice.action.as_str() {
+        "commented" => format!("New comment from {who}"),
+        "moved" => match notice.to.as_deref() {
+            Some(to) => format!("Moved to {} by {who}", column_name(to)),
+            None => format!("Moved by {who}"),
+        },
+        "assigned" => match notice.assignee.as_ref().map(reader_assignee_name) {
+            Some(to) => format!("Assigned to {to} by {who}"),
+            None => format!("Assigned by {who}"),
+        },
+        "unassigned" => format!("Unassigned by {who}"),
+        "created" => format!("Filed by {who}"),
+        "closed" => format!("Closed by {who}"),
+        "reopened" => format!("Reopened by {who}"),
+        "linked" => format!("Linked by {who}"),
+        _ => format!("Edited by {who}"),
+    }
+}
+
 /// A column's display name, so a notice reads "moved to In review" rather than
 /// naming the slug a client is supposed to render.
 fn column_name(slug: &str) -> &str {
@@ -285,6 +424,14 @@ fn column_name(slug: &str) -> &str {
         .find(|column| column.id == slug)
         .map(|column| column.name)
         .unwrap_or(slug)
+}
+
+/// Who got it, to the person whose inbox it is: themselves, said as "you".
+fn reader_assignee_name(assignee: &crate::tracker::Assignee) -> String {
+    match assignee {
+        crate::tracker::Assignee::User => "you".to_string(),
+        other => assignee_name(other),
+    }
 }
 
 fn assignee_name(assignee: &crate::tracker::Assignee) -> String {
@@ -315,16 +462,39 @@ mod tests {
         }
     }
 
-    /// The line a watcher gets.
+    fn words(who: &str) -> ActorWords {
+        ActorWords {
+            to_agent: who.to_string(),
+            to_reader: who.to_string(),
+        }
+    }
+
+    /// The line a watching AGENT gets.
     fn body_of(write: &IssueWrite, who: &str) -> String {
         let notice = notice_of(write, None).unwrap();
-        notice_body(&notice, &write.issue, who, false)
+        notice_line(
+            &notice,
+            &write.issue,
+            &words(who),
+            NoticeVoice::Agent { holds_it: false },
+        )
     }
 
     /// And the line the agent HOLDING it gets.
     fn body_for_holder(write: &IssueWrite, who: &str) -> String {
         let notice = notice_of(write, None).unwrap();
-        notice_body(&notice, &write.issue, who, true)
+        notice_line(
+            &notice,
+            &write.issue,
+            &words(who),
+            NoticeVoice::Agent { holds_it: true },
+        )
+    }
+
+    /// And the line the USER reads off their inbox row.
+    fn reader_body_of(write: &IssueWrite, who: &str) -> String {
+        let notice = notice_of(write, None).unwrap();
+        notice_line(&notice, &write.issue, &words(who), NoticeVoice::Reader)
     }
 
     /// A move carries both columns as slugs for a client to render, and reads
@@ -395,6 +565,45 @@ mod tests {
             "{holding}"
         );
         assert!(!holding.contains("Reproduced it"), "{holding}");
+    }
+
+    /// The same event, said to a person: the facts are the notice's, and the
+    /// comment id and the tool to call are not — the reader clicks the row.
+    #[test]
+    fn the_readers_voice_keeps_the_facts_and_drops_the_machinery() {
+        let mut write = write_by(Actor::Agent {
+            agent_id: "agent-1".into(),
+        });
+        write.comments.push(crate::tracker::IssueComment {
+            id: "ic-1".into(),
+            issue_id: write.issue.id.clone(),
+            author: Actor::Agent {
+                agent_id: "agent-1".into(),
+            },
+            body: "Reproduced it on the compose stack.".into(),
+            refs: Vec::new(),
+            attachments: Vec::new(),
+            created_at: "2026-09-20T15:01:00Z".into(),
+        });
+        let reading = reader_body_of(&write, "Rail scroll");
+        assert_eq!(reading, "New comment from Rail scroll");
+        assert!(
+            !reading.contains("ic-1") && !reading.contains("read_comment"),
+            "{reading}"
+        );
+
+        let mut moved = write_by(Actor::User);
+        moved.event(
+            &Actor::User,
+            IssueEventKind::Moved,
+            json!({ "from": "backlog", "to": "in_review" }),
+            "2026-09-20T15:01:00Z",
+        );
+        assert_eq!(
+            reader_body_of(&moved, "you"),
+            "Moved to In review by you",
+            "the same column the agent's line names"
+        );
     }
 
     /// Somebody else starting to watch is not a change to the issue, so it is

@@ -63,6 +63,7 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
     pub(in crate::app) role_models: Option<crate::models::RoleModels>,
+    pub(in crate::app) watch_agent_filed_issues: Option<bool>,
 }
 
 /// The list a `settings.set` asks for, refused before anything is written if
@@ -110,7 +111,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 8] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 9] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -164,6 +165,14 @@ impl SettingsPatch {
         // optional triples is a rule nobody could predict from the wire.
         ("role_models", |patch, value, _| {
             patch.role_models = Some(accepted_role_models(value)?);
+            Ok(())
+        }),
+        ("watch_agent_filed_issues", |patch, value, _| {
+            patch.watch_agent_filed_issues = Some(
+                value
+                    .as_bool()
+                    .ok_or_else(|| "watch_agent_filed_issues is true or false.".to_string())?,
+            );
             Ok(())
         }),
     ];
@@ -360,6 +369,12 @@ impl AppState {
         self.apply_default_harness_config(config);
         self.apply_project_agent_config(config);
         self.apply_role_models_config(config);
+        if let Some(watching) = config
+            .get("watch_agent_filed_issues")
+            .and_then(Value::as_bool)
+        {
+            self.watch_agent_filed_issues = watching;
+        }
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;

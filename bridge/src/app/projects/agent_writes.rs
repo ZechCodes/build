@@ -235,6 +235,9 @@ impl AppState {
         if let Some(name) = name {
             params["name"] = json!(name);
         }
+        // An agent asked for this one, so the user only sees it if the agent
+        // said they should.
+        params["made_by_agent"] = json!(true);
         let mut added = self.agent_add(&params)?;
         added["workspace_id"] = json!(workspace_id);
         Ok(added)

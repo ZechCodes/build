@@ -16,6 +16,7 @@ impl AppState {
             "default_harness": self.default_harness,
             "project_agent": self.project_agent,
             "role_models": self.role_models,
+            "watch_agent_filed_issues": self.watch_agent_filed_issues,
             "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
@@ -132,10 +133,14 @@ impl AppState {
             .role_models
             .clone()
             .unwrap_or_else(|| self.role_models.clone());
+        let watch_agent_filed_issues = patch
+            .watch_agent_filed_issues
+            .unwrap_or(self.watch_agent_filed_issues);
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
         config["role_models"] = json!(role_models);
+        config["watch_agent_filed_issues"] = json!(watch_agent_filed_issues);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
@@ -143,6 +148,7 @@ impl AppState {
         self.isolation = isolation;
         self.project_agent = project_agent;
         self.role_models = role_models;
+        self.watch_agent_filed_issues = watch_agent_filed_issues;
         Ok(self.settings_get())
     }
 }

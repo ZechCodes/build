@@ -223,5 +223,6 @@ mod tracker_activity;
 mod tracker_dispatch;
 mod tracker_tools;
 mod tracker_tracking;
+mod tracker_watching;
 mod workflow;
 mod workspaces;

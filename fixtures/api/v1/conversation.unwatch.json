@@ -1,0 +1,17 @@
+{
+  "method": "conversation.unwatch",
+  "since": "1.9.0",
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-2"
+  },
+  "result": {
+    "agent_id": "agent-2",
+    "watched": false
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

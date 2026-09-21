@@ -15,6 +15,7 @@ mod activity;
 mod attachments;
 mod dispatch;
 mod edits;
+mod inbox;
 mod notices;
 mod refs;
 mod reminder;
@@ -157,6 +158,8 @@ impl AppState {
         // cannot resolve must refuse the whole call rather than leave a filed
         // issue whose reason for being filed is missing from it.
         draft.attachments = self.parse_issue_attachments(params)?;
+        // The user filed it, so the user watches it. Nobody has to ask.
+        draft.watched = true;
         // Read BEFORE the issue is written: an assignee this bridge cannot make
         // sense of must refuse the whole call rather than leave a filed issue
         // nobody asked for.
@@ -219,6 +222,12 @@ impl AppState {
         };
         let mut write = IssueWrite::by(Actor::User, issue);
         write.comments.push(comment.clone());
+        // Saying something on an issue is caring about it, so the user watches
+        // it from here on. Folded into this write rather than done after it:
+        // one change to the record, one push, one notice.
+        if write.issue.set_watched(true) {
+            write.event(&Actor::User, IssueEventKind::Watched, json!({}), &now);
+        }
         let answered = self.commit_issue_write(&project_id, write, &now)?;
         Ok(json!({
             "issue": answered["issue"],

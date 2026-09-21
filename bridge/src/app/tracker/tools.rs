@@ -57,6 +57,7 @@ impl AppState {
                 labels,
                 priority,
                 attachments,
+                notify_user,
                 ..
             } => self.create_issue_as_agent(
                 &scope,
@@ -66,6 +67,7 @@ impl AppState {
                 labels,
                 priority,
                 attachments,
+                notify_user,
             ),
             BridgeAction::TrackerCommentIssue {
                 issue_id,
@@ -113,7 +115,8 @@ impl AppState {
             ),
             _ => return None,
         };
-        Some(self.also_track(&scope, action, answered))
+        let answered = self.also_track(&scope, action, answered);
+        Some(self.also_watch(&scope, action, answered))
     }
 
     /// Honour `track` on a write that carried it (spec: Issues → Tracking).
@@ -143,6 +146,39 @@ impl AppState {
         match self.set_tracking_as_agent(scope, &issue_id, true) {
             Ok(tracked) => answered["issue"] = tracked["issue"].clone(),
             Err(why) => eprintln!("track {issue_id} alongside the write: {why}"),
+        }
+        Ok(answered)
+    }
+
+    /// Honour `notify_user` on a write that carried it (spec: Issues →
+    /// Watching).
+    ///
+    /// Beside `also_track` and for the same reason: the issue a create
+    /// concerns does not exist until its answer names it. Where tracking puts
+    /// the AGENT on the issue, this puts the issue in the USER's inbox — the
+    /// agent saying "you asked for this, so you should see it".
+    ///
+    /// Quiet about its own failure. The write landed and is durable; reporting
+    /// the call as failed would invite the agent to make it twice.
+    fn also_watch(
+        &mut self,
+        scope: &IssueScope,
+        action: &BridgeAction,
+        answered: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let mut answered = answered?;
+        if !wants_the_user_told(action) {
+            return Ok(answered);
+        }
+        let Some(issue_id) = answered["issue"]["id"].as_str().map(str::to_string) else {
+            return Ok(answered);
+        };
+        let Ok((project_id, issue)) = self.tracker_issue(&issue_id) else {
+            return Ok(answered);
+        };
+        match self.set_watching(&project_id, issue, true, scope.actor.clone()) {
+            Ok(watched) => answered["issue"] = watched["issue"].clone(),
+            Err(why) => eprintln!("show {issue_id} to the user alongside the write: {why}"),
         }
         Ok(answered)
     }
@@ -241,6 +277,7 @@ impl AppState {
         labels: &[String],
         priority: &Option<String>,
         attachments: &[Value],
+        notify_user: &Option<bool>,
     ) -> Result<Value, String> {
         let project_path = self.tracker_project_path(&scope.project_id)?;
         let now = crate::store::now_rfc3339();
@@ -248,8 +285,18 @@ impl AppState {
         params["title"] = json!(title);
         params["labels"] = json!(labels);
         params["attachments"] = json!(attachments);
+        if let Some(asked) = notify_user {
+            params["notify_user"] = json!(asked);
+        }
         let mut draft = edits::drafted_issue(&params, &project_path, scope.actor.clone(), &now)?;
         draft.attachments = self.parse_issue_attachments(&params)?;
+        // Whether the user hears about an issue an AGENT filed. Two ways to
+        // say yes: the agent asked for it with `notify_user`, because the user
+        // asked for the issue; or the device says every agent-filed issue is
+        // worth seeing, which is the default. An agent filing for another
+        // agent, on a device that has turned that off, is not the user's
+        // business until somebody says it is.
+        draft.watched = notify_user_asked(&params) || self.watch_agent_filed_issues;
         let created = crate::tracker::IssueEvent::new(
             &draft.id,
             scope.actor.clone(),
@@ -411,6 +458,14 @@ impl AppState {
 /// `null` is a value that says neither — `json!` would write one for every
 /// `None`, which is how a tool that filtered nothing would be refused for
 /// sending a status that is not a string.
+/// Whether a tool call asked for the user to be told. Absent is no.
+pub(in crate::app) fn notify_user_asked(params: &Value) -> bool {
+    params
+        .get("notify_user")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 fn asked(fields: &[(&str, &Option<String>)]) -> Value {
     let mut params = json!({});
     for (key, value) in fields {
@@ -426,6 +481,19 @@ fn asked(fields: &[(&str, &Option<String>)]) -> Value {
 /// Asked only where the scope could not be resolved at all: an agent whose
 /// owner is bound to no project has no issues to reach, and must still be able
 /// to call every tool that is not about a project.
+/// Whether this write asked for the user to be told about the issue.
+///
+/// A create answers for itself — the draft is already marked watched or not,
+/// by the flag or the device setting — so only the writes that touch an issue
+/// that already exists are here.
+fn wants_the_user_told(action: &BridgeAction) -> bool {
+    match action {
+        BridgeAction::TrackerCommentIssue { notify_user, .. }
+        | BridgeAction::TrackerAssignIssue { notify_user, .. } => notify_user.unwrap_or(false),
+        _ => false,
+    }
+}
+
 /// Whether this write was asked to follow the issue it touched.
 ///
 /// Absent means NO everywhere but `create_issue`, where it means yes. An agent

@@ -90,6 +90,108 @@ impl AppState {
         self.commit_issue_write(project_id, write, &now)
     }
 
+    /// `issues.watch` — the user wants this issue in their inbox.
+    ///
+    /// Idempotent and quiet about it, like `issues.track`: watching a second
+    /// time is not a second fact, and a timeline that said so would be
+    /// claiming two.
+    pub(crate) fn issues_watch(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+        self.set_watching(&project_id, issue, true, Actor::User)
+    }
+
+    /// `issues.unwatch` — take it out of the inbox. This is also what Mute
+    /// means on a row: the row's absence from the next push is the answer.
+    pub(crate) fn issues_unwatch(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+        self.set_watching(&project_id, issue, false, Actor::User)
+    }
+
+    /// Start or stop the user watching, writing the event only when something
+    /// actually changed.
+    pub(in crate::app) fn set_watching(
+        &mut self,
+        project_id: &str,
+        issue: Issue,
+        watching: bool,
+        actor: Actor,
+    ) -> Result<Value, String> {
+        let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::by(actor.clone(), issue);
+        if !write.issue.set_watched(watching) {
+            return Ok(json!({
+                "issue": super::issue_json(project_id, &write.issue),
+            }));
+        }
+        let kind = if watching {
+            IssueEventKind::Watched
+        } else {
+            IssueEventKind::Unwatched
+        };
+        write.event(&actor, kind, json!({}), &now);
+        self.commit_issue_write(project_id, write, &now)
+    }
+
+    /// `issues.read_through` — the user has read this issue as far as
+    /// `event_id`.
+    ///
+    /// Advanced by the issue page on open and on reaching the end, the way a
+    /// conversation's read mark is. Never moved backwards: a reader who opens
+    /// an old issue after a newer one has still read the newer one, and a mark
+    /// that walked back would make everything unread again.
+    pub(crate) fn issues_read_through(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let event_id = require_str(params, "event_id")?;
+        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+        let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::by(Actor::User, issue);
+        let already_read =
+            |read: &str| super::inbox::when(read) >= super::inbox::when(event_id.as_str());
+        if write
+            .issue
+            .read_through
+            .as_deref()
+            .is_some_and(already_read)
+        {
+            return Ok(json!({
+                "issue": super::issue_json(&project_id, &write.issue),
+            }));
+        }
+        write.issue.read_through = Some(event_id);
+        // No event: reading is not something that happened TO the issue, and a
+        // timeline that recorded every scroll would be a timeline nobody could
+        // read.
+        self.commit_issue_write(&project_id, write, &now)
+    }
+
+    /// `issues.dismiss` — clear this issue's inbox row until something else
+    /// happens to it.
+    ///
+    /// The same Done a conversation row has. A mark rather than a flag: the
+    /// next event is past it and the row comes back on its own, so nothing has
+    /// to remember to unset anything.
+    pub(crate) fn issues_dismiss(&mut self, params: &Value) -> Result<Value, String> {
+        let issue_id = require_str(params, "issue_id")?;
+        let (project_id, issue) = self.tracker_issue(&issue_id)?;
+        let newest = self
+            .tracker_store()?
+            .load_tracker_timeline(&issue.id)
+            .stored()?
+            .last()
+            .map(|entry| match entry {
+                crate::tracker::TimelineEntry::Comment(comment) => comment.id.clone(),
+                crate::tracker::TimelineEntry::Event(event) => event.id.clone(),
+            });
+        let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::by(Actor::User, issue);
+        write.issue.dismissed_through = newest;
+        // No event: clearing a row is the reader tidying their own inbox, not
+        // something that happened to the issue.
+        self.commit_issue_write(&project_id, write, &now)
+    }
+
     /// `issues.for_agent` — what one agent holds and what it watches.
     ///
     /// Two digest lists rather than two whole-issue lists: this is a list

@@ -64,6 +64,15 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             IssuesTrackParams,
             IssueAnswer
         ),
+        v1_method!("issues.watch", issues_watch, IssueIdParams, IssueAnswer),
+        v1_method!("issues.dismiss", issues_dismiss, IssueIdParams, IssueAnswer),
+        v1_method!("issues.unwatch", issues_unwatch, IssueIdParams, IssueAnswer),
+        v1_method!(
+            "issues.read_through",
+            issues_read_through,
+            IssuesReadThroughParams,
+            IssueAnswer
+        ),
         v1_method!(
             "issues.for_agent",
             issues_for_agent,
@@ -259,6 +268,14 @@ pub struct IssuesTrackParams {
     pub agent_id: String,
 }
 
+/// How far the user has read one issue.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct IssuesReadThroughParams {
+    pub issue_id: String,
+    /// The last event the user has seen. Never moved backwards.
+    pub event_id: String,
+}
+
 /// What one agent is on.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssuesForAgentParams {
@@ -314,6 +331,19 @@ pub struct IssueView {
     /// that dropped them, and `[]` says it carried none.
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,
+    /// Whether the USER is watching this issue — the inbox's flag, not
+    /// `trackers`, which is the agents'. Absent means no, so an issue nobody
+    /// watches says nothing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub watched: bool,
+    /// The last event on this issue the user has read. `null` when they have
+    /// read none of it, which is how an issue arrives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_through: Option<String>,
+    /// The last event the user put down without reading — Done until the next
+    /// one. `null` unless they have dismissed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_through: Option<String>,
     /// `{"kind":"user"}` or `{"kind":"agent","agent_id":…}`.
     pub created_by: Value,
     pub created_at: String,
@@ -592,6 +622,34 @@ fn issues_reopen(
     params: IssueIdParams,
 ) -> Result<Answer<IssueAnswer>, ApiError> {
     answer(app.issues_reopen(&params.wire())).map_err(refine)
+}
+
+fn issues_watch(
+    app: &mut AppState,
+    params: IssueIdParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_watch(&params.wire())).map_err(refine)
+}
+
+fn issues_dismiss(
+    app: &mut AppState,
+    params: IssueIdParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_dismiss(&params.wire())).map_err(refine)
+}
+
+fn issues_unwatch(
+    app: &mut AppState,
+    params: IssueIdParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_unwatch(&params.wire())).map_err(refine)
+}
+
+fn issues_read_through(
+    app: &mut AppState,
+    params: IssuesReadThroughParams,
+) -> Result<Answer<IssueAnswer>, ApiError> {
+    answer(app.issues_read_through(&params.wire())).map_err(refine)
 }
 
 fn issues_track(

@@ -283,6 +283,11 @@ impl AppState {
             }),
         };
         write.issue.assignee = settled.clone();
+        // An issue handed TO the user is one they are being asked about, so it
+        // goes in their inbox whoever handed it over.
+        if matches!(settled, Some(Assignee::User)) && write.issue.set_watched(true) {
+            write.event(actor, IssueEventKind::Watched, json!({}), now);
+        }
         match &settled {
             None => write.event(actor, IssueEventKind::Unassigned, json!({}), now),
             Some(assignee) => write.event(
@@ -452,6 +457,10 @@ impl AppState {
         if let Some(agent_name) = agent_name {
             params["name"] = json!(agent_name);
         }
+        // Dispatching an issue makes an agent for the WORK, not for the user's
+        // inbox. The issue is what the user watches; the conversation under it
+        // is the agent's own business unless somebody says otherwise.
+        params["made_by_agent"] = json!(true);
         let added = self.agent_add(&params)?;
         let agent_id = added["agent"]["id"]
             .as_str()

@@ -875,6 +875,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 priority: None,
                 track: None,
                 attachments: Vec::new(),
+                notify_user: None,
             },
         )
         .expect("an agent files an issue");
@@ -896,6 +897,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 refs: Vec::new(),
                 track: None,
                 attachments: Vec::new(),
+                notify_user: None,
             },
             "commented_on",
         ),
@@ -955,6 +957,7 @@ fn a_comment_message_carries_its_comment_id() {
                 refs: Vec::new(),
                 track: None,
                 attachments: Vec::new(),
+                notify_user: None,
             },
         )
         .expect("an agent comments");
@@ -1014,6 +1017,7 @@ fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
                 assignee: json!({ "kind": "agent", "agent_id": target.1 }),
                 note: None,
                 track: None,
+                notify_user: None,
             },
         )
         .expect("an agent hands work over");
@@ -1055,6 +1059,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 priority: None,
                 track: None,
                 attachments: Vec::new(),
+                notify_user: None,
             },
         )
         .expect("an agent may file an issue");
@@ -1079,6 +1084,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 priority: None,
                 track: Some(false),
                 attachments: Vec::new(),
+                notify_user: None,
             },
         )
         .expect("an agent may file one it does not want to hear about");
@@ -1138,6 +1144,7 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
                 refs: Vec::new(),
                 track: Some(true),
                 attachments: Vec::new(),
+                notify_user: None,
             },
         )
         .expect("a comment that follows");
@@ -1190,6 +1197,7 @@ fn an_assignment_the_agent_made_records_who_got_it() {
                 assignee: json!({ "kind": "new_agent", "workspace_id": ws }),
                 note: None,
                 track: None,
+                notify_user: None,
             },
         )
         .expect("an agent may assign");
@@ -1218,6 +1226,7 @@ fn an_assignment_the_agent_made_records_who_got_it() {
                 assignee: Value::Null,
                 note: None,
                 track: None,
+                notify_user: None,
             },
         )
         .expect("an agent may hand it back");

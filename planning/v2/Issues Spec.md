@@ -756,6 +756,112 @@ The wire verb is the user's, so it may name any agent of the issue's project
 and refuses one outside it by name — the same refusal every project-scoped
 handler gives.
 
+## Watching
+
+Tracking above is the agents'. Watching is the person's: which issues are in
+the USER's inbox, how far they have read one, and whether the row is cleared.
+The two are the same idea and deliberately not the same field — an agent
+tracker gets a notice delivered into its conversation and its turn started; the
+user's watch puts a row in a list. `trackers` stays what it has been since
+1.5.0, an array of agent-id strings, and the user's watch is `watched: bool` on
+the issue beside it. Conversations gain the same `watched` on the agent record.
+
+### What the user watches without asking
+
+- **An issue they filed, commented on, or were assigned.** Filing and saying
+  something are caring about it; being handed one is being asked about it.
+- **A conversation they made.** Every agent added from the UI is watched; one
+  an agent added (`made_by_agent: true` on `agent.add`) is not, because an
+  agent's own helper is that agent's business.
+- **An issue an agent filed**, when the device setting `watch_agent_filed_issues`
+  is on — which is the default, so a device that has never been asked behaves
+  as it did before watching existed.
+- **Anything an agent asked to be seen** with `notify_user: true`, on
+  `create_issue`, `comment_issue`, `assign_issue` or `agent.add`. This is the
+  case the feature is for: the user asks an agent to open an issue to workshop
+  something, and it appears in their inbox without them going to find it.
+
+Nothing else. An agent filing among agents on a device that has turned the
+setting off, and an agent an agent spawned, are not the user's business until
+somebody says they are.
+
+### The verbs
+
+| Verb | Params | Result |
+| --- | --- | --- |
+| `issues.watch` | `{issue_id}` | `{issue}` |
+| `issues.unwatch` | `{issue_id}` | `{issue}` |
+| `issues.read_through` | `{issue_id, event_id}` | `{issue}` |
+| `issues.dismiss` | `{issue_id}` | `{issue}` |
+| `conversation.watch` | `{entity_id, agent_id}` | `{agent_id, watched}` |
+| `conversation.unwatch` | `{entity_id, agent_id}` | `{agent_id, watched}` |
+
+All at `1.9.0`, with `API_VERSION` and `versions.json` moving together.
+
+`issues.watch` and `issues.unwatch` write a `watched` / `unwatched` event, and
+only when something actually changed: watching what is already watched answers
+the issue unchanged and writes nothing, as tracking does. **Mute is unwatch**
+on an issue — there is no third state, and the row's absence from the next
+`board.list` is the whole of the answer.
+
+`issues.read_through` never moves the mark backwards, and writes no event:
+reading is not something that happened TO the issue, and a timeline that
+recorded every scroll is one nobody could read. `issues.dismiss` is Done —
+it stores the newest entry's id as `dismissed_through`, and the next thing that
+happens is past it, so the row comes back on its own.
+
+Both marks are entry ids, and a timeline holds two kinds: comments are `ic-…`
+and events are `ie-…`. **They are compared without the prefix.** The ULID after
+it is time-ordered; the prefixes are not, and comparing them whole would put
+every comment below every event — a mark left on an event would hide every
+comment made after it.
+
+The user's own entries are left out of the unread count. The badge is a list of
+things asking for their attention, and a count that went up when they commented
+would be telling them about themselves.
+
+### The inbox row
+
+`board.list` carries one row per watched issue in `items`, the same list the
+conversations are in, interleaved by `anchor`:
+
+```json
+{
+  "kind": "tracker_issue",
+  "issue_id": "issue-01K5Z…",
+  "number": 12,
+  "project_id": "proj-1",
+  "title": "Kanban drag does not persist",
+  "status": "in_review",
+  "assignee": { "kind": "agent", "agent_id": "agent-01K5Z…" },
+  "assigned_to_user": false,
+  "last_event": { "text": "New comment from the rail agent",
+                  "actor": "the rail agent", "at": "2026-09-19T10:12:00Z" },
+  "anchor": "2026-09-19T10:12:00Z",
+  "last_activity": "2026-09-19T10:12:00Z",
+  "unread": 3,
+  "muted": false,
+  "done_until_next": false
+}
+```
+
+`kind` is `tracker_issue` and not `issue`: the feed already spends `issue` on
+the multi-stage kind, which routes to another page. `anchor` and
+`last_activity` are both the instant of the last event, so the interleave with
+the conversation rows needs no special case. `muted` is always false, for the
+reason above. `unread` is a COUNT here where a work row sends a flag — an
+issue's badge is how much has happened.
+
+`last_event.text` is composed by the bridge, in the reader's voice of the same
+line #61 sends an agent: the same composer, two voices. The agent's line names
+the comment id and the tool to read it; the reader's says "New comment from the
+rail agent" and "Moved to In review by you". One function decides the facts, so
+the two cannot drift; the voice is the only difference. (The reader's voice is
+what an issue page's timeline sentences should use as well.)
+
+`session.hello` states `"issues": { "attachments": true, "watching": true }`, so
+a client gates its inbox on the capability rather than on a version compare.
+
 ## Push
 
 Issues push over the existing changes subscription

@@ -116,6 +116,7 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
             priority: Some("high".into()),
             track: None,
             attachments: Vec::new(),
+            notify_user: None,
         },
     )
     .expect("an agent files an issue in its own project");
@@ -159,6 +160,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
             refs: Vec::new(),
             track: None,
             attachments: Vec::new(),
+            notify_user: None,
         },
     )
     .expect("an agent comments");
@@ -236,6 +238,7 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
             refs: Vec::new(),
             track: None,
             attachments: Vec::new(),
+            notify_user: None,
         },
     ] {
         let name = action.tool_name();
@@ -309,6 +312,7 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
             priority: None,
             track: None,
             attachments: Vec::new(),
+            notify_user: None,
         },
     )
     .expect("the project agent files an issue");
@@ -346,6 +350,7 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
             assignee: json!({ "kind": "agent", "agent_id": them.1 }),
             note: Some("the parser is the part that matters".into()),
             track: None,
+            notify_user: None,
         },
     )
     .expect("an agent assigns to another agent of its project");
@@ -408,6 +413,7 @@ fn an_agent_cannot_hand_an_issue_outside_its_own_project() {
             assignee: json!({ "kind": "agent", "agent_id": foreign }),
             note: None,
             track: None,
+            notify_user: None,
         },
     )
     .expect_err("an agent outside the project");
@@ -448,6 +454,7 @@ fn a_tools_harness_becomes_the_wires_provider() {
             }),
             note: None,
             track: None,
+            notify_user: None,
         },
     )
     .expect("a tool names a harness");

@@ -350,6 +350,18 @@ pub(in crate::app) fn listed<const N: usize>(words: [&str; N]) -> String {
     }
 }
 
+/// Whether the user should see this conversation in their inbox.
+///
+/// `notify_user` says so outright. Absent, the answer is whoever asked: the
+/// UI's own creates carry no agent caller and are the user's own doing, and an
+/// agent's do.
+fn watching_asked(params: &Value) -> bool {
+    if let Some(asked) = params.get("notify_user").and_then(Value::as_bool) {
+        return asked;
+    }
+    params.get("made_by_agent").and_then(Value::as_bool) != Some(true)
+}
+
 pub(in crate::app) fn has_agent_choice(params: &Value) -> bool {
     ["provider", "model", "effort"]
         .iter()
@@ -1083,12 +1095,18 @@ impl AppState {
                 true,
             ),
         };
-        if let Some(name) = name {
-            if let Some(agent) = active.agents.iter_mut().find(|agent| agent.id == added.id) {
+        if let Some(agent) = active.agents.iter_mut().find(|agent| agent.id == added.id) {
+            if let Some(name) = &name {
                 agent.name = Some(name.clone());
                 // Given a name, so never asked for one.
                 agent.name_asked = true;
             }
+            // Whether the user sees this conversation in their inbox. A
+            // creation the UI made is the user's own and is watched; one an
+            // agent made for itself is not, until it says `notify_user` —
+            // otherwise an agent spawning three puts three rows in front of
+            // somebody who asked for one thing.
+            agent.watched = watching_asked(params);
         }
         let added = active
             .agents

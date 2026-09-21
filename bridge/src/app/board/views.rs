@@ -506,7 +506,7 @@ impl AppState {
         // other row does — Done, deleted, or dismissed — never on its own.
         // `branch.get` still resolves it directly (deep-linking); this filter
         // is the feed list's alone.
-        let items: Vec<Value> = self
+        let mut items: Vec<Value> = self
             .work_items(&checkouts.rows)
             .into_iter()
             .filter(|row| {
@@ -514,6 +514,11 @@ impl AppState {
                     || !row["run_id"].is_null()
             })
             .collect();
+        // The issues the user is watching, in the same list as the
+        // conversations so the two interleave by `anchor` for free (spec:
+        // Issues → Watching). A row's absence is how unwatching shows.
+        items.extend(self.watched_issue_rows());
+        crate::branch::sort_by_anchor(&mut items);
         json!({
             // The active feed contains workspace-backed work only. Legacy
             // issue records are intentionally absent from both the folded
@@ -560,6 +565,17 @@ impl AppState {
             .runs
             .iter()
             .filter(|(_, active)| active.run.state != RunState::Archived)
+            // A conversation nobody is watching is not in the inbox (spec:
+            // Issues → Watching). An agent an agent made is its own business
+            // until it asks for the user, and a run whose every agent has been
+            // unwatched is a row the user has already put down.
+            //
+            // A run with NO agents is not unwatched — it is a checkout nobody
+            // has started yet, and it has always had a row. "Every agent is
+            // unwatched" is only an answer when there are agents to ask.
+            .filter(|(_, active)| {
+                active.agents.is_empty() || active.agents.iter().any(|agent| agent.watched)
+            })
             .map(|(id, _)| id.clone())
             .collect();
         // Diffstats first: they are the one part of a row that needs `&mut`.

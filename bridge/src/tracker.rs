@@ -292,6 +292,34 @@ pub struct Issue {
     /// and an empty list is the right answer for them.
     #[serde(default)]
     pub attachments: Vec<crate::thread::MessageAttachment>,
+    /// Whether the USER is watching this issue (spec: Issues → Watching).
+    ///
+    /// Beside `trackers` rather than in it. An agent tracker gets every change
+    /// delivered into its conversation and its turn started; the user's watch
+    /// puts a row in the inbox. Two delivery mechanisms in one list would be a
+    /// list every reader has to branch on, and `trackers` is already on the
+    /// wire as agent ids that clients match by string.
+    ///
+    /// `default` false: an issue nobody has watched is one the inbox says
+    /// nothing about, which is the point — an agent filing an issue for
+    /// another agent must not put a row in front of the user.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub watched: bool,
+    /// The last event the user has read on this issue, as an event id.
+    ///
+    /// Ids are time-ordered, so "after the mark" is a string comparison and
+    /// needs no timestamps. `None` is an issue the user has never opened, and
+    /// then everything since they started watching is unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_through: Option<String>,
+    /// The last event the user cleared this issue's inbox row through.
+    ///
+    /// Done means "clear it until something else happens", which is what a
+    /// conversation row's Done already means. Anything after this mark brings
+    /// the row back, so the field is a point in the timeline rather than a
+    /// flag somebody has to remember to unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_through: Option<String>,
     pub created_by: Actor,
     pub created_at: String,
     pub updated_at: String,
@@ -326,6 +354,16 @@ impl Issue {
         let before = self.trackers.len();
         self.trackers.retain(|tracking| tracking != agent_id);
         self.trackers.len() != before
+    }
+
+    /// Start or stop the user watching. Answers whether anything changed, so
+    /// a caller can skip writing an event for a watch that already stood.
+    pub fn set_watched(&mut self, watching: bool) -> bool {
+        if self.watched == watching {
+            return false;
+        }
+        self.watched = watching;
+        true
     }
 
     pub fn is_tracked_by(&self, agent_id: &str) -> bool {
@@ -363,6 +401,9 @@ impl Issue {
             links: IssueLinks::default(),
             trackers: Vec::new(),
             attachments: Vec::new(),
+            watched: false,
+            read_through: None,
+            dismissed_through: None,
             created_by,
             created_at: now.to_string(),
             updated_at: now.to_string(),
@@ -411,6 +452,11 @@ pub enum IssueEventKind {
     /// it. The payload says which.
     Tracked,
     Untracked,
+    /// The USER started or stopped watching. Separate from `tracked`, which is
+    /// an agent: one puts a row in the inbox, the other wakes an agent, and a
+    /// timeline that called both the same would be hiding which happened.
+    Watched,
+    Unwatched,
 }
 
 impl IssueEventKind {
@@ -427,6 +473,8 @@ impl IssueEventKind {
             IssueEventKind::Dispatched => "dispatched",
             IssueEventKind::Tracked => "tracked",
             IssueEventKind::Untracked => "untracked",
+            IssueEventKind::Watched => "watched",
+            IssueEventKind::Unwatched => "unwatched",
         }
     }
 }

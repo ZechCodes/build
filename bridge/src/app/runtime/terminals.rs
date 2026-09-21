@@ -265,7 +265,12 @@ pub(in crate::app) fn session_hello(
         // Attachments). Stated outright rather than left to the minor, because
         // a composer that offers a paperclip against a bridge with no
         // `issues.attach` offers a press that cannot work.
-        "issues": { "attachments": true },
+        // `watching`: the watch verbs, the read marks, and `tracker_issue`
+        // rows on the inbox. Stated beside `attachments` rather than left to
+        // the minor, for the same reason — an inbox that offers a Done press
+        // against a bridge with no `issues.dismiss` offers one that cannot
+        // work.
+        "issues": { "attachments": true, "watching": true },
         "thread_post_operations": {
             "version": 1,
             "status_method": "thread.operation",

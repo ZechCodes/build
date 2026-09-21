@@ -72,6 +72,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("agent.add", agent_add, AgentAddParams, AgentAdded),
         v1_method!("agent.choose", agent_choose, AgentChooseParams, AgentChoice),
         v1_method!("agent.remove", agent_remove, AgentRemoveParams, AgentRoster),
+        v1_method!(
+            "conversation.watch",
+            conversation_watch,
+            AgentRemoveParams,
+            ConversationWatch
+        ),
+        v1_method!(
+            "conversation.unwatch",
+            conversation_unwatch,
+            AgentRemoveParams,
+            ConversationWatch
+        ),
         v1_method!("agent.list", agent_list, AgentListParams, AgentRoster),
     ]
 }
@@ -276,6 +288,15 @@ pub struct AgentAddParams {
     /// How much direction it should need, when that matters to the caller.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
+    /// An AGENT asked for this one, not the person. Its conversation is that
+    /// agent's business and stays out of the user's inbox (spec: Issues →
+    /// Watching) unless `notify_user` says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub made_by_agent: Option<bool>,
+    /// Put this conversation in the user's inbox whoever asked for it — the
+    /// agent saying "you will want to see this one".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_user: Option<bool>,
     #[serde(flatten)]
     pub choice: ModelChoiceParams,
 }
@@ -515,6 +536,13 @@ pub struct AgentDigest {
     pub surfaces: Option<AgentSurfaces>,
 }
 
+/// Whether one conversation is in the user's inbox.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationWatch {
+    pub agent_id: String,
+    pub watched: bool,
+}
+
 /// `agent.add`. `created` is false when a `creation_id` matched an agent this
 /// entity already has — the retry, answered with what the first call made.
 #[derive(Debug, Deserialize, Serialize)]
@@ -569,6 +597,10 @@ fn names_nothing(message: &str) -> bool {
     message.contains("unknown ")
         || message.contains("does not exist")
         || message.starts_with("not an attachment on this conversation")
+        // "agent agent-2 is not on run-7": the entity is real and the agent is
+        // not one of its own, which is the same answer as never having heard
+        // of it — not a fault of this bridge.
+        || message.contains(" is not on ")
 }
 
 /// Whether a refusal is about the request itself rather than the state it met.
@@ -666,6 +698,20 @@ fn agent_choose(
     params: AgentChooseParams,
 ) -> Result<Answer<AgentChoice>, ApiError> {
     answer(app.agent_choose(&params.wire())).map_err(refine)
+}
+
+fn conversation_watch(
+    app: &mut AppState,
+    params: AgentRemoveParams,
+) -> Result<Answer<ConversationWatch>, ApiError> {
+    answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, true)).map_err(refine)
+}
+
+fn conversation_unwatch(
+    app: &mut AppState,
+    params: AgentRemoveParams,
+) -> Result<Answer<ConversationWatch>, ApiError> {
+    answer(app.set_conversation_watched(&params.entity_id, &params.agent_id, false)).map_err(refine)
 }
 
 fn agent_remove(

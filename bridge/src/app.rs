@@ -387,6 +387,14 @@ pub struct AppState {
     /// queued it has answered. The queue's in-flight counters let the idle
     /// sweep distinguish an agent on its way from one that never arrived.
     delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
+    /// Whether an issue an AGENT files goes into the user's inbox without
+    /// being asked for (spec: Issues → Watching).
+    ///
+    /// On by default: an agent filing an issue is usually filing it because
+    /// the user will care, and a board the user never sees fills up quietly.
+    /// Off is for a device where agents file between themselves and the user
+    /// wants only what they asked for.
+    watch_agent_filed_issues: bool,
     /// The issue each agent's CURRENT turn was dispatched under (spec: Issues
     /// → Automatic activity).
     ///
@@ -570,6 +578,7 @@ impl AppState {
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
+            watch_agent_filed_issues: true,
             dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
             operation_ledger: Default::default(),

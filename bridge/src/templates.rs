@@ -441,7 +441,16 @@ unless you say `track: false`, and every other issue write takes `track: true`
 to follow it from then on, so following is never a second call. You are tracked automatically on
 anything assigned to you, your own changes are never sent back to you, and
 `untrack_issue` stops it — being unassigned does not, because handing work on is
-often exactly when you still want to know how it went.";
+often exactly when you still want to know how it went.
+
+`notify_user: true` puts an issue in front of the USER. Tracking is for you;
+this is for them. Use it when the user asked for the issue, or when what you
+filed or said is something they will want to see: an issue you were told to
+open, a question on an issue only they can answer, work handed to them. Leave
+it off for the issues agents file among themselves — an inbox that fills with
+work nobody asked the user to look at is one they stop reading. It takes the
+same call: `create_issue`, `comment_issue` and `assign_issue` each accept it,
+so telling them costs nothing extra.";
 
 /// The reference shapes an agent can write, so a link into Build costs a few
 /// characters rather than a route nobody can remember (#56).

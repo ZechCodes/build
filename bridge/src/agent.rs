@@ -228,6 +228,27 @@ pub struct Agent {
     /// with the user's own words. Never set for an agent that has a name.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub name_asked: bool,
+    /// Whether the USER is watching this conversation (spec: Issues →
+    /// Watching).
+    ///
+    /// Every conversation used to be in the inbox whether the user had
+    /// anything to do with it or not, which is how an agent spawning three
+    /// agents put three rows in front of somebody who asked for one thing.
+    /// Now the user watches what they made, and what an agent asked them to
+    /// see.
+    ///
+    /// Defaults TRUE, unlike an issue's. Every conversation that exists today
+    /// is in the inbox, and a field that defaulted false would empty it on the
+    /// first read after an upgrade. What narrows it is the creating paths
+    /// setting it false for an agent an agent made.
+    #[serde(default = "watched_by_default")]
+    pub watched: bool,
+}
+
+/// Conversations are watched unless somebody says otherwise — see
+/// [`Agent::watched`].
+fn watched_by_default() -> bool {
+    true
 }
 
 /// The longest a name may be, and the most words it may have. Both are about
@@ -305,6 +326,7 @@ impl Agent {
             topic: None,
             name: None,
             name_asked: false,
+            watched: true,
         }
     }
 

@@ -232,6 +232,7 @@ fn an_agent_that_assigns_is_named_in_the_notice() {
                 assignee: json!({ "kind": "project_agent" }),
                 note: None,
                 track: None,
+                notify_user: None,
             },
         )
         .expect("an agent may assign");

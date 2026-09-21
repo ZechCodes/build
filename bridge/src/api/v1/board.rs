@@ -407,6 +407,15 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub project_agent: Named<ProjectAgentPatch>,
+    /// Whether an issue an AGENT files reaches the user's inbox without the
+    /// agent asking (spec: Issues → Watching). On until the device says
+    /// otherwise.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub watch_agent_filed_issues: Named<bool>,
 }
 
 /// The three words a device says about its project agents, each of them
@@ -605,6 +614,67 @@ pub struct FeedItemRow {
     pub rest: OtherKeys,
 }
 
+/// One watched issue in the inbox (spec: Issues → Watching).
+///
+/// Every key is named: this row is the whole of what the inbox draws for an
+/// issue, and an undeclared one would be dropped on its way out of the facade
+/// rather than reach the client.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TrackerIssueRow {
+    /// Always `tracker_issue`. Not `issue`, which the feed already spends on
+    /// the multi-stage kind and routes to another page.
+    pub kind: String,
+    pub issue_id: String,
+    /// Per-project and sequential, for `#12`.
+    pub number: u64,
+    pub project_id: String,
+    pub title: String,
+    /// The column slug — one of `issues.columns`' ids.
+    pub status: String,
+    /// `{"kind":"user"}`, `{"kind":"agent","agent_id":…}` or `null`.
+    pub assignee: Option<serde_json::Value>,
+    /// The row is the user's own work to do, which pins it above the rest.
+    pub assigned_to_user: bool,
+    pub last_event: TrackerIssueEventView,
+    /// Both the instant the last event happened, as the rows beside this one
+    /// send them, so the interleave needs no special case.
+    pub anchor: String,
+    pub last_activity: String,
+    /// How many events are past the user's read mark, their own left out. A
+    /// COUNT here, where a work row sends a flag: an issue's badge is how much
+    /// has happened, and the client shows the number it is given.
+    pub unread: u64,
+    /// Always false. Mute is unwatch on an issue, and an unwatched issue sends
+    /// no row at all.
+    pub muted: bool,
+    /// The user cleared the row and nothing has happened since.
+    pub done_until_next: bool,
+}
+
+/// What last happened to a watched issue, in the reader's voice.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TrackerIssueEventView {
+    /// The line the row draws under the title, composed by the bridge. The
+    /// same facts as the notice an agent gets, said to a person: no comment
+    /// id, no tool to call.
+    pub text: String,
+    /// Who did it, as the text names them — `you` for the user.
+    pub actor: String,
+    pub at: String,
+}
+
+/// One row of the feed: a piece of work, or a watched issue beside it.
+///
+/// Untagged rather than one struct with everything optional: the two shapes
+/// share a list and nothing else, and a row that half-parsed as the other
+/// would reach a client missing exactly the keys it needed.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum FeedItem {
+    TrackerIssue(TrackerIssueRow),
+    Work(FeedItemRow),
+}
+
 /// One external checkout the rail's scan found.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExternalWorktreeRow {
@@ -648,7 +718,7 @@ pub struct PendingRow {
 /// later.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BoardListResult {
-    pub items: Vec<FeedItemRow>,
+    pub items: Vec<FeedItem>,
     pub projects: Vec<BoardProjectRow>,
     pub runs: Vec<RunRow>,
     pub external_worktrees: Vec<ExternalWorktreeRow>,
@@ -797,6 +867,12 @@ pub struct SettingsResult {
     /// then every create falls to `default_harness` as it always did.
     #[serde(default)]
     pub role_models: Vec<RoleModelView>,
+    /// Whether an issue an agent files reaches the user's inbox without the
+    /// agent asking (spec: Issues → Watching). On until the device says
+    /// otherwise, so a device that has never been asked behaves as it did
+    /// before watching existed: the user sees what was filed.
+    #[serde(default)]
+    pub watch_agent_filed_issues: bool,
 }
 
 /// One model the user has declared, and what they declared it for.

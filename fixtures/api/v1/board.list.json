@@ -112,6 +112,29 @@
         },
         "routing": null,
         "question": null
+      },
+      {
+        "kind": "tracker_issue",
+        "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "number": 12,
+        "project_id": "proj-1",
+        "title": "Kanban drag does not persist",
+        "status": "in_review",
+        "assignee": {
+          "kind": "agent",
+          "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+        },
+        "assigned_to_user": false,
+        "last_event": {
+          "text": "New comment from the rail agent",
+          "actor": "the rail agent",
+          "at": "2026-09-19T10:12:00Z"
+        },
+        "anchor": "2026-09-19T10:12:00Z",
+        "last_activity": "2026-09-19T10:12:00Z",
+        "unread": 3,
+        "muted": false,
+        "done_until_next": false
       }
     ],
     "projects": [

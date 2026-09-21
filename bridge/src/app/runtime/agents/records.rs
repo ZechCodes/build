@@ -529,6 +529,29 @@ impl AppState {
         Ok(serde_json::json!({ "name": name }))
     }
 
+    /// `conversation.watch` / `conversation.unwatch` — whether this
+    /// conversation is in the user's inbox.
+    ///
+    /// Unwatching is what Mute means on its row: the row goes and nothing else
+    /// changes, so the agent keeps working and the user keeps not hearing
+    /// about it.
+    pub(crate) fn set_conversation_watched(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        watching: bool,
+    ) -> Result<serde_json::Value, String> {
+        let mut found = false;
+        self.edit_agent_record("set_conversation_watched", owner, agent_id, |agent| {
+            found = true;
+            agent.watched = watching;
+        });
+        if !found {
+            return Err(format!("agent {agent_id} is not on {owner}"));
+        }
+        Ok(serde_json::json!({ "agent_id": agent_id, "watched": watching }))
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn record_agent_active_model(
         &mut self,

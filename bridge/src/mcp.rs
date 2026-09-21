@@ -294,6 +294,9 @@ pub enum BridgeAction {
         /// and nowhere else: an agent that files an issue almost always wants
         /// to know how it goes.
         track: Option<bool>,
+        /// And put it in the USER's inbox. For an issue the user asked for,
+        /// or will want to see.
+        notify_user: Option<bool>,
     },
     /// Say something on one, with typed references fenced by what it is about.
     TrackerCommentIssue {
@@ -303,6 +306,7 @@ pub enum BridgeAction {
         attachments: Vec<Value>,
         refs: Vec<crate::thread::ThreadLink>,
         track: Option<bool>,
+        notify_user: Option<bool>,
     },
     /// Hand one over, which starts whoever gets it.
     ///
@@ -314,6 +318,7 @@ pub enum BridgeAction {
         issue_id: String,
         note: Option<String>,
         track: Option<bool>,
+        notify_user: Option<bool>,
     },
     /// Move one to another column.
     TrackerMoveIssue {
@@ -913,6 +918,10 @@ impl DoneServer {
                         "track": {
                             "type": "boolean",
                             "description": "Follow this issue: every later change to it arrives as a message here. Defaults to TRUE — an issue you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
+                        },
+                        "notify_user": {
+                            "type": "boolean",
+                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
                         }
                     },
                     "required": ["title"]
@@ -928,6 +937,10 @@ impl DoneServer {
                         "body": { "type": "string", "description": "Markdown." },
                         "track": track,
                         "attachments": attachments,
+                        "notify_user": {
+                            "type": "boolean",
+                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                        },
                         "refs": {
                             "type": "array",
                             "maxItems": 20,
@@ -968,7 +981,11 @@ impl DoneServer {
                             "required": ["kind"]
                         },
                         "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." },
-                        "track": track
+                        "track": track,
+                        "notify_user": {
+                            "type": "boolean",
+                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                        }
                     },
                     "required": ["issue_id", "assignee"]
                 }
@@ -1063,6 +1080,7 @@ impl DoneServer {
                         priority: optional_argument(params, "priority"),
                         attachments: value_list_argument(params, "attachments"),
                         track: optional_flag(params, "track"),
+                        notify_user: optional_flag(params, "notify_user"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -1080,6 +1098,7 @@ impl DoneServer {
                                 refs,
                                 attachments: value_list_argument(params, "attachments"),
                                 track: optional_flag(params, "track"),
+                                notify_user: optional_flag(params, "notify_user"),
                             },
                         ),
                         Err(message) => refused(id.clone(), message),
@@ -1097,6 +1116,7 @@ impl DoneServer {
                         assignee: argument(params, "assignee").unwrap_or(Value::Null),
                         note: optional_argument(params, "note"),
                         track: optional_flag(params, "track"),
+                        notify_user: optional_flag(params, "notify_user"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),

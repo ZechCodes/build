@@ -3,17 +3,17 @@
 //
 // Two holes this file fills, both found after the panel head was measured.
 //
-// The gate's own suite (trackerWatchGate.test.js) mocks `bridgeApiVersion`
-// wholesale, so it proves the COMPARISON and nothing about the wiring: a
-// renamed export, a greeting that never reaches the store, or a version read
-// off the wrong key would all leave it green. So the first half here greets a
-// real bridge and asks the real gate — which is the shape of the break
+// The gate's own suite (trackerWatchGate.test.js) mocks the capability read,
+// so it proves the CONTRACT and nothing about the wiring: a renamed export, a
+// greeting that never reaches the store, or a flag spelled differently from the
+// way the bridge spells it would all leave it green. So the first half here
+// greets a real bridge and asks the real gate — which is the shape of the break
 // issues-spa hit when its copy still exported `carriesWatch`.
 //
 // The second half is the head's own half of that gate. I reported "the panel
-// head draws no switch below 1.9.0" with nothing asserting it: the rail's DOM
-// suite never greets a bridge, so its heads have always rendered switchless
-// and would have gone on doing so if the gate were deleted.
+// head draws no switch on a bridge without watching" with nothing asserting it:
+// the rail's DOM suite never greets a bridge, so its heads have always rendered
+// switchless and would have gone on doing so if the gate were deleted.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -22,13 +22,16 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { bridgeApiVersion, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { bridgeApiVersion, bridgeCapabilities, greetBridge, resetChangeEvents } =
+  await import("../src/core/changeEvents.js");
 const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { panelHeadHtml } = await import("../src/core/agentRail.js");
 
-/** One machine saying what it is, through the real greeting path. */
-const greet = (apiVersion, deviceId = "dev-1") =>
-  greetBridge(async () => ({ push_events: true, api_version: apiVersion }), { deviceId });
+/** One machine saying what it is, through the real greeting path. `over` is
+ *  whatever else that greeting states — `{ issues: { watching: false } }` for a
+ *  bridge new enough to carry it that says it does not. */
+const greet = (apiVersion, { deviceId = "dev-1", ...over } = {}) =>
+  greetBridge(async () => ({ push_events: true, api_version: apiVersion, ...over }), { deviceId });
 
 const head = (given) => {
   document.body.innerHTML = panelHeadHtml("claude", "chat", given);
@@ -43,7 +46,7 @@ afterEach(() => {
 });
 
 describe("the gate, asked of a bridge that actually greeted", () => {
-  it("offers watching to a machine that said 1.9.0", async () => {
+  it("offers watching to a machine that greeted 1.9.0", async () => {
     await greet("1.9.0");
     expect(bridgeApiVersion("dev-1")).toBe("1.9.0");
     expect(carriesWatching("dev-1")).toBe(true);
@@ -54,24 +57,41 @@ describe("the gate, asked of a bridge that actually greeted", () => {
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
-  // Not a mocked null: this is the real "0.0.0" a bridge reads as before it
-  // has ever been greeted, which is the state every machine starts in.
+  // The flag is the point of moving off the version compare: a bridge states
+  // what it can do, and is taken at its word in BOTH directions.
+  it("takes a stated flag over the minor, either way", async () => {
+    await greet("1.8.0", { deviceId: "dev-early", issues: { watching: true } });
+    await greet("1.9.0", { deviceId: "dev-withdrawn", issues: { watching: false } });
+    expect([carriesWatching("dev-early"), carriesWatching("dev-withdrawn")]).toEqual([true, false]);
+  });
+
+  // The whole reason the gate reads a capability rather than a number: the
+  // client asks what the bridge can do, and the flag is where that is said.
+  it("is the capability the adapter derived, not a second opinion", async () => {
+    await greet("1.9.0");
+    expect(bridgeCapabilities("dev-1").issues.watching).toBe(true);
+    expect(carriesWatching("dev-1")).toBe(bridgeCapabilities("dev-1").issues.watching);
+  });
+
+  // Not a mocked null: this is the real floor a machine reads as before it has
+  // ever been greeted, which is the state every machine starts in.
   it("refuses a machine that has never greeted at all", () => {
     expect(bridgeApiVersion("dev-1")).toBe("0.0.0");
+    expect(bridgeCapabilities("dev-1").issues.watching).toBe(false);
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
   // The gate is per machine. A phone paired to two bridges must not be offered
   // a switch on the older one because the newer one answered first.
   it("answers per machine, not once for the client", async () => {
-    await greet("1.9.0", "dev-new");
-    await greet("1.8.0", "dev-old");
+    await greet("1.9.0", { deviceId: "dev-new" });
+    await greet("1.8.0", { deviceId: "dev-old" });
     expect([carriesWatching("dev-new"), carriesWatching("dev-old")]).toEqual([true, false]);
   });
 });
 
 describe("the head's half of it", () => {
-  // `watchStateFor` hands null through for a machine below the minor, and this
+  // `watchStateFor` hands null through for a machine the gate refused, and this
   // is what null has to mean by the time it reaches the markup.
   it("draws no switch at all when there is no watch state", () => {
     expect(switchIn(head({ watch: null }))).toBe(null);

@@ -88,7 +88,8 @@ describe("adapter selection", () => {
       // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
-      issues: { attachments: false },
+      // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
+      issues: { attachments: false, watching: false },
     });
   });
 
@@ -107,6 +108,34 @@ describe("adapter selection", () => {
     expect(perFile("1.3.0")).toBe(false);
     expect(perFile("1.4.0")).toBe(true);
     expect(perFile("1.5.2")).toBe(true);
+  });
+
+  /** Watching (#64, 1.9) is stated outright the way attachments are, because a
+   *  switch wired to a verb the bridge has never heard of can only refuse. The
+   *  minor answers for a bridge that has the verbs but predates the flag, and a
+   *  bridge that states `false` is taken at its word however new it is. */
+  it("reads watching off the greeting's flag, and off the minor from 1.9", () => {
+    const greetingAt = (version, over = {}) => ({
+      api_version: version,
+      push_events: true,
+      changes: { subscriptions: true, kinds: ["issues"], items: "bodies" },
+      ...over,
+    });
+    const watching = (version, over) =>
+      selectAdapter(greetingAt(version, over)).create(vi.fn()).capabilities.issues.watching;
+
+    // The minor alone, for a bridge that says nothing about it.
+    expect(watching("1.8.0")).toBe(false);
+    expect(watching("1.9.0")).toBe(true);
+    expect(watching("1.10.0")).toBe(true);
+
+    // Stated outright, which outranks the minor in both directions.
+    expect(watching("1.8.0", { issues: { watching: true } })).toBe(true);
+    expect(watching("1.9.0", { issues: { watching: false } })).toBe(false);
+
+    // Anything that is not a boolean is not a claim, so the minor decides.
+    expect(watching("1.8.0", { issues: { watching: "yes" } })).toBe(false);
+    expect(watching("1.9.0", { issues: { watching: null } })).toBe(true);
   });
 
   // A greeting's kind list rides through whole, whatever is on it. The list
@@ -157,7 +186,7 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
-        issues: { attachments: false },
+        issues: { attachments: false, watching: false },
       });
     }
   });

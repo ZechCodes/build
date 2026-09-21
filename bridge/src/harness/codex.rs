@@ -21,6 +21,8 @@ use crate::pty::HarnessSpec;
 /// Reasoning-effort levels codex accepts, across all its models.
 pub const EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
+// What the Codex CLI says when it runs out of usage is not known yet (issue #58);
+// see `codex_app_server::protocol`, where a typed limit would be recognised.
 pub(super) fn models() -> Vec<ModelOption> {
     const THROUGH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
     const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];

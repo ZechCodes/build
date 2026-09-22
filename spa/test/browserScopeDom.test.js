@@ -60,7 +60,7 @@ it("creates a directory in the current folder and opens it", async () => {
   document.querySelector("#bmkdir").click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" });
-  expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" });
+  await vi.waitFor(() => expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" }));
   await vi.waitFor(() => expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source"));
 });
 it("validates directory names before calling the device", async () => {

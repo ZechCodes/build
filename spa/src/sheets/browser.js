@@ -7,9 +7,16 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
-import { readCached, subscribeCache, writeCached } from "../core/localCache.js";
+import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
 
 export const browserListingAddress = (deviceId, path) => ({ deviceId, entityId: "fs-browser", kind: "listing", sub: path || "" });
+
+async function cacheCreatedDirectory(deviceId, parent, created, name) {
+  await mergeCached(browserListingAddress(deviceId, parent), (listing) => {
+    if (!listing || listing.entries.some((entry) => entry.path === created.path)) return null;
+    return { ...listing, entries: [...listing.entries, { path: created.path, name, is_git: false, is_hidden: name.startsWith(".") }] };
+  });
+}
 
 const missingDirectory = (error) => /No such file or directory \(os error 2\)$/.test(error?.message || "");
 
@@ -128,6 +135,8 @@ export async function openBrowser(opts) {
     try {
       const created = await callRpc("fs.mkdir", { parent: data.path, name });
       if (!isCurrent()) return;
+      await cacheCreatedDirectory(deviceId, data.path, created, name);
+      if (!current()) return;
       await nav(created.path);
     } catch (error) {
       if (isCurrent()) {

@@ -487,6 +487,22 @@ fn paging_reaches_the_history_a_restart_never_loaded() {
         "the restart loaded the conversation whole: {resident} of {held}"
     );
 
+    let newest = restarted.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-forward-restart",
+            "after_sequence": 100,
+            "newest": true,
+        }),
+    ));
+    assert_eq!(newest["ok"], true, "{newest:?}");
+    assert_eq!(
+        page_sequences(&newest["result"]),
+        (151..=250).collect::<Vec<u64>>(),
+        "{newest:?}"
+    );
+    assert_eq!(newest["result"]["has_more"], json!(true));
+
     let mut walked: Vec<u64> = Vec::new();
     let mut before: Option<u64> = None;
     loop {
@@ -967,6 +983,86 @@ fn thread_page_after_a_cached_sequence_walks_forward_to_the_end() {
     );
     assert_eq!(caught_up["result"]["has_more"], json!(false));
     assert!(caught_up["result"]["oldest_sequence"].is_null());
+}
+
+/// `newest` bounds a returning client's catch-up at the conversation tip,
+/// while `has_more` tells it that the old cursor and this window do not abut.
+#[test]
+fn thread_page_newest_after_a_cached_sequence_returns_the_tip() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let held = run_with_long_conversation(&mut state, "run-newest-forward", 250);
+
+    let page = state.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-newest-forward",
+            "after_sequence": 100,
+            "newest": true,
+        }),
+    ));
+    assert_eq!(page["ok"], true, "{page:?}");
+    let thread = &page["result"];
+    assert_eq!(
+        page_sequences(thread),
+        (151..=250).collect::<Vec<u64>>(),
+        "{thread:?}"
+    );
+    assert_eq!(thread["has_more"], json!(true), "{thread:?}");
+    assert_eq!(thread["oldest_sequence"], json!(151), "{thread:?}");
+    assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+
+    let short_delta = state.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-newest-forward",
+            "after_sequence": 240,
+            "newest": true,
+        }),
+    ));
+    assert_eq!(
+        page_sequences(&short_delta["result"]),
+        (241..=250).collect::<Vec<u64>>(),
+        "{short_delta:?}"
+    );
+    assert_eq!(short_delta["result"]["has_more"], json!(false));
+
+    let limited = state.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-newest-forward",
+            "after_sequence": 100,
+            "newest": true,
+            "limit": 5,
+        }),
+    ));
+    assert_eq!(
+        page_sequences(&limited["result"]),
+        (246..=250).collect::<Vec<u64>>(),
+        "{limited:?}"
+    );
+    assert_eq!(limited["result"]["has_more"], json!(true));
+}
+
+#[test]
+fn thread_page_newest_requires_a_forward_cursor() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    run_with_long_conversation(&mut state, "run-newest-no-cursor", 3);
+
+    let refused = state.handle(req(
+        "thread.page",
+        json!({ "entity_id": "run-newest-no-cursor", "newest": true }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("newest must be used with after_sequence"),
+        "{refused:?}"
+    );
 }
 
 /// The forward cap is the sync constant, and a client may ask for less of

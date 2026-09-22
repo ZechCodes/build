@@ -140,7 +140,7 @@ export const provisionalItemKey = (operationId) => `${PROVISIONAL_KEY_PREFIX}${o
 /** Whether an item is this tab's own stand-in rather than the conversation's.
  *  An item off the wire names the operation that made it too; what makes this
  *  one provisional is that nothing has confirmed it yet. */
-const isProvisionalItem = (item) => item?.data?.provisional === true && !!item?.data?.operation_id;
+export const isProvisionalItem = (item) => item?.data?.provisional === true && !!item?.data?.operation_id;
 
 /** The key an item is held under: its sequence, or the operation standing in
  *  for one. */

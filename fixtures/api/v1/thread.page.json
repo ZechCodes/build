@@ -5,6 +5,7 @@
     "entity_id": "run-7",
     "agent_id": "agent-1",
     "after_sequence": 29,
+    "newest": true,
     "limit": 20
   },
   "result": {

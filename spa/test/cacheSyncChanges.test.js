@@ -595,7 +595,7 @@ describe("applying one item", () => {
     script["thread.page"] = () => ({ items: [{ id: "m-9", data: { sequence: 400 } }], has_more: false });
     await deliver([{ entity_id: "run-1", thread: [{ agent_id: "ag-1", last_sequence: 400, items: [] }] }]);
     expect(calls("thread.page").map(([, params]) => params)).toEqual([
-      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, limit: sync.LATEST_THREAD_ITEMS },
+      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, newest: true, limit: sync.LATEST_THREAD_ITEMS },
     ]);
     expect((await read("run-1", "thread", "ag-1")).value.deliveredSequence).toBe(400);
   });

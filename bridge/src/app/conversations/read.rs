@@ -361,16 +361,24 @@ impl AppState {
         let thread = self.conversation_at(&address)?;
         let before = params.get("before_sequence").and_then(Value::as_u64);
         let after = params.get("after_sequence").and_then(Value::as_u64);
-        match (before, after) {
+        let newest = params
+            .get("newest")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        match (before, after, newest) {
             // Two cursors name two walks, and a verb that picked one would
             // answer a page nobody asked for.
-            (Some(_), Some(_)) => {
+            (Some(_), Some(_), _) => {
                 Err("provide exactly one of before_sequence and after_sequence".to_string())
             }
-            (_, Some(after)) => {
+            (_, Some(after), true) => {
+                Ok(thread.wire_value_newest_page_after(after, thread_page_forward_limit(params)))
+            }
+            (_, Some(after), false) => {
                 self.thread_page_after(thread, after, thread_page_forward_limit(params))
             }
-            (_, None) => self.thread_page_at(thread, before, thread_page_limit(params)),
+            (_, None, true) => Err("newest must be used with after_sequence".to_string()),
+            (_, None, false) => self.thread_page_at(thread, before, thread_page_limit(params)),
         }
     }
 

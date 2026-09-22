@@ -10,6 +10,7 @@
 // here paints; it hands the rail a row and tells it when there is another.
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
+import { entityIdOf } from "./entityId.js";
 import { readCached, subscribeCache } from "./localCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
@@ -40,6 +41,7 @@ export function createRailWorkItem({
 }) {
   let mountedSources = [];
   let unwatchRow = null;
+  let unwatchFeed = null;
   let unwatchSources = null;
   let watchedRowId;
   let rereading = null;
@@ -54,7 +56,14 @@ export function createRailWorkItem({
   const cachedRow = async (entityId) => {
     const address = rowAddress(entityId);
     if (!address) return null;
-    return (await readCached(address))?.value || null;
+    const row = (await readCached(address))?.value;
+    if (row || context.kind !== "workspace") return row || null;
+    // An unwatched workspace still has an agent and a conversation, but its
+    // run is deliberately absent from the inbox's `items`. The same board
+    // record keeps it in `runs`; read that cached roster for the workspace
+    // without putting it back into the inbox as a visible row.
+    const feed = (await readCached(cacheScope.address({ entityId: "", kind: "feed" })))?.value;
+    return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
   };
 
   /// What the workspace list says about the workspace this rail is standing on:
@@ -140,12 +149,17 @@ export function createRailWorkItem({
   const watchRow = (entityId) => {
     if (watchedRowId === entityId) return;
     unwatchRow?.();
+    unwatchFeed?.();
     unwatchRow = null;
+    unwatchFeed = null;
     watchedRowId = entityId;
     const address = rowAddress(entityId);
     unwatchRow = address
       ? subscribeCache(address, () => void takeUpRow(entityId))
       : watchForARowOfOurOwn();
+    if (address && context.kind === "workspace") {
+      unwatchFeed = subscribeCache(cacheScope.address({ entityId: "", kind: "feed" }), () => void takeUpRow(entityId));
+    }
   };
 
   /// The workspace list moved. Read everything again, and where the sources
@@ -191,6 +205,8 @@ export function createRailWorkItem({
     unwatch() {
       unwatchRow?.();
       unwatchRow = null;
+      unwatchFeed?.();
+      unwatchFeed = null;
       unwatchSources?.();
       unwatchSources = null;
     },

@@ -430,6 +430,13 @@ async function readIssues(context, projectId) {
 async function workspacesToRead(context, view) {
   const items = view.items || [];
   const rows = new Map();
+  // `items` is the inbox, so it omits a run after every agent on it is
+  // unwatched. The routed workspace still owns that run and its thread; the
+  // board's `runs` collection carries the roster needed to sync it.
+  for (const run of view.runs || []) {
+    const entityId = entityIdOf(run);
+    if (entityId) rows.set(entityId, run);
+  }
   for (const row of items) {
     const entityId = entityIdOf(row);
     if (entityId) rows.set(entityId, row);
@@ -483,7 +490,7 @@ async function dropWhatTheBoardStoppedNaming(context, view) {
 
 const entitiesTheBoardNames = (view) => {
   const named = new Set();
-  for (const row of view.items || []) {
+  for (const row of [...(view.items || []), ...(view.runs || [])]) {
     const entityId = entityIdOf(row);
     if (entityId) named.add(entityId);
   }

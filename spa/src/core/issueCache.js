@@ -46,6 +46,11 @@ export async function readStoredIssueRecord(deviceId, issueId, sub) {
   return (await readCached(issueAddress(deviceId, issueId, sub)))?.value;
 }
 
+function rethrowReadError(error, held) {
+  if (held === undefined) throw error;
+  throw Object.assign(error, { heldRecord: held });
+}
+
 /**
  * One record, read through.
  *
@@ -62,8 +67,7 @@ export async function readIssueRecord({ deviceId, issueId, sub, read, force = fa
   try {
     answer = await read();
   } catch (error) {
-    if (held === undefined) throw error;
-    throw Object.assign(error, { heldRecord: held });
+    rethrowReadError(error, held);
   }
   // A newer cache writer won the race while this request was in flight. Its
   // record is the one the view must keep; a late response must not roll it

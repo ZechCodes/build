@@ -86,6 +86,7 @@ describe("the workspace settings sheet", () => {
     open({ callRpc: vi.fn(() => new Promise(() => {})) });
     await vi.waitFor(() => expect($("#wsdefmodel-claude_adk")?.textContent).toContain("Claude Opus 5"));
     type("unsaved name");
+    $("#wsdefmodel-claude_adk").focus();
     await writeCached(deviceModelsAddress("dev-1"), {
       ...CATALOG,
       providers: CATALOG.providers.map((provider) => provider.id === "claude_adk"
@@ -94,6 +95,19 @@ describe("the workspace settings sheet", () => {
     });
     await vi.waitFor(() => expect($("#wsdefmodel-claude_adk").textContent).toContain("Claude New"));
     expect($("#wsname").value).toBe("unsaved name");
+    expect(document.activeElement).toBe($("#wsdefmodel-claude_adk"));
+
+    pick("#wsdefmodel-claude_adk", "claude-opus-5");
+    $("#wsdefeffort-claude_adk").focus();
+    await writeCached(deviceModelsAddress("dev-1"), {
+      ...CATALOG,
+      providers: CATALOG.providers.map((provider) => provider.id === "claude_adk"
+        ? { ...provider, models: [...provider.models, { id: "claude-next", label: "Claude Next", supports_effort: true }] }
+        : provider),
+    });
+    await vi.waitFor(() => expect($("#wsdefmodel-claude_adk").textContent).toContain("Claude Next"));
+    expect(document.activeElement).toBe($("#wsdefeffort-claude_adk"));
+    expect($("#wsdefmodel-claude_adk").value).toBe("claude-opus-5");
   });
   it("paints cached directories and offered sources while both pulls are absent", async () => {
     await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), {

@@ -139,7 +139,11 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (offered) => {
     if (!current() || !offered) return;
     cacheCatalogSeen = true;
+    const focused = sheet.ownerDocument.activeElement;
+    const defaultsPanel = sheet.querySelector(`[data-harness-defaults="${PREFIX}"]`);
+    const focusId = defaultsPanel?.contains(focused) ? focused.id : null;
     mountHarnessDefaults(sheet, { catalog: offered, prefix: PREFIX, storage: defaultsStorage });
+    if (focusId) sheet.querySelector(`#${focusId}`)?.focus();
   }, { owner: opened });
   disposeCatalog = () => catalogRecord.dispose();
   void catalogRecord.read()

@@ -58,6 +58,8 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
 
   return {
     read: reread,
+    /** Completion of every read already queued by a cache announcement. */
+    whenPainted: () => reads,
     write: async (value) => {
       if (!active) return;
       await writeCached(address, value);

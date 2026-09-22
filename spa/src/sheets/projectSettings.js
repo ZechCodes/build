@@ -171,6 +171,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   }).catch((error) => {
     if (!$("#psname")) paintMissing(`Project settings are unavailable: ${error.message}`);
   });
+  return { whenCachePainted: record.whenPainted };
 }
 
 /** The source controls: a Remove per folder, and the two ways one is added.

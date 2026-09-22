@@ -26,7 +26,7 @@ beforeEach(async () => {
 });
 
 describe("openProjectSettings", () => {
-  it("keeps a focused remote draft through a later project cache write and delayed list answer", async () => {
+  it("keeps a focused remote draft when a delayed project.list repaints the sheet", async () => {
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
     let answerList;
     const callRpc = vi.fn(() => new Promise((resolve) => { answerList = resolve; }));
@@ -36,14 +36,26 @@ describe("openProjectSettings", () => {
     remote.value = "my unsaved remote";
     remote.focus();
     remote.setSelectionRange(3, 3);
-    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
-    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("renamed"));
+    answerList({ projects: [{ ...PROJECT, name: "from bridge" }] });
+    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("from bridge"));
     expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
     expect(document.activeElement).toBe(document.querySelector("#psremote"));
     expect(document.querySelector("#psremote").selectionStart).toBe(3);
-    answerList({ projects: [PROJECT] });
-    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("renamed"));
+  });
+
+  it("keeps a focused remote draft through a project cache announcement", async () => {
+    const address = projectSettingsAddress("dev-1", PROJECT.project_id);
+    await writeCached(address, PROJECT);
+    const sheet = openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe(PROJECT.remote));
+    const remote = document.querySelector("#psremote");
+    remote.value = "my unsaved remote";
+    remote.focus();
+    await writeCached(address, { ...PROJECT, name: "renamed" });
+    await sheet.whenCachePainted();
+    expect(document.querySelector("#psname").value).toBe("renamed");
     expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
+    expect(document.activeElement).toBe(document.querySelector("#psremote"));
   });
 
   it("keeps an unfinished add-remote form when the project record changes", async () => {
@@ -68,13 +80,15 @@ describe("openProjectSettings", () => {
       if (method === "fs.list") return { path: "/Users/z/Projects", parent: "/Users/z", is_git: false, entries: [] };
       return new Promise(() => {});
     });
-    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    const sheet = openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
     await vi.waitFor(() => expect(document.querySelector("#psaddfolder")).toBeTruthy());
     document.querySelector("#psaddfolder").click();
     await vi.waitFor(() => expect(document.querySelector("#psbrowseback")).toBeTruthy());
+    const back = document.querySelector("#psbrowseback");
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
-    expect(document.querySelector("#psbrowseback")).toBeTruthy();
-    document.querySelector("#psbrowseback").click();
+    await sheet.whenCachePainted();
+    expect(document.querySelector("#psbrowseback")).toBe(back);
+    back.click();
     await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("renamed"));
   });
   it("paints the cached project while project.list has no answer", async () => {

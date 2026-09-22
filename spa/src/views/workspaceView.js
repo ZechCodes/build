@@ -75,6 +75,7 @@ async function writeWorkspaceResult(state, workspace) {
   const address = workspaceListAddress(state);
   if (!address || !workspace) return;
   await mergeCached(address, (held) => {
+    if (!routeHoldsWorkspace(state)) return null;
     const rows = Array.isArray(held) ? held : [];
     const id = workspace.workspace_id || workspace.id;
     const present = rows.some((row) => (row.workspace_id || row.id) === id);
@@ -112,7 +113,7 @@ async function readWorkspaceResult(state) {
 
 async function writeGitResult(state, sourceId, answer) {
   const address = gitOptionsAddress(state, sourceId);
-  if (!address) return;
+  if (!address || !workspaceSourceIsActive(state, sourceId)) return;
   const directory = answer.workspace?.directories?.find((entry) => directoryId(entry) === sourceId);
   const completed = new Set((answer.results || answer.outcomes || []).filter((result) => result.status !== "failed").map((result) => result.target));
   await mergeCached(address, (held) => ({

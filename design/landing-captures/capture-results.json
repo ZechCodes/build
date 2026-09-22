@@ -1,652 +1,10 @@
 {
   "version": 1,
   "generatedBy": "design/landing-captures/capture.mjs",
-  "checkedAssets": 24,
+  "checkedAssets": 30,
   "results": [
     {
       "state": "ui01",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui02",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-question",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-answer",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-resumed",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui04",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui05-approval",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui05-merged",
-      "profile": "macbook",
-      "logicalViewport": [
-        1512,
-        982
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        3024,
-        1964
-      ],
-      "appBounds": [
-        48,
-        102,
-        1416,
-        804
-      ],
-      "systemExclusions": {
-        "menuBar": [
-          0,
-          0,
-          1512,
-          37
-        ],
-        "cameraHousing": [
-          661,
-          0,
-          190,
-          37
-        ],
-        "dock": [
-          527.5,
-          913,
-          457,
-          62
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui01",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui02",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-question",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-answer",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui03-resumed",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui04",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui05-approval",
-      "profile": "ipad",
-      "logicalViewport": [
-        1210,
-        834
-      ],
-      "deviceScaleFactor": 2,
-      "nativeDimensions": [
-        2420,
-        1668
-      ],
-      "appBounds": [
-        36,
-        73,
-        1138,
-        672
-      ],
-      "systemExclusions": {
-        "statusBar": [
-          0,
-          0,
-          1210,
-          31
-        ],
-        "windowControls": [
-          49,
-          50.5,
-          44,
-          10
-        ],
-        "dock": [
-          422,
-          755,
-          366,
-          66
-        ],
-        "homeIndicator": [
-          549,
-          826,
-          112,
-          4
-        ]
-      },
-      "issues": []
-    },
-    {
-      "state": "ui05-merged",
       "profile": "ipad",
       "logicalViewport": [
         1210,
@@ -738,6 +96,92 @@
       "issues": []
     },
     {
+      "state": "ui01",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui02",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
       "state": "ui02",
       "profile": "iphone",
       "logicalViewport": [
@@ -784,47 +228,87 @@
       "issues": []
     },
     {
-      "state": "ui03-question",
-      "profile": "iphone",
+      "state": "ui02",
+      "profile": "macbook",
       "logicalViewport": [
-        440,
-        956
+        1512,
+        982
       ],
-      "deviceScaleFactor": 3,
+      "deviceScaleFactor": 2,
       "nativeDimensions": [
-        1320,
-        2868
+        3024,
+        1964
       ],
       "appBounds": [
-        0,
-        59,
-        440,
-        863
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-answer",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
       ],
       "systemExclusions": {
         "statusBar": [
           0,
           0,
-          440,
-          59
+          1210,
+          31
         ],
-        "islandSafeArea": [
-          99,
-          0,
-          229,
-          55
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
         ],
-        "homeSafeArea": [
-          0,
-          922,
-          440,
-          34
+        "dock": [
+          422,
+          755,
+          366,
+          66
         ],
         "homeIndicator": [
-          153,
-          943,
-          134,
-          5
+          549,
+          826,
+          112,
+          4
         ]
       },
       "issues": []
@@ -876,6 +360,224 @@
       "issues": []
     },
     {
+      "state": "ui03-answer",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-question",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-question",
+      "profile": "iphone",
+      "logicalViewport": [
+        440,
+        956
+      ],
+      "deviceScaleFactor": 3,
+      "nativeDimensions": [
+        1320,
+        2868
+      ],
+      "appBounds": [
+        0,
+        59,
+        440,
+        863
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          440,
+          59
+        ],
+        "islandSafeArea": [
+          99,
+          0,
+          229,
+          55
+        ],
+        "homeSafeArea": [
+          0,
+          922,
+          440,
+          34
+        ],
+        "homeIndicator": [
+          153,
+          943,
+          134,
+          5
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-question",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-resumed",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
       "state": "ui03-resumed",
       "profile": "iphone",
       "logicalViewport": [
@@ -917,6 +619,92 @@
           943,
           134,
           5
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui03-resumed",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui04",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
         ]
       },
       "issues": []
@@ -968,6 +756,92 @@
       "issues": []
     },
     {
+      "state": "ui04",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui05-approval",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
       "state": "ui05-approval",
       "profile": "iphone",
       "logicalViewport": [
@@ -1014,6 +888,92 @@
       "issues": []
     },
     {
+      "state": "ui05-approval",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui05-merged",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
       "state": "ui05-merged",
       "profile": "iphone",
       "logicalViewport": [
@@ -1055,6 +1015,292 @@
           943,
           134,
           5
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui05-merged",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui10-editor",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui12-issues",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui13-team",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui14-git",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui15-triage",
+      "profile": "ipad",
+      "logicalViewport": [
+        1210,
+        834
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        2420,
+        1668
+      ],
+      "appBounds": [
+        36,
+        73,
+        1138,
+        672
+      ],
+      "systemExclusions": {
+        "statusBar": [
+          0,
+          0,
+          1210,
+          31
+        ],
+        "windowControls": [
+          49,
+          50.5,
+          44,
+          10
+        ],
+        "dock": [
+          422,
+          755,
+          366,
+          66
+        ],
+        "homeIndicator": [
+          549,
+          826,
+          112,
+          4
+        ]
+      },
+      "issues": []
+    },
+    {
+      "state": "ui16-builder",
+      "profile": "macbook",
+      "logicalViewport": [
+        1512,
+        982
+      ],
+      "deviceScaleFactor": 2,
+      "nativeDimensions": [
+        3024,
+        1964
+      ],
+      "appBounds": [
+        48,
+        102,
+        1416,
+        804
+      ],
+      "systemExclusions": {
+        "menuBar": [
+          0,
+          0,
+          1512,
+          37
+        ],
+        "cameraHousing": [
+          661,
+          0,
+          190,
+          37
+        ],
+        "dock": [
+          527.5,
+          913,
+          457,
+          62
         ]
       },
       "issues": []

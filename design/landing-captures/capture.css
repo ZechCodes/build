@@ -328,7 +328,7 @@ button, input { font: inherit; }
 .issue-card.featured { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: inset 3px 0 0 var(--accent); }
 .issue-card.muted { opacity: .58; }
 
-.team-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 330px; }
+.team-layout { flex: 1; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .team-main { padding: 24px clamp(24px, 4vw, 54px); }
 .team-summary { display: flex; align-items: end; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 17px; }
 .team-summary > div { display: flex; align-items: center; gap: 10px; }
@@ -341,8 +341,8 @@ button, input { font: inherit; }
 .team-row-title > span:last-child { margin-left: auto; color: var(--accent); font-size: 10px; }
 .team-meta { display: flex; align-items: center; gap: 7px; margin: 8px 0 0 18px; color: var(--dim); font-size: 10px; }
 .team-meta code { margin-left: auto; color: var(--ink2); }
-.terminal-drawer { border-left: 1px solid var(--line); background: rgba(8,24,30,.65); padding: 17px; }
-.terminal-drawer code { display: block; margin-top: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink2); font-size: 10px; line-height: 1.8; background: #061116; }
+.terminal-drawer { border-top: 1px solid var(--line); background: rgba(8,24,30,.65); padding: 10px 18px 12px; }
+.terminal-drawer code { display: block; margin-top: 7px; color: var(--ink2); font-size: 10px; line-height: 1.4; white-space: nowrap; }
 .terminal-drawer code span, .terminal-drawer code b { color: var(--accent); }
 
 .builder { flex: 1; min-height: 0; display: grid; grid-template-columns: 205px minmax(0, 1fr); }
@@ -368,6 +368,7 @@ button, input { font: inherit; }
 .workspace-path { display: block; margin: 9px 3px; color: var(--dim); font-size: 9px; overflow-wrap: anywhere; }
 .panel-eyebrow.spaced { margin-top: 19px; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
 .commit-line { position: relative; display: grid; grid-template-columns: 15px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 8px 3px; color: var(--ink2); }
+.commit-line:not(.main)::before { content: ""; position: absolute; left: 7px; top: 19px; bottom: -10px; width: 1px; background: var(--line3); }
 .commit-line span { color: var(--line3); }
 .commit-line.active span { color: var(--accent); }
 .commit-line strong { font-size: 10px; font-weight: 500; }

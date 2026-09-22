@@ -110,6 +110,18 @@ describe("opening a conversation from what is on disk", () => {
     expect(seededThread).toBe("ag-1");
   });
 
+  it("keeps a painted window when a cache reread finds no record", async () => {
+    await cache.writeCached(threadAddress, savedWindow);
+    const held = mountCache();
+    await held.seed();
+
+    await cache.evictEntity("dev-1", "run-3");
+    await held.reread();
+
+    expect(threadCache.seeded).toEqual(savedWindow);
+    expect(threadCache.seeds).toBe(1);
+  });
+
   it("reports nothing for the agent the reader left while the read was in flight", async () => {
     await cache.writeCached(threadAddress, savedWindow);
     await saveSurfaces(shells("cargo test"));

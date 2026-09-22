@@ -124,9 +124,17 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
    *  written back to the record (core/agentRailContext.js), so the record is
    *  always the wider of the two. */
   const openWindow = (record, identity) => {
+    // No record is not an empty conversation. The cache's lifetime pass can
+    // remove an entity and announce that removal before the ordered sync has
+    // written its fresh window back. Clearing the live thread in that gap
+    // turns an ordinary sync into a visible painted -> empty -> painted wipe.
+    // A stored record whose value is empty remains authoritative; only the
+    // absence of a record leaves the last opened window standing.
+    if (!record) return false;
     opened = true;
-    threadCache.seedWindow(record?.value || null);
+    threadCache.seedWindow(record.value || null);
     onThreadSeeded(identity.agentId);
+    return true;
   };
 
   return {

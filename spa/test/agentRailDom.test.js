@@ -100,6 +100,7 @@ const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfa
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
+const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 const { pushRailThreadItems, writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
@@ -657,15 +658,19 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(calls).toEqual([]);
   });
 
-  it("never reads a work item off the wire where the board writes it a row", async () => {
+  it("reads only cold conversations off the wire where the board writes the work item row", async () => {
     payload = branchRow({ agents: three() });
     await mount();
     bubbles()[1].click();
     await flush();
     await pushRow(branchRow({ agents: three().slice(0, 2) }));
 
-    const reads = ["branch.get", "issue.get", "run.get", "workspace.get", "thread.page"];
-    expect(calls.filter((call) => reads.includes(call.method))).toEqual([]);
+    const workItemReads = ["branch.get", "issue.get", "run.get", "workspace.get"];
+    expect(calls.filter((call) => workItemReads.includes(call.method))).toEqual([]);
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
+      { entity_id: "run-3", agent_id: "ag-2", limit: LATEST_THREAD_ITEMS },
+    ]);
   });
 
   // An issue left the board (bridge board/views.rs), so nothing pushes one a
@@ -2936,6 +2941,32 @@ describe("the conversation's local cache", () => {
     id: `m-${sequence}`,
     type: "message",
     data: { sequence, role: "user", body, created_at: "2026-08-30T12:00:00Z" },
+  });
+
+  it("prioritizes the shared newest window when the selected conversation is cold", async () => {
+    feedSnapshot = { items: feedItems, projects: [] };
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return catalog;
+      if (method === "thread.page") {
+        return {
+          items: [threadItem(269, "almost latest"), threadItem(270, "cold first paint")],
+          has_more: true,
+          thread_total: 270,
+          thread_last_sequence: 270,
+        };
+      }
+      return {};
+    });
+
+    await mount();
+
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
+    ]);
+    expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint");
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
+    expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
   });
 
   it("opens the saved window, and asks the bridge for nothing at all", async () => {

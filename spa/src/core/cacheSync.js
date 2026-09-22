@@ -32,13 +32,9 @@ import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } fro
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
-import { mergeActivityDigests } from "./activityDigest.js";
-import {
-  THREAD_RECORD_KIND,
-  isProvisionalItem,
-  mergeThreadItems,
-  windowFromThreadPayload,
-} from "./thread.js";
+import { THREAD_RECORD_KIND } from "./thread.js";
+import { syncThreadWindow, threadWindow } from "./threadSync.js";
+export { threadWindow } from "./threadSync.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -819,90 +815,16 @@ async function syncThreads(context, entityId, row, priority) {
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none. */
 async function syncThread(context, entityId, agent, priority) {
-  const sub = agent.conversation_id || agent.id || "";
-  if (!sub) return;
-  const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
-  const held = (await readCached(address))?.value;
-  const after = Number(held?.deliveredSequence || 0);
-  const page = await ask(context, "thread.page", threadPageParams(entityId, agent, after), priority);
-  if (!page || !context.active()) return;
-  await mergeCached(address, (current) => threadWindow(current, page, { newest: after > 0 }));
+  await syncThreadWindow({
+    deviceId: context.deviceId,
+    call: context.call,
+    active: context.active,
+    entityId,
+    agentId: agent.id,
+    conversationId: agent.conversation_id,
+    priority,
+  });
 }
-
-const threadPageParams = (entityId, agent, after) => ({
-  entity_id: entityId,
-  ...(agent.id ? { agent_id: agent.id } : {}),
-  ...(after ? { after_sequence: after, newest: true } : {}),
-  limit: LATEST_THREAD_ITEMS,
-});
-
-/** Whether the record is a window over the conversation, or only this tab's
- *  own stand-ins waiting for one.
- *
- *  A send into a conversation this cache has never read makes the record
- *  itself (core/conversationCache.js), and such a record names no sequence the
- *  bridge has counted. It says nothing about how far back the conversation
- *  goes, so nothing in it may be read as saying there is nothing behind it. */
-const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
-
-/**
- * The saved window after a page.
- *
- * With no window held, the page IS the window: it is the latest hundred items,
- * and `has_more` on it means the conversation reaches back further than the
- * window does. With a window held, an abutting page is appended. A newest-mode
- * page whose `has_more` says it skipped a gap replaces the stale window with
- * the returned tip, leaving that gap behind the ordinary load-older path.
- */
-export function threadWindow(held, page, { newest = false } = {}) {
-  const arrived = windowFromThreadPayload(page);
-  if (!held) return arrived;
-  if (!arrived) return null; // nothing new: the record stands
-  if (newest && page.has_more === true) return newestThreadWindow(held, arrived, page);
-  return appendedThreadWindow(held, arrived, page);
-}
-
-const appendedThreadWindow = (held, arrived, page) => ({
-  // A record of stand-ins alone is not a window to append to: the page is
-  // the window, and only the reader's own messages carry over into it.
-  // Spreading such a record instead would fix `olderItemsRemain` at false
-  // for the life of the record, since only a page ever sets it and every
-  // later page is a forward delta — "load earlier" off for good on a
-  // conversation the reader happened to write to first.
-  ...(holdsAWindow(held) ? held : arrived),
-  // Merged rather than appended: the record may hold this tab's own message
-  // waiting for the wire to carry it, and the arrival is what takes that
-  // stand-in away (core/thread.js).
-  items: mergeThreadItems(held.items, arrived.items),
-  deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
-  knownTotalItems: arrived.knownTotalItems ?? held.knownTotalItems ?? null,
-  activityDigests: mergeActivityDigests(held.activityDigests || [], page),
-});
-
-/** Replace a stale window with a newest-forward page that skipped a gap.
- *
- * A send or push can write the record while the page is crossing the wire.
- * Preserve provisional stand-ins, plus wire items beyond the page's own
- * high-water, but none of the stale pre-gap window. */
-const newestThreadWindow = (held, arrived, page) => {
-  const pageLastSequence = Number(page.thread_last_sequence || highestCreationSequence(arrived.items));
-  const provisional = (held.items || []).filter(isProvisionalItem);
-  const newer = (held.items || []).filter((item) =>
-    !isProvisionalItem(item) && latestItemSequence(item) > pageLastSequence);
-  const items = mergeThreadItems(mergeThreadItems(provisional, arrived.items), newer);
-  return {
-    ...arrived,
-    items,
-    deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
-    knownTotalItems: Math.max(Number(held.knownTotalItems || 0), Number(arrived.knownTotalItems || 0)) || null,
-  };
-};
-
-const highestCreationSequence = (items) =>
-  (items || []).reduce((highest, item) => Math.max(highest, Number(item?.data?.sequence || 0)), 0);
-
-const latestItemSequence = (item) =>
-  Math.max(Number(item?.data?.sequence || 0), Number(item?.data?.updated_sequence || 0));
 
 // ─── Step 5: the three subscriptions ─────────────────────────────────────────
 //

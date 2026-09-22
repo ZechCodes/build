@@ -71,11 +71,18 @@ describe("opening a conversation from what is on disk", () => {
     await saveSurfaces(shells("cargo test"));
     const held = mountCache();
 
-    await held.seed();
+    expect(await held.seed()).toBe(true);
 
     expect(threadCache.seeded).toEqual(savedWindow);
     expect(seededThread).toBe("ag-1");
     expect(seededSurfaces.surfaces).toEqual(shells("cargo test"));
+  });
+
+  it("reports a cold thread record so its caller can prioritize the shared sync", async () => {
+    const held = mountCache();
+
+    expect(await held.seed()).toBe(false);
+    expect(threadCache.seeds).toBe(0);
   });
 
   it("names the record the panel is reading, so a watcher can hear it move", () => {

@@ -148,16 +148,16 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
      *  the last live session observed. Once per conversation. */
     async seed() {
       const identity = addressOf();
-      if (!identity || opened) return;
+      if (!identity || opened) return false;
       opened = true;
       const [thread, surfaces] = await Promise.all([
         readCached(threadCacheAddress(identity)),
         readCached(surfacesCacheAddress(identity)),
       ]);
       const stillOpen = addressOf();
-      if (!sameConversation(identity, stillOpen)) return;
+      if (!sameConversation(identity, stillOpen)) return false;
       if (sameSurfaceIdentity(identity, stillOpen)) seedSurfaces(surfaces, identity);
-      openWindow(thread, identity);
+      return openWindow(thread, identity);
     },
 
     /** The window again, after something wrote to the record. */

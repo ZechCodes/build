@@ -15,9 +15,9 @@
 //
 // One work item, one rail: `mountAgentRail` is given the route, resolves it
 // against this device's cached rows (core/railWorkItem.js), and every agent it
-// renders comes off that row's agents[]. It asks the machine nothing to paint:
-// the strip and the conversation are on the first frame, out of the cache, and
-// move when the record moves.
+// renders comes off that row's agents[]. A saved conversation is on the first
+// frame out of the cache; a cold one asks the shared window syncer immediately
+// and then moves only when that cache record moves.
 //
 // With one exception, and it is the project's agent. A project's agent is
 // reachable from every workspace in the project — that is what makes it the
@@ -80,6 +80,7 @@ import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
+import { syncThreadWindow } from "./threadSync.js";
 import {
   conversationRecordAddress,
   postSubmission,
@@ -1984,7 +1985,20 @@ function mountRailOnContext(host, context, swap) {
       watchedThreadKey = threadAddressKey(address);
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
-    await conversation.seed();
+    if (await conversation.seed()) return;
+    const identity = cacheIdentity();
+    const askedKey = threadAddressKey(address);
+    if (!identity || !address || !askedKey) return;
+    await syncThreadWindow({
+      deviceId: identity.deviceId,
+      call: chatRepository.currentCall(),
+      active: () => !disposed && askedKey === threadAddressKey(conversation.address()),
+      entityId: identity.entityId,
+      agentId: identity.agentId,
+      conversationId: identity.conversationId,
+      address,
+      priority: "foreground",
+    });
   };
 
   const threadFor = () => {

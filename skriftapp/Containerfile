@@ -41,6 +41,21 @@ RUN cd /build/repo/spa \
  && VITE_RELAY_URL="$VITE_RELAY_URL" VITE_BUILD_VERSION="$VITE_BUILD_VERSION" npm run build
 # → emits /build/repo/skriftapp/buildapp/static/ (vite outDir).
 
+# --- landing: Astro static build (multi-stage node builder) ----------------
+# The public homepage is a static Astro document, built the same way the SPA is:
+# in-image, from the repo's own source, no CDN. Stock npm resolves this manifest
+# (the spa stage's npm@12 pin is for the SPA's peer graph, not a house rule).
+FROM docker.io/library/node:22-bookworm-slim AS landing
+WORKDIR /build/repo/landing
+# Manifests first, so the dependency layer survives a copy edit.
+COPY landing/package.json landing/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY landing/ ./
+RUN npm run build
+# → emits /build/repo/skriftapp/buildapp/landing/generated/ (astro outDir).
+# landing/node_modules is excluded from the build context (.containerignore),
+# so the COPY above never drags the host's install in over npm ci's.
+
 # --- runtime: uv-managed Python 3.13 ---------------------------------------
 # uv version pinned so builds are reproducible and pyproject's [tool.uv]
 # settings (exclude-newer cooldown) parse the same way in CI as locally.
@@ -64,6 +79,9 @@ COPY skriftapp/templates ./templates
 COPY scripts/install.sh /scripts/install.sh
 COPY scripts/install-desktop.sh /scripts/install-desktop.sh
 COPY --from=spa /build/repo/skriftapp/buildapp/static ./buildapp/static
+# The generated homepage, after buildapp/ so it lands inside the landing
+# directory the asset route already serves.
+COPY --from=landing /build/repo/skriftapp/buildapp/landing/generated ./buildapp/landing/generated
 RUN chmod +x /app/entrypoint.sh \
  && useradd --create-home --uid 10001 appuser \
  && chown -R appuser:appuser /app

@@ -217,6 +217,37 @@ jobs:
         working-directory: spa
         run: npx vitest run
 
+  # The landing page's own gate. `npm test` BUILDS the Astro document and then
+  # reads it back (landing/test/), so this job is both the build proof and the
+  # page's contract — a page that no longer compiles cannot reach the app image.
+  # Gated on `app` like `spa`: skriftapp/Containerfile builds landing/ into the
+  # same image, which is why `landing/` is one of the app tier's paths.
+  landing:
+    name: Landing page tests
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-landing
+      cancel-in-progress: true
+    needs: [changes]
+    if: ${{ needs.changes.outputs.app == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: landing
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          # Astro and the test runner both need node 22+. Unlike spa/, this
+          # project has no file: dependencies, so its lockfile is committed and
+          # the npm cache can key on it.
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: landing/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Test
+        run: npm test
+
   # scripts/install.sh is published verbatim as a release asset and piped into
   # `sh` on a stranger's machine, so it is checked as POSIX sh — the shell it
   # actually runs under — and not as the bash a developer happens to test with,
@@ -351,13 +382,14 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, skriftapp, scripts, shell, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
           && needs.spa.result == 'success'
+          && needs.landing.result == 'success'
           && needs.skriftapp.result == 'success'
           && (needs.scripts.result == 'success' || needs.scripts.result == 'skipped')
           && (needs.shell.result == 'success' || needs.shell.result == 'skipped')
@@ -478,11 +510,11 @@ jobs:
         run: |
           verify() {
             curl -sf -o /dev/null https://getbuild.ing/healthz &&
-            curl -sf https://getbuild.ing/ | grep -q "Set the work in motion" &&
-            curl -sf -o /dev/null https://getbuild.ing/landing/cinematic.css &&
-            curl -sf -o /dev/null https://getbuild.ing/landing/vendor/three-device-runtime.js &&
+            curl -sf https://getbuild.ing/ | grep -q "Your agents. Your machine. Your call." &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/generated/waitlist-boot.js &&
             curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/laptop-low.glb &&
-            curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/laptop.webp &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/assets/devices/scene-01-desktop.webp &&
+            curl -sf -o /dev/null https://getbuild.ing/landing/assets/screens/ui10-editor-macbook.webp &&
             curl -sf -o /dev/null https://getbuild.ing/docs &&
             curl -sf -o /dev/null https://getbuild.ing/privacy
           }

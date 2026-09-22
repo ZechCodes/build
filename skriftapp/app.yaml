@@ -44,9 +44,10 @@ oauth2_enabled: true
 rate_limit:
   enabled: true
   rules:
-    # The current landing tree has 89 scene, texture, font, model, and support
-    # files. A 600/minute budget allows six full uncached reloads plus headroom
-    # without letting that browser fanout consume the 60/minute default.
+    # The landing tree is about 106 poster, screen-texture, font, model, and
+    # generated-bundle files. A 600/minute budget allows five full uncached
+    # reloads plus headroom without letting that browser fanout consume the
+    # 60/minute default.
     - name: landing_assets
       match:
         path: /landing/

@@ -202,37 +202,73 @@
       "file": "laptop.webp",
       "width": 1200,
       "height": 900,
-      "bytes": 35554,
+      "bytes": 30006,
+      "sha256": "a812a217588bafc6f05f2924dd68e37009df1efbb47e67817e2765ba9ff6c1fa",
       "content_bounds_px_bottom_left": [
         69,
         93,
         1062,
         556
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "tablet": {
       "file": "tablet.webp",
       "width": 1000,
       "height": 760,
-      "bytes": 40604,
+      "bytes": 46122,
+      "sha256": "11709175e8ec2742b62275d2fc35d358c1c11973641948f20e08f54eb11e0d94",
       "content_bounds_px_bottom_left": [
         157,
         50,
         753,
         638
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          }
+        }
+      }
     },
     "phone": {
       "file": "phone.webp",
       "width": 640,
       "height": 1040,
-      "bytes": 21616,
+      "bytes": 23750,
+      "sha256": "1b119841a242799452a7afa1cf930130db902a93a4989d273f2f9b553b97c045",
       "content_bounds_px_bottom_left": [
         135,
         133,
         379,
         789
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "phone": {
+            "file": "screens/ui03-answer-iphone.webp",
+            "sha256": "9324edceb4f54c6dedd81ee9edc906bc5f5b89f6c27bc112a40b544a9d6b3f0b"
+          }
+        }
+      }
     },
     "mobile-hero": {
       "file": "mobile-hero.webp",
@@ -250,181 +286,529 @@
       "file": "scene-01-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 37014,
+      "bytes": 30042,
+      "sha256": "03f7fdf37e8f57b1a932b947cfb880a622f42aa463ca6d6177dd510defd4c2e5",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        119,
+        48,
+        1203,
+        628
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "scene-01-mobile": {
       "file": "scene-01-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 15686,
+      "bytes": 12890,
+      "sha256": "223f06e07d7a92f0a179301a0f8b971c1cc036e030232a3ec86acd4be6f645ed",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        42,
+        267,
+        637,
+        333
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "scene-02-desktop": {
       "file": "scene-02-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 22940,
+      "bytes": 29970,
+      "sha256": "068610a7d5c3db7b9dccbc7a233eec1de309b2ea25976e5202f8697d35bb374e",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        195,
+        112,
+        901,
+        620
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "scene-02-mobile": {
       "file": "scene-02-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 14098,
+      "bytes": 14808,
+      "sha256": "52618dc8a74dab46a4392f75abe7bc6003042513a8e8f99b2f7205d18e2fa858",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        36,
+        272,
+        556,
+        384
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "scene-03-desktop": {
       "file": "scene-03-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 22544,
+      "bytes": 36720,
+      "sha256": "c1e1c8b46711d63d307f0118bca83ac2b322bbab6b5a30ca57eba772310b475c",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        264,
+        54,
+        992,
+        726
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui12-issues-macbook.webp",
+            "sha256": "aad432048f1d09fb7c85c23fde550086365b100f4dcf3fc76c0c083b5dcdd1a5"
+          }
+        }
+      }
     },
     "scene-03-mobile": {
       "file": "scene-03-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 21526,
+      "bytes": 17428,
+      "sha256": "be65dcebdf34496a790687cd681c92e11ae6110123aac0ec4eb1f99d13419a4c",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        88,
+        245,
+        592,
+        431
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui12-issues-macbook.webp",
+            "sha256": "aad432048f1d09fb7c85c23fde550086365b100f4dcf3fc76c0c083b5dcdd1a5"
+          }
+        }
+      }
     },
     "scene-04-desktop": {
       "file": "scene-04-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 42780,
+      "bytes": 25626,
+      "sha256": "55cee8e9d5cdaadaa85b8945aeddda71c986c52422add976bd39a03c252c95c8",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        208,
+        44,
+        908,
+        699
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui13-team-macbook.webp",
+            "sha256": "d38ccf512145c84600d294b2b0b750294eb19c801d0c8bdfe3363a64f698fd12"
+          },
+          "phone": {
+            "file": "screens/ui03-answer-iphone.webp",
+            "sha256": "9324edceb4f54c6dedd81ee9edc906bc5f5b89f6c27bc112a40b544a9d6b3f0b"
+          }
+        }
+      }
     },
     "scene-04-mobile": {
       "file": "scene-04-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 23782,
+      "bytes": 12826,
+      "sha256": "52e62368ab9564b67f32396af04fbd417ff2215dc07404050069644385b0c758",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        37,
+        225,
+        572,
+        439
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui13-team-macbook.webp",
+            "sha256": "d38ccf512145c84600d294b2b0b750294eb19c801d0c8bdfe3363a64f698fd12"
+          },
+          "phone": {
+            "file": "screens/ui03-answer-iphone.webp",
+            "sha256": "9324edceb4f54c6dedd81ee9edc906bc5f5b89f6c27bc112a40b544a9d6b3f0b"
+          }
+        }
+      }
     },
     "scene-05-desktop": {
       "file": "scene-05-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 51160,
+      "bytes": 34174,
+      "sha256": "47a11db5e092717fade09a5094507d3892a1feaa3491468d6eeb835f518fd39d",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        119,
+        48,
+        1203,
+        628
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui16-builder-macbook.webp",
+            "sha256": "812cd665417badf363368f03b3c46872b6c9b554ca5d887109051e8b9214ecec"
+          }
+        }
+      }
     },
     "scene-05-mobile": {
       "file": "scene-05-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 28014,
+      "bytes": 13014,
+      "sha256": "8c68dc2bbe64fda999658c3e7af2a23816e3826afb5d3bf10556a770bedf19f8",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        42,
+        268,
+        637,
+        332
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui16-builder-macbook.webp",
+            "sha256": "812cd665417badf363368f03b3c46872b6c9b554ca5d887109051e8b9214ecec"
+          }
+        }
+      }
     },
     "scene-06-desktop": {
       "file": "scene-06-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 34964,
+      "bytes": 30974,
+      "sha256": "16f64a1c06950bed85f9fca4b8945ded67b3be29ec0519abda406a6e896253c9",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        165,
+        50,
+        1076,
+        646
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui14-git-macbook.webp",
+            "sha256": "025b7e082e128f59dc87b12d2eac9e5be2ecfb2eb36ae1f04d46d4e2c5d7c342"
+          }
+        }
+      }
     },
     "scene-06-mobile": {
       "file": "scene-06-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 32034,
+      "bytes": 14344,
+      "sha256": "5a7a6ec0fd92bee323acf6d3a42ea96c67d54adb84cb984de5817308a2012b71",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        42,
+        251,
+        617,
+        369
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui14-git-macbook.webp",
+            "sha256": "025b7e082e128f59dc87b12d2eac9e5be2ecfb2eb36ae1f04d46d4e2c5d7c342"
+          }
+        }
+      }
     },
     "desktop-poster": {
       "file": "desktop-poster.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 34964,
+      "bytes": 35064,
+      "sha256": "0d04657096a00ccc1876de4c95454da76d01a4a1bc6c68fbe17fdbb3f84375e3",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1440,
-        900
-      ]
+        74,
+        55,
+        1122,
+        665
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          },
+          "phone": {
+            "file": "screens/ui05-merged-iphone.webp",
+            "sha256": "bbfb2d0a63d08342434384c9d07924040486c659ee1332e93ab606935e314809"
+          }
+        }
+      }
     },
     "mobile-poster": {
       "file": "mobile-poster.webp",
       "width": 720,
       "height": 960,
-      "bytes": 32034,
+      "bytes": 19078,
+      "sha256": "e8a30343e0419ab45e2bb582ef27aee4ee3e3ee71682d0b90af5321586ffdea1",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        720,
-        960
-      ]
+        38,
+        200,
+        538,
+        539
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          },
+          "phone": {
+            "file": "screens/ui05-merged-iphone.webp",
+            "sha256": "bbfb2d0a63d08342434384c9d07924040486c659ee1332e93ab606935e314809"
+          }
+        }
+      }
     },
     "social-preview": {
       "file": "social-preview.webp",
       "width": 1200,
       "height": 630,
-      "bytes": 23942,
+      "bytes": 22230,
+      "sha256": "f05f7d59dc38d9a945fa32fe0c9296c7e0d2641686e888d0343d75f972e018d7",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1200,
-        630
-      ]
+        116,
+        182,
+        1025,
+        360
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
+    },
+    "scene-07-desktop": {
+      "file": "scene-07-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 35012,
+      "sha256": "42ea6166c6d02ef87daf161afe710965bf70ea8c366b4f11d36442b6db424d78",
+      "content_bounds_px_bottom_left": [
+        73,
+        180,
+        1099,
+        574
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          }
+        }
+      }
+    },
+    "scene-07-mobile": {
+      "file": "scene-07-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 13308,
+      "sha256": "f7d3e3bae802e897d67d88e248c39679aa72f4117893350095a17f095a936b45",
+      "content_bounds_px_bottom_left": [
+        37,
+        344,
+        551,
+        288
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          }
+        }
+      }
+    },
+    "scene-08-desktop": {
+      "file": "scene-08-desktop.webp",
+      "width": 1440,
+      "height": 900,
+      "bytes": 35064,
+      "sha256": "0d04657096a00ccc1876de4c95454da76d01a4a1bc6c68fbe17fdbb3f84375e3",
+      "content_bounds_px_bottom_left": [
+        74,
+        55,
+        1122,
+        665
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          },
+          "phone": {
+            "file": "screens/ui05-merged-iphone.webp",
+            "sha256": "bbfb2d0a63d08342434384c9d07924040486c659ee1332e93ab606935e314809"
+          }
+        }
+      }
+    },
+    "scene-08-mobile": {
+      "file": "scene-08-mobile.webp",
+      "width": 720,
+      "height": 960,
+      "bytes": 19078,
+      "sha256": "e8a30343e0419ab45e2bb582ef27aee4ee3e3ee71682d0b90af5321586ffdea1",
+      "content_bounds_px_bottom_left": [
+        38,
+        200,
+        538,
+        539
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui05-merged-macbook.webp",
+            "sha256": "90d9d4df3cf3d12575f84bb740ecf7bfeac234d716dd16d7ffe9d7198fd22868"
+          },
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          },
+          "phone": {
+            "file": "screens/ui05-merged-iphone.webp",
+            "sha256": "bbfb2d0a63d08342434384c9d07924040486c659ee1332e93ab606935e314809"
+          }
+        }
+      }
+    },
+    "social-preview-og": {
+      "file": "../social-preview.png",
+      "width": 1200,
+      "height": 630,
+      "bytes": 667260,
+      "sha256": "52da2fde9293bb2d27bb969d3594420ebb94065173ef2a825035f761c271d584",
+      "content_bounds_px_bottom_left": [
+        117,
+        183,
+        1023,
+        358
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     }
   },
   "source": {

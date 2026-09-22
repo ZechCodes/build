@@ -1,8 +1,13 @@
 """Behavioural contract for the public landing and its practical exits.
 
-The page may change composition and rendering technique without rewriting a screenshot
-spec in Python. These checks keep the six approved ideas readable, every production
-action real, and every same-origin asset routable.
+The homepage is a static Astro build (`landing/` at the repo root) emitted into
+``landing/generated/``. skriftapp serves that document as it is, filling exactly the
+two slots that cannot be static: the activity feed and the repository link. These
+checks own that boundary — the document is not re-wrapped, no slot survives into the
+response, an unbuilt tree says so plainly, and every same-origin asset is routable.
+
+The page's own composition (acts, copy, choreography) is the landing project's test
+suite (`landing/test/`), not Python's.
 """
 
 from __future__ import annotations
@@ -16,19 +21,25 @@ import pytest
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
-from buildapp import releases
-from buildapp.landing_page import LANDING_DIR, SHELL_NAME, read_landing_file
-from buildapp.landing_content import _render_activity, _render_activity_section, load_content
+from buildapp import landing_content, releases
+from buildapp.landing_page import LANDING_DIR, SHELL_NAME
+from buildapp.landing_content import (
+    _render_activity,
+    _render_activity_section,
+    load_content,
+    render_homepage_slots,
+)
 from buildapp.root_controller import (
-    LANDING_PAGE_NAME,
+    GENERATED_PAGE,
+    UNBUILT_LANDING_MESSAGE,
     RootController,
     render_docs_page,
     render_landing_page,
     render_privacy_page,
 )
 
-# Imported by the panel/invite/unsubscribe suites. Their pages intentionally retain
-# the legacy shell footer while the marketing landing supplies its own compact footer.
+# Imported by the panel/invite/unsubscribe suites. Their pages render through the
+# shell; the marketing homepage no longer does, and supplies its own head and footer.
 STYLESHEET_LINK = '<link rel="stylesheet" href="/landing/landing.css">'
 FONT_PRELOAD_LINK = (
     '<link rel="preload" href="/landing/fonts/JetBrainsMono-latin.woff2" '
@@ -39,142 +50,185 @@ FOOTER_COPYRIGHT_COPY = "© 2026 BUILD · GETBUILD.ING"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 CANONICAL_REPOSITORY_URL = "https://github.com/ZechCodes/build-web"
-SCENES = (
-    ("start", "Set the work in motion.", "Your coding agents. Your hardware. Any screen."),
-    ("handoff", "Your day moves.", "Pick up the same workspace wherever you are."),
-    (
-        "direction",
-        "A little direction. Back to work.",
-        "Answer your agents from the screen at hand.",
-    ),
-    (
-        "overview",
-        "See the whole picture.",
-        "Follow agents, workflows, and shells in one place.",
-    ),
-    (
-        "review",
-        "Keep the final say.",
-        "Understand the changes. Decide what lands.",
-    ),
-    ("download", "Any screen. Your call.", "Free &amp; open source."),
+
+# A stand-in for the Astro output: a complete document carrying both server slots,
+# so these checks run on a tree that has never run `npm run build`.
+GENERATED_DOCUMENT = (
+    "<!doctype html><html lang=\"en\"><head><title>Build</title></head>"
+    "<body><main>Your agents. Your machine. Your call.</main>"
+    '<div class="practical">{{activity_section}}</div>'
+    '<footer><a href="{{repository_url}}">GitHub</a></footer>'
+    "</body></html>\n"
 )
+VERIFIED_ACTIVITY = {
+    "reason": "Public development updates will appear here when available.",
+    "entries": [
+        {
+            "summary": "Improve connection recovery",
+            "category": "Reliability",
+            "merged_at": "2026-09-17T21:10:00Z",
+            "source_url": f"{CANONICAL_REPOSITORY_URL}/pull/42",
+            "release_status": "merged_not_released",
+        }
+    ],
+}
+
+# Every device and screen asset the story hands to the browser. Each is a same-origin
+# file with a hard size ceiling: the page is the first thing a stranger loads.
+ASSET_SIZE_LIMIT = 2_000_000
 HOST_ASSETS = (
-    "assets/devices/laptop.webp",
-    "assets/devices/tablet.webp",
-    "assets/devices/phone.webp",
-    "assets/devices/laptop.glb",
+    "assets/devices/laptop-low.glb",
     "assets/devices/tablet.glb",
     "assets/devices/phone.glb",
     "assets/devices/metadata.json",
+    "assets/devices/laptop.webp",
+    "assets/devices/tablet.webp",
+    "assets/devices/phone.webp",
+    *(
+        f"assets/devices/scene-0{act}-{profile}.webp"
+        for act in range(1, 9)
+        for profile in ("desktop", "mobile")
+    ),
+    "assets/screens/ui10-editor-macbook.webp",
+    "assets/screens/ui12-issues-macbook.webp",
+    "assets/screens/ui13-team-macbook.webp",
+    "assets/screens/ui14-git-macbook.webp",
+    "assets/screens/ui15-triage-ipad.webp",
+    "assets/screens/ui16-builder-macbook.webp",
+    "assets/screens/ui05-merged-macbook.webp",
+    "assets/screens/ui05-merged-ipad.webp",
+    "assets/screens/ui05-merged-iphone.webp",
+    "assets/screens/ui05-approval-ipad.webp",
+    "assets/screens/ui03-question-iphone.webp",
+    "assets/screens/ui03-answer-iphone.webp",
+    "assets/screens/ui03-resumed-iphone.webp",
 )
 MEDIA_TYPES = (
     ("cinematic.css", "text/css"),
-    ("main.js", "text/javascript"),
-    ("story-devices.js", "text/javascript"),
+    ("waitlist-form.js", "text/javascript"),
     ("brand-mark.svg", "image/svg+xml"),
     ("favicon.svg", "image/svg+xml"),
     ("favicon.png", "image/png"),
     ("assets/devices/laptop.webp", "image/webp"),
-    ("assets/devices/laptop.glb", "model/gltf-binary"),
+    ("assets/devices/laptop-low.glb", "model/gltf-binary"),
     ("assets/devices/metadata.json", "application/json"),
     ("content.json", "application/json"),
     ("fonts/inter-400-latin.woff2", "font/woff2"),
 )
+# The build's own output, served from the same route one directory deeper.
+GENERATED_MEDIA_TYPES = (
+    ("generated/_astro/index.Dd5lpgnm.js", "text/javascript"),
+    ("generated/_astro/index.CngaKg5u.css", "text/css"),
+    ("generated/waitlist-boot.js", "text/javascript"),
+)
 
 
-def _landing_html() -> str:
-    return render_landing_page()
+@pytest.fixture
+def built_page(monkeypatch, tmp_path) -> Path:
+    """A generated document on disk, standing in for `cd landing && npm run build`."""
+    page = tmp_path / "generated" / "index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text(GENERATED_DOCUMENT)
+    monkeypatch.setattr("buildapp.root_controller.GENERATED_PAGE", page)
+    return page
 
 
-def test_root_serves_the_complete_landing_document():
+def test_the_generated_page_is_the_astro_build_output():
+    assert GENERATED_PAGE == LANDING_DIR / "generated" / "index.html"
+
+
+def test_root_serves_the_generated_document_with_only_its_two_slots_filled(built_page):
     response = asyncio.run(RootController.root.fn(None))
     assert isinstance(response, Response)
+    # Litestar fills the handler's default status on the way out; only the 503 below
+    # sets one on the response itself.
+    assert response.status_code is None
     assert response.media_type == "text/html"
-    assert response.content == _landing_html()
-    assert response.content.startswith("<!doctype html>")
+    slots = render_homepage_slots()
+    assert response.content == GENERATED_DOCUMENT.replace(
+        "{{activity_section}}", slots["activity_section"]
+    ).replace("{{repository_url}}", slots["repository_url"])
     assert "{{" not in response.content
 
 
-def test_story_contains_the_six_approved_scenes_in_order():
-    html = _landing_html()
-    positions = []
-    for scene_id, headline, supporting_text in SCENES:
-        marker = f'data-story-scene="{scene_id}"'
-        assert html.count(marker) == 1
-        scene_position = html.index(marker)
-        assert html.index(headline, scene_position) > scene_position
-        assert supporting_text in html
-        positions.append(scene_position)
-    assert positions == sorted(positions)
+def test_the_generated_document_is_served_whole_and_never_wrapped_in_the_shell(built_page):
+    html = render_landing_page()
+    assert html.startswith("<!doctype html>")
+    assert html.rstrip().endswith("</html>")
+    # Astro emits the document; wrapping it in shell.html would nest two of everything.
+    assert html.count("<html") == 1
+    assert html.count("<head") == 1
+    assert html.count("<body") == 1
+    assert STYLESHEET_LINK not in html
+    assert FOOTER_ASSURANCE_COPY not in html
 
 
-def test_story_actions_reach_real_public_exits():
-    html = _landing_html()
-    assert html.count('href="#download"') >= 3
-    assert html.count(f'href="{CANONICAL_REPOSITORY_URL}"') >= 3
-    assert 'href="/docs"' in html
-    assert 'href="/privacy"' in html
-    assert releases.DOWNLOADS_PATH not in html
-
-
-def test_download_section_publishes_the_installer_and_hands_off_to_alpha_pairing():
-    html = _landing_html()
-    assert '<section class="download-chooser" id="download"' in html
-    assert escape(releases.install_command("https://getbuild.ing")) in html
-    assert 'href="/app/">Open installer setup</a>' in html
-    assert (
-        "Installer downloads are public. Alpha access is required to pair and use a host."
-        in html
+def test_an_unbuilt_landing_answers_service_unavailable_in_one_plain_sentence(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "buildapp.root_controller.GENERATED_PAGE", tmp_path / "generated" / "index.html"
     )
-    assert "authenticated installer" not in html
-    assert "installer is available after alpha access" not in html
-    for key, label in releases.PLATFORMS:
-        assert label in html
-        assert f'href="{releases.latest_asset_url(releases.asset_name(key))}"' in html
+    response = asyncio.run(RootController.root.fn(None))
+    assert response.status_code == 503
+    assert response.media_type == "text/plain"
+    assert response.content == UNBUILT_LANDING_MESSAGE
+    assert UNBUILT_LANDING_MESSAGE == "The landing page has not been built yet."
 
 
-def test_mobile_is_described_as_a_client_instead_of_a_binary_target():
-    html = _landing_html()
-    assert "Mobile devices connect to that host" in html
-    assert "iPhone" not in html
-    assert "Android" not in html
-
-
-def test_practical_content_links_to_the_maintained_facts():
-    html = _landing_html()
-    assert 'href="/docs#harnesses"' in html
-    assert "Claude Code, Codex, and Pi are available now; OpenCode is planned." in html
-    assert 'href="/privacy"' in html
-    assert "content-free connection diagnostics" in html
-    assert "optional browser push subscription" in html
-
-
-def test_private_repository_leaves_the_activity_section_off_the_page():
-    html = _landing_html()
+def test_a_private_repository_leaves_the_activity_section_off_the_page(built_page):
     content = load_content()
     assert content["source"]["repository_public"] is False
     assert content["activity"]["entries"] == []
+    html = render_landing_page()
     # An empty "built in the open" section says less than no section.
     assert 'id="activity"' not in html
     assert content["activity"]["reason"] not in html
-    assert "View project history on GitHub" not in html
     assert "Merged, not necessarily released" not in html
 
 
+def test_a_verified_activity_entry_renders_into_the_generated_document(
+    built_page, monkeypatch
+):
+    monkeypatch.setattr(
+        landing_content,
+        "load_content",
+        lambda: {
+            "source": {"repository_url": CANONICAL_REPOSITORY_URL},
+            "activity": VERIFIED_ACTIVITY,
+        },
+    )
+    html = render_landing_page()
+    assert 'id="activity"' in html
+    assert "Improve connection recovery" in html
+    assert "Merged, not necessarily released" in html
+    assert "{{" not in html
+
+
+def test_the_repository_url_is_escaped_into_every_link_it_fills(built_page, monkeypatch):
+    monkeypatch.setattr(
+        landing_content,
+        "load_content",
+        lambda: {
+            "source": {"repository_url": '/" onmouseover="alert(1)'},
+            "activity": {"entries": []},
+        },
+    )
+    html = render_landing_page()
+    assert '" onmouseover="' not in html
+    assert "&quot; onmouseover=&quot;" in html
+
+
+def test_the_homepage_asks_for_exactly_two_values_at_request_time():
+    slots = render_homepage_slots()
+    assert set(slots) == {"activity_section", "repository_url"}
+    assert slots["repository_url"] == escape(
+        load_content()["source"]["repository_url"], quote=True
+    )
+
+
 def test_a_small_verified_activity_cache_renders_without_becoming_a_page_dependency():
-    activity = {
-        "reason": "Public development updates will appear here when available.",
-        "entries": [
-            {
-                "summary": "Improve connection recovery",
-                "category": "Reliability",
-                "merged_at": "2026-09-17T21:10:00Z",
-                "source_url": f"{CANONICAL_REPOSITORY_URL}/pull/42",
-                "release_status": "merged_not_released",
-            }
-        ],
-    }
+    activity = {**VERIFIED_ACTIVITY, "entries": [dict(VERIFIED_ACTIVITY["entries"][0])]}
     rendered = _render_activity(activity)
     assert "Improve connection recovery" in rendered
     assert "Merged, not necessarily released" in rendered
@@ -186,13 +240,6 @@ def test_a_small_verified_activity_cache_renders_without_becoming_a_page_depende
     activity["entries"][0].pop("source_url")
     assert _render_activity(activity) == ""
     assert _render_activity_section(activity, CANONICAL_REPOSITORY_URL) == ""
-
-
-def test_footer_has_the_five_required_exits():
-    html = _landing_html()
-    footer = html[html.index('<footer class="landing-footer">') :]
-    for label in ("Build", "Docs", "GitHub", "Privacy", "Alpha"):
-        assert f">{label}<" in footer
 
 
 def test_docs_publish_current_host_and_harness_status():
@@ -247,28 +294,54 @@ def test_landing_asset_serves_shipped_media_with_an_explicit_type(
     assert (LANDING_DIR / asset_path).is_file()
 
 
+@pytest.mark.parametrize("asset_path, expected_media_type", GENERATED_MEDIA_TYPES)
+def test_the_build_output_is_served_from_the_same_asset_route(
+    monkeypatch, tmp_path, asset_path: str, expected_media_type: str
+):
+    asset = tmp_path / asset_path
+    asset.parent.mkdir(parents=True, exist_ok=True)
+    asset.write_bytes(b"/* built */")
+    monkeypatch.setattr("buildapp.root_controller.LANDING_DIR", tmp_path)
+    response = RootController.landing_asset.fn(None, asset_path=asset_path)
+    assert response.media_type == expected_media_type
+    assert response.content == b"/* built */"
+
+
+def test_the_generated_document_is_not_offered_as_a_second_homepage(monkeypatch, tmp_path):
+    """`/` is the homepage. The same bytes under /landing/ are not a second one, so
+    the route hands them back untyped rather than as a page a browser would render."""
+    page = tmp_path / "generated" / "index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text(GENERATED_DOCUMENT)
+    monkeypatch.setattr("buildapp.root_controller.LANDING_DIR", tmp_path)
+    response = RootController.landing_asset.fn(None, asset_path="generated/index.html")
+    assert response.media_type == "application/octet-stream"
+
+
 def test_every_device_asset_in_the_handoff_exists_and_is_bounded():
     for name in HOST_ASSETS:
         asset = LANDING_DIR / name
-        assert asset.is_file()
-        assert asset.stat().st_size < 2_000_000
+        assert asset.is_file(), name
+        assert asset.stat().st_size < ASSET_SIZE_LIMIT, name
 
 
-def test_every_same_origin_landing_asset_in_the_document_exists():
-    paths = set(re.findall(r'(?:src|href)="/landing/([^"?#]+)', _landing_html()))
+@pytest.mark.skipif(
+    not GENERATED_PAGE.is_file(), reason="the landing project has not been built here"
+)
+def test_every_same_origin_landing_asset_in_the_built_document_exists():
+    paths = set(re.findall(r'(?:src|href)="/landing/([^"?#]+)', render_landing_page()))
     assert paths
     for path in paths:
         assert (LANDING_DIR / path).is_file(), path
 
 
 def test_landing_assets_reject_traversal_and_missing_files():
-    for path in ("../controllers.py", "no-such-asset.js"):
+    for path in ("../controllers.py", "generated/../../controllers.py", "no-such-asset.js"):
         with pytest.raises(NotFoundException):
             RootController.landing_asset.fn(None, asset_path=path)
 
 
 def test_only_the_shell_is_a_complete_html_document():
-    assert "<head" not in read_landing_file(LANDING_PAGE_NAME)
     documents = [
         source.name
         for source in LANDING_DIR.glob("*.html")
@@ -277,70 +350,15 @@ def test_only_the_shell_is_a_complete_html_document():
     assert documents == [SHELL_NAME]
 
 
-def test_page_uses_semantic_content_and_a_single_external_module():
-    html = _landing_html()
-    assert html.count("<main") == 1
-    assert '<nav class="cinematic-nav"' in html
-    assert html.count("<script") == 1
-    assert '<script type="module" src="/landing/main.js"></script>' in html
-    assert "<style" not in html
-
-
-def test_reduced_motion_keeps_the_story_readable():
-    css = read_landing_file("cinematic.css")
-    assert "prefers-reduced-motion:reduce" in css.replace(" ", "")
-    assert ".story-scene" in css
-
-
-def test_static_story_reads_as_a_document_on_phones():
-    css = read_landing_file("cinematic.css")
-    compact = css.replace(" ", "")
-    # Scene anchors land below the fixed nav, scene renders blend into the page
-    # instead of sitting in black boxes, and the closing scene stacks on phones.
-    assert ".story-scene{" in compact and "scroll-margin-top:var(--cinematic-nav)" in compact
-    assert ".static-visualimg{" in compact and "mix-blend-mode:lighten" in compact
-    assert "aspect-ratio:3/4" not in compact
-    assert ".story-scene--download{display:block}" in compact
-
-
-def test_practical_details_stay_reachable_and_tappable():
-    css = read_landing_file("cinematic.css").replace(" ", "")
-    assert ".cinematic-pagesection[id]{scroll-margin-top:calc(var(--cinematic-nav)" in css
-    assert ".install-command{" in css and "white-space:nowrap;overflow-x:auto" in css
-    assert "body.is-menu-open{overflow:hidden}" in css
-
-
-def test_story_details_follow_the_scroll_position_instead_of_flipping():
-    css = read_landing_file("cinematic.css").replace(" ", "")
-    # Conversation and review steps, and the review card itself, are driven by
-    # the continuous --scene-local value rather than checkpoint attributes.
-    assert "--step-in:clamp(0,calc((var(--scene-local,0)-var(--step-at))/" in css
-    assert '[data-checkpoint="answer"]' not in css
-    assert '[data-checkpoint="diff"]' not in css
-    assert '[data-scene="review"].demo--review{opacity:1}' not in css
-    assert ".demo--review{" in css and "opacity:clamp(0,calc(var(--scene-local,0)/" in css
-
-
-def test_nav_blur_is_reserved_for_pointer_devices():
-    css = read_landing_file("cinematic.css").replace(" ", "")
-    # backdrop-filter over a moving story is a per-frame cost on tablets.
-    assert "@media(hover:hover){.cinematic-nav{" in css and "backdrop-filter:blur(18px)}}" in css
-    assert css.count("backdrop-filter") == 1
-
-
-def test_review_scene_shows_every_step_and_sizes_the_card_to_its_content():
-    css = read_landing_file("cinematic.css").replace(" ", "")
-    assert "aspect-ratio:4/3" not in css
-    # Steps are never removed from the card; the scroll position lights them up.
-    assert '[data-review-step]{display:none' not in css
-    assert '[data-review-step]{opacity:' in css
-
-
 def test_deploy_smoke_checks_the_new_story_and_critical_assets():
     workflow = CI_WORKFLOW_PATH.read_text()
     for expected in (
-        "Set the work in motion",
-        "/landing/cinematic.css",
-        "/landing/assets/devices/laptop.webp",
+        "Your agents. Your machine. Your call.",
+        "/landing/assets/devices/laptop-low.glb",
+        "/landing/assets/screens/ui10-editor-macbook.webp",
+        "/landing/assets/devices/scene-01-desktop.webp",
+        "/landing/generated/waitlist-boot.js",
     ):
-        assert expected in workflow
+        assert expected in workflow, expected
+    for retired in ("/landing/cinematic.css", "/landing/vendor/three-device-runtime.js"):
+        assert retired not in workflow, retired

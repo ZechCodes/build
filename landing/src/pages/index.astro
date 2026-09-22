@@ -1,0 +1,468 @@
+---
+import "../styles/fonts.css";
+import "../styles/landing.css";
+import "../styles/film.css";
+import Film from "../components/Film.astro";
+
+// The document skriftapp serves at "/". Astro emits the whole thing — head,
+// fonts, social meta — so the server never wraps it in a shell.
+const title = "Build — Any screen. Your call.";
+const description =
+  "Your coding agents. Your hardware. Any screen. Free and open source.";
+const socialTitle = "Build — Your agents. Your machine. Your call.";
+const socialDescription = "Your coding agents. Your hardware. Any screen.";
+const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
+
+// Filled by the server at request time (root_controller.render_landing_page),
+// the way the practical section has always been filled. Written as constants
+// because a literal {{…}} in Astro markup would be read as an expression.
+const activitySectionSlot = "{{activity_section}}";
+const repositoryUrlSlot = "{{repository_url}}";
+const repositoryTitle =
+  "Build source repository; access may require an invitation during alpha";
+
+// One poster pair per act, rendered by Astra from the same poses the film
+// uses (DIRECTION.md §5).
+const poster = (act: number) => ({
+  desktop: `/landing/assets/devices/scene-0${act}-desktop.webp`,
+  mobile: `/landing/assets/devices/scene-0${act}-mobile.webp`,
+});
+
+// Code and shell text live here rather than in markup: braces in an .astro
+// template are expressions, and these lines are full of them.
+const testFileBefore = `import { archive, search } from "../search";
+
+describe("archive", () => {
+  const archived = archive("launch notes");
+});`;
+const testFileAfter = `import { archive, search } from "../search";
+
+describe("archive", () => {
+  const archived = archive("launch notes");
+
+  it("keeps archived items in search", () => {
+    expect(search("launch notes")).toContain(archived);
+  });
+});`;
+const machineLabel = "zech-mbp · ~/code/build · main";
+const workspacePath = "~/code/build/workspaces/archive-search";
+const branchLine = `build/archive-search · ${workspacePath}`;
+const diffRemoved = "- search.remove(id);";
+const diffAdded = "+ search.update(id, { archived: true });";
+const commitMessage = "archive: keep archived results searchable";
+const testStepLabel = "Test · runs archive.test.ts";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href="/landing/favicon.png" type="image/png" sizes="32x32" />
+    <link rel="icon" href="/landing/favicon.svg" type="image/svg+xml" sizes="any" />
+    <link
+      rel="preload"
+      href="/landing/fonts/inter-400-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link
+      rel="preload"
+      href="/landing/fonts/JetBrainsMono-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <meta property="og:title" content={socialTitle} />
+    <meta property="og:description" content={socialDescription} />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content={socialImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={socialTitle} />
+    <meta name="twitter:description" content={socialDescription} />
+    <meta name="twitter:image" content={socialImage} />
+    <script src="../scripts/main.js"></script>
+    <script type="module" src="/landing/generated/waitlist-boot.js" is:inline></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#act-1">Skip to the story</a>
+
+    <main class="story" data-story>
+      <div class="film" data-film>
+      <!-- The device stage and the hero poster it takes over from. Both are
+           display: none until the entry script decides the visitor gets the
+           film; the document reads without them. -->
+      <canvas class="stage" data-stage aria-hidden="true"></canvas>
+      <picture class="hero-poster" data-hero-poster aria-hidden="true">
+        <img src={poster(1).desktop} width="1440" height="900" alt="" decoding="async" />
+      </picture>
+      <Film />
+      <!-- Act 1 -->
+      <section class="act" id="act-1" data-act="1" aria-labelledby="act-1-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">01 / Your machine</p>
+            <h1 id="act-1-title">Your agents. Your machine. Your call.</h1>
+            <p class="support">
+              Build is the IDE for agentic coding. Agents run on your hardware, in your
+              checkouts. You decide what ships.
+            </p>
+            <div class="actions">
+              <a class="cta" href="#act-8">Join the waitlist</a>
+              <a class="link" href="#act-2">See how it works</a>
+            </div>
+            <p class="meta">Free and open source · Invite-only alpha</p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(1).mobile} width="720" height="960" />
+            <img src={poster(1).desktop} width="1440" height="900" alt="" decoding="async" />
+          </picture>
+          <div class="act__proof proof-pair">
+            <article class="card">
+              <p class="card__label">Before</p>
+              <p class="file-name">archive.test.ts</p>
+              <pre><code>{testFileBefore}</code></pre>
+            </article>
+            <article class="card">
+              <p class="card__label">After · you typed the test</p>
+              <p class="file-name">archive.test.ts</p>
+              <pre><code>{testFileAfter}</code></pre>
+              <p class="card__foot">
+                2 changes · you <span class="machine-label">{machineLabel}</span>
+              </p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 2 -->
+      <section class="act" id="act-2" data-act="2" aria-labelledby="act-2-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">02 / Where it runs</p>
+            <h2 id="act-2-title">The work runs on your machine.</h2>
+            <p class="support">
+              Your agents run where your code lives. Connect from another screen and stay
+              in control of the same work.
+            </p>
+            <ul class="captions">
+              <li>Agents execute here.</li>
+              <li>Checkouts change here.</li>
+              <li>Build's service handles sign-in and pairing. It never holds your code.</li>
+            </ul>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(2).mobile} width="720" height="960" />
+            <img src={poster(2).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+        </div>
+      </section>
+
+      <!-- Act 3 -->
+      <section class="act" id="act-3" data-act="3" aria-labelledby="act-3-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">03 / Issues</p>
+            <h2 id="act-3-title">Say what needs doing.</h2>
+            <p class="support">
+              Write the issue where the code lives. Assign it to an agent. It cuts a
+              branch on your machine and starts. You write the next one.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(3).mobile} width="720" height="960" />
+            <img src={poster(3).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">In progress</p>
+              <h3>Make archived items searchable</h3>
+              <ul class="chips">
+                <li>search</li>
+                <li>bug</li>
+                <li>Claude Code</li>
+              </ul>
+              <p class="card__foot">{branchLine}</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 4 -->
+      <section class="act" id="act-4" data-act="4" aria-labelledby="act-4-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">04 / Orchestration</p>
+            <h2 id="act-4-title">One issue. A whole team.</h2>
+            <p class="support">
+              The agent splits the work: one implements, one reviews, one audits the edge
+              cases. Each gets its own workspace, a copy-on-write copy of your checkout,
+              made in an instant on your machine. When one needs you, it asks. You answer
+              from the screen in your hand.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(4).mobile} width="720" height="960" />
+            <img src={poster(4).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof">
+            <article class="card">
+              <p class="card__label">On your phone</p>
+              <ul class="conversation">
+                <li data-from="agent">
+                  <span class="who">Claude Code</span>Keep archived items in search?
+                </li>
+                <li data-from="you"><span class="who">You</span>Yes. Label them clearly.</li>
+                <li data-from="agent">
+                  <span class="who">Claude Code</span>Got it. I'll update the archive
+                  behavior and checks.
+                </li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 5 -->
+      <section class="act" id="act-5" data-act="5" aria-labelledby="act-5-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">05 / Workflows</p>
+            <h2 id="act-5-title">Build the workflow. Then run it again.</h2>
+            <p class="support">
+              The path you just watched is a workflow: implement, review, decide. Open it
+              in the builder. Add a test step. Move the review. Put the gate where you
+              want your call. Run it on the next issue.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(5).mobile} width="720" height="960" />
+            <img src={poster(5).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof proof-pair">
+            <article class="card">
+              <p class="card__label">Before</p>
+              <ul class="flow">
+                <li data-node="agent">Implement</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="agent">Review</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="gate">You decide</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="merge">Merge</li>
+              </ul>
+            </article>
+            <article class="card">
+              <p class="card__label">After · a test step, dropped in</p>
+              <ul class="flow">
+                <li data-node="agent">Implement</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="test">{testStepLabel}</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="agent">Review</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="gate">You decide</li>
+                <li class="edge" aria-hidden="true">→</li>
+                <li data-node="merge">Merge</li>
+              </ul>
+              <p class="card__foot">Saved as <em>Fix with tests</em>. Runs on the next issue.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 6 -->
+      <section class="act" id="act-6" data-act="6" aria-labelledby="act-6-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">06 / Git</p>
+            <h2 id="act-6-title">Every change lands in Git.</h2>
+            <p class="support">
+              Your line and the agents' lines, on one branch, in one window. Read the
+              diff. Stage it. Commit it. The editor and the Git tools are the same app.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(6).mobile} width="720" height="960" />
+            <img src={poster(6).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof proof-pair">
+            <article class="card">
+              <p class="card__label">Git</p>
+              <p class="file-name">{branchLine}</p>
+              <ul class="tree">
+                <li>archive.ts · modified · Claude Code</li>
+                <li>archive.test.ts · modified · you</li>
+              </ul>
+              <p class="card__foot">{commitMessage}</p>
+            </article>
+            <article class="card">
+              <p class="card__label">Diff · archive.ts</p>
+              <pre><code><span class="line-removed">{diffRemoved}</span><span class="line-new">{diffAdded}</span></code></pre>
+              <p class="card__foot">+2 −1 · <span class="machine-label">{machineLabel}</span></p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 7 -->
+      <section class="act" id="act-7" data-act="7" aria-labelledby="act-7-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">07 / Review</p>
+            <h2 id="act-7-title">See what needs you. Decide what ships.</h2>
+            <p class="support">
+              Agents triage every change before you see it. What needs your judgment comes
+              first, with the diff and the evidence beside it. Everything else stays one
+              tap away. Read. Decide. Build merges.
+            </p>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(7).mobile} width="720" height="960" />
+            <img src={poster(7).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+          <div class="act__proof proof-pair">
+            <article class="card">
+              <p class="card__label">Triage</p>
+              <ul class="triage">
+                <li>Needs you · 1: Search index behaviour changed</li>
+                <li>Verified <span class="count">3</span></li>
+                <li>Failed <span class="count">0</span></li>
+              </ul>
+            </article>
+            <article class="card finding">
+              <p class="card__label">The finding</p>
+              <h3>Keep archived items searchable and visibly labeled.</h3>
+              <pre><code><span class="line-removed">{diffRemoved}</span><span class="line-new">{diffAdded}</span></code></pre>
+              <ul class="evidence">
+                <li>archive.test.ts passed</li>
+                <li>keeps archived items in search ✓</li>
+                <li>Checks passed</li>
+              </ul>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Act 8 -->
+      <section class="act" id="act-8" data-act="8" aria-labelledby="act-8-title">
+        <div class="content-container act__inner">
+          <div class="act__copy">
+            <p class="kicker">08 / Any screen</p>
+            <div class="beat" data-beat="a">
+            <h2 id="act-8-title">Your work stays put. You don't have to.</h2>
+            <p class="support">
+              Check in, answer a question, review what's ready from your phone or tablet.
+              The agents keep working on the machine you chose.
+            </p>
+            </div>
+            <div class="beat" data-beat="b">
+            <h2 class="beat-b">Your machine. Your call.</h2>
+            <p class="support">
+              Free and open source. Runs on the hardware you already own.
+            </p>
+            <div class="waitlist" id="waitlist" data-waitlist>
+              <form class="waitlist-form" novalidate>
+                <input
+                  class="waitlist-input"
+                  type="email"
+                  name="email"
+                  placeholder="you@company.com"
+                  autocomplete="email"
+                  aria-label="Email address"
+                  required
+                />
+                <button class="cta button-primary button-primary--form" type="submit">
+                  Join the waitlist
+                </button>
+              </form>
+              <p class="note waitlist-error" role="alert" hidden>
+                ✗ COULDN’T ADD YOU — TRY AGAIN.
+              </p>
+              <p class="waitlist-success" role="status" hidden>
+                ✓ YOU’RE ON THE LIST — <span data-waitlist-email></span>
+              </p>
+              <p class="note waitlist-confirmation" role="status" hidden>
+                A confirmation is on its way. Every email has a one-click unsubscribe.
+              </p>
+            </div>
+            <div class="actions">
+              <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
+            </div>
+            <p class="meta">Invite-only alpha. Free and open source.</p>
+            </div>
+          </div>
+          <picture class="poster">
+            <source media="(max-width: 767px)" srcset={poster(8).mobile} width="720" height="960" />
+            <img src={poster(8).desktop} width="1440" height="900" alt="" decoding="async" loading="lazy" />
+          </picture>
+        </div>
+      </section>
+      </div>
+    </main>
+
+    <div class="practical">
+      <section class="practical-section hosts-section" id="details" aria-labelledby="hosts-title">
+        <div class="content-container practical-container">
+          <header class="practical-heading">
+            <p class="section-kicker">Your host</p>
+            <h2 id="hosts-title">Your hosts do the work.</h2>
+            <p>
+              Agents run on your personal devices. Keep your host online to connect from
+              another screen.
+            </p>
+          </header>
+
+          <div class="faq-list" aria-label="Build details">
+            <details open>
+              <summary>What do I install?</summary>
+              <p>
+                Install Build on the computer that runs your agents, then connect from
+                your other screens. Mobile devices connect to that host; they are not
+                offered a desktop binary.
+              </p>
+              <a href="/docs#architecture">Read the setup and connection guide</a>
+            </details>
+            <details>
+              <summary>Which agents can I use?</summary>
+              <p>
+                Build works with coding harnesses already installed and authenticated on
+                your host. Claude Code, Codex, and Pi are available now; OpenCode is
+                planned.
+              </p>
+              <a href="/docs#harnesses">See the maintained integration list</a>
+            </details>
+            <details id="privacy-summary">
+              <summary>What does Build store?</summary>
+              <p>
+                Build stores your account, device registration, content-free connection
+                diagnostics, and optional browser push subscription. Agents execute on
+                your personal hosts.
+              </p>
+              <a href="/privacy">Read the architecture and privacy details</a>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <Fragment set:html={activitySectionSlot} />
+    </div>
+
+    <footer class="landing-footer">
+      <div class="content-container landing-footer-inner">
+        <a class="footer-brand" href="/">Build</a>
+        <nav aria-label="Footer">
+          <a href="/docs">Docs</a>
+          <a href={repositoryUrlSlot}>GitHub</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/app/">Alpha</a>
+        </nav>
+      </div>
+    </footer>
+  </body>
+</html>

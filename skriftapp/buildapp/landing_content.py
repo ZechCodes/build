@@ -1,9 +1,12 @@
 """Verified practical content for the public landing page and its documentation.
 
-The cinematic story is intentionally static. Facts that can drift -- supported host
-builds, harness status, repository visibility -- are rendered here from the same
-release table as the app and a small, reviewable snapshot. A private repository never
-turns local commit messages into pretend public activity.
+The story is a static build. Facts that can drift -- harness status, repository
+visibility, merged work -- are rendered here from the same release table as the app
+and a small, reviewable snapshot. A private repository never turns local commit
+messages into pretend public activity.
+
+The homepage asks for exactly two of these at request time (``render_homepage_slots``);
+everything else on it is baked into the generated document.
 """
 
 from __future__ import annotations
@@ -16,7 +19,6 @@ from buildapp import releases
 from buildapp.landing_page import fill_slots, read_landing_file
 
 CONTENT_FILE_NAME = "content.json"
-PRACTICAL_FRAGMENT_NAME = "practical.html"
 ACTIVITY_FRAGMENT_NAME = "activity-section.html"
 DOCS_PATH = "/docs"
 PRIVACY_PATH = "/privacy"
@@ -26,20 +28,15 @@ def load_content() -> dict[str, Any]:
     return json.loads(read_landing_file(CONTENT_FILE_NAME))
 
 
-def render_practical_content() -> str:
+def render_homepage_slots() -> dict[str, str]:
+    """The two values the generated homepage cannot carry: the activity feed, which
+    is only as current as the last refresh, and the repository link."""
     content = load_content()
-    source = content["source"]
-    return fill_slots(
-        read_landing_file(PRACTICAL_FRAGMENT_NAME),
-        {
-            "install_command": escape(releases.install_command("https://getbuild.ing")),
-            "platforms": _render_platforms(),
-            "activity_section": _render_activity_section(
-                content["activity"], source["repository_url"]
-            ),
-            "repository_url": escape(source["repository_url"], quote=True),
-        },
-    )
+    repository_url = content["source"]["repository_url"]
+    return {
+        "activity_section": _render_activity_section(content["activity"], repository_url),
+        "repository_url": escape(repository_url, quote=True),
+    }
 
 
 def render_docs_body() -> str:
@@ -99,17 +96,6 @@ def render_privacy_body() -> str:
   <p>The hosted Build service does not receive or store your coding-harness credentials. Each harness is installed and authenticated on the host, and its own provider terms and data handling still apply.</p>
   <a href="/docs#architecture">Read the setup and connection guide</a>
 </main>"""
-
-
-def _render_platforms() -> str:
-    return "\n".join(
-        '          <li><a href="{url}"><span>{label}</span>'
-        '<span class="availability">Download host build</span></a></li>'.format(
-            url=escape(releases.latest_asset_url(releases.asset_name(key)), quote=True),
-            label=escape(label),
-        )
-        for key, label in releases.PLATFORMS
-    )
 
 
 def _render_activity_section(activity: dict[str, Any], repository_url: str) -> str:

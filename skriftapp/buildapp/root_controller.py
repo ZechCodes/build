@@ -1,4 +1,10 @@
-"""Public landing, documentation, and same-origin landing assets."""
+"""Public landing, documentation, and same-origin landing assets.
+
+The homepage is not rendered here. `landing/` at the repo root is an Astro project
+whose `npm run build` emits a complete document into ``landing/generated/``; this
+module serves that document and fills the only two values that cannot be static.
+`/docs` and `/privacy` are still Python-rendered bodies in the shared shell.
+"""
 
 import asyncio
 
@@ -7,38 +13,32 @@ from litestar.di import Provide
 from litestar.enums import MediaType
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
+from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from buildapp import releases
 from buildapp.email_message import provide_public_base_url
 from buildapp.landing_page import (
     LANDING_DIR,
     fill_slots,
-    read_landing_file,
     render_shell,
 )
 from buildapp.landing_content import (
     DOCS_PATH,
     PRIVACY_PATH,
     render_docs_body,
-    render_practical_content,
+    render_homepage_slots,
     render_privacy_body,
 )
 
-LANDING_PAGE_NAME = "index.html"
-PRACTICAL_SLOT_NAME = "practical_content"
-LANDING_TITLE = "Build — Any screen. Your call."
-LANDING_DESCRIPTION = "Your coding agents. Your hardware. Any screen. Free and open source."
-LANDING_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
+#: The Astro build output. Gitignored, like the SPA's bundle: built by the node stage
+#: in skriftapp/Containerfile, or by `cd landing && npm run build` in a checkout.
+GENERATED_PAGE = LANDING_DIR / "generated" / "index.html"
+#: What `/` says when the build never ran. One sentence, no verb prefix — it is read
+#: by a person in a browser, not by a log.
+UNBUILT_LANDING_MESSAGE = "The landing page has not been built yet."
+#: Only /docs and /privacy still render through the shell, and cinematic.css is their
+#: stylesheet. The homepage carries its own.
 LANDING_HEAD = '<link rel="stylesheet" href="/landing/cinematic.css">'
-SOCIAL_HEAD = (
-    '<meta property="og:title" content="Build — Set the work in motion.">'
-    '<meta property="og:description" content="Your coding agents. Your hardware. Any screen.">'
-    '<meta property="og:type" content="website">'
-    '<meta property="og:image" content="https://getbuild.ing/landing/assets/social-preview.png">'
-    '<meta property="og:image:width" content="1200">'
-    '<meta property="og:image:height" content="630">'
-    '<meta name="twitter:card" content="summary_large_image">'
-)
 
 LANDING_MEDIA_TYPES = {
     ".js": "text/javascript",
@@ -54,19 +54,8 @@ LANDING_MEDIA_TYPES = {
 
 
 def render_landing_page() -> str:
-    practical = render_practical_content().rstrip("\n")
-    return render_shell(
-        title=LANDING_TITLE,
-        description=LANDING_DESCRIPTION,
-        body=fill_slots(
-            read_landing_file(LANDING_PAGE_NAME),
-            {PRACTICAL_SLOT_NAME: practical},
-        ),
-        scripts=LANDING_SCRIPTS,
-        head=LANDING_HEAD + SOCIAL_HEAD,
-        footer="",
-        body_class="cinematic-page",
-    )
+    """The generated document, byte for byte, with its two server slots filled."""
+    return fill_slots(GENERATED_PAGE.read_text(), render_homepage_slots())
 
 
 def render_docs_page() -> str:
@@ -99,6 +88,12 @@ class RootController(Controller):
 
     @get("/")
     async def root(self) -> Response:
+        if not GENERATED_PAGE.is_file():
+            return Response(
+                UNBUILT_LANDING_MESSAGE,
+                media_type=MediaType.TEXT,
+                status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            )
         html = await asyncio.to_thread(render_landing_page)
         return Response(html, media_type=MediaType.HTML)
 

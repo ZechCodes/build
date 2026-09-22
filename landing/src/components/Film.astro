@@ -85,7 +85,7 @@ const findingSummary = "Archived results remain visible and now carry a clear la
       <span class="arrow" data-arrow="test-review">→</span>
       <span class="arrow" data-arrow="review-gate">→</span>
       <span class="arrow" data-arrow="gate-merge">→</span>
-      <article class="node done" data-node="implement"><small>1</small><strong>Implement</strong><span>Claude Code</span><em>Done · handoff pending</em></article>
+      <article class="node done" data-node="implement"><small>1</small><strong>Implement</strong><span>Claude Code</span><em data-node-status="implement">Done · handoff pending</em></article>
       <article class="node test" data-node="test"><small>2</small><strong>Test</strong><span>runs archive.test.ts</span><em data-node-status="test">Waiting</em></article>
       <article class="node" data-node="review"><small data-node-index="review">2</small><strong>Review</strong><span>Codex</span><em data-node-status="review">Waiting</em></article>
       <article class="node gate" data-node="gate"><small data-node-index="gate">3</small><strong>You decide</strong><span>Human gate</span><em data-node-status="gate">Waiting</em></article>
@@ -118,7 +118,7 @@ const findingSummary = "Archived results remain visible and now carry a clear la
     </aside>
     <div class="git-editor">
       <div class="ed-tabs"><span class="active">archive.ts</span><span>{testFileTab}</span><span class="machine-line">{machineLabel}</span></div>
-      <div class="diff-title"><strong>archive.ts</strong><span class="add" data-diff-add>+2</span><span class="del">−1</span><span class="author-chip agent" data-chip="agent"><i class="mark"></i>Claude Code</span></div>
+      <div class="diff-title"><strong>archive.ts</strong><span class="add" data-diff-add>+3</span><span class="del">−1</span><span class="author-chip agent" data-chip="agent"><i class="mark"></i>Claude Code</span></div>
       <div class="ed-code diff-code" data-hunk="agent">
         <div><i>11</i><span>{diffContext}</span></div>
         <div class="removed"><i>12</i><span>{diffRemoved}</span></div>

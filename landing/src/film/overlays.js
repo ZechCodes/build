@@ -66,11 +66,19 @@ function caret(tl, panel, name, from, until) {
 }
 
 // A discrete change at one moment that scrubbing back undoes: new text, a
-// class gained (or, with `off`, a class lost), or both.
-function flip(tl, element, time, { text, className, off = false } = {}) {
-  const before = element.textContent;
+// class gained (or, with `off`, a class lost), or both. The text to restore
+// is read as the change fires, so an element flipped twice hands back what
+// the earlier flip left, not what the markup started with.
+export function flip(tl, element, time, { text, className, off = false } = {}) {
+  let before = null;
+  let applied = false;
   const apply = (forward) => {
-    if (text !== undefined) element.textContent = forward ? text : before;
+    if (forward === applied) return;
+    applied = forward;
+    if (text !== undefined) {
+      if (forward) before = element.textContent;
+      element.textContent = forward ? text : before;
+    }
     if (className) element.classList.toggle(className, off ? !forward : forward);
   };
   tl.to(element, { duration: 0.01, onStart: () => apply(true), onReverseComplete: () => apply(false) }, time);
@@ -219,6 +227,7 @@ function builderBeats(tl, panels) {
   tl.set(pulse, { x: FIVE_UP[0] + NODE_WIDTH, y, autoAlpha: 1 }, at(5, 0.6));
   tl.to(pulse, { x: FIVE_UP[1] + NODE_WIDTH / 2, duration: span(5, 0.6, 0.64), ease: "power1.inOut" }, at(5, 0.6));
   flip(tl, node("implement"), at(5, 0.61), { className: "settled" });
+  flip(tl, status("implement"), at(5, 0.61), { text: "Done" });
   flip(tl, status("test"), at(5, 0.64), { text: "Passed ✓" });
   flip(tl, node("test"), at(5, 0.64), { className: "passed" });
   tl.to(pulse, { x: FIVE_UP[2] + NODE_WIDTH / 2, duration: span(5, 0.65, 0.69), ease: "power1.inOut" }, at(5, 0.65));
@@ -234,7 +243,8 @@ function builderBeats(tl, panels) {
   hide(tl, builder.state, at(6, 0), at(6, 0.03));
 }
 
-// Act 6: gutter highlights, author chips, one line added to the diff, stage,
+// Act 6: gutter highlights, author chips, one line added to the diff (the
+// hunk's count goes +3 to +4, as the document's proof says), stage,
 // a hold on the finished message, commit; the graph gains the visitor's
 // commit and the working tree is clean.
 function gitBeats(tl, panels) {
@@ -271,7 +281,7 @@ function gitBeats(tl, panels) {
   tl.to(humanLine, { height: "auto", autoAlpha: 1, duration: span(6, 0.4, 0.43), ease: "power2.out" }, at(6, 0.4));
   caret(tl, root, "human", at(6, 0.4), at(6, 0.55));
   typeInto(tl, humanText, at(6, 0.42), at(6, 0.54));
-  flip(tl, diffAdd, at(6, 0.54), { text: "+3" });
+  flip(tl, diffAdd, at(6, 0.54), { text: "+4" });
   flip(tl, closeNumber, at(6, 0.54), { text: "15" });
   press(tl, stageAll, at(6, 0.56), at(6, 0.62));
   flip(tl, treeLabel, at(6, 0.59), { text: "Staged" });

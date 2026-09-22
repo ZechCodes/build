@@ -169,6 +169,35 @@ async function inspectFilm(width, height) {
   await context.close();
 }
 
+// Scrubbing back over a labelled change hands back the label that was there
+// before it, not the markup's: the sequences Astra reproduced, forward and
+// back, plus the caption a finished node keeps and the hunk's count.
+const SCRUBS = [
+  { name: "act 4 implement status", selector: '[data-row-status="implement"]', steps: [[4, 0.6, "Waiting", true], [4, 0.8, "Working", false], [4, 0.6, "Waiting", true]] },
+  { name: "act 5 implement caption", selector: '[data-node-status="implement"]', steps: [[5, 0.5, "Done · handoff pending"], [5, 0.82, "Done"], [5, 0.5, "Done · handoff pending"]] },
+  { name: "act 6 hunk count", selector: "[data-diff-add]", steps: [[6, 0.3, "+3"], [6, 0.8, "+4"], [6, 0.3, "+3"]] },
+  { name: "act 6 tree label", selector: "[data-tree-label]", steps: [[6, 0.7, "Staged"], [6, 0.9, "Working tree"], [6, 0.7, "Staged"], [6, 0.5, "Working tree"]] },
+];
+
+async function inspectScrubs(width, height) {
+  const label = `${width}x${height}-scrub`;
+  const { context, page, errors, state } = await openFilm(width, height, label);
+  for (const { name, selector, steps } of SCRUBS) {
+    for (const [act, local, expected, waiting] of steps) {
+      await seek(page, act, local);
+      const found = await page.evaluate((query) => {
+        const element = document.querySelector(query);
+        return { text: element.textContent, waiting: element.classList.contains("waiting") };
+      }, selector);
+      assert.equal(found.text, expected, `${label}: ${name} at ${act}/${local}`);
+      if (waiting !== undefined) assert.equal(found.waiting, waiting, `${label}: ${name} waiting class at ${act}/${local}`);
+    }
+  }
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  findings.push({ label, viewport: [width, height], mode: state.mode });
+  await context.close();
+}
+
 // A desktop window made smaller mid-film: the pin re-measures, the stage
 // follows, and the close-ups stay on their screens.
 async function inspectResize([fromWidth, fromHeight], [toWidth, toHeight]) {
@@ -193,6 +222,7 @@ try {
   await inspectDocument(1440, 900, { javaScriptEnabled: false }, "1440x900-no-javascript");
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await inspectResize([1440, 900], [1024, 768]);
+  await inspectScrubs(1440, 900);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));
   console.log(`Passed ${findings.length} browser profiles. Artifacts: ${output}`);
 } finally {

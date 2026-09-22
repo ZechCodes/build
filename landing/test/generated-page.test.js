@@ -85,6 +85,8 @@ describe("the generated landing document", () => {
     assert.ok(act7.includes(label), "act 7's proof keeps the label a person added in act 6");
     const review = html.slice(html.indexOf('data-panel="review"'), html.indexOf('data-act="1"'));
     assert.ok(review.includes(label), "the review close-up keeps the label too");
+    assert.ok(html.includes('data-diff-add>+3<'), "the close-up hunk counts three added lines before the person's");
+    assert.ok(html.includes("+4 −1"), "the document proof counts four after it");
   });
 
   it("offers no download, only the waitlist", () => {

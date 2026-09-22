@@ -382,7 +382,7 @@ describe("the first-run screen", () => {
     document.getElementById("oapprove").click();
     await flush();
     expect(approveDevice).toHaveBeenCalledWith("G6ZP-KD2U");
-    expect(refreshDevices).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
   });
 
   // boot() swallows what enterApp throws (a stale status is the ordinary

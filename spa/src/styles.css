@@ -153,6 +153,9 @@
      step (see below), which is why this is a token and not a raw --line2. */
   --row-hover:var(--line2);
   --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
+  --user-bubble:#d7f7e4; --user-bubble-ink:#113e2b;
+  --user-bubble-link:#075a39; --user-bubble-muted:#365c4b;
+  --user-bubble-warn:#a04d00; --user-bubble-error:#a6293d;
   --green:#137344; --green-bg:#e3fff0;
   --red:#c43d52; --red-bg:#fbe9ec; --danger-ink:#fff;
   /* The waiting tone. Something pending review is not something broken: it is
@@ -192,6 +195,9 @@
   /* Electric mint is a clear affordance against the dark ground. --green stays
      slightly quieter so merged and passed states do not compete with actions. */
   --accent:#51ffb4; --accent-fill:#51ffb4; --accent-soft:#123b29; --accent-ink:#062719;
+  --user-bubble:#174e36; --user-bubble-ink:#e8fff2;
+  --user-bubble-link:#7cffc2; --user-bubble-muted:#bde8d0;
+  --user-bubble-warn:#ffd176; --user-bubble-error:#ffb8c4;
   --green:#54e8a2; --green-bg:#103b29;
   --red:#ff5c72; --red-bg:#2a1620; --danger-ink:#26050b;
   --amber:#ffd447; --amber-bg:#2b2210;
@@ -1836,22 +1842,29 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-comment-card { min-width:0; overflow:visible; border-radius:0; background:transparent; }
 .thread-body { padding:0; min-width:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
 .thread-message.user { align-self:flex-end; }
-/* A message another agent sent into this conversation is somebody else
-   speaking: it takes the side everything said TO this agent arrives on, in the
-   same bubble the reader's own words wear — and the accent's own surface, which
-   is green at the lightness --panel2 sits at in both themes. The colour is the
-   whole of the difference, and it is what says at a glance that the reader did
-   not write this. */
-.thread-message.from-agent { align-self:flex-start; }
-.thread-message:is(.user, .from-agent) { width:min(78%, 520px); }
-.thread-message:is(.user, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
+/* The reader's words use the green bubble; this agent and another agent use
+   the old neutral user surface. Both treatments are shared by the full
+   conversation and the rail. Bubble ink and muted labels have their own
+   contrast-safe tokens because the page's dim text may be faint on green. */
+.thread-message:is(.agent, .from-agent) { align-self:flex-start; }
+.thread-message:is(.user, .agent, .from-agent) { width:min(78%, 520px); }
+.thread-message:is(.user, .agent, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
   background:var(--panel2); }
-.thread-message.from-agent .thread-comment-card { background:var(--accent-soft); }
-.thread-message:is(.user, .from-agent) .thread-body { padding:6px 12px 9px; }
-.thread-message:is(.user, .from-agent) .message-viewing-context { padding:7px 12px 0; }
-.thread-message:is(.user, .from-agent) .thread-references,
-.thread-message:is(.user, .from-agent) .thread-attachments,
-.thread-message:is(.user, .from-agent) .thread-options { padding-inline:12px; }
+.thread-message.user .thread-comment-card { background:var(--user-bubble); color:var(--user-bubble-ink); }
+.thread-message.user .thread-body { color:var(--user-bubble-ink); }
+.thread-message.user .thread-body a,
+.thread-message.user .thread-revision-link { color:var(--user-bubble-link); }
+.thread-message.user :is(.thread-message-footer, .thread-status, .thread-anchor,
+  .thread-message-resolution, .thread-attachment-figure figcaption,
+  .thread-attachment-figure figcaption .thread-attachment-name,
+  .viewing-context-detail > button) { color:var(--user-bubble-muted); }
+.thread-message.user .delivery-status.uncertain { color:var(--user-bubble-warn); }
+.thread-message.user .delivery-status.failed { color:var(--user-bubble-error); }
+.thread-message:is(.user, .agent, .from-agent) .thread-body { padding:6px 12px 9px; }
+.thread-message:is(.user, .agent, .from-agent) .message-viewing-context { padding:7px 12px 0; }
+.thread-message:is(.user, .agent, .from-agent) .thread-references,
+.thread-message:is(.user, .agent, .from-agent) .thread-attachments,
+.thread-message:is(.user, .agent, .from-agent) .thread-options { padding-inline:12px; }
 /* Where it came from, above the bubble: the workspace or project, and the
    conversation it was said in. Both are links, so the other side of an
    exchange is one press away. */
@@ -1906,12 +1919,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-references, .thread-attachments, .thread-options { padding-inline:0; }
 .thread-message-footer { display:flex; align-items:center; gap:5px; padding-top:5px;
   color:var(--dim); font-size:11px; line-height:1; }
-.thread-message:is(.user, .from-agent) .thread-message-footer { padding:0 12px 8px; }
+.thread-message:is(.user, .agent, .from-agent) .thread-message-footer { padding:0 12px 8px; }
 .thread-status { display:inline-flex; align-items:center; }
 .thread-status svg { width:13px; height:13px; }
 .thread-status svg + svg { margin-left:-7px; }
 .thread-message-resolution { padding-bottom:5px; font-size:11px; }
-.thread-message:is(.user, .from-agent) .thread-message-resolution { padding:7px 12px 0; }
+.thread-message:is(.user, .agent, .from-agent) .thread-message-resolution { padding:7px 12px 0; }
 .thread-lightbox { position:relative; display:flex; align-items:center; justify-content:center;
   width:auto; max-width:min(94vw, 1200px); max-height:92vh; padding:34px 12px 12px; background:var(--bg); }
 .thread-lightbox-image { display:block; max-width:min(calc(94vw - 24px), 1174px);
@@ -1980,7 +1993,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .composer-send { width:34px; height:34px; border-radius:8px; }
 .composer-attach { width:34px; height:34px; }
 @media (max-width: 640px) {
-  .thread-message:is(.user, .from-agent) { width:min(88%, 520px); }
+  .thread-message:is(.user, .agent, .from-agent) { width:min(88%, 520px); }
 }
 
 /* Global notifications (core/notify.js) — errors persist until dismissed,

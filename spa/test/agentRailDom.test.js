@@ -691,6 +691,39 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(callsTo("issue.get")).toHaveLength(1);
     expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });
+
+  it("paints a remembered cached conversation before the roster arrives, then falls back in the same frame", async () => {
+    await wipeCache();
+    chatRepository.railView("issue:plan-1").chooseAgent("ag-remembered");
+    await writeRailThread("plan-1", "ag-remembered", { items: [said(1, "remembered cached words")] });
+    await writeRailThread("plan-1", "ag-first", { items: [said(1, "first delivered agent words")] });
+    let deliverRoster;
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "issue.get") return new Promise((resolve) => { deliverRoster = resolve; });
+      return {};
+    });
+
+    rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
+    await flush();
+
+    const body = railHost().querySelector("#rail-body");
+    expect(body.textContent).toContain("remembered cached words");
+    expect(railHost().querySelector("#railinput")).toBeNull();
+
+    deliverRoster({
+      issue_id: "plan-1",
+      project_id: "p1",
+      agents: [agent({ id: "ag-first", ordinal: 1 })],
+    });
+    await flush();
+
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(body.textContent).toContain("first delivered agent words");
+    expect(bubbles().find((bubble) => bubble.dataset.agent === "ag-first").classList).toContain("active");
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
 });
 
 describe("the bubble strip", () => {

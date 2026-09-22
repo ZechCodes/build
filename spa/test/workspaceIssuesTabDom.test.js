@@ -159,6 +159,17 @@ describe("the list", () => {
     expect(titles()).toEqual(["Held by an agent here"]);
   });
 
+  it("re-derives workspace issues when an initially empty cached roster arrives", async () => {
+    feed.items[0].agents = [];
+    await mount();
+    expect(titles()).toEqual([]);
+
+    feed.items[0].agents = [{ id: HERE, ordinal: 1 }, { id: ALSO, ordinal: 2 }];
+    tab.feedMoved();
+
+    expect(titles()).toEqual(["Held by another agent here", "Held by an agent here"]);
+  });
+
   it("shows nothing at all for a workspace whose agents hold nothing", async () => {
     await mount({ route: { workspaceId: "ws-9" } });
     expect(titles()).toEqual([]);

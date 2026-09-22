@@ -98,7 +98,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     const before = cacheWrites;
     const answer = await callRpc("git.refs", scope);
     if (disposed || request !== loadRequest || pending) return;
-    if (!address || cacheWrites !== before) return;
+    if (!address || cacheScope.active?.() === false || cacheWrites !== before) return;
     await writeCached(address, answer);
   };
   const checkout = async (fullRef) => {

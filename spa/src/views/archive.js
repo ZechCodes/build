@@ -14,18 +14,13 @@ import { subscribeBoardWrites } from "../core/feedRows.js";
 import { liveContexts } from "../core/deviceContexts.js";
 import { deviceKey } from "../core/deviceKey.js";
 import { archiveDeviceNames, archiveListHtml, archiveRows, newestFirst } from "../core/archive.js";
+import { readCachedMany, subscribeCache, writeCached } from "../core/localCache.js";
 
-/** One machine's share of the archive: its rows, each stamped with the machine
- *  that answered for it and keyed by it, since every daemon mints its own
- *  record ids and two machines can hand back the same one. A machine that will
- *  not answer contributes nothing rather than emptying the page. */
-const readDeviceArchive = (context) =>
-  context
-    .call("archived.list")
-    .then((payload) =>
-      archiveRows(payload).map((row) => ({ ...row, deviceId: context.deviceId, key: deviceKey(context.deviceId, row.key) })),
-    )
-    .catch(() => null);
+export const archiveAddress = (deviceId) => ({ deviceId, entityId: "", kind: "archive" });
+
+/** A bridge mints its own record ids, so every cached slice keeps its device. */
+const rowsFor = (deviceId, payload) =>
+  archiveRows(payload).map((row) => ({ ...row, deviceId, key: deviceKey(deviceId, row.key) }));
 
 export function renderArchive(options = {}) {
   const root = options.root || $("#root");
@@ -38,6 +33,8 @@ export function renderArchive(options = {}) {
   let openKey = null;
   let painted = false;
   let paintedFrom = null; // what the page currently stands on
+  let readGeneration = 0;
+  const cacheWrites = new Map();
   const archiveList = () => root.querySelector("#archive-list");
 
   const draw = () => {
@@ -76,40 +73,62 @@ export function renderArchive(options = {}) {
     }
   };
 
-  const load = async () => {
-    const answers = await Promise.all(liveContexts().map(readDeviceArchive));
-    if (disposed || options.isCurrent?.() === false) return;
-    const landed = answers.filter((answer) => answer !== null);
-    if (!landed.length) {
-      sayUnavailable();
-      return;
-    }
-    rows = landed.flat().sort(newestFirst);
+  const readArchive = async () => {
+    const generation = ++readGeneration;
+    const ids = [...new Set([...App.devices.map((device) => device.id), ...liveContexts().map((context) => context.deviceId)])];
+    const records = await readCachedMany(ids.map(archiveAddress));
+    if (disposed || options.isCurrent?.() === false || generation !== readGeneration) return;
+    const held = records.map((record, index) => record ? rowsFor(ids[index], record.value) : null).filter(Boolean);
+    if (!held.length && !painted) return;
+    rows = held.flat().sort(newestFirst);
     // A row that vanished cannot stay open under a row it no longer is.
     if (openKey && !rows.some((row) => row.key === openKey)) openKey = null;
     draw();
   };
 
-  let unwatch = null;
+  const load = async () => {
+    if (disposed || options.isCurrent?.() === false) return;
+    const answers = await Promise.all(liveContexts().map(async (context) => {
+      const revision = cacheWrites.get(context.deviceId) || 0;
+      try {
+        const payload = await context.call("archived.list");
+        if (disposed || options.isCurrent?.() === false || !context.active()) return false;
+        // A cache writer that landed while the pull was out has newer news.
+        if ((cacheWrites.get(context.deviceId) || 0) !== revision) return true;
+        await writeCached(archiveAddress(context.deviceId), payload);
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    if (!disposed && !answers.some(Boolean)) sayUnavailable();
+  };
+
+  const unwatchArchive = subscribeCache({}, (address) => {
+    if (address.kind === "archive" && address.deviceId) {
+      cacheWrites.set(address.deviceId, (cacheWrites.get(address.deviceId) || 0) + 1);
+      void readArchive();
+    } else if (address.kind === undefined) {
+      void readArchive();
+    }
+  });
+  const unwatchBoard = subscribeBoardWrites(load);
   const dispose = () => {
     disposed = true;
-    if (unwatch) unwatch();
-    unwatch = null;
+    unwatchArchive();
+    unwatchBoard();
   };
   if (options.registerDispose) options.registerDispose(dispose);
   else App.viewDispose = dispose;
   // The read is not awaited: the page (and the account nav above it) must be on
   // screen even when the device is unreachable and the read never lands.
-  load();
+  void readArchive().then(load);
   // Archiving is a lifecycle move, which is feed state: a machine's board
-  // moving is what says this list changed. The archive is not in the
-  // cache-first brief and holds no records of its own, so this is the whole of
-  // what wakes it — and a re-read that lands the same history repaints nothing
-  // (`draw` above).
+  // moving asks for fresh archive records. Each answer writes its device's
+  // record, whose announcement re-reads the cache before drawing.
   //
   // The read itself is handed over rather than fired and forgotten: a pass
   // writes a board and every row on it, and what keeps that from being a read
   // per row is the wake knowing when this one is still out (core/feedRows.js).
-  unwatch = subscribeBoardWrites(load);
   if (!options.registerDispose) App.poll = { dispose };
 }

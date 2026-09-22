@@ -41,6 +41,8 @@ const resizeWebp = (source, destination, width, height) => new Promise((resolveP
 });
 
 async function assertSystemSafeAreas(page, profile) {
+  // The profile name is passed as an argument, never spliced into the page script.
+  // nosemgrep: javascript.playwright.security.audit.playwright-evaluate-arg-injection.playwright-evaluate-arg-injection
   const result = await page.evaluate((profileName) => {
     const rectangle = (selector) => {
       const element = document.querySelector(selector);
@@ -105,6 +107,8 @@ for (const profile of profiles) {
     const states = scene === "ui03" ? ["question", "answer", "resumed"] : scene === "ui05" ? ["approval", "merged"] : ["default"];
     for (const state of states) {
       const suffix = state === "default" ? "" : `-${state}`;
+      // Loopback capture page; scene, state and profile come from the fixed lists above.
+      // nosemgrep: javascript.playwright.security.audit.playwright-goto-injection.playwright-goto-injection
       await page.goto(`${origin}/design/landing-captures/?scene=${scene}&state=${state}&profile=${profile.name}`);
       await page.evaluate(() => document.fonts.ready);
       const validation = await assertSystemSafeAreas(page, profile);

@@ -343,13 +343,80 @@ describe("the cursors", () => {
     script["thread.page"] = () => ({ items: [{ id: "m-2", data: { sequence: 8 } }], has_more: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
     expect(paramsOf("thread.page")).toEqual([
-      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, limit: sync.LATEST_THREAD_ITEMS },
+      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, newest: true, limit: sync.LATEST_THREAD_ITEMS },
     ]);
     const record = await read("run-1", "thread", "ag-1");
     expect(record.value.items.map((one) => one.id)).toEqual(["m-1", "m-2"]);
     expect(record.value.deliveredSequence).toBe(8);
     // How far back the window reaches is not what a forward page answers.
     expect(record.value.olderItemsRemain).toBe(true);
+  });
+
+  it("replaces a stale warm window with only the newest hundred after a gap", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-7", data: { sequence: 7 } }], deliveredSequence: 7, olderItemsRemain: false },
+    );
+    const items = Array.from({ length: 100 }, (_, index) => ({
+      id: `m-${index + 58}`,
+      data: { sequence: index + 58 },
+    }));
+    script["thread.page"] = () => ({
+      items,
+      has_more: true,
+      thread_total: 157,
+      thread_last_sequence: 157,
+    });
+
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+
+    expect(paramsOf("thread.page")).toEqual([
+      { entity_id: "run-1", agent_id: "ag-1", after_sequence: 7, newest: true, limit: sync.LATEST_THREAD_ITEMS },
+    ]);
+    const record = await read("run-1", "thread", "ag-1");
+    expect(record.value.items.map((one) => one.data.sequence)).toEqual(
+      Array.from({ length: 100 }, (_, index) => index + 58),
+    );
+    expect(record.value.deliveredSequence).toBe(157);
+    expect(record.value.knownTotalItems).toBe(157);
+    expect(record.value.olderItemsRemain).toBe(true);
+  });
+
+  it("keeps the legacy forward-page append path when newest is omitted", () => {
+    const held = {
+      items: [{ id: "m-7", data: { sequence: 7 } }],
+      deliveredSequence: 7,
+      olderItemsRemain: false,
+    };
+    const merged = sync.threadWindow(held, {
+      items: [{ id: "m-8", data: { sequence: 8 } }],
+      has_more: true,
+    });
+    expect(merged.items.map((one) => one.id)).toEqual(["m-7", "m-8"]);
+    expect(merged.deliveredSequence).toBe(8);
+    expect(merged.olderItemsRemain).toBe(false);
+  });
+
+  it("does not lose a provisional send or a newer push when a gapped page lands", () => {
+    const held = {
+      items: [
+        { id: "m-7", data: { sequence: 7 } },
+        { id: "m-158", data: { sequence: 158 } },
+        { id: "pending", data: { provisional: true, operation_id: "op-1", body: "still sending" } },
+      ],
+      deliveredSequence: 158,
+      knownTotalItems: 158,
+    };
+    const merged = sync.threadWindow(held, {
+      items: [{ id: "m-58", data: { sequence: 58 } }, { id: "m-157", data: { sequence: 157 } }],
+      has_more: true,
+      thread_last_sequence: 157,
+      thread_total: 157,
+    }, { newest: true });
+    expect(merged.items.map((one) => one.id)).toEqual(["m-58", "m-157", "m-158", "pending"]);
+    expect(merged.deliveredSequence).toBe(158);
+    expect(merged.knownTotalItems).toBe(158);
+    expect(merged.olderItemsRemain).toBe(true);
   });
 
   it("asks for the latest hundred when it holds no sequence, and remembers what is behind them", async () => {
@@ -448,7 +515,7 @@ describe("the cursors", () => {
     // a resync costs a cursor rather than the conversation again.
     expect(paramsOf("thread.page").filter((params) => params.entity_id === "run-proj")).toEqual([
       { entity_id: "run-proj", agent_id: "project-01M2", limit: 100 },
-      { entity_id: "run-proj", agent_id: "project-01M2", after_sequence: 4, limit: 100 },
+      { entity_id: "run-proj", agent_id: "project-01M2", after_sequence: 4, newest: true, limit: 100 },
     ]);
   });
 

@@ -148,6 +148,10 @@ pub struct ThreadPageParams {
     /// `before_sequence`; both is `invalid_params`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_sequence: Option<u64>,
+    /// With `after_sequence`, return the newest page of that delta rather than
+    /// its oldest page. Omitted or false keeps the original forward walk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest: Option<bool>,
     /// Clamped server-side to one page's worth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<PageLimit>,

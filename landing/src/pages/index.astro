@@ -6,11 +6,12 @@ import Film from "../components/Film.astro";
 
 // The document skriftapp serves at "/". Astro emits the whole thing — head,
 // fonts, social meta — so the server never wraps it in a shell.
-const title = "Build — Any screen. Your call.";
+const title = "Build — Your agents. Your machine. Your call.";
 const description =
-  "Your coding agents. Your hardware. Any screen. Free and open source.";
+  "The IDE for agentic coding. Agents run on your hardware, in your checkouts. You decide what ships. Free and open source.";
 const socialTitle = "Build — Your agents. Your machine. Your call.";
-const socialDescription = "Your coding agents. Your hardware. Any screen.";
+const socialDescription =
+  "The IDE for agentic coding. Agents run on your hardware, in your checkouts. You decide what ships.";
 const socialImage = "https://getbuild.ing/landing/assets/social-preview.png";
 
 // Filled by the server at request time (root_controller.render_landing_page),
@@ -413,8 +414,8 @@ const testStepLabel = "Test · runs archive.test.ts";
             <p class="section-kicker">Your host</p>
             <h2 id="hosts-title">Your hosts do the work.</h2>
             <p>
-              Agents run on your personal devices. Keep your host online to connect from
-              another screen.
+              Agents run on a computer you own. Keep it online and every other screen
+              can reach it.
             </p>
           </header>
 
@@ -422,27 +423,25 @@ const testStepLabel = "Test · runs archive.test.ts";
             <details open>
               <summary>What do I install?</summary>
               <p>
-                Install Build on the computer that runs your agents, then connect from
-                your other screens. Mobile devices connect to that host; they are not
-                offered a desktop binary.
+                One thing, on the computer that runs your agents. Phones and tablets
+                connect to that computer; there is nothing to install on them.
               </p>
               <a href="/docs#architecture">Read the setup and connection guide</a>
             </details>
             <details>
               <summary>Which agents can I use?</summary>
               <p>
-                Build works with coding harnesses already installed and authenticated on
-                your host. Claude Code, Codex, and Pi are available now; OpenCode is
-                planned.
+                The coding agents already installed and signed in on your machine. Claude
+                Code, Codex and Pi work today; OpenCode is next.
               </p>
               <a href="/docs#harnesses">See the maintained integration list</a>
             </details>
             <details id="privacy-summary">
               <summary>What does Build store?</summary>
               <p>
-                Build stores your account, device registration, content-free connection
-                diagnostics, and optional browser push subscription. Agents execute on
-                your personal hosts.
+                Your account, your paired devices, connection diagnostics with no content
+                in them, and a push subscription if you turn one on. Build's service
+                never holds your code.
               </p>
               <a href="/privacy">Read the architecture and privacy details</a>
             </details>

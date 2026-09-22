@@ -1758,9 +1758,13 @@ function mountRailOnContext(host, context, swap) {
     remove.setAttribute("aria-label", wanted);
   };
 
-  const adoptPanelBody = () => {
+  const adoptPanelBody = (controller = null) => {
     const panel = host.querySelector("#rail-panel");
-    if (panel) panel.dataset.body = wantedPanelBody();
+    if (!panel) return;
+    panel.dataset.body = controller
+      ? `${shownPanelMode()}:conversation`
+      : wantedPanelBody();
+    if (controller) panel.dataset.conversation = conversationKey(controller);
   };
 
   const releaseConversationChrome = () => {

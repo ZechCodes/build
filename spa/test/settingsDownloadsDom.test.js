@@ -14,26 +14,14 @@ const DOWNLOADS = downloadsPayload({
   platforms: [{ key: "linux-x86_64", label: "Linux · x86_64", url: asset("linux-x86_64") }],
 });
 
-const CATALOG = {
-  default_provider: "claude",
-  providers: [{ id: "claude", label: "Claude Code", models: [], efforts: [], creatable: true }],
-};
-
 let devices = [];
 let downloads = async () => DOWNLOADS;
 const { App, deviceListeners } = vi.hoisted(() => ({
-  App: { call: null, devices: [], selectedDeviceId: null },
+  App: { devices: [], selectedDeviceId: null },
   deviceListeners: new Set(),
 }));
 const fetchDownloads = vi.fn(() => downloads());
 const mintInstallCommand = vi.fn(async () => ({ install_command: mintedCommand(), expires_in_s: 600 }));
-
-const call = vi.fn(async (method) => {
-  if (method === "project.list") return { projects: [] };
-  if (method === "settings.get") return { projects_dir: "~/code", default_harness: "claude" };
-  if (method === "models.list") return CATALOG;
-  return {};
-});
 
 // No device context is registered here, so the creation device's catalog is the
 // empty one — which is all this page's downloads block cares about.
@@ -79,7 +67,6 @@ beforeEach(async () => {
   deviceListeners.clear();
   devices = [];
   downloads = async () => DOWNLOADS;
-  App.call = (...args) => call(...args);
   App.devices = [];
   document.body.innerHTML = bodyHtml;
   ({ renderSettings } = await import("../src/views/settings.js"));

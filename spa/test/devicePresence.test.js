@@ -11,6 +11,8 @@
 
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
+
 const connection = vi.hoisted(() => ({
   openDeviceSessions: vi.fn(() => ({ first: Promise.resolve(null), settled: Promise.resolve([]) })),
   deviceWentAway: vi.fn(),
@@ -44,6 +46,7 @@ const { App } = await import("../src/app.js");
 const { refreshDevices, watchPresence, stopWatchingPresence } = await import("../src/devices.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { fakeSession } = await import("./deviceSessionFixture.js");
+const { clearMemoryCacheRecords } = await import("./memoryCache.js");
 
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 const away = (id) => ({ ...online(id), status: "offline" });
@@ -52,6 +55,7 @@ let listed = [];
 
 beforeEach(() => {
   vi.useFakeTimers();
+  clearMemoryCacheRecords();
   document.body.innerHTML = '<div id="devpick"></div>';
   resetDeviceContexts();
   App.devices = [];

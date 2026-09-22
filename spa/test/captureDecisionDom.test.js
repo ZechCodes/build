@@ -237,10 +237,11 @@ describe("the capture decision page", () => {
   it("answers with the choice that was tapped, and shows the router deciding again", async () => {
     record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-1" } });
     choices()[0].click();
-    await flush();
     expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-1" });
-    expect(refreshFeed).toHaveBeenCalled();
-    expect(host.textContent).toContain("Deciding where this goes");
+    await vi.waitFor(() => {
+      expect(refreshFeed).toHaveBeenCalled();
+      expect(host.textContent).toContain("Deciding where this goes");
+    });
   });
 
   it("goes back to the inbox once the router has routed it", async () => {

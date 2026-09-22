@@ -235,6 +235,30 @@ describe("a file body", () => {
     files.dispose();
   });
 
+  it("completes a save from the file record written with the fs.write result", async () => {
+    const call = vi.fn(async (method, params) => {
+      if (method === "fs.read") return fileAnswer();
+      if (method === "fs.write") {
+        return fileAnswer({ revision: "r-2", size: 12, content_b64: params.content_b64 });
+      }
+      return { path: "", entries: [] };
+    });
+    const { host, files } = await openReadme(call);
+    host.querySelector('[data-file-mode="edit"]').click();
+    const editor = host.querySelector(".file-editor");
+    editor.value = "saved value";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    host.querySelector(".file-save").click();
+    await settle();
+
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" });
+    expect(record.value.file.revision).toBe("r-2");
+    expect(record.value.file.content_b64).toBe(b64("saved value"));
+    expect(host.querySelector(".file-editor").value).toBe("saved value");
+    expect(host.querySelector(".file-save").disabled).toBe(true);
+    files.dispose();
+  });
+
   it("re-stamps what it opened off the disk, so the five kept are the five last read", async () => {
     const longAgo = Date.now() - 3600 * 1000;
     await writeCached(

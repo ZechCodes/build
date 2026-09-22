@@ -119,7 +119,7 @@ function createFillQueue() {
  * `bodyOf(path)` answers `{ content_key, patch }` or undefined and never
  * waits, because a paint asks it.
  */
-export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
+export function createChangesetBodies({ addressOf, fetchFiles, keyFor, onChange = () => {} }) {
   let disposed = false;
   const enqueue = createFillQueue();
   // What has been asked for and answered, by the key the file wore when it was
@@ -142,6 +142,8 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
       }));
     },
     valueOf: (file) => ({ key: file.path, value: { content_key: file.content_key, patch: file.patch } }),
+    cacheDriven: true,
+    onChange,
   });
 
   const bodyOf = (path) => bodies.read(path);
@@ -170,6 +172,7 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor }) {
     sync: (views, openPaths, { budget = BODIES_PER_TURN } = {}) => enqueue(() => fill(views, openPaths, budget)),
     dispose: () => {
       disposed = true;
+      bodies.dispose();
     },
   };
 }

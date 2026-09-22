@@ -83,6 +83,7 @@ export function createFileDiffs({
   call,
   requestPriority = "foreground",
   requestScope = call,
+  onChange = () => {},
 }) {
   let disposed = false;
   const enqueue = createFillQueue();
@@ -108,6 +109,8 @@ export function createFileDiffs({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, truncated: Boolean(file.truncated) },
     }),
+    cacheDriven: Boolean(deviceId && entityId),
+    onChange,
   });
 
   const bodyOf = (path) => bodies.read(path);
@@ -146,6 +149,7 @@ export function createFileDiffs({
       enqueue(() => fill(status, { openPaths: new Set(statusPaths(status)), budget })),
     dispose: () => {
       disposed = true;
+      bodies.dispose();
     },
   };
 }

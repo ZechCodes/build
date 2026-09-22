@@ -1,13 +1,14 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mountGitPane, mountConsole, mountAgentRail, renderFilesTab } = vi.hoisted(() => ({
+const { mountGitPane, mountConsole, mountAgentRail, mountWorkspaceIssuesTab, renderFilesTab } = vi.hoisted(() => ({
   mountGitPane: vi.fn((host) => {
     host.innerHTML = '<aside class="crail-host"></aside>';
     return { dispose: vi.fn() };
   }),
   mountConsole: vi.fn(() => ({ dispose: vi.fn() })),
   mountAgentRail: vi.fn(() => ({ dispose: vi.fn() })),
+  mountWorkspaceIssuesTab: vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() })),
   renderFilesTab: vi.fn((host) => {
     host.innerHTML = '<aside class="ftree"></aside><main class="file-editor"></main>';
     return { dispose: vi.fn(), canLeave: vi.fn(async () => false) };
@@ -17,6 +18,7 @@ const { mountGitPane, mountConsole, mountAgentRail, renderFilesTab } = vi.hoiste
 vi.mock("../src/core/gitPane.js", () => ({ mountGitPane }));
 vi.mock("../src/core/console.js", () => ({ mountConsole }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
+vi.mock("../src/core/workspaceIssuesTab.js", () => ({ mountWorkspaceIssuesTab }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 // The surface stands on this machine's cached workspace list. The feed is a
@@ -115,6 +117,7 @@ beforeEach(() => {
   mountGitPane.mockClear();
   mountConsole.mockClear();
   mountAgentRail.mockClear();
+  mountWorkspaceIssuesTab.mockClear();
   renderFilesTab.mockClear();
   App.viewDispose = null;
   App.viewingContext = { clear() {} };
@@ -141,6 +144,17 @@ afterEach(() => {
 });
 
 describe("workspace surface", () => {
+  it("keeps cache-feed announcements wired to an open Issues tab", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "issues" };
+    device("dev-1", async () => workspace);
+    await standUp();
+    const pane = mountWorkspaceIssuesTab.mock.results[0].value;
+
+    deliverWorkspaces([workspace]);
+
+    expect(pane.feedMoved).toHaveBeenCalledOnce();
+  });
+
   it("stands on the cached workspace list, and asks the machine for no detail at all", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     const call = device("dev-1", async () => workspace);

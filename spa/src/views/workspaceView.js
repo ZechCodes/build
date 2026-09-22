@@ -414,19 +414,20 @@ const workspaceNow = (deviceId, workspaceId) =>
  */
 async function standOnWorkspace(state) {
   const take = () => {
-    if (state.disposed || state.workspace) return;
+    if (state.disposed) return;
+    if (state.workspace) {
+      // The workspace Issues pane derives its scope from the cached feed's
+      // roster. Keep the cache announcement wired after mount so a later row
+      // write can re-scope the already cached issue catalogue.
+      state.pane?.feedMoved?.();
+      return;
+    }
     const workspace = workspaceNow(state.route.deviceId, state.route.workspaceId);
     if (!workspace) return;
-    stopWatchingFeed(state);
     mountWorkspace(workspace, state);
   };
   state.unwatchFeed = subscribeFeed(take);
-  if (state.workspace || state.disposed) {
-    // The replay mounted it inside `subscribeFeed`, before the handle above
-    // existed to be let go of.
-    stopWatchingFeed(state);
-    return;
-  }
+  if (state.workspace || state.disposed) return;
   if (await passAnsweredWithoutIt(state)) sayUnknownWorkspace(state);
 }
 
@@ -449,9 +450,4 @@ async function passAnsweredWithoutIt(state) {
 function sayUnknownWorkspace(state) {
   const body = $("#tabbody");
   if (body) body.innerHTML = errorHtml(`unknown workspace_id: ${state.route.workspaceId}`);
-}
-
-function stopWatchingFeed(state) {
-  state.unwatchFeed?.();
-  state.unwatchFeed = null;
 }

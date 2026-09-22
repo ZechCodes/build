@@ -71,9 +71,15 @@ const firstText = (...values) => values.find(Boolean) || "";
  *  and the row an error or a live-key sweep names are the same row. */
 export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspaceKey}`;
 
+const workspaceEntityId = (workspace) => workspace.entity_id || workspace.run_id || null;
+
 function toWorkspaceEntry(workspace, projectNames, conversation) {
   const activity = conversation || { working: workspace.status === "active" };
-  const entityId = entityIdOf(conversation);
+  // The workspace list carries the conversation owner independently of the
+  // board row. On a cold replay it can therefore lead the row that carries the
+  // roster; keep that owner so separately cached conversation records are
+  // addressable while the roster record is still landing.
+  const entityId = entityIdOf(conversation) || workspaceEntityId(workspace);
   // A checkout Build only adopted, with nobody talking in it: somebody else's
   // folder, listed so it can be opened. There is no work to summarize and
   // nothing for Done to remove, so the row says what it is instead.
@@ -137,7 +143,7 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
   const listed = (workspace) =>
     workspace.status !== "finished" && !standsOnProjectCheckout(workspace, projectsByKey.get(workspace.projectKey));
   return workspaces.filter(listed).map((workspace) => {
-    const owner = workspace.entity_id || workspace.run_id || workspace.id;
+    const owner = workspaceEntityId(workspace) || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);
   }).sort(byAnchor);

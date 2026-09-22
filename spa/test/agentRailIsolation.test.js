@@ -264,7 +264,7 @@ describe("agent rail chat ownership", () => {
     expect(input().value).toBe("");
   });
 
-  it("holds the remembered conversation shut until the work item is in hand", async () => {
+  it("paints the remembered conversation frame but keeps its composer shut until the work item is in hand", async () => {
     await mountBranch();
     bubble("agent-b").click();
     await flush();
@@ -275,7 +275,8 @@ describe("agent rail chat ownership", () => {
 
     // The row is on disk, and reading it is a turn away: in that turn the
     // panel knows which conversation it is coming back to and nothing about
-    // it, so it says so rather than offering a composer addressed at nobody.
+    // its roster. It paints the cache-backed conversation frame without
+    // offering a composer addressed at nobody.
     rail = mountAgentRail(host(), {
       kind: "branch",
       deviceId: DEVICE_ID,
@@ -288,7 +289,7 @@ describe("agent rail chat ownership", () => {
 
     expect(input()).toBeNull();
     expect(host().querySelector("#railsend")).toBeNull();
-    expect(host().querySelector(".rail-chat-loading").textContent).toBe("Loading chat…");
+    expect(host().querySelector("#rail-body").textContent).toContain("No conversation yet.");
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(0);
 

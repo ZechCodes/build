@@ -691,6 +691,85 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(callsTo("issue.get")).toHaveLength(1);
     expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });
+
+  it("paints a remembered cached conversation before the roster arrives, then falls back in the same frame", async () => {
+    await wipeCache();
+    chatRepository.railView("issue:plan-1").chooseAgent("ag-remembered");
+    await writeRailThread("plan-1", "ag-remembered", { items: [said(1, "remembered cached words")] });
+    await writeRailThread("plan-1", "ag-first", { items: [said(1, "first delivered agent words")] });
+    let deliverRoster;
+    bridge.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "issue.get") return new Promise((resolve) => { deliverRoster = resolve; });
+      return {};
+    });
+
+    rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
+    await flush();
+
+    const body = railHost().querySelector("#rail-body");
+    expect(body.textContent).toContain("remembered cached words");
+    expect(railHost().querySelector("#railinput")).toBeNull();
+
+    deliverRoster({
+      issue_id: "plan-1",
+      project_id: "p1",
+      agents: [agent({ id: "ag-first", ordinal: 1 })],
+    });
+    await flush();
+
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(body.textContent).toContain("first delivered agent words");
+    expect(bubbles().find((bubble) => bubble.dataset.agent === "ag-first").classList).toContain("active");
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  it("reads a workspace transcript from cache before its roster row exists", async () => {
+    await wipeCache();
+    chatRepository.railView("workspace:ws-late").chooseAgent("ag-remembered");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-late", project_id: "p1", name: "late", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-remembered", { items: [said(1, "workspace words before roster")] });
+    await writeRailThread("run-3", "ag-first", { items: [said(1, "workspace fallback words")] });
+
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-late" }));
+    await flush();
+    const body = railHost().querySelector("#rail-body");
+    expect(body.textContent).toContain("workspace words before roster");
+    expect(railHost().querySelector("#railinput")).toBeNull();
+
+    await writeRailWorkItem(branchRow({ agents: [agent({ id: "ag-first", ordinal: 1 })] }));
+    await flush();
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(body.textContent).toContain("workspace fallback words");
+    expect(headWho()).toBe(TOPICS["ag-first"] || "Claude Code");
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  it("turns a stale remembered workspace conversation into the new-agent view after an authoritative empty roster", async () => {
+    await wipeCache();
+    chatRepository.railView("workspace:ws-empty").chooseAgent("ag-removed");
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-empty", project_id: "p1", name: "empty", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-removed", { items: [said(1, "removed agent words")] });
+
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-empty" }));
+    await flush();
+    const body = railHost().querySelector("#rail-body");
+    expect(body.textContent).toContain("removed agent words");
+
+    await writeRailWorkItem(branchRow({ agents: [] }));
+    await flush();
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(body.querySelector(".rail-newagent")).not.toBeNull();
+    expect(headWho()).toBe("New agent");
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
 });
 
 describe("the bubble strip", () => {

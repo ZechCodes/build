@@ -8,7 +8,10 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 const { createRailWorkItem } = await import("../src/core/railWorkItem.js");
+const { createConversationCache } = await import("../src/core/conversationCache.js");
+const { createThreadCache } = await import("../src/core/thread.js");
 const { wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const DEVICE = "dev-1";
 
@@ -115,5 +118,63 @@ describe("a rail waiting for a row of its own", () => {
     await flush();
 
     expect(reread).not.toHaveBeenCalled();
+  });
+});
+
+describe("a workspace whose cached records arrive independently", () => {
+  it("opens the cached thread from the workspace owner before the roster row arrives, then hears that row", async () => {
+    records.unwatch();
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-1", project_id: "p1", name: "login", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-remembered", {
+      items: [{ type: "message", data: { sequence: 1, role: "agent", body: "cached before roster" } }],
+    });
+    const standing = [];
+    const workspaceContext = {
+      kind: "workspace",
+      projectId: "p1",
+      workspaceId: "ws-1",
+      feedRoute: () => ({ name: "workspace", deviceId: DEVICE, projectId: "p1", workspaceId: "ws-1" }),
+    };
+    records = createRailWorkItem({
+      context: { kind: "workspace", deviceId: DEVICE },
+      railContext: workspaceContext,
+      cacheScope,
+      callFor: () => async () => ({}),
+      named: () => {},
+      standOn: (row) => standing.push(row),
+      reread: () => {},
+      redrawConversation: () => {},
+      alive: () => true,
+    });
+
+    const entityId = await records.entityIdFor(workspaceContext);
+    expect(entityId).toBe("run-3");
+    expect(await records.read(entityId)).toBeNull();
+
+    const threadCache = createThreadCache();
+    const conversation = createConversationCache({
+      addressOf: () => ({ deviceId: DEVICE, entityId, agentId: "ag-remembered", conversationId: "ag-remembered" }),
+      threadCache,
+      onThreadSeeded: () => {},
+      onSurfacesSeeded: () => {},
+    });
+    expect(await conversation.seed()).toBe(true);
+    expect(threadCache.readWindow().items[0].data.body).toBe("cached before roster");
+
+    records.watch(entityId);
+    await writeRailWorkItem({
+      kind: "branch",
+      project_id: "p1",
+      workspace_id: "ws-1",
+      run_id: "run-3",
+      agents: [{ id: "ag-first", ordinal: 1 }],
+    });
+    await flush();
+
+    expect(standing).toHaveLength(1);
+    expect(standing[0].agents[0].id).toBe("ag-first");
   });
 });

@@ -1351,7 +1351,17 @@ function mountRailOnContext(host, context, swap) {
   const refresh = async () => {
     const entityId = await records.entityIdFor(railContext);
     if (disposed) return;
+    const ownerChanged = records.entityId() !== entityId;
     records.watch(entityId);
+    // A workspace's cached list can name its conversation owner before the
+    // cached work-item row carrying the roster arrives. The first panel paint
+    // already attempted the remembered conversation without that owner; point
+    // the cache reader at it again now that its address is complete.
+    if (ownerChanged) {
+      resetConversationCache();
+      threadAgentId = null;
+    }
+    paintChat();
     const row = await records.read(entityId);
     if (disposed) return;
     if (row) standOnRow(row);
@@ -1723,8 +1733,10 @@ function mountRailOnContext(host, context, swap) {
   const rememberedConversationIsLoading = () =>
     !addingAgent && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
 
+  const conversationIsUnselected = () =>
+    !visibleAgents().length && (!selectedId || isProvisionalKey(selectedId));
+
   const panelBodyIdentity = () => {
-    if (rememberedConversationIsLoading()) return "loading";
     if (addingAgent) return "new";
     // Every existing agent uses the same mounted conversation frame. Moving
     // between bubbles changes what the shared thread painter reconciles into
@@ -1889,7 +1901,12 @@ function mountRailOnContext(host, context, swap) {
       && conversationChanged
       && panel.dataset.conversation !== wantedConversation
       && wantedConversation) {
-      rebindConversationChrome(panel);
+      if (panel.querySelector("#rail-composer")) rebindConversationChrome(panel);
+      else {
+        panel.insertAdjacentHTML("beforeend", composerRowHtml());
+        wireComposer(panel);
+        deliverDroppedFiles();
+      }
       panel.dataset.conversation = wantedConversation;
     }
     syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
@@ -2338,12 +2355,7 @@ function mountRailOnContext(host, context, swap) {
       body.innerHTML = '<div class="rail-chat-loading">This workspace does not have an agent conversation yet.</div>';
       return;
     }
-    if (rememberedConversationIsLoading()) {
-      body.innerHTML = '<div class="rail-chat-loading">Loading chat…</div>';
-      syncSurfaces();
-      return;
-    }
-    if (!visibleAgents().length || addingAgent) {
+    if (conversationIsUnselected() || addingAgent) {
       paintNewAgent(body);
       syncComposer();
       syncSurfaces();

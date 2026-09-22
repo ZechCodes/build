@@ -1,0 +1,16 @@
+{
+  "name": "build-landing",
+  "private": true,
+  "type": "module",
+  "description": "The getbuild.ing landing page: a static Astro build served by skriftapp.",
+  "scripts": {
+    "build": "astro build",
+    "dev": "astro dev",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "astro": "^7.3.3",
+    "gsap": "^3.15.0",
+    "three": "0.186.0"
+  }
+}

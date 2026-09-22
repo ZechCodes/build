@@ -18,6 +18,7 @@ import { canAnswer, knownDeviceContext, routeContext } from "../core/deviceConte
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
+import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { mountWorkspaceIssuesTab } from "../core/workspaceIssuesTab.js";
 import { issueContextItem } from "../core/trackerViewingContext.js";
@@ -64,20 +65,94 @@ function errorHtml(message) {
   return `<div class="empty"><h2>Workspace unavailable</h2><p>${esc(message)}</p></div>`;
 }
 
-function applyRetry(answer, state, previous) {
-  const selectedNeedsRefresh = selectedDirectory(previous, state.route.sourceId)?.status !== "ready";
-  const current = answer.workspace || answer;
-  if (selectedNeedsRefresh) state.refreshPane?.(current);
-  return current;
+const workspaceListAddress = (state) =>
+  state.context.cacheScope.address({ entityId: "", kind: "workspaces" });
+
+const gitOptionsAddress = (state, sourceId) =>
+  state.context.cacheScope.address({ entityId: state.route.workspaceId, kind: "git-init-options", sub: sourceId });
+
+async function writeWorkspaceResult(state, workspace) {
+  const address = workspaceListAddress(state);
+  if (!address || !workspace) return;
+  await mergeCached(address, (held) => {
+    const rows = Array.isArray(held) ? held : [];
+    const id = workspace.workspace_id || workspace.id;
+    const present = rows.some((row) => (row.workspace_id || row.id) === id);
+    const next = rows.map((row) => (row.workspace_id || row.id) === id ? { ...row, ...workspace } : row);
+    return present ? next : [...next, workspace];
+  });
+  await state.workspaceRead;
+}
+
+const routeHoldsWorkspace = (state) =>
+  ownsWorkspace(state) && App.route.workspaceId === state.route.workspaceId;
+
+const selectedNeedsRetryRefresh = (state) =>
+  state.retryRefreshPending && selectedDirectory(state.workspace, state.route.sourceId)?.status !== "ready";
+
+async function cachedWorkspaceResult(state) {
+  const address = workspaceListAddress(state);
+  const workspaces = address ? (await readCached(address))?.value : null;
+  return Array.isArray(workspaces)
+    ? workspaces.find((row) => (row.workspace_id || row.id) === state.route.workspaceId)
+    : null;
+}
+
+async function readWorkspaceResult(state) {
+  const workspace = await cachedWorkspaceResult(state);
+  if (!routeHoldsWorkspace(state)) return;
+  if (!workspace || !state.workspace) return;
+  const refresh = selectedNeedsRetryRefresh(state);
+  state.workspace = workspace;
+  state.retryRefreshPending = false;
+  if (refresh) state.refreshPane?.(workspace);
+  state.paintTabs?.();
+  state.onWorkspaceCached?.(workspace);
+}
+
+async function writeGitResult(state, sourceId, answer) {
+  const address = gitOptionsAddress(state, sourceId);
+  if (!address) return;
+  const directory = answer.workspace?.directories?.find((entry) => directoryId(entry) === sourceId);
+  const completed = new Set((answer.results || answer.outcomes || []).filter((result) => result.status !== "failed").map((result) => result.target));
+  await mergeCached(address, (held) => ({
+    ...held,
+    workspace_id: state.route.workspaceId,
+    source_id: sourceId,
+    workspace: {
+      ...held?.workspace,
+      ...(directory && { is_git: directory.is_git }),
+      ...(completed.has("workspace") || completed.has("both") ? { needs_reconciliation: false } : null),
+    },
+    source: {
+      ...held?.source,
+      ...(answer.source && typeof answer.source.is_git === "boolean" ? { is_git: answer.source.is_git } : null),
+      ...(completed.has("source") || completed.has("both") ? { needs_reconciliation: false } : null),
+    },
+  }));
+  await state.gitOptionsRead;
+}
+
+async function readGitOptions(state, sourceId) {
+  const address = gitOptionsAddress(state, sourceId);
+  if (!address) return;
+  const options = (await readCached(address))?.value;
+  if (!options || !workspaceSourceIsActive(state, sourceId)) return;
+  state.sourceGit = options.source?.is_git !== false;
+  state.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
+  state.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
+  state.paintTabs?.();
 }
 
 function installWorkspaceAction(state, workspace) {
   if (workspace?.status !== "failed") return;
   let current = workspace;
+  let host = null;
   let pending = false;
   let message = "";
   let failed = false;
-  const render = (host) => {
+  const render = (target) => {
+    host = target;
     if (current?.status !== "failed") {
       host.innerHTML = `<span class="workspace-action-status" role="status">${esc(message)}</span>`;
       return;
@@ -92,17 +167,23 @@ function installWorkspaceAction(state, workspace) {
       try {
         const answer = await state.callRpc("workspace.retry", { workspace_id: state.route.workspaceId });
         if (state.disposed) return;
-        current = applyRetry(answer, state, current);
-        message = "Workspace ready.";
+        state.retryRefreshPending = true;
+        await writeWorkspaceResult(state, answer.workspace || answer);
+        message = current?.status === "ready" ? "Workspace ready." : "Retry finished.";
       } catch (error) {
         if (state.disposed) return;
         failed = true;
         message = error.message || String(error);
       } finally {
+        state.retryRefreshPending = false;
         pending = false;
         if (!state.disposed) render(host);
       }
     };
+  };
+  state.onWorkspaceCached = (workspaceRow) => {
+    current = workspaceRow;
+    if (host?.isConnected) render(host);
   };
   state.toolbarAction = render;
   setToolbarVerb(render);
@@ -182,12 +263,13 @@ function paintGitInitialization(rail, state, sourceId, directory) {
     rail.appendChild(initHost);
     const controller = mountWorkspaceGitInitialization({
       host: initHost, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
+      cacheScope: state.context.cacheScope,
       isActive: () => workspaceSourceIsActive(state, sourceId),
-      onUpdate: (answer) => {
-        if (answer.workspace) state.workspace = answer.workspace;
-        if (answer.source && typeof answer.source.is_git === "boolean") state.sourceGit = answer.source.is_git;
-        clearReconciledTargets(state, answer.results || answer.outcomes || []);
-        state.paintTabs?.();
+      onUpdate: async (answer) => {
+        if (answer.workspace) await writeWorkspaceResult(state, answer.workspace);
+        await writeGitResult(state, sourceId, answer);
+        const address = gitOptionsAddress(state, sourceId);
+        return address ? (await readCached(address))?.value : null;
       },
     });
     state.gitInitialization.push(controller);
@@ -199,12 +281,6 @@ function paintGitInitialization(rail, state, sourceId, directory) {
 function gitInitializationLabel(state, directory) {
   if (state.workspaceNeedsReconciliation) return "Finish Git initialization…";
   return directory.is_git === false ? "Initialize Git…" : "Initialize original source…";
-}
-
-function clearReconciledTargets(state, results) {
-  const completed = new Set(results.filter((result) => result.status !== "failed").map((result) => result.target));
-  if (completed.has("workspace") || completed.has("both")) state.workspaceNeedsReconciliation = false;
-  if (completed.has("source") || completed.has("both")) state.sourceNeedsReconciliation = false;
 }
 
 /** Still this view's to write to: not disposed, and its machine is still the
@@ -221,14 +297,15 @@ async function probeSourceGit(state, sourceId) {
   if (state.sourceProbePending) return;
   state.sourceProbePending = true;
   try {
+    await readGitOptions(state, sourceId);
+    const revision = state.gitOptionsRevision.get(sourceId) || 0;
     const options = await state.callRpc("workspace.git_init_options", { workspace_id: state.route.workspaceId, source_id: sourceId });
     if (!ownsWorkspace(state)) return;
-    state.sourceGit = options.source?.is_git !== false;
-    state.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
-    state.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
-    state.paintTabs?.();
+    if ((state.gitOptionsRevision.get(sourceId) || 0) !== revision) return;
+    const address = gitOptionsAddress(state, sourceId);
+    if (address) await writeCached(address, options);
   } catch {
-    if (workspaceSourceIsActive(state, sourceId)) state.sourceGit = false;
+    // A failed probe adds no news; the cached source answer remains on screen.
   } finally {
     state.sourceProbePending = false;
   }
@@ -359,7 +436,15 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
+    state.workspaceRead = readWorkspaceResult(state);
+  });
+  const unwatchGitOptions = subscribeCache({ deviceId: route.deviceId, entityId: route.workspaceId, kind: "git-init-options" }, (address) => {
+    if (!address.sub || !state.workspace) return;
+    state.gitOptionsRevision.set(address.sub, (state.gitOptionsRevision.get(address.sub) || 0) + 1);
+    state.gitOptionsRead = readGitOptions(state, address.sub);
+  });
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   // This machine answers now. If it goes while the workspace is open, what was
   // read stays on screen and the strip says whose state that is — but only once
@@ -372,6 +457,8 @@ export async function renderWorkspace() {
     // the slot it put it in.
     state.unwatchFeed?.();
     state.unwatchFeed = null;
+    unwatchWorkspace();
+    unwatchGitOptions();
     // The rail is the shell's column, lent to whichever surface is standing on
     // it: leaving hands it back empty rather than leaving this workspace's
     // faces up over the next view.

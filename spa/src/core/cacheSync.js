@@ -63,7 +63,7 @@ import {
 } from "./surfacesCache.js";
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
-import { setUsageLimits } from "./usageLimits.js";
+import { writeUsageLimits } from "./usageLimits.js";
 import {
   BACKGROUND_COOLDOWN_MS,
   COMMIT_PATCH_MAX_BYTES,
@@ -296,7 +296,7 @@ async function readLists(context) {
     ask(context, "workspace.list", {}, "background"),
   ]);
   if (!board || !projects || !context.active()) return null;
-  setUsageLimits(context.deviceId, board.usage_limits);
+  await writeUsageLimits(context.deviceId, board.usage_limits);
   const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
   await writeLists(context, view);
   return view;
@@ -952,8 +952,9 @@ async function applyItem(context, item) {
  *  moved. An entity that finished, was deleted, or was cleared away appears in
  *  `removed`, and everything it had goes at once — its data and its row. */
 async function applyBoard(context, state) {
-  // The harnesses out of usage there (#58): live, so held rather than cached.
-  setUsageLimits(context.deviceId, state.usage_limits);
+  // The harnesses out of usage there (#58): the pushed reading replaces the
+  // device's record, and mounted surfaces repaint from its cache announcement.
+  await writeUsageLimits(context.deviceId, state.usage_limits);
   const removed = (state.removed || []).map((entityId) => String(entityId)).filter(Boolean);
   if (removed.length) await dropRemovedRows(context, removed);
   if (state.projects) {

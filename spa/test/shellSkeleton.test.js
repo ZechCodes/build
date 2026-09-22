@@ -36,6 +36,7 @@ const { App, render } = await import("../src/app.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
 const { consoleHeadHtml } = await import("../src/core/console.js");
+const { stopShell } = await import("../src/core/shell.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 
 globalThis.indexedDB = new IDBFactory();
@@ -91,6 +92,7 @@ const openDevice = () =>
 
 afterEach(() => {
   App.viewDispose?.();
+  stopShell();
   if (App.poll) clearInterval(App.poll);
   App.poll = null;
   App.viewDispose = null;

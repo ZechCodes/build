@@ -10,26 +10,72 @@
 // own words behind a press, and the same reason on a message still queued for
 // the agent.
 //
-// Live state rather than cached: a limit is about the machine now, and one read
-// from disk after the machine has moved on would be a banner telling a lie.
+// The cache is the rendering boundary. A board pull or push first replaces one
+// device's record; this module hears that committed write, reads it back, and
+// only then updates the synchronous projection the picker and rail paint from.
 
 import { esc } from "./text.js";
 import { providerLabel } from "./providerCatalog.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 
-/** What each device last said, by id: the bridge's `usage_limits` as it sent them. */
+export const usageLimitsAddress = (deviceId) => ({ deviceId, entityId: "", kind: "usage-limits" });
+
+/** What the cache last said for each device, held synchronously for renderers. */
 const byDevice = new Map();
 const listeners = new Set();
+const readGenerations = new Map();
+const latestReads = new Map();
 
-/** Record what a device's board said about its limits. A list the bridge did
- *  not send (an older bridge, or a board item that moved something else) says
- *  nothing, and changes nothing. */
-export function setUsageLimits(deviceId, limits) {
-  if (!deviceId || !Array.isArray(limits)) return;
+function applyCachedUsageLimits(deviceId, limits) {
   const was = JSON.stringify(byDevice.get(deviceId) || []);
   if (was === JSON.stringify(limits)) return;
   if (limits.length) byDevice.set(deviceId, limits);
   else byDevice.delete(deviceId);
   for (const listener of [...listeners]) listener(deviceId);
+}
+
+/** Read one device's committed record into the render projection. */
+export function readCachedUsageLimits(deviceId, { clearMissing = false } = {}) {
+  if (!deviceId) return Promise.resolve([]);
+  const generation = (readGenerations.get(deviceId) || 0) + 1;
+  readGenerations.set(deviceId, generation);
+  const read = readCached(usageLimitsAddress(deviceId)).then((record) => {
+    if (readGenerations.get(deviceId) !== generation) return usageLimitsOf(deviceId);
+    if (!record && !clearMissing) return usageLimitsOf(deviceId);
+    const limits = Array.isArray(record?.value) ? record.value : [];
+    applyCachedUsageLimits(deviceId, limits);
+    return limits;
+  });
+  latestReads.set(deviceId, read);
+  return read;
+}
+
+/**
+ * Persist what a board pull or push said. An omitted field is no news; an empty
+ * array is news and is stored so a prior cached limit is cleared on every tab.
+ */
+export async function writeUsageLimits(deviceId, limits) {
+  if (!deviceId || !Array.isArray(limits)) return;
+  await writeCached(usageLimitsAddress(deviceId), limits);
+  await latestReads.get(deviceId);
+}
+
+// Every production update reaches the projection through this readback. A
+// broad listener also hears a whole-cache wipe, which clears held limits.
+subscribeCache({}, (address) => {
+  if (address.kind === "usage-limits" && address.deviceId) {
+    void readCachedUsageLimits(address.deviceId, { clearMissing: true });
+  } else if (address.kind === undefined) {
+    for (const deviceId of [...byDevice.keys()]) {
+      void readCachedUsageLimits(deviceId, { clearMissing: true });
+    }
+  }
+});
+
+/** Test seam for text/countdown unit tests that do not exercise IndexedDB. */
+export function setUsageLimitsForTest(deviceId, limits) {
+  if (!deviceId || !Array.isArray(limits)) return;
+  applyCachedUsageLimits(deviceId, limits);
 }
 
 export const usageLimitsOf = (deviceId) => byDevice.get(deviceId) || [];
@@ -156,6 +202,7 @@ export function mountUsageLimitBanner(panelOf, deviceId, { onPaint = () => {} } 
     if (changed === deviceId) sync();
   });
   sync();
+  void readCachedUsageLimits(deviceId);
   return {
     sync,
     dispose() {

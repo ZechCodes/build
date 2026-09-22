@@ -4,7 +4,7 @@ import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { renderSettings } from "./settings.js";
 import { renderDeviceSettings } from "./deviceSettings.js";
 import { renderArchive } from "./archive.js";
-import { paintDevicePicker } from "../devices.js";
+import { onDevicesChanged, paintDevicePicker, readCachedDevices } from "../devices.js";
 
 export function isSettingsRoute(route) {
   return route.name === "device" || route.name === "account";
@@ -72,6 +72,13 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     });
     restoreSidebarFocus(focusedEntry);
   };
+  const renderSelectedPanel = async (deviceId, options, current) => {
+    if (deviceId === null) return renderSettings(options);
+    if (deviceId === "archive") return renderArchive(options);
+    await readCachedDevices();
+    if (generation !== current) return;
+    return renderDeviceSettings(options);
+  };
   const select = async (deviceId) => {
     const current = ++generation;
     disposePanel?.();
@@ -101,9 +108,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
       onDeviceDeactivated: () => void select(null),
     };
     try {
-      if (deviceId === null) await renderSettings(options);
-      else if (deviceId === "archive") await renderArchive(options);
-      else await renderDeviceSettings(options);
+      await renderSelectedPanel(deviceId, options, current);
       if (generation === current) paintSidebar();
     } catch (error) {
       if (generation === current) content.innerHTML = `<p role="alert">${esc(error.message)}</p>`;
@@ -134,11 +139,14 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     close();
   };
   document.addEventListener("keydown", onKeydown, true);
-  const unsubscribe = onDeviceStateChanged(paintSidebar);
+  const unsubscribeState = onDeviceStateChanged(paintSidebar);
+  const unsubscribeDevices = onDevicesChanged(paintSidebar);
+  void readCachedDevices();
   const dispose = () => {
     generation += 1;
     disposePanel?.();
-    unsubscribe();
+    unsubscribeState();
+    unsubscribeDevices();
     document.removeEventListener("keydown", onKeydown, true);
     background.inert = wasInert;
     document.body.classList.remove("settings-open");

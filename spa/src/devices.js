@@ -14,34 +14,96 @@ import { esc, nothingAnswersMark } from "./core/text.js";
 import { canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
-import { onUsageLimitsChanged, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
+import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
 import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { rememberDeviceFilter } from "./core/deviceFilter.js";
 import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
-import { DEVICES_ADDRESS, writeCached } from "./core/localCache.js";
+import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 
 let presenceGeneration = 0;
+const deviceListListeners = new Set();
+let deviceReadGeneration = 0;
+// Do not read `App` at module initialization: app.js imports the settings modal,
+// which imports this module, so the object is still crossing that cycle here.
+let latestDeviceRead = Promise.resolve([]);
+
+/**
+ * Take up the account list only from its committed cache record. The REST pull
+ * below and another tab both come through this one path, so `App.devices` is a
+ * projection of disk rather than a second rendering source.
+ *
+ * A mount read leaves an already-held list alone when the cache is empty. An
+ * announcement clears it: the only announced missing record is an eviction or
+ * account reset, and keeping the old account's devices then would be wrong.
+ */
+function takeUpCachedDevices({ clearMissing = false } = {}) {
+  const generation = ++deviceReadGeneration;
+  const read = readCached(DEVICES_ADDRESS).then((record) => {
+    if (generation !== deviceReadGeneration) return App.devices;
+    if (!record && !clearMissing) return App.devices;
+    const devices = Array.isArray(record?.value) ? record.value : [];
+    App.devices = devices;
+    syncDeviceRecoveryPresence(devices);
+    forgetFilterOnMissingDevice();
+    for (const listener of [...deviceListListeners]) listener(devices);
+    return devices;
+  });
+  latestDeviceRead = read;
+  return read;
+}
+
+// Installed when the store module is imported, before any REST read can write.
+// `writeCached` announces synchronously after commit, so a writer can wait for
+// the exact reread its own write started without applying its payload directly.
+subscribeCache(DEVICES_ADDRESS, () => {
+  latestDeviceRead = takeUpCachedDevices({ clearMissing: true });
+});
+
+/** Read the account list for a mounting surface, without making a network ask. */
+export const readCachedDevices = () => takeUpCachedDevices();
+
+/** Hear the canonical list after a cache readback has applied it. */
+export function onDevicesChanged(listener) {
+  deviceListListeners.add(listener);
+  return () => deviceListListeners.delete(listener);
+}
 
 export async function refreshDevices() {
   const generation = ++presenceGeneration;
   const accountEpoch = App.accountEpoch;
   const devices = await fetchDevices();
   if (generation !== presenceGeneration || accountEpoch !== App.accountEpoch) throw new Error("stale device presence read");
-  App.devices = devices;
   // The rail is the whole account's, so a reload paints every machine it knows
   // before this read has answered. It has no TTL — the list leaves only when
   // the account stops naming it, which is this write replacing it. Awaited
   // rather than let go of, so what the next paint reads off disk is what this
   // read said.
   await writeCached(DEVICES_ADDRESS, devices);
-  syncDeviceRecoveryPresence(devices);
-  forgetFilterOnMissingDevice();
-  paintDevicePicker();
+  await latestDeviceRead;
   return App.devices;
 }
+
+/** Commit an account action through the same record as presence reads. An
+ * older presence request must not undo a rename or revocation after it lands. */
+async function changeCachedDevices(change) {
+  presenceGeneration += 1;
+  const accountEpoch = App.accountEpoch;
+  const record = await readCached(DEVICES_ADDRESS);
+  if (accountEpoch !== App.accountEpoch) throw new Error("device account changed");
+  if (!Array.isArray(record?.value)) return refreshDevices();
+  await writeCached(DEVICES_ADDRESS, change(record.value));
+  await latestDeviceRead;
+  return App.devices;
+}
+
+export const cacheRenamedDevice = (deviceId, name) => changeCachedDevices((devices) =>
+  devices.map((device) => device.id === deviceId ? { ...device, name } : device));
+
+export const cacheRevokedDevice = (deviceId) => changeCachedDevices((devices) =>
+  devices.filter((device) => device.id !== deviceId));
 
 /** A rail filtered to a device the account no longer lists would show nothing
  *  at all, with nothing on screen to say why. The account is what the picker is
@@ -352,10 +414,18 @@ export function initDevicePicker() {
   document.addEventListener("focusin", dismiss);
   const stopWatchingDeviceState = onDeviceStateChanged(paintDevicePicker);
   const stopWatchingLimits = onUsageLimitsChanged(paintDevicePicker);
+  const takeUpDevices = () => {
+    for (const device of App.devices) void readCachedUsageLimits(device.id);
+    paintDevicePicker();
+  };
+  const stopWatchingDevices = onDevicesChanged(takeUpDevices);
+  void readCachedDevices();
+  takeUpDevices();
   removePickerListeners = () => {
     document.removeEventListener("click", dismiss);
     document.removeEventListener("focusin", dismiss);
     stopWatchingDeviceState();
     stopWatchingLimits();
+    stopWatchingDevices();
   };
 }

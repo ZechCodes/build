@@ -130,3 +130,8 @@ export function resetMemoryCache() {
   records.clear();
   listeners.clear();
 }
+
+/** Empty records while retaining module-lifetime production subscriptions. */
+export function clearMemoryCacheRecords() {
+  records.clear();
+}

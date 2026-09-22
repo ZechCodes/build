@@ -4,3 +4,7 @@ Frames from `node web/landing-check.mjs` (`LANDING_GPU=1`) at the head named in
 the #77 comment that references them. Regenerate by running the check and
 converting the PNGs in the review directory to WebP; they are review aids,
 not page assets.
+
+Round 1 (60af631e and later): `film-resize-1024-act7.webp` is the window
+resized from 1440×900 to 1024×768 at act 7 / .55, the case the gate now
+checks.

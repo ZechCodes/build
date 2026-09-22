@@ -206,6 +206,20 @@ describe("the issue", () => {
     expect(held.issue.number).toBe(12);
     expect(held.timeline).toHaveLength(4);
   });
+
+  it("repaints from an issue-cache write while issues.get stays absent", async () => {
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(host.querySelector(".issue-page-title")).toBeNull();
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", number: 12, title: "Announced detail" }),
+      timeline: [],
+    });
+    await flush();
+
+    expect(host.querySelector(".issue-page-title").textContent).toBe("Announced detail");
+  });
 });
 
 describe("the timeline", () => {

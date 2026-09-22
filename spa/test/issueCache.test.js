@@ -57,6 +57,17 @@ describe("reading an issue record", () => {
     expect(await held("stages")).toEqual({ stages: [{ id: "s1" }] });
   });
 
+  it("does not let a late pull overwrite a newer cache write", async () => {
+    let answer;
+    const pending = readThrough("get", () => new Promise((resolve) => { answer = resolve; }));
+    await new Promise((done) => setTimeout(done, 0));
+    await writeCached(issueAddress("dev-1", "issue-1", "get"), { goal: "newer announcement" });
+    answer({ goal: "late pull" });
+
+    expect(await pending).toEqual({ goal: "newer announcement" });
+    expect(await held("get")).toEqual({ goal: "newer announcement" });
+  });
+
   it("raises a cold read that fails — there is nothing to paint", async () => {
     const read = async () => {
       throw new Error("unknown issue_id");

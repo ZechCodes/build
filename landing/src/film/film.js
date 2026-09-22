@@ -68,7 +68,7 @@ function deviceTimeline(tl, pose) {
     tl.to(pose[device], { ...fullPose(to), duration: until - from, ease }, from);
   };
   const laptop = POSES.laptop;
-  move("laptop", laptop["1-typing"], at(1, 0.15), at(1, 0.32));
+  move("laptop", laptop["1-typing"], at(1, 0.06), at(1, 0.2));
   move("laptop", laptop[2], at(1, 0.8), at(2, 0.22));
   move("laptop", laptop[3], at(2, 0.85), at(3, 0.2));
   move("laptop", laptop[4], at(3, 0.85), at(4, 0.2));
@@ -86,9 +86,7 @@ function deviceTimeline(tl, pose) {
   const tablet = POSES.tablet;
   move("tablet", tablet["7-arrive"], at(7, 0), at(7, 0.15), "power3.out");
   move("tablet", tablet[7], at(7, 0.15), at(7, 0.25));
-  move("tablet", departPose("tablet", tablet[7]), at(7, 0.9), at(7, 1), "power2.in");
-  tl.set(pose.tablet, fullPose(entrancePose("tablet", tablet[8])), at(8, 0));
-  move("tablet", tablet[8], at(8, 0.05), at(8, 0.35), "power3.out");
+  move("tablet", tablet[8], at(7, 0.9), at(8, 0.35));
 }
 
 function screenPreloader(stage) {
@@ -144,9 +142,10 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
       anticipatePin: 1,
       scrub: SCRUB_SECONDS,
       invalidateOnRefresh: true,
+      // Raw scroll progress runs ahead of the smoothed playhead; it is
+      // right for preloading and wrong for what is on a screen.
       onUpdate: (self) => {
         const time = self.progress * TOTAL_TRAVEL;
-        resolveScreens(time);
         preload(time);
         film.dataset.act = String(actAt(time).act);
       },
@@ -161,15 +160,33 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
 
   let stopped = false;
   let firstFrameShown = false;
+  // One rendered frame: the displays, the poses and the close-ups all read
+  // the same clock, the timeline's, so a fast scroll cannot swap a screen
+  // before the overlay that matches it arrives.
+  const draw = () => {
+    resolveScreens(tl.time());
+    for (const [device, current] of Object.entries(pose)) stage.setPose(device, current);
+    stage.render();
+    overlays.update();
+  };
   const frame = () => {
     if (stopped) return;
     const trigger = tl.scrollTrigger;
     const nearby = trigger && scrollY < trigger.end + innerHeight;
     if (!nearby) return;
-    for (const [device, current] of Object.entries(pose)) stage.setPose(device, current);
-    stage.render();
-    overlays.update(tl.scrollTrigger.progress * TOTAL_TRAVEL);
+    draw();
   };
+  // The pin gives the film its box, and ScrollTrigger re-measures that box
+  // after a resize on its own schedule; the canvas tells us when its box
+  // actually changed, and that is when the stage's viewport must follow.
+  const sync = () => {
+    if (stopped) return;
+    stage.resize();
+    draw();
+  };
+  const boxWatcher = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
+  boxWatcher?.observe(canvas);
+  ScrollTrigger.addEventListener("refresh", sync);
 
   function stop(reason) {
     if (stopped) return;
@@ -177,6 +194,8 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     console.info(`The film stops (${reason}); the document stands.`);
     const { act } = actAt(tl.scrollTrigger.progress * TOTAL_TRAVEL);
     gsap.ticker.remove(frame);
+    boxWatcher?.disconnect();
+    ScrollTrigger.removeEventListener("refresh", sync);
     tl.scrollTrigger.kill();
     tl.kill();
     overlays.dispose();
@@ -234,14 +253,13 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     if (event.matches) stop("reduced motion");
   });
   addEventListener("resize", () => {
-    stage.resize();
     if (innerWidth < STAGE_LIMITS.documentMaxWidth) stop("viewport");
   });
 
   stage.load(["laptop"])
     .then(() => stage.setScreen("laptop", SCREEN_CUES.laptop[0][1]))
     .then(() => {
-      resolveScreens(tl.scrollTrigger.progress * TOTAL_TRAVEL);
+      resolveScreens(tl.time());
       stage.resize();
       gsap.ticker.add(frame);
       showFirstFrame();
@@ -259,6 +277,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
       scrollTo({ top: trigger.start + (at(actId, local) / TOTAL_TRAVEL) * (trigger.end - trigger.start), behavior: "instant" });
     },
     time: () => tl.scrollTrigger.progress * TOTAL_TRAVEL,
+    sync,
     timeline: tl,
     stage,
     pose,

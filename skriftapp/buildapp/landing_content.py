@@ -68,7 +68,7 @@ def render_docs_body() -> str:
   <section id="architecture" aria-labelledby="architecture-title">
     <h2 id="architecture-title">Connection architecture</h2>
     <p>The app server handles authentication, device registration, and rendezvous. The browser and host negotiate an encrypted WebRTC data channel. Direct connections reveal each peer's IP to the other; when direct connection fails, Cloudflare TURN can relay DTLS ciphertext.</p>
-    <p>Your coding agents, worktrees, terminals, and Git operations run on the paired host.</p>
+    <p>Your coding agents, workspaces, terminals, and Git operations run on the paired host.</p>
     <a href="/privacy">Read the storage and transport details</a>
   </section>
   <section id="harnesses" aria-labelledby="harnesses-title">
@@ -89,7 +89,7 @@ def render_privacy_body() -> str:
   <h2>Optional browser notifications</h2>
   <p>If you enable browser push notifications, the hosted Build service stores the browser's push endpoint and its p256dh and auth encryption keys with your account. Unsubscribing removes that endpoint for the signed-in account.</p>
   <h2>Where agent work runs</h2>
-  <p>Coding agents execute on your paired host. Worktrees, terminals, files, diffs, and Git operations are produced there and sent to the browser over the encrypted application session.</p>
+  <p>Coding agents execute on your paired host. Workspaces, terminals, files, diffs, and Git operations are produced there and sent to the browser over the encrypted application session.</p>
   <h2>How a browser reaches a host</h2>
   <p>The app and relay coordinate WebRTC negotiation. A direct connection exposes each peer's IP address to the other. If direct connection is unavailable, Cloudflare TURN may relay DTLS ciphertext and can observe connection metadata such as source IP, timing, and traffic size.</p>
   <h2>Provider boundary</h2>

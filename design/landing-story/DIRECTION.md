@@ -466,8 +466,8 @@ A static build, dropped into the current serving path, with one integration chan
   infrastructure. Note that `preview-landing.py` registers only `RootController`, so the
   preview does not exercise submission; the implementation issue should either register
   the waitlist controller in the preview or document the form's preview-only state.
-- `preview-landing.py` and the landing browser checks (`web/landing-check.mjs`,
-  `web/landing-record.mjs`) keep working against the built output; `test_root_landing.py`
+- `preview-landing.py` and the landing browser check (`web/landing-check.mjs`; the old
+  `web/landing-record.mjs` drove the retired page and went with it) keep working against the built output; `test_root_landing.py`
   and `test_landing_page.py` change from "fragment wrapped in shell" to "generated document
   with slots filled".
 

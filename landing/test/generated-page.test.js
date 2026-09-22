@@ -58,7 +58,8 @@ describe("the generated landing document", () => {
     assert.ok(html.includes("Every change lands in Git."));
     assert.ok(html.includes("data-waitlist"));
     assert.ok(html.includes("Join the waitlist"));
-    assert.ok(html.includes("Invite-only alpha. Free and open source."));
+    assert.ok(html.includes("Invite-only alpha."));
+    assert.ok(!html.includes("Invite-only alpha. Free and open source."), "the closing line says free once");
   });
 
   it("shows the readable proof beside each act", () => {
@@ -68,10 +69,28 @@ describe("the generated landing document", () => {
       "Keep archived items in search?",
       "Test · runs archive.test.ts",
       "archive: keep archived results searchable",
-      "Keep archived items searchable and visibly labeled.",
+      "Archived results remain visible and now carry a clear label.",
+      "Ready for review",
     ]) {
       assert.ok(html.includes(proof), proof);
     }
+  });
+
+  it("keeps the sample diff valid and carries the human-added label into the review", () => {
+    assert.ok(!html.includes("archived: true\n"), "the agent's object literal ends its line with a comma");
+    assert.ok(html.includes("+   archived: true,"), "the close-up diff");
+    assert.ok(html.includes("+   archived: true,</span>"), "the document diff");
+    const label = "label: &quot;Archived&quot;,";
+    const act7 = html.slice(html.indexOf('data-act="7"'), html.indexOf('data-act="8"'));
+    assert.ok(act7.includes(label), "act 7's proof keeps the label a person added in act 6");
+    const review = html.slice(html.indexOf('data-panel="review"'), html.indexOf('data-act="1"'));
+    assert.ok(review.includes(label), "the review close-up keeps the label too");
+    assert.ok(html.includes('data-diff-add>+3<'), "the close-up hunk counts three added lines before the person's");
+    assert.ok(html.includes("+4 −1"), "the document proof counts four after it");
+  });
+
+  it("offers no download, only the waitlist", () => {
+    assert.ok(!/download/i.test(html));
   });
 
   it("offers the anchor the invite pages link to", () => {
@@ -89,7 +108,7 @@ describe("the generated landing document", () => {
   });
 
   it("keeps the practical section without the download chooser", () => {
-    assert.ok(html.includes("Your hosts do the work."));
+    assert.ok(html.includes("Your host does the work."));
     assert.ok(html.includes("Which agents can I use?"));
     assert.ok(!html.includes("download-chooser"));
     assert.ok(!html.includes("curl "));

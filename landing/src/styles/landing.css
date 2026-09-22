@@ -215,6 +215,16 @@ a {
   color: var(--ink);
 }
 
+/* The one boundary claim that is a scope, not a promise: quiet and exact. */
+.scope {
+  margin-top: 1.5rem;
+  max-width: var(--measure);
+  font-family: var(--mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-faint);
+}
+
 .poster {
   display: block;
 }
@@ -302,6 +312,13 @@ pre .line-removed {
   display: block;
   color: var(--ink-faint);
   text-decoration: line-through;
+}
+
+/* The one line a person added, in the agent's hunk. */
+pre .line-you {
+  box-shadow: inset 2px 0 0 var(--accent);
+  padding-left: 0.5rem;
+  margin-left: -0.5rem;
 }
 
 .file-name {

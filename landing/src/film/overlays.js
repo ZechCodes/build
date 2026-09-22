@@ -65,20 +65,47 @@ function caret(tl, panel, name, from, until) {
   hide(tl, element, until, until + 0.01);
 }
 
-// Act 1 and 2: the tab switches to the test file, a test types in over the
-// scroll, the gutter marks both lines, the status bar ticks to "2 changes".
+// A discrete change at one moment that scrubbing back undoes: new text, a
+// class gained (or, with `off`, a class lost), or both. The text to restore
+// is read as the change fires, so an element flipped twice hands back what
+// the earlier flip left, not what the markup started with.
+export function flip(tl, element, time, { text, className, off = false } = {}) {
+  let before = null;
+  let applied = false;
+  const apply = (forward) => {
+    if (forward === applied) return;
+    applied = forward;
+    if (text !== undefined) {
+      if (forward) before = element.textContent;
+      element.textContent = forward ? text : before;
+    }
+    if (className) element.classList.toggle(className, off ? !forward : forward);
+  };
+  tl.to(element, { duration: 0.01, onStart: () => apply(true), onReverseComplete: () => apply(false) }, time);
+}
+
+// A button press: down, then up.
+function press(tl, button, from, until) {
+  const half = (until - from) / 2;
+  tl.to(button, { "--pressed": 1, duration: half, ease: "power2.out" }, from);
+  tl.to(button, { "--pressed": 0, duration: half }, from + half);
+}
+
+// Act 1 and 2: the laptop has finished its push before the tab switches to
+// the test file; a test types in over the scroll, the gutter marks both
+// lines, the status bar ticks to "2 changes"; then a reading hold.
 function editorBeats(tl, panels) {
   const editor = panels.editor;
   const status = panels.status;
   const lines = editor.element.querySelectorAll("[data-typed-line]");
   const typed = editor.element.querySelectorAll("[data-type]");
   gsap.set(lines, { "--mark": 0 });
-  show(tl, editor.state, at(1, 0.12), at(1, 0.15));
-  caret(tl, editor.element, "1", at(1, 0.15), at(1, 0.4));
-  typeInto(tl, typed[0], at(1, 0.16), at(1, 0.4));
-  tl.to(lines[0], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.4));
-  caret(tl, editor.element, "2", at(1, 0.41), at(1, 0.65));
-  typeInto(tl, typed[1], at(1, 0.42), at(1, 0.63));
+  show(tl, editor.state, at(1, 0.18), at(1, 0.21));
+  caret(tl, editor.element, "1", at(1, 0.21), at(1, 0.43));
+  typeInto(tl, typed[0], at(1, 0.22), at(1, 0.43));
+  tl.to(lines[0], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.43));
+  caret(tl, editor.element, "2", at(1, 0.44), at(1, 0.65));
+  typeInto(tl, typed[1], at(1, 0.45), at(1, 0.63));
   typeInto(tl, typed[2], at(1, 0.63), at(1, 0.65));
   tl.to([lines[1], lines[2]], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.65));
   show(tl, status.state, at(1, 0.66), at(1, 0.7));
@@ -87,7 +114,7 @@ function editorBeats(tl, panels) {
 }
 
 // Act 3: the card lifts out of Ready, gets its assignee, moves to In progress
-// with its branch, and goes back into the board.
+// with its branch, and is back in the board before the laptop moves on.
 function issueBeats(tl, panels) {
   const issue = panels.issue;
   const hole = panels.hole;
@@ -100,20 +127,20 @@ function issueBeats(tl, panels) {
   gsap.set([agent, progress, branch], { autoAlpha: 0 });
   gsap.set(branch, { height: 0 });
   show(tl, issue.state, at(3, 0.18), at(3, 0.2));
-  tl.to(issue.state, { lift: 1, duration: span(3, 0.2, 0.35), ease: "power3.inOut" }, at(3, 0.2));
+  tl.to(issue.state, { lift: 1, duration: span(3, 0.2, 0.34), ease: "power3.inOut" }, at(3, 0.2));
   show(tl, hole.state, at(3, 0.2), at(3, 0.26));
   hide(tl, none, at(3, 0.35), at(3, 0.4));
-  show(tl, agent, at(3, 0.38), at(3, 0.5));
-  hide(tl, ready, at(3, 0.5), at(3, 0.56));
-  show(tl, progress, at(3, 0.54), at(3, 0.62));
-  tl.to(branch, { autoAlpha: 1, height: "auto", duration: span(3, 0.58, 0.7), ease: "power2.out" }, at(3, 0.58));
-  tl.to(branch, { autoAlpha: 0, height: 0, duration: span(3, 0.85, 0.9), ease: "power2.in" }, at(3, 0.85));
-  tl.to(issue.state, { lift: 0, x: 892, y: 362, duration: span(3, 0.85, 1), ease: "power3.inOut" }, at(3, 0.85));
+  show(tl, agent, at(3, 0.38), at(3, 0.48));
+  hide(tl, ready, at(3, 0.5), at(3, 0.55));
+  show(tl, progress, at(3, 0.53), at(3, 0.6));
+  tl.to(branch, { autoAlpha: 1, height: "auto", duration: span(3, 0.58, 0.68), ease: "power2.out" }, at(3, 0.58));
+  tl.to(branch, { autoAlpha: 0, height: 0, duration: span(3, 0.72, 0.76), ease: "power2.in" }, at(3, 0.72));
+  tl.to(issue.state, { lift: 0, x: 892, y: 362, duration: span(3, 0.74, 0.85), ease: "power3.inOut" }, at(3, 0.74));
   hide(tl, [issue.state, hole.state], at(3, 0.98), at(4, 0.01));
 }
 
-// Act 4: one row becomes three, the counter climbs, the implementing agent
-// waits on the phone's answer and resumes.
+// Act 4: one row becomes three, the counter climbs; from then on only the
+// implementing agent's status changes, with the phone's question and answer.
 function teamBeats(tl, panels) {
   const team = panels.team;
   const rows = team.element.querySelectorAll("[data-team-row]");
@@ -125,83 +152,101 @@ function teamBeats(tl, panels) {
   tl.to(rows[1], { autoAlpha: 1, x: 0, duration: span(4, 0.1, 0.18), ease: "power3.out" }, at(4, 0.1));
   tl.to(rows[2], { autoAlpha: 1, x: 0, duration: span(4, 0.2, 0.28), ease: "power3.out" }, at(4, 0.2));
   tl.to(counter, { value: 3, duration: span(4, 0.1, 0.28), snap: "value", onUpdate: () => { count.textContent = String(counter.value); } }, at(4, 0.1));
-  tl.to(status, { onStart: () => { status.textContent = "Waiting"; status.classList.add("waiting"); }, onReverseComplete: () => { status.textContent = "Working"; status.classList.remove("waiting"); }, duration: 0.01 }, at(4, 0.45));
-  tl.to(status, { onStart: () => { status.textContent = "Working"; status.classList.remove("waiting"); }, onReverseComplete: () => { status.textContent = "Waiting"; status.classList.add("waiting"); }, duration: 0.01 }, at(4, 0.75));
+  flip(tl, status, at(4, 0.45), { text: "Waiting", className: "waiting" });
+  flip(tl, status, at(4, 0.75), { text: "Working", className: "waiting", off: true });
   hide(tl, team.state, at(4, 0.96), at(5, 0.0));
 }
 
-const NODE_WIDTH = 146;
-const NODE_HEIGHT = 122;
-const NODE_TOP = 283;
-const FOUR_UP = [109, 305, 501, 697];
-const FIVE_UP = [29, 215, 401, 587, 773];
+// The builder's canvas, in the panel's own pixels: nodes are 150 wide on a
+// 196 pitch four up and a 186 pitch five up, as the fixture draws them, and
+// an arrow sits in each gap.
+const NODE_WIDTH = 150;
+const NODE_HEIGHT = 125;
+const NODE_TOP = 282;
+const PALETTE_TEST = { x: -190, y: 85 };
+const FOUR_UP = [108, 304, 500, 696];
+const FIVE_UP = [28, 214, 400, 586, 772];
+const ARROW_WIDTH = 16;
 
-function nodeCentre(x) {
-  return [x + NODE_WIDTH / 2, NODE_TOP + NODE_HEIGHT / 2];
+function arrowX(fromX, toX) {
+  return (fromX + NODE_WIDTH + toX) / 2 - ARROW_WIDTH / 2;
 }
 
-function edgePath(fromX, toX) {
-  const [x1, y] = nodeCentre(fromX);
-  const [x2] = nodeCentre(toX);
-  return `M ${x1 + NODE_WIDTH / 2} ${y} L ${x2 - NODE_WIDTH / 2} ${y}`;
+function nodeCentreY() {
+  return NODE_TOP + NODE_HEIGHT / 2;
 }
 
-// Act 5: the canvas lifts out, a Test node is dropped between Implement and
-// Review, the edges reconnect, and the pending handoff runs to the gate.
+// Act 5: the canvas lifts out, a Test node is dragged in on a shallow arc and
+// settles between Implement and Review before its arrows draw; the pending
+// handoff runs to the gate, dimming each finished node as it passes.
 function builderBeats(tl, panels) {
   const builder = panels.builder;
   const root = builder.element;
   const node = (name) => root.querySelector(`[data-node="${name}"]`);
-  const edge = (name) => root.querySelector(`[data-edge="${name}"]`);
+  const arrow = (name) => root.querySelector(`[data-arrow="${name}"]`);
   const status = (name) => root.querySelector(`[data-node-status="${name}"]`);
   const pulse = root.querySelector("[data-pulse]");
   const caption = root.querySelector("[data-canvas-caption]");
   const layout = { implement: 0, review: 1, gate: 2, merge: 3 };
   for (const [name, index] of Object.entries(layout)) gsap.set(node(name), { x: FOUR_UP[index], y: NODE_TOP });
-  gsap.set(node("test"), { x: -190, y: 85, autoAlpha: 0, scale: 0.6 });
-  gsap.set(edge("implement-review"), { attr: { d: edgePath(FOUR_UP[0], FOUR_UP[1]) } });
-  gsap.set(edge("review-gate"), { attr: { d: edgePath(FOUR_UP[1], FOUR_UP[2]) } });
-  gsap.set(edge("gate-merge"), { attr: { d: edgePath(FOUR_UP[2], FOUR_UP[3]) } });
-  gsap.set([edge("implement-test"), edge("test-review")], { attr: { d: edgePath(FIVE_UP[0], FIVE_UP[1]) }, strokeDasharray: 400, strokeDashoffset: 400 });
-  gsap.set(edge("test-review"), { attr: { d: edgePath(FIVE_UP[1], FIVE_UP[2]) } });
+  gsap.set(node("test"), { ...PALETTE_TEST, autoAlpha: 0, scale: 0.6 });
+  gsap.set(arrow("implement-review"), { x: arrowX(FOUR_UP[0], FOUR_UP[1]), y: nodeCentreY() });
+  gsap.set(arrow("review-gate"), { x: arrowX(FOUR_UP[1], FOUR_UP[2]), y: nodeCentreY() });
+  gsap.set(arrow("gate-merge"), { x: arrowX(FOUR_UP[2], FOUR_UP[3]), y: nodeCentreY() });
+  gsap.set(arrow("implement-test"), { x: arrowX(FIVE_UP[0], FIVE_UP[1]), y: nodeCentreY(), autoAlpha: 0 });
+  gsap.set(arrow("test-review"), { x: arrowX(FIVE_UP[1], FIVE_UP[2]), y: nodeCentreY(), autoAlpha: 0 });
   gsap.set(pulse, { autoAlpha: 0 });
   gsap.set(caption, { autoAlpha: 0, y: 10 });
 
   show(tl, builder.state, at(5, 0.12), at(5, 0.15));
   tl.to(builder.state, { lift: 1, duration: span(5, 0.15, 0.22), ease: "power3.inOut" }, at(5, 0.15));
 
-  // The drag: the node leaves the palette, grows to size, and lands in the
-  // gap the others open for it.
+  // The drag: the node leaves the palette, grows to size, rises a little and
+  // lands in the gap the others open for it.
   tl.to(node("test"), { autoAlpha: 1, scale: 0.8, duration: span(5, 0.35, 0.38), ease: "power2.out" }, at(5, 0.35));
-  tl.to(node("test"), { x: FIVE_UP[1], y: NODE_TOP, scale: 1, duration: span(5, 0.38, 0.52), ease: "power3.inOut" }, at(5, 0.38));
-  tl.to(edge("implement-review"), { autoAlpha: 0, strokeDasharray: "6 8", duration: span(5, 0.4, 0.46) }, at(5, 0.4));
-  tl.to(node("implement"), { x: FIVE_UP[0], duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(node("review"), { x: FIVE_UP[2], duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(node("gate"), { x: FIVE_UP[3], duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(node("merge"), { x: FIVE_UP[4], duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(edge("review-gate"), { attr: { d: edgePath(FIVE_UP[2], FIVE_UP[3]) }, duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(edge("gate-merge"), { attr: { d: edgePath(FIVE_UP[3], FIVE_UP[4]) }, duration: span(5, 0.42, 0.52), ease: "power3.inOut" }, at(5, 0.42));
-  tl.to(edge("implement-test"), { strokeDashoffset: 0, duration: span(5, 0.5, 0.55) }, at(5, 0.5));
-  tl.to(edge("test-review"), { strokeDashoffset: 0, duration: span(5, 0.52, 0.56) }, at(5, 0.52));
-  const renumber = (name, value) => tl.to(root.querySelector(`[data-node-index="${name}"]`), { duration: 0.01, onStart: () => { root.querySelector(`[data-node-index="${name}"]`).textContent = value; }, onReverseComplete: () => { root.querySelector(`[data-node-index="${name}"]`).textContent = String(Number(value) - 1); } }, at(5, 0.5));
-  renumber("review", "3"); renumber("gate", "4"); renumber("merge", "5");
+  tl.to(node("test"), { x: FIVE_UP[1], scale: 1, duration: span(5, 0.38, 0.5), ease: "power2.inOut" }, at(5, 0.38));
+  tl.to(node("test"), { keyframes: [{ y: PALETTE_TEST.y - 40, duration: span(5, 0.38, 0.42), ease: "power1.out" }, { y: NODE_TOP, duration: span(5, 0.42, 0.5), ease: "power2.inOut" }] }, at(5, 0.38));
+  hide(tl, arrow("implement-review"), at(5, 0.4), at(5, 0.44));
+  const shift = { duration: span(5, 0.42, 0.5), ease: "power3.inOut" };
+  tl.to(node("implement"), { x: FIVE_UP[0], ...shift }, at(5, 0.42));
+  tl.to(node("review"), { x: FIVE_UP[2], ...shift }, at(5, 0.42));
+  tl.to(node("gate"), { x: FIVE_UP[3], ...shift }, at(5, 0.42));
+  tl.to(node("merge"), { x: FIVE_UP[4], ...shift }, at(5, 0.42));
+  tl.to(arrow("review-gate"), { x: arrowX(FIVE_UP[2], FIVE_UP[3]), ...shift }, at(5, 0.42));
+  tl.to(arrow("gate-merge"), { x: arrowX(FIVE_UP[3], FIVE_UP[4]), ...shift }, at(5, 0.42));
+  // Settled: now the new arrows, and the numbers.
+  show(tl, arrow("implement-test"), at(5, 0.53), at(5, 0.56));
+  show(tl, arrow("test-review"), at(5, 0.56), at(5, 0.59));
+  flip(tl, root.querySelector('[data-node-index="review"]'), at(5, 0.53), { text: "3" });
+  flip(tl, root.querySelector('[data-node-index="gate"]'), at(5, 0.53), { text: "4" });
+  flip(tl, root.querySelector('[data-node-index="merge"]'), at(5, 0.53), { text: "5" });
 
-  // The handoff runs on the new path and stops at the gate.
-  const [startX, y] = nodeCentre(FIVE_UP[0]);
-  tl.set(pulse, { attr: { cx: startX + NODE_WIDTH / 2, cy: y }, autoAlpha: 1 }, at(5, 0.55));
-  tl.to(pulse, { attr: { cx: nodeCentre(FIVE_UP[1])[0] }, duration: span(5, 0.55, 0.6), ease: "power1.inOut" }, at(5, 0.55));
-  tl.to(status("test"), { duration: 0.01, onStart: () => { status("test").textContent = "Passed ✓"; node("test").classList.add("passed"); }, onReverseComplete: () => { status("test").textContent = "Waiting"; node("test").classList.remove("passed"); } }, at(5, 0.6));
-  tl.to(pulse, { attr: { cx: nodeCentre(FIVE_UP[2])[0] }, duration: span(5, 0.61, 0.65), ease: "power1.inOut" }, at(5, 0.61));
-  tl.to(status("review"), { duration: 0.01, onStart: () => { status("review").textContent = "Done"; node("review").classList.add("passed"); }, onReverseComplete: () => { status("review").textContent = "Waiting"; node("review").classList.remove("passed"); } }, at(5, 0.65));
-  tl.to(pulse, { attr: { cx: nodeCentre(FIVE_UP[3])[0] - NODE_WIDTH / 2 - 8 }, duration: span(5, 0.66, 0.7), ease: "power1.inOut" }, at(5, 0.66));
-  tl.to(status("gate"), { duration: 0.01, onStart: () => { status("gate").textContent = "Waiting for you"; node("gate").classList.add("waiting"); }, onReverseComplete: () => { status("gate").textContent = "Waiting"; node("gate").classList.remove("waiting"); } }, at(5, 0.7));
-  tl.to(caption, { autoAlpha: 1, y: 0, duration: span(5, 0.72, 0.78), ease: "power2.out" }, at(5, 0.72));
+  // The handoff runs on the new path and stops at the gate. A node the pulse
+  // has left is finished, and finished is quiet.
+  const y = nodeCentreY();
+  tl.set(pulse, { x: FIVE_UP[0] + NODE_WIDTH, y, autoAlpha: 1 }, at(5, 0.6));
+  tl.to(pulse, { x: FIVE_UP[1] + NODE_WIDTH / 2, duration: span(5, 0.6, 0.64), ease: "power1.inOut" }, at(5, 0.6));
+  flip(tl, node("implement"), at(5, 0.61), { className: "settled" });
+  flip(tl, status("implement"), at(5, 0.61), { text: "Done" });
+  flip(tl, status("test"), at(5, 0.64), { text: "Passed ✓" });
+  flip(tl, node("test"), at(5, 0.64), { className: "passed" });
+  tl.to(pulse, { x: FIVE_UP[2] + NODE_WIDTH / 2, duration: span(5, 0.65, 0.69), ease: "power1.inOut" }, at(5, 0.65));
+  flip(tl, node("test"), at(5, 0.66), { className: "settled" });
+  flip(tl, status("review"), at(5, 0.69), { text: "Done" });
+  flip(tl, node("review"), at(5, 0.69), { className: "passed" });
+  tl.to(pulse, { x: FIVE_UP[3] - 10, duration: span(5, 0.7, 0.74), ease: "power1.inOut" }, at(5, 0.7));
+  flip(tl, node("review"), at(5, 0.71), { className: "settled" });
+  flip(tl, status("gate"), at(5, 0.74), { text: "Waiting for you" });
+  flip(tl, node("gate"), at(5, 0.74), { className: "waiting" });
+  tl.to(caption, { autoAlpha: 1, y: 0, duration: span(5, 0.76, 0.81), ease: "power2.out" }, at(5, 0.76));
   tl.to(builder.state, { lift: 0, duration: span(5, 0.85, 1), ease: "power3.inOut" }, at(5, 0.85));
   hide(tl, builder.state, at(6, 0), at(6, 0.03));
 }
 
-// Act 6: gutter highlights, author chips, one line edited in the diff, stage,
-// commit; the graph gains the visitor's commit.
+// Act 6: gutter highlights, author chips, one line added to the diff (the
+// hunk's count goes +3 to +4, as the document's proof says), stage,
+// a hold on the finished message, commit; the graph gains the visitor's
+// commit and the working tree is clean.
 function gitBeats(tl, panels) {
   const git = panels.git;
   const root = git.element;
@@ -215,12 +260,16 @@ function gitBeats(tl, panels) {
   const closeNumber = root.querySelector("[data-close-number]");
   const stageAll = root.querySelector("[data-stage-all]");
   const treeLabel = root.querySelector("[data-tree-label]");
+  const treeCount = root.querySelector("[data-tree-count]");
+  const changedFiles = root.querySelectorAll("[data-changed-file]");
+  const cleanTree = root.querySelector("[data-clean-tree]");
   const commitInput = root.querySelector("[data-commit-input] [data-type]");
   const commitButton = root.querySelector("[data-commit-button]");
   const newCommit = root.querySelector("[data-new-commit]");
   gsap.set([chipAgent, chipYou], { autoAlpha: 0, x: 8 });
   gsap.set(humanLine, { height: 0, autoAlpha: 0 });
   gsap.set(newCommit, { height: 0, autoAlpha: 0 });
+  gsap.set(cleanTree, { autoAlpha: 0 });
   gsap.set([hunkAgent, hunkYou], { "--lit": 0 });
 
   show(tl, git.state, at(6, 0.02), at(6, 0.05));
@@ -232,20 +281,26 @@ function gitBeats(tl, panels) {
   tl.to(humanLine, { height: "auto", autoAlpha: 1, duration: span(6, 0.4, 0.43), ease: "power2.out" }, at(6, 0.4));
   caret(tl, root, "human", at(6, 0.4), at(6, 0.55));
   typeInto(tl, humanText, at(6, 0.42), at(6, 0.54));
-  tl.to(diffAdd, { duration: 0.01, onStart: () => { diffAdd.textContent = "+3"; closeNumber.textContent = "15"; }, onReverseComplete: () => { diffAdd.textContent = "+2"; closeNumber.textContent = "14"; } }, at(6, 0.54));
-  tl.to(stageAll, { "--pressed": 1, duration: span(6, 0.56, 0.59), ease: "power2.out" }, at(6, 0.56));
-  tl.to(treeLabel, { duration: 0.01, onStart: () => { treeLabel.textContent = "Staged"; }, onReverseComplete: () => { treeLabel.textContent = "Working tree"; } }, at(6, 0.59));
-  tl.to(stageAll, { "--pressed": 0, duration: span(6, 0.6, 0.62) }, at(6, 0.6));
-  caret(tl, root, "commit", at(6, 0.62), at(6, 0.72));
-  typeInto(tl, commitInput, at(6, 0.62), at(6, 0.71));
-  tl.to(commitButton, { "--pressed": 1, duration: span(6, 0.72, 0.74), ease: "power2.out" }, at(6, 0.72));
-  tl.to(commitButton, { "--pressed": 0, duration: span(6, 0.75, 0.77) }, at(6, 0.75));
-  tl.to(newCommit, { height: "auto", autoAlpha: 1, duration: span(6, 0.74, 0.8), ease: "power2.out" }, at(6, 0.74));
-  tl.to(git.state, { lift: 0, duration: span(6, 0.85, 1), ease: "power3.inOut" }, at(6, 0.85));
+  flip(tl, diffAdd, at(6, 0.54), { text: "+4" });
+  flip(tl, closeNumber, at(6, 0.54), { text: "15" });
+  press(tl, stageAll, at(6, 0.56), at(6, 0.62));
+  flip(tl, treeLabel, at(6, 0.59), { text: "Staged" });
+  caret(tl, root, "commit", at(6, 0.62), at(6, 0.73));
+  typeInto(tl, commitInput, at(6, 0.62), at(6, 0.7));
+  // The message is complete; a beat to read it before the commit.
+  press(tl, commitButton, at(6, 0.74), at(6, 0.78));
+  tl.to(newCommit, { height: "auto", autoAlpha: 1, duration: span(6, 0.78, 0.84), ease: "power2.out" }, at(6, 0.78));
+  flip(tl, treeLabel, at(6, 0.79), { text: "Working tree" });
+  flip(tl, treeCount, at(6, 0.79), { text: "0" });
+  tl.to(changedFiles, { autoAlpha: 0, height: 0, paddingTop: 0, paddingBottom: 0, duration: span(6, 0.79, 0.83), ease: "power2.in" }, at(6, 0.79));
+  show(tl, cleanTree, at(6, 0.82), at(6, 0.85));
+  tl.to(git.state, { lift: 0, duration: span(6, 0.87, 1), ease: "power3.inOut" }, at(6, 0.87));
   hide(tl, git.state, at(7, 0.78), at(7, 0.8));
 }
 
-// Act 7: triage narrows, the finding opens, a person approves, Build merges.
+// Act 7: the triage lifts out to reading size, narrows to what needs a
+// person, opens the finding with its diff and evidence, holds, then a person
+// approves and the tablet shows the merge.
 function reviewBeats(tl, panels) {
   const review = panels.review;
   const root = review.element;
@@ -261,15 +316,18 @@ function reviewBeats(tl, panels) {
   gsap.set(approved, { autoAlpha: 0 });
 
   show(tl, review.state, at(7, 0.17), at(7, 0.25));
-  tl.to([row("verified"), row("failed")], { autoAlpha: 0, height: 0, marginTop: 0, duration: span(7, 0.27, 0.36), ease: "power2.inOut" }, at(7, 0.27));
-  tl.to(row("rest"), { autoAlpha: 1, height: "auto", duration: span(7, 0.32, 0.4), ease: "power2.out" }, at(7, 0.32));
-  tl.to(finding, { height: "auto", autoAlpha: 1, duration: span(7, 0.4, 0.5), ease: "power2.out" }, at(7, 0.4));
-  tl.to(approval, { autoAlpha: 1, duration: span(7, 0.65, 0.68), ease: "power2.out" }, at(7, 0.65));
-  tl.to(approveButton, { "--pressed": 1, duration: span(7, 0.71, 0.73), ease: "power2.out" }, at(7, 0.71));
-  tl.to(approveButton, { autoAlpha: 0, duration: span(7, 0.74, 0.76) }, at(7, 0.74));
-  tl.to(approved, { autoAlpha: 1, duration: span(7, 0.75, 0.78), ease: "power2.out" }, at(7, 0.75));
-  tl.to(pill, { duration: 0.01, onStart: () => { pill.textContent = "Approved"; pill.classList.add("done"); }, onReverseComplete: () => { pill.textContent = "1 needs you"; pill.classList.remove("done"); } }, at(7, 0.75));
-  hide(tl, review.state, at(7, 0.8), at(7, 0.83));
+  tl.to(review.state, { lift: 1, duration: span(7, 0.27, 0.36), ease: "power3.inOut" }, at(7, 0.27));
+  tl.to([row("verified"), row("failed")], { autoAlpha: 0, height: 0, marginTop: 0, duration: span(7, 0.37, 0.45), ease: "power2.inOut" }, at(7, 0.37));
+  tl.to(row("rest"), { autoAlpha: 1, height: "auto", duration: span(7, 0.41, 0.48), ease: "power2.out" }, at(7, 0.41));
+  tl.to(finding, { height: "auto", autoAlpha: 1, duration: span(7, 0.45, 0.55), ease: "power2.out" }, at(7, 0.45));
+  // .55 to .66: the reading hold.
+  tl.to(approval, { autoAlpha: 1, duration: span(7, 0.66, 0.69), ease: "power2.out" }, at(7, 0.66));
+  press(tl, approveButton, at(7, 0.7), at(7, 0.73));
+  tl.to(approveButton, { autoAlpha: 0, duration: span(7, 0.73, 0.75) }, at(7, 0.73));
+  tl.to(approved, { autoAlpha: 1, duration: span(7, 0.74, 0.77), ease: "power2.out" }, at(7, 0.74));
+  flip(tl, pill, at(7, 0.74), { text: "Approved", className: "done" });
+  tl.to(review.state, { lift: 0, duration: span(7, 0.78, 0.82), ease: "power3.inOut" }, at(7, 0.78));
+  hide(tl, review.state, at(7, 0.82), at(7, 0.85));
 }
 
 export function createOverlays({ film, stage, pose }) {

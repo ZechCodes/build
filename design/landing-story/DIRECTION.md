@@ -235,7 +235,9 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
     becomes `"Archived"`. The gutter updates live.
   - 0.55 → 0.75: Stage all; the commit message types in: `archive: keep archived results
     searchable`; Commit. The graph gains one commit on the branch with a "you" chip.
-  - 0.75 → 0.85: hold. 0.85 → 1.0: return to screen; the laptop departs left.
+  - 0.75 → 0.85: hold. 0.85 → 1.0: return to screen; the laptop pulls back and left
+    into its act 7 host pose (x 22, y 66, w 26, yaw 14), the Git panel still showing the
+    new commit. It does not leave.
 - **Document version:** still of the Git panel plus the diff as an HTML code block.
 
 ### Act 7. Your call (about 140vh, the longest act)
@@ -245,12 +247,15 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 - **Support:** Agents triage every change before you see it. What needs your judgment
   comes first, with the diff and the evidence beside it. Everything else stays one tap away.
   Read. Decide. Build merges.
-- **Devices:** tablet, landscape, pivoting in from the right (existing entrance) and
-  settling to the exact HTML alignment the runtime already implements for the review
-  surface (rotation zeroed, faceCamera 0, width matched to the HTML surface).
-- **Screens:** `ui15-triage-ipad` (new) → existing `ui05-approval-ipad` →
+- **Devices:** the laptop stays open on the left as the host (the act 6 exit pose, x 22,
+  y 66, w 26, yaw 14, opacity 0.9) for the whole act, the same rule as act 4. The tablet,
+  landscape, pivots in from the right (existing entrance) and settles to the exact HTML
+  alignment the runtime already implements for the review surface (rotation zeroed,
+  faceCamera 0, width matched to the HTML surface).
+- **Screens:** tablet `ui15-triage-ipad` (new) → existing `ui05-approval-ipad` →
   existing `ui05-merged-ipad`. Reuse the existing iPad system UI treatment (status bar,
-  window controls, Dock, home indicator).
+  window controls, Dock, home indicator). Laptop: `ui14-git-macbook` carried over from
+  act 6, swapping to existing `ui05-merged-macbook` at the merged beat.
 - **HTML review surface:** the triage list, then the finding open with summary, diff, and
   evidence, then approval, then merged. This is an evolution of today's `demo--review`.
 - **Beats:**
@@ -261,13 +266,16 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
     verified rows compress to a single collapsed row that stays visible and tappable; the
     one finding rises to the top. Nothing disappears.
   - 0.40 → 0.65: the finding opens. Summary: "Keep archived items searchable and visibly
-    labeled." Diff: the same lines from act 6. Evidence: `archive-search.test.ts passed`,
+    labeled." Diff: the same lines from act 6. Evidence: `archive.test.ts passed`,
     "keeps archived items in search ✓" (the visitor's test from act 1), "Checks passed".
     This is stable reading time: at least half the act is a still surface.
   - 0.65 → 0.80: the approval control appears; a human approves ("Approved for merge.").
     Shown as a separate beat from the merge so the decision is visibly a person's.
   - 0.80 → 0.90: merged state (`ui05-merged-ipad`): "Merged · Archive behavior updated".
-  - 0.90 → 1.0: the surface returns to the tablet; the tablet departs.
+    The laptop screen swaps to `ui05-merged-macbook` in the same beat: the merge lands on
+    the machine, and the tablet only shows it.
+  - 0.90 → 1.0: the surface returns to the tablet; the tablet departs to the right. The
+    laptop stays.
 - **Document version:** three stills (triage, finding open, merged) with the triage list as
   an HTML card.
 
@@ -286,7 +294,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
   y 75.8 w 27.2; phone x 77.8 y 77.1 w 8.5), laptop dominant on the left.
 - **Screens:** `ui05-merged-macbook`, `ui05-merged-ipad`, `ui05-merged-iphone` (all
   existing): the same finished work on every screen, not three unrelated demos.
-- **Beats:** the laptop pulls back from act 7's departure into its lineup pose; tablet and
+- **Beats:** the laptop eases from its act 7 host pose into its lineup pose; tablet and
   phone arrive with the existing settle (0 → 0.35). Beat A copy holds (0.35 → 0.60).
   Beat A crossfades to Beat B and the CTAs (0.60 → 0.75). Hold. The pin ends and the page
   returns to document flow into the practical section.
@@ -394,19 +402,30 @@ A static build, dropped into the current serving path, with one integration chan
 
 - Source lives in a new `landing/` project at the repo root (beside `spa/`), Astro +
   GSAP + three.js as npm dependencies, self-hosted fonts and the vendored runtime moved
-  in. `npm run build` emits into `skriftapp/buildapp/landing/` (gitignored, like
-  `static/`), and the Containerfile's node stage builds it next to the SPA. The current
-  hand-written landing directory is retired when the new build lands.
-- `/landing/{path}` keeps serving files from that directory unchanged; the media-type map
-  already covers `.js`, `.css`, `.webp`, `.glb`, `.woff2`, `.json`.
+  in. `npm run build` emits into `skriftapp/buildapp/landing/generated/` (gitignored,
+  like `static/`), and the Containerfile's node stage builds it next to the SPA.
+- **The shared landing directory stays.** `shell.html` and the fragments the other routes
+  render (`panel.html`, `panel-button.html`, `panel-link.html`, `waitlist.html`,
+  `unsubscribe-form.html`, `unsubscribe-address.html`, `activity-section.html`) are not
+  homepage files and are untouched. Only the homepage's own files are retired when the
+  generated page lands: `index.html`, `practical.html`, the story scripts
+  (`cinematic-story.js`, `story-manifest.js`, `story-devices.js`, `device-stage.js`,
+  `device-lighting.js`, `main.js`), `cinematic.css`, and the assets the generated build
+  now carries itself.
+- `/landing/{path}` keeps serving the directory unchanged, generated subdirectory
+  included; the media-type map already covers `.js`, `.css`, `.webp`, `.glb`, `.woff2`,
+  `.json`.
 - **`/` serves the generated full document**, not a fragment. Astro emits a complete
   `<html>`, so `render_landing_page` must not wrap it in `shell.html` (that would nest
   shells). The generated page carries the same head, fonts, favicon, and social meta itself.
-- **Dynamic content stays dynamic.** The practical section needs the install command,
-  platform download URLs, and the activity feed at request time. The Astro page leaves the
-  existing `{{install_command}}`, `{{platforms}}`, `{{activity_section}}`, and
-  `{{repository_url}}` markers in its HTML, and `render_landing_page` runs `fill_slots` over
-  the generated document exactly as it does today. Nothing else is templated.
+- **Dynamic content stays dynamic, and only what the homepage still shows.** The practical
+  section needs the activity feed and the repository link at request time. The Astro page
+  leaves the existing `{{activity_section}}` and `{{repository_url}}` markers in its HTML,
+  and `render_landing_page` runs `fill_slots` over the generated document exactly as it
+  does today. The `{{install_command}}` and `{{platforms}}` slots leave the homepage with
+  the download chooser: install commands and host builds belong to `/docs` for invited
+  users, and a waitlist page must not advertise a download it cannot offer. Nothing else
+  is templated.
 - Every other public route (`/docs`, `/privacy`, invite and unsubscribe pages, the
   installer scripts, `/app/`) keeps its current shell and code path.
 - **CSP.** Bundles must be external same-origin files. Astro inlines small scripts by

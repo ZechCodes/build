@@ -45,6 +45,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { writeRailBoard } = await import("./railCacheFixture.js");
 
 const CATALOG = {
@@ -199,9 +200,14 @@ describe("the project's agent on a workspace's strip", () => {
     // Nothing is minted to paint it. A rail that asked for an owner would give
     // every workspace page a project agent nobody asked for.
     expect(callsTo("project.ensure_conversation")).toHaveLength(0);
-    // Nothing is read off the wire to paint the bubble: the project list is on
-    // disk like everything else the rail draws.
-    expect(calls.map((call) => call.method)).toEqual(["models.list"]);
+    // The project bubble is painted entirely from the saved list. The only
+    // content read is the selected workspace agent's cold conversation window.
+    expect(calls.map((call) => call.method)).toEqual(["models.list", "thread.page"]);
+    expect(callsTo("thread.page")[0].params).toEqual({
+      entity_id: "run-workspace",
+      agent_id: "wa-1",
+      limit: LATEST_THREAD_ITEMS,
+    });
   });
 
   it("carries what the project's agent is waiting on once there is one", async () => {

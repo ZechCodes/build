@@ -22,7 +22,7 @@ set -eu
 
 REPO="${1:-.}"
 
-APP_PATHS='^(spa|skriftapp)/|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
+APP_PATHS='^(spa|skriftapp|landing)/|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
 RELAY_PATHS='^bridge/|^deploy/k8s/relay\.yaml$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
 

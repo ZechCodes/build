@@ -110,6 +110,19 @@ name="a deployed commit this history does not contain moves that tier and every 
 run_case "$REPO" "$WORK/8" "$APP:0123456789abcdef0123456789abcdef01234567" "$RELAY:$C3"
 assert_tiers "$name" "$WORK/8" "app=true relay=false e2e=true desktop=true scripts=true shell=true" && pass "$name"
 
+# The landing page is built into the app image by skriftapp/Containerfile, so a
+# page-only commit has to move the app tier — and only that tier.
+LANDING_REPO="$WORK/landing-repo"
+make_repo "$LANDING_REPO"
+LANDING_BASE="$(sha_of "$LANDING_REPO" HEAD)"
+mkdir -p "$LANDING_REPO/landing/src/pages"
+echo a > "$LANDING_REPO/landing/src/pages/index.astro"
+git -C "$LANDING_REPO" add -A && git -C "$LANDING_REPO" commit -qm C4
+
+name="the landing page ships in the app image: a page-only commit moves the app tier"
+run_case "$LANDING_REPO" "$WORK/9" "$APP:$LANDING_BASE" "$RELAY:$LANDING_BASE"
+assert_tiers "$name" "$WORK/9" "app=true relay=false e2e=true desktop=false scripts=false shell=false" && pass "$name"
+
 name="the summary goes to stderr, only key=value lines to stdout"
 if [ "$(grep -cvE '^[a-z0-9]+=(true|false)$' "$WORK/3")" = "0" ] && [ -s "$WORK/3.err" ]; then
     pass "$name"

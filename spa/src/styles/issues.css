@@ -211,6 +211,7 @@
    the pointer is a list that flickers as the eye travels down it. */
 
 .issue-rows { list-style:none; margin:0; padding:0; }
+.issue-paging { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 10px; color:var(--dim); font-size:12px; }
 /* Two lines, stacked at every width: `#12 Title` on the first with the full
    row to itself, and every other fact on the second. 6px of padding on each
    side puts 12px between one row's words and the next's, with the rule in the

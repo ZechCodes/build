@@ -33,17 +33,23 @@ const keyOf = (issue) => issue.id;
  * list takes no height, so the reader sees the same thing either way, and the
  * patch above never has to tell a `<div>` apart from a `<ul>` in the same slot.
  */
-const listFrameHtml = (issues, filters) =>
-  `<ul class="issue-rows" ${KEYED_LIST_ATTRIBUTE}></ul>${issues.length ? "" : emptyListHtml(filters || {})}`;
+const listFrameHtml = (issues, filters, paging) =>
+  `<ul class="issue-rows" ${KEYED_LIST_ATTRIBUTE}></ul>${issues.length ? "" : emptyListHtml(filters || {})}` +
+  (paging?.total > 0
+    ? `<div class="issue-paging"><span>Showing ${issues.length} of ${paging.total}</span>${issues.length < paging.total
+      ? '<button class="btn mini" type="button" data-issue-more>Load more issues</button>' : ""}</div>`
+    : "");
 
 /** The list view: one keyed row per issue. */
 export function paintIssueRows(body, issues, context, wire) {
-  patchInnerHtml(body, listFrameHtml(issues, context.filters));
+  patchInnerHtml(body, listFrameHtml(issues, context.filters, context.paging));
   patchList(body.querySelector(".issue-rows"), issues, {
     keyOf,
     render: (issue) => issueRowHtml(issue, context),
     wire,
   });
+  const more = body.querySelector("[data-issue-more]");
+  if (more) more.onclick = context.paging.more;
 }
 
 /** Each column's card list, found by the column it drops into rather than by a

@@ -242,6 +242,40 @@ describe("painting before the bridge is asked", () => {
 });
 
 describe("the list", () => {
+  it("shows cached issues a page at a time and appends the next page without a bridge answer", async () => {
+    const issues = Array.from({ length: 54 }, (_, index) => issue({
+      id: `issue-${54 - index}`, number: 54 - index, title: `Cached ${54 - index}`,
+    }));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+
+    expect(titles()).toHaveLength(25);
+    expect(titles()[0]).toBe("Cached 54");
+    expect(host.querySelector(".issue-paging").textContent).toContain("25 of 54");
+    host.querySelector("[data-issue-more]").click();
+    expect(titles()).toHaveLength(50);
+    expect(titles()[25]).toBe("Cached 29");
+    host.querySelector("[data-issue-more]").click();
+    expect(titles()).toHaveLength(54);
+    expect(host.querySelector("[data-issue-more]")).toBeNull();
+  });
+
+  it("keeps an expanded page after a late cache write", async () => {
+    const issues = Array.from({ length: 30 }, (_, index) => issue({
+      id: `issue-${30 - index}`, number: 30 - index, title: `Cached ${30 - index}`,
+    }));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
+    let answer;
+    call = vi.fn((method) => method === "issues.list" ? new Promise((resolve) => { answer = resolve; }) : Promise.resolve({}));
+    await mount();
+    host.querySelector("[data-issue-more]").click();
+    answer({ issues: [...issues, issue({ id: "issue-31", number: 31, title: "New issue" })] });
+    await flush();
+    expect(titles()).toHaveLength(31);
+    expect(titles()[0]).toBe("New issue");
+  });
+
   it("draws a row per issue, newest number first", async () => {
     await mount();
     expect([...host.querySelectorAll(".issue-number")].map((one) => one.textContent)).toEqual(["#12", "#11"]);

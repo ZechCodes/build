@@ -48,6 +48,8 @@ import { openIssueComposer } from "./issueComposer.js";
 import { carriesIssueAttachments } from "./issueAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
 
+export const ISSUE_PAGE_SIZE = 25;
+
 export function mountIssuesPane(host, options) {
   const state = {
     ...options,
@@ -55,6 +57,7 @@ export function mountIssuesPane(host, options) {
     unscopedShown: [], // the active filter-addressed projection before that roster narrows it
     all: [], // the project's whole list, which the filter menus are built from
     shown: [], // the narrowed list, which is what is painted
+    visibleCount: ISSUE_PAGE_SIZE,
     columns: [],
     // Open, not everything (#33): a closed issue is done, and done work is not
     // what the tab is for. It is still one press away on the state filter.
@@ -126,6 +129,7 @@ export function mountIssuesPane(host, options) {
     onView: (view) => {
       if (state.view === view) return;
       state.view = view;
+      state.visibleCount = ISSUE_PAGE_SIZE;
       state.onViewChange?.(state.view);
       previewQuery();
       paint();
@@ -135,6 +139,7 @@ export function mountIssuesPane(host, options) {
     onNew: () => fileIssue(),
     onFilter: (name, chosen) => {
       state.filters = { ...state.filters, [name]: chosen };
+      state.visibleCount = ISSUE_PAGE_SIZE;
       previewQuery();
       paint();
       watchQuery();
@@ -144,6 +149,7 @@ export function mountIssuesPane(host, options) {
       // Back to what the tab opens on, not to everything: Clear undoes the
       // reader's narrowing, and closed issues were never part of it.
       state.filters = { ...DEFAULT_FILTERS };
+      state.visibleCount = ISSUE_PAGE_SIZE;
       previewQuery();
       paint();
       watchQuery();
@@ -156,13 +162,20 @@ export function mountIssuesPane(host, options) {
     ...reading(),
     filters: state.filters,
     href: hrefOf,
+    paging: {
+      total: state.shown.length,
+      more: () => {
+        state.visibleCount += ISSUE_PAGE_SIZE;
+        paint();
+      },
+    },
   });
 
   /** The two drawings of one read, each as what it paints, what it paints from
    *  and what has to be wired onto an entry it had to make. Chosen by name
    *  rather than asked about: a view is a thing this tab HAS, not a branch. */
   const VIEWS = {
-    [LIST_VIEW]: { paint: paintIssueRows, entries: () => state.shown, wire: wireRow },
+    [LIST_VIEW]: { paint: paintIssueRows, entries: () => state.shown.slice(0, state.visibleCount), wire: wireRow },
     [BOARD_VIEW]: { paint: paintIssueBoard, entries: () => boardColumns(state.columns, state.shown), wire: wireCard },
   };
 

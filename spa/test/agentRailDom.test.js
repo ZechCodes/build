@@ -3936,10 +3936,9 @@ describe("sending to an agent that is already there", () => {
     await flush();
   };
 
-  // Issue #58, through the rail as a surface mounts it: the device's limit is a
-  // strip at the top of the conversation, the message sent meanwhile is Queued
-  // with the same reason on hover, and both go when the bridge clears it.
-  it("says a harness is out of usage over the conversation, and why a message is still queued", async () => {
+  // Issue #58: the device's limit remains visible while the conversation
+  // still delivers messages.
+  it("shows a usage limit without attributing a queued message to it", async () => {
     resetUsageLimits();
     const resetsAt = new Date(Date.now() + 34 * 60_000).toISOString();
     setUsageLimits("dev-1", [{
@@ -3958,8 +3957,11 @@ describe("sending to an agent that is already there", () => {
 
     const release = holdThreadPost();
     await press("are you still on this?");
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(callsTo("thread.post")[0].params.body).toBe("are you still on this?");
     const queued = timeline().querySelector('[data-delivery-status="queued"]');
-    expect(queued.title).toBe("Claude session limit reached · resets in 34 min");
+    expect(queued).not.toBeNull();
+    expect(queued.hasAttribute("title")).toBe(false);
 
     setUsageLimits("dev-1", []);
     expect(panel().querySelector(".usage-limit-banner")).toBeNull();

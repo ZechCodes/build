@@ -60,7 +60,7 @@ pub(in crate::app) fn spawn_status_pump(
     let session = Arc::downgrade(&session);
     tokio::spawn(async move {
         let mut recorded_context = None;
-        let mut recorded_limit = None;
+        let mut recorded_limit = super::usage_limits::UsageObservation::default();
         loop {
             let snapshot = changed.borrow_and_update().clone();
             let (ended, retry_deferred, clock, delivery_state) = {

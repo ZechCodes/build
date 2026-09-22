@@ -205,33 +205,37 @@ fn a_complete_after_a_usage_limit_still_moves_the_issue_the_turn_was_dispatched_
         mark.settle(&mut state);
     }
 
-    // It stops at the limit, the human says something meanwhile, and it waits.
+    // It stops at the limit, then the human retries before the reported reset.
     let resets_at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
     let limited = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Waiting)
         .limited(crate::harness::usage_limit::UsageLimited {
             said: "You've hit your session limit · resets 6:20pm (America/New_York)".into(),
             resets_at: Some(resets_at),
-        })
-        .unwrap();
-    let mut recorded = None;
+        });
+    let mut recorded = Default::default();
     state.record_usage_limit(&entity_id, &agent_id, &limited, &mut recorded);
     let posted = state.handle(req(
         "thread.post",
         json!({ "entity_id": entity_id, "agent_id": agent_id, "body": "how is it going?" }),
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
-    assert!(state.take_pending_turns().is_empty(), "held");
+    let (_, mark) = state
+        .take_pending_turns()
+        .next_turn()
+        .expect("retry goes before reset");
+    mark.settle(&mut state);
     assert_eq!(
         state.dispatched_issue.get(&agent_id),
         Some(&id),
-        "through the hold"
+        "through the retry"
     );
 
     // The limit lifts; the turn that resumes it runs.
     state.release_usage_limits_due_at(resets_at);
     let mut resumed = state.take_pending_turns();
     assert!(resumed.next_turn().is_some(), "the resumed turn goes");
-    let running = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Working);
+    let running = crate::harness::SessionStatusSnapshot::new(crate::harness::AgentStatus::Working)
+        .successful_response();
     state.record_usage_limit(&entity_id, &agent_id, &running, &mut recorded);
     assert_eq!(
         state.dispatched_issue.get(&agent_id),

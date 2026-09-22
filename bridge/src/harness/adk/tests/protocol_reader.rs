@@ -925,6 +925,68 @@ async fn a_model_answer_after_the_limit_means_the_turn_was_not_stopped_by_it() {
     assert!(status.borrow().usage_limit.is_none());
 }
 
+#[test]
+fn a_successful_model_message_clears_a_previous_limit_before_the_result() {
+    let (mut reader, status) = limited_reader();
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&result_line());
+    assert_eq!(status.borrow().usage_limit_count, 1);
+    assert!(status.borrow().usage_limit.is_some());
+
+    reader.read_line(&quoted_line("Working again."));
+    assert!(status.borrow().usage_limit.is_none());
+    assert_eq!(status.borrow().successful_response_count, 1);
+    reader.read_line(&json!({ "type": "result", "subtype": "success" }).to_string());
+    assert_eq!(status.borrow().successful_response_count, 1);
+    reader.end_stream();
+    assert!(status.borrow().usage_limit.is_none());
+    assert_eq!(status.borrow().usage_limit_count, 1);
+}
+
+#[test]
+fn an_identical_refusal_on_a_later_turn_counts_again() {
+    let (mut reader, status) = limited_reader();
+    for expected_count in 1..=2 {
+        reader.read_line(&rate_limited_line(LIMIT_SAID));
+        reader.read_line(&result_line());
+        reader.end_stream();
+        assert_eq!(status.borrow().usage_limit_count, expected_count);
+    }
+}
+
+#[test]
+fn a_successful_result_without_model_message_clears_a_previous_limit() {
+    let (mut reader, status) = limited_reader();
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&result_line());
+    reader.read_line(
+        &json!({ "type": "result", "subtype": "success", "is_error": false }).to_string(),
+    );
+    assert!(status.borrow().usage_limit.is_none());
+    assert_eq!(status.borrow().successful_response_count, 1);
+}
+
+#[test]
+fn protocol_echoes_controls_and_errors_do_not_clear_a_limit() {
+    let (mut reader, status) = limited_reader();
+    reader.read_line(&rate_limited_line(LIMIT_SAID));
+    reader.read_line(&result_line());
+    for line in [
+        json!({ "type": "user", "message": { "content": [{ "type": "text", "text": "echo" }] } }),
+        json!({ "type": "system", "subtype": "init" }),
+        json!({ "type": "control_response", "response": { "subtype": "success" } }),
+        json!({ "type": "assistant", "error": "server_error", "message": { "content": [{ "type": "text", "text": "failed" }] } }),
+        json!({ "type": "assistant", "isApiErrorMessage": true, "message": { "content": [{ "type": "text", "text": "synthetic" }] } }),
+        json!({ "type": "assistant", "message": { "model": "<synthetic>", "content": [{ "type": "text", "text": "synthetic" }] } }),
+        json!({ "type": "assistant", "message": { "content": [{ "unexpected": "block" }] } }),
+        json!({ "type": "result", "subtype": "error", "is_error": true }),
+    ] {
+        reader.read_line(&line.to_string());
+        assert!(status.borrow().usage_limit.is_some(), "{line}");
+        assert_eq!(status.borrow().successful_response_count, 0, "{line}");
+    }
+}
+
 /// A subagent refused for usage is that subagent's trouble to report; the
 /// session's own turn is not over on it.
 #[tokio::test]

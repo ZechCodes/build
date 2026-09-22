@@ -1,17 +1,11 @@
-//! A harness out of usage, as this device knows it (issue #58).
+//! Usage reports shown on the board, with one automatic retry at a known reset.
 //!
-//! The session that hit the limit says so on its own status snapshot (see
-//! [`crate::harness::usage_limit`]). That is one agent's account; the limit is
-//! not. Every agent on this device using the same harness is out of usage with
-//! it, so the device keeps one record per harness, the wire carries it on the
-//! board item, and delivery reads it before starting a turn.
-//!
-//! The record lives from the first turn that stopped at the limit until a turn
-//! on that harness RUNS again. Not until its stated reset passes: the harness
-//! answering is better evidence than any clock it named. The reset instant
-//! only decides when the bridge stops holding turns back and tries again.
+//! A report describes one session's last failure, not whether another request
+//! can succeed. Users may change models or accounts, reset limits, or add credits,
+//! so remembered limits never hold delivery. A successful response clears the
+//! report; starting a request is not evidence that the provider accepted it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 use time::format_description::well_known::Rfc3339;
@@ -24,7 +18,7 @@ use crate::models::AgentProvider;
 /// An agent, by the entity it belongs to and its own id.
 type AgentKey = (String, String);
 
-/// One harness out of usage on this device.
+/// The latest observed usage failure for one harness on this device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceUsageLimit {
     harness: AgentProvider,
@@ -33,16 +27,11 @@ struct DeviceUsageLimit {
     resets_at: Option<OffsetDateTime>,
     /// The harness's own sentence, shown behind the banner.
     said: String,
-    /// Whether turns on this harness may start again. False while a known
-    /// reset is still ahead; true once it has passed, and from the start when
-    /// the harness named no reset — there is nothing to wait for then, and a
-    /// turn that runs is the only way to learn the limit is over.
-    released: bool,
+    /// Whether the single automatic retry at this reset has been handled.
+    /// No known future reset means there is no automatic retry to schedule.
+    reset_retry_done: bool,
     /// Whether a drain has asked to be woken at `resets_at`.
     wake_asked: bool,
-    /// The conversations already told a turn is waiting on this limit, so
-    /// each is told once.
-    told: BTreeSet<AgentKey>,
 }
 
 impl DeviceUsageLimit {
@@ -56,7 +45,7 @@ impl DeviceUsageLimit {
     }
 }
 
-/// An agent whose turn stopped at a limit and has not run since.
+/// An agent whose turn stopped at a limit and has not succeeded since.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StoppedAgent {
     harness: AgentProvider,
@@ -75,7 +64,7 @@ pub(in crate::app) struct Resume {
     pub said: String,
 }
 
-/// Every harness out of usage on this device, and the agents it stopped.
+/// Usage reports for the board and agents whose work stopped at a limit.
 #[derive(Debug, Default)]
 pub(in crate::app) struct UsageLimits {
     by_harness: BTreeMap<&'static str, DeviceUsageLimit>,
@@ -104,7 +93,7 @@ impl UsageLimits {
                 resumed: false,
             },
         );
-        let released = limit.resets_at.is_none_or(|at| at <= now);
+        let reset_retry_done = limit.resets_at.is_none_or(|at| at <= now);
         match self.by_harness.get_mut(harness.wire_id()) {
             Some(record) if record.said == limit.said && record.resets_at == limit.resets_at => {
                 false
@@ -112,7 +101,7 @@ impl UsageLimits {
             Some(record) => {
                 record.said = limit.said.clone();
                 record.resets_at = limit.resets_at;
-                record.released = released;
+                record.reset_retry_done = reset_retry_done;
                 record.wake_asked = false;
                 true
             }
@@ -124,9 +113,8 @@ impl UsageLimits {
                         since: now,
                         resets_at: limit.resets_at,
                         said: limit.said.clone(),
-                        released,
+                        reset_retry_done,
                         wake_asked: false,
-                        told: BTreeSet::new(),
                     },
                 );
                 true
@@ -134,12 +122,10 @@ impl UsageLimits {
         }
     }
 
-    /// A turn is running on `harness` for this agent: the harness is
-    /// answering, so the device's limit on it is over, and this agent is no
-    /// longer stopped. Answers the device record's change (true when there was
-    /// one to clear) and the other agents the limit stopped that nothing has
-    /// started again yet.
-    pub(in crate::app) fn turn_ran(
+    /// A response succeeded on `harness` for this agent: clear its report and
+    /// mark this agent as no longer stopped. Answers whether a record was
+    /// cleared and which other stopped agents have not been retried yet.
+    pub(in crate::app) fn response_succeeded(
         &mut self,
         harness: AgentProvider,
         owner: &str,
@@ -156,48 +142,21 @@ impl UsageLimits {
         (cleared, resumes)
     }
 
-    /// Whether a turn on `harness` waits for its limit to reset.
-    pub(in crate::app) fn holds(&self, harness: AgentProvider) -> bool {
-        self.by_harness
-            .get(harness.wire_id())
-            .is_some_and(|record| !record.released)
-    }
-
-    /// Whether this agent's last turn stopped at a limit and nothing has run
-    /// on it since.
+    /// Whether this agent stopped at a limit and has not succeeded since.
     pub(in crate::app) fn stopped(&self, owner: &str, agent_id: &str) -> bool {
         self.stopped
             .contains_key(&(owner.to_string(), agent_id.to_string()))
     }
 
-    /// The harness's sentence, the first time this conversation has a turn
-    /// held behind the limit on `harness`; `None` every time after.
-    pub(in crate::app) fn first_hold(
-        &mut self,
-        harness: AgentProvider,
-        owner: &str,
-        agent_id: &str,
-    ) -> Option<String> {
-        let record = self
-            .by_harness
-            .get_mut(harness.wire_id())
-            .filter(|record| !record.released)?;
-        record
-            .told
-            .insert((owner.to_string(), agent_id.to_string()))
-            .then(|| record.said.clone())
-    }
-
-    /// Let turns start again on every harness whose reset has passed, and
-    /// answer the agents that stopped at it and want starting again.
+    /// Retry stopped agents once when their reported reset has passed.
     pub(in crate::app) fn release_due(&mut self, now: OffsetDateTime) -> Vec<Resume> {
         let due: Vec<AgentProvider> = self
             .by_harness
             .values_mut()
-            .filter(|record| !record.released)
+            .filter(|record| !record.reset_retry_done)
             .filter(|record| record.resets_at.is_some_and(|at| at <= now))
             .map(|record| {
-                record.released = true;
+                record.reset_retry_done = true;
                 record.harness
             })
             .collect();
@@ -210,7 +169,7 @@ impl UsageLimits {
     pub(in crate::app) fn wake_due(&mut self) -> Option<OffsetDateTime> {
         self.by_harness
             .values_mut()
-            .filter(|record| !record.released && !record.wake_asked)
+            .filter(|record| !record.reset_retry_done && !record.wake_asked)
             .filter_map(|record| {
                 record.wake_asked = true;
                 record.resets_at
@@ -249,26 +208,23 @@ fn rfc3339(at: OffsetDateTime) -> String {
     at.format(&Rfc3339).unwrap_or_default()
 }
 
-/// What a conversation is told when a turn to it is held behind the limit.
-///
-/// The harness's own sentence rather than a reset time restated: it names the
-/// time in the zone the human reads, and restating it would mean choosing one.
-fn held_notice(harness: AgentProvider, said: &str) -> String {
-    let label = crate::harness::harness_for(harness).label();
-    format!(
-        "{label} has run out of usage on this device (“{said}”). Messages to this agent \
-         stay queued and are delivered in order when it resets."
-    )
-}
-
 /// What an agent whose turn died at the limit is told when it lifts.
 fn resume_notice(harness: AgentProvider, said: &str) -> String {
     let label = crate::harness::harness_for(harness).label();
     format!(
-        "{label}'s usage limit has reset. Your last turn stopped when it ran out \
+        "Retrying {label} after its reported usage limit. Your last turn stopped \
          (“{said}”), so it did not finish: pick up where you left off, starting \
          from what is in your working tree."
     )
+}
+
+/// What this session's status pump has already observed. Success counters are
+/// local to a session, so a replacement session starts with a fresh observation.
+#[derive(Default)]
+pub(in crate::app) struct UsageObservation {
+    limit: Option<UsageLimited>,
+    successful_response_count: u64,
+    usage_limit_count: u64,
 }
 
 impl AppState {
@@ -292,22 +248,28 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         snapshot: &crate::harness::SessionStatusSnapshot,
-        recorded: &mut Option<UsageLimited>,
+        recorded: &mut UsageObservation,
     ) -> bool {
         let Some(harness) = self.agent_harness(owner, agent_id) else {
             return false;
         };
-        // The limit first: a turn that stops at it says so while its status
-        // still reads Working, and that is not a turn running. A turn that
-        // really starts clears the limit off its own snapshot.
-        match (&snapshot.usage_limit, snapshot.status) {
-            (Some(limit), _) => self.record_limit_seen(harness, owner, agent_id, limit, recorded),
-            (None, crate::harness::AgentStatus::Working) => {
-                *recorded = None;
-                self.record_turn_ran(harness, owner, agent_id)
-            }
-            (None, _) => false,
+        let succeeded = snapshot.successful_response_count > recorded.successful_response_count;
+        recorded.successful_response_count = snapshot.successful_response_count;
+        if snapshot.usage_limit_count > recorded.usage_limit_count {
+            // Another session may have cleared the board since this agent last
+            // failed. A new rejection is news even when its wording is identical.
+            recorded.limit = None;
         }
+        recorded.usage_limit_count = snapshot.usage_limit_count;
+        // A newer limit wins if watch coalesced a success and a later failure.
+        if let Some(limit) = &snapshot.usage_limit {
+            return self.record_limit_seen(harness, owner, agent_id, limit, &mut recorded.limit);
+        }
+        if succeeded {
+            recorded.limit = None;
+            return self.record_response_succeeded(harness, owner, agent_id);
+        }
+        false
     }
 
     fn record_limit_seen(
@@ -337,8 +299,15 @@ impl AppState {
         true
     }
 
-    fn record_turn_ran(&mut self, harness: AgentProvider, owner: &str, agent_id: &str) -> bool {
-        let (cleared, resumes) = self.usage_limits.turn_ran(harness, owner, agent_id);
+    fn record_response_succeeded(
+        &mut self,
+        harness: AgentProvider,
+        owner: &str,
+        agent_id: &str,
+    ) -> bool {
+        let (cleared, resumes) = self
+            .usage_limits
+            .response_succeeded(harness, owner, agent_id);
         if cleared {
             eprintln!(
                 "usage limit cleared: harness={} agent={agent_id}",
@@ -349,8 +318,7 @@ impl AppState {
         self.resume_after_usage_limit(resumes)
     }
 
-    /// Before a drain takes its turns: lift every limit whose reset has passed
-    /// and queue the agents it stopped.
+    /// Before a drain takes its turns, queue automatic retries whose reset is due.
     pub(in crate::app) fn release_due_usage_limits(&mut self) {
         self.release_usage_limits_due_at(OffsetDateTime::now_utc());
     }
@@ -358,38 +326,6 @@ impl AppState {
     pub(in crate::app) fn release_usage_limits_due_at(&mut self, now: OffsetDateTime) {
         let resumes = self.usage_limits.release_due(now);
         self.resume_after_usage_limit(resumes);
-    }
-
-    /// After a drain has taken its turns: tell each conversation with a turn
-    /// held behind a limit, once.
-    pub(in crate::app) fn tell_turns_held_by_usage_limits(&mut self) {
-        let held: Vec<(AgentProvider, String, String)> = self
-            .delivery_queue
-            .queued()
-            .filter(|turn| self.usage_limits.holds(turn.model_choice.provider))
-            .map(|turn| {
-                (
-                    turn.model_choice.provider,
-                    turn.owner.clone(),
-                    turn.agent_id.clone(),
-                )
-            })
-            .collect();
-        for (harness, owner, agent_id) in held {
-            let Some(said) = self.usage_limits.first_hold(harness, &owner, &agent_id) else {
-                continue;
-            };
-            let notice = held_notice(harness, &said);
-            let now = crate::store::now_rfc3339();
-            if let Err(why) = self.edit_agent_conversation(&owner, &agent_id, |thread, _| {
-                thread.post_user_from_build(notice, &now);
-                Ok(Value::Null)
-            }) {
-                eprintln!(
-                    "usage limit: {agent_id} on {owner} was not told its turn is held: {why}"
-                );
-            }
-        }
     }
 
     /// When the next limit's reset is due, if a drain has not already asked.
@@ -500,20 +436,17 @@ mod tests {
     }
 
     #[test]
-    fn a_known_reset_holds_turns_until_it_passes_and_then_starts_the_stopped_agents() {
+    fn a_known_reset_retries_the_stopped_agents_once_when_it_passes() {
         let mut limits = UsageLimits::default();
         let now = datetime!(2026-09-20 21:30 UTC);
         let reset = datetime!(2026-09-20 22:20 UTC);
         limits.observe(HARNESS, "run-1", "agent-a", &limit(Some(reset)), now);
-        assert!(limits.holds(HARNESS));
-        assert!(!limits.holds(AgentProvider::CodexAppServer));
         assert_eq!(limits.wake_due(), Some(reset));
         assert_eq!(limits.wake_due(), None, "asked once");
 
         assert!(limits
             .release_due(datetime!(2026-09-20 22:19 UTC))
             .is_empty());
-        assert!(limits.holds(HARNESS));
 
         let resumes = limits.release_due(reset);
         assert_eq!(
@@ -525,77 +458,57 @@ mod tests {
                 said: SAID.into(),
             }]
         );
-        assert!(!limits.holds(HARNESS));
-        // Released is not cleared: the banner stays until a turn runs.
+        // A scheduled retry does not clear the report; a response must succeed.
         assert_eq!(limits.render().as_array().unwrap().len(), 1);
         assert!(limits.release_due(reset).is_empty(), "started once");
     }
 
     #[test]
-    fn no_reset_named_holds_nothing_and_waits_for_a_turn_to_run() {
+    fn no_reset_named_schedules_no_automatic_retry() {
         let mut limits = UsageLimits::default();
         let now = datetime!(2026-09-20 21:30 UTC);
         assert!(limits.observe(HARNESS, "run-1", "agent-a", &limit(None), now));
-        assert!(!limits.holds(HARNESS));
         assert_eq!(limits.wake_due(), None);
         assert_eq!(limits.render()[0]["resets_at"], Value::Null);
         assert!(limits.release_due(now + time::Duration::days(2)).is_empty());
     }
 
     #[test]
-    fn a_turn_running_clears_the_record_and_starts_the_other_stopped_agents() {
+    fn a_successful_response_clears_the_record_and_starts_the_other_stopped_agents() {
         let mut limits = UsageLimits::default();
         let now = datetime!(2026-09-20 21:30 UTC);
         let reset = Some(datetime!(2026-09-20 22:20 UTC));
         limits.observe(HARNESS, "run-1", "agent-a", &limit(reset), now);
         limits.observe(HARNESS, "run-2", "agent-b", &limit(reset), now);
 
-        let (cleared, resumes) = limits.turn_ran(HARNESS, "run-1", "agent-a");
+        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-1", "agent-a");
         assert!(cleared);
         assert_eq!(limits.render(), json!([]));
-        assert!(!limits.holds(HARNESS));
         assert!(!limits.stopped("run-1", "agent-a"));
         assert_eq!(resumes.len(), 1);
         assert_eq!(resumes[0].agent_id, "agent-b");
-        // Still stopped until its own turn runs, so nothing reads it as quiet.
+        // Still stopped until its own response succeeds.
         assert!(limits.stopped("run-2", "agent-b"));
 
-        let (cleared, resumes) = limits.turn_ran(HARNESS, "run-2", "agent-b");
+        let (cleared, resumes) = limits.response_succeeded(HARNESS, "run-2", "agent-b");
         assert!(!cleared, "already clear");
         assert!(resumes.is_empty());
         assert!(!limits.stopped("run-2", "agent-b"));
     }
 
     #[test]
-    fn a_turn_on_another_harness_clears_nothing() {
+    fn a_success_on_another_harness_clears_nothing() {
         let mut limits = UsageLimits::default();
         let now = datetime!(2026-09-20 21:30 UTC);
         limits.observe(HARNESS, "run-1", "agent-a", &limit(None), now);
-        let (cleared, _) = limits.turn_ran(AgentProvider::CodexAppServer, "run-2", "agent-c");
+        let (cleared, _) =
+            limits.response_succeeded(AgentProvider::CodexAppServer, "run-2", "agent-c");
         assert!(!cleared);
         assert_eq!(limits.render().as_array().unwrap().len(), 1);
     }
 
     #[test]
-    fn each_conversation_is_told_once_that_its_turn_is_held() {
-        let mut limits = UsageLimits::default();
-        let now = datetime!(2026-09-20 21:30 UTC);
-        let reset = Some(datetime!(2026-09-20 22:20 UTC));
-        limits.observe(HARNESS, "run-1", "agent-a", &limit(reset), now);
-        assert_eq!(
-            limits.first_hold(HARNESS, "run-2", "agent-b").as_deref(),
-            Some(SAID)
-        );
-        assert_eq!(limits.first_hold(HARNESS, "run-2", "agent-b"), None);
-        assert!(limits.first_hold(HARNESS, "run-3", "agent-c").is_some());
-        assert_eq!(
-            limits.first_hold(AgentProvider::CodexAppServer, "run-3", "agent-c"),
-            None
-        );
-    }
-
-    #[test]
-    fn a_later_reset_holds_again_and_asks_for_a_new_wake() {
+    fn a_later_reset_asks_for_a_new_wake() {
         let mut limits = UsageLimits::default();
         let now = datetime!(2026-09-20 21:30 UTC);
         let first = datetime!(2026-09-20 22:20 UTC);
@@ -608,19 +521,14 @@ mod tests {
             resets_at: Some(later),
         };
         assert!(limits.observe(HARNESS, "run-1", "agent-a", &again, first));
-        assert!(limits.holds(HARNESS));
         assert_eq!(limits.wake_due(), Some(later));
         assert_eq!(limits.render()[0]["since"], "2026-09-20T21:30:00Z");
     }
 
     #[test]
     fn the_notices_quote_the_harness() {
-        let held = held_notice(HARNESS, SAID);
-        assert!(held.starts_with("Claude Code has run out of usage on this device"));
-        assert!(held.contains(SAID));
-        assert!(held.contains("delivered in order when it resets"));
         let resume = resume_notice(HARNESS, SAID);
-        assert!(resume.contains("usage limit has reset"));
+        assert!(resume.contains("after its reported usage limit"));
         assert!(resume.contains(SAID));
     }
 }

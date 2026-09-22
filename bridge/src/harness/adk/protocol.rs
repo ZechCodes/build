@@ -68,6 +68,9 @@ pub(super) struct ProtocolState {
     /// `Working` short-circuits the idle sweep, an agent that quietly stopped
     /// would never be explained.
     pub(super) turn_open: bool,
+    /// A top-level model response already proved this turn ran. The result
+    /// should not count the same success a second time.
+    pub(super) turn_had_success: bool,
     /// What the harness said in the top-level assistant message it marked
     /// `error: "rate_limit"` this turn (`harness/usage_limit.rs`).
     ///
@@ -143,6 +146,7 @@ impl ProtocolState {
         ProtocolState {
             announced: false,
             turn_open: false,
+            turn_had_success: false,
             limit_said_last: None,
             usage_limited: None,
             rate_limit_resets_at: None,
@@ -228,20 +232,20 @@ pub(super) fn publish_status(updates: &watch::Sender<SessionStatusSnapshot>, sta
     });
 }
 
-/// Tell everything above that this session is idle because its harness has no
-/// usage left. Quiet when it already says so, so a limit two readers both notice
-/// wakes the subscribers once.
+/// Tell everything above that a turn ended at a usage limit. Each concluded
+/// refusal increments the snapshot's event count, even when its words match a
+/// prior refusal. The reader takes the pending sentence at most once per turn.
 pub(super) fn publish_usage_limit(
     updates: &watch::Sender<SessionStatusSnapshot>,
     limit: crate::harness::usage_limit::UsageLimited,
 ) {
-    updates.send_if_modified(|snapshot| match snapshot.limited(limit.clone()) {
-        Some(next) => {
-            *snapshot = next;
-            true
-        }
-        None => false,
-    });
+    updates.send_modify(|snapshot| *snapshot = snapshot.limited(limit.clone()));
+}
+
+/// Publish durable evidence that the harness answered. A successful response
+/// clears the session's old limit even if its status is still `Working`.
+pub(super) fn publish_successful_response(updates: &watch::Sender<SessionStatusSnapshot>) {
+    updates.send_modify(|snapshot| *snapshot = snapshot.successful_response());
 }
 
 /// What became of one tool call, kept until its result arrives so the answer

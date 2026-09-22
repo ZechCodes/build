@@ -338,6 +338,9 @@ impl AgentSession for AdkSession {
         .to_string();
         self.write_line(&line)?;
         let mut state = self.state.lock().unwrap();
+        if !state.turn_open {
+            state.turn_had_success = false;
+        }
         state.turn_open = true;
         state.first_turn_at.get_or_insert_with(Instant::now);
         // A turn handed over behind an outstanding interrupt is the steering

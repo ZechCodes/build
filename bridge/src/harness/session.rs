@@ -161,6 +161,12 @@ pub struct SessionStatusSnapshot {
     pub status: AgentStatus,
     pub changed_at: String,
     pub last_worked_at: Option<String>,
+    /// Cumulative limit conclusions in this session. Identical refusals still
+    /// count as separate events after a retry.
+    pub usage_limit_count: u64,
+    /// Cumulative successful model responses in this session. A watch receiver
+    /// can miss intermediate statuses, but cannot miss this count increasing.
+    pub successful_response_count: u64,
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
@@ -172,7 +178,7 @@ pub struct SessionStatusSnapshot {
     /// right to go on asking that. What was missing was the reason — a limited
     /// harness looked exactly like an agent waiting for the human, which is how
     /// one sat with an uncommitted tree for fifty-five minutes and nothing said
-    /// why. Cleared when a turn runs again.
+    /// why. Cleared when the harness reports a successful response.
     pub usage_limit: Option<crate::harness::usage_limit::UsageLimited>,
 }
 
@@ -184,6 +190,8 @@ impl SessionStatusSnapshot {
             status,
             changed_at,
             last_worked_at,
+            usage_limit_count: 0,
+            successful_response_count: 0,
             context: None,
             usage_limit: None,
         }
@@ -202,32 +210,44 @@ impl SessionStatusSnapshot {
                 status,
                 changed_at,
                 last_worked_at,
+                usage_limit_count: self.usage_limit_count,
+                successful_response_count: self.successful_response_count,
                 context: self.context,
-                // A turn running again is the harness answering again, so the
-                // limit is over whatever its stated reset said. Anything else
-                // keeps it: going from Waiting to Waiting must not quietly clear
-                // a banner the reader still needs.
-                usage_limit: match status {
-                    AgentStatus::Working => None,
-                    _ => self.usage_limit.clone(),
-                },
+                usage_limit: self.usage_limit.clone(),
             }
         })
     }
 
     /// Record that this session is idle because its harness has no usage left.
     ///
-    /// `None` when nothing changed, matching `transition`, so a caller can hand
-    /// the result straight to `send_if_modified` — a limit re-reported by a second
-    /// reader must not wake every subscriber again.
-    pub fn limited(&self, limit: crate::harness::usage_limit::UsageLimited) -> Option<Self> {
-        (self.usage_limit.as_ref() != Some(&limit)).then(|| Self {
+    /// Every call is a new concluded refusal, even if the harness used the
+    /// same words and reset time as before. The counter survives coalesced
+    /// watch updates and lets the bridge restore a report cleared by another
+    /// agent's success.
+    pub fn limited(&self, limit: crate::harness::usage_limit::UsageLimited) -> Self {
+        Self {
             status: self.status,
             changed_at: status_time(),
             last_worked_at: self.last_worked_at.clone(),
+            usage_limit_count: self.usage_limit_count.saturating_add(1),
+            successful_response_count: self.successful_response_count,
             context: self.context,
             usage_limit: Some(limit),
-        })
+        }
+    }
+
+    /// Evidence that the harness answered a request. This is separate from
+    /// `Working`, which only means Build sent a turn to the process.
+    pub fn successful_response(&self) -> Self {
+        Self {
+            status: self.status,
+            changed_at: status_time(),
+            last_worked_at: self.last_worked_at.clone(),
+            usage_limit_count: self.usage_limit_count,
+            successful_response_count: self.successful_response_count.saturating_add(1),
+            context: self.context,
+            usage_limit: None,
+        }
     }
 }
 
@@ -672,6 +692,41 @@ mod tests {
         };
         let waiting = working.transition(AgentStatus::Waiting).unwrap();
         assert_eq!(waiting.context, Some(context));
+    }
+
+    #[test]
+    fn a_sent_turn_preserves_its_limit_until_the_harness_answers() {
+        let limit = crate::harness::usage_limit::UsageLimited {
+            said: "usage exhausted".to_string(),
+            resets_at: None,
+        };
+        let limited = SessionStatusSnapshot::new(AgentStatus::Waiting).limited(limit.clone());
+        let sent = limited.transition(AgentStatus::Working).unwrap();
+        assert_eq!(sent.usage_limit, Some(limit));
+        assert_eq!(sent.usage_limit_count, 1);
+        assert_eq!(sent.successful_response_count, 0);
+
+        let answered = sent.successful_response();
+        assert!(answered.usage_limit.is_none());
+        assert_eq!(answered.successful_response_count, 1);
+        assert_eq!(
+            answered
+                .transition(AgentStatus::Waiting)
+                .unwrap()
+                .successful_response_count,
+            1
+        );
+    }
+
+    #[test]
+    fn an_identical_limit_after_a_retry_is_a_new_event() {
+        let limit = crate::harness::usage_limit::UsageLimited {
+            said: "usage exhausted".to_string(),
+            resets_at: None,
+        };
+        let first = SessionStatusSnapshot::new(AgentStatus::Waiting).limited(limit.clone());
+        let second = first.limited(limit);
+        assert_eq!(second.usage_limit_count, 2);
     }
 
     #[test]

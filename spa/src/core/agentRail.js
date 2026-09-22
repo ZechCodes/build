@@ -70,7 +70,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
-import { applyQueuedReason, mountUsageLimitBanner, queuedReason } from "./usageLimits.js";
+import { mountUsageLimitBanner } from "./usageLimits.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
@@ -1993,13 +1993,6 @@ function mountRailOnContext(host, context, swap) {
     usageLimitBanner.sync();
   };
 
-  /** The reason a message still queued for the agent in focus gives on hover,
-   *  when that is its harness being out of usage on this machine (#58). */
-  const paintQueuedReasons = () => {
-    const body = host.querySelector("#rail-body");
-    if (body) applyQueuedReason(body, queuedReason(context.deviceId, agentInFocus()?.provider));
-  };
-
   const wireHead = (panel) => {
     const tuiToggle = panel.querySelector(".rail-tui");
     if (tuiToggle) {
@@ -2413,7 +2406,6 @@ function mountRailOnContext(host, context, swap) {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
-        paintQueuedReasons();
       }, { olderItemsPrepended });
       syncUserMessageTicks(body);
     });
@@ -3470,9 +3462,7 @@ function mountRailOnContext(host, context, swap) {
   statusTicker = setInterval(paintRailStatus, 1000);
   // A harness out of usage on this machine (#58): a strip at the top of the
   // conversation, counting down to its reset, whichever agent is open.
-  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector("#rail-panel"), context.deviceId, {
-    onPaint: paintQueuedReasons,
-  });
+  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector("#rail-panel"), context.deviceId);
   const visibilityChanged = () => {
     if (document.hidden) leaveUnreadMarker();
     else paintChat();

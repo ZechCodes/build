@@ -46,7 +46,7 @@ impl DeliveryRunner {
                 app.delivery_queue.settle_wake_fired(at)
             });
         }
-        // A limit's reset has nothing else to wake the queue it is holding.
+        // Wake once at a reported reset to retry agents stopped by that limit.
         if let Some(at) = usage_limit_wake {
             let wait = at - time::OffsetDateTime::now_utc();
             let wait = std::time::Duration::try_from(wait).unwrap_or_default();

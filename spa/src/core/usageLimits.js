@@ -1,14 +1,11 @@
 // A harness out of usage on a device (issue #58).
 //
-// When Claude runs out of usage, every agent on that machine using it stops,
-// and until this existed nothing in the client said why: a limited agent looked
-// exactly like one waiting for the human. The bridge keeps one record per
+// The bridge reports harness usage limits on each device. It keeps one record per
 // harness and carries the list on its board (`board.list`, and the board item of
 // a `changes` push, since wire 1.11.0); this module holds what each device last
 // said, and paints it where the reader is — a strip at the top of every
 // conversation on that machine, counting down to the reset, with the harness's
-// own words behind a press, and the same reason on a message still queued for
-// the agent.
+// own words behind a press.
 //
 // The cache is the rendering boundary. A board pull or push first replaces one
 // device's record; this module hears that committed write, reads it back, and
@@ -151,23 +148,6 @@ export function untilAnyTextChanges(deviceIds, now = Date.now()) {
   return waits.length ? Math.min(...waits) : null;
 }
 
-/** Why a message to an agent on `provider` is still queued, when the reason is
- *  that its harness is out of usage on this device; `null` otherwise. */
-export function queuedReason(deviceId, provider, now = Date.now()) {
-  const held = usageLimitsOf(deviceId).find((limit) => limit.harness === provider);
-  return held ? usageLimitText(held, now) : null;
-}
-
-/** Say the reason on every Queued chip under `root`, or stop saying it. A pass
- *  over what is painted rather than a word inside the thread's renderer,
- *  because nothing about a message changes when its harness runs out. */
-export function applyQueuedReason(root, reason) {
-  for (const chip of root.querySelectorAll(".delivery-status.queued, .delivery-status.submitted")) {
-    if (reason) chip.title = reason;
-    else chip.removeAttribute("title");
-  }
-}
-
 const bannerHtml = (limit, now) => `<details class="usage-limit-banner" data-harness="${esc(limit.harness)}">
   <summary><span class="usage-limit-text">${esc(usageLimitText(limit, now))}</span></summary>
   <p class="usage-limit-said">${esc(limit.said)}</p>
@@ -181,11 +161,9 @@ const bannerHtml = (limit, now) => `<details class="usage-limit-banner" data-har
  * whenever it switches what it shows; `sync` puts the strip back after one,
  * and a press that opened a line is kept across every repaint. The strip also
  * repaints itself when the device's limits change and on each minute the
- * countdown moves. `onPaint` runs after every paint, for whatever else the
- * surface says about the same limit (the Queued hover). Returns
- * `{ sync, dispose }`.
+ * countdown moves. Returns `{ sync, dispose }`.
  */
-export function mountUsageLimitBanner(panelOf, deviceId, { onPaint = () => {} } = {}) {
+export function mountUsageLimitBanner(panelOf, deviceId) {
   let timer = null;
   const sync = () => {
     clearTimeout(timer);
@@ -194,7 +172,6 @@ export function mountUsageLimitBanner(panelOf, deviceId, { onPaint = () => {} } 
     if (!panel) return;
     const now = Date.now();
     paintBanners(panel, usageLimitsOf(deviceId), now);
-    onPaint();
     const next = untilAnyTextChanges([deviceId], now);
     if (next !== null) timer = setTimeout(sync, next);
   };

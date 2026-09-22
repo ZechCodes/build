@@ -1,10 +1,5 @@
-//! A harness out of usage, from the snapshot that says so to the turn that
-//! runs once it lifts (issue #58).
-//!
-//! The session's own report is pinned in `harness/adk`; what these pin is what
-//! the device does with it: one record per harness on the board, no turn
-//! started while it holds, the conversation told once, and the agent whose turn
-//! died at the limit started again when it lifts.
+//! Usage reports inform the board without holding user messages. Known resets
+//! schedule one retry, and only a successful response clears the report.
 
 use super::resume::standing;
 use super::*;
@@ -15,16 +10,14 @@ use time::OffsetDateTime;
 const SAID: &str = "You've hit your session limit · resets 6:20pm (America/New_York)";
 
 fn limited(resets_at: Option<OffsetDateTime>) -> SessionStatusSnapshot {
-    SessionStatusSnapshot::new(AgentStatus::Waiting)
-        .limited(UsageLimited {
-            said: SAID.to_string(),
-            resets_at,
-        })
-        .expect("a limit is news to a fresh snapshot")
+    SessionStatusSnapshot::new(AgentStatus::Waiting).limited(UsageLimited {
+        said: SAID.to_string(),
+        resets_at,
+    })
 }
 
-fn working() -> SessionStatusSnapshot {
-    SessionStatusSnapshot::new(AgentStatus::Working)
+fn successful() -> SessionStatusSnapshot {
+    SessionStatusSnapshot::new(AgentStatus::Waiting).successful_response()
 }
 
 fn an_hour_from_now() -> OffsetDateTime {
@@ -78,7 +71,7 @@ fn a_turn_that_stopped_at_the_limit_puts_the_harness_on_the_board() {
     );
 
     let resets_at = an_hour_from_now();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     assert!(state.record_usage_limit(&run_id, &agent_id, &limited(Some(resets_at)), &mut recorded));
 
     let limits = usage_limits(state);
@@ -100,20 +93,20 @@ fn the_same_limit_on_every_later_snapshot_is_recorded_once() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();
     let snapshot = limited(Some(an_hour_from_now()));
-    let mut recorded = None;
+    let mut recorded = Default::default();
     assert!(state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded));
     assert!(
         !state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded),
-        "an idle session carries its limit on every snapshot until a turn runs"
+        "an idle session carries its limit on every snapshot until a response succeeds"
     );
 }
 
 #[test]
-fn a_message_while_limited_stays_queued_and_the_conversation_is_told_once() {
+fn a_message_on_the_same_model_is_ready_before_the_reported_reset() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();
     state.delivery_queue.clear_queued();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(
         &run_id,
         &agent_id,
@@ -121,49 +114,149 @@ fn a_message_while_limited_stays_queued_and_the_conversation_is_told_once() {
         &mut recorded,
     );
 
-    post(state, &run_id, &agent_id, "the first thing");
+    post(state, &run_id, &agent_id, "try again after I added credits");
+    let mut taken = state.take_pending_turns();
+    let (turn, mark) = taken
+        .next_turn()
+        .expect("a remembered limit never holds a message");
+    assert_eq!(turn.agent_id, agent_id);
+    assert_eq!(state.delivery_queue.queued_len(), 0);
+    mark.settle(state);
     assert!(
         state.take_pending_turns().is_empty(),
-        "no turn starts on a harness out of usage"
+        "no automatic retry loop"
     );
-    assert_eq!(state.delivery_queue.queued_len(), 1, "it stays queued");
-
-    post(state, &run_id, &agent_id, "one more thing");
-    assert!(state.take_pending_turns().is_empty());
+    assert!(build_notices(state, &run_id, &agent_id, "stay queued").is_empty());
     assert_eq!(
-        state.delivery_queue.queued_len(),
+        usage_limits(state).len(),
         1,
-        "the second rides the turn already waiting, as it does for any agent"
-    );
-
-    let told = build_notices(state, &run_id, &agent_id, "run out of usage");
-    assert_eq!(told.len(), 1, "told once, however many wait: {told:?}");
-    assert!(
-        told[0].contains(SAID),
-        "in the harness's own words: {}",
-        told[0]
-    );
-    assert!(
-        told[0].contains("delivered in order when it resets"),
-        "{}",
-        told[0]
+        "the report remains informative"
     );
 }
 
+fn post_operation(
+    state: &mut AppState,
+    run_id: &str,
+    agent_id: &str,
+    operation_id: &str,
+    revision: u64,
+) {
+    let agent = state
+        .entity_agents(run_id)
+        .unwrap()
+        .by_id(agent_id)
+        .unwrap();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "agent_id": agent_id,
+            "conversation_id": agent.conversation_id(),
+            "operation_id": operation_id,
+            "body": operation_id,
+            "choice_revision": revision,
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+}
+
 #[test]
-fn when_the_reset_passes_the_queued_turns_go_in_order() {
+fn switching_from_fable_to_opus_delivers_both_operations_in_order_before_reset() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    state.delivery_queue.clear_queued();
+    let fable = crate::models::ModelChoice {
+        provider: crate::models::AgentProvider::ClaudeAdk,
+        model: Some("claude-fable-5".into()),
+        ..Default::default()
+    };
+    state
+        .set_agent_model_choice(&run_id, &agent_id, fable.clone())
+        .unwrap();
+    let first_revision = state
+        .entity_agents(&run_id)
+        .unwrap()
+        .by_id(&agent_id)
+        .unwrap()
+        .choice_revision;
+    let mut recorded = Default::default();
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &limited(Some(an_hour_from_now())),
+        &mut recorded,
+    );
+    post_operation(state, &run_id, &agent_id, "before-switch", first_revision);
+    let opus = crate::models::ModelChoice {
+        model: Some("claude-opus-5".into()),
+        ..fable.clone()
+    };
+    state
+        .set_agent_model_choice(&run_id, &agent_id, opus.clone())
+        .unwrap();
+    let second_revision = state
+        .entity_agents(&run_id)
+        .unwrap()
+        .by_id(&agent_id)
+        .unwrap()
+        .choice_revision;
+    post_operation(state, &run_id, &agent_id, "after-switch", second_revision);
+
+    let mut taken = state.take_pending_turns();
+    let (first, first_mark) = taken
+        .next_turn()
+        .expect("the older Fable operation is ready");
+    let (second, second_mark) = taken.next_turn().expect("the Opus operation is ready");
+    assert_eq!(first.operation_id.as_deref(), Some("before-switch"));
+    assert_eq!(first.model_choice, fable);
+    assert_eq!(second.operation_id.as_deref(), Some("after-switch"));
+    assert_eq!(second.model_choice, opus);
+    assert!(taken.is_empty());
+    assert_eq!(state.delivery_queue.queued_len(), 0);
+    first_mark.settle(state);
+    second_mark.settle(state);
+}
+
+#[test]
+fn usage_reports_do_not_bypass_pending_rows_or_in_flight_delivery() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    state.delivery_queue.clear_queued();
+    let mut recorded = Default::default();
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &limited(Some(an_hour_from_now())),
+        &mut recorded,
+    );
+    post_operation(state, &run_id, &agent_id, "first", 0);
+    state.pending_rows.push(
+        crate::lifecycle::PendingRow::creating(run_id.clone(), None, "pending".into()).into(),
+    );
+    assert!(state.take_pending_turns().is_empty());
+    assert_eq!(state.delivery_queue.queued_len(), 1);
+    state.pending_rows.clear();
+    let mut taken = state.take_pending_turns();
+    let (_, mark) = taken.next_turn().expect("ordinary blocker is gone");
+    post_operation(state, &run_id, &agent_id, "second", 0);
+    assert!(
+        state.take_pending_turns().is_empty(),
+        "an in-flight delivery still holds its agent"
+    );
+    mark.settle(state);
+    assert!(state.take_pending_turns().next_turn().is_some());
+}
+
+#[test]
+fn messages_queued_before_reset_keep_their_order() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();
     state.delivery_queue.clear_queued();
     let resets_at = an_hour_from_now();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(&run_id, &agent_id, &limited(Some(resets_at)), &mut recorded);
     post(state, &run_id, &agent_id, "the first thing");
     post(state, &run_id, &agent_id, "one more thing");
-    assert!(state.take_pending_turns().is_empty());
-
-    state.release_usage_limits_due_at(resets_at);
-
     let mut taken = state.take_pending_turns();
     let (turn, _mark) = taken.next_turn().expect("the queued turn goes");
     assert_eq!(turn.agent_id, agent_id);
@@ -179,7 +272,7 @@ fn when_the_reset_passes_the_queued_turns_go_in_order() {
     assert_eq!(
         usage_limits(state).len(),
         1,
-        "released is not cleared: the banner goes when a turn runs"
+        "delivery does not clear the report: a response must succeed"
     );
 }
 
@@ -189,7 +282,7 @@ fn an_agent_whose_turn_died_at_the_limit_is_started_again_when_it_lifts() {
     let (state, _root, run_id, agent_id) = standing.parts();
     state.delivery_queue.clear_queued();
     let resets_at = an_hour_from_now();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(&run_id, &agent_id, &limited(Some(resets_at)), &mut recorded);
     assert_eq!(state.delivery_queue.queued_len(), 0);
 
@@ -197,7 +290,7 @@ fn an_agent_whose_turn_died_at_the_limit_is_started_again_when_it_lifts() {
     assert_eq!(state.delivery_queue.queued_len(), 0, "not before its reset");
 
     state.release_usage_limits_due_at(resets_at);
-    let told = build_notices(state, &run_id, &agent_id, "usage limit has reset");
+    let told = build_notices(state, &run_id, &agent_id, "after its reported usage limit");
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(
         told[0].contains("pick up where you left off"),
@@ -219,14 +312,14 @@ fn an_agent_with_a_message_already_waiting_is_told_but_not_given_a_second_turn()
     let (state, _root, run_id, agent_id) = standing.parts();
     state.delivery_queue.clear_queued();
     let resets_at = an_hour_from_now();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(&run_id, &agent_id, &limited(Some(resets_at)), &mut recorded);
     post(state, &run_id, &agent_id, "are you still on this?");
 
     state.release_usage_limits_due_at(resets_at);
 
     assert_eq!(
-        build_notices(state, &run_id, &agent_id, "usage limit has reset").len(),
+        build_notices(state, &run_id, &agent_id, "after its reported usage limit").len(),
         1
     );
     assert_eq!(
@@ -237,10 +330,10 @@ fn an_agent_with_a_message_already_waiting_is_told_but_not_given_a_second_turn()
 }
 
 #[test]
-fn a_turn_running_on_the_harness_clears_the_limit() {
+fn the_first_successful_response_clears_the_limit() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(
         &run_id,
         &agent_id,
@@ -249,7 +342,7 @@ fn a_turn_running_on_the_harness_clears_the_limit() {
     );
     assert_eq!(usage_limits(state).len(), 1);
 
-    state.record_usage_limit(&run_id, &agent_id, &working(), &mut recorded);
+    state.record_usage_limit(&run_id, &agent_id, &successful(), &mut recorded);
 
     assert_eq!(usage_limits(state), Vec::<Value>::new());
     assert!(!state.usage_limits.stopped(&run_id, &agent_id));
@@ -267,7 +360,7 @@ fn no_reset_named_holds_nothing_but_still_says_so_on_the_board() {
     let mut standing = standing();
     let (state, _root, run_id, agent_id) = standing.parts();
     state.delivery_queue.clear_queued();
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(&run_id, &agent_id, &limited(None), &mut recorded);
     let limits = usage_limits(state);
     assert_eq!(limits[0]["resets_at"], Value::Null, "reset time unknown");
@@ -288,7 +381,7 @@ fn the_board_item_carries_the_list_when_it_moves() {
     let facts = state.board_lists(crate::changes::BoardLists::USAGE_LIMITS);
     assert_eq!(facts.render(), json!({ "usage_limits": [] }));
 
-    let mut recorded = None;
+    let mut recorded = Default::default();
     state.record_usage_limit(&run_id, &agent_id, &limited(None), &mut recorded);
     let rendered = state
         .board_lists(crate::changes::BoardLists::USAGE_LIMITS)
@@ -301,5 +394,131 @@ fn the_board_item_carries_the_list_when_it_moves() {
             .get("usage_limits"),
         None,
         "and only when it moved"
+    );
+}
+
+#[test]
+fn starting_or_rejecting_a_retry_does_not_clear_the_limit() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    let snapshot = limited(Some(an_hour_from_now()));
+    let mut recorded = Default::default();
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    for status in [AgentStatus::Working, AgentStatus::Waiting] {
+        state.record_usage_limit(
+            &run_id,
+            &agent_id,
+            &SessionStatusSnapshot::new(status),
+            &mut recorded,
+        );
+        assert_eq!(
+            usage_limits(state).len(),
+            1,
+            "status is not proof of success"
+        );
+    }
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    assert_eq!(
+        usage_limits(state).len(),
+        1,
+        "a rejected retry preserves the report"
+    );
+}
+
+#[test]
+fn a_stale_success_marker_does_not_clear_a_later_limit() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    let mut recorded = Default::default();
+    let success = successful();
+    state.record_usage_limit(&run_id, &agent_id, &success, &mut recorded);
+    let mut snapshot = limited(Some(an_hour_from_now()));
+    snapshot.successful_response_count = success.successful_response_count;
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    state.record_usage_limit(&run_id, &agent_id, &success, &mut recorded);
+    assert_eq!(
+        usage_limits(state).len(),
+        1,
+        "a previous response is not a new success"
+    );
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &success.successful_response(),
+        &mut recorded,
+    );
+    assert!(usage_limits(state).is_empty());
+}
+
+#[test]
+fn the_latest_limit_wins_when_success_and_a_new_error_are_coalesced() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    let mut recorded = Default::default();
+    let mut snapshot = limited(Some(an_hour_from_now()));
+    snapshot.successful_response_count = 1;
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    assert_eq!(usage_limits(state).len(), 1);
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &snapshot.successful_response(),
+        &mut recorded,
+    );
+    assert!(usage_limits(state).is_empty());
+}
+
+#[test]
+fn a_replacement_sessions_first_success_clears_the_existing_report() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    let mut original = Default::default();
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &limited(Some(an_hour_from_now())),
+        &mut original,
+    );
+    let mut replacement = Default::default();
+    state.record_usage_limit(
+        &run_id,
+        &agent_id,
+        &SessionStatusSnapshot::new(AgentStatus::Working),
+        &mut replacement,
+    );
+    assert_eq!(usage_limits(state).len(), 1);
+    state.record_usage_limit(&run_id, &agent_id, &successful(), &mut replacement);
+    assert!(usage_limits(state).is_empty());
+    assert!(!state.usage_limits.stopped(&run_id, &agent_id));
+}
+
+#[test]
+fn a_new_identical_rejection_restores_a_report_cleared_by_another_agent() {
+    let mut standing = standing();
+    let (state, _root, run_id, agent_id) = standing.parts();
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    let other_agent = added["result"]["agent"]["id"].as_str().unwrap().to_owned();
+    let mut recorded = Default::default();
+    let snapshot = limited(Some(an_hour_from_now()));
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    state.record_usage_limit(
+        &run_id,
+        &other_agent,
+        &successful(),
+        &mut Default::default(),
+    );
+    assert!(usage_limits(state).is_empty());
+    state.record_usage_limit(&run_id, &agent_id, &snapshot, &mut recorded);
+    assert!(
+        usage_limits(state).is_empty(),
+        "idle snapshots cannot restore a cleared report"
+    );
+
+    let rejected_again = snapshot.limited(snapshot.usage_limit.clone().unwrap());
+    state.record_usage_limit(&run_id, &agent_id, &rejected_again, &mut recorded);
+    assert_eq!(
+        usage_limits(state).len(),
+        1,
+        "the new rejection is shown even with identical wording"
     );
 }

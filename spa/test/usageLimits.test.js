@@ -1,14 +1,12 @@
 // @vitest-environment jsdom
 // A harness out of usage on a device (issue #58): what the bridge's board says,
 // the words the banner wears as it counts down, the banner itself at the top of
-// a conversation, and the reason a Queued message gives on hover.
+// a conversation.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  applyQueuedReason,
   mountUsageLimitBanner,
   onUsageLimitsChanged,
-  queuedReason,
   resetUsageLimits,
   setUsageLimitsForTest,
   usageLimitText,
@@ -147,37 +145,5 @@ describe("the banner at the top of a conversation", () => {
     expect(host.querySelector(".usage-limit-banner")).not.toBeNull();
     banner.dispose();
     expect(host.querySelector(".usage-limit-banner")).toBeNull();
-  });
-});
-
-describe("a Queued message's hover", () => {
-  const chips = () => {
-    document.body.innerHTML = `
-      <span class="delivery-status queued" data-delivery-status="queued" aria-label="Queued for the agent">Queued</span>
-      <span class="delivery-status submitted" data-delivery-status="submitted" aria-label="Queued for the agent">Queued</span>
-      <span class="delivery-status sent" data-delivery-status="sent" aria-label="Sent to the agent">Sent</span>`;
-    return document.body;
-  };
-
-  it("carries the reason while the conversation's harness is limited", () => {
-    setUsageLimits("dev-1", [limit()]);
-    const reason = queuedReason("dev-1", "claude_adk", NOW);
-    expect(reason).toBe("Claude session limit reached · resets in 34 min");
-    const body = chips();
-    applyQueuedReason(body, reason);
-    const [queued, submitted, sent] = body.querySelectorAll(".delivery-status");
-    expect(queued.title).toBe(reason);
-    expect(submitted.title).toBe(reason);
-    expect(sent.title).toBe("");
-  });
-
-  it("carries none for another harness, and loses it when the limit clears", () => {
-    setUsageLimits("dev-1", [limit()]);
-    expect(queuedReason("dev-1", "codex_app_server", NOW)).toBeNull();
-    const body = chips();
-    applyQueuedReason(body, queuedReason("dev-1", "claude_adk", NOW));
-    setUsageLimits("dev-1", []);
-    applyQueuedReason(body, queuedReason("dev-1", "claude_adk", NOW));
-    expect(body.querySelector(".queued").hasAttribute("title")).toBe(false);
   });
 });

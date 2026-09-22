@@ -1,7 +1,7 @@
 use super::activity::{spawn_shell_tail_poller, ActivitySlot};
 use super::protocol::{
-    publish_status, publish_usage_limit, ProtocolState, RecordedCall, BUILD_MCP_TOOL_PREFIX,
-    SURFACE_TASK_SUBTYPES,
+    publish_status, publish_successful_response, publish_usage_limit, ProtocolState, RecordedCall,
+    BUILD_MCP_TOOL_PREFIX, SURFACE_TASK_SUBTYPES,
 };
 use super::translation::{
     bounded_activity_text, ended_summary, result_error_text, spoken, task_description,
@@ -134,6 +134,23 @@ impl ProtocolReader {
                 said.said, said.reset_clock, resolved.resets_at
             );
             publish_usage_limit(&self.status_updates, resolved);
+        }
+    }
+
+    /// A model response, or a successful result with no response line, is
+    /// enough to retire this session's previous limit. Publish once per turn.
+    fn record_successful_response(&self) {
+        let first_success = {
+            let mut state = self.state.lock().unwrap();
+            state.limit_said_last = None;
+            state.usage_limited = None;
+            state.rate_limit_resets_at = None;
+            let first_success = !state.turn_had_success;
+            state.turn_had_success = true;
+            first_success
+        };
+        if first_success {
+            publish_successful_response(&self.status_updates);
         }
     }
 
@@ -544,12 +561,16 @@ impl ProtocolReader {
             event["is_error"].as_bool(),
             event["duration_ms"].as_u64(),
         );
-        // Before the status says the turn is over, so no reader ever sees this
-        // session idle without the reason: a queue drained in that gap would
-        // hand the harness a turn it can only refuse.
-        self.conclude_usage_limit();
+        // Record the result before the status says the turn is over, so a
+        // coalesced watch snapshot still carries the right limit or success.
+        if failed {
+            self.conclude_usage_limit();
+        } else if event["subtype"].as_str() == Some("success") {
+            self.record_successful_response();
+        }
         {
             let mut state = self.state.lock().unwrap();
+            state.turn_had_success = false;
             // Taken, acked or not, so an interrupt can never leak into the turn
             // after the one it ended.
             let stopped = state.pending_interrupt.take();
@@ -594,6 +615,9 @@ impl ProtocolReader {
                 // A SUBAGENT's error is that subagent's own trouble to report;
                 // the session's usage is the parent's.
                 self.read_assistant_error(event);
+                if is_model_response(event) {
+                    self.record_successful_response();
+                }
             }
             if let Some(call_id) = parent_call_id {
                 let moved = self
@@ -784,6 +808,23 @@ pub(super) fn runs_the_model_asked(asked: &str, running: &str) -> bool {
 
 /// Every text block of one message, in order: what a message the CLI wrote
 /// itself says, whole.
+fn is_model_response(event: &Value) -> bool {
+    event["error"].is_null()
+        && event["isApiErrorMessage"] != true
+        && event["message"]["isApiErrorMessage"] != true
+        && event["message"]["model"] != "<synthetic>"
+        && event["message"]["content"]
+            .as_array()
+            .is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    matches!(
+                        block["type"].as_str(),
+                        Some("thinking" | "text" | "tool_use")
+                    )
+                })
+            })
+}
+
 fn assistant_text(message: &Value) -> String {
     message["content"]
         .as_array()

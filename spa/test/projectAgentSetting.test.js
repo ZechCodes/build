@@ -203,10 +203,12 @@ describe("the project-agent panel", () => {
 
     await change(harness(), "claude_adk");
 
-    expect(document.getElementById("projectagenterr").textContent).toContain("cannot write the config file");
-    expect(document.getElementById("projectagentsaved").textContent).toBe("");
-    expect(harness().value).toBe("codex");
-    expect(harness().disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(document.getElementById("projectagenterr").textContent).toContain("cannot write the config file");
+      expect(document.getElementById("projectagentsaved").textContent).toBe("");
+      expect(harness().value).toBe("codex");
+      expect(harness().disabled).toBe(false);
+    });
   });
 
   it("offers nothing it cannot keep when the machine will not answer", async () => {

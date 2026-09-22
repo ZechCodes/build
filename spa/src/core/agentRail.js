@@ -1725,7 +1725,10 @@ function mountRailOnContext(host, context, swap) {
   const panelBodyIdentity = () => {
     if (rememberedConversationIsLoading()) return "loading";
     if (addingAgent) return "new";
-    return conversationKey();
+    // Every existing agent uses the same mounted conversation frame. Moving
+    // between bubbles changes what the shared thread painter reconciles into
+    // that frame; it is not a reason to tear the whole panel down first.
+    return "conversation";
   };
 
   const wantedPanelBody = () => `${shownPanelMode()}:${panelBodyIdentity()}`;
@@ -1755,11 +1758,35 @@ function mountRailOnContext(host, context, swap) {
     remove.setAttribute("aria-label", wanted);
   };
 
-  const adoptPanelBody = (controller = null) => {
+  const adoptPanelBody = () => {
     const panel = host.querySelector("#rail-panel");
-    if (panel) panel.dataset.body = controller
-      ? `${shownPanelMode()}:${conversationKey(controller)}`
-      : wantedPanelBody();
+    if (panel) panel.dataset.body = wantedPanelBody();
+  };
+
+  const releaseConversationChrome = () => {
+    disposeSurfaces();
+    disposeComposerClearance?.();
+    disposeComposerClearance = null;
+    closeSurfaceMenu?.();
+    composerControl?.dispose?.();
+    unsubscribeComposerController?.();
+    unsubscribeComposerController = null;
+    composerController = null;
+    composerControl = null;
+    composerModelMenu = null;
+    composerGauge = null;
+  };
+
+  /** Move the pinned controls to another conversation without touching the
+   *  timeline above them. Drafts, uploads and surface state belong to the
+   *  controller; the thread frame belongs to the one shared painter. */
+  const rebindConversationChrome = (panel) => {
+    const standing = panel.querySelector("#rail-composer");
+    if (!standing) return;
+    releaseConversationChrome();
+    standing.outerHTML = composerRowHtml();
+    wireComposer(panel);
+    deliverDroppedFiles();
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
@@ -1803,13 +1830,14 @@ function mountRailOnContext(host, context, swap) {
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
+    const wantedConversation = shownMode === "chat" && !addingAgent && !rememberedConversationIsLoading()
+      ? conversationKey()
+      : "";
+    const conversationChanged = panel.dataset.conversation !== wantedConversation;
     if (panel.dataset.body !== wantedBody) {
       disposeTitleMotion();
       disposeTui();
-      disposeSurfaces();
-      disposeComposerClearance?.();
-      disposeComposerClearance = null;
-      closeSurfaceMenu?.();
+      releaseConversationChrome();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
@@ -1818,15 +1846,9 @@ function mountRailOnContext(host, context, swap) {
       panel.dataset.head = wantedHead;
       panel.dataset.title = wantedTitle;
       panel.dataset.body = wantedBody;
+      panel.dataset.conversation = wantedConversation;
       mountTitleMotion(panel);
       wireHead(panel);
-      composerControl?.dispose?.();
-      unsubscribeComposerController?.();
-      unsubscribeComposerController = null;
-      composerController = null;
-      composerControl = null;
-      composerModelMenu = null;
-      composerGauge = null;
       if (shownMode === "tui") mountTui();
       else if (!rememberedConversationIsLoading() && entity.chatCapable !== false) {
         wireComposer(panel);
@@ -1857,6 +1879,13 @@ function mountRailOnContext(host, context, swap) {
       panel.dataset.title = wantedTitle;
       mountTitleMotion(panel);
       wireHead(panel);
+    }
+    if (panel.dataset.body === wantedBody
+      && conversationChanged
+      && panel.dataset.conversation !== wantedConversation
+      && wantedConversation) {
+      rebindConversationChrome(panel);
+      panel.dataset.conversation = wantedConversation;
     }
     syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
     // The remove button names the agent by its topic too, and a topic arriving

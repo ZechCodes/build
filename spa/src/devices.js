@@ -86,6 +86,25 @@ export async function refreshDevices() {
   return App.devices;
 }
 
+/** Commit an account action through the same record as presence reads. An
+ * older presence request must not undo a rename or revocation after it lands. */
+async function changeCachedDevices(change) {
+  presenceGeneration += 1;
+  const accountEpoch = App.accountEpoch;
+  const record = await readCached(DEVICES_ADDRESS);
+  if (accountEpoch !== App.accountEpoch) throw new Error("device account changed");
+  if (!Array.isArray(record?.value)) return refreshDevices();
+  await writeCached(DEVICES_ADDRESS, change(record.value));
+  await latestDeviceRead;
+  return App.devices;
+}
+
+export const cacheRenamedDevice = (deviceId, name) => changeCachedDevices((devices) =>
+  devices.map((device) => device.id === deviceId ? { ...device, name } : device));
+
+export const cacheRevokedDevice = (deviceId) => changeCachedDevices((devices) =>
+  devices.filter((device) => device.id !== deviceId));
+
 /** A rail filtered to a device the account no longer lists would show nothing
  *  at all, with nothing on screen to say why. The account is what the picker is
  *  a filter over, so a device leaving it takes the filter with it. */

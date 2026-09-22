@@ -72,6 +72,13 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     });
     restoreSidebarFocus(focusedEntry);
   };
+  const renderSelectedPanel = async (deviceId, options, current) => {
+    if (deviceId === null) return renderSettings(options);
+    if (deviceId === "archive") return renderArchive(options);
+    await readCachedDevices();
+    if (generation !== current) return;
+    return renderDeviceSettings(options);
+  };
   const select = async (deviceId) => {
     const current = ++generation;
     disposePanel?.();
@@ -101,9 +108,7 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
       onDeviceDeactivated: () => void select(null),
     };
     try {
-      if (deviceId === null) await renderSettings(options);
-      else if (deviceId === "archive") await renderArchive(options);
-      else await renderDeviceSettings(options);
+      await renderSelectedPanel(deviceId, options, current);
       if (generation === current) paintSidebar();
     } catch (error) {
       if (generation === current) content.innerHTML = `<p role="alert">${esc(error.message)}</p>`;

@@ -79,9 +79,10 @@ describe("settings modal", () => {
     document.querySelector('[data-local]').click();
     expect(dispose).toHaveBeenCalledOnce();
   });
-  it("opens device deep links and lets nested sheets own Escape", () => {
+  it("opens device deep links and lets nested sheets own Escape", async () => {
     App.route = { name: "device", id: "b" };
     openModal();
+    await flush();
     expect(device.mock.calls[0][0].deviceId).toBe("b");
     document.querySelector('#scrim').classList.add("show");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

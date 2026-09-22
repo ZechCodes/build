@@ -177,7 +177,17 @@ await Promise.all([
 /** The diagnostic history as the page holds it — the same dump
  *  `buildConnectionDiagnostics()` gives support, which is what Settings →
  *  Diagnostics renders. */
-const diagnostics = () => page.evaluate(() => globalThis.buildConnectionDiagnostics?.() || []);
+// The report is `{ since, dropped, events }` since #60; a bare array before.
+// Neither shape means the page changed under this script, and walking nothing
+// would read as a clean run, so it stops.
+const diagnostics = async () => {
+  const report = await page.evaluate(() => globalThis.buildConnectionDiagnostics?.() ?? null);
+  const history = Array.isArray(report) ? report : report?.events;
+  if (!Array.isArray(history)) {
+    throw new Error(`buildConnectionDiagnostics() answered ${JSON.stringify(report)}, which is neither the event list nor a report with events, so this check cannot read what the page recorded.`);
+  }
+  return history;
+};
 const probes = async () => (await diagnostics()).filter((entry) => entry.event === "path-probe");
 const sessionsConnected = async () =>
   (await diagnostics()).filter((entry) => entry.event === "connected").length;

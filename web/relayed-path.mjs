@@ -124,7 +124,17 @@ async function forceRelay(context, servers) {
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ iceServers: servers }) }));
 }
 
-const diagnostics = (page) => page.evaluate(() => window.buildConnectionDiagnostics?.() || []);
+// The report is `{ since, dropped, events }` since #60; a bare array before.
+// Neither shape means the page changed under this script, and walking nothing
+// would read as a clean run, so it stops.
+const diagnostics = async (page) => {
+  const report = await page.evaluate(() => window.buildConnectionDiagnostics?.() ?? null);
+  const rows = Array.isArray(report) ? report : report?.events;
+  if (!Array.isArray(rows)) {
+    throw new Error(`buildConnectionDiagnostics() answered ${JSON.stringify(report)}, which is neither the event list nor a report with events, so this run cannot read what the page recorded.`);
+  }
+  return rows;
+};
 
 const printRows = (rows, limit = 40) => {
   for (const row of rows.slice(-limit)) {

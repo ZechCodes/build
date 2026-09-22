@@ -7,11 +7,14 @@ deploy
 web/node_modules
 spa/node_modules
 spa/package-lock.json
+landing/node_modules
+landing/.astro
 bridge/target
 skriftapp/.venv
 skriftapp/.env
 skriftapp/app.db
 skriftapp/app.dev.yaml
 skriftapp/buildapp/static
+skriftapp/buildapp/landing/generated
 **/__pycache__
 **/*.pyc

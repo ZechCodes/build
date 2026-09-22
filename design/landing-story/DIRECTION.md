@@ -486,54 +486,83 @@ A static build, dropped into the current serving path, with one integration chan
   `ui03-question/answer/resumed` (the phone conversation), `ui04` (activity),
   `ui05-approval` and `ui05-merged` on all three devices.
 
-### Needs new textures (captured through the existing fixture, `design/landing-captures/`)
+### Asset handoff for Astra
 
-Each new state is a new entry in `screen-manifest.json` plus fixture markup; the capture
-script then emits native-resolution masters and the runtime WebPs with system UI. These are
-authored demonstration states of the final product, so several need UI that the SPA does
-not have yet (the fixture is allowed to draw it; it is marketing artwork, not the client).
+Astra produces every graphic below in its own workspace while the page is built in
+parallel, so this list is written to be worked from without further questions. Everything
+is UI capture or a render of the existing models; nothing needs generated imagery, and no
+image-generation API key is needed right now. If the implementation adds something Astra
+cannot make (for example a photographic or painted hero background at a specific size),
+that is the point to ask Zech for one.
 
-| Texture | Device | Act | What it shows |
+**Rules that apply to every screen texture.**
+
+- Captured through the existing fixture in `design/landing-captures/`: add a state to
+  `screen-manifest.json` and its markup to the fixture, then run `capture.mjs`. Masters
+  (PNG) land in `design/landing-captures/masters/`, runtime WebPs in
+  `skriftapp/buildapp/landing/assets/screens/`. Names follow the manifest pattern
+  `{state}-{macbook|ipad|iphone}.webp`; the fixture also emits the app-only
+  `{state}-{desktop|tablet|mobile}` variants, which the page does not use.
+- Native sizes come from the manifest's system profiles and must not change: macbook
+  1512×982 (master 3024×1964, app window at 48,102 to 1416,804), ipad 1210×834 (master
+  2420×1668), iphone 440×956 (master 1320×2868). Keep the system UI treatment the fixture
+  already draws (menu bar and Dock, iPad status bar and Dock, iPhone status bar and home
+  indicator), the system clock at 9:41, and text inside the text-safe bounds.
+- Every macbook texture carries the machine label in the app status bar:
+  `zech-mbp · ~/code/build · main`. Today's macbook textures lack it, which is why
+  `ui05-merged-macbook` is re-captured below.
+- The product term is **workspace** (copy-on-write), never "worktree", in every path and
+  label. Paths look like `~/code/build/workspaces/archive-search`.
+- These are demonstration states of the final product. The fixture may draw UI the client
+  does not have yet (editor, issue board, builder canvas, Git panel, triage list). Use the
+  Build palette (black, mint `#51ffb4`, Inter and JetBrains Mono) unless Zech answers the
+  palette question differently.
+- Animated parts of each act (typing, the card lifting, nodes moving, the fan-out) are HTML
+  overlays aligned to the screen plane. Textures show the **resting state named below**;
+  they do not need intermediate frames.
+
+**Screen textures.**
+
+| File | Size | Act | What is on screen |
 |---|---|---|---|
-| `ui10-editor-macbook` | laptop | 1, 2 | Full editor: file tree, code, collapsed terminal drawer, agents rail, machine label. |
-| `ui12-issues-macbook` | laptop | 3 | Issue board with the archived-search card in Ready. |
-| `ui13-team-macbook` | laptop | 4 | Three agents with workspace paths, terminal drawer showing a test run. |
-| `ui16-builder-macbook` | laptop | 5 | Workflow builder canvas with the four-node path and the palette. |
-| `ui14-git-macbook` | laptop | 6 | Editor with Git panel: branch, workspace, commit graph, diff. |
-| `ui15-triage-ipad` | tablet | 7 | Triage list: needs you / verified / failed. |
-| `ui05-merged-*` | all | 8 | Existing; verify the merged state reads as the same job. |
+| `ui10-editor-macbook.webp` | 1512×982 | 1, 2 | Editor. File tree left with `build-app/src/search/archive.ts` and `archive.test.ts`; `archive.ts` open in the middle with `search.remove(id)` still present (before any change); terminal drawer collapsed along the bottom; agents rail right with one row "Fixing archive button · Claude Code · Working"; status bar with the machine label. `archive.test.ts` is **not** edited in the texture: the typed test is an overlay. |
+| `ui12-issues-macbook.webp` | 1512×982 | 3 | Issue board with columns Backlog, Ready, In progress, In review. One card in Ready: "Make archived items searchable", labels `search` and `bug`, no assignee. Machine label. |
+| `ui13-team-macbook.webp` | 1512×982 | 4 | Agents view derived from the existing `ui04` layout. Three rows: "Implement · Claude Code · ~/code/build/workspaces/archive-search", "Review · Codex · ~/code/build/workspaces/archive-review", "Audit edge cases · Codex · ~/code/build/workspaces/archive-audit", each "Working"; a "3 running" counter; terminal drawer open one line showing a test run. Machine label. (The Waiting state on the Implement row is an overlay.) |
+| `ui16-builder-macbook.webp` | 1512×982 | 5 | Workflow builder. Canvas with four nodes on one path, Implement → Review → You decide → Merge, each node showing the agent that runs it; the Implement node reads "Done · handoff pending". Node palette on the left: Agent, Test, Review, Human gate, Fan out. Machine label. |
+| `ui14-git-macbook.webp` | 1512×982 | 6, 7 | Editor with the Git panel open: branch `build/archive-search`, workspace path, a small commit graph (main, the branch, three agent commits), working tree list with `archive.ts` and `archive.test.ts` modified. The editor shows the `archive.ts` diff: `search.remove(id)` removed, `search.update(id, { archived: true })` added. Machine label. |
+| `ui15-triage-ipad.webp` | 1210×834 | 7 | Review triage list: "Needs you · 1: Search index behaviour changed" (expanded one line), "Verified · 3", "Failed · 0", each row expandable. Same iPad system UI as `ui05-*-ipad`. |
+| `ui05-merged-macbook.webp` | 1512×982 | 7, 8 | Re-capture of the existing merged state with the machine label added and any "worktree" wording changed to workspace. Content otherwise unchanged: "Merged · Archive behavior updated". |
+| `ui03-question-iphone.webp`, `ui03-answer-iphone.webp`, `ui03-resumed-iphone.webp` | 440×956 | 4 | Existing; reuse as-is unless their copy says "worktree". |
+| `ui05-approval-ipad.webp`, `ui05-merged-ipad.webp`, `ui05-merged-iphone.webp` | 1210×834, 1210×834, 440×956 | 7, 8 | Existing; reuse as-is. The approval screen must show the evidence line `archive.test.ts passed` and "keeps archived items in search ✓"; re-capture if it names a different file. |
 
-Plus the machine label on every laptop screen, which today's textures lack.
+**Posters and stills** (rendered by `design/landing/build_device_assets.py` or captured
+from the live stage at the same sizes, as the review stills were; either is fine, the live
+stage matches the page better). All go in `skriftapp/buildapp/landing/assets/devices/`,
+WebP, black background, one desktop and one mobile file per act.
 
-### Needs new scenes or posters
+| File | Size | Act | What is on screen |
+|---|---|---|---|
+| `scene-01-desktop.webp`, `scene-01-mobile.webp` | 1440×900, 720×960 | 1 | Laptop fully open, low front view, showing `ui10-editor-macbook`. This is the hero fallback and the first thing a reduced-motion or phone reader sees: never a closed or partly open lid. (Today's scene-01 poster is already open; keep it that way with the new screen.) |
+| `scene-02-desktop.webp`, `scene-02-mobile.webp` | 1440×900, 720×960 | 2 | Laptop centered and smaller, turned 12° toward the copy side, `ui10-editor-macbook`. |
+| `scene-03-desktop.webp`, `scene-03-mobile.webp` | 1440×900, 720×960 | 3 | Laptop three-quarter view from the left, `ui12-issues-macbook`. |
+| `scene-04-desktop.webp`, `scene-04-mobile.webp` | 1440×900, 720×960 | 4 | Laptop open on the left with `ui13-team-macbook`; phone on the right with `ui03-answer-iphone`. |
+| `scene-05-desktop.webp`, `scene-05-mobile.webp` | 1440×900, 720×960 | 5 | Laptop front and center, large, `ui16-builder-macbook`. |
+| `scene-06-desktop.webp`, `scene-06-mobile.webp` | 1440×900, 720×960 | 6 | Laptop near-frontal close-up, `ui14-git-macbook`. |
+| `scene-07-desktop.webp`, `scene-07-mobile.webp` | 1440×900, 720×960 | 7 | Small open laptop on the left with `ui05-merged-macbook`; tablet landscape on the right, frontal, with `ui05-merged-ipad`. |
+| `scene-08-desktop.webp`, `scene-08-mobile.webp` | 1440×900, 720×960 | 8 | The physical-scale lineup (laptop left and dominant, tablet, phone) all showing `ui05-merged-*`. |
+| `desktop-poster.webp`, `mobile-poster.webp` | 1440×900, 720×960 | closing | Byte-identical copies of the scene-08 pair (the closing alias moves from scene 06 to scene 08). |
+| `laptop.webp`, `tablet.webp`, `phone.webp` | 1200×900, 1000×760, 640×1040 | document version | Transparent cutouts of each device, open, showing the act 1, act 7, and act 4 screens respectively. Existing sizes; re-render because the laptop screen changes. |
+| `social-preview.webp` and `assets/social-preview.png` | 1200×630 | sharing | Open laptop on the editor with the headline "Your agents. Your machine. Your call." The PNG is the `og:image` referenced from `root_controller.py`; both files, same composition. |
 
-- **Eight scene posters** (sixteen files: desktop and mobile pairs) instead of six.
-  The act 1 poster shows the laptop fully open on the editor; today's scene-01 poster
-  (closed lid) must not survive as the hero fallback.
-  `render_scene_posters` in `design/landing/build_device_assets.py` authors a fixed six
-  and aliases `scene-06` as the closing poster (`desktop-poster.webp`, `mobile-poster.webp`);
-  it needs the new scene definitions and screen assignments, the closing alias moved to
-  scene 08, a refreshed `social-preview.webp` and the `og:image` PNG, and the capture
-  manifest and `metadata.json` (render bounds, hashes, provenance) kept in sync.
-  Alternatively capture the posters from the live stage at 1440×900 and 720×960 as the
-  review stills were, which is faster and matches the live look. Either way the reduced-
-  motion and phone readers see the new final-product screens; the old six posters are not
-  an adequate fallback because they tell the old story.
-- **New choreography** (poses per act, screen source per beat, HTML alignment for the
-  laptop): a new timeline, replacing the scene-index logic in `device-stage.js`.
-- **Nothing requires new geometry, materials, or Blender work.** No rear views, no
-  portrait tablet, no exploded views, no depth-of-field or bloom (the runtime bundle has
-  no post-processing and should stay that way for the frame budget).
+**Also keep in sync**: `screen-manifest.json` (new states and their descriptions),
+`assets/devices/metadata.json` (render bounds, hashes, provenance for the posters), and
+`design/landing/README.md`'s poster list (eight pairs, not six). No page code changes are
+part of this handoff; the timeline that consumes these files is the rewrite issue's job.
 
-### Who makes the artwork
-
-Astra produces the graphics: the seven new screen textures through the capture fixture,
-the sixteen posters and the social preview through the Blender generator or live-stage
-captures, and any flat illustration the page turns out to need. Everything in this
-storyboard is UI capture or a render of the existing models, so nothing here needs
-generated imagery. If the implementation adds something Astra cannot make (for example a
-photographic or painted hero background at a specific size), that is the point to ask
-Zech for an image-generation API key. Right now there is no such item.
+**Not needed.** No new geometry, materials, or Blender modelling: no rear views, no
+portrait tablet, no exploded views, no depth-of-field or bloom (the runtime bundle has no
+post-processing and should stay that way for the frame budget). The lid hinge, the pivot
+entrances, and the poster handoff already exist.
 
 ### Deliberately not doing
 

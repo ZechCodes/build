@@ -773,6 +773,21 @@ describe("the rail over a machine that is asked nothing", () => {
 });
 
 describe("the bubble strip", () => {
+  it("wires a reader-message tick to its chat row after mounting the rail", async () => {
+    payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items: [
+      { type: "message", data: { sequence: 1, role: "user", body: "Find my question", created_at: "2026-09-22T12:00:00Z" } },
+      { type: "message", data: { sequence: 2, role: "agent", body: "Here is the answer" } },
+    ] } } });
+    await mount();
+
+    const tick = railHost().querySelector(".thread-user-tick");
+    const row = tick.closest(".thread-message.user");
+    row.scrollIntoView = vi.fn();
+    tick.click();
+
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  });
+
   it("opens a cache-backed agent overview and returns to the chosen chat", async () => {
     payload = branchRow({ agents: [
       agent({ id: "ag-1", name: "First agent", working: true }),

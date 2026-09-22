@@ -18,29 +18,44 @@ import shutil
 import sys
 from pathlib import Path
 
+import bmesh
 import bpy
 import numpy as np
 from bpy_extras.object_utils import world_to_camera_view
 from mathutils import Matrix, Vector
-
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_DIR = ROOT / "design" / "landing"
 LANDING_ASSETS = ROOT / "skriftapp" / "buildapp" / "landing" / "assets"
 OUTPUT_DIR = LANDING_ASSETS / "devices"
 SCREENS_DIR = LANDING_ASSETS / "screens"
-DEFAULT_LAPTOP_SCREEN = SCREENS_DIR / "ui01-desktop.webp"
-DEFAULT_TABLET_SCREEN = SCREENS_DIR / "ui04-tablet.webp"
-DEFAULT_PHONE_SCREEN = SCREENS_DIR / "ui02-mobile.webp"
+DEFAULT_LAPTOP_SCREEN = SCREENS_DIR / "ui01-macbook.webp"
+DEFAULT_TABLET_SCREEN = SCREENS_DIR / "ui04-ipad.webp"
+DEFAULT_PHONE_SCREEN = SCREENS_DIR / "ui02-iphone.webp"
 BLEND_PATH = SOURCE_DIR / "build-devices.blend"
 SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export are meters
 
 
-GRAPHITE = (0.075, 0.080, 0.088, 1.0)
-GRAPHITE_EDGE = (0.19, 0.20, 0.215, 1.0)
+GRAPHITE = (0.045, 0.050, 0.059, 1.0)
+GRAPHITE_EDGE = (0.090, 0.098, 0.112, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
-KEY_COLOR = (0.065, 0.073, 0.085, 1.0)
+KEY_COLOR = (0.0035, 0.0038, 0.0045, 1.0)
 GLASS = (0.012, 0.018, 0.026, 1.0)
+LAPTOP_LID_ANGLE_DEG = -15.0  # 105 degrees measured from the keyboard deck
+# The visible open pose was authored around the lower barrel center. The
+# animation parent uses the actual linkage axis above the deck so its 90-degree
+# closed pose clears the keyboard while preserving that accepted open pose.
+LAPTOP_OPEN_GEOMETRY_PIVOT = Vector((0.0, -0.004, 0.096))
+LAPTOP_HINGE = Vector((0.0, -0.004, 0.1175))
+LAPTOP_SCREEN_SIZE_M = (3024 / 254 * 0.0254, 1964 / 254 * 0.0254)
+TABLET_SCREEN_SIZE_M = (2420 / 264 * 0.0254, 1668 / 264 * 0.0254)
+PHONE_SCREEN_SIZE_M = (1320 / 460 * 0.0254, 2868 / 460 * 0.0254)
+LAPTOP_SCREEN_Y = -0.0130
+TABLET_SCREEN_Y = -0.0285
+PHONE_SCREEN_Y = -0.0459
+LAPTOP_RENDER_CAMERA = (0.0, -6.40, 0.82)
+LAPTOP_RENDER_TARGET = (0.0, -0.92, 1.10)
+LAPTOP_RENDER_LENS = 70
 
 
 def parse_args():
@@ -49,6 +64,10 @@ def parse_args():
     parser.add_argument("--tablet-screen", type=Path, default=DEFAULT_TABLET_SCREEN)
     parser.add_argument("--phone-screen", type=Path, default=DEFAULT_PHONE_SCREEN)
     parser.add_argument("--preview-dir", type=Path)
+    parser.add_argument(
+        "--models-only", "--skip-renders", action="store_true", dest="models_only",
+        help="export GLBs, the Blender source, metadata, and contract without poster renders",
+    )
     blender_args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     return parser.parse_args(blender_args)
 
@@ -64,7 +83,16 @@ def reset_scene() -> None:
     bpy.context.preferences.filepaths.save_version = 0
 
 
-def material(name: str, color: tuple[float, float, float, float], metallic=0.0, roughness=0.4):
+def material(
+    name: str,
+    color: tuple[float, float, float, float],
+    metallic=0.0,
+    roughness=0.4,
+    coat=0.0,
+    coat_roughness=None,
+    anisotropic=0.0,
+    specular=None,
+):
     mat = bpy.data.materials.new(name)
     mat.diffuse_color = color
     mat.use_nodes = True
@@ -72,22 +100,38 @@ def material(name: str, color: tuple[float, float, float, float], metallic=0.0, 
     bsdf.inputs["Base Color"].default_value = color
     bsdf.inputs["Metallic"].default_value = metallic
     bsdf.inputs["Roughness"].default_value = roughness
+    if "Coat Weight" in bsdf.inputs:
+        bsdf.inputs["Coat Weight"].default_value = coat
+        bsdf.inputs["Coat Roughness"].default_value = (
+            coat_roughness if coat_roughness is not None else max(0.08, roughness * 0.55)
+        )
+    if "Anisotropic IOR Level" in bsdf.inputs:
+        bsdf.inputs["Anisotropic IOR Level"].default_value = anisotropic
+    if specular is not None and "Specular IOR Level" in bsdf.inputs:
+        bsdf.inputs["Specular IOR Level"].default_value = specular
     return mat
 
 
 def screen_material(name: str, image_path: Path | None):
     mat = bpy.data.materials.new(name)
+    mat["display_response"] = "emission_only"
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
     bsdf = nodes.get("Principled BSDF")
-    bsdf.inputs["Base Color"].default_value = GLASS
-    bsdf.inputs["Roughness"].default_value = 0.82
+    # Active pixels should reproduce the UI without inheriting the studio rig.
+    # Keep a Principled surface so glTF export and texture detachment retain the
+    # existing material contract, but remove its reflective response entirely.
+    bsdf.inputs["Base Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+    bsdf.inputs["Metallic"].default_value = 0.0
+    bsdf.inputs["Roughness"].default_value = 1.0
     if "Specular IOR Level" in bsdf.inputs:
         bsdf.inputs["Specular IOR Level"].default_value = 0.0
+    if "Coat Weight" in bsdf.inputs:
+        bsdf.inputs["Coat Weight"].default_value = 0.0
     if "Emission Color" in bsdf.inputs:
-        bsdf.inputs["Emission Color"].default_value = (0.015, 0.025, 0.035, 1.0)
-        bsdf.inputs["Emission Strength"].default_value = 0.55
+        bsdf.inputs["Emission Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+        bsdf.inputs["Emission Strength"].default_value = 1.0
     coordinates = nodes.new("ShaderNodeTexCoord")
     mapping = nodes.new("ShaderNodeMapping")
     mapping.name = "screen_contain"
@@ -98,10 +142,8 @@ def screen_material(name: str, image_path: Path | None):
     tex.interpolation = "Linear"
     links.new(coordinates.outputs["UV"], mapping.inputs["Vector"])
     links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
-    links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     if "Emission Color" in bsdf.inputs:
         links.new(tex.outputs["Color"], bsdf.inputs["Emission Color"])
-        bsdf.inputs["Emission Strength"].default_value = 0.68
     if image_path and image_path.exists():
         image = bpy.data.images.load(str(image_path), check_existing=True)
         tex.image = image
@@ -152,7 +194,7 @@ def rounded_box(name, location, dimensions, mat, radius=0.04, collection=None):
     return obj
 
 
-def rounded_outline(width, height, radius, segments=7):
+def rounded_outline(width, height, radius, segments=20):
     radius = min(radius, width / 2, height / 2)
     centers = (
         (width / 2 - radius, -height / 2 + radius, -90),
@@ -165,10 +207,27 @@ def rounded_outline(width, height, radius, segments=7):
         for step in range(segments + 1):
             angle = math.radians(start_angle + 90 * step / segments)
             points.append((center_x + radius * math.cos(angle), center_y + radius * math.sin(angle)))
-    return points
+    deduplicated = []
+    for point in points:
+        if not deduplicated or math.dist(point, deduplicated[-1]) > 1e-12:
+            deduplicated.append(point)
+    if len(deduplicated) > 1 and math.dist(deduplicated[0], deduplicated[-1]) <= 1e-12:
+        deduplicated.pop()
+    return deduplicated
 
 
-def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, plane="XY", segments=7):
+def assert_convex_outward_normals(mesh, name):
+    """Fail the build when a generated convex shell contains an inward face."""
+    inward = [
+        polygon.index
+        for polygon in mesh.polygons
+        if polygon.center.dot(polygon.normal) <= 1e-10
+    ]
+    if inward:
+        raise AssertionError(f"{name} has inward-facing polygons: {inward[:8]}")
+
+
+def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, plane="XY", segments=20):
     width, height, depth = (value * SCALE for value in dimensions)
     location = Vector(tuple(value * SCALE for value in location))
     outline = rounded_outline(width, height, radius * SCALE, segments=segments)
@@ -181,10 +240,13 @@ def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, 
         back = [(x, half_depth, y) for x, y in outline]
     count = len(outline)
     faces = [tuple(range(count)), tuple(range(2 * count - 1, count - 1, -1))]
-    faces.extend((index, (index + 1) % count, (index + 1) % count + count, index + count) for index in range(count))
+    # The outline is CCW. Walk front -> back before advancing around the
+    # outline so side normals face away from the shell in both supported planes.
+    faces.extend((index, index + count, (index + 1) % count + count, (index + 1) % count) for index in range(count))
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(front + back, [], faces)
     mesh.update()
+    assert_convex_outward_normals(mesh, name)
     obj = bpy.data.objects.new(name, mesh)
     collection.objects.link(obj)
     obj.location = location
@@ -196,12 +258,194 @@ def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, 
         bevel.harden_normals = True
         bpy.context.view_layer.objects.active = obj
         bpy.ops.object.modifier_apply(modifier=bevel.name)
+    cap_axis = 2 if plane == "XY" else 1
+    for polygon in obj.data.polygons:
+        # Flat caps keep crisp screen/deck silhouettes; curved perimeter and
+        # bevel faces interpolate their normals instead of showing segments.
+        polygon.use_smooth = abs(polygon.normal[cap_axis]) < 0.999
     return obj
+
+
+def profiled_rounded_shell(
+    name, location, dimensions, radius, profile, mat, collection, segments=20,
+):
+    """Build a solid enclosure from a continuous rounded horizontal section."""
+    width, length, height = (value * SCALE for value in dimensions)
+    location = Vector(tuple(value * SCALE for value in location))
+    radius *= SCALE
+    levels = [(z * SCALE, inset * SCALE) for z, inset in profile]
+    if levels[0][0] != 0 or abs(levels[-1][0] - height) > 1e-10:
+        raise ValueError(f"{name} profile must span the full enclosure height")
+    outlines = [
+        rounded_outline(
+            width - 2 * inset,
+            length - 2 * inset,
+            max(0.001 * SCALE, radius - inset),
+            segments,
+        )
+        for _, inset in levels
+    ]
+    count = len(outlines[0])
+    if any(len(outline) != count for outline in outlines):
+        raise AssertionError(f"{name} profile rings do not share a vertex count")
+    vertices = [
+        (x, y, z - height / 2)
+        for (z, _), outline in zip(levels, outlines, strict=True)
+        for x, y in outline
+    ]
+    faces = [tuple(range(count - 1, -1, -1))]
+    for ring_index in range(len(outlines) - 1):
+        lower = ring_index * count
+        upper = (ring_index + 1) * count
+        faces.extend(
+            (
+                lower + index,
+                lower + (index + 1) % count,
+                upper + (index + 1) % count,
+                upper + index,
+            )
+            for index in range(count)
+        )
+    faces.append(tuple(range((len(outlines) - 1) * count, len(outlines) * count)))
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    assert_convex_outward_normals(mesh, name)
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.location = location
+    obj.data.materials.append(mat)
+    obj["profile_kind"] = "rolled_underbody"
+    obj["profile_levels_m"] = [round(z, 7) for z, _ in levels]
+    obj["profile_insets_m"] = [round(inset, 7) for _, inset in levels]
+    for polygon in mesh.polygons:
+        polygon.use_smooth = abs(polygon.normal.z) < 0.999
+    return obj
+
+
+def rounded_ring(name, location, outer_dimensions, inner_dimensions, radius, mat, collection, segments=16):
+    """Create a fine, upward-facing rounded seam in the XY plane."""
+    outer_width, outer_height = (value * SCALE for value in outer_dimensions)
+    inner_width, inner_height = (value * SCALE for value in inner_dimensions)
+    outer = rounded_outline(outer_width, outer_height, radius * SCALE, segments)
+    inset = (outer_width - inner_width) / 2
+    inner = rounded_outline(
+        inner_width,
+        inner_height,
+        max(0, radius * SCALE - inset),
+        segments,
+    )
+    count = len(outer)
+    vertices = [(x, y, 0) for x, y in outer + inner]
+    faces = [
+        (index, (index + 1) % count, (index + 1) % count + count, index + count)
+        for index in range(count)
+    ]
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.location = tuple(value * SCALE for value in location)
+    obj.data.materials.append(mat)
+    return obj
+
+
+def keycap(name, location, dimensions, radius, mat, collection, segments=6):
+    """Build a tapered key with a shallow dished top instead of a flat tile."""
+    width, height, depth = (value * SCALE for value in dimensions)
+    radius *= SCALE
+    z_bottom = -depth / 2
+    z_top = depth / 2
+    rings = (
+        (width - 0.008 * SCALE, height - 0.008 * SCALE, z_bottom),
+        (width, height, z_bottom + 0.0025 * SCALE),
+        (width - 0.008 * SCALE, height - 0.008 * SCALE, z_top - 0.0025 * SCALE),
+        (width - 0.014 * SCALE, height - 0.014 * SCALE, z_top - 0.0012 * SCALE),
+        (width - 0.040 * SCALE, height - 0.040 * SCALE, z_top - 0.0022 * SCALE),
+    )
+    outlines = [
+        rounded_outline(ring_width, ring_height, max(0.001 * SCALE, radius - inset), segments)
+        for ring_width, ring_height, _, inset in (
+            (*rings[0], 0.004 * SCALE),
+            (*rings[1], 0),
+            (*rings[2], 0.004 * SCALE),
+            (*rings[3], 0.007 * SCALE),
+            (*rings[4], 0.020 * SCALE),
+        )
+    ]
+    count = len(outlines[0])
+    vertices = [
+        (x, y, rings[ring_index][2])
+        for ring_index, outline in enumerate(outlines)
+        for x, y in outline
+    ]
+    faces = [tuple(range(count - 1, -1, -1))]
+    for ring_index in range(len(outlines) - 1):
+        lower = ring_index * count
+        upper = (ring_index + 1) * count
+        faces.extend(
+            (
+                lower + index,
+                lower + (index + 1) % count,
+                upper + (index + 1) % count,
+                upper + index,
+            )
+            for index in range(count)
+        )
+    faces.append(tuple(range((len(outlines) - 1) * count, len(outlines) * count)))
+    mesh = bpy.data.meshes.new(f"{name}_mesh")
+    mesh.from_pydata(vertices, [], faces)
+    mesh.update()
+    bottom = mesh.polygons[0]
+    top = mesh.polygons[-1]
+    shell_faces = mesh.polygons[1:1 + count * (len(outlines) - 2)]
+    dish_faces = mesh.polygons[1 + count * (len(outlines) - 2):-1]
+    if bottom.normal.z > -0.999 or top.normal.z < 0.999:
+        raise AssertionError(f"{name} has an inward-facing cap")
+    if any(Vector((polygon.center.x, polygon.center.y)).dot(Vector((polygon.normal.x, polygon.normal.y))) <= 0 for polygon in shell_faces):
+        raise AssertionError(f"{name} has an inward-facing key side")
+    bad_dish = [(polygon.index, tuple(round(value, 4) for value in polygon.normal)) for polygon in dish_faces if polygon.normal.z <= 0]
+    if bad_dish:
+        raise AssertionError(f"{name} has an inward-facing dish surface: {bad_dish[:8]}")
+    side_faces = [polygon for polygon in shell_faces if abs(polygon.normal.z) < 0.9]
+    if not side_faces:
+        raise AssertionError(f"{name} has no modeled side surface")
+    obj = bpy.data.objects.new(name, mesh)
+    collection.objects.link(obj)
+    obj.location = tuple(value * SCALE for value in location)
+    obj.data.materials.append(mat)
+    obj["sculpted_keycap"] = True
+    obj["dish_depth_m"] = 0.00010
+    for polygon in mesh.polygons:
+        polygon.use_smooth = abs(polygon.normal.z) < 0.999
+    return obj
+
+
+def cut_recess(target, name, location, dimensions, radius, collection):
+    """Cut a real pocket into an enclosure and discard the temporary cutter."""
+    cutter = rounded_prism(name, location, dimensions, radius, 0, target.data.materials[0], collection)
+    boolean = target.modifiers.new(f"{name}_boolean", "BOOLEAN")
+    boolean.operation = "DIFFERENCE"
+    boolean.solver = "EXACT"
+    boolean.object = cutter
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.modifier_apply(modifier=boolean.name)
+    bpy.data.objects.remove(cutter, do_unlink=True)
+    manifold = bmesh.new()
+    manifold.from_mesh(target.data)
+    nonmanifold = [edge.index for edge in manifold.edges if not edge.is_manifold]
+    signed_volume = manifold.calc_volume(signed=True)
+    manifold.free()
+    if nonmanifold:
+        raise AssertionError(f"{target.name} recess produced non-manifold edges: {nonmanifold[:8]}")
+    if signed_volume <= 0:
+        raise AssertionError(f"{target.name} recess reversed the enclosure volume")
 
 
 def rounded_screen(name, location, width, height, radius, mat, collection):
     width_m, height_m = width * SCALE, height * SCALE
-    outline = rounded_outline(width_m, height_m, radius * SCALE, segments=10)
+    outline = rounded_outline(width_m, height_m, radius * SCALE, segments=20)
     vertices = [(x, 0, z) for x, z in outline]
     mesh = bpy.data.meshes.new(f"{name}_mesh")
     mesh.from_pydata(vertices, [], [tuple(range(len(vertices)))])
@@ -236,7 +480,10 @@ def join_meshes(objects, name):
     return objects[0]
 
 
-def cylinder(name, location, radius, depth, mat, collection, rotation=(0, 0, 0), vertices=32):
+def cylinder(
+    name, location, radius, depth, mat, collection, rotation=(0, 0, 0),
+    vertices=32, bevel=0.012,
+):
     location = tuple(value * SCALE for value in location)
     radius *= SCALE
     depth *= SCALE
@@ -244,14 +491,103 @@ def cylinder(name, location, radius, depth, mat, collection, rotation=(0, 0, 0),
     obj = bpy.context.object
     obj.name = name
     obj.data.materials.append(mat)
-    bevel = obj.modifiers.new("edge_bevel", "BEVEL")
-    bevel.width = 0.012 * SCALE
-    bevel.segments = 4
-    bevel.harden_normals = True
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.object.modifier_apply(modifier=bevel.name)
+    if bevel:
+        edge_bevel = obj.modifiers.new("edge_bevel", "BEVEL")
+        edge_bevel.width = bevel * SCALE
+        edge_bevel.segments = 3
+        edge_bevel.harden_normals = True
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.modifier_apply(modifier=edge_bevel.name)
     move_to_collection(obj, collection)
     return obj
+
+
+def torus(name, location, major_radius, minor_radius, mat, collection, rotation=(0, 0, 0)):
+    bpy.ops.mesh.primitive_torus_add(
+        major_radius=major_radius * SCALE,
+        minor_radius=minor_radius * SCALE,
+        major_segments=28,
+        minor_segments=6,
+        location=tuple(value * SCALE for value in location),
+        rotation=rotation,
+    )
+    obj = bpy.context.object
+    obj.name = name
+    obj.data.materials.append(mat)
+    move_to_collection(obj, collection)
+    return obj
+
+
+def text_mesh(name, body, location, size, mat, collection, rotation=(0, 0, 0)):
+    """Create a small, joined-ready legend with no external font dependency."""
+    curve = bpy.data.curves.new(f"{name}_curve", "FONT")
+    curve.body = body
+    curve.align_x = "CENTER"
+    curve.align_y = "CENTER"
+    curve.size = size * SCALE
+    curve.extrude = 0.0002 * SCALE
+    curve.resolution_u = 2
+    curve.render_resolution_u = 2
+    obj = bpy.data.objects.new(name, curve)
+    collection.objects.link(obj)
+    obj.location = tuple(value * SCALE for value in location)
+    obj.rotation_euler = rotation
+    obj.data.materials.append(mat)
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.convert(target="MESH")
+    obj["shadow_excluded"] = True
+    return obj
+
+
+def transform_objects(objects, pivot, rotation=(0, 0, 0)):
+    pivot = Vector(tuple(value * SCALE for value in pivot))
+    rotation_matrix = (
+        Matrix.Rotation(rotation[2], 4, "Z")
+        @ Matrix.Rotation(rotation[1], 4, "Y")
+        @ Matrix.Rotation(rotation[0], 4, "X")
+    )
+    transform = Matrix.Translation(pivot) @ rotation_matrix @ Matrix.Translation(-pivot)
+    for obj in objects:
+        obj.matrix_world = transform @ obj.matrix_world
+
+
+def parent_rotating_parts(name, objects, pivot, rotation, collection, rest_pivot=None):
+    """Parent moving parts at a physical pivot without baking their rest pose."""
+    pivot_m = Vector(tuple(value * SCALE for value in pivot))
+    parent = bpy.data.objects.new(name, None)
+    collection.objects.link(parent)
+    parent.empty_display_type = "PLAIN_AXES"
+    parent.empty_display_size = 0.08
+    parent.location = pivot_m
+    parent.rotation_euler = rotation
+    parent["hinge_axis"] = "+X"
+    parent["closed_rotation_deg"] = 90.0
+    parent["default_rotation_deg"] = math.degrees(rotation[0])
+    parent["default_open_angle_deg"] = 105.0
+    rest_pivot_m = Vector(tuple(value * SCALE for value in (rest_pivot or pivot)))
+    rotation_matrix = (
+        Matrix.Rotation(rotation[2], 4, "Z")
+        @ Matrix.Rotation(rotation[1], 4, "Y")
+        @ Matrix.Rotation(rotation[0], 4, "X")
+    )
+    parent_world = Matrix.Translation(pivot_m) @ rotation_matrix
+    rest_transform = Matrix.Translation(rest_pivot_m) @ rotation_matrix @ Matrix.Translation(-rest_pivot_m)
+    for obj in objects:
+        original_world = obj.matrix_world.copy()
+        obj.parent = parent
+        obj.matrix_parent_inverse = Matrix.Identity(4)
+        obj.matrix_basis = parent_world.inverted() @ rest_transform @ original_world
+    return parent
+
+
+def laptop_lid_point(point):
+    """Return a Blender-space point after the authored lid opening transform."""
+    pivot = LAPTOP_OPEN_GEOMETRY_PIVOT
+    angle = math.radians(LAPTOP_LID_ANGLE_DEG)
+    local = Vector(point) - pivot
+    return pivot + Matrix.Rotation(angle, 4, "X") @ local
 
 
 def move_to_collection(obj, collection):
@@ -266,113 +602,254 @@ def add_collection(name: str):
     return collection
 
 
-def add_key_row(collection, mat, row_index, y, width_weights, height=0.13):
+def add_key_row(collection, mats, row_index, y, width_weights, labels, height=0.13):
     gap = 0.018
     row_width = 2.38
     scale = (row_width - gap * (len(width_weights) - 1)) / sum(width_weights)
     key_widths = [weight * scale for weight in width_weights]
     cursor = -row_width / 2
-    keys = []
+    keys, legends = [], []
     for column, key_width in enumerate(key_widths):
         center_x = cursor + key_width / 2
-        keys.append(rounded_prism(
-            f"key_{row_index:02d}_{column:02d}",
-            (center_x, y, 0.116),
-            (key_width, height, 0.012),
-            0.012,
-            0,
-            mat,
-            collection,
-            segments=3,
-        ))
+        label = labels[column] if column < len(labels) else ""
+        if row_index == 0 and column == len(key_widths) - 1:
+            keys.append(cylinder(
+                "touch_id_sensor", (center_x, y, 0.11285), 0.034, 0.0004,
+                mats["sensor"], collection, vertices=24, bevel=0,
+            ))
+        if label == "↑↓":
+            half_height = (height - gap * 0.55) / 2
+            for direction, y_offset in (("↑", half_height / 2 + gap * 0.14), ("↓", -half_height / 2 - gap * 0.14)):
+                keys.append(keycap(
+                    f"key_{row_index:02d}_{column:02d}_{direction}",
+                    (center_x, y + y_offset, 0.1075),
+                    (key_width, half_height, 0.013), 0.010,
+                    mats["key"], collection, segments=4,
+                ))
+                legends.append(text_mesh(
+                    f"legend_{row_index:02d}_{column:02d}_{direction}", direction,
+                    (center_x, y + y_offset, 0.11286), 0.036, mats["legend"], collection,
+                ))
+        else:
+            keys.append(keycap(
+                f"key_{row_index:02d}_{column:02d}",
+                (center_x, y, 0.1075),
+                (key_width, height, 0.013),
+                0.012,
+                mats["key"],
+                collection,
+                segments=6,
+            ))
+        if label and label != "↑↓":
+            legend_size = 0.030 if len(label) > 2 else 0.040
+            legends.append(text_mesh(
+                f"legend_{row_index:02d}_{column:02d}", label,
+                (center_x, y, 0.11286), legend_size, mats["legend"], collection,
+            ))
         cursor += key_width + gap
-    return keys
+    return keys, legends
 
 
 def build_keyboard(collection, mats):
     black_parts = [rounded_prism(
-        "keyboard_recess", (0, -0.70, 0.1101), (2.48, 1.12, 0.002),
-        0.055, 0, mats["black"], collection,
+        "keyboard_well_floor", (0, -0.70, 0.1030), (2.465, 1.105, 0.001),
+        0.0475, 0, mats["black"], collection,
     )]
     row_specs = (
-        (-0.22, [1] * 14, 0.105),
-        (-0.40, [1.25] + [1] * 12 + [1.25], 0.13),
-        (-0.59, [1.55] + [1] * 11 + [1.65], 0.13),
-        (-0.78, [1.85] + [1] * 10 + [1.85], 0.13),
-        (-0.97, [2.25] + [1] * 9 + [2.25], 0.13),
-        (-1.16, [1.25, 1, 1, 1.35, 5.8, 1.35, 1, 1, 1.25], 0.13),
+        (-0.22, [1] * 14, ("esc", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", ""), 0.13),
+        (-0.40, [1.25] + [1] * 12 + [1.25], ("`", "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=", "delete"), 0.13),
+        (-0.59, [1.45] + [1] * 12 + [1.45], ("tab", "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", "[", "]", "\\"), 0.13),
+        (-0.78, [1.72] + [1] * 11 + [1.72], ("caps", "A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'", "return"), 0.13),
+        (-0.97, [2.20] + [1] * 10 + [2.20], ("shift", "Z", "X", "C", "V", "B", "N", "M", ",", ".", "/", "shift"), 0.13),
+        (-1.16, [1.10, 1, 1.20, 1.35, 5.1, 1.35, 1.20, 1, 1, 1], ("fn", "⌃", "⌥", "⌘", "", "⌘", "⌥", "◀", "↑↓", "▶"), 0.13),
     )
-    keys = []
-    for row_index, (y, widths, height) in enumerate(row_specs):
-        keys.extend(add_key_row(collection, mats["key"], row_index, y, widths, height))
+    keys, legends = [], []
+    for row_index, (y, widths, labels, height) in enumerate(row_specs):
+        row_keys, row_legends = add_key_row(collection, mats, row_index, y, widths, labels, height)
+        keys.extend(row_keys)
+        legends.extend(row_legends)
     grilles = []
     for side in (-1, 1):
-        for column_x in (1.325, 1.425):
-            for row in range(12):
+        for column in range(5):
+            for row in range(18):
                 hole = cylinder(
-                    f"speaker_{side}_{column_x}_{row}",
-                    (side * column_x, -0.24 - row * 0.078, 0.111),
-                    0.0065,
-                    0.003,
+                    f"speaker_{side}_{column}_{row}",
+                    (side * (1.315 + column * 0.040), -0.20 - row * 0.057, 0.1115),
+                    0.0052,
+                    0.002,
                     mats["black"],
                     collection,
-                    vertices=12,
+                    vertices=8,
+                    bevel=0,
                 )
-                hole["decorative"] = True
                 grilles.append(hole)
-    return join_meshes(black_parts, "laptop_insets"), join_meshes(keys, "keyboard_keys"), join_meshes(grilles, "speaker_grilles")
+    return (
+        join_meshes(black_parts, "laptop_insets"),
+        join_meshes(keys, "keyboard_keys"),
+        join_meshes(legends, "keyboard_legends"),
+        join_meshes(grilles, "speaker_grilles"),
+    )
+
+
+def build_laptop_ports(collection, mats):
+    ports = []
+    # Left edge: MagSafe, two Thunderbolt ports, headphone jack.
+    for name, y, length, height in (
+        ("magsafe", -0.28, 0.24, 0.040),
+        ("thunderbolt_1", -0.63, 0.16, 0.034),
+        ("thunderbolt_2", -0.88, 0.16, 0.034),
+    ):
+        ports.append(rounded_box(name, (-1.563, y, 0.060), (0.002, length, height), mats["port"], 0.012, collection))
+    ports.append(cylinder(
+        "headphone_jack", (-1.563, -1.20, 0.060), 0.025, 0.003, mats["port"], collection,
+        rotation=(0, math.radians(90), 0), vertices=20, bevel=0.004,
+    ))
+    # Right edge: HDMI, Thunderbolt, and SDXC slot.
+    ports.extend((
+        rounded_box("hdmi", (1.563, -0.38, 0.060), (0.002, 0.23, 0.043), mats["port"], 0.010, collection),
+        rounded_box("thunderbolt_3", (1.563, -0.69, 0.060), (0.002, 0.16, 0.034), mats["port"], 0.012, collection),
+        rounded_box("sdxc", (1.563, -1.03, 0.068), (0.002, 0.26, 0.014), mats["port"], 0.004, collection),
+    ))
+    return join_meshes(ports, "laptop_ports")
 
 
 def build_laptop(mats):
     c = add_collection("Laptop")
+    lower_roll = tuple(
+        (
+            0.040 * (1 - math.cos(math.pi * step / 16)),
+            0.018 * (1 - math.sin(math.pi * step / 16)),
+        )
+        for step in range(9)
+    )
+    upper_shoulder = tuple(
+        (
+            0.082 + 0.028 * math.sin(math.pi * step / 12),
+            0.008 * (1 - math.cos(math.pi * step / 12)),
+        )
+        for step in range(1, 7)
+    )
+    base = profiled_rounded_shell(
+        "laptop_base", (0, -1.106, 0.055), (3.126, 2.212, 0.110),
+        0.095,
+        (
+            *lower_roll,
+            (0.082, 0.0000),
+            *upper_shoulder,
+        ),
+        mats["graphite"], c,
+    )
+    cut_recess(
+        base,
+        "keyboard_well_cutter",
+        (0, -0.70, 0.110),
+        (2.48, 1.12, 0.0155),
+        0.055,
+        c,
+    )
     hardware = [
-        rounded_prism("laptop_base", (0, -1.106, 0.055), (3.126, 2.212, 0.110), 0.095, 0.008, mats["graphite"], c),
-        rounded_prism("laptop_lid", (0, 0.010, 1.160), (3.126, 2.110, 0.040), 0.060, 0.006, mats["graphite"], c, plane="XZ"),
-        cylinder("hinge_left", (-1.03, -0.004, 0.096), 0.022, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
-        cylinder("hinge_right", (1.03, -0.004, 0.096), 0.022, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
+        base,
+        cylinder("hinge_left", (-1.03, -0.004, 0.096), 0.0175, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
+        cylinder("hinge_right", (1.03, -0.004, 0.096), 0.0175, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
     ]
     join_meshes(hardware, "laptop_hardware")
-    rounded_prism("laptop_front_glass", (0, -0.0106, 1.160), (3.086, 2.070, 0.001), 0.052, 0, mats["glass"], c, plane="XZ")
-    screen = rounded_screen("laptop_screen", (0, -0.0112, 1.160), 3.024, 1.964, 0.045, mats["desktop_screen"], c)
+    lid_shell = rounded_prism("laptop_lid_shell", (0, 0.00875, 1.160), (3.126, 2.110, 0.0385), 0.060, 0.006, mats["graphite"], c, plane="XZ")
+    front_glass = rounded_prism("laptop_front_glass", (0, -0.0112, 1.160), (3.086, 2.070, 0.0015), 0.052, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen("laptop_screen", (0, LAPTOP_SCREEN_Y, 1.160), 3.024, 1.964, 0.045, mats["desktop_screen"], c)
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
     build_keyboard(c, mats)
-    rounded_prism("trackpad", (0, -1.695, 0.1105), (1.27, 0.70, 0.001), 0.055, 0, mats["trackpad"], c)
-    rounded_prism("camera_notch", (0, -0.0114, 2.132), (0.22, 0.060, 0.002), 0.015, 0, mats["black"], c, plane="XZ")
+    rounded_ring(
+        "trackpad_seam", (0, -1.695, 0.11012), (1.2745, 0.7045), (1.270, 0.700),
+        0.05725, mats["black"], c,
+    )
+    rounded_prism("trackpad", (0, -1.695, 0.11008), (1.27, 0.70, 0.00012), 0.055, 0, mats["trackpad"], c)
+    notch = rounded_prism("camera_notch", (0, -0.0125, 2.126), (0.315, 0.042, 0.002), 0.020, 0, mats["black"], c, plane="XZ")
+    notch_bridge = rounded_prism("camera_notch_bridge", (0, -0.0125, 2.171), (0.315, 0.052, 0.002), 0.002, 0, mats["black"], c, plane="XZ", segments=2)
+    camera = cylinder(
+        "facetime_camera", (0, -0.0138, 2.142), 0.010, 0.0025, mats["sensor"], c,
+        rotation=(math.radians(90), 0, 0), vertices=20, bevel=0,
+    )
+    build_laptop_ports(c, mats)
+    # A centered front scoop and fine seam keep the lower enclosure from reading as a slab.
+    rounded_box("front_lip_scoop", (0, -2.213, 0.102), (0.62, 0.005, 0.022), mats["port"], 0.010, c)
+    parent_rotating_parts(
+        "laptop_lid",
+        (lid_shell, front_glass, screen, notch, notch_bridge, camera),
+        LAPTOP_HINGE,
+        (math.radians(LAPTOP_LID_ANGLE_DEG), 0, 0),
+        c,
+        rest_pivot=LAPTOP_OPEN_GEOMETRY_PIVOT,
+    )
     return c
 
 
 def build_tablet(mats):
     c = add_collection("Tablet")
-    rounded_prism("tablet_body", (0, 0, 0), (2.816, 2.155, 0.051), 0.095, 0.0055, mats["graphite"], c, plane="XZ")
+    rounded_prism("tablet_body", (0, 0, 0), (2.497, 1.775, 0.053), 0.1505, 0.0055, mats["graphite"], c, plane="XZ")
     controls = [
-        rounded_box("tablet_power", (1.400, 0, 0.58), (0.016, 0.042, 0.22), mats["edge"], 0.006, c),
-        rounded_box("tablet_volume", (0.82, 0, 1.0695), (0.28, 0.042, 0.016), mats["edge"], 0.006, c),
+        rounded_box("tablet_power", (1.247, 0, 0.55), (0.014, 0.043, 0.22), mats["edge"], 0.006, c),
+        rounded_box("tablet_volume", (0.72, 0, 0.886), (0.28, 0.043, 0.014), mats["edge"], 0.006, c),
     ]
     join_meshes(controls, "tablet_controls")
-    rounded_prism("tablet_front_glass", (0, -0.0261, 0), (2.776, 2.115, 0.001), 0.083, 0, mats["glass"], c, plane="XZ")
-    screen = rounded_screen("tablet_screen", (0, -0.0267, 0), 2.640, 1.980, 0.068, mats["tablet_screen"], c)
+    rounded_prism("tablet_front_glass", (0, -0.0271, 0), (2.467, 1.745, 0.001), 0.1355, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen(
+        "tablet_screen", (0, TABLET_SCREEN_Y, 0),
+        TABLET_SCREEN_SIZE_M[0] / SCALE, TABLET_SCREEN_SIZE_M[1] / SCALE,
+        0.066, mats["tablet_screen"], c,
+    )
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
-    cylinder("tablet_camera", (0, -0.0265, 1.035), 0.012, 0.003, mats["black"], c, rotation=(math.radians(90), 0, 0), vertices=20)
+    cylinder("tablet_landscape_camera", (0, -0.0280, 0.824), 0.012, 0.003, mats["sensor"], c, rotation=(math.radians(90), 0, 0), vertices=20, bevel=0)
+    # Rear camera, microphone, Smart Connector, and centered Thunderbolt/USB-C port.
+    cylinder("tablet_rear_camera_ring", (-1.035, 0.0335, 0.675), 0.055, 0.018, mats["edge"], c, rotation=(math.radians(90), 0, 0), vertices=28, bevel=0.006)
+    cylinder("tablet_rear_camera", (-1.035, 0.044, 0.675), 0.041, 0.010, mats["lens"], c, rotation=(math.radians(90), 0, 0), vertices=28, bevel=0.003)
+    cylinder("tablet_rear_mic", (-0.955, 0.031, 0.675), 0.010, 0.007, mats["port"], c, rotation=(math.radians(90), 0, 0), vertices=12, bevel=0)
+    usb = rounded_box("tablet_usb_c", (1.249, 0, 0), (0.007, 0.036, 0.128), mats["port"], 0.015, c)
+    smart = [cylinder(f"tablet_smart_{index}", (-0.055 + index * 0.055, 0.029, -0.660), 0.010, 0.004, mats["connector"], c, rotation=(math.radians(90), 0, 0), vertices=12, bevel=0) for index in range(3)]
+    join_meshes([usb, *smart], "tablet_connectors")
     return c
 
 
 def build_phone(mats):
     c = add_collection("Phone")
-    rounded_prism("phone_body", (0, 0, 0), (0.719, 1.500, 0.0875), 0.140, 0.0075, mats["graphite"], c, plane="XZ")
+    rounded_prism("phone_body", (0, 0, 0), (0.780, 1.634, 0.0875), 0.154, 0.0080, mats["phone_aluminum"], c, plane="XZ")
     controls = [
-        rounded_box("phone_action", (-0.3535, 0, 0.36), (0.012, 0.070, 0.14), mats["edge"], 0.005, c),
-        rounded_box("phone_volume_up", (-0.3535, 0, 0.13), (0.012, 0.070, 0.18), mats["edge"], 0.005, c),
-        rounded_box("phone_volume_down", (-0.3535, 0, -0.10), (0.012, 0.070, 0.18), mats["edge"], 0.005, c),
-        rounded_box("phone_side", (0.3535, 0, 0.20), (0.012, 0.070, 0.30), mats["edge"], 0.005, c),
+        rounded_box("phone_action", (-0.388, 0, 0.42), (0.013, 0.069, 0.13), mats["phone_edge"], 0.005, c),
+        rounded_box("phone_volume_up", (-0.388, 0, 0.17), (0.013, 0.069, 0.18), mats["phone_edge"], 0.005, c),
+        rounded_box("phone_volume_down", (-0.388, 0, -0.07), (0.013, 0.069, 0.18), mats["phone_edge"], 0.005, c),
+        rounded_box("phone_side", (0.388, 0, 0.28), (0.013, 0.069, 0.30), mats["phone_edge"], 0.005, c),
+        rounded_box("phone_camera_control", (0.388, 0, -0.27), (0.013, 0.069, 0.24), mats["phone_edge"], 0.005, c),
     ]
     join_meshes(controls, "phone_controls")
-    rounded_prism("phone_front_glass", (0, -0.0444, 0), (0.699, 1.480, 0.001), 0.130, 0, mats["glass"], c, plane="XZ")
-    screen = rounded_screen("phone_screen", (0, -0.0450, 0), 0.664, 1.4435, 0.115, mats["phone_screen"], c)
+    rounded_prism("phone_front_glass", (0, -0.0444, 0), (0.764, 1.618, 0.001), 0.146, 0, mats["glass"], c, plane="XZ")
+    screen = rounded_screen(
+        "phone_screen", (0, PHONE_SCREEN_Y, 0),
+        PHONE_SCREEN_SIZE_M[0] / SCALE, PHONE_SCREEN_SIZE_M[1] / SCALE,
+        0.140, mats["phone_screen"], c,
+    )
     screen["replaceable_texture"] = True
     screen["runtime_forward"] = "+Z"
-    rounded_prism("phone_island", (0, -0.0452, 0.661), (0.200, 0.055, 0.002), 0.0275, 0, mats["black"], c, plane="XZ")
+    rounded_prism("phone_island", (0, -0.0452, 0.745), (0.198, 0.056, 0.002), 0.028, 0, mats["black"], c, plane="XZ")
+    # The 17 Pro generation uses a forged full-width aluminum camera plateau and
+    # a contrasting Ceramic Shield back inset rather than the old square island.
+    rounded_prism("phone_back_glass", (0, 0.0445, -0.205), (0.668, 0.775, 0.0015), 0.105, 0, mats["phone_back"], c, plane="XZ")
+    rounded_prism("phone_camera_plateau", (0, 0.052, 0.575), (0.760, 0.420, 0.026), 0.115, 0.007, mats["phone_aluminum"], c, plane="XZ")
+    lens_positions = ((-0.205, 0.680), (-0.205, 0.438), (0.055, 0.560))
+    camera_parts = []
+    for index, (x, z) in enumerate(lens_positions, start=1):
+        camera_parts.extend((
+            cylinder(f"phone_camera_ring_{index}", (x, 0.071, z), 0.090, 0.033, mats["camera_ring"], c, rotation=(math.radians(90), 0, 0), vertices=32, bevel=0.006),
+            cylinder(f"phone_camera_lens_{index}", (x, 0.090, z), 0.068, 0.013, mats["lens"], c, rotation=(math.radians(90), 0, 0), vertices=32, bevel=0.003),
+        ))
+    cylinder("phone_flash", (0.270, 0.071, 0.675), 0.031, 0.010, mats["flash"], c, rotation=(math.radians(90), 0, 0), vertices=24, bevel=0.002)
+    cylinder("phone_lidar", (0.270, 0.071, 0.455), 0.026, 0.010, mats["port"], c, rotation=(math.radians(90), 0, 0), vertices=24, bevel=0.002)
+    rounded_box("phone_usb_c", (0, 0, -0.817), (0.155, 0.040, 0.007), mats["port"], 0.016, c)
+    speaker_slots = [
+        rounded_box(f"phone_speaker_{side}_{index}", (side * (0.17 + index * 0.045), 0, -0.817), (0.021, 0.035, 0.007), mats["port"], 0.006, c)
+        for side in (-1, 1) for index in range(4)
+    ]
+    join_meshes([*camera_parts, *speaker_slots], "phone_camera_and_speakers")
     return c
 
 
@@ -468,12 +945,14 @@ def add_camera(name, location, target, lens=58, ortho_scale=None):
     return camera
 
 
-def add_area(name, location, energy, size, color, target):
+def add_area(name, location, energy, size, color, target, shape="DISK", size_y=None):
     data = bpy.data.lights.new(name, "AREA")
     # Preserve the authored exposure when the whole physical scene is scaled to meters.
     data.energy = energy * SCALE * SCALE
-    data.shape = "DISK"
+    data.shape = shape
     data.size = size * SCALE
+    if shape == "RECTANGLE" and size_y is not None:
+        data.size_y = size_y * SCALE
     data.color = color
     obj = bpy.data.objects.new(name, data)
     bpy.context.scene.collection.objects.link(obj)
@@ -505,8 +984,8 @@ def setup_render(width, height, transparent):
     scene.view_settings.look = "AgX - Medium Low Contrast"
     scene.world.use_nodes = True
     background = scene.world.node_tree.nodes.get("Background")
-    background.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
-    background.inputs["Strength"].default_value = 0.0
+    background.inputs["Color"].default_value = (0.0056, 0.0065, 0.0080, 1.0)
+    background.inputs["Strength"].default_value = 0.12
 
 
 def add_floor(size=14, z=-0.075, black=True):
@@ -542,10 +1021,27 @@ def render(path, width, height, camera_location, target, lens, transparent, floo
     setup_render(width, height, transparent)
     camera = add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
     fit_device_framing(camera)
-    add_area("render_key", (-4.2, -5.8, 5.4), 800, 4.8, (1.0, 0.98, 0.95), target)
-    add_area("render_fill", (4.2, -4.4, 3.0), 500, 4.2, (0.82, 0.87, 0.94), target)
-    add_area("render_rim", (3.8, 1.6, 4.6), 420, 3.8, (0.90, 0.93, 1.0), target)
-    add_area("render_top", (-1.0, 0.2, 7.0), 260, 3.5, (1.0, 0.99, 0.97), target)
+    view_side = 1 if camera_location[1] > target[1] else -1
+    add_area(
+        "render_left_strip", (-4.0, view_side * 5.0, 3.0), 240, 3.5,
+        (0.96, 0.98, 1.0), target, shape="RECTANGLE", size_y=5.0,
+    )
+    add_area(
+        "render_right_strip", (4.0, view_side * 3.0, 1.0), 150, 0.85,
+        (0.78, 0.84, 0.94), target, shape="RECTANGLE", size_y=5.0,
+    )
+    add_area(
+        "render_top_strip", (0.0, view_side * 1.0, 5.0), 240, 5.0,
+        (1.0, 0.98, 0.94), target, shape="RECTANGLE", size_y=1.1,
+    )
+    add_area(
+        "render_front_card", (-1.0, view_side * 5.0, 0.1), 55, 6.0,
+        (0.86, 0.90, 0.96), target, shape="RECTANGLE", size_y=2.0,
+    )
+    add_area(
+        "render_low_front", (-1.0, view_side * 5.0, -2.0), 20, 4.0,
+        (0.72, 0.79, 0.90), target, shape="RECTANGLE", size_y=0.6,
+    )
     if floor:
         add_floor(14, -0.075, black=True)
     bpy.context.scene.render.filepath = str(path)
@@ -568,19 +1064,23 @@ def restore_offsets(collection, offsets):
 
 
 def transform_collection(collection, pivot, offset=(0, 0, 0), scale=1.0, rotation=(0, 0, 0)):
-    snapshots = {obj.name: obj.matrix_world.copy() for obj in collection_objects(collection)}
+    objects = collection_objects(collection)
+    object_set = set(objects)
+    roots = [obj for obj in objects if obj.parent not in object_set]
+    snapshots = {obj.name: obj.matrix_world.copy() for obj in roots}
     pivot = Vector(tuple(value * SCALE for value in pivot))
     offset = Vector(tuple(value * SCALE for value in offset))
     rotation_matrix = Matrix.Rotation(rotation[2], 4, "Z") @ Matrix.Rotation(rotation[1], 4, "Y") @ Matrix.Rotation(rotation[0], 4, "X")
     transform = Matrix.Translation(offset) @ Matrix.Translation(pivot) @ rotation_matrix @ Matrix.Scale(scale, 4) @ Matrix.Translation(-pivot)
-    for obj in collection_objects(collection):
+    for obj in roots:
         obj.matrix_world = transform @ obj.matrix_world
     return snapshots
 
 
 def restore_matrices(collection, snapshots):
     for obj in collection_objects(collection):
-        obj.matrix_world = snapshots[obj.name]
+        if obj.name in snapshots:
+            obj.matrix_world = snapshots[obj.name]
 
 
 def triangle_count(collection, include_decorative=True):
@@ -596,6 +1096,22 @@ def triangle_count(collection, include_decorative=True):
         total += len(mesh.loop_triangles)
         obj.evaluated_get(depsgraph).to_mesh_clear()
     return total
+
+
+def collection_bounds_size(collection):
+    """Return evaluated outer bounds in exported glTF axis order (X, Y-up, Z)."""
+    bpy.context.view_layer.update()
+    points = [
+        obj.matrix_world @ Vector(corner)
+        for obj in collection_objects(collection)
+        if obj.type == "MESH"
+        for corner in obj.bound_box
+    ]
+    blender_size = [
+        max(getattr(point, axis) for point in points) - min(getattr(point, axis) for point in points)
+        for axis in "xyz"
+    ]
+    return [blender_size[0], blender_size[2], blender_size[1]]
 
 
 def image_info(path):
@@ -623,11 +1139,9 @@ def render_scene_posters(collections, mats, default_screens):
     fixture_stems = ["ui01", "ui02", "ui03-resumed", "ui04", "ui05-approval", "ui05-merged"]
     render_paths = []
     for index, stem in enumerate(fixture_stems, start=1):
-        desktop_fixture = SCREENS_DIR / f"{stem}-desktop.webp"
-        mobile_fixture = SCREENS_DIR / f"{stem}-mobile.webp"
-        tablet_fixture = SCREENS_DIR / f"{stem}-tablet.webp"
-        if not tablet_fixture.exists():
-            tablet_fixture = desktop_fixture
+        desktop_fixture = SCREENS_DIR / f"{stem}-macbook.webp"
+        mobile_fixture = SCREENS_DIR / f"{stem}-iphone.webp"
+        tablet_fixture = SCREENS_DIR / f"{stem}-ipad.webp"
         set_screen_texture(mats["desktop_screen"], desktop_fixture)
         set_screen_texture(mats["tablet_screen"], tablet_fixture)
         set_screen_texture(mats["phone_screen"], mobile_fixture)
@@ -636,8 +1150,8 @@ def render_scene_posters(collections, mats, default_screens):
 
         if index == 1:
             set_visible_collections(laptop)
-            render(desktop_path, 1440, 900, (0.84, -6.94, 1.54), (0, -1.0, 1.12), 58, False, ortho_scale=3.0)
-            render(mobile_path, 720, 960, (0.84, -6.94, 1.54), (0, -1.0, 1.12), 58, False, ortho_scale=5.1)
+            render(desktop_path, 1440, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, False)
+            render(mobile_path, 720, 960, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, False)
         elif index == 2:
             laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-0.72, 0, 0), scale=0.78)
             phone_state = transform_collection(phone, (0, 0, 0), offset=(1.35, -0.15, -0.20), scale=1.12)
@@ -656,9 +1170,9 @@ def render_scene_posters(collections, mats, default_screens):
             render(desktop_path, 1440, 900, (2.45, -5.0, 1.92), (0, 0, 0), 67, False)
             render(mobile_path, 720, 960, (2.45, -5.0, 1.92), (0, 0, 0), 67, False)
         else:
-            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.2, 0, 0), scale=0.62)
-            tablet_state = transform_collection(tablet, (0, 0, 0), offset=(1.18, 0.05, 0.42), scale=0.58)
-            phone_state = transform_collection(phone, (0, 0, 0), offset=(2.18, -0.14, -0.34), scale=0.78)
+            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.15, 0, 0), scale=0.62)
+            tablet_state = transform_collection(tablet, (0, 0, 0), offset=(0.72, 0.05, 0.36), scale=0.62)
+            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.98, -0.14, -0.34), scale=0.62)
             set_visible_collections(laptop, tablet, phone)
             render(desktop_path, 1440, 900, (1.05, -7.0, 1.65), (0.35, -0.45, 0.76), 60, False, ortho_scale=5.0)
             restore_matrices(laptop, laptop_state)
@@ -688,46 +1202,90 @@ def render_previews(preview_dir, collections):
         export_glb(collection, preview_dir / f"{name}.glb")
     export_glb(laptop, preview_dir / "laptop-low.glb", include_decorative=False)
     set_collection_visibility(laptop)
-    render(preview_dir / "laptop-candidate.webp", 1200, 900, (0.88, -6.94, 1.54), (0.04, -1.0, 1.12), 58, True, ortho_scale=3.25)
+    render(preview_dir / "laptop-candidate.webp", 1200, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, True)
     set_collection_visibility(tablet)
     render(preview_dir / "tablet-candidate.webp", 1000, 760, (2.45, -5.0, 1.92), (0, 0, 0), 67, True)
     set_collection_visibility(phone)
     render(preview_dir / "phone-candidate.webp", 640, 1040, (1.45, -3.95, 1.10), (0, 0, 0), 72, True)
+    render(preview_dir / "phone-back-candidate.webp", 760, 1040, (-1.55, 4.15, 1.18), (0, 0, 0.05), 72, True)
 
 
-def device_specs():
-    return {
+def device_specs(collections=None):
+    screen_center_blender = laptop_lid_point((0, LAPTOP_SCREEN_Y, 1.160)) * SCALE
+    screen_corners_blender = [
+        laptop_lid_point((x, LAPTOP_SCREEN_Y, z)) * SCALE
+        for x, z in (
+            (-1.512, 0.178), (1.512, 0.178),
+            (1.512, 2.142), (-1.512, 2.142),
+        )
+    ]
+    to_gltf = lambda point: [round(point.x, 7), round(point.z, 7), round(-point.y, 7)]
+    lid_top = laptop_lid_point((0, 0.010, 2.215)) * SCALE
+    lid_rear = max(point.y for point in screen_corners_blender) + 0.0021
+    tablet_half_screen = (TABLET_SCREEN_SIZE_M[0] / 2, TABLET_SCREEN_SIZE_M[1] / 2)
+    phone_half_screen = (PHONE_SCREEN_SIZE_M[0] / 2, PHONE_SCREEN_SIZE_M[1] / 2)
+    specs = {
         "laptop": {
-            "dimensions_m": [0.3126, 0.2215, 0.2222],
+            "model": "MacBook Pro 14-inch (M5, 2025)",
+            "dimensions_m": [0.3126, round(lid_top.z, 7), round(0.2212 + lid_rear, 7)],
             "body_size_m": [0.3126, 0.0110, 0.2212],
             "body_corner_radius_m": 0.0095,
-            "lid_size_m": [0.3126, 0.2110, 0.0040],
+            "closed_height_m": 0.0155,
+            "lid_size_m": [0.3126, 0.2110, 0.0041],
             "lid_corner_radius_m": 0.0060,
-            "screen_size_m": [0.3024, 0.1964],
-            "screen_center_m": [0, 0.1160, 0.00112],
+            "lid_open_angle_deg": 105.0,
+            "lid_hinge_node": "laptop_lid",
+            "lid_hinge_axis": "+X",
+            "lid_hinge_closed_rotation_deg": 90.0,
+            "lid_hinge_default_rotation_deg": LAPTOP_LID_ANGLE_DEG,
+            "screen_size_m": list(LAPTOP_SCREEN_SIZE_M),
+            "screen_center_m": to_gltf(screen_center_blender),
             "screen_corner_radius_m": 0.0045,
-            "screen_corners_m": [[-0.1512, 0.0178, 0.00112], [0.1512, 0.0178, 0.00112], [0.1512, 0.2142, 0.00112], [-0.1512, 0.2142, 0.00112]],
-            "hinge_pivot_m": [0, 0.0096, 0.0004],
+            "screen_surface_clearance_m": 0.000105,
+            "screen_corners_m": [to_gltf(point) for point in screen_corners_blender],
+            "hinge_pivot_m": [
+                round(LAPTOP_HINGE.x * SCALE, 7),
+                round(LAPTOP_HINGE.z * SCALE, 7),
+                round(-LAPTOP_HINGE.y * SCALE, 7),
+            ],
         },
         "tablet": {
-            "dimensions_m": [0.2816, 0.2155, 0.0051],
-            "body_size_m": [0.2816, 0.2155, 0.0051],
-            "body_corner_radius_m": 0.0095,
-            "screen_size_m": [0.2640, 0.1980],
-            "screen_center_m": [0, 0, 0.00267],
-            "screen_corner_radius_m": 0.0068,
-            "screen_corners_m": [[-0.1320, -0.0990, 0.00267], [0.1320, -0.0990, 0.00267], [0.1320, 0.0990, 0.00267], [-0.1320, 0.0990, 0.00267]],
+            "model": "iPad Pro 11-inch (M5, 2025)",
+            "dimensions_m": [0.2497, 0.1775, 0.0082],
+            "body_size_m": [0.2497, 0.1775, 0.0053],
+            "body_corner_radius_m": 0.01505,
+            "screen_size_m": list(TABLET_SCREEN_SIZE_M),
+            "screen_center_m": [0, 0, round(-TABLET_SCREEN_Y * SCALE, 7)],
+            "screen_corner_radius_m": 0.0066,
+            "screen_surface_clearance_m": 0.000090,
+            "screen_corners_m": [
+                [-tablet_half_screen[0], -tablet_half_screen[1], round(-TABLET_SCREEN_Y * SCALE, 7)],
+                [tablet_half_screen[0], -tablet_half_screen[1], round(-TABLET_SCREEN_Y * SCALE, 7)],
+                [tablet_half_screen[0], tablet_half_screen[1], round(-TABLET_SCREEN_Y * SCALE, 7)],
+                [-tablet_half_screen[0], tablet_half_screen[1], round(-TABLET_SCREEN_Y * SCALE, 7)],
+            ],
         },
         "phone": {
-            "dimensions_m": [0.0719, 0.1500, 0.00875],
-            "body_size_m": [0.0719, 0.1500, 0.00875],
-            "body_corner_radius_m": 0.0140,
-            "screen_size_m": [0.0664, 0.14435],
-            "screen_center_m": [0, 0, 0.00450],
-            "screen_corner_radius_m": 0.0115,
-            "screen_corners_m": [[-0.0332, -0.072175, 0.00450], [0.0332, -0.072175, 0.00450], [0.0332, 0.072175, 0.00450], [-0.0332, 0.072175, 0.00450]],
+            "model": "iPhone 17 Pro Max (2025)",
+            "dimensions_m": [0.0780, 0.1634, 0.01403],
+            "body_size_m": [0.0780, 0.1634, 0.00875],
+            "body_corner_radius_m": 0.0154,
+            "screen_size_m": list(PHONE_SCREEN_SIZE_M),
+            "screen_center_m": [0, 0, round(-PHONE_SCREEN_Y * SCALE, 7)],
+            "screen_corner_radius_m": 0.0140,
+            "screen_surface_clearance_m": 0.000100,
+            "screen_corners_m": [
+                [-phone_half_screen[0], -phone_half_screen[1], round(-PHONE_SCREEN_Y * SCALE, 7)],
+                [phone_half_screen[0], -phone_half_screen[1], round(-PHONE_SCREEN_Y * SCALE, 7)],
+                [phone_half_screen[0], phone_half_screen[1], round(-PHONE_SCREEN_Y * SCALE, 7)],
+                [-phone_half_screen[0], phone_half_screen[1], round(-PHONE_SCREEN_Y * SCALE, 7)],
+            ],
         },
     }
+    if collections:
+        for name, collection in collections.items():
+            specs[name]["dimensions_m"] = collection_bounds_size(collection)
+    return specs
 
 
 def write_device_contract(specs):
@@ -740,6 +1298,7 @@ def write_device_contract(specs):
     }
     for name, spec in specs.items():
         device = {
+            "model": spec["model"],
             "bounds_size_m": spec["dimensions_m"],
             "body_size_m": spec["body_size_m"],
             "body_corner_radius_m": spec["body_corner_radius_m"],
@@ -749,9 +1308,14 @@ def write_device_contract(specs):
                 "center_m": spec["screen_center_m"],
                 "corners_m": spec["screen_corners_m"],
                 "corner_radius_m": spec["screen_corner_radius_m"],
+                "surface_clearance_m": spec["screen_surface_clearance_m"],
             },
         }
-        for key in ("lid_size_m", "lid_corner_radius_m", "hinge_pivot_m"):
+        for key in (
+            "closed_height_m", "lid_size_m", "lid_corner_radius_m", "lid_open_angle_deg",
+            "lid_hinge_node", "lid_hinge_axis", "lid_hinge_closed_rotation_deg",
+            "lid_hinge_default_rotation_deg", "hinge_pivot_m",
+        ):
             if key in spec:
                 device[key] = spec[key]
         contract["devices"][name] = device
@@ -762,7 +1326,7 @@ def write_device_contract(specs):
 
 
 def build_metadata(collections, render_paths, default_screens):
-    specs = device_specs()
+    specs = device_specs(collections)
     devices = {}
     for name, collection in collections.items():
         glb = OUTPUT_DIR / f"{name}.glb"
@@ -793,8 +1357,8 @@ def build_metadata(collections, render_paths, default_screens):
         "screen_fixtures": {
             name: {
                 "file": str(path.relative_to(LANDING_ASSETS)),
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                "packed_in_blend": True,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None,
+                "packed_in_blend": path.exists(),
             }
             for name, path in default_screens.items()
         },
@@ -820,19 +1384,32 @@ def main():
     }
     reset_scene()
     mats = {
-        "graphite": material("Graphite", GRAPHITE, metallic=0.70, roughness=0.31),
-        "edge": material("GraphiteEdge", GRAPHITE_EDGE, metallic=0.64, roughness=0.25),
-        "black": material("BlackInset", BLACK, metallic=0.15, roughness=0.28),
-        "glass": material("FrontGlass", (0.0045, 0.0050, 0.0060, 1.0), metallic=0.08, roughness=0.16),
-        "key": material("KeyGraphite", KEY_COLOR, metallic=0.12, roughness=0.39),
-        "trackpad": material("TrackpadGraphite", GRAPHITE, metallic=0.58, roughness=0.38),
+        "graphite": material("SpaceBlackAluminum", GRAPHITE, metallic=1.0, roughness=0.30, coat=0.0, anisotropic=0.34),
+        "edge": material("MachinedSpaceBlackEdge", GRAPHITE_EDGE, metallic=1.0, roughness=0.22, coat=0.0, anisotropic=0.42),
+        "black": material("BlackInset", (0.001, 0.001, 0.0015, 1.0), metallic=0.0, roughness=0.92, specular=0.0),
+        "glass": material(
+            "FrontGlass", (0.0045, 0.0050, 0.0060, 1.0), metallic=0.0,
+            roughness=0.30, coat=0.10, coat_roughness=0.30, specular=0.18,
+        ),
+        "key": material("KeyGraphite", KEY_COLOR, metallic=0.0, roughness=0.38, coat=0.0, specular=0.18),
+        "legend": material("KeyLegend", (0.42, 0.45, 0.49, 1.0), metallic=0.0, roughness=0.42),
+        "trackpad": material("TrackpadSpaceBlack", (0.030, 0.033, 0.039, 1.0), metallic=0.10, roughness=0.20, coat=0.62),
+        "port": material("PortInterior", (0.002, 0.003, 0.004, 1.0), metallic=0.12, roughness=0.37),
+        "connector": material("ConnectorMetal", (0.28, 0.22, 0.10, 1.0), metallic=0.84, roughness=0.20),
+        "lens": material("OpticalGlass", (0.002, 0.007, 0.014, 1.0), metallic=0.02, roughness=0.055, coat=1.0),
+        "sensor": material("SensorBlack", (0.0007, 0.0010, 0.0014, 1.0), metallic=0.0, roughness=0.55, specular=0.05),
+        "camera_ring": material("CameraRing", (0.025, 0.038, 0.045, 1.0), metallic=0.92, roughness=0.16, coat=0.16),
+        "flash": material("FlashGlass", (0.78, 0.74, 0.58, 1.0), metallic=0.0, roughness=0.17, coat=0.75),
+        "phone_aluminum": material("DeepBlueAluminum", (0.018, 0.031, 0.058, 1.0), metallic=1.0, roughness=0.30, coat=0.0, anisotropic=0.38),
+        "phone_edge": material("DeepBlueMachinedEdge", (0.040, 0.060, 0.095, 1.0), metallic=1.0, roughness=0.22, coat=0.0, anisotropic=0.42),
+        "phone_back": material("DeepBlueCeramicShield", (0.014, 0.023, 0.041, 1.0), metallic=0.12, roughness=0.25, coat=0.62),
         "desktop_screen": screen_material("ScreenDesktop", default_screens["laptop"]),
         "tablet_screen": screen_material("ScreenTablet", default_screens["tablet"]),
         "phone_screen": screen_material("ScreenPhone", default_screens["phone"]),
     }
-    floor_black = material("RenderFloorBlack", (0.0015, 0.002, 0.004, 1), metallic=0.05, roughness=0.34)
-    floor_clear = material("RenderFloorClear", (0.02, 0.02, 0.02, 0), metallic=0, roughness=0.5)
-    floor_clear.diffuse_color = (0.02, 0.02, 0.02, 0)
+    material("RenderFloorBlack", (0.0015, 0.002, 0.004, 1), metallic=0.05, roughness=0.34)
+    render_floor_clear = material("RenderFloorClear", (0.02, 0.02, 0.02, 0), metallic=0, roughness=0.5)
+    render_floor_clear.diffuse_color = (0.02, 0.02, 0.02, 0)
 
     laptop = build_laptop(mats)
     tablet = build_tablet(mats)
@@ -851,11 +1428,19 @@ def main():
     # Save editable source before temporary composition transforms are applied.
     bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_PATH))
 
+    if args.models_only:
+        existing_renders = sorted(OUTPUT_DIR.glob("*.webp"))
+        build_metadata(collections, existing_renders, default_screens)
+        bpy.ops.wm.save_as_mainfile(filepath=str(BLEND_PATH))
+        BLEND_PATH.with_suffix(".blend1").unlink(missing_ok=True)
+        print(f"Built device models in {OUTPUT_DIR}")
+        return
+
     render_paths = []
     set_collection_visibility(laptop)
-    render(OUTPUT_DIR / "hero-laptop.webp", 1600, 1180, (0.88, -6.94, 1.54), (0.04, -1.0, 1.12), 58, True, ortho_scale=3.45)
+    render(OUTPUT_DIR / "hero-laptop.webp", 1600, 1180, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, True)
     render_paths.append(OUTPUT_DIR / "hero-laptop.webp")
-    render(OUTPUT_DIR / "laptop.webp", 1200, 900, (0.88, -6.94, 1.54), (0.04, -1.0, 1.12), 58, True, ortho_scale=3.45)
+    render(OUTPUT_DIR / "laptop.webp", 1200, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, True)
     render_paths.append(OUTPUT_DIR / "laptop.webp")
 
     set_collection_visibility(tablet)

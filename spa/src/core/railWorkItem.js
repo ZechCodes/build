@@ -11,6 +11,7 @@
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { readCached, subscribeCache } from "./localCache.js";
+import { issueAddress, readIssueRecord } from "./issueCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
  *  thing that says what a workspace is mounted out of. */
@@ -46,7 +47,9 @@ export function createRailWorkItem({
   let rereadAgain = false;
 
   const rowAddress = (entityId) =>
-    (entityId && cacheScope?.address({ entityId, kind: ROW_RECORD_KIND })) || null;
+    (entityId && (context.kind === "issue"
+      ? cacheScope?.address(issueAddress(context.deviceId, entityId, "get"))
+      : cacheScope?.address({ entityId, kind: ROW_RECORD_KIND }))) || null;
 
   /// The row itself, or nothing where this device holds none — a checkout
   /// nobody has claimed has no row anywhere, and the rail on it is the one that
@@ -83,15 +86,14 @@ export function createRailWorkItem({
     return entry?.entityId || null;
   };
 
-  /// The work item this rail stands on: the cached row, for every kind the
-  /// board writes one for. An issue is the exception — nothing on either side
-  /// writes an issue a row — and its context reads its own
-  /// (core/agentRailContext.js). A read that is refused answers nothing, which
-  /// leaves the rail as it was rather than blanking the conversation under the
-  /// reader.
+  /// Issues have no board row. Their detail pull is a writer to the issue's
+  /// durable get record; its announcement makes this reader take it up. A
+  /// warm record is returned immediately while that pull is still in flight.
   const read = async (entityId) => {
     if (!railContext.workItem) return cachedRow(entityId);
-    return railContext.workItem(callFor()).catch(() => null);
+    void readIssueRecord({ deviceId: context.deviceId, issueId: entityId, sub: "get",
+      read: () => railContext.workItem(callFor()), force: true }).catch(() => null);
+    return cachedRow(entityId);
   };
 
   const takeUpRow = async (entityId) => {

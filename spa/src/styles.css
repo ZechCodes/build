@@ -1842,12 +1842,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-comment-card { min-width:0; overflow:visible; border-radius:0; background:transparent; }
 .thread-body { padding:0; min-width:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
 .thread-message.user { align-self:flex-end; }
-/* The reader's words use the green bubble; this agent and another agent use
-   the old neutral user surface. Both treatments are shared by the full
-   conversation and the rail. Bubble ink and muted labels have their own
-   contrast-safe tokens because the page's dim text may be faint on green. */
-.thread-message:is(.agent, .from-agent) { align-self:flex-start; }
-.thread-message:is(.user, .agent, .from-agent) { width:min(78%, 520px); }
+/* The reader's words use the green bubble; words arriving from another agent
+   use the old neutral reader surface. This agent's own words stay inline in
+   the transcript. The rail and full conversation share these treatments.
+   Bubble ink and muted labels have contrast-safe tokens for the green. */
+.thread-message.from-agent { align-self:flex-start; }
+.thread-message:is(.user, .from-agent) { width:min(78%, 520px); }
 .thread-message.user { width:100%; }
 .thread-message.user .thread-comment-card { width:min(78%, 520px); margin-left:auto; }
 .thread-user-tick { position:absolute; left:0; top:50%; transform:translateY(-50%);
@@ -1856,7 +1856,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-user-tick span { display:block; width:3px; height:14px; border-radius:3px; background:currentColor; }
 .thread-user-tick:hover, .thread-user-tick.active { color:var(--accent); background:var(--accent-soft); }
 .thread-user-tick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.thread-message:is(.user, .agent, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
+.thread-message:is(.user, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
   background:var(--panel2); }
 .thread-message.user .thread-comment-card { background:var(--user-bubble); color:var(--user-bubble-ink); }
 .thread-message.user .thread-body { color:var(--user-bubble-ink); }
@@ -1868,11 +1868,11 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   .viewing-context-detail > button) { color:var(--user-bubble-muted); }
 .thread-message.user .delivery-status.uncertain { color:var(--user-bubble-warn); }
 .thread-message.user .delivery-status.failed { color:var(--user-bubble-error); }
-.thread-message:is(.user, .agent, .from-agent) .thread-body { padding:6px 12px 9px; }
-.thread-message:is(.user, .agent, .from-agent) .message-viewing-context { padding:7px 12px 0; }
-.thread-message:is(.user, .agent, .from-agent) .thread-references,
-.thread-message:is(.user, .agent, .from-agent) .thread-attachments,
-.thread-message:is(.user, .agent, .from-agent) .thread-options { padding-inline:12px; }
+.thread-message:is(.user, .from-agent) .thread-body { padding:6px 12px 9px; }
+.thread-message:is(.user, .from-agent) .message-viewing-context { padding:7px 12px 0; }
+.thread-message:is(.user, .from-agent) .thread-references,
+.thread-message:is(.user, .from-agent) .thread-attachments,
+.thread-message:is(.user, .from-agent) .thread-options { padding-inline:12px; }
 /* Where it came from, above the bubble: the workspace or project, and the
    conversation it was said in. Both are links, so the other side of an
    exchange is one press away. */
@@ -1927,12 +1927,12 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-references, .thread-attachments, .thread-options { padding-inline:0; }
 .thread-message-footer { display:flex; align-items:center; gap:5px; padding-top:5px;
   color:var(--dim); font-size:11px; line-height:1; }
-.thread-message:is(.user, .agent, .from-agent) .thread-message-footer { padding:0 12px 8px; }
+.thread-message:is(.user, .from-agent) .thread-message-footer { padding:0 12px 8px; }
 .thread-status { display:inline-flex; align-items:center; }
 .thread-status svg { width:13px; height:13px; }
 .thread-status svg + svg { margin-left:-7px; }
 .thread-message-resolution { padding-bottom:5px; font-size:11px; }
-.thread-message:is(.user, .agent, .from-agent) .thread-message-resolution { padding:7px 12px 0; }
+.thread-message:is(.user, .from-agent) .thread-message-resolution { padding:7px 12px 0; }
 .thread-lightbox { position:relative; display:flex; align-items:center; justify-content:center;
   width:auto; max-width:min(94vw, 1200px); max-height:92vh; padding:34px 12px 12px; background:var(--bg); }
 .thread-lightbox-image { display:block; max-width:min(calc(94vw - 24px), 1174px);
@@ -2001,7 +2001,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .composer-send { width:34px; height:34px; border-radius:8px; }
 .composer-attach { width:34px; height:34px; }
 @media (max-width: 640px) {
-  .thread-message:is(.agent, .from-agent), .thread-message.user .thread-comment-card { width:min(88%, 520px); }
+  .thread-message.from-agent, .thread-message.user .thread-comment-card { width:min(88%, 520px); }
 }
 
 /* Global notifications (core/notify.js) — errors persist until dismissed,

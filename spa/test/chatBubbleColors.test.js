@@ -35,11 +35,14 @@ describe("chat bubble colours", () => {
     }
   });
 
-  it("gives reader messages green and other agents the former neutral surface", () => {
-    expect(styles).toMatch(/\.thread-message:is\(\.user, \.agent, \.from-agent\) \.thread-comment-card[^}]+background:var\(--panel2\)/);
+  it("gives readers green, other agents grey, and this agent's words no bubble", () => {
+    expect(styles).toMatch(/\.thread-comment-card \{[^}]+border-radius:0; background:transparent/);
+    expect(styles).toMatch(/\.thread-message:is\(\.user, \.from-agent\) \.thread-comment-card[^}]+background:var\(--panel2\)/);
     expect(styles).toMatch(/\.thread-message\.user \.thread-comment-card \{[^}]+background:var\(--user-bubble\)/);
     expect(styles).toMatch(/\.thread-message\.user \.thread-body \{ color:var\(--user-bubble-ink\)/);
-    expect(styles).toMatch(/\.thread-message:is\(\.agent, \.from-agent\) \{ align-self:flex-start; \}/);
+    expect(styles).toMatch(/\.thread-message\.from-agent \{ align-self:flex-start; \}/);
+    expect(styles).not.toMatch(/\.thread-message:is\([^)]*\.agent[^)]*\) \.thread-comment-card/);
+    expect(styles).not.toMatch(/\.thread-message\.agent \.thread-comment-card/);
     for (const property of ["body", "link", "muted", "warn", "error"]) {
       const selector = property === "body" ? "thread-body" : property === "link" ? "thread-revision-link" :
         property === "warn" ? "delivery-status.uncertain" : property === "error" ? "delivery-status.failed" : "thread-message-footer";

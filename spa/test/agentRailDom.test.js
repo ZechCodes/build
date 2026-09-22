@@ -752,7 +752,7 @@ describe("the rail over a machine that is asked nothing", () => {
   it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
     await wipeCache();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
-    const hiddenRun = branchRow({ agents: [agent({ watched: false })] });
+    const hiddenRun = { run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] };
     await writeRailBoard({
       projects: [{ project_id: "p1", name: "build" }],
       workspaces: [{ id: "ws-unwatched", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
@@ -784,11 +784,29 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).toBeNull();
 
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
-      items: [], runs: [branchRow({ agents: [agent({ watched: false })] })],
+      items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
     });
     await flush();
 
     expect(railHost().querySelector("#rail-body").textContent).toContain("Already cached words");
+    expect(headWho()).toBe(TOPICS["ag-1"]);
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  it("keeps a project agent usable when its run is absent from inbox items", async () => {
+    await wipeCache();
+    await writeRailBoard({ projects: [{ project_id: "p1", name: "build", entity_id: "run-3" }] });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
+      items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Project conversation words")] });
+
+    rail = mountAgentRail(railHost(), railAddress({
+      kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1",
+    }));
+    await flush();
+
+    expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words");
     expect(headWho()).toBe(TOPICS["ag-1"]);
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });

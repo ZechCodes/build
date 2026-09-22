@@ -4,6 +4,8 @@
 // by its project and its name, a workspace by the conversation it holds. The
 // device's own rows answer that (core/cachedRows.js), and the row it names is
 // the work item — its agents, what they are doing, what they have observed.
+// A conversation hidden from the inbox keeps its roster in the cached board's
+// `runs` collection, which is also heard here.
 //
 // This is the whole of the rail's reading: one row address, the watch on it,
 // and the workspace list beside it for the one thing a row cannot say. Nothing
@@ -60,8 +62,8 @@ export function createRailWorkItem({
     const address = rowAddress(entityId);
     if (!address) return null;
     const row = (await readCached(address))?.value;
-    if (row || context.kind !== "workspace") return row || null;
-    // An unwatched workspace still has an agent and a conversation, but its
+    if (row || !["workspace", "project"].includes(context.kind)) return row || null;
+    // An unwatched conversation still has an agent, but its
     // run is deliberately absent from the inbox's `items`. The same board
     // record keeps it in `runs`; read that cached roster for the workspace
     // without putting it back into the inbox as a visible row.
@@ -159,7 +161,7 @@ export function createRailWorkItem({
     unwatchRow = address
       ? subscribeCache(address, () => void takeUpRow(entityId))
       : watchForARowOfOurOwn();
-    if (address && context.kind === "workspace") {
+    if (address && ["workspace", "project"].includes(context.kind)) {
       unwatchFeed = subscribeCache(cacheScope.address({ entityId: "", kind: "feed" }), () => void takeUpRow(entityId));
     }
   };

@@ -141,6 +141,10 @@ describe("a flush arriving at the real subscriptions", () => {
       };
       return answer(method, params);
     });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-quiet", kind: "row" }, {
+      ...hiddenRun, agents: [{ id: "ag-previously-watched", watched: true }],
+    });
+    await new Promise((done) => setTimeout(done, 2));
 
     await boot([], { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-quiet" });
 

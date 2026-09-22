@@ -17,7 +17,7 @@ await mkdir(derivatives, { recursive: true });
 const launchOptions = { headless: true };
 if (process.env.CHROMIUM_PATH) launchOptions.executablePath = process.env.CHROMIUM_PATH;
 const browser = await chromium.launch(launchOptions);
-const allScenes = ["ui01", "ui02", "ui03", "ui04", "ui05"];
+const allScenes = ["ui01", "ui02", "ui03", "ui04", "ui05", "ui10-editor", "ui12-issues", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
 const allProfiles = [
   { name: "macbook", width: 1512, height: 982, scale: 2, native: [3024, 1964] },
   { name: "ipad", width: 1210, height: 834, scale: 2, native: [2420, 1668] },
@@ -32,6 +32,9 @@ const selectedNames = (variable, available) => {
 };
 const scenes = selectedNames(process.env.CAPTURE_SCENES, allScenes);
 const profiles = selectedNames(process.env.CAPTURE_PROFILES, allProfiles);
+const requestedStates = process.env.CAPTURE_STATES
+  ? new Set(process.env.CAPTURE_STATES.split(",").map((name) => name.trim()).filter(Boolean))
+  : null;
 const captureResults = [];
 
 const resizeWebp = (source, destination, width, height) => new Promise((resolvePromise, reject) => {
@@ -103,14 +106,21 @@ const reportRectangle = (rectangle) => rectangle
 
 for (const profile of profiles) {
   const page = await browser.newPage({ viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.scale });
+  const pageErrors = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   for (const scene of scenes) {
-    const states = scene === "ui03" ? ["question", "answer", "resumed"] : scene === "ui05" ? ["approval", "merged"] : ["default"];
+    const availableStates = scene === "ui03" ? ["question", "answer", "resumed"] : scene === "ui05" ? ["approval", "merged"] : ["default"];
+    const states = requestedStates ? availableStates.filter((name) => requestedStates.has(name)) : availableStates;
     for (const state of states) {
       const suffix = state === "default" ? "" : `-${state}`;
       // Loopback capture page; scene, state and profile come from the fixed lists above.
       // nosemgrep: javascript.playwright.security.audit.playwright-goto-injection.playwright-goto-injection
       await page.goto(`${origin}/design/landing-captures/?scene=${scene}&state=${state}&profile=${profile.name}`);
       await page.evaluate(() => document.fonts.ready);
+      const viteOverlay = await page.locator("vite-error-overlay").count();
+      if (pageErrors.length || viteOverlay) {
+        throw new Error(`Fixture failed to render ${scene}${suffix}-${profile.name}: ${pageErrors.join("; ") || "Vite error overlay"}`);
+      }
       const validation = await assertSystemSafeAreas(page, profile);
       const stem = `${scene}${suffix}-${profile.name}`;
       captureResults.push({
@@ -132,11 +142,22 @@ for (const profile of profiles) {
 }
 
 await browser.close();
+let results = captureResults;
+if (process.env.CAPTURE_SCENES || process.env.CAPTURE_PROFILES || process.env.CAPTURE_STATES) {
+  try {
+    const previous = JSON.parse(await readFile(reportPath, "utf8")).results || [];
+    const replaced = new Set(captureResults.map(({ state, profile }) => `${state}:${profile}`));
+    results = [...previous.filter(({ state, profile }) => !replaced.has(`${state}:${profile}`)), ...captureResults]
+      .sort((a, b) => a.state.localeCompare(b.state) || a.profile.localeCompare(b.profile));
+  } catch {
+    // A first targeted capture simply starts the report with its selected assets.
+  }
+}
 await writeFile(reportPath, `${JSON.stringify({
   version: 1,
   generatedBy: "design/landing-captures/capture.mjs",
-  checkedAssets: captureResults.length,
-  results: captureResults,
+  checkedAssets: results.length,
+  results,
 }, null, 2)}\n`);
 
 const issues = captureResults.flatMap((result) => result.issues.map((issue) => `${result.state}-${result.profile}: ${issue}`));

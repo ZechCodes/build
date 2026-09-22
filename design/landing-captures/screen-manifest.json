@@ -71,7 +71,13 @@
     { "id": "ui03-resumed", "order": 5, "checkpoint": "resumed", "timer": "03:44", "description": "Claude Code resumes implementation with the decision." },
     { "id": "ui04", "order": 6, "checkpoint": "overview", "timer": "03:44", "description": "Two sub-agents, one three-step workflow, and two shell sessions." },
     { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Coherent archive diff, archived-label test evidence, and explicit approval control." },
-    { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "Confirmed merged state after approval." }
+    { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "Confirmed merged state after approval." },
+    { "id": "ui10-editor", "order": 10, "checkpoint": "editor", "timer": "03:45", "description": "Editor before the archive change, with file tree, collapsed terminal, one working agent, and machine label." },
+    { "id": "ui12-issues", "order": 12, "checkpoint": "issues", "timer": "03:46", "description": "Issue board with Make archived items searchable ready and unassigned." },
+    { "id": "ui13-team", "order": 13, "checkpoint": "team", "timer": "03:47", "description": "Three agents working in copy-on-write archive workspaces with a focused test running." },
+    { "id": "ui14-git", "order": 14, "checkpoint": "git", "timer": "03:49", "description": "Git panel and editor diff on build/archive-search with two modified files." },
+    { "id": "ui15-triage", "order": 15, "checkpoint": "triage", "timer": "03:50", "description": "Review triage with one expanded search behavior decision and passing test evidence." },
+    { "id": "ui16-builder", "order": 16, "checkpoint": "builder", "timer": "03:48", "description": "Workflow builder with Implement, Review, You decide, and Merge on one path." }
   ],
   "filePatterns": {
     "appOnly": "{state}-{desktop|tablet|mobile}.{png|webp}",

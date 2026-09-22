@@ -33,10 +33,10 @@ a list.
 
 | # | Act | Headline | What it says | What the visitor feels |
 |---|---|---|---|---|
-| 1 | **Open** | Your agents. Your machine. Your call. | Build is an IDE for agentic coding. The lid opens on a real editor, and a human types a line into it. | Recognition, then ownership. "That's an IDE, and it's mine." |
+| 1 | **Open** | Your agents. Your machine. Your call. | Build is an IDE for agentic coding. The laptop is open on a real editor the moment the page loads, and a human types a line into it. | Recognition, then ownership. "That's an IDE, and it's mine." |
 | 2 | **Where it runs** | The work runs on your machine. | Agents execute on your hardware and change your checkouts. The hosted service does sign-in and the handshake, nothing more. | Relief. Trust. |
 | 3 | **Hand it off** | Say what needs doing. | Write the issue where the code lives. Assign it. An agent cuts a branch on your machine and starts. | Leverage. |
-| 4 | **The day moves** | One issue. A whole team. | Agents fan out into their own worktrees. One asks a question. You answer from your phone. The laptop keeps working. | Momentum. |
+| 4 | **The day moves** | One issue. A whole team. | Agents fan out into their own workspaces. One asks a question. You answer from your phone. The laptop keeps working. | Momentum. |
 | 5 | **Wire it** | Build the workflow. Then run it again. | The path you just watched is a workflow. Open the builder, add a test step, move the review, put the gate where you want your call. | Authorship. Power, and a little play. |
 | 6 | **Everything has a home** | Every change lands in Git. | Your line and the agents' lines on one branch. Diff, stage, commit, without leaving the window. | Legibility. Nothing hidden. |
 | 7 | **Your call** | See what needs you. Decide what ships. | Agents triage the changes. What needs your judgment comes first, with the diff and the evidence beside it. You approve. Build merges. The climax. | Control. Confidence. |
@@ -58,9 +58,9 @@ claim.
 **What changes from today's page.** Today's arc (Start → Handoff → Direction → Overview →
 Review → Download) sells reach across screens: a laptop, then a phone, then a phone again,
 then a tablet. A visitor can reasonably read it as an agent monitoring dashboard. The new
-arc keeps its best beats (the lid opening, the phone answering a question, the tablet
-handing off to a live HTML review surface, the closing lineup) and puts them under the
-control claim, with the editor, Git, and the workflow builder proving Build is an IDE
+arc keeps its best beats (the phone answering a question, the tablet handing off to a
+live HTML review surface, the closing lineup), drops the closed-lid hero (the visitor
+should never see a shut laptop), and puts them under the control claim, with the editor, Git, and the workflow builder proving Build is an IDE
 before any remote screen appears.
 
 ---
@@ -88,18 +88,27 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 - **Meta line:** Free and open source · Invite-only alpha
 - **Actions:** primary "Join the waitlist" (opens the waitlist form in act 8 or an inline
   email field), secondary "See how it works" (scrolls to act 2).
-- **Devices:** laptop only, low front view with 4° of pitch (the existing hero pose,
-  x 65, y 57, w 52). Copy on the left.
+- **Devices:** laptop only, open, low front view with 4° of pitch (the existing hero
+  pose, x 65, y 57, w 52). Copy on the left. **The laptop is never shown closed.** The
+  first frame the visitor can see has the lid at least three-quarters open with the
+  editor lit; the poster, the reduced-motion version, and the document version all show
+  it fully open.
 - **Screen:** `ui10-editor-macbook` (new). A real editor: file tree on the left
   (`build-app/src/search/archive.ts`, `archive.test.ts`), code in the middle, a collapsed
   terminal drawer along the bottom, agents rail on the right with "Fixing archive button ·
   Claude Code · Working". Status bar carries the machine label: `zech-mbp · ~/code/build ·
   main`. That label persists on every laptop screen for the rest of the page.
-- **Beats:**
-  - local 0 → 0.40: the lid opens from closed to 105° on the real hinge while the base
-    stays planted (existing behaviour). Copy and CTA are readable before the lid moves.
-  - 0.40 → 0.55: hold on the open editor.
-  - 0.55 → 0.75: the human action. A caret appears in `archive.test.ts` and a real test
+- **Entrance (time-based, not scroll-driven):** when the hero is in view (on load, or
+  when it scrolls into view if the page was restored mid-scroll), the laptop settles
+  from lidOpen 0.7 (about 75°) to fully open over about 0.9 s with an ease-out, while
+  the copy and CTA fade up beside it. It plays once. The lid is already open enough at
+  frame one that the editor reads immediately, and the real hinge does the last quarter
+  as a welcome, not a reveal. Until the runtime has a first frame, the poster (open
+  laptop) is on screen, so there is no closed-lid state at any point. Reduced motion
+  skips the entrance and shows the fully open pose.
+- **Beats (scroll-driven, laptop already open):**
+  - local 0 → 0.15: hold on the open editor; the visitor reads the headline.
+  - 0.15 → 0.65: the human action. A caret appears in `archive.test.ts` and a real test
     types in, character by character, driven by scroll: the title line
     `it("keeps archived items in search", () => {` and then the expectation
     `expect(search("launch notes")).toContain(archived)`. The gutter marks both lines as
@@ -107,7 +116,8 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
     the screen plane (the existing review alignment technique), not a texture swap, so it
     can type. The point is a meaningful edit, not a title: the visitor sees the human state
     what "done" means before any agent touches the code.
-  - 0.75 → 1.0: copy fades; the laptop eases back and down toward center for act 2.
+  - 0.65 → 0.80: hold on the typed test.
+  - 0.80 → 1.0: copy fades; the laptop eases back and down toward center for act 2.
 - **Document version:** still of the open laptop with the editor, plus a before/after
   pair of HTML editor cards under the copy (the file without the test, then with it).
 
@@ -147,7 +157,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
   - 0.20 → 0.35: the card lifts out of the screen into the HTML close-up.
   - 0.35 → 0.50: the assignee chip fills: "Claude Code".
   - 0.50 → 0.70: the card slides from Ready to In progress; under it, a branch line appears:
-    `build/archive-search · ~/code/build/.worktrees/archive-search`.
+    `build/archive-search · ~/code/build/workspaces/archive-search`.
   - 0.70 → 0.85: hold. 0.85 → 1.0: the card returns to the screen; exit.
 - **Document version:** still plus the issue card in its In progress state.
 
@@ -156,21 +166,23 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 - **Kicker:** 04 / Orchestration
 - **Headline:** One issue. A whole team.
 - **Support:** The agent splits the work: one implements, one reviews, one audits the edge
-  cases. Each runs in its own worktree on your machine. When one needs you, it asks. You
-  answer from the screen in your hand.
+  cases. Each gets its own workspace, a copy-on-write copy of your checkout, made in an
+  instant on your machine. When one needs you, it asks. You answer from the screen in
+  your hand.
 - **Devices:** laptop stays open on the left as the host (x 30, y 64, w 34, yaw 12, opacity
   1, not the current 0.58 fade). Phone pivots in on the right (existing entrance offset:
   from x+13, y+10, scale 0.72, rotated 28°/−8°/8°, settling to x 83, y 56, w 21).
 - **Screens:**
   - laptop: `ui13-team-macbook` (new, derived from the existing `ui04` activity layout):
-    three agent rows, each with a worktree path and a harness name; the terminal drawer
+    three agent rows, each with a workspace path and a harness name; the terminal drawer
     open one line to show a test run scrolling. Machine label present.
   - phone: existing `ui03-question-iphone` → `ui03-answer-iphone` → `ui03-resumed-iphone`
     ("Keep archived items in search?" / "Yes. Label them clearly." / "Got it. I'll update
     the archive behavior and checks.").
 - **Beats:**
   - 0 → 0.30: fan-out on the laptop. One agent row becomes three, each row sliding in with
-    its worktree label. A small "3 running" counter increments.
+    its workspace label the instant it appears (the copy is copy-on-write, so there is no
+    "cloning" delay to dramatize). A small "3 running" counter increments.
   - 0.30 → 0.45: the phone pivots in and settles. Its screen already shows the question
     (texture loaded before the pivot, as the runtime does today).
   - 0.45 → 0.60: the question is read (hold). 0.60: the answer texture swaps in.
@@ -221,7 +233,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
   diff. Stage it. Commit it. The editor and the Git tools are the same app.
 - **Devices:** laptop, near-frontal close-up (x 50, y 58, w 60), aligned for HTML handoff.
 - **Screen:** `ui14-git-macbook` (new). The editor with the Git panel open: branch
-  `build/archive-search`, worktree path, a small commit graph (main, the branch, three
+  `build/archive-search`, workspace path, a small commit graph (main, the branch, three
   agent commits), and the working-tree list with `archive.ts` and `archive.test.ts`
   modified. The diff for `archive.ts` is in the editor: `search.remove(id)` removed,
   `search.update(id, { archived: true })` added (the same lines the review shows today).
@@ -330,9 +342,9 @@ Each feature is the next state of the same job, so the page builds instead of li
 
 | Order | Feature | Act | Its moment | What it proves about control |
 |---|---|---|---|---|
-| 1 | **Code editor** | 1 (and 6) | The lid opens on an editor and a human types a test line into it. | It is your editor; you can type in it. |
+| 1 | **Code editor** | 1 (and 6) | The page opens on an open laptop running an editor, and a human types a test line into it. | It is your editor; you can type in it. |
 | 2 | **Issue tracking** | 3 | The issue is written beside the code, assigned, and moves to In progress with a branch on your machine. | Work is described and assigned where the code lives. |
-| 3 | **Agent orchestration** | 4 | One agent becomes three, each in its own worktree; one asks, you answer from a phone, it resumes. | Agents execute on your hardware, in your checkouts, and ask before they guess. |
+| 3 | **Agent orchestration** | 4 | One agent becomes three, each in its own workspace; one asks, you answer from a phone, it resumes. | Agents execute on your hardware, in your checkouts, and ask before they guess. |
 | 4 | **Dynamic workflows + interactive builder** | 5 | The path from act 4 is opened as a graph; a test node is inserted; edges reconnect; a pulse stops at the human gate. | You author how work happens and where your call sits. |
 | 5 | **Git tools** | 6 | Your line and the agents' lines on one branch; edit in the diff; stage; commit. | Nothing an agent did is invisible; you can change any of it. |
 | 6 | **Review surface with agent triage** | 7 | Triage surfaces one finding, keeps the rest inspectable, shows the diff and the evidence (your test passing), you approve, Build merges. | You decide what ships. |
@@ -456,7 +468,8 @@ A static build, dropped into the current serving path, with one integration chan
 - A perspective stage (20° camera, studio environment, key/fill/edge lights, soft shadows)
   that poses any device by stage-percent position, width, yaw/pitch/roll, opacity, and
   optional camera-facing compensation. Any pose in this storyboard is expressible today.
-- The lid opening (any `lidOpen` value, so any partial angle too), phone and tablet pivot
+- The lid hinge (any `lidOpen` value, so any partial angle; used only for the hero's
+  time-based settle from three-quarters open to open), phone and tablet pivot
   entrances that settle without idle motion, solid cross-fades between devices, a fixed
   layer order in multi-device frames, and the physical-scale lineup.
 - Screen textures swapped per device per beat with the previous display kept until the
@@ -484,9 +497,9 @@ not have yet (the fixture is allowed to draw it; it is marketing artwork, not th
 |---|---|---|---|
 | `ui10-editor-macbook` | laptop | 1, 2 | Full editor: file tree, code, collapsed terminal drawer, agents rail, machine label. |
 | `ui12-issues-macbook` | laptop | 3 | Issue board with the archived-search card in Ready. |
-| `ui13-team-macbook` | laptop | 4 | Three agents with worktree paths, terminal drawer showing a test run. |
+| `ui13-team-macbook` | laptop | 4 | Three agents with workspace paths, terminal drawer showing a test run. |
 | `ui16-builder-macbook` | laptop | 5 | Workflow builder canvas with the four-node path and the palette. |
-| `ui14-git-macbook` | laptop | 6 | Editor with Git panel: branch, worktree, commit graph, diff. |
+| `ui14-git-macbook` | laptop | 6 | Editor with Git panel: branch, workspace, commit graph, diff. |
 | `ui15-triage-ipad` | tablet | 7 | Triage list: needs you / verified / failed. |
 | `ui05-merged-*` | all | 8 | Existing; verify the merged state reads as the same job. |
 
@@ -495,6 +508,8 @@ Plus the machine label on every laptop screen, which today's textures lack.
 ### Needs new scenes or posters
 
 - **Eight scene posters** (sixteen files: desktop and mobile pairs) instead of six.
+  The act 1 poster shows the laptop fully open on the editor; today's scene-01 poster
+  (closed lid) must not survive as the hero fallback.
   `render_scene_posters` in `design/landing/build_device_assets.py` authors a fixed six
   and aliases `scene-06` as the closing poster (`desktop-poster.webp`, `mobile-poster.webp`);
   it needs the new scene definitions and screen assignments, the closing alias moved to
@@ -510,9 +525,20 @@ Plus the machine label on every laptop screen, which today's textures lack.
   portrait tablet, no exploded views, no depth-of-field or bloom (the runtime bundle has
   no post-processing and should stay that way for the frame budget).
 
+### Who makes the artwork
+
+Astra produces the graphics: the seven new screen textures through the capture fixture,
+the sixteen posters and the social preview through the Blender generator or live-stage
+captures, and any flat illustration the page turns out to need. Everything in this
+storyboard is UI capture or a render of the existing models, so nothing here needs
+generated imagery. If the implementation adds something Astra cannot make (for example a
+photographic or painted hero background at a specific size), that is the point to ask
+Zech for an image-generation API key. Right now there is no such item.
+
 ### Deliberately not doing
 
-- No lid-close shot (implies a sleeping laptop keeps running).
+- No closed laptop anywhere on the page, and no lid-close shot (implies a sleeping
+  laptop keeps running). The current page's closed-lid hero is the thing being fixed.
 - No code or execution "moving" to the phone or tablet; the laptop stays open on screen
   whenever a remote device is present.
 - No glowing boundary or "nothing leaves this machine" imagery: remote screens receive

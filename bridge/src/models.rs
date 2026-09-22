@@ -777,6 +777,71 @@ mod tests {
         claude_providers_offer("claude-opus-5", "Claude Opus 5");
     }
 
+    /// Opus 5.5 (announced 2026-09-22) sits directly below Fable 5.1, above
+    /// Opus 5, with the same effort levels and window as Opus 5.
+    #[test]
+    fn opus_5_5_is_in_both_claude_providers_catalogs_below_fable() {
+        claude_providers_offer("claude-opus-5-5", "Claude Opus 5.5");
+        for provider in CLAUDE_PROVIDERS {
+            let ids: Vec<_> = catalog_of(provider)
+                .models
+                .iter()
+                .map(|model| model.id)
+                .collect();
+            assert_eq!(
+                &ids[..3],
+                &["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5"]
+            );
+        }
+        assert_eq!(
+            context_window_of(AgentProvider::ClaudeAdk, "claude-opus-5-5[1m]"),
+            Some(1_000_000)
+        );
+    }
+
+    /// GPT-6 Sol and Luna (announced 2026-09-22) follow Astra on both codex
+    /// carriers; Sol takes every reasoning level as the 5.6 Sol did, Luna
+    /// stops at max as the 5.6 Luna did.
+    #[test]
+    fn gpt_6_sol_and_luna_follow_astra_on_both_codex_carriers() {
+        for provider in [AgentProvider::Codex, AgentProvider::CodexAppServer] {
+            let catalog = catalog_of(provider);
+            let ids: Vec<_> = catalog.models.iter().map(|model| model.id).collect();
+            assert_eq!(
+                &ids[..4],
+                &["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol"]
+            );
+            let sol = catalog.models.iter().find(|m| m.id == "gpt-6-sol").unwrap();
+            assert_eq!(sol.label, "GPT-6-Sol");
+            assert_eq!(
+                sol.efforts,
+                &["low", "medium", "high", "xhigh", "max", "ultra"]
+            );
+            let luna = catalog
+                .models
+                .iter()
+                .find(|m| m.id == "gpt-6-luna")
+                .unwrap();
+            assert_eq!(luna.label, "GPT-6-Luna");
+            assert_eq!(luna.efforts, &["low", "medium", "high", "xhigh", "max"]);
+            assert!(ModelChoice {
+                provider,
+                model: Some("gpt-6-sol".into()),
+                effort: Some("ultra".into()),
+            }
+            .validate()
+            .is_ok());
+            assert!(ModelChoice {
+                provider,
+                model: Some("gpt-6-luna".into()),
+                effort: Some("ultra".into()),
+            }
+            .validate()
+            .unwrap_err()
+            .contains("does not support effort ultra"));
+        }
+    }
+
     #[test]
     fn fable_5_1_leads_both_claude_providers_catalogs_and_retires_fable_5() {
         claude_providers_offer("claude-fable-5-1", "Claude Fable 5.1");

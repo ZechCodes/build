@@ -38,7 +38,8 @@ import { terminalManager } from "../terminal/manager.js";
 import { branchRowIn } from "./feedRows.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { routedEntityId } from "./inbox.js";
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { directoryCacheId } from "./directoryScope.js";
+import { mergeCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
@@ -63,12 +64,11 @@ export function resetConsoleMemory() {
   chosenTerminal.clear();
 }
 
-/** Track a checkout's open user terminals: seeded from the `terminals` record,
- *  created from the `+`, closed on `×`. Labels are ordinals over the order the
- *  record lists them in. The list itself is never asked for — a `terminals`
- *  push is what moves it, and the record is where that lands. */
-export function terminalTabsController(scope) {
-  const manager = terminalManager();
+/** Track a checkout's open user terminals, seeded only from the `terminals`
+ *  record. Labels are ordinals over the order the record lists them in. Pulls,
+ *  mutations and pushes all write that record; its announcement is the only
+ *  way this controller is moved. */
+export function terminalTabsController() {
   let terms = []; // the record's tabs, in the order it lists them
   const labelOf = (termId) => {
     const index = terms.findIndex((t) => t.term_id === termId);
@@ -76,50 +76,14 @@ export function terminalTabsController(scope) {
   };
   return {
     ids: () => terms.map((t) => t.term_id),
-    /** The tabs as the record holds them — what a create or a close writes
-     *  back, so nothing the bridge said about a shell is dropped on the way. */
-    list: () => terms,
     /** Stand the strip up from the record. */
     seed(tabs) {
       terms = (tabs || []).filter((tab) => tab && tab.term_id);
-    },
-    /** Ask the checkout itself what it is holding. The record is the strip's
-     *  source; this is the one question, asked where no record has ever
-     *  answered for this checkout at all. */
-    async load() {
-      try {
-        terms = (await manager.listTerminals(scope)).filter((tab) => tab && tab.term_id);
-      } catch (error) {
-        // A machine we cannot reach has not answered the question — reading its
-        // silence as "no terminals" is how a shut-looking console gets a shell
-        // opened next to the ones already running in that checkout. A machine
-        // that DID answer, and cannot list this scope, is saying there are none.
-        if (isTerminalSocketLost(error)) throw error;
-        terms = [];
-      }
-      return terms;
     },
     /** The tab descriptors for the console head: ordinal-labeled, all closable. */
     tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id) })),
     label: labelOf,
     has: (termId) => terms.some((t) => t.term_id === termId),
-    /** Open one of the user's shells in this checkout's directory. */
-    async create() {
-      const r = await manager.createTerminal(scope, 80, 24);
-      terms = [...terms, { term_id: r.term_id }];
-      return r.term_id;
-    },
-    async close(termId) {
-      try {
-        await manager.closeTerminal(termId);
-      } finally {
-        terms = terms.filter((t) => t.term_id !== termId);
-      }
-    },
-    /** Drop a terminal locally (it exited/was reaped server-side already). */
-    drop(termId) {
-      terms = terms.filter((t) => t.term_id !== termId);
-    },
   };
 }
 
@@ -196,6 +160,8 @@ export function mountConsole(host, context) {
   let tabsKnown = false; // whether anything has said what this checkout is holding
   let listing = false; // the one list of a checkout no record has answered for
   let unreachable = false; // that list did not get through — not "no terminals"
+  let terminalsAt; // write time of the terminal record the strip last read
+  let scrollToTerminal = null; // a created tab to reveal after its record lands
   let pane = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
@@ -218,7 +184,15 @@ export function mountConsole(host, context) {
 
   // ---- the terminals ---------------------------------------------------------
 
-  const cacheAddress = (kind) => (entityId ? cacheScope?.address({ entityId, kind }) || null : null);
+  // A routed entity is where the sync layer and pushes file this checkout. A
+  // finished branch may no longer resolve to one while its cached row still
+  // names the run/worktree whose shells survive; file that fallback list under
+  // the checkout id, just as its directory-local cache is.
+  const recordEntityId = () => entityId || directoryCacheId(scope);
+  const cacheAddress = (kind) => {
+    const cacheEntity = recordEntityId();
+    return cacheEntity ? cacheScope?.address({ entityId: cacheEntity, kind }) || null : null;
+  };
 
   const cachedValue = async (kind) => {
     const address = cacheAddress(kind);
@@ -281,25 +255,23 @@ export function mountConsole(host, context) {
   const standOnScope = (liveScope) => {
     if (terms && JSON.stringify(scope) === JSON.stringify(liveScope)) return;
     scope = liveScope;
-    terms = terminalTabsController(liveScope);
+    terms = terminalTabsController();
     // Another checkout: nothing said yet about what THIS one is holding.
     tabsKnown = false;
     unreachable = false;
+    terminalsAt = undefined;
   };
 
-  /** The strip, off the record — where there is a record to read.
-   *
-   *  A checkout the board names no entity for addresses none, so there is no
-   *  record and never will be: a branch whose run is over is off the list the
-   *  route resolves against, while its page is still reachable and its shells
-   *  are still running. The strip there is whatever the one list answered, and
-   *  seeding it with the empty answer of an address that cannot be read would
-   *  empty a console holding running shells every time an unrelated record
-   *  landed under the device. */
+  /** Seed the strip from its record. A checkout no routed entity names falls
+   *  back to its directory cache id above, so even a finished branch's pull is
+   *  committed and announced before its surviving shells can paint. */
   const seedFromRecord = async () => {
-    if (!entityId) return;
-    const strip = await cachedValue(TERMINALS_RECORD_KIND);
+    const address = cacheAddress(TERMINALS_RECORD_KIND);
+    if (!address) return;
+    const record = await readCached(address);
     if (disposed) return;
+    terminalsAt = record?.at;
+    const strip = record?.value;
     if (strip) tabsKnown = true;
     terms.seed(strip?.tabs || []);
   };
@@ -325,6 +297,10 @@ export function mountConsole(host, context) {
     pickSelected();
     remember();
     paint();
+    if (scrollToTerminal && terms.has(scrollToTerminal)) {
+      scrollToTerminal = null;
+      scrollStripToNewest();
+    }
     if (!tabsKnown) void listOnce();
   };
 
@@ -340,14 +316,22 @@ export function mountConsole(host, context) {
     // machine that is not answering.
     if (listing || tabsKnown || unreachable || !terms) return;
     const asked = terms;
+    const address = cacheAddress(TERMINALS_RECORD_KIND);
+    if (!address) return;
+    const beforeAt = terminalsAt;
     listing = true;
+    let tabs;
     try {
-      await asked.load();
-    } catch {
-      listLost(asked); // the socket, and only the socket: `load` answers for the rest
-      return;
+      tabs = (await manager.listTerminals(scope)).filter((tab) => tab && tab.term_id);
+    } catch (error) {
+      if (isTerminalSocketLost(error)) {
+        listLost(asked);
+        return;
+      }
+      // The machine answered but cannot list this scope: it holds no shells.
+      tabs = [];
     }
-    listAnswered(asked);
+    await listAnswered(asked, address, beforeAt, tabs);
   };
 
   /** Still unknown. Say the machine is out of reach, keep the `+` back —
@@ -366,15 +350,21 @@ export function mountConsole(host, context) {
 
   /** The checkout answered. The record is what the strip reads, so the answer
    *  goes there, and every later word about these shells is a push. */
-  const listAnswered = (asked) => {
-    listing = false;
-    if (disposed || terms !== asked) return;
-    tabsKnown = true;
+  const listAnswered = async (asked, address, beforeAt, tabs) => {
+    if (disposed || terms !== asked) {
+      listing = false;
+      return;
+    }
+    const current = await readCached(address);
+    if (disposed || terms !== asked || current?.at !== beforeAt) {
+      listing = false;
+      return;
+    }
     unreachable = false;
-    pickSelected();
-    remember();
-    publishTabs();
-    paint();
+    // No payload reaches the controller. The committed write announces its
+    // address, and takeUpCache reads it back before the strip can move.
+    await writeCached(address, { tabs });
+    listing = false;
   };
 
   // One read at a time, and one more where the cache moved while it ran: a
@@ -402,11 +392,14 @@ export function mountConsole(host, context) {
     return reading;
   };
 
-  /** Keep the record the strip reads telling the truth after a create or a
-   *  close. The bridge will say the same thing on its next `terminals` push;
-   *  this is so the reader does not wait for it. */
-  const publishTabs = () => {
-    if (terms) writeThrough(TERMINALS_RECORD_KIND, { tabs: terms.list() });
+  const changeTabs = (change) => {
+    const address = cacheAddress(TERMINALS_RECORD_KIND);
+    if (!address) return Promise.resolve();
+    return mergeCached(address, (current) => {
+      const tabs = (current?.tabs || []).filter((tab) => tab && tab.term_id);
+      const next = change(tabs);
+      return next === tabs ? null : { tabs: next };
+    });
   };
 
   /** Which terminal this console is on: in memory for the rest of the session,
@@ -423,43 +416,43 @@ export function mountConsole(host, context) {
 
   const newTerminal = async () => {
     if (!terms) return;
+    const asked = terms;
+    let created;
     try {
-      selected = await terms.create();
+      created = await manager.createTerminal(scope, 80, 24);
     } catch (error) {
       notifyError("Could not open a terminal", (error && error.message) || "error");
       return;
     }
-    // The strip's record first, then the pick: both announce, and a reader
-    // woken by the pick would otherwise re-seed the strip off a record that
-    // has not been told about this terminal yet.
-    publishTabs();
-    remember();
-    openPanel();
-    scrollStripToNewest();
+    if (disposed || terms !== asked || !created?.term_id) return;
+    selected = created.term_id;
+    scrollToTerminal = created.term_id;
+    if (requestedSize === "collapsed") {
+      requestedSize = reopenSize;
+      writeConsoleSize(key, requestedSize);
+      writeConsoleReopenSize(key, requestedSize);
+    }
+    await changeTabs((tabs) =>
+      tabs.some((tab) => tab.term_id === created.term_id) ? [...tabs] : [...tabs, { term_id: created.term_id }],
+    );
   };
 
   const closeTerminal = async (termId) => {
-    if (!terms) return;
     try {
-      await terms.close(termId);
+      await manager.closeTerminal(termId);
     } catch {
-      /* raced with the reaper — drop the tab regardless */
+      /* raced with the reaper — its durable list still drops the tab */
     }
-    afterTerminalGone(termId);
+    await afterTerminalGone(termId);
   };
 
   /** A terminal that is no longer there: its tab goes, and the console falls
    *  back to whatever is left. */
-  const afterTerminalGone = (termId) => {
-    if (terms) terms.drop(termId);
-    publishTabs();
-    if (selected === termId) {
-      selected = (terms && terms.ids()[0]) || null;
-      remember();
-    }
-    if (paneTermId === termId) disposePane();
-    paint();
-  };
+  const afterTerminalGone = (termId) =>
+    changeTabs((tabs) => {
+      const next = tabs.filter((tab) => tab.term_id !== termId);
+      return next.length === tabs.length ? tabs : next;
+    });
 
   // ---- painting --------------------------------------------------------------
 
@@ -593,7 +586,7 @@ export function mountConsole(host, context) {
     paneTermId = termId;
     region.innerHTML = `<div class="termpane console-pane"></div>`;
     const paneHost = region.querySelector(".console-pane");
-    mountUserTerminalPane(paneHost, termId, { scope, onExit: () => afterTerminalGone(termId) }).then(
+    mountUserTerminalPane(paneHost, termId, { scope, onExit: () => void afterTerminalGone(termId) }).then(
       (mounted) => {
         if (disposed || paneTermId !== termId) {
           mounted.dispose();
@@ -620,7 +613,7 @@ export function mountConsole(host, context) {
         // "unknown term_id" = the terminal is gone (exited, closed elsewhere,
         // reaped while the console was shut): drop the tab rather than leave a
         // blank pane that fails identically on every click.
-        if (/unknown term_id/.test((error && error.message) || "")) afterTerminalGone(termId);
+        if (/unknown term_id/.test((error && error.message) || "")) void afterTerminalGone(termId);
         else paneHost.innerHTML = `<div class="empty">terminal unavailable: ${esc((error && error.message) || "error")}</div>`;
       },
     );

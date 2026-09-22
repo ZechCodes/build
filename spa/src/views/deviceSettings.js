@@ -12,12 +12,13 @@ import { deviceOfflineText, esc } from "../core/text.js";
 import { deviceOfflineNotice } from "../core/deviceNotice.js";
 import { contextFor } from "../core/deviceContexts.js";
 import { App } from "../app.js";
+import { cacheRenamedDevice, cacheRevokedDevice, onDevicesChanged } from "../devices.js";
 import { openDeviceSettingsSession, retireDevice } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 
-export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDevicesChanged = () => {}, onDeviceDeactivated } = {}) {
-  const device = App.devices.find((item) => item.id === deviceId);
+export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
+  let device = App.devices.find((item) => item.id === deviceId);
   root.classList.add("device-settings");
   if (!device) {
     root.innerHTML = '<div class="board-head"><h1>Device not found</h1></div><p>This device is no longer paired with your account.</p><a class="btn" href="#/account/settings">Account settings</a>';
@@ -39,7 +40,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     <div id="device-projects-panel"></div>
     <div class="panel">
       <h3>Projects folder</h3>
-      <p class="dim">New projects and cloned repositories will be kept in this folder on ${esc(device.name)}. Existing projects stay where they are.</p>
+      <p class="dim">New projects and cloned repositories will be kept in this folder on <span id="device-projects-device-name">${esc(device.name)}</span>. Existing projects stay where they are.</p>
       <div class="projfolder"><code id="device-projects-path">Loading…</code>
         <button class="btn" id="device-projects-change" disabled>Choose folder…</button></div>
       <p id="device-settings-status" role="status" aria-live="polite"></p>
@@ -60,6 +61,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   const nameInput = root.querySelector("#device-name");
   const nameStatus = root.querySelector("#device-name-status");
   const nameTitle = root.querySelector("#device-settings-title");
+  const projectsDeviceName = root.querySelector("#device-projects-device-name");
   const deactivate = root.querySelector("#device-deactivate");
   const deactivateStatus = root.querySelector("#device-deactivate-status");
   let active = true;
@@ -69,12 +71,30 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   let savingAttempt = null;
   let savingName = false;
   let deactivating = false;
+  const stopWatchingDevices = onDevicesChanged((devices) => {
+    if (!active) return;
+    const current = devices.find((item) => item.id === deviceId);
+    if (!current) {
+      active = false;
+      connectionAttempt += 1;
+      session?.close();
+      session = null;
+      stopWatchingDevices();
+      showDeactivated(root, onDeviceDeactivated, deviceId);
+      return;
+    }
+    device = current;
+    nameTitle.textContent = `${current.name} settings`;
+    projectsDeviceName.textContent = current.name;
+    if (savingName || document.activeElement !== nameInput) nameInput.value = current.name;
+  });
   const closeBrowser = () => {
     if (browserOpen) $("#scrim").classList.remove("show");
     browserOpen = false;
   };
   registerDispose(() => {
     active = false;
+    stopWatchingDevices();
     closeBrowser();
     session?.close();
   });
@@ -87,11 +107,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     nameStatus.textContent = "Saving…";
     try {
       const renamed = await renameDevice(device.id, name);
-      storeDeviceName(device, renamed.name);
-      onDevicesChanged();
+      await cacheRenamedDevice(device.id, renamed.name);
       if (!active) return;
-      nameInput.value = renamed.name;
-      nameTitle.textContent = `${renamed.name} settings`;
       nameStatus.textContent = "Saved.";
     } catch (error) {
       if (!active) return;
@@ -124,16 +141,12 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     deactivate.textContent = "Deactivating…";
     try {
       await revokeDevice(device.id);
-      const wasActive = active;
+      await cacheRevokedDevice(device.id);
       active = false;
       connectionAttempt += 1;
-      App.devices = App.devices.filter((item) => item.id !== device.id);
       session?.close();
       session = null;
       retireDevice(device.id);
-      onDevicesChanged();
-      if (!wasActive) return;
-      showDeactivated(root, onDeviceDeactivated, device.id);
     } catch (error) {
       if (!active) return;
       deactivating = false;
@@ -238,12 +251,6 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     return;
   }
   await connect();
-}
-
-function storeDeviceName(renderedDevice, name) {
-  const currentDevice = App.devices.find((item) => item.id === renderedDevice.id);
-  if (currentDevice) currentDevice.name = name;
-  renderedDevice.name = name;
 }
 
 function showDeactivated(root, onDeviceDeactivated, deviceId) {

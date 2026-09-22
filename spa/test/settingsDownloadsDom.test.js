@@ -14,27 +14,19 @@ const DOWNLOADS = downloadsPayload({
   platforms: [{ key: "linux-x86_64", label: "Linux · x86_64", url: asset("linux-x86_64") }],
 });
 
-const CATALOG = {
-  default_provider: "claude",
-  providers: [{ id: "claude", label: "Claude Code", models: [], efforts: [], creatable: true }],
-};
-
 let devices = [];
 let downloads = async () => DOWNLOADS;
+const { App, deviceListeners } = vi.hoisted(() => ({
+  App: { devices: [], selectedDeviceId: null },
+  deviceListeners: new Set(),
+}));
 const fetchDownloads = vi.fn(() => downloads());
 const mintInstallCommand = vi.fn(async () => ({ install_command: mintedCommand(), expires_in_s: 600 }));
-
-const call = vi.fn(async (method) => {
-  if (method === "project.list") return { projects: [] };
-  if (method === "settings.get") return { projects_dir: "~/code", default_harness: "claude" };
-  if (method === "models.list") return CATALOG;
-  return {};
-});
 
 // No device context is registered here, so the creation device's catalog is the
 // empty one — which is all this page's downloads block cares about.
 vi.mock("../src/app.js", () => ({
-  App: { call: (...args) => call(...args), devices: [], selectedDeviceId: null },
+  App,
   go: vi.fn(),
 }));
 vi.mock("../src/api.js", () => ({
@@ -42,7 +34,22 @@ vi.mock("../src/api.js", () => ({
   fetchDownloads: (...args) => fetchDownloads(...args),
   mintInstallCommand: (...args) => mintInstallCommand(...args),
 }));
-vi.mock("../src/devices.js", () => ({ refreshDevices: async () => devices }));
+vi.mock("../src/devices.js", () => ({
+  refreshDevices: async () => {
+    App.devices = devices;
+    for (const listener of [...deviceListeners]) listener(devices);
+    return devices;
+  },
+  readCachedDevices: async () => {
+    App.devices = devices;
+    for (const listener of [...deviceListeners]) listener(devices);
+    return devices;
+  },
+  onDevicesChanged: (listener) => {
+    deviceListeners.add(listener);
+    return () => deviceListeners.delete(listener);
+  },
+}));
 vi.mock("../src/push.js", () => ({
   pushState: async () => "unsupported",
   enablePush: async () => {},
@@ -57,8 +64,10 @@ let renderSettings;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  deviceListeners.clear();
   devices = [];
   downloads = async () => DOWNLOADS;
+  App.devices = [];
   document.body.innerHTML = bodyHtml;
   ({ renderSettings } = await import("../src/views/settings.js"));
 });

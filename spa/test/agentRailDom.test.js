@@ -101,7 +101,7 @@ const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
-const { resetUsageLimits, setUsageLimits } = await import("../src/core/usageLimits.js");
+const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
 const { pushRailThreadItems, writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 

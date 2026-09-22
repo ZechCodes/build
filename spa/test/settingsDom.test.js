@@ -16,14 +16,17 @@ const CATALOG = {
   providers: [{ id: "claude", label: "Claude Code", models: [], efforts: [], creatable: true }],
 };
 
-const { App, chooseCreationDevice, retireDevice, revokeDevice } = vi.hoisted(() => ({
+const { App, chooseCreationDevice, retireDevice, revokeDevice, deviceListeners } = vi.hoisted(() => ({
   App: { devices: [], selectedDeviceId: null, viewDispose: null },
   chooseCreationDevice: vi.fn(),
   retireDevice: vi.fn(),
   revokeDevice: vi.fn(async () => {}),
+  deviceListeners: new Set(),
 }));
 
 let devices = [];
+let cachedDevices = [];
+let pullDevices = async () => devices;
 
 const call = vi.fn(async (method) => {
   if (method === "project.list") return { projects: [] };
@@ -59,8 +62,18 @@ vi.mock("../src/api.js", () => ({
 // The account list is what the select offers, so reading it is what fills it.
 vi.mock("../src/devices.js", () => ({
   refreshDevices: async () => {
-    App.devices = devices;
-    return devices;
+    App.devices = await pullDevices();
+    for (const listener of [...deviceListeners]) listener(App.devices);
+    return App.devices;
+  },
+  readCachedDevices: async () => {
+    App.devices = cachedDevices;
+    for (const listener of [...deviceListeners]) listener(App.devices);
+    return App.devices;
+  },
+  onDevicesChanged: (listener) => {
+    deviceListeners.add(listener);
+    return () => deviceListeners.delete(listener);
   },
 }));
 vi.mock("../src/push.js", () => ({
@@ -82,10 +95,13 @@ let setContextOffline;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  deviceListeners.clear();
   devices = [
     { id: "dev-1", name: "Laptop", fingerprint: "AAAABBBBCCCCDDDD", status: "online" },
     { id: "dev-2", name: "Studio", fingerprint: "EEEEFFFF00001111", status: "online" },
   ];
+  cachedDevices = devices;
+  pullDevices = async () => devices;
   App.devices = [];
   App.selectedDeviceId = null;
   App.viewDispose?.();
@@ -249,6 +265,17 @@ describe("Settings → agent defaults", () => {
 // projects a machine holds, where it keeps them and how agents run there are
 // facts of that machine, read on that machine's own page.
 describe("Settings → what the account keeps", () => {
+  it("paints cached devices and the creation choice without waiting for the account pull", async () => {
+    cachedDevices = [{ id: "dev-cache", name: "Cached laptop", fingerprint: "AAAABBBBCCCCDDDD", status: "offline" }];
+    pullDevices = () => new Promise(() => {});
+
+    await renderSettings();
+    await flush();
+
+    expect($("#devlist").textContent).toContain("Cached laptop");
+    expect([...$("#creationdev").options].map((option) => option.textContent)).toEqual(["Cached laptop"]);
+  });
+
   it("asks the bridge nothing on the account page", async () => {
     adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
     await renderSettings();

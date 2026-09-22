@@ -33,9 +33,14 @@ next to this repo (same convention as `web/` and CI).
 npm install
 npm run lint       # eslint: one rule — no function over complexity 10
 npm test           # vitest: session core, diff, markdown, notes, router, terminal
+npm run test:browser # Chromium layout regressions, also included in npm test
 npm run build      # emits skriftapp/buildapp/static/ (served by BuildController)
 npm run dev        # Vite dev server (proxy /api to a running skriftapp yourself)
 ```
+
+Browser tests use the `playwright-core` dev dependency and require Chromium or
+Chrome on `PATH`, or `CHROMIUM_PATH` set to its executable. The app image only
+runs `npm run build`; it does not need a browser.
 
 ## Configuration
 

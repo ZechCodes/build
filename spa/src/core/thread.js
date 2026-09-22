@@ -1100,26 +1100,57 @@ const userMessageTicks = (built) => built.entries
 const userMessageNavHtml = (built) => `<nav class="thread-user-nav" aria-label="Your messages"><div class="thread-user-nav-list">${userMessageTicks(built)
   .map(userMessageTickHtml).join("")}</div></nav>`;
 
-/** The last reader message whose top has reached the viewport, never the next
- * one below it. Only the active width changes on scroll; the group stays put. */
-export function syncUserMessageTicks(scroller) {
-  const timeline = scroller?.querySelector(".thread-items");
-  const navigator = scroller?.querySelector(".thread-user-nav");
-  if (!timeline || !navigator) return;
-  const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
-  const boundary = scroller.getBoundingClientRect().top + scrollPadding;
+function nearestUserMessageIndex(rows, boundary) {
   let previous = -1;
-  const rows = timeline.querySelectorAll(":scope > .thread-message.user");
   for (const [index, row] of [...rows].entries()) {
     if (row.getBoundingClientRect().top <= boundary) previous = index;
     else break;
   }
-  for (const [index, tick] of [...navigator.querySelectorAll(".thread-user-tick")].entries()) {
+  return previous;
+}
+
+function keepUserTickInView(list, tick) {
+  if (!list.clientHeight) return;
+  if (tick.offsetTop < list.scrollTop) list.scrollTop = tick.offsetTop;
+  else if (tick.offsetTop + tick.offsetHeight > list.scrollTop + list.clientHeight) {
+    list.scrollTop = tick.offsetTop + tick.offsetHeight - list.clientHeight;
+  }
+}
+
+/** The last reader message whose top has reached the viewport, never the next
+ * one below it. Only the active width changes on scroll; the group stays put. */
+export function syncUserMessageTicks(scroller) {
+  const timeline = scroller?.querySelector(".thread-items");
+  const list = scroller?.querySelector(".thread-user-nav-list");
+  if (!timeline || !list) return;
+  const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+  const boundary = scroller.getBoundingClientRect().top + scrollPadding;
+  const rows = timeline.querySelectorAll(":scope > .thread-message.user");
+  const previous = nearestUserMessageIndex(rows, boundary);
+  for (const [index, tick] of [...list.querySelectorAll(".thread-user-tick")].entries()) {
     const active = index === previous;
     tick.classList.toggle("active", active);
     if (active) tick.setAttribute("aria-current", "location");
     else tick.removeAttribute("aria-current");
+    if (active) keepUserTickInView(list, tick);
   }
+}
+
+const pendingTickSyncs = new WeakSet();
+
+/** A scroll burst needs one layout read and one tick update per browser frame. */
+export function scheduleUserMessageTickSync(scroller) {
+  if (!scroller || pendingTickSyncs.has(scroller)) return;
+  const browser = scroller.ownerDocument?.defaultView;
+  if (!browser?.requestAnimationFrame) {
+    syncUserMessageTicks(scroller);
+    return;
+  }
+  pendingTickSyncs.add(scroller);
+  browser.requestAnimationFrame(() => {
+    pendingTickSyncs.delete(scroller);
+    syncUserMessageTicks(scroller);
+  });
 }
 
 /** Called by the rail's delegated click handler so a repainted tick needs no

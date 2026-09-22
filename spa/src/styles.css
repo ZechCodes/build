@@ -1835,7 +1835,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    prose with a quiet reply bubble instead of a stack of issue cards. */
 /* The rail and the full page share this gap, and the issue lines pull back
    against it by name (styles/issues.css) rather than guessing at it. */
-.thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 12px 20px 32px; }
+.thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 12px; }
 .thread-timeline::before { display:none; }
 .thread-message { margin-left:0; }
 .thread-avatar { display:none; }
@@ -1850,20 +1850,21 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-message:is(.user, .from-agent) { width:min(78%, 520px); }
 .thread-message.user { width:100%; }
 .thread-message.user .thread-comment-card { width:min(78%, 520px); margin-left:auto; }
-/* A compact index of the reader's messages. The zero-height sticky anchor
-   keeps the group centred in the scroller without adding space to the thread. */
+/* The group floats in the container's existing left padding. Its zero-size
+   sticky anchor leaves the message column exactly where it was. */
 .thread-user-nav { position:sticky; top:50%; z-index:4; width:0; height:0; }
-.thread-user-nav-list { position:absolute; top:0; left:0; transform:translateY(-50%);
+.thread-user-nav-list { position:absolute; top:0; left:-20px; transform:translateY(-50%);
   display:flex; flex-direction:column; max-height:min(60vh, 480px); overflow-y:auto;
   scrollbar-width:none; overscroll-behavior:contain; }
 .thread-user-nav-list::-webkit-scrollbar { display:none; }
 .thread-user-tick { flex:none; display:grid; place-items:center; width:28px; height:24px; padding:0;
   border:0; border-radius:4px; background:transparent; color:var(--dim); cursor:pointer; }
-.thread-user-tick span { display:block; width:10px; height:2px; border-radius:2px;
-  background:currentColor; transition:width var(--motion-fast); }
-.thread-user-tick:is(:hover, .active) { color:var(--accent); }
-.thread-user-tick:is(:hover, .active) span { width:20px; }
+.thread-user-tick span { display:block; width:10px; height:3px; border-radius:999px;
+  background-color:var(--dim); transition:width 200ms ease-out, background-color 200ms ease-out; }
+.thread-user-tick:is(:hover, .active) span { width:20px;
+  background-color:color-mix(in srgb, var(--dim) 55%, var(--accent)); }
 .thread-user-tick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (prefers-reduced-motion: reduce) { .thread-user-tick span { transition:none; } }
 .thread-message:is(.user, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
   background:var(--panel2); }
 .thread-message.user .thread-comment-card { background:var(--user-bubble); color:var(--user-bubble-ink); }

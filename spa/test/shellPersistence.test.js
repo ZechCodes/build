@@ -9,6 +9,7 @@
 // page swapping inside the shell does not take the strip down with it.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -96,6 +97,10 @@ vi.mock("../src/core/trackerIssuesPane.js", () => ({
 const { App, go, render, unmountView } = await import("../src/app.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { stopShell } = await import("../src/core/shell.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const rpc = (method) => {
   if (method === "project.ensure_conversation") return { entity_id: "proj-conv-1" };
@@ -113,7 +118,9 @@ const rpc = (method) => {
   return {};
 };
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = async () => {
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((done) => setTimeout(done, 0));
+};
 
 /** Every route that is a place with a conversation, and what the reader calls it. */
 const PLACES = {
@@ -178,7 +185,8 @@ const separators = () => document.querySelectorAll("#agent-rail .rail-sep");
 const bubbleIds = () => [...document.querySelectorAll("#agent-rail .rail-strip [data-agent]")].map((b) => b.dataset.agent);
 const regions = () => ["shell", "toolbar", "view-body", "root", "agent-rail", "console-region"].map((id) => document.getElementById(id));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
   document.body.className = "";

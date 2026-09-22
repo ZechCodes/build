@@ -108,6 +108,8 @@ import {
   digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
+  jumpToUserMessage,
+  syncUserMessageTicks,
   readThroughSequence,
   pressedActivityRunKey,
   revealThreadSequence,
@@ -2345,13 +2347,14 @@ function mountRailOnContext(host, context, swap) {
     });
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
-    timedPaint("chat", () =>
+    timedPaint("chat", () => {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
         paintQueuedReasons();
-      }, { olderItemsPrepended }),
-    );
+      }, { olderItemsPrepended });
+      syncUserMessageTicks(body);
+    });
   };
 
   const chatIsVisible = () => panelVisible && !document.hidden && shownPanelMode() === "chat";
@@ -2379,10 +2382,12 @@ function mountRailOnContext(host, context, swap) {
     body.onscroll = () => {
       if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
+      syncUserMessageTicks(body);
       reportRead(body);
     };
     syncComposer();
     syncSurfaces();
+    syncUserMessageTicks(body);
     reportRead(body);
   };
 
@@ -2566,6 +2571,7 @@ function mountRailOnContext(host, context, swap) {
     // wrote, and a run that opens onto rows it has to fetch cannot be a fold
     // two writers share.
     body.onclick = (event) => {
+      if (jumpToUserMessage(event)) return;
       const runKey = pressedActivityRunKey(event.target);
       if (!runKey) return;
       event.preventDefault();

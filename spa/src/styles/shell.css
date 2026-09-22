@@ -948,7 +948,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:calc(var(--surface-head) + 14px) 16px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
+  padding:calc(var(--surface-head) + 14px) 20px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
   scroll-padding-top:var(--surface-head);
   scroll-padding-bottom:calc(var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px)); }
 /* A harness out of usage on this machine (#58, core/usageLimits.js): one line
@@ -981,7 +981,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    pull back against this number to sit tight (styles/issues.css), and a rule
    that set one without the other is how they drifted — the rail said 22 and
    the variable said 18, so the lines sat 8 px apart instead of 4. */
-.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 0 16px; }
+.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 12px 16px; }
 .rail-body .thread-message.agent .thread-body { padding-right:8px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,

@@ -22,6 +22,22 @@ waitlist**. Access is invite-only until the alpha reaches beta-level stability, 
 is no Download button on the page. The waitlist endpoint and form already exist
 (`POST /api/waitlist`, `landing/waitlist.html`). The secondary link is GitHub.
 
+**The control claim (decided by Zech on #75).** The promise is: agents and checkouts run
+on hardware you choose, with the model providers you configure. The page does not promise
+local inference or that no data leaves the machine. Every line of copy in this document
+is written to that scope, and the "Deliberately not doing" list keeps it that way.
+
+**The look (decided by Zech on #75).** Build's current visual language: black, one mint
+accent (`#51ffb4`), Inter and JetBrains Mono, as in the SPA and the existing stills.
+Zech's constraint is that it must not look bland and must not look busy, so the page
+gets its richness from three things and nothing else: the lit devices (the screens are
+the colour on the page, and the studio lighting gives the hardware depth), large
+confident type with generous space around it, and motion that always means something
+(a test being typed, a node being wired, a merge landing). Mint is spent on the CTA,
+the machine label, and the one live element in each act, never on decoration. No
+gradients, grids, particles, glows, or background imagery; no second accent. Each act
+is one idea, one device group, one moving thing.
+
 ---
 
 ## 1. The story
@@ -515,8 +531,8 @@ that is the point to ask Zech for one.
   label. Paths look like `~/code/build/workspaces/archive-search`.
 - These are demonstration states of the final product. The fixture may draw UI the client
   does not have yet (editor, issue board, builder canvas, Git panel, triage list). Use the
-  Build palette (black, mint `#51ffb4`, Inter and JetBrains Mono) unless Zech answers the
-  palette question differently.
+  Build palette (black, mint `#51ffb4`, Inter and JetBrains Mono), as decided on #75:
+  contrast comes from the lit UI on dark hardware, not from extra colour.
 - Animated parts of each act (typing, the card lifting, nodes moving, the fan-out) are HTML
   overlays aligned to the screen plane. Textures show the **resting state named below**;
   they do not need intermediate frames.
@@ -572,17 +588,3 @@ entrances, and the poster handoff already exist.
   whenever a remote device is present.
 - No glowing boundary or "nothing leaves this machine" imagery: remote screens receive
   diffs, and the harness's model provider handles what the agent sends it.
-
----
-
-## 6. Open questions for Zech
-
-The CTA question is settled ("Join the waitlist", invite-only until beta-level stability,
-no Download on the page). Two remain.
-
-1. **The control claim.** Is the promise "agents and checkouts run on hardware I choose,
-   with the model providers I configure", or should the page also promise no external
-   data transfer (local inference)? The storyboard assumes the first.
-2. **Palette.** Keep Build's current look (black, mint accent, Inter and JetBrains Mono,
-   as in the stills) for the new page, or move it toward the zech.sh navy-and-cyan brand?
-   The storyboard assumes Build's current look.

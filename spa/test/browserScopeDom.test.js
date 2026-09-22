@@ -1,10 +1,33 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
-import { openBrowser } from "../src/sheets/browser.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+let openBrowser;
+let browserListingAddress;
+let writeCached;
 const listing = (path) => ({ path, parent: "/", is_git: false, entries: [] });
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  ({ openBrowser, browserListingAddress } = await import("../src/sheets/browser.js"));
+  ({ writeCached } = await import("../src/core/localCache.js"));
   vi.clearAllMocks();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
+});
+it("paints a cached folder while its pull is absent", async () => {
+  const address = browserListingAddress("dev-1", "/projects");
+  await writeCached(address, { ...listing("/projects"), entries: [{ name: "cached", path: "/projects/cached", is_git: false, is_hidden: false }] });
+  const callRpc = vi.fn(() => new Promise(() => {}));
+  void openBrowser({ title: "Projects", deviceId: "dev-1", callRpc, startPath: "/projects", onChoose: vi.fn() });
+  await vi.waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("cached"));
+  expect(callRpc).toHaveBeenCalledWith("fs.list", { path: "/projects" });
+});
+it("redraws after a real cache write and address announcement", async () => {
+  const callRpc = vi.fn(() => new Promise(() => {}));
+  void openBrowser({ title: "Projects", deviceId: "dev-1", callRpc, startPath: "/projects", onChoose: vi.fn() });
+  const address = browserListingAddress("dev-1", "/projects");
+  await writeCached(address, { ...listing("/projects"), entries: [{ name: "fresh", path: "/projects/fresh", is_git: false, is_hidden: false }] });
+  await vi.waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("fresh"));
 });
 it("uses the supplied device connection and initial folder", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/device-projects"));
@@ -38,7 +61,7 @@ it("creates a directory in the current folder and opens it", async () => {
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" });
   expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" });
-  expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source");
+  await vi.waitFor(() => expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source"));
 });
 it("validates directory names before calling the device", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/projects"));

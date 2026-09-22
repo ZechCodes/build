@@ -115,7 +115,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       const host = $("#nrbrowser");
       if (!currentBrowser(requestVersion, host)) return;
       if (!projectsDir) throw new Error("This device did not return a projects folder.");
-      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, fallbackFromMissingStart: true, startPath: projectsDir, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
+      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, fallbackFromMissingStart: true, startPath: projectsDir, deviceId: targetId, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
     } catch (error) { if (currentBrowser(requestVersion, $("#nrbrowser"))) $("#nrerr").textContent = error.message; }
   };
   const paintSources = () => {

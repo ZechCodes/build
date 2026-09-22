@@ -197,6 +197,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     browserOpen = true;
     void openBrowser({
       title: `Choose a projects folder on ${device.name}`,
+      deviceId,
       gitOnly: false,
       fallbackFromMissingStart: true,
       startPath: pathLabel.textContent,

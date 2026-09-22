@@ -47,7 +47,7 @@ function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, v
   const attachObserver = new MutationObserver(attachRefbar);
   attachRefbar();
   attachObserver.observe(gitHost, { childList: true, subtree: true });
-  const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, onCheckout: async () => {
+  const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, cacheScope, onCheckout: async () => {
       if (disposed) return;
       gitPane.dispose();
       gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection });

@@ -72,6 +72,16 @@ describe("the generated landing document", () => {
     }
   });
 
+  it("offers the anchor the invite pages link to", () => {
+    assert.ok(html.includes('id="waitlist"'));
+  });
+
+  it("ships a stylesheet that respects reduced motion", () => {
+    const href = html.match(/href="\/landing\/generated\/(_astro\/[^"]+\.css)"/)[1];
+    const css = readFileSync(`${landingDir}generated/${href}`, "utf8");
+    assert.match(css, /prefers-reduced-motion:\s*reduce/);
+  });
+
   it("says workspaces, never worktrees", () => {
     assert.ok(!/worktree/i.test(html));
   });

@@ -150,12 +150,46 @@ async function openFilm(width, height, label) {
   return { context, page, errors, state };
 }
 
+// The primary call to action, hit-tested the way a visitor reaches it: the
+// element under the pointer at the button's centre, then a real click that
+// must move the film. An invisible copy container of a later act sitting over
+// the hero is what this catches; an element-exists check would not.
+async function checkHeroPointerPath(page, label) {
+  const cta = page.locator("#act-1 .actions .cta");
+  const box = await cta.boundingBox();
+  assert.ok(box, `${label}: the hero call to action has a box`);
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  const under = await page.evaluate(([px, py]) => {
+    const hit = document.elementFromPoint(px, py);
+    return { tag: hit?.tagName, text: hit?.textContent?.trim(), act: hit?.closest(".act")?.id, isCta: !!hit?.closest("#act-1 .actions .cta") };
+  }, [x, y]);
+  assert.ok(under.isCta, `${label}: the hero call to action is under the pointer (${JSON.stringify(under)})`);
+  await page.mouse.click(x, y);
+  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: 10_000 });
+  // Where the click lands, the form takes the pointer too.
+  await page.waitForFunction(() => {
+    const field = document.querySelector("#act-8 form input");
+    const rect = field?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return false;
+    return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
+  }, null, { timeout: 10_000 });
+  await page.screenshot({ path: path.join(output, `${label}-hero-cta-click.png`) });
+  await seek(page, 1, 0);
+  await page.waitForTimeout(400);
+}
+
 async function inspectFilm(width, height) {
   const label = `${width}x${height}-film`;
   const { context, page, errors, state } = await openFilm(width, height, label);
+  // The lid entrance is a timed tween; under a loaded software renderer GSAP
+  // smooths long frames by slowing its clock, so wait for the lid, not a delay.
+  await page.waitForFunction(() => window.BuildFilm.pose.laptop.lidOpen > 0.99, null, { timeout: gpu ? 5000 : 30_000 })
+    .catch(() => {});
   const opened = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
   assert.ok(opened > 0.99, `${label}: the hero laptop is open after its entrance`);
   await page.screenshot({ path: path.join(output, `${label}-hero.png`) });
+  await checkHeroPointerPath(page, label);
   for (const [act, local] of [[1, 0.5], [2, 0.7], [3, 0.6], [4, 0.7], [5, 0.75], [6, 0.8], [7, 0.55], [7, 0.85], [8, 0.9], [4, 0.2], [1, 0.05]]) {
     await checkAct(page, label, act, local, height);
   }

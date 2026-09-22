@@ -628,15 +628,24 @@ describe("the issue tracker under a project", () => {
     });
   });
 
-  // A board is worth linking to; the list is what a link that says nothing
-  // opens, so only the board is ever written.
-  it("carries which way the tab is laid out, and writes only the board", () => {
+  it("uses Dashboard as the project default and gives List and Board stable URLs", () => {
     const board = "#/device/d1/project/p/issues?view=board";
     expect(routeFromHash(board)).toEqual({ name: "project", deviceId: "d1", projectId: "p", tab: "issues", view: "board" });
     // …and writes back as the default tab's own URL (#46).
     expect(hashFromRoute(routeFromHash(board))).toBe("#/device/d1/project/p?view=board");
     expect(hashFromRoute({ name: "project", deviceId: "d1", projectId: "p", tab: "issues", view: "list" }))
+      .toBe("#/device/d1/project/p?view=list");
+    expect(routeFromHash("#/device/d1/project/p?view=list").view).toBe("list");
+    expect(hashFromRoute({ name: "project", deviceId: "d1", projectId: "p", tab: "issues", view: "dashboard" }))
       .toBe("#/device/d1/project/p");
+    expect(routeFromHash("#/device/d1/project/p?view=dashboard").view).toBeUndefined();
+  });
+
+  it("keeps List as the workspace Issues default and links Dashboard explicitly", () => {
+    const base = "#/device/d1/project/p/workspace/ws/issues";
+    expect(hashFromRoute({ name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "issues", view: "list" })).toBe(base);
+    expect(routeFromHash(`${base}?view=dashboard`).view).toBe("dashboard");
+    expect(hashFromRoute(routeFromHash(`${base}?view=dashboard`))).toBe(`${base}?view=dashboard`);
   });
 
   it("round-trips both, on the machine the project is on", () => {

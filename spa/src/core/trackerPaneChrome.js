@@ -24,13 +24,15 @@
 // and `update` does not touch any of it (core/filterMenuControl.js).
 
 import { ICON_PLUS } from "./icons.js";
-import { chosenOf, filtersAreSet } from "./trackerFilters.js";
+import { chosenOf, DEFAULT_FILTERS, filtersAreSet, NO_FILTERS } from "./trackerFilters.js";
 import { mountFilterMenu } from "./filterMenuControl.js";
 
 export const LIST_VIEW = "list";
 export const BOARD_VIEW = "board";
+export const DASHBOARD_VIEW = "dashboard";
 
 const VIEWS = [
+  { id: DASHBOARD_VIEW, label: "Dashboard" },
   { id: LIST_VIEW, label: "List" },
   { id: BOARD_VIEW, label: "Board" },
 ];
@@ -121,7 +123,7 @@ export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
     update({ view, options, filters }) {
       viewButtons.forEach((button) => showView(button, view));
       menus.forEach(({ offer, name, control }) => control.update(offer(options), chosenOf(filters[name])));
-      clear.hidden = !filtersAreSet(filters);
+      clear.hidden = !filtersAreSet(filters, view === DASHBOARD_VIEW ? NO_FILTERS : DEFAULT_FILTERS);
     },
     dispose() {
       menus.forEach(({ control }) => control.dispose());

@@ -1,22 +1,27 @@
 import { createRequire } from "node:module";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { spawn } from "node:child_process";
 
 const require = createRequire(new URL("../../web/package.json", import.meta.url));
 const { chromium } = require("playwright");
 const origin = process.env.CAPTURE_ORIGIN || "http://127.0.0.1:4178";
+const manifest = JSON.parse(await readFile(new URL("./screen-manifest.json", import.meta.url), "utf8"));
 
 const output = resolve("design/landing-captures/masters");
+const derivatives = resolve("skriftapp/buildapp/landing/assets/screens");
+const reportPath = resolve("design/landing-captures/capture-results.json");
 await mkdir(output, { recursive: true });
+await mkdir(derivatives, { recursive: true });
 
 const launchOptions = { headless: true };
 if (process.env.CHROMIUM_PATH) launchOptions.executablePath = process.env.CHROMIUM_PATH;
 const browser = await chromium.launch(launchOptions);
 const allScenes = ["ui01", "ui02", "ui03", "ui04", "ui05"];
 const allProfiles = [
-  { name: "desktop", width: 1440, height: 900 },
-  { name: "tablet", width: 1440, height: 1080 },
-  { name: "mobile", width: 390, height: 844 },
+  { name: "macbook", width: 1512, height: 982, scale: 2, native: [3024, 1964] },
+  { name: "ipad", width: 1210, height: 834, scale: 2, native: [2420, 1668] },
+  { name: "iphone", width: 440, height: 956, scale: 3, native: [1320, 2868] },
 ];
 const selectedNames = (variable, available) => {
   if (!variable) return available;
@@ -27,19 +32,108 @@ const selectedNames = (variable, available) => {
 };
 const scenes = selectedNames(process.env.CAPTURE_SCENES, allScenes);
 const profiles = selectedNames(process.env.CAPTURE_PROFILES, allProfiles);
+const captureResults = [];
+
+const resizeWebp = (source, destination, width, height) => new Promise((resolvePromise, reject) => {
+  const imageMagick = spawn("magick", [source, "-resize", `${width}x${height}!`, "-quality", "88", destination], { stdio: "inherit" });
+  imageMagick.once("error", reject);
+  imageMagick.once("exit", (code) => code === 0 ? resolvePromise() : reject(new Error(`ImageMagick exited with ${code}`)));
+});
+
+async function assertSystemSafeAreas(page, profile) {
+  const result = await page.evaluate((profileName) => {
+    const rectangle = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const { left, right, top, bottom, width, height } = element.getBoundingClientRect();
+      return { left, right, top, bottom, width, height };
+    };
+    const overlaps = (first, second) => first && second
+      && first.left < second.right && first.right > second.left
+      && first.top < second.bottom && first.bottom > second.top;
+    const appHostIssues = (host, app) => {
+      if (!host || !app) return ["missing app host or app"];
+      if (Math.abs(host.width - app.width) > .5 || Math.abs(host.height - app.height) > .5) {
+        return ["app does not fill its reserved host"];
+      }
+      return [];
+    };
+    const hostSelector = profileName === "iphone" ? ".iphone-app-host" : ".system-app-host";
+    const host = rectangle(hostSelector);
+    const app = rectangle(`${hostSelector} > .app`);
+    const exclusions = profileName === "macbook"
+      ? { menuBar: rectangle(".mac-menu-bar"), cameraHousing: rectangle(".camera-safe-area"), dock: rectangle(".mac-dock") }
+      : profileName === "ipad"
+        ? { statusBar: rectangle(".ipad-status-bar"), windowControls: rectangle(".ipad-window-controls"), dock: rectangle(".ipad-dock"), homeIndicator: rectangle(".home-indicator") }
+        : { statusBar: rectangle(".iphone-status-bar"), islandSafeArea: rectangle(".island-safe-area"), homeSafeArea: rectangle(".iphone-home-safe"), homeIndicator: rectangle(".iphone-home-safe .home-indicator") };
+    const issues = appHostIssues(host, app);
+    Object.entries(exclusions).forEach(([name, exclusion]) => {
+      if (!exclusion) issues.push(`missing system exclusion ${name}`);
+      else if (overlaps(host, exclusion)) issues.push(`app host overlaps system exclusion ${name}`);
+    });
+    const statusChildren = profileName === "iphone"
+      ? [rectangle(".iphone-status-bar > strong"), rectangle(".island-safe-area"), rectangle(".iphone-status-bar .system-status-right")]
+      : [];
+    if (statusChildren.length && (statusChildren.some((entry) => !entry)
+      || overlaps(statusChildren[0], statusChildren[1])
+      || overlaps(statusChildren[1], statusChildren[2]))) {
+      issues.push("iPhone status content enters the island exclusion");
+    }
+    return { issues, host, exclusions, viewport: { width: innerWidth, height: innerHeight } };
+  }, profile.name);
+  if (result.viewport.width !== profile.width || result.viewport.height !== profile.height) {
+    result.issues.push(`viewport ${result.viewport.width}x${result.viewport.height} is not ${profile.width}x${profile.height}`);
+  }
+  const expectedBounds = manifest.profiles.system[profile.name].appBounds;
+  const actualBounds = result.host && [result.host.left, result.host.top, result.host.width, result.host.height];
+  if (!actualBounds || actualBounds.some((value, index) => Math.abs(value - expectedBounds[index]) > .5)) {
+    result.issues.push(`app bounds ${JSON.stringify(actualBounds)} do not match manifest ${JSON.stringify(expectedBounds)}`);
+  }
+  if (profile.width * profile.scale !== profile.native[0] || profile.height * profile.scale !== profile.native[1]) {
+    result.issues.push(`capture scale does not produce native dimensions ${profile.native.join("x")}`);
+  }
+  return result;
+}
+
+const reportRectangle = (rectangle) => rectangle
+  ? [rectangle.left, rectangle.top, rectangle.width, rectangle.height].map((value) => Math.round(value * 100) / 100)
+  : null;
 
 for (const profile of profiles) {
-  const page = await browser.newPage({ viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: 2 });
+  const page = await browser.newPage({ viewport: { width: profile.width, height: profile.height }, deviceScaleFactor: profile.scale });
   for (const scene of scenes) {
     const states = scene === "ui03" ? ["question", "answer", "resumed"] : scene === "ui05" ? ["approval", "merged"] : ["default"];
     for (const state of states) {
       const suffix = state === "default" ? "" : `-${state}`;
-      await page.goto(`${origin}/design/landing-captures/?scene=${scene}&state=${state}`);
+      await page.goto(`${origin}/design/landing-captures/?scene=${scene}&state=${state}&profile=${profile.name}`);
       await page.evaluate(() => document.fonts.ready);
-      await page.screenshot({ path: resolve(output, `${scene}${suffix}-${profile.name}.png`) });
+      const validation = await assertSystemSafeAreas(page, profile);
+      const stem = `${scene}${suffix}-${profile.name}`;
+      captureResults.push({
+        state: `${scene}${suffix}`,
+        profile: profile.name,
+        logicalViewport: [profile.width, profile.height],
+        deviceScaleFactor: profile.scale,
+        nativeDimensions: profile.native,
+        appBounds: reportRectangle(validation.host),
+        systemExclusions: Object.fromEntries(Object.entries(validation.exclusions).map(([name, rectangle]) => [name, reportRectangle(rectangle)])),
+        issues: validation.issues,
+      });
+      const masterPath = resolve(output, `${stem}.png`);
+      await page.screenshot({ path: masterPath });
+      await resizeWebp(masterPath, resolve(derivatives, `${stem}.webp`), profile.width, profile.height);
     }
   }
   await page.close();
 }
 
 await browser.close();
+await writeFile(reportPath, `${JSON.stringify({
+  version: 1,
+  generatedBy: "design/landing-captures/capture.mjs",
+  checkedAssets: captureResults.length,
+  results: captureResults,
+}, null, 2)}\n`);
+
+const issues = captureResults.flatMap((result) => result.issues.map((issue) => `${result.state}-${result.profile}: ${issue}`));
+if (issues.length) throw new Error(`Capture validation failed:\n${issues.join("\n")}`);

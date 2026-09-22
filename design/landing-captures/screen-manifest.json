@@ -1,16 +1,67 @@
 {
-  "version": 1,
+  "version": 2,
   "fixture": {
     "project": "Build",
     "workspace": "Launch",
     "directories": ["build-app", "build-bridge", "notes"],
     "conversation": "Fixing archive button",
-    "demonstrationOnly": true
+    "demonstrationOnly": true,
+    "systemClock": "9:41"
   },
   "profiles": {
-    "desktop": { "viewport": [1440, 900], "crop": [0, 0, 1440, 900], "textSafe": [22, 54, 1396, 802] },
-    "tablet": { "viewport": [1440, 1080], "crop": [0, 0, 1440, 1080], "textSafe": [22, 54, 1396, 982] },
-    "mobile": { "viewport": [390, 844], "crop": [0, 0, 390, 844], "textSafe": [14, 50, 362, 744] }
+    "appOnly": {
+      "desktop": { "viewport": [1440, 900], "crop": [0, 0, 1440, 900], "textSafe": [22, 54, 1396, 802] },
+      "tablet": { "viewport": [1440, 1080], "crop": [0, 0, 1440, 1080], "textSafe": [22, 54, 1396, 982] },
+      "mobile": { "viewport": [390, 844], "crop": [0, 0, 390, 844], "textSafe": [14, 50, 362, 744] }
+    },
+    "system": {
+      "macbook": {
+        "device": "MacBook Pro 14-inch (M5, 2025)",
+        "orientation": "landscape",
+        "viewport": [1512, 982],
+        "deviceScaleFactor": 2,
+        "master": [3024, 1964],
+        "derivative": [1512, 982],
+        "appBounds": [48, 102, 1416, 804],
+        "windowBounds": [48, 61, 1416, 845],
+        "systemExclusions": {
+          "menuBar": [0, 0, 1512, 37],
+          "cameraHousing": [661, 0, 190, 37],
+          "dock": [527.5, 913, 457, 62]
+        }
+      },
+      "ipad": {
+        "device": "iPad Pro 11-inch (M5, 2025)",
+        "orientation": "landscape",
+        "viewport": [1210, 834],
+        "deviceScaleFactor": 2,
+        "master": [2420, 1668],
+        "derivative": [1210, 834],
+        "appBounds": [36, 73, 1138, 672],
+        "windowBounds": [36, 39, 1138, 706],
+        "systemExclusions": {
+          "statusBar": [0, 0, 1210, 31],
+          "windowControls": [49, 51, 44, 10],
+          "dock": [422, 755, 366, 66],
+          "homeIndicator": [549, 826, 112, 4]
+        }
+      },
+      "iphone": {
+        "device": "iPhone 17 Pro Max (2025)",
+        "orientation": "portrait",
+        "viewport": [440, 956],
+        "deviceScaleFactor": 3,
+        "master": [1320, 2868],
+        "derivative": [440, 956],
+        "appBounds": [0, 59, 440, 863],
+        "systemExclusions": {
+          "statusBar": [0, 0, 440, 59],
+          "physicalDynamicIsland": [142, 0, 156, 54],
+          "homeSafeArea": [0, 922, 440, 34],
+          "homeIndicator": [153, 943, 134, 5]
+        }
+      }
+    }
   },
   "states": [
     { "id": "ui01", "order": 1, "checkpoint": "delegated", "timer": "03:42", "description": "Prepared archive request, Claude Code selected, and three primary agents running." },
@@ -22,9 +73,20 @@
     { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Coherent archive diff, archived-label test evidence, and explicit approval control." },
     { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "Confirmed merged state after approval." }
   ],
-  "filePattern": "{state}-{profile}.{png|webp}",
+  "filePatterns": {
+    "appOnly": "{state}-{desktop|tablet|mobile}.{png|webp}",
+    "system": "{state}-{macbook|ipad|iphone}.{png|webp}"
+  },
   "masters": "design/landing-captures/masters/",
   "derivatives": "skriftapp/buildapp/landing/assets/screens/",
   "source": "design/landing-captures/",
-  "provenance": "Deterministic marketing fixture composed with current SPA renderers and CSS; it is not a live-host capture."
+  "references": [
+    "https://developer.apple.com/design/human-interface-guidelines/layout",
+    "https://developer.apple.com/design/human-interface-guidelines/status-bars",
+    "https://developer.apple.com/videos/play/wwdc2025/208/",
+    "https://www.apple.com/macbook-pro/specs/",
+    "https://www.apple.com/ipad-pro/specs/",
+    "https://www.apple.com/iphone-17-pro/specs/"
+  ],
+  "provenance": "Deterministic marketing fixture composed with current SPA renderers and original capture-only system chrome; it is not a live-host capture."
 }

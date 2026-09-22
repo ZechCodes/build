@@ -1,0 +1,242 @@
+.system-shell {
+  --system-white: #f7f8fb;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--system-white);
+  isolation: isolate;
+  font-family: Inter, system-ui, sans-serif;
+}
+
+.desktop-wallpaper,
+.tablet-wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+  background: #081621;
+}
+
+.desktop-wallpaper {
+  background:
+    radial-gradient(ellipse at 73% 27%, rgba(93, 179, 195, .63) 0, rgba(29, 91, 111, .38) 24%, transparent 51%),
+    radial-gradient(ellipse at 18% 105%, #1d5c6e 0, #0e303e 38%, transparent 67%),
+    linear-gradient(135deg, #06131c 0%, #0b202d 48%, #071116 100%);
+}
+
+.desktop-wallpaper i,
+.tablet-wallpaper i {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  filter: blur(50px);
+  opacity: .44;
+}
+
+.desktop-wallpaper i:nth-child(1) { width: 52%; height: 54%; left: 42%; top: -23%; background: #7dd8d6; transform: rotate(-18deg); }
+.desktop-wallpaper i:nth-child(2) { width: 38%; height: 41%; right: -14%; top: 22%; background: #0c536b; }
+.desktop-wallpaper i:nth-child(3) { width: 48%; height: 30%; left: -17%; bottom: -12%; background: #255a64; }
+
+.tablet-wallpaper {
+  background:
+    radial-gradient(circle at 20% 10%, rgba(66, 161, 172, .76), transparent 36%),
+    radial-gradient(circle at 87% 85%, rgba(72, 105, 154, .66), transparent 44%),
+    linear-gradient(145deg, #071b28 0%, #12363e 48%, #171a31 100%);
+}
+.tablet-wallpaper i:nth-child(1) { width: 58%; height: 76%; left: -20%; top: 21%; background: #197689; }
+.tablet-wallpaper i:nth-child(2) { width: 56%; height: 58%; right: -15%; top: -21%; background: #243e66; }
+
+.mac-menu-bar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  height: 37px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px minmax(0, 1fr);
+  align-items: center;
+  padding: 0 17px;
+  color: rgba(255,255,255,.96);
+  background: rgba(11, 24, 31, .53);
+  box-shadow: inset 0 -1px rgba(255,255,255,.09);
+  backdrop-filter: blur(26px) saturate(1.4);
+  font-size: 13px;
+  letter-spacing: -.012em;
+}
+
+.mac-menu-left,
+.mac-menu-right,
+.system-status-right {
+  display: flex;
+  align-items: center;
+}
+.mac-menu-left { gap: 20px; min-width: 0; }
+.mac-menu-left > svg { width: 15px; height: 17px; margin-right: 1px; }
+.apple-glyph { fill: currentColor; }
+.mac-menu-left strong, .mac-menu-right strong { font-weight: 600; }
+.mac-menu-right { justify-content: flex-end; gap: 13px; white-space: nowrap; }
+.mac-menu-right > svg { flex: none; }
+.mac-menu-right .battery-icon { width: 25px; }
+.mac-menu-right .status-stroke { width: 17px; }
+.mac-menu-right .menu-stroke { width: 16px; }
+.camera-safe-area { width: 190px; height: 100%; }
+
+.status-stroke,
+.menu-stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.status-stroke .solid { fill: currentColor; stroke: none; }
+.status-fill { fill: currentColor; }
+.menu-stroke .solid-bg { fill: #fff; stroke: rgba(12,24,30,.74); stroke-width: 1.35; }
+.battery-icon { width: 27px; height: 13px; overflow: visible; }
+.battery-case { fill: none; stroke: currentColor; stroke-width: 1.2; opacity: .72; }
+.battery-level, .battery-cap { fill: currentColor; }
+.battery-cap { opacity: .5; }
+
+.system-window {
+  position: absolute;
+  z-index: 2;
+  overflow: hidden;
+  background: #07151b;
+  box-shadow: 0 27px 68px rgba(0, 0, 0, .44), 0 4px 16px rgba(0,0,0,.34), 0 0 0 1px rgba(255,255,255,.18);
+}
+.mac-window {
+  left: 48px;
+  right: 48px;
+  top: 61px;
+  bottom: 76px;
+  border-radius: 11px;
+}
+.mac-titlebar,
+.ipad-windowbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(239,245,247,.68);
+  background: linear-gradient(#1d2b31, #15242a);
+  border-bottom: 1px solid rgba(0,0,0,.72);
+  box-shadow: inset 0 1px rgba(255,255,255,.08);
+}
+.mac-titlebar { height: 41px; font-size: 12px; }
+.window-title { font-weight: 500; letter-spacing: -.01em; }
+.traffic-lights { position: absolute; left: 14px; display: flex; gap: 8px; }
+.traffic-lights i,
+.ipad-window-controls i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 .7px rgba(0,0,0,.18);
+}
+.traffic-lights i:nth-child(1), .ipad-window-controls i:nth-child(1) { background: #ff5f57; }
+.traffic-lights i:nth-child(2), .ipad-window-controls i:nth-child(2) { background: #febc2e; }
+.traffic-lights i:nth-child(3), .ipad-window-controls i:nth-child(3) { background: #28c840; }
+.system-app-host { width: 100%; height: calc(100% - 41px); overflow: hidden; }
+
+.system-dock {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(255,255,255,.19);
+  background: rgba(234, 241, 244, .24);
+  box-shadow: 0 9px 30px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.22);
+  backdrop-filter: blur(28px) saturate(1.65);
+}
+.mac-dock { height: 62px; bottom: 7px; padding: 7px 9px 6px; border-radius: 17px; }
+.dock-item { position: relative; width: 47px; height: 47px; flex: none; }
+.dock-app { width: 47px; height: 47px; border-radius: 10px; overflow: hidden; filter: drop-shadow(0 3px 3px rgba(0,0,0,.3)); }
+.dock-app > svg { display: block; width: 100%; height: 100%; }
+.dock-running { position: absolute; left: 50%; bottom: -5px; width: 3px; height: 3px; border-radius: 50%; background: rgba(255,255,255,.83); transform: translateX(-50%); }
+.dock-divider { width: 1px; height: 39px; margin: 0 2px; background: rgba(255,255,255,.26); }
+
+.dock-finder { background: linear-gradient(90deg, #9de4fb 50%, #168ad1 50%); }
+.finder-light { fill: #9de4fb; }.finder-dark { fill: #168ad1; }
+.finder-line { fill: none; stroke: #123c5a; stroke-width: 1.65; stroke-linecap: round; }
+.finder-eye { fill: none; stroke: #123c5a; stroke-width: 2.8; stroke-linecap: round; }
+.dock-safari { background: linear-gradient(145deg,#f7fbff,#c9e8f8); }
+.safari-face { fill: #1999e6; }.safari-ring { fill: none; stroke: white; stroke-width: 2; }
+.safari-ticks { fill: none; stroke: white; stroke-width: 1.2; stroke-linecap: round; }
+.safari-needle { fill: #f54846; stroke: white; stroke-width: .7; stroke-linejoin: round; }
+.dock-messages { background: linear-gradient(#66ee70,#10b52c); }
+.messages-bubble { fill: white; }.dock-messages circle { fill: #36c64c; }
+.dock-terminal { background: linear-gradient(#303338,#101216); box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
+.terminal-face { fill: #15171b; stroke: #7d838b; stroke-width: 1; }.terminal-code { fill: none; stroke: #f0f2f2; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.dock-notes { background: #fff; }.notes-paper { fill: #fff; }.notes-head { stroke: #f7d43d; stroke-width: 10; }.notes-lines { fill: none; stroke: #b9bdc0; stroke-width: 1.7; stroke-linecap: round; }
+.dock-files { background: linear-gradient(150deg,#62bfff,#147bd9); }
+.files-folder { fill: #f6fbff; }.files-fold { fill: none; stroke: #5bb5f1; stroke-width: 1.4; opacity: .68; }
+.dock-settings { background: linear-gradient(145deg,#b7bec6,#68717d); }
+.settings-gear { fill: #f6f8fa; }.settings-center { fill: #818b96; stroke: rgba(255,255,255,.72); stroke-width: 1.2; }
+.dock-build { background: linear-gradient(145deg,#16362f,#071c1a); box-shadow: inset 0 0 0 1px rgba(81,255,180,.26); }
+.dock-build-mark { display: grid; width: 100%; height: 100%; place-items: center; }
+.dock-build-mark img { width: 24px; height: 29px; object-fit: contain; filter: drop-shadow(0 0 7px rgba(81,255,180,.3)); }
+.dock-trash { background: rgba(239,246,248,.83); }
+.trash-bin { fill: rgba(224,235,239,.8); stroke: #69808a; stroke-width: 1.3; }.trash-lines { fill: none; stroke: #69808a; stroke-width: 1.6; stroke-linecap: round; }
+
+.ipad-status-bar,
+.iphone-status-bar {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  letter-spacing: -.015em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 5px rgba(0,0,0,.42);
+}
+.ipad-status-bar { height: 31px; padding: 0 22px; }
+.system-status-right { gap: 7px; }
+.system-status-right .status-stroke { width: 17px; }
+.system-status-right .status-fill { width: 18px; }
+.system-status-right .battery-icon { width: 26px; margin-left: 1px; }
+
+.ipad-window { left: 36px; right: 36px; top: 39px; bottom: 89px; border-radius: 15px; }
+.ipad-windowbar { height: 34px; background: rgba(24,39,46,.97); }
+.ipad-window-controls { position: absolute; left: 13px; display: flex; gap: 7px; }
+.ipad-window-controls i { width: 10px; height: 10px; }
+.ipad-window-title { color: rgba(239,245,247,.68); font-size: 11px; font-weight: 500; }
+.ipad-window .system-app-host { height: calc(100% - 34px); }
+.ipad-dock { height: 66px; bottom: 13px; padding: 8px 10px 7px; border-radius: 22px; gap: 10px; }
+.ipad-dock .dock-item,
+.ipad-dock .dock-app { width: 49px; height: 49px; }
+.ipad-dock .dock-divider { height: 42px; }
+.ipad-dock .dock-running { display: none; }
+
+.home-indicator {
+  position: absolute;
+  z-index: 7;
+  left: 50%;
+  bottom: 4px;
+  width: 112px;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.86);
+  transform: translateX(-50%);
+  box-shadow: 0 1px 3px rgba(0,0,0,.26);
+}
+
+.iphone-shell { background: #07151b; }
+.iphone-status-bar { height: 59px; padding: 0 22px 4px 25px; background: rgba(7,21,27,.98); text-shadow: none; font-size: 14px; }
+.iphone-status-bar > strong { width: 74px; text-align: center; font-weight: 600; }
+.iphone-status-bar .system-status-right { min-width: 90px; justify-content: flex-end; gap: 6px; }
+.iphone-status-bar .status-stroke { width: 16px; }
+.iphone-status-bar .status-fill { width: 17px; }
+.iphone-status-bar .battery-icon { width: 25px; }
+.island-safe-area { flex: 1; height: 100%; min-width: 148px; }
+.iphone-app-host { position: absolute; inset: 59px 0 34px; overflow: hidden; }
+.iphone-home-safe { position: absolute; z-index: 6; inset: auto 0 0; height: 34px; background: rgba(7,21,27,.98); }
+.iphone-home-safe .home-indicator { width: 134px; height: 5px; bottom: 8px; }
+
+@media (max-width: 500px) {
+  .iphone-app-host .app { grid-template-rows: 50px minmax(0,1fr) 44px; }
+  .iphone-app-host .statusbar { font-size: 9px; }
+}

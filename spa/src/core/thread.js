@@ -1066,6 +1066,9 @@ export function incomingKindOf(message) {
   return INCOMING_KINDS.user;
 }
 
+const isReaderMessage = (message) => message?.role === "user" && !message.issue_action
+  && !message.sent_to && incomingKindOf(message) === INCOMING_KINDS.user;
+
 function messageHtml(message, agentLabel, context) {
   // This agent's own doings first: an action line is it saying what it just
   // did here, and a sent message is it speaking elsewhere. Neither arrived.
@@ -1075,36 +1078,44 @@ function messageHtml(message, agentLabel, context) {
   if (kind === INCOMING_KINDS.notice) return noticeMessageHtml(message, context);
   if (kind === INCOMING_KINDS.agent) return arrivedMessageHtml(message, agentLabel, context);
   // An agent's own words are not incoming at all; only the reader's are.
-  const user = message.role === "user";
+  const user = isReaderMessage(message);
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     ${avatarHtml(user)}
-    ${user ? userMessageTickHtml(message) : ""}
     <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
   </article>`;
 }
 
-function userMessageTickHtml(message) {
+function userMessageTickHtml({ message, index }) {
   const date = new Date(message.created_at || "");
   const when = Number.isNaN(date.getTime()) ? "an earlier time" : date.toLocaleString("en-US", {
     dateStyle: "medium", timeStyle: "short",
   });
-  return `<button type="button" class="thread-user-tick" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
+  return `<button type="button" class="thread-user-tick" data-user-tick-index="${index}" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
 }
 
+const userMessageTicks = (built) => built.entries
+  .filter(({ item }) => item?.type === "message" && isReaderMessage(item.data))
+  .map(({ key, item }, index) => ({ key, message: item.data, index }));
+
+const userMessageNavHtml = (built) => `<nav class="thread-user-nav" aria-label="Your messages"><div class="thread-user-nav-list">${userMessageTicks(built)
+  .map(userMessageTickHtml).join("")}</div></nav>`;
+
 /** The last reader message whose top has reached the viewport, never the next
- * one below it. This is recomputed after a repaint and on every scroll. */
+ * one below it. Only the active width changes on scroll; the group stays put. */
 export function syncUserMessageTicks(scroller) {
   const timeline = scroller?.querySelector(".thread-items");
-  if (!timeline) return;
+  const navigator = scroller?.querySelector(".thread-user-nav");
+  if (!timeline || !navigator) return;
   const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
   const boundary = scroller.getBoundingClientRect().top + scrollPadding;
-  let previous = null;
-  for (const row of timeline.querySelectorAll(":scope > .thread-message.user")) {
-    if (row.getBoundingClientRect().top <= boundary) previous = row;
+  let previous = -1;
+  const rows = timeline.querySelectorAll(":scope > .thread-message.user");
+  for (const [index, row] of [...rows].entries()) {
+    if (row.getBoundingClientRect().top <= boundary) previous = index;
     else break;
   }
-  for (const tick of timeline.querySelectorAll(".thread-user-tick")) {
-    const active = tick.closest(".thread-message") === previous;
+  for (const [index, tick] of [...navigator.querySelectorAll(".thread-user-tick")].entries()) {
+    const active = index === previous;
     tick.classList.toggle("active", active);
     if (active) tick.setAttribute("aria-current", "location");
     else tick.removeAttribute("aria-current");
@@ -1116,7 +1127,8 @@ export function syncUserMessageTicks(scroller) {
 export function jumpToUserMessage(event) {
   const tick = event.target.closest?.(".thread-user-tick");
   if (!tick) return false;
-  const row = tick.closest(".thread-message.user");
+  const index = Number(tick.dataset.userTickIndex);
+  const row = tick.closest(".review-thread")?.querySelectorAll(".thread-items > .thread-message.user")[index];
   if (!row) return false;
   row.scrollIntoView({ behavior: "smooth", block: "start" });
   return true;
@@ -1407,7 +1419,7 @@ function foldActivityRuns(rows, digests, view) {
       continue;
     }
     closeRun();
-    entries.push({ key: row.key, html: row.html });
+    entries.push({ key: row.key, html: row.html, item: row.item });
   }
   closeRun();
   return entries;
@@ -1757,6 +1769,7 @@ export function threadHtml(thread, options = {}) {
   const empty = built.itemCount ? "" : " is-empty";
   return `<section class="review-thread pane-col${empty}">
     <div class="thread-title">${threadTitleHtml(built.itemCount, options.status)}</div>
+    ${userMessageNavHtml(built)}
     <div class="thread-items thread-timeline${empty}">${timelineRows(built).map((row) => row.html).join("")}</div>
     <div class="thread-revision-view" hidden></div>
     ${threadActionsHtml(options.actionsId)}
@@ -1866,13 +1879,17 @@ export function paintThreadEntries(container, built, options = {}) {
     keyOf: (row) => row.key,
     render: (row) => row.html,
   });
+  patchList(section.querySelector(".thread-user-nav-list"), userMessageTicks(built), {
+    keyOf: (tick) => tick.key,
+    render: userMessageTickHtml,
+  });
   return framed;
 }
 
 /// The parts of a rendered thread a repaint may overwrite. The composer is
 /// deliberately not among them, and neither is the revision viewer — both are
 /// state the reader put there, and the poll knows nothing about either.
-const REPAINTED_PARTS = [".thread-title", ".thread-items", ".thread-actions"];
+const REPAINTED_PARTS = [".thread-title", ".thread-user-nav", ".thread-items", ".thread-actions"];
 
 /// What makes two composers the same box: the input it writes into, and
 /// whether it takes files. Anything else about it (the placeholder) is moved

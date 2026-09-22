@@ -835,19 +835,30 @@ describe("the rail over a machine that is asked nothing", () => {
 });
 
 describe("the bubble strip", () => {
-  it("wires a reader-message tick to its chat row after mounting the rail", async () => {
+  it("wires a cache-backed grouped navigator while thread payloads are late", async () => {
     payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items: [
       { type: "message", data: { sequence: 1, role: "user", body: "Find my question", created_at: "2026-09-22T12:00:00Z" } },
       { type: "message", data: { sequence: 2, role: "agent", body: "Here is the answer" } },
     ] } } });
+    const originalCall = bridge.call;
+    bridge.call = (method, params) => method === "thread.page"
+      ? new Promise(() => {}) : originalCall(method, params);
     await mount();
 
-    const tick = railHost().querySelector(".thread-user-tick");
-    const row = tick.closest(".thread-message.user");
+    const navigator = railHost().querySelector(".thread-user-nav");
+    const tick = navigator.querySelector(".thread-user-tick");
+    const row = railHost().querySelector(".thread-items > .thread-message.user");
+    expect(tick.closest(".thread-message")).toBeNull();
     row.scrollIntoView = vi.fn();
     tick.click();
-
     expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+
+    await pushRailThreadItems("run-3", "ag-1", [
+      { type: "message", data: { sequence: 3, role: "user", body: "One more question", created_at: "2026-09-22T13:00:00Z" } },
+    ]);
+    await flush();
+    expect(navigator.querySelectorAll(".thread-user-tick")).toHaveLength(2);
+    expect(railHost().querySelector(".thread-items").textContent).toContain("One more question");
   });
 
   it("opens a cache-backed agent overview and returns to the chosen chat", async () => {

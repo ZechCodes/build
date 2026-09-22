@@ -95,8 +95,8 @@ async def test_landing_assets_have_an_independent_bounded_browser_budget():
 @pytest.mark.parametrize(
     ("path", "method", "expected_policy"),
     (
-        ("/landing/main.js", "GET", "landing_assets"),
-        ("/landing/main.js", "POST", "default"),
+        ("/landing/generated/waitlist-boot.js", "GET", "landing_assets"),
+        ("/landing/generated/waitlist-boot.js", "POST", "default"),
         ("/landing", "GET", "default"),
         ("/docs", "GET", "default"),
         ("/install.sh", "GET", "default"),

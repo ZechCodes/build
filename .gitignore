@@ -168,8 +168,6 @@ vendor/
 # ...but the interim vendored skrift wheel ships with the app image build
 !skriftapp/vendor/
 !skriftapp/vendor/*.whl
-# The landing page serves its pinned device renderer from the same origin.
-!skriftapp/buildapp/landing/vendor/
 *.exe
 *.exe~
 

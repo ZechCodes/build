@@ -3,11 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node build-three-runtime.mjs",
-    "test": "node --test test-device-stage.mjs test-device-assets.mjs"
+    "test": "node --test test-device-assets.mjs"
   },
   "devDependencies": {
-    "esbuild": "0.25.9",
     "three": "0.180.0"
   }
 }

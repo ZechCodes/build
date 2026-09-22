@@ -749,6 +749,68 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
+  it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
+    await wipeCache();
+    chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
+    const hiddenRun = { run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build" }],
+      workspaces: [{ id: "ws-unwatched", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
+      items: [], runs: [hiddenRun], projects: [], workspaces: [],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "A full cached conversation")] });
+
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
+    await flush();
+
+    expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation");
+    expect(headWho()).toBe(TOPICS["ag-1"]);
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+    expect(callsTo("workspace.get")).toHaveLength(0);
+  });
+
+  it("redraws the remembered workspace head and composer when its hidden run reaches the cache", async () => {
+    await wipeCache();
+    chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
+    await writeRailBoard({
+      workspaces: [{ id: "ws-unwatched", project_id: "p1", name: "Quiet work", entity_id: "run-3" }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Already cached words")] });
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
+    await flush();
+    expect(headWho()).toBe("New agent");
+    expect(railHost().querySelector("#railinput")).toBeNull();
+
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
+      items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
+    });
+    await flush();
+
+    expect(railHost().querySelector("#rail-body").textContent).toContain("Already cached words");
+    expect(headWho()).toBe(TOPICS["ag-1"]);
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  it("keeps a project agent usable when its run is absent from inbox items", async () => {
+    await wipeCache();
+    await writeRailBoard({ projects: [{ project_id: "p1", name: "build", entity_id: "run-3" }] });
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
+      items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
+    });
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "Project conversation words")] });
+
+    rail = mountAgentRail(railHost(), railAddress({
+      kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1",
+    }));
+    await flush();
+
+    expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words");
+    expect(headWho()).toBe(TOPICS["ag-1"]);
+    expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
   it("turns a stale remembered workspace conversation into the new-agent view after an authoritative empty roster", async () => {
     await wipeCache();
     chatRepository.railView("workspace:ws-empty").chooseAgent("ag-removed");

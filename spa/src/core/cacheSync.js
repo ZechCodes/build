@@ -240,13 +240,14 @@ function startPass(deviceId) {
 async function orderedSync(deviceId, turn) {
   const context = await greetedContext(deviceId, turn);
   if (!context) return false;
+  const passStartedAt = Date.now();
   const view = await readLists(context);
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
   await readWorkspaces(context, pass);
   await readProjectIssues(context, view);
   await evictRowsThatAreOver(context, view);
-  await dropWhatTheBoardStoppedNaming(context, view);
+  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt);
   if (!context.active()) return false;
   await subscribeDevice(context);
   return true;
@@ -430,6 +431,13 @@ async function readIssues(context, projectId) {
 async function workspacesToRead(context, view) {
   const items = view.items || [];
   const rows = new Map();
+  // `items` is the inbox, so it omits a run after every agent on it is
+  // unwatched. The routed workspace still owns that run and its thread; the
+  // board's `runs` collection carries the roster needed to sync it.
+  for (const run of view.runs || []) {
+    const entityId = entityIdOf(run);
+    if (entityId) rows.set(entityId, run);
+  }
   for (const row of items) {
     const entityId = entityIdOf(row);
     if (entityId) rows.set(entityId, row);
@@ -473,17 +481,29 @@ async function evictRowsThatAreOver(context, view) {
  *  is gone — the row is the board's to list and the board's to remove, so the
  *  row goes with the data. Another device's records are another device's
  *  business. */
-async function dropWhatTheBoardStoppedNaming(context, view) {
+async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt) {
   const named = entitiesTheBoardNames(view);
+  const visible = new Set((view.items || []).map(entityIdOf));
+  const hiddenRuns = new Set((view.runs || []).map(entityIdOf).filter((id) => id && !visible.has(id)));
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
-    if (!named.has(cachedId)) await dropUnnamedEntity(context, cachedId);
+    if (!named.has(cachedId)) {
+      await dropUnnamedEntity(context, cachedId);
+    } else if (hiddenRuns.has(cachedId)) {
+      // Keep the live conversation's records, but remove an older inbox row:
+      // `taskFeed` appends standalone row records to the board's `items`, and
+      // an unwatched run is deliberately absent from that list. A state push
+      // after this pass began owns a newer row and must not be erased.
+      const address = addressOf(context, cachedId, "row");
+      const row = await readCached(address);
+      if (row && row.at < passStartedAt) await deleteCached([address]);
+    }
   }
 }
 
 const entitiesTheBoardNames = (view) => {
   const named = new Set();
-  for (const row of view.items || []) {
+  for (const row of [...(view.items || []), ...(view.runs || [])]) {
     const entityId = entityIdOf(row);
     if (entityId) named.add(entityId);
   }

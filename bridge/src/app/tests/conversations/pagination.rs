@@ -487,22 +487,6 @@ fn paging_reaches_the_history_a_restart_never_loaded() {
         "the restart loaded the conversation whole: {resident} of {held}"
     );
 
-    let newest = restarted.handle(req(
-        "thread.page",
-        json!({
-            "entity_id": "run-forward-restart",
-            "after_sequence": 100,
-            "newest": true,
-        }),
-    ));
-    assert_eq!(newest["ok"], true, "{newest:?}");
-    assert_eq!(
-        page_sequences(&newest["result"]),
-        (151..=250).collect::<Vec<u64>>(),
-        "{newest:?}"
-    );
-    assert_eq!(newest["result"]["has_more"], json!(true));
-
     let mut walked: Vec<u64> = Vec::new();
     let mut before: Option<u64> = None;
     loop {
@@ -1186,6 +1170,22 @@ fn the_forward_page_reaches_the_history_a_restart_never_loaded() {
         resident < held,
         "the restart loaded the conversation whole: {resident} of {held}"
     );
+
+    let newest = restarted.handle(req(
+        "thread.page",
+        json!({
+            "entity_id": "run-forward-restart",
+            "after_sequence": 100,
+            "newest": true,
+        }),
+    ));
+    assert_eq!(newest["ok"], true, "{newest:?}");
+    assert_eq!(
+        page_sequences(&newest["result"]),
+        (151..=250).collect::<Vec<u64>>(),
+        "{newest:?}"
+    );
+    assert_eq!(newest["result"]["has_more"], json!(true));
 
     let mut walked: Vec<u64> = Vec::new();
     let mut after = 0u64;

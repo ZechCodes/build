@@ -223,6 +223,22 @@ describe("painting before the bridge is asked", () => {
     await mount();
     expect(notifyError).not.toHaveBeenCalled();
   });
+
+  it("repaints from a query-cache write while the pulled payload is absent", async () => {
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(titles()).toEqual([]);
+
+    await trackerCache.writeIssuesQueryRecord(
+      "dev-1",
+      "proj-1",
+      { project_id: "proj-1", state: "open" },
+      trackerCache.issuesRecord([issue({ id: "issue-cache", number: 30, title: "Announced from cache" })], columns()),
+    );
+    await flush();
+
+    expect(titles()).toEqual(["Announced from cache"]);
+  });
 });
 
 describe("the list", () => {

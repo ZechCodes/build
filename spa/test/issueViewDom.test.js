@@ -4,6 +4,7 @@
 // messages, and the assignment control feeding the implement verbs.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountIssueView, openingStageId, docAnnotatable } from "../src/core/issueView.js";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 import { createAgentSelection } from "../src/core/agentSelection.js";
@@ -12,6 +13,7 @@ import { INBOX_SCOPE } from "../src/core/inboxView.js";
 import { pendingIn, resetOptimistic } from "../src/core/optimistic.js";
 import { dismissAllNotices } from "../src/core/notify.js";
 import { armChangeEvents, dispatchChangeEvent, resetChangeEvents } from "../src/core/changeEvents.js";
+import { wipeCache } from "../src/core/localCache.js";
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -83,14 +85,14 @@ async function mount(overrides = {}) {
 
 const settle = async (host) => {
   for (let i = 0; i < 30; i++) {
-    await Promise.resolve();
+    await new Promise((done) => setTimeout(done, 0));
     if (host.querySelector(".ivsplit")) break;
   }
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 const flush = async () => {
-  for (let i = 0; i < 30; i++) await Promise.resolve();
+  for (let i = 0; i < 30; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 /** The push that says this issue moved: what wakes the surface now that
@@ -98,7 +100,7 @@ const flush = async () => {
 const pushMoved = async () => {
   armChangeEvents({ push_events: true });
   dispatchChangeEvent({ type: "changes", items: [{ entity_id: "issue-1", state: { kind: "issue" } }] });
-  for (let i = 0; i < 40; i++) await Promise.resolve();
+  for (let i = 0; i < 40; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
 /** Every `issue.get` made for `agentId` so far, once at least one has been. The
@@ -153,7 +155,10 @@ async function answerConfirm(ok) {
 }
 
 describe("the issue view", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    if (typeof indexedDB === "undefined") globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
+    await wipeCache();
     document.body.innerHTML = "";
     resetOptimistic();
   });

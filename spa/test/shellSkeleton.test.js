@@ -3,6 +3,7 @@
 // the architecture says, and every route paints into the middle one.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -35,6 +36,10 @@ const { App, render } = await import("../src/app.js");
 const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
 const { consoleHeadHtml } = await import("../src/core/console.js");
+const { wipeCache } = await import("../src/core/localCache.js");
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const rpc = (method) => {
   if (method === "branch.get")
@@ -55,10 +60,13 @@ const rpc = (method) => {
   return {};
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flush = async () => {
+  for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+};
 const root = () => document.getElementById("root");
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   location.hash = "";

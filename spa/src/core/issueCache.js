@@ -40,6 +40,17 @@ export const issueAddress = (deviceId, issueId, sub) => ({
   sub,
 });
 
+/** One record exactly as the cache holds it. Views use this on cache
+ *  announcements; wire readers never hand their response object to a paint. */
+export async function readStoredIssueRecord(deviceId, issueId, sub) {
+  return (await readCached(issueAddress(deviceId, issueId, sub)))?.value;
+}
+
+function rethrowReadError(error, held) {
+  if (held === undefined) throw error;
+  throw Object.assign(error, { heldRecord: held });
+}
+
 /**
  * One record, read through.
  *
@@ -49,17 +60,24 @@ export const issueAddress = (deviceId, issueId, sub) => ({
  */
 export async function readIssueRecord({ deviceId, issueId, sub, read, force = false }) {
   const address = issueAddress(deviceId, issueId, sub);
-  const held = (await readCached(address))?.value;
+  const heldRecord = await readCached(address);
+  const held = heldRecord?.value;
   if (held !== undefined && !force) return held;
   let answer;
   try {
     answer = await read();
   } catch (error) {
-    if (held === undefined) throw error;
-    throw Object.assign(error, { heldRecord: held });
+    rethrowReadError(error, held);
   }
+  // A newer cache writer won the race while this request was in flight. Its
+  // record is the one the view must keep; a late response must not roll it
+  // backwards.
+  const current = await readCached(address);
+  if (current?.at !== heldRecord?.at) return current?.value;
   await writeCached(address, answer);
-  return answer;
+  // Deliberately read back. Even the caller that initiated the fill receives
+  // the cache's record, never the pulled payload object.
+  return readStoredIssueRecord(deviceId, issueId, sub);
 }
 
 /** Whether all of these records are already on disk.

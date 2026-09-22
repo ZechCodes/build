@@ -202,37 +202,73 @@
       "file": "laptop.webp",
       "width": 1200,
       "height": 900,
-      "bytes": 35554,
+      "bytes": 30006,
+      "sha256": "a812a217588bafc6f05f2924dd68e37009df1efbb47e67817e2765ba9ff6c1fa",
       "content_bounds_px_bottom_left": [
         69,
         93,
         1062,
         556
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "tablet": {
       "file": "tablet.webp",
       "width": 1000,
       "height": 760,
-      "bytes": 40604,
+      "bytes": 46122,
+      "sha256": "11709175e8ec2742b62275d2fc35d358c1c11973641948f20e08f54eb11e0d94",
       "content_bounds_px_bottom_left": [
         157,
         50,
         753,
         638
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          }
+        }
+      }
     },
     "phone": {
       "file": "phone.webp",
       "width": 640,
       "height": 1040,
-      "bytes": 21616,
+      "bytes": 23750,
+      "sha256": "1b119841a242799452a7afa1cf930130db902a93a4989d273f2f9b553b97c045",
       "content_bounds_px_bottom_left": [
         135,
         133,
         379,
         789
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "phone": {
+            "file": "screens/ui03-answer-iphone.webp",
+            "sha256": "9324edceb4f54c6dedd81ee9edc906bc5f5b89f6c27bc112a40b544a9d6b3f0b"
+          }
+        }
+      }
     },
     "mobile-hero": {
       "file": "mobile-hero.webp",

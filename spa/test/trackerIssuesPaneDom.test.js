@@ -94,6 +94,7 @@ const mount = async (over = {}) => {
     catalog: () => ({ providers: [] }),
     refreshCatalog: async () => ({ providers: [] }),
     feed: () => feed,
+    defaultView: "list",
     navigate: vi.fn(),
     ...over,
   });
@@ -238,6 +239,64 @@ describe("painting before the bridge is asked", () => {
     await flush();
 
     expect(titles()).toEqual(["Announced from cache"]);
+  });
+});
+
+describe("the Dashboard", () => {
+  const dashboardRows = (section) => [...host.querySelectorAll(`[data-dashboard-section="${section}"] .issue-dashboard-row`)]
+    .map((row) => row.dataset.issue);
+
+  it("defaults the project to Dashboard and paints all sections from cached records while the payload is absent", async () => {
+    const working = issue({ id: "working", number: 4, title: "Write release notes", assignee: { kind: "agent", agent_id: "agent-1" } });
+    const review = issue({ id: "review", number: 3, title: "Review patch", status: "in_review" });
+    const done = issue({ id: "done", number: 2, title: "Shipped fix", status: "done", state: "closed", links: { commits: ["abc123def456"] } });
+    const movedAt = new Date(Date.now() - 60_000).toISOString();
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [working, review, done], columns: columns() });
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", done.id, trackerCache.issueRecord(done, [
+      { type: "event", kind: "moved", at: movedAt, payload: { to: "done" } },
+    ]));
+    const { threadCacheAddress } = await import("../src/core/conversationCache.js");
+    const thread = threadCacheAddress({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", conversationId: "conv-1" });
+    await cache.writeCached(thread, { items: [{ type: "message", data: { role: "agent", body: "Writing summary\nNext line" } }] });
+    const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1", name: "Writer" }] }] };
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ feed: () => activeFeed, defaultView: undefined });
+
+    expect(host.querySelector('[data-issue-view="dashboard"]').getAttribute("aria-pressed")).toBe("true");
+    expect(clearPress()).toBeNull();
+    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    expect(dashboardRows("needsYou")).toEqual(["review"]);
+    expect(dashboardRows("doneToday")).toEqual(["done"]);
+    expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
+      .toContain("Writing summary");
+    expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-detail').textContent)
+      .toContain("abc123def456");
+  });
+
+  it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {
+    const working = issue({ id: "working", number: 4, title: "Work", assignee: { kind: "agent", agent_id: "agent-1" } });
+    const done = issue({ id: "done", number: 3, title: "Done", status: "done", state: "closed" });
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [working, done], columns: columns() });
+    const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1" }] }] };
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ feed: () => activeFeed, defaultView: undefined });
+    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    expect(dashboardRows("doneToday")).toEqual([]);
+
+    const { threadCacheAddress } = await import("../src/core/conversationCache.js");
+    await cache.writeCached(threadCacheAddress({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", conversationId: "conv-1" }), {
+      items: [{ type: "message", data: { role: "agent", body: "Cached new activity" } }],
+    });
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", done.id, trackerCache.issueRecord(done, [
+      { type: "event", kind: "moved", at: new Date().toISOString(), payload: { to: "done" } },
+    ]));
+    await flush();
+
+    expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
+      .toContain("Cached new activity");
+    expect(dashboardRows("doneToday")).toEqual(["done"]);
+    expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-link').getAttribute("href"))
+      .toContain("done");
   });
 });
 

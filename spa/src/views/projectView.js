@@ -192,7 +192,7 @@ export async function renderProject() {
   const state = {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
-    tab: tabOf(route), view: route.view || "list", feed: null, issues: null, openTab: null,
+    tab: tabOf(route), view: route.view || "dashboard", feed: null, issues: null, openTab: null,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;

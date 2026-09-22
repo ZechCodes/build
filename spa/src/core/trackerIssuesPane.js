@@ -41,18 +41,23 @@ import { columnsOf } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
 import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
-import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
+import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
+import { dashboardSections } from "./trackerDashboardModel.js";
+import { paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
+import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
 import { carriesIssueAttachments } from "./issueAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
 
 export const ISSUE_PAGE_SIZE = 25;
+const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
 
 export function mountIssuesPane(host, options) {
+  const initialView = VIEW_IDS.has(options.view) ? options.view : options.defaultView || DASHBOARD_VIEW;
   const state = {
     ...options,
     unscoped: [], // the whole list before a workspace's live roster narrows it
@@ -64,8 +69,9 @@ export function mountIssuesPane(host, options) {
     columns: [],
     // Open, not everything (#33): a closed issue is done, and done work is not
     // what the tab is for. It is still one press away on the state filter.
-    filters: { ...DEFAULT_FILTERS },
-    view: options.view === BOARD_VIEW ? BOARD_VIEW : LIST_VIEW,
+    filters: { ...DEFAULT_FILTERS, state: initialView === DASHBOARD_VIEW ? "" : DEFAULT_FILTERS.state },
+    stateFilterTouched: false,
+    view: initialView,
     disposed: false,
     picker: null,
     composer: null,
@@ -133,6 +139,7 @@ export function mountIssuesPane(host, options) {
     onView: (view) => {
       if (state.view === view) return;
       state.view = view;
+      if (!state.stateFilterTouched) state.filters.state = view === DASHBOARD_VIEW ? "" : DEFAULT_FILTERS.state;
       state.visibleCount = ISSUE_PAGE_SIZE;
       state.onViewChange?.(state.view);
       previewQuery();
@@ -143,6 +150,7 @@ export function mountIssuesPane(host, options) {
     onNew: () => fileIssue(),
     onFilter: (name, chosen) => {
       state.filters = { ...state.filters, [name]: chosen };
+      if (name === "state") state.stateFilterTouched = true;
       state.visibleCount = ISSUE_PAGE_SIZE;
       previewQuery();
       paint();
@@ -152,7 +160,8 @@ export function mountIssuesPane(host, options) {
     onClear: () => {
       // Back to what the tab opens on, not to everything: Clear undoes the
       // reader's narrowing, and closed issues were never part of it.
-      state.filters = { ...DEFAULT_FILTERS };
+      state.filters = { ...DEFAULT_FILTERS, state: state.view === DASHBOARD_VIEW ? "" : DEFAULT_FILTERS.state };
+      state.stateFilterTouched = false;
       state.visibleCount = ISSUE_PAGE_SIZE;
       previewQuery();
       paint();
@@ -186,6 +195,7 @@ export function mountIssuesPane(host, options) {
     [REST_GROUP, "Other issues"],
   ];
   let details;
+  let activity;
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
       feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(),
@@ -203,6 +213,13 @@ export function mountIssuesPane(host, options) {
    *  and what has to be wired onto an entry it had to make. Chosen by name
    *  rather than asked about: a view is a thing this tab HAS, not a branch. */
   const VIEWS = {
+    [DASHBOARD_VIEW]: {
+      paint: paintIssueDashboard,
+      entries: () => dashboardSections(state.shown, {
+        feed: state.feed(), projectKey: state.projectKey, detailById: details.read(),
+        activityByAgent: activity?.read(),
+      }),
+    },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },
     [BOARD_VIEW]: { paint: paintIssueBoard, entries: () => boardColumns(state.columns, state.shown), wire: wireCard },
   };
@@ -226,7 +243,8 @@ export function mountIssuesPane(host, options) {
   function focusPendingIssue() {
     if (!state.focusIssue) return;
     const issueId = state.focusIssue;
-    const focused = state.view === BOARD_VIEW ? focusCard(issueId) : focusRow(issueId);
+    const focused = state.view === BOARD_VIEW ? focusCard(issueId)
+      : state.view === DASHBOARD_VIEW ? focusDashboardRow(issueId) : focusRow(issueId);
     if (focused) state.focusIssue = null;
   }
 
@@ -299,6 +317,8 @@ export function mountIssuesPane(host, options) {
     callRpc: state.callRpc,
     onChange: () => paint(),
   });
+  activity = createTrackerAgentActivityFeed({ deviceId: state.deviceId, onChange: () => paint() });
+  void activity.updateFeed(state.feed(), state.projectKey);
 
   /** The board's columns ARE the statuses, so narrowing by one there would
    *  empty every other column rather than filter anything. The three filters
@@ -455,6 +475,16 @@ export function mountIssuesPane(host, options) {
     return false;
   };
 
+  const focusDashboardRow = (issueId) => {
+    for (const row of host.querySelectorAll(".issue-dashboard-row")) {
+      if (row.dataset.issue === issueId) {
+        row.querySelector(".issue-dashboard-link")?.focus();
+        return true;
+      }
+    }
+    return false;
+  };
+
   /**
    * Open the composer in place (#57).
    *
@@ -566,6 +596,7 @@ export function mountIssuesPane(host, options) {
     feedMoved() {
       rescope();
       details.updateIssues(state.shown);
+      void activity.updateFeed(state.feed(), state.projectKey);
       paint();
     },
     dispose() {
@@ -573,6 +604,7 @@ export function mountIssuesPane(host, options) {
       watcher.dispose();
       wholeListWatcher?.();
       details.dispose();
+      activity.dispose();
       queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();

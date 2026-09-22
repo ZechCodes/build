@@ -145,6 +145,49 @@ async fn agent_attach_addresses_a_worktree_by_scope_before_any_run_owns_it() {
     assert_eq!(live["result"]["term_id"], json!(wire_id));
 }
 
+#[tokio::test]
+async fn run_scoped_agent_attach_uses_the_workspace_container() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let (run_id, root) = {
+        let mut state = state.lock().unwrap();
+        let project_id = state.project_at(0).id.clone();
+        let workspace = state.handle(req(
+            "workspace.create",
+            json!({"project_id": project_id, "name": "work", "isolation": "worktree"}),
+        ));
+        assert_eq!(workspace["ok"], true, "{workspace:?}");
+        let workspace_id = workspace["result"]["workspace_id"].as_str().unwrap();
+        let root = PathBuf::from(workspace["result"]["root"].as_str().unwrap());
+        let conversation = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ));
+        assert_eq!(conversation["ok"], true, "{conversation:?}");
+        (
+            conversation["result"]["run_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            root,
+        )
+    };
+
+    let attached = handler.call(
+        SessionSender::detached("s1"),
+        req("agent.attach", json!({"run_id": run_id})),
+    );
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    assert_eq!(attached["result"]["live"], false);
+    assert_eq!(
+        attached["result"]["term_id"],
+        json!(format!(
+            "agent:{}",
+            crate::worktree::external_worktree_id(&AppState::canonical_root(&root))
+        ))
+    );
+}
+
 /// An agent that exited leaves a screen and nothing else — and the offer to
 /// start one again leads with the harness that painted it. Only the tab
 /// knows which one that was (the entity's model choice can have moved since,

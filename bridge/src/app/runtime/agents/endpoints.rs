@@ -1,8 +1,8 @@
+use crate::app::runtime::terminals::terminal_scope_root;
 use crate::app::{
     agent_tab_id, attach_to_tab, attach_view, optional_nonempty_string, require_str,
     working_time_json, AddressedSession, AppState, DeliveryRunner, LifecycleDiagnostic,
-    PendingAgentTurn, SelfReport, TabFacts, TabKey, TermScope, TurnText,
-    NEW_THREAD_MESSAGES_PROMPT,
+    PendingAgentTurn, SelfReport, TabFacts, TabKey, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
 #[cfg(test)]
 use crate::app::{Tab, TabRole};
@@ -103,7 +103,7 @@ pub(in crate::app) fn agent_attach(
         .map(str::to_string);
     let root = match &entity_id {
         Some(entity_id) => s.entity_agent_root(entity_id)?,
-        None => TermScope::parse(params)?.resolve_root(s)?,
+        None => terminal_scope_root(s, params)?,
     };
     // Which agent: the one the rail named, or the entity's first — so a
     // surface that predates the rail still attaches to the agent it always did.

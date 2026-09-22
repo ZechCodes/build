@@ -134,6 +134,31 @@ describe("createFileDiffs", () => {
     diffs.dispose();
   });
 
+  it("takes a newer cache announcement instead of a late body pull", async () => {
+    const answer = deferred();
+    const call = vi.fn(() => answer.promise);
+    const onChange = vi.fn();
+    const diffs = fileDiffs.createFileDiffs({
+      deviceId: "dev-1",
+      entityId: "run-1",
+      scope: { run_id: "run-1" },
+      call,
+      onChange,
+    });
+    const pending = diffs.sync({ status: TWO, openPaths: new Set(["a.js"]) });
+    await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(1));
+
+    const newer = { content_key: "key-a", patch: patchFor("a.js", "newer cache write"), truncated: false };
+    await cache.writeCached(address("a.js"), newer);
+    answer.resolve({ files: [{ path: "a.js", ...bodyFor("a.js", "key-a"), patch: patchFor("a.js", "late pull") }] });
+    await pending;
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+
+    expect(diffs.bodyOf("a.js")).toEqual(newer);
+    expect((await cache.readCached(address("a.js"))).value).toEqual(newer);
+    diffs.dispose();
+  });
+
   it("asks again for nothing once every open body is held", async () => {
     const calls = [];
     const diffs = mountDiffs(wireOver({ "a.js": "key-a", "b.js": "key-b" }, calls));

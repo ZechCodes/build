@@ -140,6 +140,57 @@ describe("the live write-through", () => {
     expect(never.mock.calls.some(([method]) => method === "git.diff")).toBe(false);
     pane.dispose();
   });
+
+  it("redraws an open uncommitted file when its body record is written", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    const never = vi.fn(() => new Promise(() => {}));
+    const { container, pane } = await mountPane(never);
+    expect(container.textContent).not.toContain("body from cache write");
+
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "filediff", sub: "src/a.js" },
+      {
+        content_key: status().files[0].content_key,
+        patch: patchFor("src/a.js", "body from cache write"),
+        truncated: false,
+      },
+    );
+    await settle();
+
+    expect(container.textContent).toContain("body from cache write");
+    pane.dispose();
+  });
+
+  it("does not let late status and log pulls overwrite newer records", async () => {
+    let answerStatus, answerLog;
+    const callRpc = vi.fn((method) => {
+      if (method === "git.status") return new Promise((resolve) => { answerStatus = resolve; });
+      if (method === "git.log") return new Promise((resolve) => { answerLog = resolve; });
+      return new Promise(() => {});
+    });
+    const { container, pane } = await mountPane(callRpc);
+    await vi.waitFor(() => expect([answerStatus, answerLog].every(Boolean)).toBe(true));
+
+    const newerStatus = status({ head: "b".repeat(40) });
+    const newerLog = {
+      ...log(),
+      commits: [{ ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "newer cache write" }],
+    };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, newerStatus);
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, newerLog);
+    await settle();
+
+    answerStatus(status());
+    answerLog({ ...log(), commits: [{ ...log().commits[0], subject: "late pull" }] });
+    await settle();
+
+    expect(container.textContent).toContain("newer cache write");
+    expect(container.textContent).not.toContain("late pull");
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).value.head)
+      .toBe("b".repeat(40));
+    pane.dispose();
+  });
 });
 
 // The whole of a mount, against a cache the sync layer has filled: the pane
@@ -178,6 +229,31 @@ describe("a pane over a filled cache", () => {
     );
     await settle();
     expect(container.textContent).toContain("what landed since");
+    pane.dispose();
+  });
+
+  it("does not let a late older-log page replace newer cached history", async () => {
+    const initial = { ...log(), more: true };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, initial);
+    let answerPage;
+    const callRpc = vi.fn((method) => method === "git.log"
+      ? new Promise((resolve) => { answerPage = resolve; })
+      : new Promise(() => {}));
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".gitmore").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => expect(answerPage).toBeTypeOf("function"));
+
+    const newerCommit = { ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "newer older page" };
+    const newerLog = { ...initial, commits: [...initial.commits, newerCommit], more: false };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, newerLog);
+    answerPage({ ...initial, commits: [{ ...newerCommit, hash: "c".repeat(40), short: "ccccccc", subject: "late older page" }], more: false });
+    await settle();
+
+    expect(container.textContent).toContain("newer older page");
+    expect(container.textContent).not.toContain("late older page");
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" })).value.commits.at(-1).subject)
+      .toBe("newer older page");
     pane.dispose();
   });
 
@@ -286,6 +362,35 @@ describe("a commit's detail", () => {
     await settle();
 
     expect(container.textContent).toContain("why it happened");
+    pane.dispose();
+  });
+
+  it("does not let a late git.show replace a newer patch record", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    let answerShow;
+    const callRpc = vi.fn((method, params) => {
+      if (method === "git.diff") return Promise.resolve(tree.diff(params));
+      if (method === "git.show") return new Promise((resolve) => { answerShow = resolve; });
+      return new Promise(() => {});
+    });
+    const { container, pane } = await mountPane(callRpc);
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await vi.waitFor(() => expect(answerShow).toBeTypeOf("function"));
+
+    const newer = { ...show(), body: "newer explanation", patch: patchFor("src/b.js", "newer commit body") };
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) },
+      newer,
+    );
+    answerShow({ ...show(), body: "late explanation", patch: patchFor("src/b.js", "late commit body") });
+    await settle();
+
+    expect(container.textContent).toContain("newer explanation");
+    expect(container.textContent).toContain("newer commit body");
+    expect(container.textContent).not.toContain("late explanation");
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).value.body)
+      .toBe("newer explanation");
     pane.dispose();
   });
 

@@ -37,4 +37,9 @@ describe("a run or a bare checkout", () => {
     expect(syncWalksCheckout({ run_id: "run-1" })).toBe(true);
     expect(syncWalksCheckout(null)).toBe(false);
   });
+
+  it("gives a project's own checkout a synthetic cache entity", () => {
+    expect(directoryCacheId({ project_id: "project-1" })).toBe('project:["project-1"]');
+    expect(syncWalksCheckout({ project_id: "project-1" })).toBe(false);
+  });
 });

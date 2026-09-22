@@ -164,6 +164,14 @@ export function createReviewPlug({
         },
         fetchFiles,
         keyFor: (path) => renderedFiles.find((view) => view.path === path)?.contentKey,
+        onChange: () => {
+          if (!host) return;
+          if (repaintFrozen()) {
+            bodiesHeld = true;
+            return;
+          }
+          render();
+        },
       })
     : null;
   const bodyOf = bodies ? bodies.bodyOf : undefined;
@@ -263,10 +271,6 @@ export function createReviewPlug({
    *  a review in progress — a pending comment, an open popover, typed text. */
   const repaintFrozen = () => actionsFrozen() || Boolean(commentLayer && commentLayer.repaintBusy());
 
-  /** One record, as a string, so a write this plug made is recognised when it
-   *  comes back round as an announcement. */
-  const fingerprintOf = (value) => JSON.stringify(value ?? null);
-
   function render() {
     if (!host) return;
     paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
@@ -290,14 +294,7 @@ export function createReviewPlug({
   const refreshBodies = () => {
     if (!bodies || !host) return;
     void bodies.sync(renderedFiles, openPaths()).then(
-      (filled) => {
-        if (!filled || !host) return;
-        if (repaintFrozen()) {
-          bodiesHeld = true;
-          return;
-        }
-        render();
-      },
+      () => {},
       () => {
         // A body that could not be read is not an error the reader can act
         // on: the file says "loading…" and the next paint asks again.
@@ -427,7 +424,6 @@ export function createReviewPlug({
   };
   let refreshHeld = false; // a wire answer dropped because repainting was frozen
   let recordHeld = false; // a record that moved while repainting was frozen
-  let writtenRecord = null; // the fingerprint of the record this plug last wrote
 
   /** The saved diff, painted whole — comment tray and verbs included. The
    *  record IS the diff on this surface: a push rewrites it, and nothing here
@@ -472,12 +468,12 @@ export function createReviewPlug({
     if (!record || record.stale || readsForItself || bodyOnly(record)) paint();
   };
 
-  /** The record moved — a `git` push carried a new working tree, or another
-   *  tab read one. A record this plug wrote itself is not news to it. */
+  /** The record moved — a `git` push carried a new working tree, or a reader
+   *  wrote through. Own writes deliberately travel this same readback path. */
   const rereadDiff = async () => {
     const mounted = host;
     const record = await heldDiff();
-    if (!record || host !== mounted || fingerprintOf(record) === writtenRecord) return;
+    if (!record || host !== mounted) return;
     if (record.stale) {
       paint();
       return;
@@ -498,34 +494,43 @@ export function createReviewPlug({
     unwatchDiff = address ? subscribeCache(address, () => void rereadDiff()) : null;
   };
 
-  // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
-  const paintOnce = async () => {
-    if (!host || isOffline()) return;
-    let payload;
-    try {
-      payload = await fetchDiff(responseDiffKey);
-    } catch {
-      return; // not readable yet (or a handed-off surface) — the poll retries
-    }
-    if (!host || !payload) return; // unmounted while the RPC was in flight
-    const patchUnchanged = Boolean(payload.unchanged);
-    if (patchUnchanged)
-      payload = {
-        ...payload,
-        patch: renderedPatch,
-        file_edited_at: payload.file_edited_at || fileEditedAt,
-      };
+  const recordFiles = (payload, previous, patchUnchanged) => {
+    if (patchUnchanged) return previous.files || [];
+    return payload.files || [];
+  };
+
+  const diffRecordValue = (payload, before, patchUnchanged) => {
+    const previous = before?.value || {};
+    const value = {
+    // An unchanged conditional answer names no files; keep the list whose key
+    // it just confirmed instead of replacing the stack with an empty one.
+      files: recordFiles(payload, previous, patchUnchanged),
+      stat: payload.stat ?? previous.stat,
+      commentable: payload.commentable !== false,
+      file_edited_at: fileEditedAtOf(payload),
+      diff_key: payload.diff_key || previous.diff_key || null,
+    };
+    if (payload.patch !== undefined) value.patch = payload.patch;
+    return value;
+  };
+
+  const writePulledDiff = async (address, before, payload, patchUnchanged) => {
+    const current = await readCached(address);
+    if (current?.at !== before?.at) return;
+    await writeCached(address, diffRecordValue(payload, before, patchUnchanged));
+  };
+
+  const cachelessDiffKey = (payload, nextCommentable) => [
+    String(payload.key ?? ""),
+    String(nextCommentable),
+    String(payload.diff_key ?? payload.revision ?? payload.patch ?? ""),
+    JSON.stringify(fileEditedAtOf(payload)),
+  ].join("\x01");
+
+  const paintCachelessDiff = (payload, patchUnchanged) => {
     const nextCommentable = payload.commentable !== false && Boolean(commentLayer);
-    const key = [
-      String(payload.key ?? ""),
-      String(nextCommentable),
-      String(payload.diff_key ?? payload.revision ?? payload.patch ?? ""),
-      JSON.stringify(fileEditedAtOf(payload)),
-    ].join("\x01");
-    // Freeze while the reviewer is mid-comment or the surface has an action in
-    // flight, and skip the rebuild when nothing moved (fold state survives too).
-    const busy = repaintFrozen();
-    if (host.querySelector(".diffbar") && busy) {
+    const key = cachelessDiffKey(payload, nextCommentable);
+    if (host.querySelector(".diffbar") && repaintFrozen()) {
       refreshHeld = true;
       paintActions();
       return;
@@ -542,26 +547,34 @@ export function createReviewPlug({
     renderedPatch = payload.patch || "";
     commentableNow = nextCommentable;
     diffKey = key;
-    // Only a paint that changed anything rewrites the record — the skip branch
-    // above already filtered the unmoved answers out.
-    const address = diffAddress();
-    if (address) {
-      const value = {
-        ...(payload.patch === undefined ? {} : { patch: payload.patch }),
-        // The list is what a stack is drawn from when no patch came with it,
-        // so it is what the record has to hold for the next mount to paint.
-        files: payload.files || [],
-        stat: payload.stat,
-        commentable: payload.commentable !== false,
-        file_edited_at: fileEditedAt,
-        diff_key: responseDiffKey,
-      };
-      // Remembered so the announcement this write makes is not read back as
-      // news: the paint below is already the record.
-      writtenRecord = fingerprintOf(value);
-      writeCached(address, value);
-    }
     render();
+  };
+
+  const paintOnce = async () => {
+    if (!host || isOffline()) return;
+    const address = diffAddress();
+    const before = address ? await readCached(address) : undefined;
+    let payload;
+    try {
+      payload = await fetchDiff(responseDiffKey);
+    } catch {
+      return; // not readable yet (or a handed-off surface) — the poll retries
+    }
+    if (!host || !payload) return; // unmounted while the RPC was in flight
+    const patchUnchanged = Boolean(payload.unchanged);
+    if (patchUnchanged)
+      payload = {
+        ...payload,
+        patch: renderedPatch,
+        file_edited_at: payload.file_edited_at || fileEditedAt,
+      };
+    if (address) {
+      // A push may have moved the record while this read was in flight. The
+      // announcement already takes that newer record up; never roll it back.
+      await writePulledDiff(address, before, payload, patchUnchanged);
+      return;
+    }
+    paintCachelessDiff(payload, patchUnchanged);
   };
 
   // Push delivery and the safety timer can land together. Serialize them so a
@@ -641,7 +654,6 @@ export function createReviewPlug({
       diffKey = null; // a fresh host always needs a first paint
       refreshHeld = false;
       recordHeld = false;
-      writtenRecord = null;
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
       watchDiffRecord();

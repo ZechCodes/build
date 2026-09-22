@@ -14,6 +14,9 @@ const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { worktreeOf } = await import("./gitWireFixture.js");
+
+const tree = worktreeOf({ "src/a.js": "new line" });
 
 const PATCH = `diff --git a/src/a.js b/src/a.js
 index 1111111..2222222 100644
@@ -158,6 +161,52 @@ describe("the saved aggregate diff", () => {
     );
     await settle();
     expect(host.textContent).toContain("pushed line");
+    plug.unmount();
+  });
+
+  it("does not let a late aggregate pull overwrite a newer diff record", async () => {
+    let answer;
+    const fetchDiff = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    plug = plugOn("dev-1", { fetchDiff, entity: "run-1" });
+    plug.mount(host);
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+
+    const newer = PATCH.replace("cached line", "newer cache write");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { patch: newer, commentable: true },
+    );
+    answer({ patch: PATCH.replace("cached line", "late pull"), commentable: true });
+    await settle();
+
+    expect(host.textContent).toContain("newer cache write");
+    expect(host.textContent).not.toContain("late pull");
+    expect((await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).value.patch).toBe(newer);
+    plug.unmount();
+  });
+
+  it("redraws file hunks from a changeset body cache write", async () => {
+    const file = tree.status().files[0];
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { files: [file], commentable: true, diff_key: "d1" },
+    );
+    plug = plugOn("dev-1", {
+      fetchDiff: vi.fn(() => new Promise(() => {})),
+      fetchFiles: vi.fn(() => new Promise(() => {})),
+      entity: "run-1",
+    });
+    plug.mount(host);
+    await settle();
+    expect(host.textContent).not.toContain("hunk from cache write");
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "changesetdiff", sub: file.path },
+      { content_key: file.content_key, patch: tree.diff({ paths: [file.path] }).files[0].patch.replace("new line", "hunk from cache write") },
+    );
+    await settle();
+
+    expect(host.textContent).toContain("hunk from cache write");
     plug.unmount();
   });
 

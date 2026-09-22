@@ -73,6 +73,23 @@ describe("the cached listing", () => {
     expect(treeNames(host)).toEqual(["new.js"]);
   });
 
+  it("does not let a late listing overwrite a newer cache announcement", async () => {
+    let answer;
+    const call = vi.fn(() => new Promise((resolve) => { answer = resolve; }));
+    const { host, files } = mountFiles(call);
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+
+    await seedTree("", [{ name: "newer.js", kind: "file", size: 1 }]);
+    await settle();
+    answer({ path: "", entries: [{ name: "late.js", kind: "file", size: 1 }] });
+    await settle();
+
+    expect(treeNames(host)).toEqual(["newer.js"]);
+    expect((await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" })).value.entries[0].name)
+      .toBe("newer.js");
+    files.dispose();
+  });
+
   it("asks for a directory nothing has been written for, once, and writes it", async () => {
     await seedTree("", [{ name: "src", kind: "dir" }]);
     const call = vi.fn(async (method, params) => ({
@@ -156,6 +173,90 @@ describe("a file body", () => {
     const { host } = await openReadme(call);
     expect(host.textContent).toContain("from the disk");
     expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(0);
+  });
+
+  it("opens when another writer fills the selected file record and the pull never answers", async () => {
+    const call = vi.fn((method) => method === "fs.read" ? new Promise(() => {}) : Promise.resolve({ path: "", entries: [] }));
+    const { host, files } = mountFiles(call);
+    await settle();
+    host.querySelector(".ffile").click();
+    await settle();
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
+      { file: fileAnswer({ content_b64: b64("from the announcement") }), openedAt: Date.now() },
+    );
+    await settle();
+
+    expect(host.textContent).toContain("from the announcement");
+    files.dispose();
+  });
+
+  it("does not let a late read overwrite a newer selected-file record", async () => {
+    let answer;
+    const call = vi.fn((method) => method === "fs.read"
+      ? new Promise((resolve) => { answer = resolve; })
+      : Promise.resolve({ path: "", entries: [] }));
+    const { host, files } = mountFiles(call);
+    await settle();
+    host.querySelector(".ffile").click();
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+
+    const newer = fileAnswer({ revision: "r-2", content_b64: b64("newer announcement") });
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
+      { file: newer, openedAt: Date.now() },
+    );
+    answer(fileAnswer({ content_b64: b64("late pull") }));
+    await settle();
+
+    expect(host.textContent).toContain("newer announcement");
+    expect(host.textContent).not.toContain("late pull");
+    expect((await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" })).value.file.revision)
+      .toBe("r-2");
+    files.dispose();
+  });
+
+  it("holds a cache repaint while the editor has a newer local draft", async () => {
+    const { host, files } = await openReadme(withReadme());
+    host.querySelector('[data-file-mode="edit"]').click();
+    const editor = host.querySelector(".file-editor");
+    editor.value = "local draft";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
+      { file: fileAnswer({ revision: "r-2", content_b64: b64("disk change") }), openedAt: Date.now() },
+    );
+    await settle();
+
+    expect(host.querySelector(".file-editor").value).toBe("local draft");
+    expect(host.textContent).toContain("File changed on disk");
+    files.dispose();
+  });
+
+  it("completes a save from the file record written with the fs.write result", async () => {
+    const call = vi.fn(async (method, params) => {
+      if (method === "fs.read") return fileAnswer();
+      if (method === "fs.write") {
+        return fileAnswer({ revision: "r-2", size: 12, content_b64: params.content_b64 });
+      }
+      return { path: "", entries: [] };
+    });
+    const { host, files } = await openReadme(call);
+    host.querySelector('[data-file-mode="edit"]').click();
+    const editor = host.querySelector(".file-editor");
+    editor.value = "saved value";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    host.querySelector(".file-save").click();
+    await settle();
+
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" });
+    expect(record.value.file.revision).toBe("r-2");
+    expect(record.value.file.content_b64).toBe(b64("saved value"));
+    expect(host.querySelector(".file-editor").value).toBe("saved value");
+    expect(host.querySelector(".file-save").disabled).toBe(true);
+    files.dispose();
   });
 
   it("re-stamps what it opened off the disk, so the five kept are the five last read", async () => {

@@ -122,6 +122,19 @@ afterEach(() => {
 });
 
 describe("the list", () => {
+  it("pages the workspace-scoped cached list", async () => {
+    const issues = Array.from({ length: 28 }, (_, index) => held(HERE, {
+      id: `held-${28 - index}`, number: 28 - index, title: `Held ${28 - index}`,
+    }));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount();
+    expect(titles()).toHaveLength(25);
+    body.querySelector("[data-issue-more]").click();
+    expect(titles()).toHaveLength(28);
+    expect(titles()[27]).toBe("Held 1");
+  });
+
   it("shows only the issues this workspace's agents are holding", async () => {
     await mount();
     // Newest number first, the same order the project's own Issues tab uses.

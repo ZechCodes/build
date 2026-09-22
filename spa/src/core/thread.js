@@ -1047,7 +1047,7 @@ export const INCOMING_KINDS = Object.freeze({
   /// The reader typed it. Right, and the reader's colour.
   user: "user",
   /// Another agent sent it here — the project's agent, a workspace agent, a
-  /// hand-off. Left, green, folded, with the sender named.
+  /// hand-off. Left, neutral, folded, with the sender named.
   agent: "agent",
   /// Build wrote it about the work, not to the reader. One quiet line.
   notice: "notice",
@@ -1078,8 +1078,48 @@ function messageHtml(message, agentLabel, context) {
   const user = message.role === "user";
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}"${sequenceAttribute(message)}>
     ${avatarHtml(user)}
+    ${user ? userMessageTickHtml(message) : ""}
     <div class="thread-comment-card">${messageCardHtml(message, agentLabel, context)}</div>
   </article>`;
+}
+
+function userMessageTickHtml(message) {
+  const date = new Date(message.created_at || "");
+  const when = Number.isNaN(date.getTime()) ? "an earlier time" : date.toLocaleString("en-US", {
+    dateStyle: "medium", timeStyle: "short",
+  });
+  return `<button type="button" class="thread-user-tick" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
+}
+
+/** The last reader message whose top has reached the viewport, never the next
+ * one below it. This is recomputed after a repaint and on every scroll. */
+export function syncUserMessageTicks(scroller) {
+  const timeline = scroller?.querySelector(".thread-items");
+  if (!timeline) return;
+  const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+  const boundary = scroller.getBoundingClientRect().top + scrollPadding;
+  let previous = null;
+  for (const row of timeline.querySelectorAll(":scope > .thread-message.user")) {
+    if (row.getBoundingClientRect().top <= boundary) previous = row;
+    else break;
+  }
+  for (const tick of timeline.querySelectorAll(".thread-user-tick")) {
+    const active = tick.closest(".thread-message") === previous;
+    tick.classList.toggle("active", active);
+    if (active) tick.setAttribute("aria-current", "location");
+    else tick.removeAttribute("aria-current");
+  }
+}
+
+/** Called by the rail's delegated click handler so a repainted tick needs no
+ * per-node listener. The button remains keyboard-operable by the browser. */
+export function jumpToUserMessage(event) {
+  const tick = event.target.closest?.(".thread-user-tick");
+  if (!tick) return false;
+  const row = tick.closest(".thread-message.user");
+  if (!row) return false;
+  row.scrollIntoView({ behavior: "smooth", block: "start" });
+  return true;
 }
 
 

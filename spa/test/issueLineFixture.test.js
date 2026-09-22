@@ -118,12 +118,17 @@ afterAll(() => vi.useRealTimers());
 
 describe("the markup the browser measurement is taken over", () => {
   it("is what the renderer produces", () => {
-    const html = rendered();
+    // This fixture measures issue-line spacing. Reader-message gutter controls
+    // are outside those rows, so keep the fixture stable across chat controls.
+    const measuredMarkup = (markup) => markup
+      .replace(/<button type="button" class="thread-user-tick"[^>]*><span aria-hidden="true"><\/span><\/button>/g, "")
+      .replace(/(<span class="thread-avatar"[^>]*>[^<]*<\/span>)\s*(<div class="thread-comment-card">)/g, "$1\n    $2");
+    const html = measuredMarkup(rendered());
     if (process.env.ISSUE_LINE_FIXTURE === "write") {
       mkdirSync(dirname(FIXTURE), { recursive: true });
       writeFileSync(FIXTURE, html);
     }
-    expect(readFileSync(FIXTURE, "utf8")).toBe(html);
+    expect(measuredMarkup(readFileSync(FIXTURE, "utf8"))).toBe(html);
   });
 
   // The measurement asks about these rows specifically; a fixture that stopped

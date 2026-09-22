@@ -153,6 +153,9 @@
      step (see below), which is why this is a token and not a raw --line2. */
   --row-hover:var(--line2);
   --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
+  --user-bubble:#d7f7e4; --user-bubble-ink:#113e2b;
+  --user-bubble-link:#075a39; --user-bubble-muted:#365c4b;
+  --user-bubble-warn:#a04d00; --user-bubble-error:#a6293d;
   --green:#137344; --green-bg:#e3fff0;
   --red:#c43d52; --red-bg:#fbe9ec; --danger-ink:#fff;
   /* The waiting tone. Something pending review is not something broken: it is
@@ -192,6 +195,9 @@
   /* Electric mint is a clear affordance against the dark ground. --green stays
      slightly quieter so merged and passed states do not compete with actions. */
   --accent:#51ffb4; --accent-fill:#51ffb4; --accent-soft:#123b29; --accent-ink:#062719;
+  --user-bubble:#174e36; --user-bubble-ink:#e8fff2;
+  --user-bubble-link:#7cffc2; --user-bubble-muted:#bde8d0;
+  --user-bubble-warn:#ffd176; --user-bubble-error:#ffb8c4;
   --green:#54e8a2; --green-bg:#103b29;
   --red:#ff5c72; --red-bg:#2a1620; --danger-ink:#26050b;
   --amber:#ffd447; --amber-bg:#2b2210;
@@ -1829,24 +1835,39 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    prose with a quiet reply bubble instead of a stack of issue cards. */
 /* The rail and the full page share this gap, and the issue lines pull back
    against it by name (styles/issues.css) rather than guessing at it. */
-.thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 0; }
+.thread-timeline { --thread-gap:20px; gap:var(--thread-gap); padding:20px 12px; }
 .thread-timeline::before { display:none; }
 .thread-message { margin-left:0; }
 .thread-avatar { display:none; }
 .thread-comment-card { min-width:0; overflow:visible; border-radius:0; background:transparent; }
 .thread-body { padding:0; min-width:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
 .thread-message.user { align-self:flex-end; }
-/* A message another agent sent into this conversation is somebody else
-   speaking: it takes the side everything said TO this agent arrives on, in the
-   same bubble the reader's own words wear — and the accent's own surface, which
-   is green at the lightness --panel2 sits at in both themes. The colour is the
-   whole of the difference, and it is what says at a glance that the reader did
-   not write this. */
+/* The reader's words use the green bubble; words arriving from another agent
+   use the old neutral reader surface. This agent's own words stay inline in
+   the transcript. The rail and full conversation share these treatments.
+   Bubble ink and muted labels have contrast-safe tokens for the green. */
 .thread-message.from-agent { align-self:flex-start; }
 .thread-message:is(.user, .from-agent) { width:min(78%, 520px); }
+.thread-message.user { width:100%; }
+.thread-message.user .thread-comment-card { width:min(78%, 520px); margin-left:auto; }
+.thread-user-tick { position:absolute; left:0; top:50%; transform:translateY(-50%);
+  display:grid; place-items:center; width:24px; height:32px; padding:0; border:0;
+  border-radius:8px; background:transparent; color:var(--dim); cursor:pointer; }
+.thread-user-tick span { display:block; width:3px; height:14px; border-radius:3px; background:currentColor; }
+.thread-user-tick:hover, .thread-user-tick.active { color:var(--accent); background:var(--accent-soft); }
+.thread-user-tick:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .thread-message:is(.user, .from-agent) .thread-comment-card { overflow:hidden; border-radius:18px;
   background:var(--panel2); }
-.thread-message.from-agent .thread-comment-card { background:var(--accent-soft); }
+.thread-message.user .thread-comment-card { background:var(--user-bubble); color:var(--user-bubble-ink); }
+.thread-message.user .thread-body { color:var(--user-bubble-ink); }
+.thread-message.user .thread-body a,
+.thread-message.user .thread-revision-link { color:var(--user-bubble-link); }
+.thread-message.user :is(.thread-message-footer, .thread-status, .thread-anchor,
+  .thread-message-resolution, .thread-attachment-figure figcaption,
+  .thread-attachment-figure figcaption .thread-attachment-name,
+  .viewing-context-detail > button) { color:var(--user-bubble-muted); }
+.thread-message.user .delivery-status.uncertain { color:var(--user-bubble-warn); }
+.thread-message.user .delivery-status.failed { color:var(--user-bubble-error); }
 .thread-message:is(.user, .from-agent) .thread-body { padding:6px 12px 9px; }
 .thread-message:is(.user, .from-agent) .message-viewing-context { padding:7px 12px 0; }
 .thread-message:is(.user, .from-agent) .thread-references,
@@ -1980,7 +2001,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .composer-send { width:34px; height:34px; border-radius:8px; }
 .composer-attach { width:34px; height:34px; }
 @media (max-width: 640px) {
-  .thread-message:is(.user, .from-agent) { width:min(88%, 520px); }
+  .thread-message.from-agent, .thread-message.user .thread-comment-card { width:min(88%, 520px); }
 }
 
 /* Global notifications (core/notify.js) — errors persist until dismissed,

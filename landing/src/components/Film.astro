@@ -1,0 +1,160 @@
+---
+// The close-ups the film puts on the device screens. Each panel is authored in
+// the texture's own pixels (data-panel-region is x y width height in that
+// space) and projected onto the screen plane by overlays.js. In the document
+// version this whole block is display: none; the readable proof lives in the
+// acts themselves.
+const testLine1 = 'it("keeps archived items in search", () => {';
+const testLine2 = 'expect(search("launch notes")).toContain(archived);';
+const testClose = "});";
+const importLine = 'import { archive, search } from "../search";';
+const describeOpen = 'describe("archive", () => {';
+const archivedConst = 'const archived = archive("launch notes");';
+const branchLine = "build/archive-search · ~/code/build/workspaces/archive-search";
+const humanLine = '+   label: "Archived",';
+const commitMessage = "archive: keep archived results searchable";
+const diffAdded1 = "+ search.update(id, {";
+const diffAdded2 = "+   archived: true";
+const diffAdded3 = "+ })";
+const diffRemoved = "− search.remove(id)";
+const diffContext = "  const item = search.get(id)";
+const testFileTab = "archive.test.ts";
+---
+
+<div class="overlays" data-overlays aria-hidden="true">
+  <!-- Act 1 and 2: the editor pane, with the visitor's test typed in. -->
+  <div class="panel panel--editor" data-panel="editor" data-panel-device="laptop" data-panel-region="496 222 692 598">
+    <div class="ed-tabs"><span>archive.ts</span><span class="active">{testFileTab}</span></div>
+    <div class="ed-code">
+      <div><i>1</i><span>{importLine}</span></div>
+      <div><i>2</i><span></span></div>
+      <div><i>3</i><span>{describeOpen}</span></div>
+      <div><i>4</i><span>  {archivedConst}</span></div>
+      <div><i>5</i><span></span></div>
+      <div data-typed-line><i>6</i><span>  <b data-type={testLine1}></b><em class="caret" data-caret="1"></em></span></div>
+      <div data-typed-line><i>7</i><span>    <b data-type={testLine2}></b><em class="caret" data-caret="2"></em></span></div>
+      <div data-typed-line><i>8</i><span>  <b data-type={testClose}></b></span></div>
+      <div><i>9</i><span>{testClose}</span></div>
+    </div>
+  </div>
+  <div class="panel panel--status" data-panel="status" data-panel-device="laptop" data-panel-region="648 872 200 24">
+    <span class="status-chip" data-status-chip>2 changes · you</span>
+  </div>
+
+  <!-- Act 3: the issue card, lifted out of the board. -->
+  <div class="panel panel--hole" data-panel="hole" data-panel-device="laptop" data-panel-region="621 283 246 95"></div>
+  <div class="panel panel--issue" data-panel="issue" data-panel-device="laptop" data-panel-region="621 283 246 95" data-panel-flat="0.64 0.46 0.30">
+    <div class="issue-card">
+      <small>#78 <em>search</em> <em>bug</em> <span class="column-chip" data-column-chip><span data-column="ready">Ready</span><span data-column="progress">In progress</span></span></small>
+      <strong>Make archived items searchable</strong>
+      <p class="assignee"><span data-assignee="none">No assignee</span><span data-assignee="agent"><i class="mark"></i>Claude Code</span></p>
+      <code class="branch-line" data-branch-line>{branchLine}</code>
+    </div>
+  </div>
+
+  <!-- Act 4: the fan-out. -->
+  <div class="panel panel--team" data-panel="team" data-panel-device="laptop" data-panel-region="306 222 1154 582">
+    <div class="team-summary"><span class="presence"></span><strong><b data-running-count>1</b> running</strong><p>One issue moving across isolated workspaces on this machine.</p></div>
+    <div class="team-rows">
+      <article class="team-row" data-team-row="1"><div><i class="mark"></i><strong>Implement</strong><span data-row-status="implement">Working</span></div><div class="team-meta"><span>Claude Code</span><code>~/code/build/workspaces/archive-search</code></div></article>
+      <article class="team-row" data-team-row="2"><div><i class="mark"></i><strong>Review</strong><span>Working</span></div><div class="team-meta"><span>Codex</span><code>~/code/build/workspaces/archive-review</code></div></article>
+      <article class="team-row" data-team-row="3"><div><i class="mark"></i><strong>Audit edge cases</strong><span>Working</span></div><div class="team-meta"><span>Codex</span><code>~/code/build/workspaces/archive-audit</code></div></article>
+    </div>
+  </div>
+
+  <!-- Act 5: the workflow builder, taken over by HTML. -->
+  <div class="panel panel--builder" data-panel="builder" data-panel-device="laptop" data-panel-region="306 222 1154 638" data-panel-flat="0.5 0.6 0.72">
+    <aside class="palette">
+      <div class="eyebrow">Node palette</div>
+      <div class="palette-item">＋ Agent</div>
+      <div class="palette-item" data-palette="test">＋ Test</div>
+      <div class="palette-item">＋ Review</div>
+      <div class="palette-item">＋ Human gate</div>
+      <div class="palette-item">＋ Fan out</div>
+    </aside>
+    <div class="canvas" data-canvas>
+      <div class="canvas-label">Archive search workflow</div>
+      <svg class="edges" data-edges viewBox="0 0 948 638" aria-hidden="true">
+        <path data-edge="implement-review" />
+        <path data-edge="implement-test" />
+        <path data-edge="test-review" />
+        <path data-edge="review-gate" />
+        <path data-edge="gate-merge" />
+        <circle class="pulse" data-pulse cx="0" cy="0" r="6" />
+      </svg>
+      <article class="node done" data-node="implement"><small>1</small><strong>Implement</strong><span>Claude Code</span><em>Done · handoff pending</em></article>
+      <article class="node test" data-node="test"><small>2</small><strong>Test</strong><span>runs archive.test.ts</span><em data-node-status="test">Waiting</em></article>
+      <article class="node" data-node="review"><small data-node-index="review">2</small><strong>Review</strong><span>Codex</span><em data-node-status="review">Waiting</em></article>
+      <article class="node gate" data-node="gate"><small data-node-index="gate">3</small><strong>You decide</strong><span>Human gate</span><em data-node-status="gate">Waiting</em></article>
+      <article class="node" data-node="merge"><small data-node-index="merge">4</small><strong>Merge</strong><span>Build</span><em>Waiting</em></article>
+      <p class="canvas-caption" data-canvas-caption>Saved as <em>Fix with tests</em>. Runs on the next issue.</p>
+    </div>
+  </div>
+
+  <!-- Act 6: the Git panel and the diff. -->
+  <div class="panel panel--git" data-panel="git" data-panel-device="laptop" data-panel-region="306 222 1154 638" data-panel-flat="0.5 0.6 0.72">
+    <aside class="git-side">
+      <div class="eyebrow">Source control</div>
+      <div class="branch-chip">⑂ build/archive-search</div>
+      <code class="ws-path">~/code/build/workspaces/archive-search</code>
+      <div class="eyebrow spaced">Graph</div>
+      <div class="commit-line new" data-new-commit><span>●</span><strong>{commitMessage}</strong><small class="you">you</small></div>
+      <div class="commit-line active"><span>●</span><strong>Archive search behavior</strong><small>Claude Code</small></div>
+      <div class="commit-line"><span>●</span><strong>Review archive coverage</strong><small>Codex</small></div>
+      <div class="commit-line"><span>●</span><strong>Audit edge cases</strong><small>Codex</small></div>
+      <div class="commit-line main"><span>●</span><strong>main</strong></div>
+      <div class="eyebrow spaced"><span data-tree-label>Working tree</span> <span>2</span></div>
+      <div class="changed-file active">M archive.ts</div>
+      <div class="changed-file">M archive.test.ts</div>
+      <button class="git-button" data-stage-all type="button" tabindex="-1">Stage all</button>
+      <div class="commit-box"><span class="commit-input" data-commit-input><b data-type={commitMessage}></b><em class="caret" data-caret="commit"></em></span><button class="git-button primary" data-commit-button type="button" tabindex="-1">Commit</button></div>
+    </aside>
+    <div class="git-editor">
+      <div class="ed-tabs"><span class="active">archive.ts</span><span>{testFileTab}</span></div>
+      <div class="diff-title"><strong>archive.ts</strong><span class="add" data-diff-add>+2</span><span class="del">−1</span><span class="author-chip agent" data-chip="agent"><i class="mark"></i>Claude Code</span></div>
+      <div class="ed-code diff-code" data-hunk="agent">
+        <div><i>11</i><span>{diffContext}</span></div>
+        <div class="removed"><i>12</i><span>{diffRemoved}</span></div>
+        <div class="added"><i>12</i><span>{diffAdded1}</span></div>
+        <div class="added"><i>13</i><span>{diffAdded2}</span></div>
+        <div class="added human" data-human-line><i>14</i><span><b data-type={humanLine}></b><em class="caret" data-caret="human"></em></span></div>
+        <div class="added"><i data-close-number>14</i><span>{diffAdded3}</span></div>
+      </div>
+      <div class="diff-title"><strong>{testFileTab}</strong><span class="add">+3</span><span class="author-chip you" data-chip="you">you</span></div>
+      <div class="ed-code diff-code" data-hunk="you">
+        <div class="added"><i>6</i><span>+   {testLine1}</span></div>
+        <div class="added"><i>7</i><span>+     {testLine2}</span></div>
+        <div class="added"><i>8</i><span>+   {testClose}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Act 7: the review surface on the tablet. -->
+  <div class="panel panel--review" data-panel="review" data-panel-device="tablet" data-panel-region="294 195 880 505">
+    <div class="review-head"><div><div class="kicker">Ready for your call</div><h1>Review triage</h1></div><span class="pill" data-review-pill>1 needs you</span></div>
+    <article class="triage-row expanded" data-triage="finding">
+      <header><span class="chevron">⌄</span><div><small>Needs you · 1</small><strong>Search index behaviour changed</strong></div><span class="dot"></span></header>
+      <p class="summary">Keep archived items searchable and visibly labeled.</p>
+      <div class="finding" data-finding>
+        <div class="ed-code diff-code">
+          <div class="removed"><i>12</i><span>{diffRemoved}</span></div>
+          <div class="added"><i>12</i><span>{diffAdded1}</span></div>
+          <div class="added"><i>13</i><span>{diffAdded2}</span></div>
+          <div class="added"><i>14</i><span>{diffAdded3}</span></div>
+        </div>
+        <ul class="evidence">
+          <li>archive.test.ts passed</li>
+          <li>keeps archived items in search ✓</li>
+          <li>Checks passed</li>
+        </ul>
+        <div class="approval" data-approval>
+          <button class="git-button primary" data-approve-button type="button" tabindex="-1">Approve for merge</button>
+          <span class="approved" data-approved><i class="you">you</i> Approved for merge.</span>
+        </div>
+      </div>
+    </article>
+    <article class="triage-row" data-triage="verified"><header><span class="chevron">›</span><div><small>Verified · 3</small><strong>Checks passed</strong></div><span class="good">3</span></header></article>
+    <article class="triage-row" data-triage="failed"><header><span class="chevron">›</span><div><small>Failed · 0</small><strong>No failing checks</strong></div><span>0</span></header></article>
+    <article class="triage-row collapsed" data-triage="rest"><header><span class="chevron">›</span><div><small>Verified · 3 &nbsp;·&nbsp; Failed · 0</small><strong>Everything else passed</strong></div><span class="good">3</span></header></article>
+  </div>
+</div>

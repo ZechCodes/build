@@ -81,15 +81,6 @@ a {
   z-index: 10;
 }
 
-/* The mount point the choreography takes over later. Until then it is an
-   empty, decorative, zero-height element: the document reads without it. */
-#device-stage {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
 .story,
 .practical {
   position: relative;
@@ -116,6 +107,13 @@ a {
 .act__inner {
   display: grid;
   gap: var(--gap);
+}
+
+/* Grid children take their min-content width by default, and a code block's
+   is wider than a phone; let them shrink and scroll instead. */
+.act__inner > *,
+.card {
+  min-width: 0;
 }
 
 @media (min-width: 60rem) {

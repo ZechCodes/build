@@ -1,5 +1,17 @@
-// Exercise the public story in a browser. Start scripts/preview-landing.py first.
-// LANDING_URL and LANDING_REVIEW_DIR allow a deployed preview and artifact folder.
+// Exercise the public landing in a browser. Start scripts/preview-landing.py
+// first (it serves the generated page and every /landing/ asset).
+//
+//   LANDING_URL         where the preview listens (default http://127.0.0.1:4173)
+//   LANDING_REVIEW_DIR  where captures land (default /tmp/build-landing-review)
+//   CHROMIUM_PATH       a system Chromium instead of Playwright's download
+//   LANDING_GPU=1       use the machine's GPU through ANGLE instead of SwiftShader
+//
+// Two versions of the page are checked by exit code: the document (phones,
+// reduced motion, no JavaScript) must carry the whole story in order, and the
+// film (desktop) must start its stage, reach every act, keep each act's
+// headline in the viewport, and raise no browser errors. On SwiftShader the
+// film is forced past its frame budget with ?film=force, because a software
+// renderer would otherwise, correctly, hand back to the document.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -7,166 +19,130 @@ import { chromium } from "playwright";
 
 const base = process.env.LANDING_URL || "http://127.0.0.1:4173";
 const output = process.env.LANDING_REVIEW_DIR || "/tmp/build-landing-review";
+const gpu = process.env.LANDING_GPU === "1";
 await fs.mkdir(output, { recursive: true });
+
 const browser = await chromium.launch({
-  headless: process.env.LANDING_HEADFUL !== "1",
+  headless: true,
   executablePath: process.env.CHROMIUM_PATH,
-  args: process.env.LANDING_HEADFUL === "1" ? ["--ozone-platform=x11"] : ["--enable-unsafe-swiftshader"],
+  args: gpu
+    ? ["--headless=new", "--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist"]
+    : ["--enable-unsafe-swiftshader"],
 });
+
+const HEADLINES = [
+  "Your agents. Your machine. Your call.",
+  "The work runs on your machine.",
+  "Say what needs doing.",
+  "One issue. A whole team.",
+  "Build the workflow. Then run it again.",
+  "Every change lands in Git.",
+  "See what needs you. Decide what ships.",
+  "Your work stays put. You don't have to.",
+];
+const FILM_VIEWPORTS = [[1440, 900], [1920, 1080], [1024, 768]];
+const DOCUMENT_VIEWPORTS = [[390, 844], [360, 740]];
 const findings = [];
-const sizes = [[1440, 900], [1920, 1080], [768, 1024], [1024, 768], [390, 844], [360, 740], [844, 390]];
 
-async function settle(page) {
-  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-}
-
-async function settleDevices(page) {
-  const enhanced = await page.evaluate(() => window.BuildLandingStory?.getState?.().enhanced);
-  if (!enhanced || process.env.LANDING_HEADFUL !== "1") return;
-  await page.waitForFunction(async () => {
-    const { getDeviceScreenSource } = await import("/landing/device-stage.js");
-    const frame = window.BuildLandingStory.getState();
-    return ["laptop", "tablet", "phone"].every((name) => {
-      const source = getDeviceScreenSource(name, frame);
-      if (!source) return true;
-      return document.querySelector(`[data-device="${name}"]`)?.dataset.webglScreenSource === source;
-    });
+function watchErrors(page) {
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
   });
-  // Include the poster-to-WebGL crossfade in visual captures.
-  await page.waitForTimeout(350);
+  return errors;
 }
 
 async function layout(page) {
   return page.evaluate(() => ({
     width: innerWidth,
     documentWidth: document.documentElement.scrollWidth,
-    headings: [...document.querySelectorAll("[data-story-scene] h1, [data-story-scene] h2")].map((element) => element.textContent.trim()),
-    state: window.BuildLandingStory?.getState?.(),
-    ready: document.querySelector("[data-device-stage]")?.dataset.webglReady,
+    mode: document.documentElement.dataset.mode || "document",
+    stage: document.documentElement.dataset.stage || "",
+    headings: [...document.querySelectorAll("[data-act] h1, [data-act] h2")].map((element) => element.textContent.trim()),
     missingImages: [...document.images].filter((image) => image.complete && !image.naturalWidth).map((image) => image.src),
+    slots: (document.documentElement.outerHTML.match(/\{\{\w+\}\}/g) || []),
   }));
 }
 
-async function inspectViewport(width, height) {
-  const context = await browser.newContext({ viewport: { width, height } });
+function assertStory(state, label) {
+  for (const headline of HEADLINES) assert.ok(state.headings.includes(headline), `${label}: ${headline}`);
+  assert.deepEqual(state.slots, [], `${label}: every server slot is filled`);
+  assert.deepEqual(state.missingImages, [], `${label}: all visible media should resolve`);
+}
+
+async function inspectDocument(width, height, options, label) {
+  const context = await browser.newContext({ viewport: { width, height }, ...options });
   const page = await context.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  const errors = watchErrors(page);
   await page.goto(base, { waitUntil: "networkidle" });
-  await settle(page);
-  await settleDevices(page);
-  const initial = await layout(page);
-  assert.equal(initial.headings.length, 6, "all six semantic claims must exist");
-  assert(initial.documentWidth <= width + 1, `horizontal overflow at ${width}×${height}`);
-  assert.deepEqual(initial.missingImages, [], "all visible media should resolve");
-  if (height >= 600 && width >= 768) assert(initial.state?.enhanced, "supported viewports enhance");
-  await page.screenshot({ path: path.join(output, `${width}x${height}-start.png`), animations: "disabled" });
-  if (initial.state?.enhanced) {
-    if (width === 1440 && process.env.LANDING_HEADFUL === "1") await inspectPersistentDisplay(page);
-    await inspectChapters(page, `${width}x${height}`);
+  const state = await layout(page);
+  assertStory(state, label);
+  assert.equal(state.mode, "document", `${label} reads the document`);
+  assert.ok(state.documentWidth <= width + 1, `${label}: no horizontal overflow`);
+  for (const act of await page.locator("[data-act]").all()) {
+    await act.scrollIntoViewIfNeeded();
+    assert.ok(await act.isVisible(), `${label}: each act is readable`);
+    assert.ok(await act.locator(".poster img").first().isVisible(), `${label}: each act keeps its still`);
   }
-  await page.locator("#download").scrollIntoViewIfNeeded();
-  await settle(page);
-  assert(await page.locator("#download").isVisible(), "installer chooser is reachable");
-  assert(await page.locator('#download a[href="/app/"]').count(), "chooser keeps the authenticated pairing flow reachable");
-  await page.screenshot({ path: path.join(output, `${width}x${height}-download.png`) });
-  assert.deepEqual(errors, [], `browser errors at ${width}×${height}`);
-  findings.push({ viewport: [width, height], ...initial, browserErrors: errors });
+  assert.ok(await page.locator("#waitlist form").isVisible(), `${label}: the waitlist form is reachable`);
+  assert.equal(await page.locator("#waitlist button").textContent().then((text) => text.trim()), "Join the waitlist");
+  assert.ok(await page.locator('footer a[href="/docs"]').count(), `${label}: the footer reaches the docs`);
+  await page.screenshot({ path: path.join(output, `${label}.png`), fullPage: true });
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  findings.push({ label, viewport: [width, height], mode: state.mode });
   await context.close();
 }
 
-async function seek(page, sceneIndex, local) {
-  await page.evaluate(async ({ sceneIndex, local }) => {
-    const { travelAtFrame } = await import("/landing/story-manifest.js");
-    const story = document.querySelector("[data-story]");
-    const stage = document.querySelector("[data-story-stage]");
-    const state = window.BuildLandingStory.getState();
-    const origin = story.getBoundingClientRect().top + scrollY;
-    scrollTo({ top: origin + travelAtFrame(sceneIndex, local, state.profile) * stage.getBoundingClientRect().height, behavior: "instant" });
-  }, { sceneIndex, local });
-  await settle(page);
-  await settleDevices(page);
+async function seek(page, act, local) {
+  await page.evaluate(({ act, local }) => window.BuildFilm.seek(act, local), { act, local });
+  // The scrub eases the playhead toward the scroll position.
+  await page.waitForFunction(({ act, local }) => {
+    const film = window.BuildFilm;
+    return Math.abs(film.timeline.time() - film.time()) < 0.5 && document.querySelector("[data-film]").dataset.act === String(act);
+  }, { act, local }, { timeout: gpu ? 5000 : 30_000 });
+  await page.waitForTimeout(150);
 }
 
-async function inspectPersistentDisplay(page) {
-  await seek(page, 1, 0.5);
-  let blockedRoute;
-  let requestedTexture;
-  const requested = new Promise((resolve) => { requestedTexture = resolve; });
-  const pattern = "**/ui03-answer-iphone.webp";
-  await page.route(pattern, (route) => {
-    blockedRoute = route;
-    requestedTexture();
-  });
-  try {
-    await page.evaluate(() => window.BuildLandingStory.seek(2, 0.5, "instant"));
-    await requested;
-    await settle(page);
-    const pending = await page.locator('[data-device="phone"]').evaluate((element) => ({
-      source: element.dataset.webglScreenSource,
-      ready: element.dataset.webglDeviceReady,
-      posterOpacity: element.style.opacity,
-    }));
-    assert.match(pending.source, /ui02-iphone/, "previous system display stays in place while the next image loads");
-    assert.equal(pending.ready, "true");
-    assert.equal(pending.posterOpacity, "0", "pending content must not flash a fallback poster");
-  } finally {
-    await blockedRoute.continue();
-    await page.unroute(pattern);
-  }
-  await settleDevices(page);
-}
-
-function assertFitsViewport(box, viewport, label) {
-  assert(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height, `${label} fits the viewport`);
-}
-
-async function inspectActivity(page, headingBox) {
-  const activity = await page.locator(".demo--activity").boundingBox();
-  const viewport = page.viewportSize();
-  assertFitsViewport(activity, viewport, "the entire activity card");
-  if (viewport.width < 768) assert(activity.y >= headingBox.y + headingBox.height, "the mobile activity card clears its claim");
-}
-
-async function inspectChapters(page, label) {
-  for (const index of [1, 2, 3, 4, 5, 3, 1, 0]) {
-    await seek(page, index, 0.5);
-    const current = await layout(page);
-    assert.equal(current.state.sceneIndex, index, "forward/reverse seeks restore the exact scene");
-    const heading = page.locator("[data-story-scene]").nth(index).locator("h1,h2");
-    const box = await heading.boundingBox();
-    assertFitsViewport(box, page.viewportSize(), "the active claim");
-    if (index === 3) await inspectActivity(page, box);
-    await page.screenshot({ path: path.join(output, `${label}-scene-${index + 1}.png`), animations: "disabled" });
-  }
-  const checkpoints = [];
-  for (const local of [0.28, 0.42, 0.58, 0.72, 0.82, 0.28]) {
-    await seek(page, 4, local);
-    checkpoints.push((await layout(page)).state.checkpoint);
-  }
-  assert.deepEqual(checkpoints, ["summary", "diff", "evidence", "approval", "merged", "summary"]);
-}
-
-async function inspectStatic(options, label) {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, ...options });
+async function inspectFilm(width, height) {
+  const label = `${width}x${height}-film`;
+  const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
-  await page.goto(base, { waitUntil: "networkidle" });
+  const errors = watchErrors(page);
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "networkidle" });
+  await page.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
+  await page.waitForTimeout(1200);
   const state = await layout(page);
-  assert.equal(state.headings.length, 6);
-  assert(state.documentWidth <= 391, `${label} overflow`);
-  for (const scene of await page.locator("[data-story-scene]").all()) {
-    await scene.scrollIntoViewIfNeeded();
-    assert(await scene.isVisible(), `${label} must keep each chapter readable`);
+  assertStory(state, label);
+  assert.equal(state.mode, "film", `${label} runs the film`);
+  assert.ok(state.documentWidth <= width + 1, `${label}: no horizontal overflow`);
+  const opened = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
+  assert.ok(opened > 0.99, `${label}: the hero laptop is open after its entrance`);
+  await page.screenshot({ path: path.join(output, `${label}-hero.png`) });
+  for (const [act, local] of [[1, 0.5], [2, 0.7], [3, 0.6], [4, 0.7], [5, 0.75], [6, 0.8], [7, 0.55], [7, 0.85], [8, 0.9], [4, 0.2], [1, 0.05]]) {
+    await seek(page, act, local);
+    const heading = page.locator(`[data-act="${act}"]`).locator("h1, h2").first();
+    const box = await heading.boundingBox();
+    assert.ok(box && box.y >= 0 && box.y + box.height <= height, `${label}: act ${act} headline in view`);
+    const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
+    assert.ok(screens.laptop, `${label}: the laptop shows a display in act ${act}`);
+    const lid = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
+    assert.ok(lid > 0.99, `${label}: the laptop never closes (act ${act})`);
+    await page.screenshot({ path: path.join(output, `${label}-act-${act}-${local}.png`) });
   }
-  await page.screenshot({ path: path.join(output, `${label}.png`), fullPage: true });
-  findings.push({ mode: label, ...state });
+  const frame = await page.evaluate(() => window.BuildFilm.stage.getState().lastFrameMs);
+  await page.locator("#details").scrollIntoViewIfNeeded();
+  assert.ok(await page.locator("#details").isVisible(), `${label}: the practical section follows the film`);
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  findings.push({ label, viewport: [width, height], mode: state.mode, lastFrameMs: frame });
   await context.close();
 }
 
 try {
-  for (const [width, height] of sizes) await inspectViewport(width, height);
-  await inspectStatic({ reducedMotion: "reduce" }, "reduced-motion");
-  await inspectStatic({ javaScriptEnabled: false }, "no-javascript");
+  for (const [width, height] of DOCUMENT_VIEWPORTS) await inspectDocument(width, height, {}, `${width}x${height}-phone`);
+  await inspectDocument(1440, 900, { reducedMotion: "reduce" }, "1440x900-reduced-motion");
+  await inspectDocument(1440, 900, { javaScriptEnabled: false }, "1440x900-no-javascript");
+  for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));
   console.log(`Passed ${findings.length} browser profiles. Artifacts: ${output}`);
 } finally {

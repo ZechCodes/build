@@ -10,7 +10,7 @@ import {
   HemisphereLight,
   Mesh,
   MeshBasicMaterial,
-  PCFSoftShadowMap,
+  PCFShadowMap,
   PMREMGenerator,
   PerspectiveCamera,
   PlaneGeometry,
@@ -114,7 +114,7 @@ function createRenderer(canvas) {
   renderer.toneMapping = ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.04;
   renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = PCFSoftShadowMap;
+  renderer.shadowMap.type = PCFShadowMap;
   return renderer;
 }
 

@@ -1,0 +1,8 @@
+GSAP (GreenSock Animation Platform), bundled from the gsap npm package.
+
+GSAP is used here under the GSAP Standard License, which since GSAP 3.13 permits
+free use, including commercial use, with no fee: https://gsap.com/standard-license/
+
+Copyright 2008-2025, GreenSock. All rights reserved. GSAP is a Webflow product.
+The full licence text and terms are published at the address above and in the
+gsap npm package's README.

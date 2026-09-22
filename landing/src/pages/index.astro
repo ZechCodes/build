@@ -1,6 +1,8 @@
 ---
 import "../styles/fonts.css";
 import "../styles/landing.css";
+import "../styles/film.css";
+import Film from "../components/Film.astro";
 
 // The document skriftapp serves at "/". Astro emits the whole thing — head,
 // fonts, social meta — so the server never wraps it in a shell.
@@ -19,12 +21,11 @@ const repositoryUrlSlot = "{{repository_url}}";
 const repositoryTitle =
   "Build source repository; access may require an invitation during alpha";
 
-// Astra's renders land here later; until then each act shows the scene poster
-// it is closest to, and acts 7 and 8 share scene 06.
-const posters = ["01", "02", "03", "04", "05", "06", "06", "06"];
+// One poster pair per act, rendered by Astra from the same poses the film
+// uses (DIRECTION.md §5).
 const poster = (act: number) => ({
-  desktop: `/landing/assets/devices/scene-${posters[act - 1]}-desktop.webp`,
-  mobile: `/landing/assets/devices/scene-${posters[act - 1]}-mobile.webp`,
+  desktop: `/landing/assets/devices/scene-0${act}-desktop.webp`,
+  mobile: `/landing/assets/devices/scene-0${act}-mobile.webp`,
 });
 
 // Code and shell text live here rather than in markup: braces in an .astro
@@ -90,9 +91,17 @@ const testStepLabel = "Test · runs archive.test.ts";
   </head>
   <body>
     <a class="skip-link" href="#act-1">Skip to the story</a>
-    <div id="device-stage" aria-hidden="true"></div>
 
     <main class="story" data-story>
+      <div class="film" data-film>
+      <!-- The device stage and the hero poster it takes over from. Both are
+           display: none until the entry script decides the visitor gets the
+           film; the document reads without them. -->
+      <canvas class="stage" data-stage aria-hidden="true"></canvas>
+      <picture class="hero-poster" data-hero-poster aria-hidden="true">
+        <img src={poster(1).desktop} width="1440" height="900" alt="" decoding="async" />
+      </picture>
+      <Film />
       <!-- Act 1 -->
       <section class="act" id="act-1" data-act="1" aria-labelledby="act-1-title">
         <div class="content-container act__inner">
@@ -345,11 +354,14 @@ const testStepLabel = "Test · runs archive.test.ts";
         <div class="content-container act__inner">
           <div class="act__copy">
             <p class="kicker">08 / Any screen</p>
+            <div class="beat" data-beat="a">
             <h2 id="act-8-title">Your work stays put. You don't have to.</h2>
             <p class="support">
               Check in, answer a question, review what's ready from your phone or tablet.
               The agents keep working on the machine you chose.
             </p>
+            </div>
+            <div class="beat" data-beat="b">
             <h2 class="beat-b">Your machine. Your call.</h2>
             <p class="support">
               Free and open source. Runs on the hardware you already own.
@@ -383,6 +395,7 @@ const testStepLabel = "Test · runs archive.test.ts";
               <a class="link" href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
             </div>
             <p class="meta">Invite-only alpha. Free and open source.</p>
+            </div>
           </div>
           <picture class="poster">
             <source media="(max-width: 767px)" srcset={poster(8).mobile} width="720" height="960" />
@@ -390,6 +403,7 @@ const testStepLabel = "Test · runs archive.test.ts";
           </picture>
         </div>
       </section>
+      </div>
     </main>
 
     <div class="practical">

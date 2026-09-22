@@ -47,7 +47,9 @@ describe("the generated landing document", () => {
   it("tells the story in eight acts, in order, each with a stage hook", () => {
     const acts = [...html.matchAll(/data-act="(\d)"/g)].map((match) => match[1]);
     assert.deepEqual(acts, ["1", "2", "3", "4", "5", "6", "7", "8"]);
-    assert.ok(html.includes('<div id="device-stage" aria-hidden="true"></div>'));
+    assert.ok(html.includes('<canvas class="stage" data-stage aria-hidden="true"></canvas>'));
+    assert.ok(html.includes("data-film"));
+    assert.ok(html.includes("data-overlays"));
   });
 
   it("opens on the headline and closes on the waitlist", () => {

@@ -1,19 +1,19 @@
 // The capture decision page's wiring: one capture, every way of deciding what
-// happens to it, and the poll that keeps the page honest about where it stands.
+// happens to it, and the cache record that keeps its answer current.
 //
 // WHAT the page says is core/captureDecision.js; this module is the behaviour.
 // Four ways out, and the page offers all of them at once: tap one of the
 // choices the router offered, name a destination yourself, answer in words, or
 // cancel the capture altogether.
 //
-// The paint is idempotent — a poll that reads the same capture again paints
+// The paint is idempotent — a cache read of the same capture paints
 // nothing — and it stands down entirely while a field on the page has the
 // caret, because rewriting the page would take the words, the caret and, on a
 // phone, the keyboard with it.
 
-import { go } from "../app.js";
+import { App, go } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { deviceFeedView } from "./deviceContexts.js";
+import { creationDevice, deviceFeedView } from "./deviceContexts.js";
 import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
@@ -23,6 +23,8 @@ import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { forgetCaptureRecord } from "./composeView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
+import { captureRecordAddress } from "./captureRecords.js";
+import { DEVICES_ADDRESS, deleteCached, readCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
 import {
   answerParams,
   captureCancelConfirm,
@@ -53,13 +55,19 @@ const deviceOfCapture = (feed, captureId) =>
  * the cadence), `dispose` stops it caring about anything that lands later.
  */
 export function mountCaptureDecision(host, captureId) {
-  let record = null; // the capture as the daemon last stated it
+  let record = null; // the capture last read from the local cache
   let paintedFrom = null; // what the host currently stands on
   let disposed = false;
   let busy = false; // a mutation is in flight; the page holds still
   let error = "";
   let feed = { items: [], projects: [] };
   let captureDeviceId = null; // the machine this capture is on, once a snapshot says
+  let cacheAddress = null;
+  let cacheRevision = 0;
+  let cacheRead = Promise.resolve();
+  let unwatchCache = () => {};
+  let unsubscribe = () => {};
+  let lastFeed = null;
   // What the user has typed or chosen, kept beside the page rather than in it:
   // a repaint rebuilds the page, and these are theirs.
   const draft = { projectId: "", kind: "branch", branch: "", answer: "" };
@@ -70,12 +78,6 @@ export function mountCaptureDecision(host, captureId) {
   // projects it can be routed to are that machine's. A snapshot that has not
   // caught up with the capture leaves the last answer standing rather than
   // sending the page home mid-decision.
-  const unsubscribe = subscribeFeed((next) => {
-    captureDeviceId = deviceOfCapture(next, captureId) || captureDeviceId;
-    feed = deviceFeedView(next, captureDeviceId);
-    if (record) drawFromPoll();
-  });
-
   /** Everything this page asks — read, answer, reroute and cancel alike — goes
    *  to the machine the capture is on, and is refused in the words its inbox row
    *  is greyed with while that machine is away. */
@@ -163,6 +165,42 @@ export function mountCaptureDecision(host, captureId) {
     draw();
   }
 
+  /** Every paint of the daemon's full capture starts with this read. The
+   *  announcement carries only an address, never the reply that caused it. */
+  function rereadCapture() {
+    const address = cacheAddress;
+    const read = async () => {
+      const held = await readCached(address);
+      if (disposed || address !== cacheAddress) return;
+      record = held?.value || null;
+      if (record?.state === "routed") leaveForTheInbox();
+      else if (record) drawFromPoll();
+    };
+    cacheRead = cacheRead.then(read, read);
+    return cacheRead;
+  }
+
+  function watchCapture() {
+    const address = captureRecordAddress(captureDeviceId, captureId);
+    if (cacheAddress?.deviceId === address.deviceId) return cacheRead;
+    unwatchCache();
+    cacheAddress = address;
+    cacheRevision = 0;
+    record = null;
+    paintedFrom = null;
+    unwatchCache = subscribeCache(address, () => {
+      cacheRevision += 1;
+      void rereadCapture();
+    });
+    return rereadCapture();
+  }
+
+  async function writeCapture(capture) {
+    if (capture?.id !== captureId || disposed) return;
+    await writeCached(cacheAddress, capture);
+    await rereadCapture();
+  }
+
   /** A capture the daemon will not state. Whatever is already on screen stays;
    *  a first read that fails says so, and offers the way back. */
   function unreadable(message) {
@@ -238,7 +276,7 @@ export function mountCaptureDecision(host, captureId) {
     try {
       const answered = await ask("capture.answer", params);
       draft.answer = ""; // said and gone
-      if (answered && answered.id) record = answered;
+      await writeCapture(answered);
       await refreshFeed();
     } catch (failure) {
       error = messageOf(failure);
@@ -276,7 +314,7 @@ export function mountCaptureDecision(host, captureId) {
     draw();
     try {
       const routed = await ask("capture.reroute", manualRouteParams(captureId, draft));
-      if (routed && routed.id) record = routed;
+      await writeCapture(routed);
       await refreshFeed();
     } catch (failure) {
       error = messageOf(failure);
@@ -299,6 +337,7 @@ export function mountCaptureDecision(host, captureId) {
       call: async () => {
         await ask("capture.cancel", { capture_id: captureId });
         forgetCaptureRecord(captureId);
+        await deleteCached([cacheAddress]);
       },
       failureSummary: "The capture could not be cancelled",
     });
@@ -309,6 +348,10 @@ export function mountCaptureDecision(host, captureId) {
 
   async function load() {
     if (disposed) return;
+    await ready;
+    await cacheRead;
+    const address = cacheAddress;
+    const startedRevision = cacheRevision;
     let capture;
     try {
       capture = await ask("capture.get", { capture_id: captureId });
@@ -318,20 +361,48 @@ export function mountCaptureDecision(host, captureId) {
       if (!disposed && !record) unreadable(messageOf(failure));
       return;
     }
-    if (disposed) return;
-    record = capture;
-    if (record.state === "routed") {
-      leaveForTheInbox();
+    if (disposed || address !== cacheAddress) return;
+    if (cacheRevision !== startedRevision) {
+      await rereadCapture();
       return;
     }
-    drawFromPoll();
+    await writeCapture(capture);
   }
+
+  /** A direct capture link carries an id, not a device. The feed may already
+   *  name its machine; on a cold mount, find its stored full record across the
+   *  account's known devices before choosing where to read. */
+  async function resolveCaptureDevice() {
+    if (!captureDeviceId) {
+      const storedDevices = (await readCached(DEVICES_ADDRESS))?.value || [];
+      const deviceIds = [...new Set([...App.devices, ...storedDevices].map((device) => device?.id).filter(Boolean))];
+      const records = await readCachedMany(deviceIds.map((deviceId) => captureRecordAddress(deviceId, captureId)));
+      captureDeviceId = deviceIds.find((_, index) => records[index]?.value?.id === captureId) || creationDevice();
+    }
+    feed = deviceFeedView(lastFeed, captureDeviceId);
+    await watchCapture();
+  }
+
+  unsubscribe = subscribeFeed((next) => {
+    lastFeed = next;
+    const onDevice = deviceOfCapture(next, captureId);
+    if (onDevice && onDevice !== captureDeviceId) {
+      captureDeviceId = onDevice;
+      void watchCapture().then(() => {
+        if (ready) void load();
+      });
+    }
+    feed = deviceFeedView(next, captureDeviceId || creationDevice());
+    if (record) drawFromPoll();
+  });
+  const ready = resolveCaptureDevice();
 
   return {
     load,
     dispose() {
       disposed = true;
       unsubscribe();
+      unwatchCache();
     },
   };
 }

@@ -5,6 +5,7 @@
 // never takes the box being typed into.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -50,7 +51,7 @@ let entryKeyOf;
 let host;
 let surface;
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 20));
 
 // Every destination the router can offer is a branch: filing an issue is
 // retired (core/captureDecision.js drops an issue option that names no branch),
@@ -102,6 +103,8 @@ async function answerConfirm(ok) {
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<main id="root"><div id="capture-page"></div></main>';
   location.hash = "#/capture/capture-1";
   ({ App } = await import("../src/app.js"));
@@ -159,6 +162,69 @@ afterEach(() => {
 const choices = () => [...host.querySelectorAll("[data-capture-option]")];
 
 describe("the capture decision page", () => {
+  it("paints a stored capture before a late reply and redraws from a cache write", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    await writeCached(address, asking({ question: { text: "The stored question" } }));
+    surface.dispose();
+    homeCall = vi.fn(() => new Promise(() => {}));
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await flush();
+
+    expect(host.textContent).toContain("The stored question");
+    await writeCached(address, asking({ question: { text: "The newly stored question" } }));
+    await flush();
+    expect(host.textContent).toContain("The newly stored question");
+  });
+
+  it("keeps a newer cache write when an older capture.get reply lands", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      await writeCached(address, asking({ question: { text: "The stored question" } }));
+      surface.dispose();
+      let finishRead;
+      homeCall = vi.fn(() => new Promise((resolve) => { finishRead = resolve; }));
+      host.innerHTML = "";
+      surface = mountCaptureDecision(host, "capture-1");
+      await flush();
+      const pending = surface.load();
+      await flush();
+      await writeCached(address, asking({ question: { text: "The newer question" } }));
+      await flush();
+      finishRead(asking({ question: { text: "The stale reply" } }));
+      await pending;
+
+      expect(host.textContent).toContain("The newer question");
+      expect(host.textContent).not.toContain("The stale reply");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("finds a non-home capture's stored record before its feed row arrives", async () => {
+    const { deleteCached, writeCached } = await import("../src/core/localCache.js");
+    await deleteCached([{ deviceId: "dev-1", entityId: "capture-1", kind: "capture" }]);
+    await writeCached(
+      { deviceId: "dev-2", entityId: "capture-1", kind: "capture" },
+      asking({ question: { text: "The away device's question" } }),
+    );
+    surface.dispose();
+    homeCall = vi.fn(() => new Promise(() => {}));
+    awayCall.mockImplementation(() => new Promise(() => {}));
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await flush();
+    expect(host.textContent).toContain("The away device's question");
+
+    void surface.load();
+    await flush();
+    expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
+    expect(homeCall).not.toHaveBeenCalled();
+  });
+
   it("states what was said, what the router asked, and the choices it offered", () => {
     expect(homeCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
     expect(host.textContent).toContain("fix the login redirect");

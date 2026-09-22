@@ -101,12 +101,13 @@ async function rerouteCapture(captureId, destination) {
   capturesBeingRerouted.add(captureId);
   errors.delete(captureId);
   try {
-    const call = verbCall(entryFor(`capture:${captureId}`));
+    const entry = entryFor(`capture:${captureId}`);
+    const call = verbCall(entry);
     const rerouted = await call("capture.reroute", rerouteParams(captureId, destination));
     // The answer carries the new routing, and for a capture that has already
     // settled it is the only thing that will: the feed stopped carrying it, so
     // nothing else would ever correct the row's "→ project as issue".
-    adoptCaptureRecord(rerouted);
+    await adoptCaptureRecord(rerouted, entry?.deviceId);
     await refreshFeed();
   } catch (error) {
     errors.set(captureId, messageOf(error));

@@ -7,6 +7,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -50,7 +51,7 @@ let modelCatalog;
 // it, so a test that hands over a new one is that bridge answering differently.
 const bridge = { call: null };
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 20));
 const $ = (selector) => document.querySelector(selector);
 const type = (selector, value) => {
   const control = $(selector);
@@ -76,6 +77,8 @@ const captureRecord = (over = {}) => ({
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
   const composeHost = document.createElement("div");
@@ -244,6 +247,53 @@ describe("capture first", () => {
 describe("a route the client is watching", () => {
   const routedTo = (over) => ({ ...captureRecord({ state: "routed" }), ...over });
 
+  it("projects the pending row from a cache write after create answers", async () => {
+    const { readCached, writeCached } = await import("../src/core/localCache.js");
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await flush();
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    expect((await readCached(address))?.value.text).toBe("fix the login redirect");
+
+    await writeCached(address, captureRecord({ text: "the cache changed this capture" }));
+    await flush();
+    expect(pendingCaptureRows()[0].title).toContain("the cache changed this capture");
+  });
+
+  it("writes a rerouted capture even when this client does not track its row", async () => {
+    const { readCached } = await import("../src/core/localCache.js");
+    await adoptCaptureRecord(captureRecord({ state: "routed" }), "dev-1");
+    const held = await readCached({ deviceId: "dev-1", entityId: "capture-1", kind: "capture" });
+    expect(held?.value.state).toBe("routed");
+  });
+
+  it("keeps a newer cache write when a settled capture.get reply arrives in the same tick", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      let finishRead;
+      bridge.call = vi.fn(async (method) => {
+        if (method === "capture.create") return captureRecord();
+        if (method === "capture.get") return new Promise((resolve) => { finishRead = resolve; });
+        return { ok: true };
+      });
+      press("c");
+      type("#compose-text", "fix the login redirect");
+      $("#compose-send").click();
+      await flush();
+      await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+      const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+      await writeCached(address, routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/new" } }));
+      finishRead(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-old" } }));
+      await flush();
+
+      expect(pendingCaptureRows()[0].routing.target_id).toBe("build/new");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   /** Send one, then let the feed drop it: the route settled, so the client asks
    *  once where it went and keeps the row on screen. */
   async function settledCapture(record) {
@@ -273,7 +323,7 @@ describe("a route the client is watching", () => {
 
     // What `capture.reroute` answers with. Nothing else will ever correct this
     // row: the feed stopped carrying the capture when its route settled.
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
 
     const [row] = pendingCaptureRows();
     expect(row.routing.kind).toBe("branch");
@@ -293,7 +343,7 @@ describe("a route the client is watching", () => {
     // The user reroutes it just before it would have dropped off.
     await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
     const clock = vi.spyOn(Date, "now").mockReturnValue(nearlyGone);
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
     clock.mockRestore();
 
     expect(pendingCaptureRows(wouldHaveGone).length).toBe(1);
@@ -318,7 +368,7 @@ describe("a route the client is watching", () => {
     $("#compose-send").click();
     await flush();
 
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
 
     expect(pendingCaptureRows(Date.now() + 10).length).toBe(1);
   });
@@ -562,7 +612,7 @@ describe("an account with more than one device", () => {
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
     await flush();
-    adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
+    await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });
 });

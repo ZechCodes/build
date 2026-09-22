@@ -438,10 +438,21 @@ describe("while the device is away", () => {
 describe("the advanced panel", () => {
   // The panel's harness picker is filled from the creation device's catalog, so
   // opening it is a round trip the tests below wait out.
-  const openAdvanced = async () => {
+  const openAdvanced = async ({ catalog = true } = {}) => {
     press("c");
     $("#compose-advanced").click();
-    await flush();
+    if (!catalog) {
+      await vi.waitFor(() => expect($("#compose-project")).toBeTruthy());
+      return;
+    }
+    const { readCached } = await import("../src/core/localCache.js");
+    const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
+    await vi.waitFor(async () => expect((await readCached(deviceModelsAddress("dev-1")))?.value).toEqual(modelCatalog));
+    const claude = modelCatalog.providers.find((provider) => provider.id === "claude" || provider.id === "claude_adk");
+    await vi.waitFor(() => {
+      const offered = [...document.querySelectorAll("#compose-choice-provider option")].map((option) => option.value);
+      expect(offered).toContain(claude.id);
+    });
   };
 
   it("offers the projects and the branches there are, with no issue destination", async () => {
@@ -525,7 +536,7 @@ describe("the advanced panel", () => {
       timedOut.uncertain = true;
       throw timedOut;
     });
-    await openAdvanced();
+    await openAdvanced({ catalog: false });
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     $("#compose-manual-go").click();
@@ -562,7 +573,7 @@ describe("the advanced panel", () => {
     bridge.call = vi.fn(async () => {
       throw new Error("unknown project_id: p9");
     });
-    await openAdvanced();
+    await openAdvanced({ catalog: false });
     type("#compose-text", "add a /health endpoint");
     $("#compose-manual-go").click();
     await flush();

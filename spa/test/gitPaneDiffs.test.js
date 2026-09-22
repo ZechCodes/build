@@ -4,10 +4,18 @@
 // with a key rather than a diff.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { refetchEverything } from "../src/core/changeEvents.js";
 import { COLLAPSED_PREVIEW_ROWS } from "../src/core/fileEntries.js";
+import { scopeFor } from "../src/core/cacheScope.js";
+import { wipeCache } from "../src/core/localCache.js";
 import { unchangedStatus, worktreeOf } from "./gitWireFixture.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
+
+const testCacheScope = scopeFor("dev-1");
 
 const log = () => ({
   branch: "main",
@@ -25,7 +33,7 @@ const click = async (element) => {
 };
 
 /** Mount the pane over a worktree fixture; `answers` overrides one verb. */
-async function mount({ tree, answers = {}, scope = { project_id: "p1" } } = {}) {
+async function mount({ tree, answers = {}, scope = { project_id: "p1" }, cacheScope = null } = {}) {
   const calls = [];
   const callRpc = vi.fn(async (method, params) => {
     calls.push({ method, params });
@@ -37,7 +45,7 @@ async function mount({ tree, answers = {}, scope = { project_id: "p1" } } = {}) 
   });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const pane = mountGitPane(container, { scope, callRpc });
+  const pane = mountGitPane(container, { scope, callRpc, cacheScope });
   await settle();
   return { container, pane, calls, callRpc };
 }
@@ -61,7 +69,8 @@ function refusingTheFirstBody(tree) {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = "";
 });
 
@@ -77,6 +86,7 @@ describe("the shape and its bodies", () => {
     const { container, pane, calls } = await mount({
       tree,
       scope: { workspace_id: "ws-1", source_id: "dir-1" },
+      cacheScope: testCacheScope,
       answers: {
         "git.unpushed": () => ({
           patch: aggregatePatch,

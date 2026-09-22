@@ -1203,12 +1203,21 @@ export function mountGitPane(
   /** Read this checkout off the machine and repaint (post-action refresh, and
    *  the one first paint a checkout the cache holds nothing for gets). */
   const forceRefresh = async () => {
-    const [statusBefore, logBefore] = await Promise.all([cacheRecord("status"), cacheRecord("log")]);
-    let answer, log;
+    // Capture the records before the pull without holding the pull behind an
+    // IndexedDB turn. Besides keeping a cold mount quick, this matters for a
+    // route on another device: its own caller must be reached as soon as the
+    // pane stands up. The snapshots still settle before anything is stored,
+    // so a record written while the request is in flight wins the late-pull
+    // guard below.
+    const before = Promise.all([cacheRecord("status"), cacheRecord("log")]);
+    let answer, log, statusBefore, logBefore;
     try {
-      [answer, log] = await Promise.all([
-        callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
-        callRpc("git.log", { ...scope }),
+      [[statusBefore, logBefore], [answer, log]] = await Promise.all([
+        before,
+        Promise.all([
+          callRpc("git.status", { ...scope, ...ifStatusKey(lastStatus) }),
+          callRpc("git.log", { ...scope }),
+        ]),
       ]);
     } catch (e) {
       if (disposed) return;
@@ -1811,9 +1820,16 @@ export function mountGitPane(
    *  nothing walks, where the records are this pane's own last visit and a
    *  remount painting them would show a checkout as it was left. */
   const standUp = async () => {
+    // A checkout nobody else walks needs a pull on every mount. Start it beside
+    // the cache read: the read still owns the first paint, and the pull can
+    // only paint after its records are written and re-read. Keeping the wire
+    // behind several IndexedDB turns made a remote route look as though it had
+    // never reached its own device at all.
+    const refresh = readsForItself ? forceRefresh() : null;
     const painted = await takeUpRecords();
     if (disposed) return;
-    if (!painted || readsForItself) await forceRefresh();
+    if (!painted && !refresh) await forceRefresh();
+    else if (refresh) await refresh;
   };
 
   /**

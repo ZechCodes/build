@@ -852,8 +852,7 @@ describe("a capture on another device", () => {
     document.querySelector("#compose-open").click();
     document.querySelector("#compose-text").value = "ship it";
     document.querySelector("#compose-send").click();
-    await flush();
-    expect(captureRowFor("cap-9")).toBeTruthy();
+    await vi.waitFor(() => expect(captureRowFor("cap-9")).toBeTruthy());
 
     rememberDeviceFilter("dev-2");
     expect(captureRowFor("cap-9")).toBeNull();

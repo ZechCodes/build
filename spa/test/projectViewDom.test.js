@@ -164,7 +164,7 @@ describe("the project surface", () => {
   // it exactly the way a workspace asks for its own.
   it("mounts the rail on the owner project.ensure_conversation answers with", async () => {
     await openProject();
-    await flush();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
@@ -181,14 +181,14 @@ describe("the project surface", () => {
   it("opens the rail on the agent the route names", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", agent: "ag-2" };
     await openProject();
-    await flush();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe("ag-2");
   });
 
   it("names no agent where the route names none", async () => {
     await openProject();
-    await flush();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
   });
@@ -202,7 +202,7 @@ describe("the project surface", () => {
       provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
     }));
     await openProject();
-    await flush();
+    await vi.waitFor(() => expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" }));
 
     const ensured = here.mock.calls.filter(([method]) => method === "project.ensure_conversation");
     expect(ensured).toHaveLength(1);

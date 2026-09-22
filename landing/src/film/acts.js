@@ -142,7 +142,7 @@ export const SCREEN_CUES = Object.freeze({
   tablet: [
     [at(7, 0), "ui15-triage-ipad"],
     [at(7, 0.65), "ui05-approval-ipad"],
-    [at(7, 0.8), "ui05-merged-ipad"],
+    [at(7, 0.82), "ui05-merged-ipad"],
   ],
 });
 

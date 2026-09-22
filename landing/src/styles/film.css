@@ -136,6 +136,7 @@
 /* --- the close-ups ------------------------------------------------------ */
 
 .panel {
+  --lift: 0;
   position: absolute;
   left: 0;
   top: 0;
@@ -178,6 +179,22 @@
 
 .panel .eyebrow.spaced {
   margin-top: 22px;
+}
+
+/* What the fixture under a panel does not have arrives with the lift. */
+.panel .with-lift {
+  opacity: var(--lift);
+}
+
+/* The machine label, readable on the close-up while it covers the host's
+   own, which is too small to read at that distance. */
+.panel .machine-line {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  white-space: nowrap;
+  opacity: var(--lift);
 }
 
 .caret {
@@ -297,7 +314,7 @@
 }
 
 .panel--hole {
-  background: rgb(6, 18, 23);
+  background: rgb(6, 17, 22);
 }
 
 .issue-card {
@@ -478,10 +495,48 @@
 
 .canvas {
   position: relative;
-  background-color: rgb(4, 14, 20);
+  background-color: rgb(4, 12, 19);
+  overflow: hidden;
+}
+
+/* The fixture's dotted canvas, fading to plain as the panel lifts. */
+.canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
   background-image: radial-gradient(#13303a 1px, transparent 1.5px);
   background-size: 32px 32px;
   background-position: 16px 16px;
+  opacity: calc(1 - var(--lift));
+}
+
+.canvas .machine-line {
+  position: absolute;
+  right: 22px;
+  top: 22px;
+}
+
+.arrow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  margin-top: -11px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent);
+  text-align: center;
+}
+
+.pulse {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .canvas-label {
@@ -493,31 +548,13 @@
   color: var(--app-dim);
 }
 
-.edges {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-}
-
-.edges path {
-  fill: none;
-  stroke: var(--app-line2);
-  stroke-width: 2;
-}
-
-.edges .pulse {
-  fill: var(--accent);
-}
-
 .node {
   position: absolute;
   left: 0;
   top: 0;
-  width: 146px;
-  min-height: 122px;
-  padding: 14px;
+  width: 150px;
+  min-height: 125px;
+  padding: 16px 14px;
   box-sizing: border-box;
   border: 1px solid var(--app-line);
   border-radius: 8px;
@@ -546,10 +583,12 @@
 
 .node em {
   display: block;
-  margin-top: 12px;
+  margin-top: 14px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 9px;
+  font-weight: 600;
   font-style: normal;
+  white-space: nowrap;
   color: var(--app-ink2);
 }
 
@@ -579,13 +618,24 @@
   color: var(--app-green);
 }
 
-.node.waiting {
-  border-color: var(--accent);
-  animation: gate-wait 1.6s ease-in-out infinite;
+/* A node the handoff has passed is finished, and finished is quiet: the
+   mint belongs to whatever needs the visitor next. */
+.node.settled,
+.node.settled.done,
+.node.settled.passed {
+  border: 1px solid var(--app-line);
+  color: var(--app-ink2);
+  opacity: 0.72;
 }
 
-@keyframes gate-wait {
-  50% { box-shadow: 0 0 0 4px rgba(81, 255, 180, 0.18); }
+.node.settled em,
+.node.settled.done em,
+.node.settled.passed em {
+  color: var(--app-ink2);
+}
+
+.node.waiting {
+  border-color: var(--accent);
 }
 
 .canvas-caption {
@@ -677,12 +727,22 @@
   font-weight: 500;
 }
 
+.tree-head {
+  display: flex;
+  justify-content: space-between;
+}
+
 .changed-file {
   padding: 6px 10px;
   border-radius: 6px;
+  overflow: hidden;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--app-ink2);
+}
+
+.changed-file.clean {
+  color: var(--app-dim);
 }
 
 .changed-file.active {
@@ -759,17 +819,35 @@
   color: var(--app-ink2);
 }
 
+.ed-tabs .machine-line {
+  margin-left: auto;
+  border-right: 0;
+}
+
+/* The review reads at close-up size: its lines grow with the lift, from the
+   fixture's sizes to at least 14 CSS pixels at 1024 wide. */
 .panel--review {
+  overflow: hidden;
+}
+
+.review-body {
+  min-height: 505px;
   padding: 26px 60px;
   box-sizing: border-box;
   background: var(--app-bg);
-  overflow: hidden;
 }
 
 .review-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.review-head-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .review-head .kicker {
@@ -833,7 +911,7 @@
 .triage-row strong {
   display: block;
   margin-top: 4px;
-  font-size: 15px;
+  font-size: calc(15px + 6px * var(--lift));
   font-weight: 500;
 }
 
@@ -849,14 +927,21 @@
   margin-left: auto;
 }
 
-.triage-row .good {
-  color: var(--accent);
+.triage-row .count {
+  color: var(--app-ink2);
 }
 
 .triage-row .summary {
-  padding: 0 20px 14px 54px;
-  font-size: 13px;
+  padding: 0 20px 10px 54px;
+  font-size: calc(13px + 5px * var(--lift));
   color: var(--app-ink2);
+}
+
+.triage-row .evidence {
+  padding: 0 20px 14px 54px;
+  font-family: var(--mono);
+  font-size: calc(11px + 8px * var(--lift));
+  color: var(--accent);
 }
 
 .finding {
@@ -868,32 +953,26 @@
   padding: 8px 0;
   border-radius: 6px;
   background: var(--app-bg);
+  font-size: calc(13px + 6px * var(--lift));
 }
 
-.evidence {
-  list-style: none;
-  margin-top: 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--accent);
-}
-
-.evidence li {
-  padding: 3px 0;
+.finding .diff-code > div {
+  height: calc(26px + 6px * var(--lift));
 }
 
 .approval {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin-top: 6px;
+  margin-top: 10px;
 }
 
 .approval .git-button {
   margin-top: 0;
+  font-size: calc(12px + 4px * var(--lift));
 }
 
 .approved {
-  font-size: 13px;
+  font-size: calc(13px + 4px * var(--lift));
   color: var(--accent);
 }

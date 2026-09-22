@@ -9,9 +9,10 @@
 // Two versions of the page are checked by exit code: the document (phones,
 // reduced motion, no JavaScript) must carry the whole story in order, and the
 // film (desktop) must start its stage, reach every act, keep each act's
-// headline in the viewport, and raise no browser errors. On SwiftShader the
-// film is forced past its frame budget with ?film=force, because a software
-// renderer would otherwise, correctly, hand back to the document.
+// headline in the viewport, keep every close-up on its screen after the
+// window is resized, and raise no browser errors. On SwiftShader the film is
+// forced past its frame budget with ?film=force, because a software renderer
+// would otherwise, correctly, hand back to the document.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -104,8 +105,38 @@ async function seek(page, act, local) {
   await page.waitForTimeout(150);
 }
 
-async function inspectFilm(width, height) {
-  const label = `${width}x${height}-film`;
+// Every close-up that is showing sits inside the window, and the stage's
+// idea of the window is the window. After a resize both must still hold.
+async function assertAligned(page, label, width, height) {
+  const state = await page.evaluate(() => ({
+    viewport: window.BuildFilm.stage.getState().viewport,
+    window: [innerWidth, innerHeight],
+    panels: [...document.querySelectorAll("[data-panel]")]
+      .filter((panel) => panel.style.visibility === "visible" && Number(panel.style.opacity) > 0.5)
+      .map((panel) => ({ name: panel.dataset.panel, box: panel.getBoundingClientRect().toJSON() })),
+  }));
+  assert.deepEqual([state.viewport.width, state.viewport.height], [width, height], `${label}: the stage viewport is the window`);
+  assert.deepEqual(state.window, [width, height], `${label}: the window is ${width}x${height}`);
+  assert.ok(state.panels.length > 0, `${label}: a close-up is showing`);
+  for (const { name, box } of state.panels) {
+    const inside = box.left >= -1 && box.top >= -1 && box.right <= width + 1 && box.bottom <= height + 1;
+    assert.ok(inside, `${label}: the ${name} close-up sits inside the window (${JSON.stringify(box)})`);
+  }
+}
+
+async function checkAct(page, label, act, local, height) {
+  await seek(page, act, local);
+  const heading = page.locator(`[data-act="${act}"]`).locator("h1, h2").first();
+  const box = await heading.boundingBox();
+  assert.ok(box && box.y >= 0 && box.y + box.height <= height, `${label}: act ${act} headline in view`);
+  const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
+  assert.ok(screens.laptop, `${label}: the laptop shows a display in act ${act}`);
+  const lid = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
+  assert.ok(lid > 0.99, `${label}: the laptop never closes (act ${act})`);
+  await page.screenshot({ path: path.join(output, `${label}-act-${act}-${local}.png`) });
+}
+
+async function openFilm(width, height, label) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
@@ -116,20 +147,20 @@ async function inspectFilm(width, height) {
   assertStory(state, label);
   assert.equal(state.mode, "film", `${label} runs the film`);
   assert.ok(state.documentWidth <= width + 1, `${label}: no horizontal overflow`);
+  return { context, page, errors, state };
+}
+
+async function inspectFilm(width, height) {
+  const label = `${width}x${height}-film`;
+  const { context, page, errors, state } = await openFilm(width, height, label);
   const opened = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
   assert.ok(opened > 0.99, `${label}: the hero laptop is open after its entrance`);
   await page.screenshot({ path: path.join(output, `${label}-hero.png`) });
   for (const [act, local] of [[1, 0.5], [2, 0.7], [3, 0.6], [4, 0.7], [5, 0.75], [6, 0.8], [7, 0.55], [7, 0.85], [8, 0.9], [4, 0.2], [1, 0.05]]) {
-    await seek(page, act, local);
-    const heading = page.locator(`[data-act="${act}"]`).locator("h1, h2").first();
-    const box = await heading.boundingBox();
-    assert.ok(box && box.y >= 0 && box.y + box.height <= height, `${label}: act ${act} headline in view`);
-    const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
-    assert.ok(screens.laptop, `${label}: the laptop shows a display in act ${act}`);
-    const lid = await page.evaluate(() => window.BuildFilm.pose.laptop.lidOpen);
-    assert.ok(lid > 0.99, `${label}: the laptop never closes (act ${act})`);
-    await page.screenshot({ path: path.join(output, `${label}-act-${act}-${local}.png`) });
+    await checkAct(page, label, act, local, height);
   }
+  await checkAct(page, label, 7, 0.6, height);
+  await assertAligned(page, label, width, height);
   const frame = await page.evaluate(() => window.BuildFilm.stage.getState().lastFrameMs);
   await page.locator("#details").scrollIntoViewIfNeeded();
   assert.ok(await page.locator("#details").isVisible(), `${label}: the practical section follows the film`);
@@ -138,11 +169,30 @@ async function inspectFilm(width, height) {
   await context.close();
 }
 
+// A desktop window made smaller mid-film: the pin re-measures, the stage
+// follows, and the close-ups stay on their screens.
+async function inspectResize([fromWidth, fromHeight], [toWidth, toHeight]) {
+  const label = `${fromWidth}x${fromHeight}-to-${toWidth}x${toHeight}-film`;
+  const { context, page, errors, state } = await openFilm(fromWidth, fromHeight, label);
+  await checkAct(page, label, 7, 0.55, fromHeight);
+  await page.setViewportSize({ width: toWidth, height: toHeight });
+  // ScrollTrigger refreshes on a debounce; give it that and a few frames.
+  await page.waitForTimeout(600);
+  for (const [act, local] of [[7, 0.55], [6, 0.8], [5, 0.75], [3, 0.6]]) {
+    await checkAct(page, label, act, local, toHeight);
+    await assertAligned(page, `${label} act ${act}`, toWidth, toHeight);
+  }
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  findings.push({ label, viewport: [toWidth, toHeight], mode: state.mode });
+  await context.close();
+}
+
 try {
   for (const [width, height] of DOCUMENT_VIEWPORTS) await inspectDocument(width, height, {}, `${width}x${height}-phone`);
   await inspectDocument(1440, 900, { reducedMotion: "reduce" }, "1440x900-reduced-motion");
   await inspectDocument(1440, 900, { javaScriptEnabled: false }, "1440x900-no-javascript");
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
+  await inspectResize([1440, 900], [1024, 768]);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));
   console.log(`Passed ${findings.length} browser profiles. Artifacts: ${output}`);
 } finally {

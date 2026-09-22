@@ -6,7 +6,8 @@
 // The word "headless" stays out of every string a person reads.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { wipeCache } from "../src/core/localCache.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { deviceModelsAddress, deviceSettingsAddress } from "../src/core/settingsRecords.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -46,8 +47,6 @@ vi.mock("../src/connection.js", () => ({
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const flush = () => new Promise((done) => setTimeout(done, 30));
-
 const panel = () => {
   document.body.innerHTML = defaultHarnessPanelHtml();
   return document.body;
@@ -84,6 +83,19 @@ describe("the harness a settings payload names", () => {
 });
 
 describe("the fallback-agent panel", () => {
+  it("wires a cached enabled choice while both refreshes are still pending", async () => {
+    await writeCached(deviceSettingsAddress("dev-1"), { default_harness: "claude_adk" });
+    await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+    const callRpc = vi.fn((method) => method === "settings.set"
+      ? Promise.resolve({ default_harness: "pi" })
+      : new Promise(() => {}));
+    void mountDefaultHarness(panel(), { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(select().disabled).toBe(false));
+    select().value = "pi";
+    select().dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "pi" }));
+    await vi.waitFor(() => expect(document.getElementById("harnesssaved").textContent).toContain("Saved."));
+  });
   it("derives its options from the provider catalog, including Pi", async () => {
     const callRpc = vi.fn(async (method) => {
       if (method === "settings.get") return { default_harness: "pi" };
@@ -92,7 +104,7 @@ describe("the fallback-agent panel", () => {
     });
     const host = panel();
     await mountDefaultHarness(host, { callRpc });
-    await flush();
+
 
     expect(callRpc).toHaveBeenCalledWith("settings.get");
     expect(callRpc).toHaveBeenCalledWith("models.list");
@@ -111,7 +123,7 @@ describe("the fallback-agent panel", () => {
         method === "settings.get" ? { default_harness: "claude_adk" } : CATALOG,
       ),
     });
-    await flush();
+
 
     expect(host.textContent).toContain(
       "This device fallback is used only when a coding-agent creation request does not name a provider.",
@@ -129,11 +141,11 @@ describe("the fallback-agent panel", () => {
       return { default_harness: "pi" };
     });
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
+
 
     select().value = "pi";
     select().dispatchEvent(new Event("change"));
-    await flush();
+    await vi.waitFor(() => expect(document.getElementById("harnesssaved").textContent).toContain("Saved."));
 
     expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "pi" });
     expect(select().value).toBe("pi");
@@ -151,7 +163,7 @@ describe("the fallback-agent panel", () => {
   ])("shows a Settings error for a %s bridge default", async (_kind, settings) => {
     const callRpc = vi.fn(async (method) => (method === "settings.get" ? settings : CATALOG));
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
+
 
     expect(document.getElementById("harnesserr").textContent).toMatch(/default_harness/i);
     expect(select().options).toHaveLength(0);
@@ -168,7 +180,7 @@ describe("the fallback-agent panel", () => {
       method === "settings.get" ? { default_harness: "pi" } : models,
     );
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
+
 
     expect(document.getElementById("harnesserr").textContent).toMatch(/models\.list\.providers/i);
     expect(select().options).toHaveLength(0);
@@ -194,8 +206,8 @@ describe("the fallback-agent panel", () => {
 
     select().value = "pi";
     select().dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+
+    await vi.waitFor(() => expect(document.getElementById("harnesserr").textContent).toMatch(/default_harness/i));
 
     expect(document.getElementById("harnesserr").textContent).toMatch(/default_harness/i);
     expect(document.getElementById("harnesssaved").textContent).toBe("");
@@ -211,12 +223,12 @@ describe("the fallback-agent panel", () => {
       throw new Error("cannot write the config file");
     });
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
+
 
     select().value = "claude";
     select().dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+
+    await vi.waitFor(() => expect(document.getElementById("harnesserr").textContent).toContain("cannot write the config file"));
 
     expect(document.getElementById("harnesserr").textContent).toContain("cannot write the config file");
     expect(select().value).toBe("claude_adk");
@@ -235,8 +247,8 @@ describe("the fallback-agent panel", () => {
 
     select().value = "pi";
     select().dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+
+    await vi.waitFor(() => expect(document.getElementById("harnesserr").textContent).toContain("device went offline"));
 
     expect(document.getElementById("harnesserr").textContent).toContain("cannot write the config file");
     expect(document.getElementById("harnesserr").textContent).toContain("device went offline");
@@ -251,7 +263,7 @@ describe("the fallback-agent panel", () => {
       throw new Error("device offline");
     });
     await mountDefaultHarness(panel(), { callRpc });
-    await flush();
+
 
     expect(document.getElementById("harnesserr").textContent).toContain("device offline");
     expect(select().options).toHaveLength(0);
@@ -391,7 +403,7 @@ describe("the account page's creation defaults", () => {
     adoptDeviceSession(sessionAnswering(bridge));
 
     await renderSettings();
-    await flush();
+    await vi.waitFor(() => expect([...document.getElementById("defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));
 
     const defaults = document.getElementById("defprovider");
     expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);

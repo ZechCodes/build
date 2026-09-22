@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { wipeCache } from "../src/core/localCache.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { deviceSettingsAddress } from "../src/core/settingsRecords.js";
 import {
   AGENT_MODE_FAMILIES,
   AGENT_MODES,
@@ -9,7 +10,6 @@ import {
   mountAgentModes,
 } from "../src/core/agentModes.js";
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
 const settings = (claude = "headless", codex = "tui") => ({ agent_modes: { claude, codex } });
 const select = (family) => document.querySelector(`[data-agent-mode="${family}"]`);
 const status = (family) => document.querySelector(`[data-agent-mode-status="${family}"]`);
@@ -21,6 +21,18 @@ beforeEach(async () => {
 });
 
 describe("the agent-modes panel", () => {
+  it("wires a cached enabled control while the refresh is still pending", async () => {
+    await writeCached(deviceSettingsAddress("dev-1"), settings());
+    const callRpc = vi.fn((method) => method === "settings.get"
+      ? new Promise(() => {})
+      : Promise.resolve(settings("tui", "tui")));
+    void mountAgentModes(document.body, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(select("claude").disabled).toBe(false));
+    select("claude").value = "tui";
+    select("claude").dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("settings.set", { agent_modes: { claude: "tui" } }));
+    await vi.waitFor(() => expect(status("claude").textContent).toBe("Saved."));
+  });
   it("has the small panelHtml/mount API and names both families and modes", () => {
     expect(AGENT_MODE_FAMILIES).toEqual([
       { id: "claude", label: "Claude Code" },
@@ -79,7 +91,7 @@ describe("the agent-modes panel", () => {
     select("claude").dispatchEvent(new Event("change"));
     expect(select("claude").disabled).toBe(true);
     expect(status("claude").textContent).toBe("Saving…");
-    await flush();
+    await vi.waitFor(() => expect(status("claude").textContent).toBe("Saved."));
 
     expect(callRpc).toHaveBeenCalledWith("settings.set", { agent_modes: { claude: "tui" } });
     expect(select("claude").value).toBe("tui");
@@ -97,7 +109,7 @@ describe("the agent-modes panel", () => {
 
     select("codex").value = "headless";
     select("codex").dispatchEvent(new Event("change"));
-    await flush();
+    await vi.waitFor(() => expect(error().textContent).toBe("cannot write config"));
 
     expect(callRpc).toHaveBeenCalledWith("settings.set", { agent_modes: { codex: "headless" } });
     expect(select("codex").value).toBe("tui");
@@ -113,7 +125,7 @@ describe("the agent-modes panel", () => {
 
     select("claude").value = "tui";
     select("claude").dispatchEvent(new Event("change"));
-    await flush();
+    await vi.waitFor(() => expect(error().textContent).toContain("agent_modes.claude"));
 
     expect(select("claude").value).toBe("headless");
     expect(error().textContent).toContain("agent_modes.claude");
@@ -130,8 +142,7 @@ describe("the agent-modes panel", () => {
 
     select("claude").value = "tui";
     select("claude").dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+    await vi.waitFor(() => expect(error().textContent).toContain("device went offline"));
 
     expect(select("claude").disabled).toBe(false);
     expect(select("codex").disabled).toBe(false);

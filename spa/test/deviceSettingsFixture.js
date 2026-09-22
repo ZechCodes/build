@@ -9,14 +9,12 @@
 // mockedExports.test.js reads those factories back to check every name against
 // the real module, and only sees an object literal written in the suite.
 
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
-
-const flush = () => new Promise((done) => setTimeout(done, 30));
 
 /**
  * Render one paired machine's settings page against a bridge that answers
@@ -41,6 +39,10 @@ export async function renderDeviceSettingsPage(call, openSession) {
   openSession.mockResolvedValue(sessionAnswering(bridge));
   adoptDeviceSession(sessionAnswering(bridge));
   await renderDeviceSettings();
-  await flush();
+  await vi.waitFor(() => {
+    const path = document.querySelector("#device-projects-path");
+    expect(path).toBeTruthy();
+    expect(path.textContent).not.toBe("Loading…");
+  });
   return { App, call: bridge.call };
 }

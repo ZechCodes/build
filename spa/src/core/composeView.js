@@ -323,6 +323,10 @@ function wireBox(host) {
   host.querySelector("#compose-advanced").onclick = () => {
     box.value = text.value;
     box.advancedOpen = !box.advancedOpen;
+    if (!box.advancedOpen) {
+      box.stopCatalog?.();
+      box.stopCatalog = null;
+    }
     paintBox({ focus: false });
     if (box.advancedOpen) loadCatalogForPanel();
   };
@@ -382,6 +386,15 @@ function repaintChoice(host) {
   wireChoice(host);
 }
 
+function repaintCatalogChoice() {
+  const host = $("#compose");
+  if (!host) return;
+  const focused = host.ownerDocument.activeElement;
+  const focusId = focused?.id?.startsWith(`${CHOICE_PREFIX}-`) ? focused.id : null;
+  repaintChoice(host);
+  if (focusId) host.querySelector(`#${focusId}`)?.focus();
+}
+
 /** The catalog is the creation device's, so the panel opens on what the box
  *  has — nothing, the first time it is opened — and repaints once that machine
  *  answers. A repaint mid-typing is avoided by only doing it when the answer
@@ -389,15 +402,23 @@ function repaintChoice(host) {
  *  question with it. */
 function loadCatalogForPanel() {
   const asked = box;
+  const context = homeContext();
+  let heardCatalog = false;
+  const showCatalog = (loaded) => {
+    if (box !== asked || !box.advancedOpen || !loaded || loaded === box.catalog) return;
+    box.catalog = loaded;
+    // Preserve a choice made while the catalog was refreshing. Only the
+    // initially empty choice takes its default from the catalog.
+    if (!box.choice.provider) box.choice = agentDefaultsIn(loaded);
+    repaintCatalogChoice();
+  };
+  box.stopCatalog?.();
+  box.stopCatalog = context?.onModelCatalogChanged((loaded) => {
+    heardCatalog = true;
+    showCatalog(loaded);
+  }) || null;
   deviceCatalog(null)
-    .then((loaded) => {
-      if (box !== asked || loaded === box.catalog) return;
-      box.catalog = loaded;
-      // The stored defaults name no harness until one is chosen; the catalog
-      // says which one that is, and brings that harness's preference with it.
-      if (!box.choice.provider) box.choice = agentDefaultsIn(loaded);
-      if (box.advancedOpen) paintBox({ focus: false });
-    })
+    .then((loaded) => { if (!heardCatalog) showCatalog(loaded); })
     .catch(() => {});
 }
 
@@ -428,6 +449,7 @@ export function openCompose() {
 
 export function closeCompose() {
   if (!box) return;
+  box.stopCatalog?.();
   box = null;
   paintPrompt();
 }

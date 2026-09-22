@@ -609,7 +609,6 @@ describe("workspace surface", () => {
     const newer = { ...initOptions, source: { ...initOptions.source, path: "/srv/projects/newer-assets" } };
     await writeCached(address, newer);
     finishProbe({ ...initOptions, source: { ...initOptions.source, is_git: true } });
-    await flush();
     await vi.waitFor(() => expect((document.querySelector("[data-init-git]")?.textContent || "")).toContain("original source"));
     expect((await readCached(address))?.value.source.path).toBe("/srv/projects/newer-assets");
   });

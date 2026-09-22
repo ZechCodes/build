@@ -22,7 +22,7 @@ import { notifyError } from "../core/notify.js";
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { forgetWorkspaceDefaults, workspaceDefaultsStorage } from "../core/workspaceDefaults.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
-import { projectSettingsAddress, watchSettingsRecord, workspaceSettingsAddress } from "../core/settingsRecords.js";
+import { deviceModelsAddress, projectSettingsAddress, watchSettingsRecord, workspaceSettingsAddress } from "../core/settingsRecords.js";
 import { deleteCached } from "../core/localCache.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
@@ -119,8 +119,10 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   });
   $("#scrim").classList.add("show");
   let disposeDirectories = () => {};
+  let disposeCatalog = () => {};
   const close = () => {
     disposeDirectories();
+    disposeCatalog();
     $("#scrim").classList.remove("show");
   };
   const opened = sheet.firstElementChild;
@@ -132,14 +134,21 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   wireName(workspace, { callRpc, close, onRenamed });
   $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId });
   disposeDirectories = mountDirectories(workspace, { callRpc, current, deviceId });
-  Promise.resolve(catalog)
-    .then((offered) => {
-      if (!current()) return;
-      mountHarnessDefaults(sheet, {
-        catalog: offered,
-        prefix: PREFIX,
-        storage: workspaceDefaultsStorage(workspace.workspaceKey, storage),
-      });
+  const defaultsStorage = workspaceDefaultsStorage(workspace.workspaceKey, storage);
+  let cacheCatalogSeen = false;
+  const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (offered) => {
+    if (!current() || !offered) return;
+    cacheCatalogSeen = true;
+    mountHarnessDefaults(sheet, { catalog: offered, prefix: PREFIX, storage: defaultsStorage });
+  }, { owner: opened });
+  disposeCatalog = () => catalogRecord.dispose();
+  void catalogRecord.read()
+    .then(() => {
+      // A caller may already hold the catalog, but the sheet still paints it
+      // only after it becomes this device's cached record. A later cache write
+      // wins over an older promise that settles afterward.
+      if (!cacheCatalogSeen && catalog) return catalogRecord.pull(() => Promise.resolve(catalog));
+      return undefined;
     })
     .catch(() => {});
 }

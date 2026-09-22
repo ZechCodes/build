@@ -68,18 +68,6 @@ export async function mountDefaultHarness(host, { callRpc, deviceId = "", onSave
     catalogProviders = catalog.providers;
     try { renderConfirmedSettings(); } catch (failure) { clearUnconfirmedSelection(); error.textContent = failure.message; }
   }, { owner: select });
-  try {
-    await Promise.all([
-      settingsRecord.pull(() => callRpc("settings.get")),
-      catalogRecord.pull(() => callRpc("models.list")),
-    ]);
-  } catch (e) {
-    if (!cachedSettings || !catalogProviders) {
-      clearUnconfirmedSelection();
-      error.textContent = e.message;
-    }
-  }
-
   select.onchange = async () => {
     const chosen = select.value;
     select.disabled = true;
@@ -105,4 +93,15 @@ export async function mountDefaultHarness(host, { callRpc, deviceId = "", onSave
     }
     select.disabled = !catalogProviders || !cachedSettings;
   };
+  try {
+    await Promise.all([
+      settingsRecord.pull(() => callRpc("settings.get")),
+      catalogRecord.pull(() => callRpc("models.list")),
+    ]);
+  } catch (e) {
+    if (!cachedSettings || !catalogProviders) {
+      clearUnconfirmedSelection();
+      error.textContent = e.message;
+    }
+  }
 }

@@ -91,15 +91,6 @@ export async function mountAgentModes(host, { callRpc, deviceId = "", onSaved })
       error.textContent = readError.message;
     }
   }, { owner: panel });
-  try {
-    await record.pull(() => callRpc("settings.get"));
-  } catch (readError) {
-    if (!painted) {
-      disableAll();
-      error.textContent = readError.message;
-    }
-  }
-
   controls.forEach((control, family) => {
     control.select.onchange = async () => {
       const chosen = control.select.value;
@@ -126,4 +117,12 @@ export async function mountAgentModes(host, { callRpc, deviceId = "", onSaved })
       control.select.disabled = !painted;
     };
   });
+  try {
+    await record.pull(() => callRpc("settings.get"));
+  } catch (readError) {
+    if (!painted) {
+      disableAll();
+      error.textContent = readError.message;
+    }
+  }
 }

@@ -59,8 +59,6 @@ vi.mock("../src/push.js", () => ({
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86_64" }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
-const flush = () => new Promise((done) => setTimeout(done, 30));
-
 let renderSettings;
 
 beforeEach(async () => {
@@ -77,14 +75,14 @@ beforeEach(async () => {
 describe("Settings → Downloads", () => {
   it("mounts the same downloads block the gate shows, for this browser's platform", async () => {
     await renderSettings();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#downloads a.btn.primary")?.getAttribute("href")).toBe(DOWNLOADS.platforms[0].url));
     expect(document.querySelector("#downloads a.btn.primary").getAttribute("href")).toBe(DOWNLOADS.platforms[0].url);
     expect(document.getElementById("installcmd").textContent).toBe(DOWNLOADS.install_command);
   });
 
   it("sends an account with no devices to that panel rather than to a command", async () => {
     await renderSettings();
-    await flush();
+    await vi.waitFor(() => expect(document.getElementById("devlist").textContent).toContain("Install the bridge above"));
     expect(document.getElementById("devlist").textContent).toContain(
       "Install the bridge above, then add it with its pairing code",
     );
@@ -96,9 +94,7 @@ describe("Settings → Downloads", () => {
     // `await renderSettings()`, so the promise itself must not carry the api's
     // clock. Race it against a never-settling /app/downloads.
     downloads = () => new Promise(() => {});
-    await expect(
-      Promise.race([renderSettings().then(() => "settled"), flush().then(() => "stalled")]),
-    ).resolves.toBe("settled");
+    await renderSettings();
     expect(typeof document.getElementById("adddev").onclick).toBe("function");
     expect(typeof document.getElementById("creationdev").onchange).toBe("function");
     expect(document.getElementById("downloads").textContent).toContain("loading…");

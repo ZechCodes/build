@@ -5,7 +5,7 @@
 // record. Two surfaces need exactly that: the per-file diffs behind a status,
 // and the activity items behind a run. Both do the same four things in the
 // same order: decide what is missing, cross ONE async boundary, write what came
-// back through to the local cache, and answer bodies by key.
+// back through to the local cache, then answer bodies from that stored record.
 //
 // The three things a configuration has to say:
 //   `addressOf(key)`      the local-cache address for that key, or null where
@@ -23,10 +23,6 @@ export function createCachedBodies({
   addressOf,
   fetchMissing,
   valueOf,
-  // The activity reader still owns its in-memory delivery semantics. Git
-  // bodies opt into the stricter path: a wire answer is written, announced,
-  // read back, and only that stored value enters `held`.
-  cacheDriven = false,
   onChange = () => {},
 }) {
   const held = new Map(); // key → body
@@ -69,7 +65,7 @@ export function createCachedBodies({
   };
 
   const watch = (key) => {
-    if (!cacheDriven || disposed || unwatches.has(key)) return;
+    if (disposed || unwatches.has(key)) return;
     const at = addressOf(key);
     if (at) unwatches.set(key, subscribeCache(at, () => void reread(key)));
   };
@@ -86,7 +82,7 @@ export function createCachedBodies({
       consulted.add(key);
       if (!takeRecord(key, stored[index])) return;
       filled.push(key);
-      if (cacheDriven) onChange(key);
+      onChange(key);
     });
     return filled;
   }
@@ -102,9 +98,11 @@ export function createCachedBodies({
       const { key, value } = valueOf(item);
       const stringKey = String(key);
       const at = addressOf(stringKey);
-      if (!cacheDriven || !at) {
+      if (!at) {
+        // A caller with no durable entity has nowhere to address a record.
+        // Keep that narrow fallback local; every addressable body takes the
+        // write -> announcement -> readback path below.
         held.set(stringKey, value);
-        if (at) writeCached(at, value); // legacy/activity path stays intentionally unchanged
         onChange(stringKey);
         filled.push(stringKey);
         continue;

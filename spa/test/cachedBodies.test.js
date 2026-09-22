@@ -19,7 +19,7 @@ beforeEach(async () => {
 
 /** Bodies over a scripted wire: every fetch is recorded, and the answer is one
  *  item per key, in the config's own shape. */
-const bodiesOver = (fetches, { addressOf = address } = {}) =>
+const bodiesOver = (fetches, { addressOf = address, onChange } = {}) =>
   createCachedBodies({
     addressOf,
     fetchMissing: async (keys) => {
@@ -27,6 +27,7 @@ const bodiesOver = (fetches, { addressOf = address } = {}) =>
       return keys.map((key) => ({ path: key, patch: `patch:${key}` }));
     },
     valueOf: (item) => ({ key: item.path, value: { patch: item.patch } }),
+    onChange,
   });
 
 describe("createCachedBodies", () => {
@@ -58,6 +59,19 @@ describe("createCachedBodies", () => {
     await bodies.ensure(["a.js"]);
     expect(fetches).toEqual([]);
     expect(bodies.read("a.js")).toEqual({ patch: "from disk" });
+  });
+
+  it("re-reads an announced cache write and reports that stored body as the change", async () => {
+    const changes = [];
+    let bodies;
+    bodies = bodiesOver([], { onChange: (key) => changes.push([key, bodies.read(key)]) });
+    await bodies.ensure(["a.js"]);
+
+    await cache.writeCached(address("a.js"), { patch: "from another writer" });
+    await vi.waitFor(() => expect(changes).toContainEqual(["a.js", { patch: "from another writer" }]));
+
+    expect(bodies.read("a.js")).toEqual({ patch: "from another writer" });
+    bodies.dispose();
   });
 
   it("fetches only what the local cache could not answer", async () => {

@@ -142,7 +142,6 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, onChange 
       }));
     },
     valueOf: (file) => ({ key: file.path, value: { content_key: file.content_key, patch: file.patch } }),
-    cacheDriven: true,
     onChange,
   });
 

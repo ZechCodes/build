@@ -938,3 +938,65 @@ async fn a_subagents_limit_is_not_the_sessions() {
 
     assert!(status.borrow().usage_limit.is_none());
 }
+
+/// The CLI's aliases name a family, and the `init` line names the model the
+/// alias resolved to (probed on 2.1.277: `--model opus` announces
+/// `claude-opus-5`). A full id still has to be the model itself.
+#[test]
+fn an_alias_matches_its_family_and_a_full_id_only_itself() {
+    for (asked, running) in [
+        ("claude-opus-5", "claude-opus-5"),
+        ("opus", "claude-opus-5"),
+        ("sonnet", "claude-sonnet-5"),
+        ("haiku", "claude-haiku-4-5-20251001"),
+        ("fable", "claude-fable-5-1"),
+        ("opus[1m]", "claude-opus-5[1m]"),
+        ("claude-opus-5[1m]", "claude-opus-5"),
+    ] {
+        assert!(
+            runs_the_model_asked(asked, running),
+            "{asked} runs {running}"
+        );
+    }
+    for (asked, running) in [
+        ("claude-opus-5", "claude-fable-5-1"),
+        ("claude-opus-5", "claude-opus-5-1"),
+        ("opus", "claude-fable-5-1"),
+        ("opus", "claude-opusx-5"),
+        ("haiku", "claude-sonnet-5"),
+        ("", "claude-opus-5"),
+    ] {
+        assert!(
+            !runs_the_model_asked(asked, running),
+            "{asked} does not run {running}"
+        );
+    }
+}
+
+/// Issue #72's second suspect, cleared: a window that is still open is not a
+/// limit. An `allowed_warning` event with a reset ahead, then a turn that ran,
+/// leaves nothing held and no reset owed.
+#[tokio::test]
+async fn an_allowed_warning_holds_nothing() {
+    let (mut reader, status) = limited_reader();
+
+    reader.read_line(
+        &json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed_warning",
+                "resetsAt": 1_790_427_600,
+                "rateLimitType": "seven_day",
+            },
+            "session_id": "s",
+        })
+        .to_string(),
+    );
+    reader.read_line(&quoted_line("ok"));
+    reader.read_line(
+        &json!({ "type": "result", "subtype": "success", "is_error": false }).to_string(),
+    );
+    reader.end_stream();
+
+    assert!(status.borrow().usage_limit.is_none());
+}

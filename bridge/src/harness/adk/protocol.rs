@@ -123,6 +123,9 @@ pub(super) struct ProtocolState {
     pub(super) reported_error: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
     pub(super) last_stderr_line: Option<String>,
+    /// Why Build ended this child over its `init` line, once it has: the
+    /// sentence the agent's `start_error` shows (issue #72).
+    pub(super) start_refused: Option<String>,
     /// The background work the child says is live right now — its task id
     /// against the description it goes by.
     ///
@@ -156,6 +159,7 @@ impl ProtocolState {
             pending_interrupt: None,
             reported_error: None,
             last_stderr_line: None,
+            start_refused: None,
             tasks: BTreeMap::new(),
             surfaces: SurfaceLedger::for_claude(
                 NEXT_SURFACE_GENERATION.fetch_add(1, Ordering::Relaxed),

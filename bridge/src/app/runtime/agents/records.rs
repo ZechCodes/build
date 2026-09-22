@@ -466,6 +466,22 @@ impl AppState {
         });
     }
 
+    /// Build ended the agent's session before it ran a turn (issue #72: a child
+    /// that opened another model than the agent asks for). The reason is the
+    /// agent's `start_error`, so the row says why it never started instead of
+    /// sitting idle with nothing on it.
+    pub(in crate::app) fn record_agent_start_refused(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        reason: &str,
+    ) {
+        eprintln!("agent start_refused: agent={agent_id} owner={owner} {reason}");
+        self.edit_agent_record("record_agent_start_refused", owner, agent_id, |agent| {
+            agent.start_error = Some(reason.to_string());
+        });
+    }
+
     /// What the agent says its conversation is about, written onto its record
     /// and answered back so the tool result confirms what the header now wears.
     pub(in crate::app) fn set_agent_topic(

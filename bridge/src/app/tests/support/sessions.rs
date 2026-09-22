@@ -49,6 +49,7 @@ pub(in crate::app::tests) struct DictatedSession {
     active_model: Option<String>,
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
+    start_refused: Option<String>,
 }
 
 impl DictatedSession {
@@ -65,6 +66,7 @@ impl DictatedSession {
             active_model: None,
             native_choices: Vec::new(),
             interruptible: false,
+            start_refused: None,
         }
     }
 
@@ -134,6 +136,12 @@ impl DictatedSession {
         self.interruptible = true;
         self
     }
+
+    /// The same session, ended by Build before its first turn for `reason`.
+    pub(in crate::app::tests) fn refusing_start(mut self, reason: &str) -> Self {
+        self.start_refused = Some(reason.to_string());
+        self
+    }
 }
 
 impl AgentSession for DictatedSession {
@@ -200,6 +208,9 @@ impl AgentSession for DictatedSession {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
     fn backdate_last_output(&self, _ago: Duration) {}
+    fn start_refused(&self) -> Option<String> {
+        self.start_refused.clone()
+    }
     fn surfaces(&self) -> Option<AgentSurfaces> {
         self.surfaces.clone()
     }

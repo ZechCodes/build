@@ -527,6 +527,10 @@ impl AgentSession for AdkSession {
             .or_else(|| state.last_stderr_line.clone())
     }
 
+    fn start_refused(&self) -> Option<String> {
+        self.state.lock().unwrap().start_refused.clone()
+    }
+
     /// Everything this session did, on its way to the conversation. It reports
     /// its own reasoning and tool calls, so this is the stream that stands in
     /// for the terminal it does not have.

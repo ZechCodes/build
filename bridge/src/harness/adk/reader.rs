@@ -289,13 +289,16 @@ impl ProtocolReader {
                     .collect();
             }
             let mismatch = match (&state.requested_model, &state.model) {
-                (Some(asked), Some(running)) if asked != running => Some(format!(
-                    "claude opened model {running:?}, expected {asked:?}"
-                )),
+                (Some(asked), Some(running)) if !runs_the_model_asked(asked, running) => Some(
+                    format!(
+                        "Build stopped this agent's Claude Code session because it opened {running}, and the agent asks for {asked}."
+                    ),
+                ),
                 _ => None,
             };
             if let Some(reason) = &mismatch {
                 state.reported_error = Some(reason.clone());
+                state.start_refused = Some(reason.clone());
                 // Build is ending this child over what it just said, so the
                 // session is closed from here: the words it was ended over
                 // are its last, and nothing it had already written clears
@@ -305,7 +308,12 @@ impl ProtocolReader {
             publish_status(&self.status_updates, state.live_status());
             mismatch
         };
-        if mismatch.is_some() {
+        if let Some(reason) = &mismatch {
+            // Logged, because a child ended here dies before it writes a
+            // transcript: two agents asked for `opus` sat unstarted for a day
+            // with nothing in bridge.log to say why (issue #72).
+            let agent = self.state.lock().unwrap().agent_id.clone();
+            eprintln!("harness model_mismatch: agent={agent:?} {reason}");
             if let Some(child) = &self.child {
                 let _ = child.lock().unwrap().kill();
             }
@@ -751,6 +759,27 @@ impl ProtocolReader {
             let _ = sender.send(report);
         }
     }
+}
+
+/// Whether the model `init` announced is the one Build asked for.
+///
+/// Exact, except for the CLI's aliases: `--model opus` announces the model the
+/// alias stands for today (`claude-opus-5`), not `opus`, and an agent asked for
+/// the alias is running exactly what it asked for. An alias is a bare family
+/// name, so it matches any model of that family and no other; a full id still
+/// has to match itself. A `[1m]` context suffix names the window, not the model.
+pub(super) fn runs_the_model_asked(asked: &str, running: &str) -> bool {
+    let model = |id: &str| id.split('[').next().unwrap_or(id).to_string();
+    let (asked, running) = (model(asked), model(running));
+    if asked == running {
+        return true;
+    }
+    let is_alias = !asked.is_empty() && asked.chars().all(|c| c.is_ascii_alphabetic());
+    is_alias
+        && running
+            .strip_prefix("claude-")
+            .and_then(|rest| rest.strip_prefix(asked.as_str()))
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
 /// Every text block of one message, in order: what a message the CLI wrote

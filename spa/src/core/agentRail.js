@@ -1733,6 +1733,9 @@ function mountRailOnContext(host, context, swap) {
   const rememberedConversationIsLoading = () =>
     !addingAgent && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
 
+  const conversationIsUnselected = () =>
+    !visibleAgents().length && (!selectedId || isProvisionalKey(selectedId));
+
   const panelBodyIdentity = () => {
     if (addingAgent) return "new";
     // Every existing agent uses the same mounted conversation frame. Moving
@@ -2352,7 +2355,7 @@ function mountRailOnContext(host, context, swap) {
       body.innerHTML = '<div class="rail-chat-loading">This workspace does not have an agent conversation yet.</div>';
       return;
     }
-    if ((!visibleAgents().length && (!selectedId || isProvisionalKey(selectedId))) || addingAgent) {
+    if (conversationIsUnselected() || addingAgent) {
       paintNewAgent(body);
       syncComposer();
       syncSurfaces();

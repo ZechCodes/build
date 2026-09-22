@@ -538,6 +538,23 @@ impl Thread {
         let window = self.resident_after_sequence(after_sequence).collect();
         self.wire_value_of_forward_window(window, limit)
     }
+    /// The newest `limit` items strictly after a cache's cursor, oldest first.
+    ///
+    /// The resident tail is larger than the largest forward page, so the tip
+    /// always lives in memory even when the cursor predates what was loaded.
+    /// `has_more` then means exactly what this mode needs: items newer than the
+    /// cursor were omitted between that cursor and the returned window.
+    pub fn wire_value_newest_page_after(&self, after_sequence: u64, limit: usize) -> Value {
+        let window: Vec<&ThreadItem> = self.resident_after_sequence(after_sequence).collect();
+        let omitted_resident = window.len() > limit;
+        let start = window.len().saturating_sub(limit);
+        let cut = PageCut {
+            items: window.into_iter().skip(start).collect(),
+            digests: Vec::new(),
+        };
+        let has_more = omitted_resident || self.forward_page_reaches_stored_history(after_sequence);
+        self.wire_value_of_page(&cut, has_more)
+    }
     /// The same forward view, completed with items read back out of the
     /// store: the history under the tail this process loaded. Items the tail
     /// already holds are taken from the tail — memory is the fresher copy of

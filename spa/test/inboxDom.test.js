@@ -6,7 +6,7 @@
 // (core/deviceKey.js): a row's verbs go to its own device, a row whose machine
 // is away is greyed with its verbs shut, and the picker narrows the list
 // without touching the route.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
@@ -126,6 +126,7 @@ const blocks = () => [...document.querySelectorAll("#inbox-list .inbox-project")
 
 let App;
 let mountInboxList;
+let unmountInboxList;
 let inboxListRouteChanged;
 let openNewProject;
 let setInboxView;
@@ -155,7 +156,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   ({ App } = await import("../src/app.js"));
-  ({ mountInboxList, inboxListRouteChanged, openNewProject, setInboxView } = await import("../src/core/inboxView.js"));
+  ({ mountInboxList, unmountInboxList, inboxListRouteChanged, openNewProject, setInboxView } = await import("../src/core/inboxView.js"));
   ({ adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import(
     "../src/core/deviceContexts.js"
   ));
@@ -175,6 +176,8 @@ beforeEach(async () => {
   snapshot = { items: [], pending: [], projects: [], workspaces: [], devices: {} };
   mountInboxList();
 });
+
+afterEach(() => unmountInboxList?.());
 
 describe("the workspace inbox", () => {
   it("paints workspace rows with project and directory context", () => {
@@ -860,5 +863,28 @@ describe("a capture on another device", () => {
     rememberDeviceFilter("dev-1");
     expect(captureRowFor("cap-9")).toBeTruthy();
     rememberDeviceFilter(null);
+  });
+
+  it("releases a late capture repaint when the rail unmounts", async () => {
+    const host = document.createElement("div");
+    host.id = "compose";
+    document.getElementById("inbox-rail").insertBefore(host, document.getElementById("inbox-list"));
+    const { initCompose, forgetCaptureRecord } = await import("../src/core/composeView.js");
+    const record = { id: "cap-late", text: "ship it", created_at: "2026-09-02T12:00:00Z", state: "routing", routing: null };
+    workshopCall.mockResolvedValue(record);
+    initCompose();
+    document.querySelector("#compose-open").click();
+    document.querySelector("#compose-text").value = "ship it";
+    document.querySelector("#compose-send").click();
+    await vi.waitFor(() => expect(captureRowFor("cap-late")).toBeTruthy());
+
+    unmountInboxList();
+    const savedDocument = globalThis.document;
+    try {
+      globalThis.document = undefined;
+      expect(() => forgetCaptureRecord("cap-late")).not.toThrow();
+    } finally {
+      globalThis.document = savedDocument;
+    }
   });
 });

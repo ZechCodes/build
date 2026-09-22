@@ -189,6 +189,7 @@ describe("the project's agent on a workspace's strip", () => {
       "rail-sep",
       "agent",
       "add",
+      "expand",
     ]);
     expect(projectBubble().querySelector(".rail-bubble-label").textContent).toBe("B");
   });
@@ -271,6 +272,7 @@ describe("the + while the project's conversation is open", () => {
       "rail-sep",
       "agent",
       "add",
+      "expand",
     ]);
     expect(addBubble().title).toBe("Add another agent to this workspace");
   });
@@ -363,6 +365,7 @@ describe("the strip across a swap", () => {
       "rail-sep",
       "agent",
       "add",
+      "expand",
     ]);
     expect(host().querySelector('[data-bubble="ghost"]')).toBeNull();
     expect(agentBubble("wa-1").classList.contains("active")).toBe(true);

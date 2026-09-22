@@ -506,7 +506,7 @@ export function bubbleHtml(bubble) {
   // nothing and is pressed by nobody, so it is not a button.
   if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
   if (bubble.type === "expand") return `<button type="button" class="rail-expand" data-bubble="expand"
-    data-agent="" title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_MAXIMIZE}</button>`;
+    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_MAXIMIZE}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
@@ -3245,10 +3245,7 @@ function mountRailOnContext(host, context, swap) {
       if (overviewVisible) overview.open();
       return true;
     }
-    if (type !== "add") return false;
-    leaveOverview();
-    pressAddBubble();
-    return true;
+    return false;
   };
 
   const pressBubble = (type, agentId) => {
@@ -3257,6 +3254,10 @@ function mountRailOnContext(host, context, swap) {
     const swapping = swapForPress(type, agentId);
     if (swapping) {
       swapping();
+      return;
+    }
+    if (type === "add") {
+      pressAddBubble();
       return;
     }
     if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {

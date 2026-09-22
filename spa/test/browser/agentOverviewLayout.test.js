@@ -80,8 +80,7 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
     await page.locator(".rail-expand").click();
     await page.waitForSelector(".rail-panel:not([aria-hidden='true'])");
     await page.locator(".rail-panel .pinbtn").click();
-    await page.waitForSelector("#agent-rail.rail-popover");
-    await page.waitForTimeout(500); // Layout and card transitions have both settled.
+    await page.waitForSelector("#agent-rail.rail-popover:not([data-panel-transition])");
     const popoverPanel = await page.evaluate(rects);
     assert.equal(Math.round(popoverPanel.rail.width), Math.round(popoverPanel.strip.width));
     await page.locator(".rail-expand").click();

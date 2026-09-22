@@ -34,7 +34,6 @@ import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
-export { threadWindow } from "./threadSync.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -73,6 +72,8 @@ import {
   PATCH_RECORD_KIND,
   UNPUSHED_COMMITS_MAX,
 } from "./cacheThresholds.js";
+
+export { threadWindow };
 
 const SYNC_LOCK = "build.cacheSync";
 

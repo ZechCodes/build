@@ -4,12 +4,15 @@
 // by its project and its name, a workspace by the conversation it holds. The
 // device's own rows answer that (core/cachedRows.js), and the row it names is
 // the work item — its agents, what they are doing, what they have observed.
+// A conversation hidden from the inbox keeps its roster in the cached board's
+// `runs` collection, which is also heard here.
 //
 // This is the whole of the rail's reading: one row address, the watch on it,
 // and the workspace list beside it for the one thing a row cannot say. Nothing
 // here paints; it hands the rail a row and tells it when there is another.
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
+import { entityIdOf } from "./entityId.js";
 import { readCached, subscribeCache } from "./localCache.js";
 import { issueAddress, readIssueRecord } from "./issueCache.js";
 
@@ -41,6 +44,7 @@ export function createRailWorkItem({
 }) {
   let mountedSources = [];
   let unwatchRow = null;
+  let unwatchFeed = null;
   let unwatchSources = null;
   let watchedRowId;
   let rereading = null;
@@ -57,7 +61,14 @@ export function createRailWorkItem({
   const cachedRow = async (entityId) => {
     const address = rowAddress(entityId);
     if (!address) return null;
-    return (await readCached(address))?.value || null;
+    const row = (await readCached(address))?.value;
+    if (row || !["workspace", "project"].includes(context.kind)) return row || null;
+    // An unwatched conversation still has an agent, but its
+    // run is deliberately absent from the inbox's `items`. The same board
+    // record keeps it in `runs`; read that cached roster for the workspace
+    // without putting it back into the inbox as a visible row.
+    const feed = (await readCached(cacheScope.address({ entityId: "", kind: "feed" })))?.value;
+    return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
   };
 
   /// What the workspace list says about the workspace this rail is standing on:
@@ -142,12 +153,17 @@ export function createRailWorkItem({
   const watchRow = (entityId) => {
     if (watchedRowId === entityId) return;
     unwatchRow?.();
+    unwatchFeed?.();
     unwatchRow = null;
+    unwatchFeed = null;
     watchedRowId = entityId;
     const address = rowAddress(entityId);
     unwatchRow = address
       ? subscribeCache(address, () => void takeUpRow(entityId))
       : watchForARowOfOurOwn();
+    if (address && ["workspace", "project"].includes(context.kind)) {
+      unwatchFeed = subscribeCache(cacheScope.address({ entityId: "", kind: "feed" }), () => void takeUpRow(entityId));
+    }
   };
 
   /// The workspace list moved. Read everything again, and where the sources
@@ -193,6 +209,8 @@ export function createRailWorkItem({
     unwatch() {
       unwatchRow?.();
       unwatchRow = null;
+      unwatchFeed?.();
+      unwatchFeed = null;
       unwatchSources?.();
       unwatchSources = null;
     },

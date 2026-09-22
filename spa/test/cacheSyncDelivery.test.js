@@ -125,6 +125,36 @@ afterEach(() => {
 });
 
 describe("a flush arriving at the real subscriptions", () => {
+  it("syncs and retains the conversation of an unwatched workspace run", async () => {
+    const hiddenRun = {
+      run_id: "run-quiet", project_id: "p1", state: "building",
+      agents: [{ id: "ag-quiet", conversation_id: "conv-quiet", watched: false }],
+    };
+    bridge.call = vi.fn(async (method, params) => {
+      if (method === "board.list") return { items: [], runs: [hiddenRun] };
+      if (method === "workspace.list") return { workspaces: [{
+        id: "ws-quiet", workspace_id: "ws-quiet", project_id: "p1", name: "Quiet work", entity_id: "run-quiet",
+      }] };
+      if (method === "thread.page") return {
+        items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "cached reply" } }],
+        has_more: false, thread_total: 1, thread_last_sequence: 1,
+      };
+      return answer(method, params);
+    });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-quiet", kind: "row" }, {
+      ...hiddenRun, agents: [{ id: "ag-previously-watched", watched: true }],
+    });
+    await new Promise((done) => setTimeout(done, 2));
+
+    await boot([], { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-quiet" });
+
+    expect(calls("thread.page").map(([, params]) => params)).toContainEqual(expect.objectContaining({
+      entity_id: "run-quiet", agent_id: "ag-quiet",
+    }));
+    expect((await read("run-quiet", "thread", "conv-quiet")).value.items[0].data.body).toBe("cached reply");
+    expect(await read("run-quiet", "row")).toBeUndefined();
+  });
+
   it("writes the row a state item carries", async () => {
     await boot();
     await flush([{ entity_id: "run-1", state: { ...branchItem(), state: "review" } }]);

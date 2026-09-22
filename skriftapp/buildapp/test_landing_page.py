@@ -26,7 +26,7 @@ from buildapp.test_root_landing import (
 PAGE_TITLE = "Unsubscribe — Build"
 PAGE_DESCRIPTION = "A short description of the page."
 PAGE_BODY = '<main class="panel">Body content</main>'
-PAGE_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
+PAGE_SCRIPTS = '<script type="module" src="/landing/waitlist-form.js"></script>'
 PANEL_HEADING = "A heading."
 PANEL_MESSAGE = "One line of copy."
 PANEL_ACTION = '<a href="/">home</a>'

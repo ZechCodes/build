@@ -91,7 +91,7 @@ const { App } = await import("../src/app.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
-const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { evictEntity, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
@@ -608,6 +608,42 @@ describe("the rail over a machine that is asked nothing", () => {
     await flush();
 
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+  });
+
+  it("never takes a painted cold-start conversation down during a sync rewrite", async () => {
+    await mount();
+    const body = railHost().querySelector("#rail-body");
+    expect(body.querySelector(".thread-empty")).toBeTruthy();
+
+    const states = [];
+    const observer = new MutationObserver(() => {
+      states.push({
+        empty: !!body.querySelector(".thread-empty"),
+        text: body.textContent,
+      });
+    });
+    observer.observe(body, { childList: true, subtree: true, characterData: true });
+
+    await writeRailThread("run-3", "ag-1", { items: [said(1, "first sync paint")] });
+    await flush();
+    expect(body.textContent).toContain("first sync paint");
+    const paintedAt = states.findIndex((state) => state.text.includes("first sync paint"));
+    expect(paintedAt).toBeGreaterThanOrEqual(0);
+
+    // A cache lifetime pass can announce the entity deletion before its
+    // ordered thread read writes the replacement window. The live timeline is
+    // retained across that gap and then reconciled to the fresh record.
+    await evictEntity("dev-1", "run-3");
+    await flush();
+    expect(body.textContent).toContain("first sync paint");
+    await writeRailThread("run-3", "ag-1", {
+      items: [said(1, "first sync paint"), said(2, "second sync paint")],
+    });
+    await flush();
+
+    observer.disconnect();
+    expect(states.slice(paintedAt).some((state) => state.empty)).toBe(false);
+    expect(body.textContent).toContain("second sync paint");
   });
 
   it("adds the bubble a row brings without asking anything", async () => {

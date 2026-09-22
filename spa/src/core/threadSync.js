@@ -15,30 +15,41 @@ import {
 } from "./thread.js";
 import { mergeActivityDigests } from "./activityDigest.js";
 
+const ALWAYS_ACTIVE = () => true;
+const threadSub = (request) => request.conversationId || request.agentId || "";
+const validThreadRequest = (request) =>
+  !!request?.deviceId && !!request.entityId && !!threadSub(request) && typeof request.call === "function";
+const threadTarget = (request) => request.address || {
+  deviceId: request.deviceId,
+  entityId: request.entityId,
+  kind: THREAD_RECORD_KIND,
+  sub: threadSub(request),
+};
+const requestPriority = (request) => request.priority === undefined ? "foreground" : request.priority;
+const requestIsActive = (request) => (request.active === undefined ? ALWAYS_ACTIVE : request.active)();
+
+async function requestThreadPage(request, after) {
+  try {
+    return await request.call(
+      "thread.page",
+      threadPageParams(request.entityId, request.agentId || "", after),
+      requestPriorityFields(requestPriority(request)),
+    );
+  } catch {
+    return null;
+  }
+}
+
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none. */
-export async function syncThreadWindow({
-  deviceId,
-  call,
-  active = () => true,
-  entityId,
-  agentId = "",
-  conversationId = "",
-  address = null,
-  priority = "foreground",
-}) {
-  const sub = conversationId || agentId;
-  if (!deviceId || !entityId || !sub || typeof call !== "function") return false;
-  const target = address || { deviceId, entityId, kind: THREAD_RECORD_KIND, sub };
+export async function syncThreadWindow(request) {
+  if (!validThreadRequest(request)) return false;
+  const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  let page;
-  try {
-    page = await call("thread.page", threadPageParams(entityId, agentId, after), requestPriorityFields(priority));
-  } catch {
-    return false;
-  }
-  if (!page || !active()) return false;
+  const page = await requestThreadPage(request, after);
+  if (!page) return false;
+  if (!requestIsActive(request)) return false;
   await mergeCached(target, (current) => threadWindow(current, page, { newest: after > 0 }));
   return true;
 }

@@ -1067,8 +1067,12 @@ def render_social(collections, mats):
     headline.data.size = 0.072
     headline.data.space_line = 0.92
     headline.data.extrude = 0.0004
+    inter_font = ROOT / "spa" / "node_modules" / "@fontsource" / "inter" / "files" / "inter-latin-700-normal.woff2"
+    if not inter_font.exists():
+        raise FileNotFoundError(f"Social render requires the bundled Inter font: {inter_font}")
+    headline.data.font = bpy.data.fonts.load(str(inter_font), check_existing=True)
     headline.data.materials.append(material("SocialHeadline", (0.87, 1.0, 0.94, 1), roughness=0.55))
-    paths = [OUTPUT_DIR / "social-preview.webp", ROOT / "assets" / "social-preview.png"]
+    paths = [OUTPUT_DIR / "social-preview.webp", LANDING_ASSETS / "social-preview.png"]
     for path in paths:
         render(path, 1200, 630, (0.2, -7.4, 1.6), (0.0, -0.5, 0.75), 58, False, ortho_scale=5.6)
     bpy.data.objects.remove(headline, do_unlink=True)
@@ -1287,8 +1291,8 @@ def render_scene_posters(collections, mats, default_screens):
         elif index == 2:
             laptop_state = transform_collection(laptop, (0, -1.0, 1.12), scale=0.78, rotation=(0, 0, math.radians(12)))
             set_visible_collections(laptop)
-            render(desktop_path, 1440, 900, (0.9, -7.2, 1.55), (0.15, -0.55, 0.75), 58, False, ortho_scale=4.2)
-            render(mobile_path, 720, 960, (0.9, -7.2, 1.55), (0.15, -0.55, 0.75), 58, False, ortho_scale=4.2)
+            render(desktop_path, 1440, 900, (0.9, -7.2, 1.55), (0.15, -0.55, 1.15), 58, False, ortho_scale=4.2)
+            render(mobile_path, 720, 960, (0.9, -7.2, 1.55), (0.15, -0.55, 1.15), 58, False, ortho_scale=4.2)
             restore_matrices(laptop, laptop_state)
         elif index == 3:
             set_visible_collections(laptop)

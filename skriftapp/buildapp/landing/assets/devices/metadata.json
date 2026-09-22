@@ -646,13 +646,25 @@
       "file": "social-preview.webp",
       "width": 1200,
       "height": 630,
-      "bytes": 23942,
+      "bytes": 22230,
+      "sha256": "f05f7d59dc38d9a945fa32fe0c9296c7e0d2641686e888d0343d75f972e018d7",
       "content_bounds_px_bottom_left": [
-        0,
-        0,
-        1200,
-        630
-      ]
+        116,
+        182,
+        1025,
+        360
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "scene-07-desktop": {
       "file": "scene-07-desktop.webp",
@@ -770,6 +782,30 @@
           "phone": {
             "file": "screens/ui05-merged-iphone.webp",
             "sha256": "bbfb2d0a63d08342434384c9d07924040486c659ee1332e93ab606935e314809"
+          }
+        }
+      }
+    },
+    "social-preview-og": {
+      "file": "../social-preview.png",
+      "width": 1200,
+      "height": 630,
+      "bytes": 667260,
+      "sha256": "52da2fde9293bb2d27bb969d3594420ebb94065173ef2a825035f761c271d584",
+      "content_bounds_px_bottom_left": [
+        117,
+        183,
+        1023,
+        358
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
           }
         }
       }

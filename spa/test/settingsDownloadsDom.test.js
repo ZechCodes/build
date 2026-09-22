@@ -110,9 +110,10 @@ describe("Settings → Downloads", () => {
     };
     devices = [{ id: "d1", name: "studio", fingerprint: "AAAABBBBCCCCDDDDEEEE", status: "online" }];
     await renderSettings();
-    await flush();
-    expect(document.getElementById("downloadserr").textContent).toBe("invite only");
-    expect(document.getElementById("devlist").textContent).toContain("studio");
+    await vi.waitFor(() => {
+      expect(document.getElementById("downloadserr").textContent).toBe("invite only");
+      expect(document.getElementById("devlist").textContent).toContain("studio");
+    });
     expect(document.querySelector("#devlist .revoke")).toBeTruthy();
   });
 });

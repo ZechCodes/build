@@ -286,9 +286,9 @@ describe("workspace directories", () => {
   it("removes one on the caller it was handed and repaints from the answer", async () => {
     const callRpc = caller({ ...DETAIL, directories: [] });
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("[data-remove-directory]")).toBeTruthy());
     $("[data-remove-directory]").click();
-    await flush();
+    await vi.waitFor(() => expect($("#sheet [data-remove-directory]")).toBeNull());
     expect(callRpc).toHaveBeenCalledWith("workspace.remove_directory", {
       workspace_id: "ws-1",
       directory_id: "ws-1:source-1",

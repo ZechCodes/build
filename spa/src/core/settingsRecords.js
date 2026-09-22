@@ -52,7 +52,7 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
     observer = new MutationObserver(() => {
       if (!owner.isConnected) dispose();
     });
-    observer.observe(document.documentElement, { childList: true, subtree: true });
+    observer.observe(owner.ownerDocument.documentElement, { childList: true, subtree: true });
   }
   void reread();
 

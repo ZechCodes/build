@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
-import { deviceModelsAddress, deviceSettingsAddress } from "../src/core/settingsRecords.js";
+import { deviceModelsAddress, deviceSettingsAddress, watchSettingsRecord } from "../src/core/settingsRecords.js";
 import { agentModesPanelHtml, mountAgentModes } from "../src/core/agentModes.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../src/core/defaultHarness.js";
 import { projectAgentPanelHtml, mountProjectAgentSetting } from "../src/core/projectAgentSetting.js";
@@ -31,6 +31,21 @@ beforeEach(async () => {
 });
 
 describe("bridge settings cached mounts", () => {
+  it("can finish an owned cache read after the global document goes away", async () => {
+    const owner = document.createElement("div");
+    document.body.append(owner);
+    const savedDocument = globalThis.document;
+    let record;
+    try {
+      globalThis.document = undefined;
+      record = watchSettingsRecord(deviceSettingsAddress(DEVICE), () => {}, { owner });
+      await record.read();
+    } finally {
+      record?.dispose();
+      globalThis.document = savedDocument;
+    }
+  });
+
   it.each([
     ["agent modes", agentModesPanelHtml, mountAgentModes, "#agentmode-claude", "tui"],
     ["fallback harness", defaultHarnessPanelHtml, mountDefaultHarness, "#defaultharness", "codex"],

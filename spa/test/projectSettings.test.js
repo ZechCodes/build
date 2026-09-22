@@ -39,7 +39,7 @@ describe("openProjectSettings", () => {
   it("shows the project's identity read-only and its remote as the one editable field", async () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");

@@ -98,7 +98,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     device = current;
     nameTitle.textContent = `${current.name} settings`;
     projectsDeviceName.textContent = current.name;
-    if (savingName || document.activeElement !== nameInput) nameInput.value = current.name;
+    if (savingName || nameInput.ownerDocument.activeElement !== nameInput) nameInput.value = current.name;
   });
   const closeBrowser = () => {
     if (browserOpen) $("#scrim").classList.remove("show");

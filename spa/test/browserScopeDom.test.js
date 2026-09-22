@@ -127,9 +127,10 @@ it("does not fall back when later navigation reaches a missing folder", async ()
     .mockRejectedValueOnce(new Error("cannot open /projects/gone: No such file or directory (os error 2)"));
   await openBrowser({ title: "Projects", callRpc, startPath: "/projects", fallbackFromMissingStart: true });
   document.querySelectorAll(".browse-nav")[1].click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(callRpc).toHaveBeenCalledTimes(2);
-  expect(document.querySelector("#berr").textContent).toContain("No such file or directory");
+  await vi.waitFor(() => {
+    expect(callRpc).toHaveBeenCalledTimes(2);
+    expect(document.querySelector("#berr").textContent).toContain("No such file or directory");
+  });
 });
 it("does not request home after a missing initial folder finishes behind cancellation", async () => {
   let rejectInitial;

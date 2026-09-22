@@ -748,24 +748,31 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   width:calc(var(--agent-panel) + var(--agent-strip));
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
 #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
-/* The overview is a full conversation-area sheet; the strip remains the
-   selector at its edge and the ordinary panel waits behind it. */
-#agent-rail.rail-overview { position:absolute; z-index:45; grid-column:1 / -1; grid-row:1 / -1;
-  top:var(--toolbar-h); right:0;
-  bottom:0; left:0; width:auto; margin:0; background:var(--panel); }
+/* The overview takes the conversation's own room. It stays in the rail's
+   grid track, so the work to its left remains visible and receives input. */
+#agent-rail.rail-overview { z-index:45; }
+#agent-rail.rail-overview:not(.rail-popover) { width:calc(var(--agent-panel) + var(--agent-strip)); }
 #agent-rail.rail-overview .rail-panel { display:none; }
-.rail-overview-content { flex:1 1 auto; min-width:0; overflow-y:auto; padding:28px 36px; }
+.rail-overview-content { flex:1 1 auto; min-width:0; overflow-y:auto; padding:18px 16px;
+  border-radius:10px; background:var(--panel); }
 .rail-overview-content h2 { margin:0 0 18px; color:var(--ink); font-size:20px; font-weight:650; }
-.rail-overview-list { display:flex; flex-direction:column; gap:8px; max-width:960px; }
-.rail-overview-row { display:grid; grid-template-columns:minmax(110px, 180px) minmax(0, 1fr) auto;
-  align-items:center; gap:18px; width:100%; padding:14px 18px; border:1px solid var(--line);
+.rail-overview-list { display:flex; flex-direction:column; gap:8px; }
+.rail-overview-row { display:grid; grid-template-columns:minmax(0, 1fr) auto;
+  align-items:center; gap:4px 8px; width:100%; padding:10px 12px; border:1px solid var(--line);
   border-radius:10px; background:var(--panel2); color:var(--ink); text-align:left; cursor:pointer; font:inherit; }
 .rail-overview-row:hover { border-color:var(--accent); }
 .rail-overview-row:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .rail-overview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
-.rail-overview-snippet { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
+.rail-overview-snippet { grid-column:1 / -1; grid-row:2; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .rail-overview-state { color:var(--accent); font-size:11px; font-weight:650; }
 .rail-overview-empty { color:var(--dim); }
+/* Away from its dock, the overview has exactly the same card bounds as the
+   conversation popover. The rail still costs the work only the strip's width. */
+#agent-rail.rail-overview.rail-popover .rail-overview-content {
+  position:absolute; z-index:36; top:10px; bottom:10px; right:var(--agent-strip);
+  width:var(--agent-panel); flex:none; border:1px solid var(--line3, var(--line));
+  box-shadow:0 18px 48px var(--shadow); }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
 /* The foot of the column is the connection icon's (spa/src/styles.css), so the
@@ -1005,7 +1012,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    pull back against this number to sit tight (styles/issues.css), and a rule
    that set one without the other is how they drifted — the rail said 22 and
    the variable said 18, so the lines sat 8 px apart instead of 4. */
-.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 12px 16px 32px; }
+.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 12px 16px; }
 .rail-body .thread-message.agent .thread-body { padding-right:12px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,
@@ -1311,10 +1318,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
   .rail-expand { margin-top:0; margin-left:auto; }
-  #agent-rail.rail-overview { top:var(--toolbar-h); bottom:var(--console-space); }
-  .rail-overview-content { padding:18px 16px calc(var(--agent-strip) + 18px); }
-  .rail-overview-row { grid-template-columns:minmax(0, 1fr) auto; gap:2px 10px; }
-  .rail-overview-snippet { grid-column:1 / -1; grid-row:2; }
+  #agent-rail.rail-overview { position:absolute; left:0; right:0;
+    top:var(--toolbar-h); bottom:var(--console-space); width:auto; margin:0;
+    pointer-events:none; }
+  #agent-rail.rail-overview:not(.rail-popover) { width:auto; }
+  #agent-rail.rail-overview .rail-strip { bottom:0; pointer-events:auto; }
+  #agent-rail.rail-overview .rail-overview-content { position:absolute;
+    top:0; bottom:var(--agent-strip); left:0; right:0; width:auto; flex:none;
+    pointer-events:auto; }
+  #agent-rail.rail-overview.rail-popover .rail-overview-content {
+    top:auto; bottom:calc(var(--agent-strip) + 8px); left:6px; right:6px;
+    width:auto; height:min(62vh, calc(100% - var(--agent-strip) - 26px)); }
   /* The strip runs across the foot here, so the line under the project's agent
      is a rule beside it rather than under it. */
   .rail-sep { width:1px; height:16px; }

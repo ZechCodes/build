@@ -109,6 +109,7 @@ import {
   paintThreadEntries,
   paintThreadKeepingPlace,
   jumpToUserMessage,
+  scheduleUserMessageTickSync,
   syncUserMessageTicks,
   readThroughSequence,
   pressedActivityRunKey,
@@ -2443,7 +2444,7 @@ function mountRailOnContext(host, context, swap) {
     body.onscroll = () => {
       if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
-      syncUserMessageTicks(body);
+      scheduleUserMessageTickSync(body);
       reportRead(body);
     };
     syncComposer();

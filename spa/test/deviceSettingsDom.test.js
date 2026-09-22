@@ -60,7 +60,7 @@ vi.mock("../src/core/taskFeed.js", () => ({ refreshFeed }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
 import { readCachedDevices } from "../src/devices.js";
 import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
-import { deviceProjectsAddress } from "../src/core/settingsRecords.js";
+import { deviceProjectsAddress, deviceSettingsAddress } from "../src/core/settingsRecords.js";
 
 const CATALOG = {
   default_provider: "claude",
@@ -117,6 +117,23 @@ beforeEach(async () => {
 afterEach(() => App.viewDispose?.());
 
 describe("the machine's own panels", () => {
+  it("paints a cached projects folder while settings.get is absent", async () => {
+    await writeCached(deviceSettingsAddress("other"), { ...SETTINGS, projects_dir: "/cached-projects" });
+    session.call = vi.fn((method) => method === "settings.get"
+      ? new Promise(() => {})
+      : Promise.resolve(method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS));
+    void renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("#device-projects-path")?.textContent).toBe("/cached-projects"));
+    expect(document.querySelector("#device-projects-change").disabled).toBe(false);
+  });
+
+  it("repaints the projects folder after a real settings cache write", async () => {
+    await renderDeviceSettings();
+    await writeCached(deviceSettingsAddress("other"), { ...SETTINGS, projects_dir: "/announced-projects" });
+    await vi.waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/announced-projects"));
+    expect((await readCached(deviceSettingsAddress("other"))).value.projects_dir).toBe("/announced-projects");
+  });
+
   it("paints cached projects and bridge settings while project.list never answers", async () => {
     await writeCached(deviceProjectsAddress("other"), PROJECTS);
     session.call = vi.fn((method) => {
@@ -575,7 +592,12 @@ it("disables folder selection after disconnect and ignores old connection callba
   expect(document.querySelector("#device-projects-change").disabled).toBe(false);
 });
 it("closes the connection when loading settings fails", async () => {
-  session.call.mockRejectedValueOnce(new Error("Settings unavailable"));
+  session.call.mockImplementation(async (method) => {
+    if (method === "settings.get") throw new Error("Settings unavailable");
+    if (method === "project.list") return { projects: PROJECTS };
+    if (method === "models.list") return CATALOG;
+    return { ...SETTINGS };
+  });
   await renderDeviceSettings();
   expect(session.close).toHaveBeenCalled();
   expect(document.querySelector("#device-projects-change").disabled).toBe(true);
@@ -591,8 +613,7 @@ it.each(["resolve", "reject"])("ignores a stale save that %ss after reconnect, w
   const newSession = { deviceId: "other", close: vi.fn(), call: vi.fn().mockResolvedValue({ projects_dir: "/new" }) };
   openSession.mockResolvedValueOnce(newSession);
   document.querySelector("#device-settings-retry").click();
-  await new Promise((done) => setTimeout(done, 0));
-  expect(document.querySelector("#device-projects-path").textContent).toBe("/new");
+  await vi.waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/new"));
   document.querySelector("#device-projects-change").click();
   newSession.call.mockResolvedValueOnce({ projects_dir: "/latest" });
   await openBrowser.mock.calls[1][0].onChoose("/latest");

@@ -1058,20 +1058,28 @@ def render_social(collections, mats):
     set_screen_texture(mats["desktop_screen"], SCREENS_DIR / "ui10-editor-macbook.webp")
     laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(1.55, 0, -0.05), scale=0.72)
     set_visible_collections(laptop)
-    bpy.ops.object.text_add(location=(-0.47, -0.08, 0.145), rotation=(math.radians(90), 0, 0))
+    bpy.ops.object.text_add(location=(-0.24, -0.08, 0.075), rotation=(math.radians(90), 0, 0))
     headline = bpy.context.object
     headline.name = "social_headline"
     headline.data.body = "Your agents.\nYour machine.\nYour call."
     headline.data.align_x = "LEFT"
     headline.data.align_y = "CENTER"
-    headline.data.size = 0.072
+    headline.data.size = 0.038
     headline.data.space_line = 0.92
-    headline.data.extrude = 0.0004
-    inter_font = ROOT / "spa" / "node_modules" / "@fontsource" / "inter" / "files" / "inter-latin-700-normal.woff2"
-    if not inter_font.exists():
-        raise FileNotFoundError(f"Social render requires the bundled Inter font: {inter_font}")
-    headline.data.font = bpy.data.fonts.load(str(inter_font), check_existing=True)
-    headline.data.materials.append(material("SocialHeadline", (0.87, 1.0, 0.94, 1), roughness=0.55))
+    headline.data.extrude = 0.0
+    social_font = SOURCE_DIR / "fonts" / "Inter-Bold.ttf"
+    if not social_font.exists():
+        raise FileNotFoundError(f"Social render requires the bundled Inter font: {social_font}")
+    headline.data.font = bpy.data.fonts.load(str(social_font), check_existing=True)
+    headline_material = bpy.data.materials.new("SocialHeadline")
+    headline_material.diffuse_color = (0.87, 1.0, 0.94, 1)
+    headline_material.use_nodes = True
+    headline_bsdf = headline_material.node_tree.nodes.get("Principled BSDF")
+    headline_bsdf.inputs["Base Color"].default_value = (0.87, 1.0, 0.94, 1)
+    headline_bsdf.inputs["Roughness"].default_value = 0.55
+    headline_bsdf.inputs["Emission Color"].default_value = (0.87, 1.0, 0.94, 1)
+    headline_bsdf.inputs["Emission Strength"].default_value = 1.0
+    headline.data.materials.append(headline_material)
     paths = [OUTPUT_DIR / "social-preview.webp", LANDING_ASSETS / "social-preview.png"]
     for path in paths:
         render(path, 1200, 630, (0.2, -7.4, 1.6), (0.0, -0.5, 0.75), 58, False, ortho_scale=5.6)
@@ -1101,8 +1109,11 @@ def update_render_metadata(paths, fixture_map):
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     renders = metadata.setdefault("renders", {})
     for path in paths:
+        metadata_key = "social-preview-og" if path.parent == LANDING_ASSETS else path.stem
         info = image_info(path)
-        fixtures = fixture_map.get(path.stem, {})
+        if path.parent != OUTPUT_DIR:
+            info["file"] = f"../{path.name}"
+        fixtures = fixture_map.get(metadata_key, {})
         info["provenance"] = {
             "blend": BLEND_PATH.name,
             "generator": Path(__file__).name,
@@ -1115,7 +1126,7 @@ def update_render_metadata(paths, fixture_map):
                 for device, fixture in fixtures.items()
             },
         }
-        renders[path.stem] = info
+        renders[metadata_key] = info
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1161,7 +1172,8 @@ def render_only(group):
         social = render_social(collections, mats)
         paths.extend(social)
         fixture_map["social-preview"] = {"laptop": defaults["laptop"]}
-    update_render_metadata([path for path in paths if path.parent == OUTPUT_DIR], fixture_map)
+        fixture_map["social-preview-og"] = {"laptop": defaults["laptop"]}
+    update_render_metadata(paths, fixture_map)
     print(f"Rendered {group} assets from {BLEND_PATH}")
 
 

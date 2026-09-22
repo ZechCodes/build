@@ -64,7 +64,14 @@ import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
 import { replyOrNothing } from "./session.js";
-import { forgetIssueRecords, issueRecordsHeld, readIssueRecord } from "./issueCache.js";
+import {
+  forgetIssueRecords,
+  ISSUE_RECORD_KIND,
+  issueRecordsHeld,
+  readIssueRecord,
+  readStoredIssueRecord,
+} from "./issueCache.js";
+import { subscribeCache } from "./localCache.js";
 
 /** Bind an async RPC to a button: disable + label while in flight, restore and
  *  raise a persistent expandable error notification on failure. */
@@ -140,6 +147,8 @@ export function mountIssueView(
   let issue = null;
   let stagesData = { stages: [] };
   let stageDoc = null; // { stage_id, contents } for the open stage
+  let openStageDiffId = null;
+  let stageDiff = null;
   let catalog = {};
   let workItems = [];
   let selectedStageId = initialStageId;
@@ -156,6 +165,8 @@ export function mountIssueView(
   // Per-stage doc-read latches: a stage_doc ERROR renders an error state and
   // stops that doc's refetch until the user re-selects it.
   const docErrors = new Set();
+  let cacheDirty = false;
+  let cachePaintGeneration = 0;
 
   container.innerHTML = '<div class="issueview"><div class="empty">loading…</div></div>';
 
@@ -226,6 +237,7 @@ export function mountIssueView(
       return await work();
     } finally {
       actionsInFlight -= 1;
+      if (actionsInFlight === 0 && cacheDirty) scheduleCachePaint();
     }
   };
 
@@ -554,6 +566,14 @@ export function mountIssueView(
     else if (issue.state === "approved" && (stage.execution || "pending") === "pending" && predecessorsComplete(stage))
       parts.push('<button class="btn primary" id="implementstage">Implement Stage</button>');
     actions.innerHTML = parts.join("");
+    if (openStageDiffId === stage.id && stageDiff) {
+      const pane = document.createElement("pre");
+      pane.id = "stagediffpane";
+      pane.className = "fsrc";
+      pane.textContent =
+        stageDiff.status === "available" ? stageDiff.patch || "No changes." : stageDiff.reason || "Stable diff unavailable.";
+      viewerHost.querySelector("#stagedoc")?.after(pane);
+    }
 
     const retry = viewerHost.querySelector("#stagedocretry");
     if (retry)
@@ -595,17 +615,19 @@ export function mountIssueView(
       }
     }
     bindAction(viewerHost.querySelector("#stagediff"), "loading…", async () => {
-      const diff = await onDemandRecord(`stagediff:${stage.id}`, () =>
+      openStageDiffId = stage.id;
+      const held = await readStoredIssueRecord(deviceId, issueId, `stagediff:${stage.id}`);
+      if (held !== undefined) {
+        stageDiff = held;
+        renderedKey = null;
+        render();
+        return;
+      }
+      // The answer is ignored. Its cache announcement re-reads the record and
+      // paints the pane through the normal view render.
+      await onDemandRecord(`stagediff:${stage.id}`, () =>
         callRpc("issue.stage_diff", { issue_id: issueId, stage_id: stage.id }),
       );
-      let pane = viewerHost.querySelector("#stagediffpane");
-      if (!pane) {
-        pane = document.createElement("pre");
-        pane.id = "stagediffpane";
-        pane.className = "fsrc";
-        viewerHost.querySelector("#stagedoc")?.after(pane);
-      }
-      pane.textContent = diff.status === "available" ? diff.patch || "No changes." : diff.reason || "Stable diff unavailable.";
     });
     if (stageHint) stageHint.textContent = token === "building" ? "Agent is working on this stage." : "";
   };
@@ -633,6 +655,8 @@ export function mountIssueView(
   const selectStage = (stageId) => {
     if (selectedStageId === stageId) return;
     selectedStageId = stageId;
+    openStageDiffId = null;
+    stageDiff = null;
     docErrors.delete(stageId);
     stageDoc = null;
     // A pending doc comment names a passage of the stage it was written on, and
@@ -714,8 +738,10 @@ export function mountIssueView(
    *  after the user's own action must land). */
   /** One of this issue's records, read through the cache. `force` is a push
    *  (or a verb this surface sent) saying the record is behind. */
-  const issueRecord = (sub, read, force = false) =>
-    readIssueRecord({ deviceId, issueId, sub, read, force });
+  const issueRecord = (sub, read, force = false, cacheOnly = false) =>
+    cacheOnly
+      ? readStoredIssueRecord(deviceId, issueId, sub)
+      : readIssueRecord({ deviceId, issueId, sub, read, force });
 
   // What a word that the issue moved leaves behind for the records this surface
   // fills on demand — the open stage's doc, a single-doc issue's plan, a
@@ -745,7 +771,7 @@ export function mountIssueView(
 
   /** The issue itself and its stage manifest. Cold, both are read; warm, both
    *  are answered off disk and the surface paints on the frame it mounted in. */
-  const readIssueAndStages = (force) =>
+  const readIssueAndStages = (force, cacheOnly = false) =>
     Promise.all([
       issueRecord(
         "get",
@@ -761,8 +787,9 @@ export function mountIssueView(
             ...SMALLEST_THREAD_PAGE,
           }),
         force,
+        cacheOnly,
       ),
-      issueRecord("stages", () => callRpc("issue.stages", { issue_id: issueId }), force),
+      issueRecord("stages", () => callRpc("issue.stages", { issue_id: issueId }), force, cacheOnly),
     ]);
 
   /**
@@ -776,20 +803,21 @@ export function mountIssueView(
    * selecting, exactly where they are.
    */
   // eslint-disable-next-line complexity -- ratchet: this callback is at 22, cap 10 — reduce it, then drop this line
-  const load = async ({ reread = false, repaint = false } = {}) => {
+  const load = async ({ reread = false, repaint = false, cacheOnly = false, cacheGeneration = 0 } = {}) => {
     const force = repaint;
-    if (disposed || gone) return;
+    if (disposed || gone || (cacheGeneration && cacheGeneration !== cachePaintGeneration)) return;
     let payload;
     let stagesPayload;
     try {
-      [payload, stagesPayload] = await readIssueAndStages(reread || repaint);
+      [payload, stagesPayload] = await readIssueAndStages(reread || repaint, cacheOnly);
     } catch (e) {
       // A deleted issue is permanent; anything else is a machine that could not
       // answer, and what is held stays on screen until it can.
       if (/unknown (issue_id|plan_id)/.test((e && e.message) || "")) renderGone();
       return;
     }
-    if (disposed || gone) return;
+    if (disposed || gone || (cacheGeneration && cacheGeneration !== cachePaintGeneration)) return;
+    if (!payload || !stagesPayload) return;
     const first = !issue;
     issue = payload;
     stagesData = stagesPayload || { stages: [] };
@@ -806,18 +834,23 @@ export function mountIssueView(
         onSelectStage(opening);
       }
     }
-    await loadStageDoc();
-    await loadSingleDoc();
-    if (disposed || gone) return;
-    const key = issueViewKey({
+    await loadStageDoc(cacheOnly);
+    await loadSingleDoc(cacheOnly);
+    await loadStageDiff();
+    if (disposed || gone || (cacheGeneration && cacheGeneration !== cachePaintGeneration)) return;
+    const key = `${issueViewKey({
       issue,
       stagesData,
       selectedStageId,
       docState: paneState(),
       doc: stages().length ? docContents() : singleDoc || "",
-    });
+    })}|${JSON.stringify([openStageDiffId, stageDiff])}`;
     const rendered = Boolean(container.querySelector(".ivsplit"));
-    if (!force && rendered && (key === renderedKey || actionsInFlight > 0 || commentLayer.busy() || assignmentBusy())) return;
+    if (!force && rendered && (key === renderedKey || actionsInFlight > 0 || commentLayer.busy() || assignmentBusy())) {
+      if (cacheOnly && key !== renderedKey) cacheDirty = true;
+      return;
+    }
+    cacheDirty = false;
     renderedKey = key;
     render();
   };
@@ -825,16 +858,23 @@ export function mountIssueView(
   /** Fetch the open stage's doc when it can succeed — never for docs that
    *  predate canonical storage, never once a read has errored (latched off),
    *  and never again while the held doc is the open stage's. */
-  const loadStageDoc = async () => {
+  const stageDocIsCurrent = (wanted) =>
+    Boolean(stageDoc && stageDoc.stage_id === wanted && !behind(`stage:${wanted}`));
+  const stageDocCanLoad = (wanted) =>
+    shouldFetchPlanDoc({ docsAvailable: issue?.docs_available, errorLatched: docErrors.has(wanted) });
+  const keepStageDoc = (wanted, doc) => {
+    if (!disposed && selectedStageId === wanted && doc !== undefined) stageDoc = doc;
+  };
+  const readStageDoc = [
+    (wanted) => onDemandRecord(`stage:${wanted}`, () => callRpc("issue.stage_doc", { issue_id: issueId, stage_id: wanted })),
+    (wanted) => readStoredIssueRecord(deviceId, issueId, `stage:${wanted}`),
+  ];
+  const loadStageDoc = async (cacheOnly = false) => {
     if (!selectedStageId) return;
     const wanted = selectedStageId;
-    if (stageDoc && stageDoc.stage_id === wanted && !behind(`stage:${wanted}`)) return;
-    if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: docErrors.has(wanted) })) return;
+    if (stageDocIsCurrent(wanted) || !stageDocCanLoad(wanted)) return;
     try {
-      const doc = await onDemandRecord(`stage:${wanted}`, () =>
-        callRpc("issue.stage_doc", { issue_id: issueId, stage_id: wanted }),
-      );
-      if (!disposed && selectedStageId === wanted) stageDoc = doc;
+      keepStageDoc(wanted, await readStageDoc[Number(cacheOnly)](wanted));
     } catch {
       docErrors.add(wanted); // latch: render an error state, stop refetching
     }
@@ -842,15 +882,28 @@ export function mountIssueView(
 
   /** The single-doc issue's plan, fetched once and latched off on error — the
    *  same discipline the stage docs get. */
-  const loadSingleDoc = async () => {
-    if (stages().length) return;
-    if (singleDoc !== null && !behind("doc")) return;
-    if (!shouldFetchPlanDoc({ docsAvailable: issue && issue.docs_available, errorLatched: singleDocError })) return;
+  const singleDocCanLoad = () =>
+    !stages().length &&
+    (singleDoc === null || behind("doc")) &&
+    shouldFetchPlanDoc({ docsAvailable: issue?.docs_available, errorLatched: singleDocError });
+  const readSingleDoc = [
+    () => onDemandRecord("doc", () => callRpc("issue.doc", { issue_id: issueId })),
+    () => readStoredIssueRecord(deviceId, issueId, "doc"),
+  ];
+  const loadSingleDoc = async (cacheOnly = false) => {
+    if (!singleDocCanLoad()) return;
     try {
-      singleDoc = (await onDemandRecord("doc", () => callRpc("issue.doc", { issue_id: issueId }))).contents || "";
+      const doc = await readSingleDoc[Number(cacheOnly)]();
+      if (doc !== undefined) singleDoc = doc.contents || "";
     } catch {
       singleDocError = true;
     }
+  };
+
+  const loadStageDiff = async () => {
+    if (!openStageDiffId) return;
+    const held = await readStoredIssueRecord(deviceId, issueId, `stagediff:${openStageDiffId}`);
+    if (held !== undefined) stageDiff = held;
   };
 
   /** Read the issue again from its machine and draw the answer: a verb this
@@ -886,6 +939,30 @@ export function mountIssueView(
     await load();
     if (held) await readOnWord();
   };
+
+  function scheduleCachePaint() {
+    if (disposed || gone) return;
+    const generation = ++cachePaintGeneration;
+    queueMicrotask(() => void load({ cacheOnly: true, cacheGeneration: generation }));
+  }
+
+  const cacheWatcher = subscribeCache(
+    { deviceId: deviceId || "", entityId: issueId, kind: ISSUE_RECORD_KIND },
+    (changed) => {
+      const sub = changed.sub || "";
+      if (sub === "doc") {
+        singleDocError = false;
+        singleDoc = null;
+      } else if (sub.startsWith("stage:")) {
+        const stageId = sub.slice("stage:".length);
+        docErrors.delete(stageId);
+        if (selectedStageId === stageId) stageDoc = null;
+      } else if (sub === `stagediff:${openStageDiffId}`) {
+        stageDiff = null;
+      }
+      scheduleCachePaint();
+    },
+  );
   void mountRead();
   // The issue is the entity: its own plan/stage/thread mutations are what stale
   // this surface, and the push naming it is what says so. There is nothing
@@ -907,6 +984,7 @@ export function mountIssueView(
     dispose() {
       disposed = true;
       watcher.dispose();
+      cacheWatcher?.();
       if (assignmentOverlay) assignmentOverlay.close();
       commentLayer.dispose();
       if (drawer) {

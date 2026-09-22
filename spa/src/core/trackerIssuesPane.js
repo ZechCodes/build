@@ -16,7 +16,17 @@ import { hashFromRoute } from "./router.js";
 import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
-import { issuesRecordAt, readIssuesRecord } from "./trackerCache.js";
+import {
+  issuesAddress,
+  issuesQueryAddress,
+  issuesRecord,
+  issuesRecordAt,
+  readIssuesQueryRecord,
+  readIssuesRecord,
+  writeIssuesQueryRecord,
+  writeIssuesRecord,
+} from "./trackerCache.js";
+import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
 import {
@@ -42,6 +52,7 @@ export function mountIssuesPane(host, options) {
   const state = {
     ...options,
     unscoped: [], // the whole list before a workspace's live roster narrows it
+    unscopedShown: [], // the active filter-addressed projection before that roster narrows it
     all: [], // the project's whole list, which the filter menus are built from
     shown: [], // the narrowed list, which is what is painted
     columns: [],
@@ -52,6 +63,8 @@ export function mountIssuesPane(host, options) {
     disposed: false,
     picker: null,
     composer: null,
+    focusIssue: null,
+    readSerial: 0,
   };
 
   // ---- what the feed knows about this project's agents ---------------------
@@ -75,7 +88,11 @@ export function mountIssuesPane(host, options) {
   const kept = (issues) => (state.only ? (issues || []).filter((issue) => state.only(issue)) : issues || []);
   const rescope = () => {
     state.all = kept(state.unscoped);
-    state.shown = filterIssues(state.all, shownFilters());
+    state.shown = kept(state.unscopedShown);
+  };
+  const previewQuery = () => {
+    state.unscopedShown = filterIssues(state.unscoped, shownFilters());
+    rescope();
   };
 
   /** Where one issue opens. The project's tab opens the tracker's own page;
@@ -110,21 +127,26 @@ export function mountIssuesPane(host, options) {
       if (state.view === view) return;
       state.view = view;
       state.onViewChange?.(state.view);
+      previewQuery();
       paint();
+      watchQuery();
       void refresh();
     },
     onNew: () => fileIssue(),
     onFilter: (name, chosen) => {
       state.filters = { ...state.filters, [name]: chosen };
-      state.shown = filterIssues(state.all, shownFilters());
+      previewQuery();
       paint();
+      watchQuery();
       void refresh();
     },
     onClear: () => {
       // Back to what the tab opens on, not to everything: Clear undoes the
       // reader's narrowing, and closed issues were never part of it.
       state.filters = { ...DEFAULT_FILTERS };
+      previewQuery();
       paint();
+      watchQuery();
       void refresh();
     },
   });
@@ -157,7 +179,51 @@ export function mountIssuesPane(host, options) {
     const view = VIEWS[state.view] || VIEWS[LIST_VIEW];
     view.paint(chrome.body, view.entries(), paintContext(), view.wire);
     wireColumnDrops();
+    focusPendingIssue();
   };
+
+  function focusPendingIssue() {
+    if (!state.focusIssue) return;
+    const issueId = state.focusIssue;
+    const focused = state.view === BOARD_VIEW ? focusCard(issueId) : focusRow(issueId);
+    if (focused) state.focusIssue = null;
+  }
+
+  /** The active wire read has its own cache record. It is separate from the
+   *  project's whole list so a filtered answer can never empty the menus. */
+  const queryParams = () => issueListParams(state.projectId, shownFilters());
+  let queryUnsubscribe = null;
+  let querySerial = 0;
+  let queryLoaded = false;
+
+  async function paintFromQuery(params, serial = querySerial) {
+    const record = await readIssuesQueryRecord(state.deviceId, state.projectId, params);
+    if (state.disposed || serial !== querySerial || !record) return;
+    queryLoaded = true;
+    state.unscopedShown = sortIssues(record.issues);
+    state.shown = kept(state.unscopedShown);
+    // On a cold device the background whole-list pass may not have landed
+    // yet. Until it does, this cache record is still the only cache-derived
+    // source from which the menus can be built.
+    if (!state.unscoped.length) {
+      state.unscoped = state.unscopedShown;
+      state.all = kept(state.unscoped);
+    }
+    reads.succeeded();
+    paint();
+  }
+
+  function watchQuery() {
+    queryUnsubscribe?.();
+    querySerial += 1;
+    queryLoaded = false;
+    const serial = querySerial;
+    const params = queryParams();
+    queryUnsubscribe = subscribeCache(issuesQueryAddress(state.deviceId, state.projectId, params), () => {
+      void paintFromQuery(params, serial);
+    });
+    void paintFromQuery(params, serial);
+  }
 
   // ---- reading -------------------------------------------------------------
 
@@ -172,10 +238,17 @@ export function mountIssuesPane(host, options) {
     state.unscoped = sortIssues(record.issues);
     state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);
-    state.shown = filterIssues(state.all, shownFilters());
+    if (!queryLoaded) {
+      state.unscopedShown = filterIssues(state.unscoped, shownFilters());
+      state.shown = kept(state.unscopedShown);
+    }
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
     paint();
   }
+
+  const wholeListWatcher = subscribeCache(issuesAddress(state.deviceId, state.projectId), () => {
+    void paintFromCache();
+  });
 
   /** The board's columns ARE the statuses, so narrowing by one there would
    *  empty every other column rather than filter anything. The three filters
@@ -184,22 +257,19 @@ export function mountIssuesPane(host, options) {
 
   async function refresh() {
     if (state.disposed) return;
+    const serial = ++state.readSerial;
     const filters = shownFilters();
     try {
-      const answer = await state.callRpc("issues.list", issueListParams(state.projectId, filters));
-      if (state.disposed) return;
-      state.shown = kept(sortIssues(answer?.issues));
-      // An unnarrowed read IS the project's whole list; there is no second read
-      // to make for it. Asked of the READ and not of the reader: the default
-      // asks for open issues only, so it narrows this even though the reader
-      // chose nothing (#33).
-      if (!narrowsTheRead(filters)) {
-        state.unscoped = sortIssues(answer?.issues);
-        state.all = kept(state.unscoped);
-      }
-      reads.succeeded();
-      await refreshWholeList(narrowsTheRead(filters));
-      paint();
+      const params = issueListParams(state.projectId, filters);
+      const answer = await state.callRpc("issues.list", params);
+      if (state.disposed || serial !== state.readSerial) return;
+      const columns = state.columns;
+      // The fetch is a writer only. The matching cache announcement above is
+      // what re-reads this record and repaints the pane.
+      await writeIssuesQueryRecord(state.deviceId, state.projectId, params, issuesRecord(answer?.issues, columns));
+      // An unnarrowed answer is also the authoritative whole-list record.
+      if (!narrowsTheRead(filters))
+        await writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(answer?.issues, columns));
     } catch (error) {
       if (state.disposed) return;
       // The wire going away is not news about this project's issues. With a
@@ -208,26 +278,6 @@ export function mountIssuesPane(host, options) {
       if (reads.failed(error)) return;
       notifyError("Could not read this project's issues", messageOf(error));
     }
-  }
-
-  /** The filter menus are built from the project's WHOLE list, so choosing a
-   *  label never empties the menu it was chosen from. A narrowed read is not
-   *  that list, so the cache's copy stands in — the sync layer keeps it fresh
-   *  on every pass, unnarrowed, for exactly this. The columns come from there
-   *  either way: they are the project's, not any one read's. */
-  async function refreshWholeList(narrowed) {
-    const record = await readIssuesRecord(state.deviceId, state.projectId);
-    if (state.disposed) return;
-    // A cold cache holds nothing, and the bar is built from `state.all`: with
-    // the default now narrowing the read (#33), falling through here would
-    // leave every menu empty on a first open until a pass had written. The
-    // narrowed read is a partial list, but a partial menu beats no menu.
-    if (narrowed) {
-      state.unscoped = record ? sortIssues(record.issues) : state.unscoped;
-      if (!state.unscoped.length) state.unscoped = state.shown;
-      state.all = kept(state.unscoped);
-    }
-    if (record?.columns?.length) state.columns = columnsOf(record.columns);
   }
 
   // ---- moving a card -------------------------------------------------------
@@ -240,19 +290,26 @@ export function mountIssuesPane(host, options) {
    * put with no word is a card the reader will drag again.
    */
   async function moveIssue(issueId, status) {
-    const held = state.shown;
-    const issue = held.find((candidate) => candidate.id === issueId);
+    const issue = state.shown.find((candidate) => candidate.id === issueId);
     if (!issue || issue.status === status) return;
-    state.shown = withMovedIssue(held, issueId, status);
-    paint();
-    focusCard(issueId);
+    const heldQuery = state.unscopedShown;
+    const heldCatalogue = state.unscoped;
+    const movedQuery = withMovedIssue(heldQuery, issueId, status);
+    const movedCatalogue = withMovedIssue(heldCatalogue, issueId, status);
+    state.focusIssue = issueId;
+    await Promise.all([
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns)),
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns)),
+    ]);
     try {
       await state.callRpc("issues.update", moveParams(issueId, status));
     } catch (error) {
       if (state.disposed) return;
-      state.shown = held;
-      paint();
-      focusCard(issueId);
+      state.focusIssue = issueId;
+      await Promise.all([
+        writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns)),
+        writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns)),
+      ]);
       notifyError("Could not move this issue", messageOf(error));
     }
   }
@@ -265,9 +322,10 @@ export function mountIssuesPane(host, options) {
     for (const card of host.querySelectorAll(".issue-card")) {
       if (card.dataset.issue === issueId) {
         card.focus();
-        return;
+        return true;
       }
     }
+    return false;
   };
 
   /** The keyboard's half of dragging. Left and right through the columns, and
@@ -322,14 +380,17 @@ export function mountIssuesPane(host, options) {
    * see the thing you just wrote appear in the list you wrote it against. The
    * refresh behind it replaces this record with the bridge's own.
    */
-  function showTheNewIssue(issue) {
+  async function showTheNewIssue(issue) {
     if (!issue || state.disposed) return;
     const held = kept([issue]);
     if (!held.length) return; // a workspace's tab may not be about this issue
-    state.all = sortIssues([...state.all.filter((one) => one.id !== issue.id), issue]);
-    state.shown = filterIssues(state.all, shownFilters());
-    paint();
-    focusRow(issue.id);
+    const catalogue = sortIssues([...state.unscoped.filter((one) => one.id !== issue.id), issue]);
+    const query = sortIssues([...state.unscopedShown.filter((one) => one.id !== issue.id), issue]);
+    state.focusIssue = issue.id;
+    await Promise.all([
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(catalogue, state.columns)),
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(query, state.columns)),
+    ]);
   }
 
   /** Put the keyboard on a row by the issue it is about — by a scan rather
@@ -338,9 +399,10 @@ export function mountIssuesPane(host, options) {
     for (const row of host.querySelectorAll(".issue-row")) {
       if (row.dataset.issue === issueId) {
         row.querySelector(".issue-row-open")?.focus();
-        return;
+        return true;
       }
     }
+    return false;
   };
 
   /**
@@ -369,7 +431,7 @@ export function mountIssuesPane(host, options) {
       attachable: carriesIssueAttachments(state.deviceId),
       callRpc: state.callRpc,
       onFiled: (answer, outcome) => {
-        showTheNewIssue(answer?.issue);
+        void showTheNewIssue(answer?.issue);
         void refresh();
         if (outcome?.assigneeWentNowhere) sayTheAssigneeWasDropped(answer?.issue);
         if (outcome?.attachmentsWentNowhere) sayTheFilesWereDropped(answer?.issue, outcome.attachmentCount);
@@ -432,6 +494,7 @@ export function mountIssuesPane(host, options) {
   // ---- lifecycle -----------------------------------------------------------
 
   paint();
+  watchQuery();
   void paintFromCache().then(() => refresh());
   // No cadence: nothing in this client polls. The tab hears that an issue of
   // this project moved and reads the list again, and the pass behind it
@@ -457,6 +520,8 @@ export function mountIssuesPane(host, options) {
     dispose() {
       state.disposed = true;
       watcher.dispose();
+      wholeListWatcher?.();
+      queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();
       state.picker?.close?.();

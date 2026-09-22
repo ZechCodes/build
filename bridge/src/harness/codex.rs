@@ -35,6 +35,20 @@ pub(super) fn models() -> Vec<ModelOption> {
             context_window: None,
         },
         ModelOption {
+            id: "gpt-6-sol",
+            label: "GPT-6-Sol",
+            supports_effort: true,
+            efforts: &EFFORT_LEVELS,
+            context_window: None,
+        },
+        ModelOption {
+            id: "gpt-6-luna",
+            label: "GPT-6-Luna",
+            supports_effort: true,
+            efforts: THROUGH_MAX,
+            context_window: None,
+        },
+        ModelOption {
             id: "gpt-5.6-sol",
             label: "GPT-5.6-Sol",
             supports_effort: true,

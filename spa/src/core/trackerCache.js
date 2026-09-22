@@ -20,6 +20,7 @@
 import { readCached, writeCached } from "./localCache.js";
 
 export const TRACKER_ISSUES_KIND = "tracker-issues";
+export const TRACKER_ISSUES_QUERY_KIND = "tracker-issues-query";
 export const TRACKER_ISSUE_KIND = "tracker-issue";
 
 /** The project's list. */
@@ -27,6 +28,18 @@ export const issuesAddress = (deviceId, projectId) => ({
   deviceId,
   entityId: String(projectId || ""),
   kind: TRACKER_ISSUES_KIND,
+});
+
+/** One narrowed list answer. The whole-list record above is the project's
+ *  durable catalog; a filter response must not replace it or the menus would
+ *  forget every value the current filter hid. Query params are assembled in
+ *  a stable order by trackerFilters, so their JSON spelling is a stable cache
+ *  key too. */
+export const issuesQueryAddress = (deviceId, projectId, params) => ({
+  deviceId,
+  entityId: String(projectId || ""),
+  kind: TRACKER_ISSUES_QUERY_KIND,
+  sub: JSON.stringify(params || {}),
 });
 
 /** One issue and its timeline, under the project it belongs to. */
@@ -60,11 +73,19 @@ export async function readIssueRecord(deviceId, projectId, issueId) {
   return record?.value || null;
 }
 
+export async function readIssuesQueryRecord(deviceId, projectId, params) {
+  const record = await readCached(issuesQueryAddress(deviceId, projectId, params));
+  return record?.value || null;
+}
+
 export const writeIssuesRecord = (deviceId, projectId, record) =>
   writeCached(issuesAddress(deviceId, projectId), record);
 
 export const writeIssueRecord = (deviceId, projectId, issueId, record) =>
   writeCached(issueAddress(deviceId, projectId, issueId), record);
+
+export const writeIssuesQueryRecord = (deviceId, projectId, params, record) =>
+  writeCached(issuesQueryAddress(deviceId, projectId, params), record);
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

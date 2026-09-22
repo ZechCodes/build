@@ -5,13 +5,19 @@
 // pane state a width of its own again.
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { threadHtml } from "../src/core/thread.js";
 import { mountIssueView } from "../src/core/issueView.js";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { renderFilesTab } from "../src/views/files.js";
+import { wipeCache } from "../src/core/localCache.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 describe("the panes the surfaces paint carry .pane-col", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await wipeCache();
     document.body.innerHTML = "";
   });
 
@@ -44,7 +50,8 @@ describe("the panes the surfaces paint carry .pane-col", () => {
         return { stage_id: "s1", contents: "# Wire" };
       },
     });
-    for (let i = 0; i < 80 && !host.querySelector(".ivsplit"); i++) await Promise.resolve();
+    for (let i = 0; i < 80 && !host.querySelector(".ivsplit"); i++)
+      await new Promise((done) => setTimeout(done, 0));
     const split = host.querySelector(".ivsplit");
     expect(split.classList.contains("pane-split")).toBe(true);
     expect(split.querySelector(".ivstages").classList.contains("pane-list")).toBe(true);

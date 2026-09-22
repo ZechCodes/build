@@ -4,6 +4,7 @@
 // is tested against an injected caller in issueViewDom.test.js.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -39,6 +40,8 @@ let theirCall;
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = bodyHtml;
   location.hash = "#/device/dev-2/project/p1/issue/issue-1";
   ({ App } = await import("../src/app.js"));

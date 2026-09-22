@@ -15,7 +15,15 @@ import { messageOf } from "./text.js";
 import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
-import { issueRecord, issueRecordAt, issuesAddress, readIssueRecord, readIssuesRecord, writeIssueRecord } from "./trackerCache.js";
+import {
+  issueAddress,
+  issueRecord,
+  issueRecordAt,
+  issuesAddress,
+  readIssueRecord,
+  readIssuesRecord,
+  writeIssueRecord,
+} from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
@@ -50,6 +58,7 @@ export function mountIssuePage(host, options) {
     issues: [],
     disposed: false,
     picker: null,
+    readSerial: 0,
     // The tray's entries are the VIEW's draft, not the DOM's: this page
     // rewrites itself whole on a repaint, and an upload started before one
     // has to settle into the tray after it.
@@ -192,22 +201,26 @@ export function mountIssuePage(host, options) {
     restoreField(typing);
   };
 
-  /** Take one `issues.get` answer: the issue, its timeline, and the labels the
+  /** Take one cached `issues.get` record: the issue, its timeline, and the labels the
    *  rail's field opens on. A field the reader is mid-edit in is left alone —
    *  a push must not retype what somebody is typing. */
-  function take(answer, { keepDrafts = false } = {}) {
-    if (!answer?.issue) return;
-    state.issue = answer.issue;
+  function take(record, { keepDrafts = false, live = true } = {}) {
+    state.loaded = live;
+    if (!record?.issue) {
+      state.issue = null;
+      state.rows = [];
+      return;
+    }
+    state.issue = record.issue;
     // Whoever mounted this page may want to say which issue is open — the
     // route names an id, but only a read knows its number and title.
-    state.onIssueRead?.(answer.issue);
-    state.rows = timelineRows(answer.timeline);
-    if (!keepDrafts) state.labelsDraft = (answer.issue.labels || []).join(", ");
-    state.loaded = true;
+    state.onIssueRead?.(record.issue);
+    state.rows = timelineRows(record.timeline);
+    if (!keepDrafts) state.labelsDraft = (record.issue.labels || []).join(", ");
     // What the record says outranks anything the switch guessed, and opening
     // an issue is reading it: the mark moves on open as well as on the scroll
     // that reaches the end (#65).
-    watch?.settle(watchStateOf(answer.issue));
+    watch?.settle(watchStateOf(record.issue));
     markRead();
   }
 
@@ -221,8 +234,7 @@ export function mountIssuePage(host, options) {
     state.columns = columnsOf(list?.columns);
     takeList(list);
     if (!cached?.issue || state.issue) return;
-    take(cached);
-    state.loaded = false; // a cached paint is not an answer about what exists
+    take(cached, { live: false });
     reads.seen(at); // this copy is as old as the cache's stamp, not as old as now
     paint();
   }
@@ -248,14 +260,23 @@ export function mountIssuePage(host, options) {
     if (takeList(list)) paint();
   });
 
-  async function refresh({ keepDrafts = false } = {}) {
+  /** Detail writes are announcements, never payload delivery. Re-read the
+   *  record they named and only then let it reach the renderer. */
+  const issueWatcher = subscribeCache(issueAddress(state.deviceId, state.projectId, state.issueId), async () => {
+    const cached = await readIssueRecord(state.deviceId, state.projectId, state.issueId);
+    if (state.disposed || !cached) return;
+    take(cached, { keepDrafts: Boolean(state.issue), live: true });
+    reads.succeeded();
+    paint();
+  });
+
+  async function refresh() {
     if (state.disposed) return;
+    const serial = ++state.readSerial;
     try {
       const answer = await state.callRpc("issues.get", { issue_id: state.issueId });
-      if (state.disposed) return;
-      take(answer, { keepDrafts });
-      reads.succeeded();
-      paint();
+      if (state.disposed || serial !== state.readSerial) return;
+      // The pull is a writer. The subscription above owns the read and paint.
       await writeIssueRecord(state.deviceId, state.projectId, state.issueId, issueRecord(answer.issue, answer.timeline));
     } catch (error) {
       if (state.disposed) return;
@@ -464,6 +485,7 @@ export function mountIssuePage(host, options) {
       state.disposed = true;
       host.removeEventListener("scroll", onScroll);
       watcher.dispose();
+      issueWatcher?.();
       listWatcher?.();
       reads.dispose();
       state.picker?.close?.();

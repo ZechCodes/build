@@ -37,7 +37,7 @@ impl Harness for ClaudeHarness {
         "Claude Code TUI"
     }
 
-    /// The curated catalog, most capable first. (cached: 2026-07)
+    /// The curated catalog, most capable first. (cached: 2026-09)
     fn binary(&self) -> &'static str {
         "claude"
     }
@@ -47,6 +47,13 @@ impl Harness for ClaudeHarness {
             ModelOption {
                 id: "claude-fable-5-1",
                 label: "Claude Fable 5.1",
+                supports_effort: true,
+                efforts: &EFFORT_LEVELS,
+                context_window: Some(1_000_000),
+            },
+            ModelOption {
+                id: "claude-opus-5-5",
+                label: "Claude Opus 5.5",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
                 context_window: Some(1_000_000),

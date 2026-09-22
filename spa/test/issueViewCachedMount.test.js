@@ -128,6 +128,70 @@ describe("mounting over records the last session left", () => {
     expect(calls.filter((method) => method === "issue.get")).toHaveLength(1);
     expect(calls.filter((method) => method === "issue.stages")).toHaveLength(1);
   });
+
+  it("repaints from external cache writes while every payload stays absent", async () => {
+    await seed(issuePayload({ docs_available: true }), [stage()]);
+    await writeCached(issueAddress("dev-1", "issue-1", "stage:s1"), {
+      stage_id: "s1",
+      contents: "# Cached first cut",
+    });
+    view = mountIssueView(host, {
+      issueId: "issue-1",
+      projectId: "proj-1",
+      deviceId: "dev-1",
+      callRpc: () => new Promise(() => {}),
+    });
+    await settle();
+    expect(host.textContent).toContain("Cached first cut");
+
+    await writeCached(issueAddress("dev-1", "issue-1", "stages"), {
+      stages: [stage({ title: "Rewired through cache" })],
+    });
+    await writeCached(issueAddress("dev-1", "issue-1", "stage:s1"), {
+      stage_id: "s1",
+      contents: "# Cache announced revision",
+    });
+    await settle();
+
+    expect(host.textContent).toContain("Rewired through cache");
+    expect(host.textContent).toContain("Cache announced revision");
+  });
+
+  it("keeps an opened stable diff cache-driven across unrelated cache writes", async () => {
+    const complete = stage({
+      state: "complete",
+      approval: "approved",
+      execution: "complete",
+      start_sha: "aaa",
+      completion_sha: "bbb",
+    });
+    const issue = issuePayload({ state: "implementing", stages: [complete] });
+    await seed(issue, [complete]);
+    await writeCached(issueAddress("dev-1", "issue-1", "stage:s1"), { stage_id: "s1", contents: "# Done" });
+    await writeCached(issueAddress("dev-1", "issue-1", "stagediff:s1"), {
+      status: "available",
+      patch: "first cached patch",
+    });
+    view = mountIssueView(host, {
+      issueId: "issue-1",
+      projectId: "proj-1",
+      deviceId: "dev-1",
+      callRpc: () => new Promise(() => {}),
+    });
+    await settle();
+    host.querySelector("#stagediff").click();
+    await settle();
+    expect(host.querySelector("#stagediffpane").textContent).toContain("first cached patch");
+
+    await writeCached(issueAddress("dev-1", "issue-1", "stagediff:s1"), {
+      status: "available",
+      patch: "replacement cached patch",
+    });
+    await writeCached(issueAddress("dev-1", "issue-1", "get"), { ...issue, implementation_activity: "settled" });
+    await settle();
+
+    expect(host.querySelector("#stagediffpane").textContent).toContain("replacement cached patch");
+  });
 });
 
 // A stage doc is not written once and kept forever. A plan is revised while the

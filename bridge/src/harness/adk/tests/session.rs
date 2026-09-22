@@ -1412,6 +1412,11 @@ fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() 
         epitaph.contains("claude-fable-5-1") && epitaph.contains("claude-opus-5"),
         "{epitaph}"
     );
+    assert_eq!(
+        session.start_refused().as_deref(),
+        Some(epitaph.as_str()),
+        "and the agent's start_error says it in the same sentence"
+    );
 
     // And the model it WAS asked for is announced without incident.
     let session = open_with(
@@ -1423,6 +1428,45 @@ fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() 
         .expect("the turn is written");
     wait_for_status(&session, AgentStatus::Waiting);
     assert_eq!(session.epitaph(), None);
+    session.end();
+}
+
+/// Issue #72: `--model opus` announces the model the alias stands for, and an
+/// agent asked for the alias is running what it asked for. An alias of another
+/// family is still a mismatch, and says so.
+#[test]
+fn an_alias_is_the_model_it_resolves_to_and_no_other() {
+    let session = open_with(
+        &stream_json_harness(&[RESULT]),
+        &choosing(Some("fable"), None),
+    );
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    wait_for_status(&session, AgentStatus::Waiting);
+    assert_eq!(session.epitaph(), None);
+    assert_eq!(session.start_refused(), None);
+    session.end();
+
+    let session = open_with(
+        &stream_json_harness(&[RESULT]),
+        &choosing(Some("opus"), None),
+    );
+    session
+        .send_turn(&Turn::new("go"))
+        .expect("the turn is written");
+    assert!(
+        becomes_true_within(Duration::from_secs(5), || matches!(
+            session.status(),
+            AgentStatus::Ended { .. }
+        )),
+        "the child announced claude-fable-5-1 and was asked for opus: {:?}",
+        session.status()
+    );
+    assert_eq!(
+        session.start_refused().as_deref(),
+        Some("Build stopped this agent's Claude Code session because it opened claude-fable-5-1, and the agent asks for opus.")
+    );
     session.end();
 }
 

@@ -4,7 +4,7 @@ use super::activity::{
 };
 use super::fake::*;
 use super::protocol::{RecordedCall, ACTIVITY_BACKLOG};
-use super::reader::ProtocolReader;
+use super::reader::{runs_the_model_asked, ProtocolReader};
 use super::translation::tool_call_summary;
 use super::*;
 use crate::harness::shell_tail::SHELL_TAIL_LINES;

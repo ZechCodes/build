@@ -88,11 +88,15 @@ pub(in crate::app) fn spawn_status_pump(
                     &snapshot,
                     &mut recorded_limit,
                 );
+                let ended = matches!(snapshot.status, AgentStatus::Ended { .. });
+                if let Some(reason) = ended.then(|| session.start_refused()).flatten() {
+                    app.record_agent_start_refused(owner, &instance.agent_id, &reason);
+                }
                 let retry_deferred = usage_limit_moved
                     || !matches!(snapshot.status, AgentStatus::Working)
                         && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
                 (
-                    matches!(snapshot.status, AgentStatus::Ended { .. }),
+                    ended,
                     retry_deferred,
                     Arc::clone(&app.frame_clock),
                     Arc::clone(&state),

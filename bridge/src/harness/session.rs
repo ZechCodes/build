@@ -340,6 +340,14 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// Why Build ended this session before it could run a turn, as the plain
+    /// sentence the agent's `start_error` shows. `None` for a session Build
+    /// did not refuse: one that ended on its own is explained by its
+    /// [`epitaph`](AgentSession::epitaph) and the idle sweep instead.
+    fn start_refused(&self) -> Option<String> {
+        None
+    }
+
     /// The terminal, if this session has one. `None` is a normal answer.
     ///
     /// An `Option` rather than a second trait object stored beside the session:

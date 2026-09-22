@@ -9,7 +9,8 @@
 // same isolation two different things, and neither learns a variant name, a
 // label or a locked look.
 
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -55,6 +56,8 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 const SLOW_IMPORT_MS = 30000;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
+
+beforeEach(async () => { await wipeCache(); });
 
 const optionsOf = (html) => {
   const select = document.createElement("select");

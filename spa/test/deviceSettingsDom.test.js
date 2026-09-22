@@ -59,7 +59,8 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 vi.mock("../src/core/taskFeed.js", () => ({ refreshFeed }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
 import { readCachedDevices } from "../src/devices.js";
-import { DEVICES_ADDRESS, readCached, writeCached } from "../src/core/localCache.js";
+import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import { deviceProjectsAddress } from "../src/core/settingsRecords.js";
 
 const CATALOG = {
   default_provider: "claude",
@@ -87,11 +88,12 @@ const PROJECTS = [
   },
 ];
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 30));
 
 let session;
 beforeEach(async () => {
   vi.clearAllMocks();
+  await wipeCache();
   document.body.innerHTML = '<main id="root"></main><div id="scrim"><div id="sheet"></div></div>';
   App.devices = [{ id: "other", name: "Other machine", status: "online" }];
   App.accountEpoch = 0;
@@ -115,6 +117,19 @@ beforeEach(async () => {
 afterEach(() => App.viewDispose?.());
 
 describe("the machine's own panels", () => {
+  it("paints cached projects and bridge settings while project.list never answers", async () => {
+    await writeCached(deviceProjectsAddress("other"), PROJECTS);
+    session.call = vi.fn((method) => {
+      if (method === "project.list") return new Promise(() => {});
+      if (method === "models.list") return Promise.resolve(CATALOG);
+      return Promise.resolve(SETTINGS);
+    });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector("#projlist .projrow")?.textContent).toContain("relaydb"));
+    await vi.waitFor(() => expect(document.querySelector("#defaultharness")?.value).toBe("claude"));
+    expect(session.call).toHaveBeenCalledWith("project.list");
+  });
+
   it("lists the device's projects over its own connection, with Add project and Set remote on that connection", async () => {
     await renderDeviceSettings();
     await flush();
@@ -194,8 +209,7 @@ describe("the machine's own panels", () => {
     expect(document.querySelector("#device-settings-status").textContent).toContain("Bring this device online");
 
     document.querySelector("#device-settings-retry").click();
-    await flush();
-    expect(document.querySelector("#projlist").textContent).toContain("relaydb");
+    await vi.waitFor(() => expect(document.querySelector("#projlist").textContent).toContain("relaydb"));
     expect(document.getElementById("defaultharness").value).toBe("claude");
   });
 
@@ -390,6 +404,7 @@ describe("device settings", () => {
     expect(document.querySelector("#root").textContent).toContain("Fallback agent");
     expect(document.querySelector("#root").textContent).not.toContain("Diff triage");
     const select = document.querySelector("[data-isolation=select]");
+    await vi.waitFor(() => expect(select.value).toBe("worktree"));
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
     await new Promise((done) => setTimeout(done, 0));
@@ -421,6 +436,7 @@ describe("device settings", () => {
 
     await renderDeviceSettings();
 
+    await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
     const rift = [...document.querySelector("[data-isolation=select]").options].find(({ value }) => value === "rift");
     expect(rift.disabled).toBe(true);
     expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift CLI was not found");
@@ -470,14 +486,13 @@ describe("device settings", () => {
       };
       openSession.mockResolvedValueOnce(newSession);
       document.querySelector("#device-settings-retry").click();
-      await new Promise((done) => setTimeout(done, 0));
-      await new Promise((done) => setTimeout(done, 0));
+      await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
       const callsBeforeLateSave = newSession.call.mock.calls.length;
 
       if (completion === "resolve") resolveSave({ isolation: "rift", isolation_available: { rift: true } });
       else rejectSave(new Error("old save failed"));
-      await new Promise((done) => setTimeout(done, 0));
-      await new Promise((done) => setTimeout(done, 0));
+      await flush();
+      await flush();
 
       const currentSelect = document.querySelector("[data-isolation=select]");
       expect(currentSelect).not.toBe(oldSelect);

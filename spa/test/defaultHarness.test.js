@@ -6,6 +6,7 @@
 // The word "headless" stays out of every string a person reads.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -45,7 +46,7 @@ vi.mock("../src/connection.js", () => ({
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 30));
 
 const panel = () => {
   document.body.innerHTML = defaultHarnessPanelHtml();
@@ -62,7 +63,8 @@ const PROVIDERS = [
 ];
 const CATALOG = { default_provider: "claude_adk", providers: PROVIDERS };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = "";
 });
 
@@ -238,9 +240,9 @@ describe("the fallback-agent panel", () => {
 
     expect(document.getElementById("harnesserr").textContent).toContain("cannot write the config file");
     expect(document.getElementById("harnesserr").textContent).toContain("device went offline");
-    expect(select().options).toHaveLength(0);
-    expect(select().value).toBe("");
-    expect(select().disabled).toBe(true);
+    expect(select().options).toHaveLength(5);
+    expect(select().value).toBe("claude_adk");
+    expect(select().disabled).toBe(false);
   });
 
   it("says the bridge is unreachable instead of offering a choice it cannot keep", async () => {
@@ -349,6 +351,27 @@ describe("the device's settings page", () => {
 // holds: the defaults a new issue starts with, read from the creation device's
 // own catalog.
 describe("the account page's creation defaults", () => {
+  it("paints its cached device catalog while models.list has no answer", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    globalThis.fetch = vi.fn(async () => { throw new Error("no network in tests"); });
+    const { App } = await import("../src/app.js");
+    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    const { renderSettings } = await import("../src/views/settings.js");
+    const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
+    const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
+    App.devices = [{ id: "dev-1", name: "Laptop", status: "online", fingerprint: "dev-1-fingerprint" }];
+    await writeCached(DEVICES_ADDRESS, App.devices);
+    await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+    App.selectedDeviceId = "dev-1";
+    bridge.call = vi.fn(() => new Promise(() => {}));
+    adoptDeviceSession(sessionAnswering(bridge));
+
+    await renderSettings();
+    await vi.waitFor(() => expect([...document.querySelector("#defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));
+    expect(bridge.call).toHaveBeenCalledWith("models.list");
+  }, 30000);
+
   it("offers the agent defaults two agents, not every default harness", async () => {
     vi.resetModules();
     document.body.innerHTML = bodyHtml;

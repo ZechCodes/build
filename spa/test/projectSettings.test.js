@@ -5,6 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { projectSettingsAddress } from "../src/core/settingsRecords.js";
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmAction(...args) }));
@@ -17,14 +19,23 @@ const PROJECT = {
   remote: "git@github.com:8ly/build.git",
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   confirmAction.mockReset();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
 describe("openProjectSettings", () => {
+  it("paints the cached project while project.list has no answer", async () => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
+    expect(callRpc).toHaveBeenCalledWith("project.list");
+  });
+
   it("shows the project's identity read-only and its remote as the one editable field", async () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
@@ -106,6 +117,7 @@ describe("openProjectSettings", () => {
     });
     openProjectSettings("proj-1", { callRpc });
     await flush();
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "rift"]);
@@ -123,6 +135,7 @@ describe("openProjectSettings", () => {
     );
     openProjectSettings("proj-1", { callRpc });
     await flush();
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     select.value = "rift";
@@ -132,8 +145,14 @@ describe("openProjectSettings", () => {
     expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
     expect(select.value).toBe("rift");
 
-    select.value = "";
-    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => {
+      const current = document.querySelector("#sheet [data-isolation=select]");
+      expect(current).not.toBe(select);
+      expect(current.disabled).toBe(false);
+    });
+    const refreshed = document.querySelector("#sheet [data-isolation=select]");
+    refreshed.value = "";
+    refreshed.dispatchEvent(new Event("change"));
     await flush();
     await flush();
     expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null });
@@ -153,6 +172,7 @@ describe("openProjectSettings", () => {
     });
     openProjectSettings("proj-1", { callRpc });
     await flush();
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
 
     expect([...document.querySelector("#sheet [data-isolation=select]").options].map((o) => o.disabled)).toEqual([
       false,

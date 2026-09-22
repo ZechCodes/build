@@ -16,7 +16,7 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 30));
 
 /**
  * Render one paired machine's settings page against a bridge that answers

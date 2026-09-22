@@ -12,6 +12,8 @@ import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
 import { App } from "../app.js";
 import { creationCall } from "../core/inboxDevices.js";
+import { deviceProjectsAddress, projectSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
+import { readCached, writeCached } from "../core/localCache.js";
 
 export function deviceProjectsPanelHtml() {
   return `<div class="panel" data-device-projects>
@@ -46,14 +48,22 @@ const projectRowHtml = (project) => `
 export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName, onProjectCreated }) {
   const panel = host.querySelector("[data-device-projects]");
   const list = panel.querySelector("#projlist");
+  const record = watchSettingsRecord(deviceProjectsAddress(deviceId), (projects) => {
+    if (!panel.isConnected || !Array.isArray(projects)) return;
+    list.innerHTML = projects.map(projectRowHtml).join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
+    wireRemotes(projects);
+  }, { owner: panel });
 
   const refresh = async () => {
     try {
-      const { projects } = await callRpc("project.list");
-      list.innerHTML = projects.map(projectRowHtml).join("") || '<div class="dim" style="font-size:13px">No projects yet.</div>';
-      wireRemotes(projects);
+      await record.pull(async () => {
+        const { projects } = await callRpc("project.list");
+        return projects;
+      });
+      const projects = (await readCached(deviceProjectsAddress(deviceId)))?.value || [];
+      for (const project of projects) await writeCached(projectSettingsAddress(deviceId, project.project_id), project);
     } catch (error) {
-      list.innerHTML = `<div class="adderr">${esc(error.message)}</div>`;
+      if (list.textContent.includes("loading…")) list.innerHTML = `<div class="adderr">${esc(error.message)}</div>`;
     }
   };
 
@@ -63,7 +73,7 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
         openSetRemote(
           projects.find((project) => project.project_id === button.dataset.id),
           refresh,
-          { callRpc },
+          { callRpc, deviceId },
         );
     });
   };

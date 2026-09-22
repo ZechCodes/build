@@ -9,6 +9,7 @@
 // Settings page says so by refreshing.
 
 import { normalizeModelCatalog } from "./modelPicker.js";
+import { deviceModelsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
 /** What a bridge that cannot be asked offers: the harness's own default, and
  *  nothing to choose between. An older bridge without the RPC answers the same,
@@ -38,33 +39,58 @@ export const UNASKED_CATALOG = Object.freeze({ default_provider: "", providers: 
 export function createModelCatalog(context) {
   let held = null;
   let asking = null;
+  let asked = false;
+  let signature = null;
+  const listeners = new Set();
+  const record = watchSettingsRecord(deviceModelsAddress(context.deviceId), (catalog) => {
+    const nextSignature = catalog ? JSON.stringify(catalog) : null;
+    if (nextSignature === signature) return;
+    signature = nextSignature;
+    held = catalog ? normalizeModelCatalog(catalog) : null;
+    for (const listener of [...listeners]) listener(held);
+  });
 
   const read = async () => {
-    const answer = normalizeModelCatalog(await context.rpc("models.list"));
-    if (context.active()) held = answer;
-    return answer;
+    asked = true;
+    await record.pull(async () => {
+      const answer = await context.rpc("models.list");
+      if (!context.active()) throw new Error("device retired during models.list");
+      return answer;
+    });
+    return held || EMPTY_CATALOG;
   };
 
-  const readQuietly = () => read().catch(() => EMPTY_CATALOG);
+  const readQuietly = () => read().catch(() => held || EMPTY_CATALOG);
+
+  const askOnce = () => {
+    if (!asking) asking = readQuietly().finally(() => { asking = null; });
+    return asking;
+  };
 
   return {
     /** This device's catalog, asked for once. */
-    modelCatalog() {
-      if (held) return Promise.resolve(held);
-      if (!asking) {
-        asking = readQuietly().finally(() => {
-          asking = null;
-        });
+    async modelCatalog() {
+      await record.read();
+      if (held) {
+        if (!asked) void askOnce();
+        return held;
       }
-      return asking;
+      return askOnce();
     },
 
     /** Ask again, and keep the new answer: the account changed something the
      *  catalog reports, so what was held is out of date. Refuses out loud —
      *  the page that asked is the one that can say the refresh did not land. */
     refreshModelCatalog() {
-      held = null;
       return read();
+    },
+    onModelCatalogChanged(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    disposeModelCatalog() {
+      record.dispose();
+      listeners.clear();
     },
   };
 }

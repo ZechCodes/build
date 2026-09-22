@@ -456,6 +456,7 @@ function settingsForBlock(projectKey) {
   if (!block) return;
   openProjectSettings(block.id, {
     callRpc: verbCall(block),
+    deviceId: block.deviceId,
     onDeleted: async () => {
       if (routeProjectKey(App.route) === block.projectKey) goFromInbox({ name: "inbox" });
       await refreshFeed(block.deviceId);

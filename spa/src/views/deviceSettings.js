@@ -67,6 +67,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   let active = true;
   let connectionAttempt = 0;
   let session = null;
+  let disposePanels = null;
   let browserOpen = false;
   let savingAttempt = null;
   let savingName = false;
@@ -79,6 +80,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       connectionAttempt += 1;
       session?.close();
       session = null;
+      disposePanels?.();
+      disposePanels = null;
       stopWatchingDevices();
       showDeactivated(root, onDeviceDeactivated, deviceId);
       return;
@@ -96,6 +99,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     active = false;
     stopWatchingDevices();
     closeBrowser();
+    disposePanels?.();
     session?.close();
   });
   nameForm.onsubmit = async (event) => {
@@ -146,6 +150,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       connectionAttempt += 1;
       session?.close();
       session = null;
+      disposePanels?.();
+      disposePanels = null;
       retireDevice(device.id);
     } catch (error) {
       if (!active) return;
@@ -165,13 +171,15 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   // Every panel here is this machine's answer, so none of them exists until the
   // machine is answering: a page that cannot connect says that once, in its
   // status line, rather than standing up six panels that all say it again.
-  const standUpPanels = () =>
-    standUpDevicePanels({
+  const standUpPanels = () => {
+    disposePanels?.();
+    disposePanels = standUpDevicePanels({
       projectsHost: root.querySelector("#device-projects-panel"),
       bridgeHost: root.querySelector("#device-bridge-panels"),
       callRpc,
       device,
     });
+  };
   const save = async (path) => {
     const attempt = connectionAttempt;
     const owner = session;
@@ -211,6 +219,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     connectionAttempt += 1;
     session?.close();
     session = null;
+    disposePanels?.();
+    disposePanels = null;
     closeBrowser();
     change.disabled = true;
     status.textContent = "Device disconnected. Bring it online, then retry.";
@@ -232,7 +242,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       pathLabel.textContent = settings.projects_dir;
       status.textContent = "";
       change.disabled = false;
-      await standUpPanels();
+      standUpPanels();
     } catch (error) {
       if (!current()) return;
       session?.close();

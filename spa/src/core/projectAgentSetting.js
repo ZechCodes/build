@@ -19,6 +19,7 @@ import {
   modelOptionsHtml,
   providerOptionsHtml,
 } from "./modelPicker.js";
+import { deviceModelsAddress, deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
 const word = (value) => (typeof value === "string" ? value : "");
 
@@ -72,7 +73,7 @@ function offeredHarness(providers, providerId) {
 
 /** Wire the panel to the bridge: paint from settings.get, save on every change,
  *  and repaint from the answer. */
-export async function mountProjectAgentSetting(host, { callRpc, onSaved = async () => {} }) {
+export async function mountProjectAgentSetting(host, { callRpc, deviceId = "", onSaved = async () => {} }) {
   const harness = host.querySelector("#projectagentharness");
   const model = host.querySelector("#projectagentmodel");
   const effort = host.querySelector("#projectagenteffort");
@@ -81,6 +82,7 @@ export async function mountProjectAgentSetting(host, { callRpc, onSaved = async 
   if (!harness || !model || !effort) return;
   const controls = [harness, model, effort];
   let providers = [];
+  let cachedSettings;
 
   const clearUnconfirmedSelection = () => {
     for (const control of controls) {
@@ -88,8 +90,9 @@ export async function mountProjectAgentSetting(host, { callRpc, onSaved = async 
       control.disabled = true;
     }
   };
-  const renderConfirmedSettings = (settings) => {
-    const choice = projectAgentChoiceOf(settings);
+  const renderConfirmedSettings = () => {
+    if (!cachedSettings || !providers.length) return;
+    const choice = projectAgentChoiceOf(cachedSettings);
     const offered = catalogForProvider({ providers }, offeredHarness(providers, choice.provider));
     const models = offered.models || [];
     const takesEffort = effortSupported(models, choice.model);
@@ -103,6 +106,20 @@ export async function mountProjectAgentSetting(host, { callRpc, onSaved = async 
     for (const control of controls) control.disabled = false;
     effort.disabled = !takesEffort;
   };
+  const settingsRecord = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    cachedSettings = settings;
+    try { renderConfirmedSettings(); } catch (failure) { clearUnconfirmedSelection(); error.textContent = failure.message; }
+  }, { owner: harness });
+  const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (catalog) => {
+    if (!catalog) return;
+    if (!Array.isArray(catalog.providers) || catalog.providers.length === 0) {
+      clearUnconfirmedSelection();
+      error.textContent = "models.list.providers is missing, malformed, or empty";
+      return;
+    }
+    providers = catalog.providers;
+    try { renderConfirmedSettings(); } catch (failure) { clearUnconfirmedSelection(); error.textContent = failure.message; }
+  }, { owner: harness });
 
   /** One change, written and confirmed. A refusal says so and puts the controls
    *  back on what the device holds, so nothing on screen is a choice the
@@ -113,16 +130,15 @@ export async function mountProjectAgentSetting(host, { callRpc, onSaved = async 
     saved.textContent = "Saving…";
     try {
       const settings = await callRpc("settings.set", { project_agent: patch });
-      renderConfirmedSettings(settings);
+      await settingsRecord.write(settings);
       await onSaved(settings);
       saved.textContent = "Saved. New project agents start here.";
     } catch (saveError) {
       error.textContent = saveError.message;
       saved.textContent = "";
       try {
-        renderConfirmedSettings(await callRpc("settings.get"));
+        await settingsRecord.pull(() => callRpc("settings.get"));
       } catch (reloadError) {
-        clearUnconfirmedSelection();
         error.textContent = `${saveError.message}. Reload failed: ${reloadError.message}`;
       }
     }
@@ -136,14 +152,14 @@ export async function mountProjectAgentSetting(host, { callRpc, onSaved = async 
   effort.onchange = () => save({ effort: effort.value || null });
 
   try {
-    const [settings, catalog] = await Promise.all([callRpc("settings.get"), callRpc("models.list")]);
-    if (!Array.isArray(catalog?.providers) || catalog.providers.length === 0) {
-      throw new Error("models.list.providers is missing, malformed, or empty");
-    }
-    providers = catalog.providers;
-    renderConfirmedSettings(settings);
+    await Promise.all([
+      settingsRecord.pull(() => callRpc("settings.get")),
+      catalogRecord.pull(() => callRpc("models.list")),
+    ]);
   } catch (readError) {
-    clearUnconfirmedSelection();
-    error.textContent = readError.message;
+    if (!cachedSettings || !providers.length) {
+      clearUnconfirmedSelection();
+      error.textContent = readError.message;
+    }
   }
 }

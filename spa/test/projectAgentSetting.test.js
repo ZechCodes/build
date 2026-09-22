@@ -6,6 +6,7 @@
 // the bridge holds and writes back to it, beside the fallback agent.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import {
   mountProjectAgentSetting,
   projectAgentChoiceOf,
@@ -66,7 +67,8 @@ const bridgeHolding = (settings) => {
   return { call, calls };
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = "";
 });
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import {
   AGENT_MODE_FAMILIES,
   AGENT_MODES,
@@ -8,13 +9,14 @@ import {
   mountAgentModes,
 } from "../src/core/agentModes.js";
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
 const settings = (claude = "headless", codex = "tui") => ({ agent_modes: { claude, codex } });
 const select = (family) => document.querySelector(`[data-agent-mode="${family}"]`);
 const status = (family) => document.querySelector(`[data-agent-mode-status="${family}"]`);
 const error = () => document.querySelector("[data-agent-modes-error]");
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = agentModesPanelHtml();
 });
 
@@ -117,7 +119,7 @@ describe("the agent-modes panel", () => {
     expect(error().textContent).toContain("agent_modes.claude");
   });
 
-  it("disables the panel when neither a rejected save nor its reload can be confirmed", async () => {
+  it("keeps the cached choice when a rejected save cannot reload the bridge", async () => {
     let reads = 0;
     const callRpc = vi.fn(async (method) => {
       if (method === "settings.get" && reads++ === 0) return settings();
@@ -131,8 +133,9 @@ describe("the agent-modes panel", () => {
     await flush();
     await flush();
 
-    expect(select("claude").disabled).toBe(true);
-    expect(select("codex").disabled).toBe(true);
+    expect(select("claude").disabled).toBe(false);
+    expect(select("codex").disabled).toBe(false);
+    expect(select("claude").value).toBe("headless");
     expect(error().textContent).toContain("cannot write config");
     expect(error().textContent).toContain("device went offline");
   });

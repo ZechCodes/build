@@ -15,6 +15,8 @@
 // the bridge answers: the control shows what the machine actually holds, never
 // what was merely attempted.
 
+import { deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
+
 /**
  * Whether this machine watches what its agents file, as a settings payload
  * states it.
@@ -46,7 +48,7 @@ export function watchSettingPanelHtml() {
  * Mounting is what reads, so a page that reconnects mounts again: a switch
  * painted over a connection that has gone shows what WAS there.
  */
-export async function mountWatchSetting(host, { callRpc, onSaved } = {}) {
+export async function mountWatchSetting(host, { callRpc, deviceId = "", onSaved } = {}) {
   const panel = host.querySelector("[data-watch-setting]");
   if (!panel) return;
   const box = panel.querySelector("#watchagentissues");
@@ -58,6 +60,12 @@ export async function mountWatchSetting(host, { callRpc, onSaved } = {}) {
     box.disabled = false;
     failed.textContent = "";
   };
+  let painted = false;
+  const record = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    if (!settings) return;
+    show(settings);
+    painted = true;
+  }, { owner: panel });
 
   box.onchange = async () => {
     const wanted = box.checked;
@@ -66,23 +74,23 @@ export async function mountWatchSetting(host, { callRpc, onSaved } = {}) {
     try {
       // Repainted from the ANSWER rather than from `wanted`: the machine is
       // what holds this, and what it says it holds is what the switch shows.
-      show(await callRpc("settings.set", { watch_agent_filed_issues: wanted }));
+      await record.write(await callRpc("settings.set", { watch_agent_filed_issues: wanted }));
       saved.textContent = "Saved";
       onSaved?.();
     } catch (error) {
       // The switch goes back: it never shows a choice the machine refused.
-      box.checked = !wanted;
+      await record.read();
       saved.textContent = "";
       failed.textContent = error.message || String(error);
     }
   };
 
   try {
-    show(await callRpc("settings.get"));
+    await record.pull(() => callRpc("settings.get"));
   } catch (error) {
     // A machine that cannot be read offers no switch — a control that looks
     // settable but cannot be saved is worse than one that says why.
-    box.disabled = true;
+    if (!painted) box.disabled = true;
     failed.textContent = error.message || String(error);
   }
 }

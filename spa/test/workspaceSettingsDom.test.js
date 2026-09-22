@@ -4,6 +4,8 @@
 // its checkouts with it.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { projectSettingsAddress, workspaceSettingsAddress } from "../src/core/settingsRecords.js";
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({
@@ -51,7 +53,7 @@ const CATALOG = {
   ],
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
 const $ = (selector) => document.querySelector(selector);
 const shown = () => document.getElementById("scrim").classList.contains("show");
 const type = (value) => {
@@ -65,7 +67,8 @@ const pick = (selector, value) => {
 /** This workspace's own slot, as the account's savers write into it. */
 const slot = () => workspaceDefaultsStorage("dev-1/ws-1");
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   confirmAction.mockReset();
   notifyError.mockReset();
   localStorage.clear();
@@ -79,6 +82,25 @@ const open = (options = {}) => {
 };
 
 describe("the workspace settings sheet", () => {
+  it("paints cached directories and offered sources while both pulls are absent", async () => {
+    await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), {
+      id: WORKSPACE.id,
+      project_id: "proj-1",
+      directories: [{ id: "dir-1", source_id: "source-1", name: "bridge", path: "/w/bridge" }],
+    });
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), {
+      project_id: "proj-1",
+      sources: [{ id: "source-1", name: "bridge" }, { id: "source-2", name: "spa" }],
+    });
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    open({ callRpc });
+    await vi.waitFor(() => {
+      expect($("[data-remove-directory]")?.dataset.removeDirectory).toBe("dir-1");
+      expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2");
+    });
+    expect(callRpc).toHaveBeenCalledWith("workspace.get", { workspace_id: WORKSPACE.id });
+  });
+
   it("opens on the workspace's own name, with Save off until it changes", async () => {
     open();
     await flush();
@@ -278,7 +300,7 @@ describe("workspace directories", () => {
     const grown = { ...DETAIL, directories: [...DETAIL.directories, { id: "ws-1:source-2", source_id: "source-2", name: "spa", path: "/w/ws-1/spa", is_git: true, status: "ready" }] };
     const callRpc = caller(grown);
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2"));
     const offered = [...$("#wsdiradd").options].map((option) => option.value);
     expect(offered).toContain("source-2");
     expect(offered).not.toContain("source-1");
@@ -294,7 +316,7 @@ describe("workspace directories", () => {
   it("adds a Git remote as a directory of its own", async () => {
     const callRpc = caller();
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("#wsdiradd")).toBeTruthy());
     pick("#wsdiradd", "remote");
     $("#wsdirremote").value = "git@github.com:8ly/tokens.git";
     $("#wsdirname").value = "tokens";
@@ -314,9 +336,9 @@ describe("workspace directories", () => {
       throw new Error("another filesystem operation is still running");
     });
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("[data-remove-directory]")).toBeTruthy());
     $("[data-remove-directory]").click();
-    await flush();
+    await vi.waitFor(() => expect($("#wsdirerr").textContent).toContain("still running"));
     expect($("#wsdirerr").textContent).toContain("still running");
     expect($("#sheet [data-remove-directory]")).not.toBeNull();
   });

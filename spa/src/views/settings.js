@@ -12,7 +12,7 @@ import { App } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { onDevicesChanged as onDeviceListChanged, readCachedDevices, refreshDevices } from "../devices.js";
 import { chooseCreationDevice, retireDevice } from "../connection.js";
-import { deviceNameOf, homeDeviceId } from "../core/devicePolicy.js";
+import { creationDeviceId, deviceNameOf, homeDeviceId } from "../core/devicePolicy.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
 import { currentPlatformKey } from "../core/platform.js";
 import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
@@ -21,6 +21,9 @@ import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
+import { EMPTY_CATALOG } from "../core/modelCatalog.js";
+import { normalizeModelCatalog } from "../core/modelPicker.js";
+import { deviceModelsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
 import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../core/connectionDiagnostics.js";
 import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
@@ -120,7 +123,10 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   let disposePairing = null;
   let disposeDiagnostics = null;
   let disposeDevices = null;
-  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); });
+  let disposeCatalog = null;
+  let disposeCatalogState = null;
+  let catalogDeviceId;
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); });
   root.innerHTML = `
     <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -209,6 +215,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
 
   disposeDevices = onDeviceListChanged(() => {
     paintDeviceList();
+    mountAgentDefaults();
     onDevicesChanged();
   });
   paintDeviceList();
@@ -216,8 +223,10 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   void refreshDeviceList();
   $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
   mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
+  $("#creationdev")?.addEventListener("change", mountAgentDefaults);
+  disposeCatalogState = onDeviceStateChanged(mountAgentDefaults);
 
-  await mountAgentDefaults();
+  mountAgentDefaults();
   if (!isCurrent()) return;
   bindThemeControl($("#themepick"));
 
@@ -225,11 +234,21 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   // new work starts on, read from the creation device's own catalog and saved
   // on every change. What a PROJECT agent starts on is not here — that one is
   // the machine's, asked on its own page (core/projectAgentSetting.js).
-  async function mountAgentDefaults() {
+  function mountAgentDefaults() {
     if (!$("#defprovider")) return;
-    const catalog = await deviceCatalog(null);
-    if (!isCurrent()) return;
-    mountHarnessDefaults(root, { catalog });
+    const deviceId = creationDeviceId(App.devices, App.selectedDeviceId);
+    if (deviceId === catalogDeviceId) return;
+    disposeCatalog?.();
+    catalogDeviceId = deviceId;
+    if (!deviceId) {
+      mountHarnessDefaults(root, { catalog: EMPTY_CATALOG });
+      return;
+    }
+    const record = watchSettingsRecord(deviceModelsAddress(deviceId), (catalog) => {
+      if (isCurrent() && catalog) mountHarnessDefaults(root, { catalog: normalizeModelCatalog(catalog) });
+    });
+    disposeCatalog = record.dispose;
+    void deviceCatalog(deviceId);
   }
 
   // Notifications: a single toggle backed by the browser's push subscription.

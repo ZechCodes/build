@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 // The models-and-roles panel against a fake bridge.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import { agentRolesPanelHtml, mountAgentRoles } from "../src/core/agentRolesPanel.js";
 
 const DECLARED = [
@@ -27,6 +28,9 @@ const stand = async ({ refuse = false } = {}) => {
 };
 
 const rows = () => [...document.querySelectorAll("[data-aroles-rows] tr")];
+const flush = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+beforeEach(async () => { await wipeCache(); });
 
 describe("the panel", () => {
   it("draws a row per declared model, in the device's own order", async () => {
@@ -43,20 +47,18 @@ describe("the panel", () => {
     const box = rows()[0].querySelector('[data-role="implementer"]');
     box.checked = true;
     box.dispatchEvent(new Event("change", { bubbles: true }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(sent().role_models[0].roles).toEqual(["planner", "implementer", "reviewer"]);
     expect(sent().role_models[1]).toEqual(DECLARED[1]);
-    expect(document.querySelector("#arolessaved").textContent).toBe("Saved.");
+    await vi.waitFor(() => expect(document.querySelector("#arolessaved").textContent).toBe("Saved."));
   });
 
   // Moving a row IS an edit: it changes which model fills a shared role.
   it("moves a row, which changes what fills a shared role", async () => {
     const { sent } = await stand();
     rows()[1].querySelector('[data-move="-1"]').click();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(sent().role_models.map((row) => row.model)).toEqual([
       "claude-opus-5",
@@ -71,8 +73,7 @@ describe("the panel", () => {
     const form = document.querySelector("[data-aroles-add]");
     form.elements.model.value = "claude-haiku-4-5";
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(sent().role_models.at(-1)).toEqual({
       model: "claude-haiku-4-5",
       roles: [],
@@ -80,8 +81,7 @@ describe("the panel", () => {
     });
 
     rows()[0].querySelector("[data-remove]").click();
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
     expect(sent().role_models.map((row) => row.model)).not.toContain("claude-fable-5-1");
   });
 
@@ -91,8 +91,7 @@ describe("the panel", () => {
     const box = rows()[0].querySelector('[data-role="executor"]');
     box.checked = true;
     box.dispatchEvent(new Event("change", { bubbles: true }));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flush();
 
     expect(document.querySelector("#aroleserr").textContent).toContain("the device said no");
     expect(rows()[0].querySelector('[data-role="executor"]').checked).toBe(false);

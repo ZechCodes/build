@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
+import { wipeCache } from "../src/core/localCache.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -58,11 +59,12 @@ vi.mock("../src/push.js", () => ({
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86_64" }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
+const flush = () => new Promise((done) => setTimeout(done, 30));
 
 let renderSettings;
 
 beforeEach(async () => {
+  await wipeCache();
   vi.clearAllMocks();
   deviceListeners.clear();
   devices = [];

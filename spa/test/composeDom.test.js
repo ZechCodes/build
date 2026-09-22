@@ -199,7 +199,7 @@ describe("capture first", () => {
     $("#compose-send").click();
     await flush();
     expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "fix the login redirect" });
-    expect(refreshFeed).toHaveBeenCalled();
+    await vi.waitFor(() => expect(refreshFeed).toHaveBeenCalled());
     expect($("#compose-text")).toBeNull(); // the box is done with it
   });
 

@@ -97,6 +97,7 @@ function createWorkspace(state) {
 function settleProject(state) {
   openProjectSettings(state.route.projectId, {
     callRpc: state.context.rpc,
+    deviceId: state.context.deviceId,
     onDeleted: async () => {
       go({ name: "inbox" });
       await refreshFeed(state.context.deviceId);

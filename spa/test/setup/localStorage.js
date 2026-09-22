@@ -16,6 +16,11 @@
 // Held in memory and minted per file, which is the isolation jsdom's own
 // Storage gave: no suite reads what another one wrote.
 
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+if (typeof globalThis.indexedDB === "undefined") globalThis.indexedDB = new IDBFactory();
+if (typeof globalThis.IDBKeyRange === "undefined") globalThis.IDBKeyRange = IDBKeyRange;
+
 /** A Storage, as much of one as this client asks for: text in, text out, and
  *  the length/key pair that makes it enumerable. */
 function memoryStorage() {

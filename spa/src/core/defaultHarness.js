@@ -4,6 +4,7 @@
 // The bridge's provider catalog supplies this selector's choices and labels.
 
 import { providerOptionsHtml } from "./modelPicker.js";
+import { deviceModelsAddress, deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
 export function defaultHarnessOf(settings, providers) {
   const defaultHarness = settings?.default_harness;
@@ -32,37 +33,52 @@ export function defaultHarnessPanelHtml() {
 /** Wire the panel to the bridge: paint from settings.get, save with
  *  settings.set, and repaint from whatever the bridge answers. The control
  *  shows what the account actually holds, never what was merely attempted. */
-export async function mountDefaultHarness(host, { callRpc, onSaved = async () => {} }) {
+export async function mountDefaultHarness(host, { callRpc, deviceId = "", onSaved = async () => {} }) {
   const select = host.querySelector("#defaultharness");
   const saved = host.querySelector("#harnesssaved");
   const error = host.querySelector("#harnesserr");
   if (!select) return;
 
   let catalogProviders;
+  let cachedSettings;
   const clearUnconfirmedSelection = () => {
     select.innerHTML = "";
     select.disabled = true;
   };
-  const renderConfirmedSettings = (settings) => {
+  const renderConfirmedSettings = () => {
+    if (!catalogProviders || !cachedSettings) return;
     select.innerHTML = providerOptionsHtml(
       catalogProviders,
-      defaultHarnessOf(settings, catalogProviders),
+      defaultHarnessOf(cachedSettings, catalogProviders),
     );
+    select.disabled = false;
+    error.textContent = "";
   };
-
-  try {
-    const [settings, catalog] = await Promise.all([callRpc("settings.get"), callRpc("models.list")]);
-    if (!Array.isArray(catalog?.providers) || catalog.providers.length === 0) {
-      throw new Error("models.list.providers is missing, malformed, or empty");
+  const settingsRecord = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    cachedSettings = settings;
+    try { renderConfirmedSettings(); } catch (failure) { clearUnconfirmedSelection(); error.textContent = failure.message; }
+  }, { owner: select });
+  const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (catalog) => {
+    if (!catalog) return;
+    if (!Array.isArray(catalog.providers) || catalog.providers.length === 0) {
+      clearUnconfirmedSelection();
+      error.textContent = "models.list.providers is missing, malformed, or empty";
+      return;
     }
     catalogProviders = catalog.providers;
-    renderConfirmedSettings(settings);
+    try { renderConfirmedSettings(); } catch (failure) { clearUnconfirmedSelection(); error.textContent = failure.message; }
+  }, { owner: select });
+  try {
+    await Promise.all([
+      settingsRecord.pull(() => callRpc("settings.get")),
+      catalogRecord.pull(() => callRpc("models.list")),
+    ]);
   } catch (e) {
-    clearUnconfirmedSelection();
-    error.textContent = e.message;
-    return;
+    if (!cachedSettings || !catalogProviders) {
+      clearUnconfirmedSelection();
+      error.textContent = e.message;
+    }
   }
-  select.disabled = false;
 
   select.onchange = async () => {
     const chosen = select.value;
@@ -71,22 +87,22 @@ export async function mountDefaultHarness(host, { callRpc, onSaved = async () =>
     saved.textContent = "Saving…";
     try {
       const settings = await callRpc("settings.set", { default_harness: chosen });
-      renderConfirmedSettings(settings);
+      defaultHarnessOf(settings, catalogProviders);
+      await settingsRecord.write(settings);
       await onSaved(settings);
       saved.textContent = "Saved. This fallback applies when a coding-agent creation request does not name a provider.";
-      select.disabled = false;
     } catch (saveError) {
       error.textContent = saveError.message;
       saved.textContent = "";
+      await settingsRecord.read();
       try {
-        const settings = await callRpc("settings.get");
-        renderConfirmedSettings(settings);
-        await onSaved(settings);
-        select.disabled = false;
+        await settingsRecord.pull(() => callRpc("settings.get"));
+        await onSaved(cachedSettings);
+        error.textContent = saveError.message;
       } catch (reloadError) {
-        clearUnconfirmedSelection();
         error.textContent = `${saveError.message}. Reload failed: ${reloadError.message}`;
       }
     }
+    select.disabled = !catalogProviders || !cachedSettings;
   };
 }

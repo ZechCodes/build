@@ -20,6 +20,22 @@ async function settle(page) {
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 
+async function settleDevices(page) {
+  const enhanced = await page.evaluate(() => window.BuildLandingStory?.getState?.().enhanced);
+  if (!enhanced || process.env.LANDING_HEADFUL !== "1") return;
+  await page.waitForFunction(async () => {
+    const { getDeviceScreenSource } = await import("/landing/device-stage.js");
+    const frame = window.BuildLandingStory.getState();
+    return ["laptop", "tablet", "phone"].every((name) => {
+      const source = getDeviceScreenSource(name, frame);
+      if (!source) return true;
+      return document.querySelector(`[data-device="${name}"]`)?.dataset.webglScreenSource === source;
+    });
+  });
+  // Include the poster-to-WebGL crossfade in visual captures.
+  await page.waitForTimeout(350);
+}
+
 async function layout(page) {
   return page.evaluate(() => ({
     width: innerWidth,
@@ -38,13 +54,15 @@ async function inspectViewport(width, height) {
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(base, { waitUntil: "networkidle" });
   await settle(page);
+  await settleDevices(page);
   const initial = await layout(page);
   assert.equal(initial.headings.length, 6, "all six semantic claims must exist");
   assert(initial.documentWidth <= width + 1, `horizontal overflow at ${width}×${height}`);
   assert.deepEqual(initial.missingImages, [], "all visible media should resolve");
-  if (height >= 600) assert(initial.state?.enhanced || initial.state?.staticReason, "normal viewports enhance or report a static fallback reason");
+  if (height >= 600 && width >= 768) assert(initial.state?.enhanced, "supported viewports enhance");
   await page.screenshot({ path: path.join(output, `${width}x${height}-start.png`), animations: "disabled" });
   if (initial.state?.enhanced) {
+    if (width === 1440 && process.env.LANDING_HEADFUL === "1") await inspectPersistentDisplay(page);
     await inspectChapters(page, `${width}x${height}`);
   }
   await page.locator("#download").scrollIntoViewIfNeeded();
@@ -67,6 +85,36 @@ async function seek(page, sceneIndex, local) {
     scrollTo({ top: origin + travelAtFrame(sceneIndex, local, state.profile) * stage.getBoundingClientRect().height, behavior: "instant" });
   }, { sceneIndex, local });
   await settle(page);
+  await settleDevices(page);
+}
+
+async function inspectPersistentDisplay(page) {
+  await seek(page, 1, 0.5);
+  let blockedRoute;
+  let requestedTexture;
+  const requested = new Promise((resolve) => { requestedTexture = resolve; });
+  const pattern = "**/ui03-answer-iphone.webp";
+  await page.route(pattern, (route) => {
+    blockedRoute = route;
+    requestedTexture();
+  });
+  try {
+    await page.evaluate(() => window.BuildLandingStory.seek(2, 0.5, "instant"));
+    await requested;
+    await settle(page);
+    const pending = await page.locator('[data-device="phone"]').evaluate((element) => ({
+      source: element.dataset.webglScreenSource,
+      ready: element.dataset.webglDeviceReady,
+      posterOpacity: element.style.opacity,
+    }));
+    assert.match(pending.source, /ui02-iphone/, "previous system display stays in place while the next image loads");
+    assert.equal(pending.ready, "true");
+    assert.equal(pending.posterOpacity, "0", "pending content must not flash a fallback poster");
+  } finally {
+    await blockedRoute.continue();
+    await page.unroute(pattern);
+  }
+  await settleDevices(page);
 }
 
 function assertFitsViewport(box, viewport, label) {

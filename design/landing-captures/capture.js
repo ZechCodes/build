@@ -5,10 +5,12 @@ import { diffRowsHtml } from "../../spa/src/core/diffRender.js";
 import { directoryRailHtml, DIRECTORY_TABS } from "../../spa/src/core/directoryRail.js";
 import { threadHtml } from "../../spa/src/core/thread.js";
 import { ICON_FOLDERS, ICON_INBOX } from "../../spa/src/core/icons.js";
+import { renderSystemShell } from "./system-ui.js";
 
 const query = new URLSearchParams(location.search);
 const scene = query.get("scene") || "ui01";
 const state = query.get("state") || "default";
+const profile = query.get("profile") || "app";
 
 const icons = {
   claude: "../../spa/src/assets/harnesses/claude.svg",
@@ -208,4 +210,5 @@ function ui05() {
 }
 
 const scenes = { ui01, ui02, ui03, ui04, ui05 };
-document.querySelector("#capture").innerHTML = (scenes[scene] || ui01)();
+const appHtml = (scenes[scene] || ui01)();
+document.querySelector("#capture").innerHTML = renderSystemShell(profile, appHtml);

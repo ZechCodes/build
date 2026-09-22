@@ -13,8 +13,8 @@ export const STORY_SCENES = Object.freeze([
     copy: { title: "Set the work in motion.", region: "left" },
     checkpoints: [{ at: 0, id: "request" }, { at: 0.42, id: "agents-started" }, { at: 0.85, id: "running" }],
     poses: {
-      desktop: devices(pose(66, 61, 58, [-8, 4, 0])),
-      tablet: devices(pose(52, 61, 68, [-4, 3, 0])),
+      desktop: devices(pose(65, 57, 52, [0, 4, 0])),
+      tablet: devices(pose(52, 60, 64, [0, 4, 0])),
       compact: devices(pose(50, 68, 92)),
     },
   },
@@ -35,8 +35,8 @@ export const STORY_SCENES = Object.freeze([
     copy: { title: "A little direction. Back to work.", region: "left" },
     checkpoints: [{ at: 0, id: "question" }, { at: 0.42, id: "answer" }, { at: 0.68, id: "resumed" }],
     poses: {
-      desktop: devices(hidden, hidden, pose(84, 56, 22)),
-      tablet: devices(hidden, hidden, pose(75, 64, 26)),
+      desktop: devices(hidden, hidden, pose(84, 56, 22, [-10, 3, 0])),
+      tablet: devices(hidden, hidden, pose(75, 64, 26, [-8, 3, 0])),
       compact: devices(hidden, hidden, pose(50, 68, 64)),
     },
   },
@@ -46,8 +46,8 @@ export const STORY_SCENES = Object.freeze([
     copy: { title: "See the whole picture.", region: "left" },
     checkpoints: [{ at: 0, id: "workspace" }, { at: 0.3, id: "activity" }, { at: 0.75, id: "review-approach" }],
     poses: {
-      desktop: devices(hidden, pose(73, 57, 50, [-7, 5, 0])),
-      tablet: devices(hidden, pose(50, 78, 62, [-3, 3, 0])),
+      desktop: devices(hidden, pose(73, 57, 50, [-12, 5, 0])),
+      tablet: devices(hidden, pose(50, 78, 62, [-8, 4, 0])),
       compact: devices(hidden, pose(50, 70, 94)),
     },
   },
@@ -75,9 +75,9 @@ export const STORY_SCENES = Object.freeze([
     copy: { title: "Any screen. Your call.", region: "center" },
     checkpoints: [{ at: 0, id: "arrive" }, { at: 0.35, id: "settled" }],
     poses: {
-      desktop: devices(pose(30, 72, 34, [4, 1, 0]), pose(54, 73, 31, [-2, 1, 0]), pose(74, 74, 12, [-3, 0, 0])),
-      tablet: devices(pose(27, 74, 42), pose(55, 75, 38), pose(79, 76, 15)),
-      compact: devices(pose(26, 77, 48), pose(58, 78, 43), pose(83, 78, 17)),
+      desktop: devices(pose(32, 72, 34, [4, 8, 0]), pose(58, 75.8, 27.2, [-8, 3, 0]), pose(77.8, 77.1, 8.5, [-10, 2, 0])),
+      tablet: devices(pose(27, 74, 42, [4, 8, 0]), pose(57, 76.2, 33.55, [-8, 3, 0]), pose(80, 77, 10.48, [-10, 2, 0])),
+      compact: devices(pose(26, 77, 48), pose(58, 79, 38.34), pose(83, 80, 11.98)),
     },
   },
 ]);

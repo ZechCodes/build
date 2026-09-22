@@ -288,7 +288,7 @@ button, input { font: inherit; }
 
 @media (max-width: 700px) {
   .app { grid-template-columns: 1fr; grid-template-rows: 50px minmax(0,1fr) 50px; }
-  .global-head { grid-column: 1; grid-template-columns: 1fr; }
+  .global-head { position: relative; grid-column: 1; grid-template-columns: 1fr; }
   .brand { border-right: 0; padding: 0 16px; font-size: 16px; }
   .crumbs { position: absolute; inset: 0 12px 0 auto; padding: 0; }
   .crumbs > :not(.head-status) { display: none; }

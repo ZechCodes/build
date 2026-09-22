@@ -1,45 +1,50 @@
 {
   "main.js": {
-    "bytes": 4878,
-    "gzip_bytes": 1536
+    "bytes": 2783,
+    "gzip_bytes": 818
   },
   "cinematic-story.js": {
-    "bytes": 11317,
-    "gzip_bytes": 2996
+    "bytes": 12285,
+    "gzip_bytes": 3429
   },
   "story-manifest.js": {
-    "bytes": 5660,
-    "gzip_bytes": 1665
+    "bytes": 5887,
+    "gzip_bytes": 1790
   },
   "device-stage.js": {
-    "bytes": 28388,
-    "gzip_bytes": 7496
+    "bytes": 38501,
+    "gzip_bytes": 10536
+  },
+  "device-lighting.js": {
+    "bytes": 1348,
+    "gzip_bytes": 618
   },
   "assets/devices/device-contract.js": {
-    "bytes": 3105,
-    "gzip_bytes": 659
+    "bytes": 4005,
+    "gzip_bytes": 1009
   },
   "vendor/three-device-runtime.js": {
-    "bytes": 571297,
-    "gzip_bytes": 144435
+    "bytes": 567645,
+    "gzip_bytes": 145114
   },
   "cinematic.css": {
-    "bytes": 36489,
-    "gzip_bytes": 7060
+    "bytes": 32164,
+    "gzip_bytes": 6810
   },
   "landing.css": {
     "bytes": 21142,
-    "gzip_bytes": 4967
+    "gzip_bytes": 4990
   },
   "runtime_models": {
-    "laptop-low.glb": 333732,
-    "tablet.glb": 110544,
-    "phone.glb": 143636
+    "laptop-low.glb": 1717764,
+    "tablet.glb": 199504,
+    "phone.glb": 715136
   },
-  "screen_maps_bytes": 467936,
+  "screen_maps_bytes": 786220,
+  "screen_map_count": 24,
   "hero_posters": {
-    "hero-laptop.webp": 81732,
-    "mobile-hero.webp": 51864
+    "hero-laptop.webp": 53192,
+    "mobile-hero.webp": 54824
   },
-  "note": "File measurements; gzip values are calculated encodings, not production CDN measurements. PNG masters, high-detail GLB, Blender source and animatics are not fetched by the runtime."
+  "note": "File measurements; gzip values are calculated encodings, not production CDN measurements. Runtime screen maps include only the 24 system-composited variants. App-only archives, PNG masters, high-detail GLB, Blender source and animatics are not fetched by the runtime."
 }

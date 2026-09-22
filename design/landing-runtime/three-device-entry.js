@@ -8,13 +8,14 @@ export {
   MathUtils,
   Mesh,
   MeshBasicMaterial,
-  OrthographicCamera,
+  MeshPhysicalMaterial,
+  PerspectiveCamera,
   PCFSoftShadowMap,
   PMREMGenerator,
+  PlaneGeometry,
   Scene,
   SRGBColorSpace,
   TextureLoader,
   WebGLRenderer,
 } from "three";
 export { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-export { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";

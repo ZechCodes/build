@@ -1,10 +1,18 @@
 # Landing page review build
 
-The public landing page now presents the six chapters from the production brief with original Blender hardware, a shared scroll stage, deterministic screen checkpoints, and readable HTML close-ups. The same story remains available as ordinary sections when motion, media, or WebGL is unavailable.
+The current device geometry and motion revision, screenshots, and validation are recorded in [devices-2025/README.md](devices-2025/README.md).
 
-Graphite surfaces use broad neutral studio lighting so the bodies, bezels, and keyboards separate from the dark background. The live renderer uses a locally generated reflection environment; the Blender posters carry matching fill and edge lighting.
+The public landing page presents the six chapters from the production brief with original Blender hardware, a shared scroll stage, deterministic screen checkpoints, and readable HTML close-ups. The same story remains available as ordinary sections when motion, media, or WebGL is unavailable.
 
-The revised hardware follows the proportion study in `../landing/device-references.md`: thin flat frames, rounded black glass, camera cutouts, and a recessed laptop keyboard. The official mint Build mark appears in the public shell, favicon, social card, and screen fixtures. The tablet uses dedicated 4:3 maps and meets a matching review surface across viewport profiles.
+Graphite surfaces use neutral studio strips separated by dark regions so the bodies, bezels, and keyboards remain legible against the background. Aluminum exports use metallic 1.0 and clearcoat 0.0. The live renderer builds its reflection environment locally and uses a 20° perspective camera with a 0.5-unit near plane; Blender posters use related fill and edge lighting.
+
+The hardware depicts the 2025 MacBook Pro 14-inch M5, iPad Pro 11-inch M5, and iPhone 17 Pro Max using the references in `../landing/device-references.md`. The shells face outward, the laptop has raised dished keys over a recessed solid deck and a compact curved sidewall, and the iPad's 15.05 mm body and 6.6 mm screen contours share their corner centers. Native-aspect screens include persistent macOS, iPadOS, and iOS interface regions. The official mint Build mark appears in the public shell, favicon, social card, and screen fixtures.
+
+The live hero uses a low, nearly straight-on view with 4° of pitch. Its named hinge opens the lid from closed to the authored 105° position during local progress 0 through 0.45 while the base stays planted. Phone and tablet arrivals pivot into place, then stop rotating.
+
+During partial-opacity handoffs, each device receives a nearest-surface depth pass before color. The renderer clears depth between devices while retaining previously drawn color and a stable laptop, phone, tablet layer order. This keeps the laptop deck solid and prevents a nearly invisible arrival from cutting through hardware behind it. Single opaque-device frames retain the one-pass render path.
+
+Active screen pixels use an unlit texture material with tone mapping disabled. Dark app content therefore remains stable as hardware moves through the reflection environment, while a subdued front-glass layer leaves highlights on the bezel and metal. The refreshed device stills in `devices-2025/` show this final treatment; the retained recordings and geometry-focused captures predate the glare-only change.
 
 ## Preview and reproduce
 
@@ -20,26 +28,29 @@ Open **http://127.0.0.1:4173**. This loopback preview serves the public landing,
 # Browser profiles; use the optional environment variables for local Chromium/GPU.
 LANDING_HEADFUL=1 CHROMIUM_PATH=/usr/bin/chromium node web/landing-check.mjs
 
-# Re-record the two reference videos and frame measurements on a GPU browser.
-LANDING_HEADFUL=1 CHROMIUM_PATH=/usr/bin/chromium node web/landing-record.mjs
+# Re-record this revision's two videos and frame measurements on a GPU browser.
+LANDING_REVIEW_DIR=design/landing-review/devices-2025 \
+  LANDING_HEADFUL=1 CHROMIUM_PATH=/usr/bin/chromium node web/landing-record.mjs
 
 # Recreate the social card after changing the Blender hero.
 CHROMIUM_PATH=/usr/bin/chromium node web/landing-social.mjs
 ```
 
-The reference videos are `desktop-animatic.webm` and `mobile-animatic.webm`. Their visible chapter markers correspond to `story-manifest.js`.
+The current reference videos are `devices-2025/desktop-animatic.webm` and `devices-2025/mobile-animatic.webm`. Their visible chapter markers correspond to `story-manifest.js`. `LANDING_REVIEW_DIR` controls where the recorder writes videos and performance JSON; static mobile profiles do not wait for a WebGL-ready signal.
 
-The final browser matrix is saved in `browser-results.json`. Still frames are `desktop-hero.png`, `phone-hero.png`, `phone-activity.png`, and `tablet-handoff.png`.
+The focused browser matrix and stills are saved under `devices-2025/`. The earlier integration matrix and still frames remain at this directory's top level.
 
 ## Asset sources
 
 - `../landing/build-devices.blend`: editable laptop, tablet, phone, lighting, cameras, and replaceable screens.
 - `../landing/build_device_assets.py`: reproducible GLBs, low-detail laptop, cutouts, social composition, and twelve responsive scene posters. Its README documents dimensions, axes, pivots, licensing, and overrides.
-- `../landing-captures/`: seeded Launch fixture, current product renderers, nineteen 2× PNG masters, screen-state manifest, and capture tooling. Screen textures are **reconstructed demonstration fixtures**, not footage from a live host or a claim of final product-design approval.
+- `../landing-captures/`: seeded Launch fixture, current product renderers, twenty-four native-resolution system-screen PNG masters, retained app-only archives, the screen-state manifest, and capture tooling. Screen textures are **reconstructed demonstration fixtures**, not footage from a live host or a claim of final product-design approval.
 - `../landing-runtime/`: pinned Three.js dependency, reproducible same-origin bundle, license, and transition tests.
 - `../../skriftapp/buildapp/landing/`: deployed HTML, styles, manifest, runtime, and web derivatives. Editable source, masters, and videos are not downloaded by the landing page.
 
-## Verification
+## Original story verification
+
+The following records cover the earlier story-integration review. The current device revision has its own focused validation and browser captures in `devices-2025/`.
 
 - 521 backend tests and 4,752 SPA tests after upstream integration (including 39 landing tests); six focused device-state tests.
 - Python lint, JavaScript complexity cap of ten, syntax checks, and whitespace checks.
@@ -49,9 +60,9 @@ The final browser matrix is saved in `browser-results.json`. Still frames are `d
 - Keyboard menu/Escape/focus, chapter anchors, installer anchor, resizing below the story, data saving, failed model requests, WebGL context loss, and a 720×450 layout equivalent to a 1440×900 viewport at 200% browser zoom.
 - Axe WCAG A/AA scan: zero reported violations on desktop hero, practical content, and mobile. Automated checks do not replace assistive-technology review.
 
-The recorded local desktop GPU run had a median frame interval of 16.7 ms and a 95th percentile of 16.8 ms in both desktop and phone-sized browser viewports. Draw-call counts stayed unchanged while idle. These measurements describe this machine, not physical-phone performance. Raw measurements are alongside the videos.
+The retained local desktop GPU run held idle draw calls at 84 and measured a 16.7 ms median and 16.8 ms p95 across 1,432 frame intervals, with two intervals over 34 ms. The 390×844 recording used the static document path with zero WebGL draws and measured 16.7 ms median and 16.8 ms p95 across 1,439 intervals, with none over 34 ms. These measurements describe this machine and the preceding geometry/motion revision, not physical-phone performance. Raw measurements and videos are in `devices-2025/`.
 
-Hero posters are about 82 KB desktop and 52 KB mobile. The three runtime GLBs total about 588 KB, including the visible laptop keyboard; all nineteen screen maps total about 468 KB. The vendored runtime is about 144 KB with gzip. `payload.json` distinguishes file measurements and calculated gzip sizes from actual production network measurements.
+The current hero cutouts are 53 KB desktop and 55 KB mobile. The three runtime GLBs total 2.63 MB, the 24 system screen maps total 786 KB, and the vendored runtime is 145 KB with gzip. `payload.json` records the exact local file and calculated gzip sizes; these are not production network measurements.
 
 ## Publication notes
 

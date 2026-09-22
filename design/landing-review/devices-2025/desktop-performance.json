@@ -1,0 +1,24 @@
+{
+  "viewport": [
+    1440,
+    900
+  ],
+  "idleDrawCalls": [
+    84,
+    84
+  ],
+  "frameSamples": 1432,
+  "medianMs": 16.699999999999818,
+  "p95Ms": 16.799999999999272,
+  "over34ms": 2,
+  "state": {
+    "scene": "download",
+    "sceneIndex": 5,
+    "local": 1,
+    "progress": 1,
+    "profile": "desktop",
+    "checkpoint": "settled",
+    "travel": 4.5,
+    "enhanced": true
+  }
+}

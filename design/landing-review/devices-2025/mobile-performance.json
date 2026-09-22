@@ -1,0 +1,24 @@
+{
+  "viewport": [
+    390,
+    844
+  ],
+  "idleDrawCalls": [
+    0,
+    0
+  ],
+  "frameSamples": 1439,
+  "medianMs": 16.699999999999818,
+  "p95Ms": 16.799999999999272,
+  "over34ms": 0,
+  "state": {
+    "scene": "start",
+    "sceneIndex": 0,
+    "local": 0,
+    "progress": 0,
+    "profile": "static",
+    "checkpoint": "request",
+    "travel": 0,
+    "enhanced": false
+  }
+}

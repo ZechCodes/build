@@ -73,7 +73,11 @@ export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspace
 
 function toWorkspaceEntry(workspace, projectNames, conversation) {
   const activity = conversation || { working: workspace.status === "active" };
-  const entityId = entityIdOf(conversation);
+  // The workspace list carries the conversation owner independently of the
+  // board row. On a cold replay it can therefore lead the row that carries the
+  // roster; keep that owner so separately cached conversation records are
+  // addressable while the roster record is still landing.
+  const entityId = entityIdOf(conversation) || workspace.entity_id || workspace.run_id || null;
   // A checkout Build only adopted, with nobody talking in it: somebody else's
   // folder, listed so it can be opened. There is no work to summarize and
   // nothing for Done to remove, so the row says what it is instead.

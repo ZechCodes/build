@@ -292,6 +292,15 @@ describe("the entity a route is standing on", () => {
     expect(routedEntityId(route, snapshot)).toBe("run-7");
   });
 
+  it("uses the workspace's cached owner while its roster row is still landing", () => {
+    const snapshot = view(
+      [{ id: "workspace-1", project_id: "project-1", entity_id: "run-7", name: "wire" }],
+      [],
+    );
+    const route = { name: "workspace", deviceId: DEVICE, projectId: "project-1", workspaceId: "workspace-1" };
+    expect(routedEntityId(route, snapshot)).toBe("run-7");
+  });
+
   it("is that machine's row, never another machine's copy of the same branch", () => {
     const snapshot = view([], [{ kind: "branch", project_id: "project-1", branch: "build/login", run_id: "run-7" }]);
     const elsewhere = { name: "branch", deviceId: "dev-2", projectId: "project-1", branch: "build/login" };

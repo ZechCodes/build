@@ -41,6 +41,7 @@ import { labelsOf } from "./trackerFilters.js";
 export function mountIssuesPane(host, options) {
   const state = {
     ...options,
+    unscoped: [], // the whole list before a workspace's live roster narrows it
     all: [], // the project's whole list, which the filter menus are built from
     shown: [], // the narrowed list, which is what is painted
     columns: [],
@@ -72,6 +73,10 @@ export function mountIssuesPane(host, options) {
    * answers for every agent at once.
    */
   const kept = (issues) => (state.only ? (issues || []).filter((issue) => state.only(issue)) : issues || []);
+  const rescope = () => {
+    state.all = kept(state.unscoped);
+    state.shown = filterIssues(state.all, shownFilters());
+  };
 
   /** Where one issue opens. The project's tab opens the tracker's own page;
    *  a workspace's opens the same page INSIDE the workspace, because leaving
@@ -164,7 +169,8 @@ export function mountIssuesPane(host, options) {
       issuesRecordAt(state.deviceId, state.projectId),
     ]);
     if (state.disposed || !record) return;
-    state.all = kept(sortIssues(record.issues));
+    state.unscoped = sortIssues(record.issues);
+    state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);
     state.shown = filterIssues(state.all, shownFilters());
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
@@ -187,7 +193,10 @@ export function mountIssuesPane(host, options) {
       // to make for it. Asked of the READ and not of the reader: the default
       // asks for open issues only, so it narrows this even though the reader
       // chose nothing (#33).
-      if (!narrowsTheRead(filters)) state.all = state.shown;
+      if (!narrowsTheRead(filters)) {
+        state.unscoped = sortIssues(answer?.issues);
+        state.all = kept(state.unscoped);
+      }
       reads.succeeded();
       await refreshWholeList(narrowsTheRead(filters));
       paint();
@@ -213,7 +222,11 @@ export function mountIssuesPane(host, options) {
     // the default now narrowing the read (#33), falling through here would
     // leave every menu empty on a first open until a pass had written. The
     // narrowed read is a partial list, but a partial menu beats no menu.
-    if (narrowed) state.all = record ? kept(sortIssues(record.issues)) : state.shown;
+    if (narrowed) {
+      state.unscoped = record ? sortIssues(record.issues) : state.unscoped;
+      if (!state.unscoped.length) state.unscoped = state.shown;
+      state.all = kept(state.unscoped);
+    }
     if (record?.columns?.length) state.columns = columnsOf(record.columns);
   }
 
@@ -437,7 +450,10 @@ export function mountIssuesPane(host, options) {
   return {
     /** The feed moved: the agents a picker would offer may have, so the next
      *  paint names them again. Nothing is re-read from the bridge. */
-    feedMoved: paint,
+    feedMoved() {
+      rescope();
+      paint();
+    },
     dispose() {
       state.disposed = true;
       watcher.dispose();

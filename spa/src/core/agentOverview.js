@@ -30,13 +30,13 @@ export function overviewSnippet(agent, thread) {
 }
 
 export function overviewRows(entries, threads) {
-  return entries.map(({ agent, source }, index) => ({
+  return entries.map(({ agent, state = agent, source }, index) => ({
     id: agent.id,
     source,
     name: agentDisplayName(agent),
-    snippet: overviewSnippet(agent, threads[index]),
-    working: !!agent.working,
-    unread: !!agent.unread_count,
+    snippet: overviewSnippet(state, threads[index]),
+    working: !!state.working,
+    unread: !!state.unread_count,
   }));
 }
 
@@ -47,6 +47,21 @@ export function overviewHtml(rows) {
     <span class="rail-overview-snippet">${esc(row.snippet)}</span>
     ${row.working ? '<span class="rail-overview-state">Working</span>' : row.unread ? '<span class="rail-overview-state">Unread</span>' : ""}
   </button>`).join("");
+}
+
+const cachedConversationId = (agent, execution) => execution
+  ? execution.conversation_id || execution.agent_id || agent.id
+  : agent.conversation_id || agent.id;
+
+function rosterEntry(agent, execution, source) {
+  return {
+    agent,
+    state: execution?.agent ? { ...agent, ...execution.agent } : agent,
+    source: source.slot,
+    entityId: execution?.entity_id || source.entityId,
+    agentId: execution?.agent_id || agent.id,
+    conversationId: cachedConversationId(agent, execution),
+  };
 }
 
 /** Sources are cache row addresses for this work item and, where present, its
@@ -75,15 +90,13 @@ export function createAgentOverview({ sources, scope, onRows }) {
     if (!active || current !== generation) return;
     const entries = rosterSources.flatMap((source, index) => {
       const owner = railEntity(rosterRecords[index]?.value || {}, source.kind);
-      return owner.agents.map((agent) => ({ agent, source: source.slot,
-        entityId: owner.executionContext?.entity_id || source.entityId,
-        conversationId: owner.executionContext?.conversation_id || agent.conversation_id || agent.id }));
+      return owner.agents.map((agent) => rosterEntry(agent, owner.executionContext, source));
     });
-    const addressed = entries.map(({ agent, entityId, source, conversationId }) => ({ agent, entityId, source,
+    const addressed = entries.map(({ agent, state, entityId, agentId, source, conversationId }) => ({ agent, state, source,
       address: scope?.address(threadCacheAddress({
       deviceId: scope.deviceId,
       entityId,
-      agentId: agent.id,
+      agentId,
       conversationId,
     })) })).filter((entry) => entry.address);
     watch([...rosterSources.map((source) => source.address), ...addressed.map((entry) => entry.address)]);

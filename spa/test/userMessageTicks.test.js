@@ -2,9 +2,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { jumpToUserMessage, syncUserMessageTicks, threadHtml } from "../src/core/thread.js";
+import {
+  jumpToUserMessage,
+  scheduleUserMessageTickSync,
+  syncUserMessageTicks,
+  threadHtml,
+} from "../src/core/thread.js";
 
 const styles = readFileSync(resolve("src/styles.css"), "utf8");
+const railStyles = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
 function mount() {
   document.body.innerHTML = `<div id="scroller" style="scroll-padding-top:20px">${threadHtml({ items: [
@@ -17,7 +23,7 @@ function mount() {
 }
 
 describe("grouped user message navigator", () => {
-  it("groups horizontal lines in one sticky gutter column, excluding another agent's words", () => {
+  it("groups pill ticks in the existing gutter without reserving message width", () => {
     const scroller = mount();
     const navigator = scroller.querySelectorAll(".thread-user-nav");
     const ticks = scroller.querySelectorAll(".thread-user-tick");
@@ -27,11 +33,15 @@ describe("grouped user message navigator", () => {
     expect([...ticks].every((tick) => tick.closest(".thread-user-nav") === navigator[0])).toBe(true);
     expect(scroller.querySelector(".thread-message .thread-user-tick")).toBeNull();
     expect(ticks[0].getAttribute("aria-label")).toContain("Jump to your message from Sep 22, 2026");
-    expect(styles).toMatch(/\.thread-user-nav \{ position:sticky; top:50%/);
-    expect(styles).toMatch(/\.thread-user-tick span \{[^}]*width:10px; height:2px/);
+    expect(styles).toMatch(/\.thread-user-nav \{ position:sticky; top:50%;[^}]*width:0; height:0/);
+    expect(styles).toMatch(/\.thread-user-nav-list \{ position:absolute; top:0; left:-20px/);
+    expect(styles).toMatch(/\.thread-timeline \{ --thread-gap:20px; gap:var\(--thread-gap\); padding:20px 12px; \}/);
+    expect(railStyles).toMatch(/\.rail-body \.thread-timeline \{[^}]*padding:4px 12px 16px; \}/);
+    expect(styles).toMatch(/\.thread-user-tick span \{[^}]*width:10px; height:3px; border-radius:999px/);
+    expect(styles).toMatch(/transition:width 200ms ease-out, background-color 200ms ease-out/);
   });
 
-  it("widens the nearest previous line and any hovered line, leaving the others narrow", () => {
+  it("widens exactly one nearest previous pill and any hovered pill to twice the resting width", () => {
     const scroller = mount();
     const rows = scroller.querySelectorAll(".thread-message.user");
     const ticks = scroller.querySelectorAll(".thread-user-tick");
@@ -51,7 +61,50 @@ describe("grouped user message navigator", () => {
     positions = [121, 200];
     syncUserMessageTicks(scroller);
     expect(scroller.querySelector(".thread-user-tick.active")).toBeNull();
-    expect(styles).toMatch(/\.thread-user-tick:is\(:hover, \.active\) span \{ width:20px; \}/);
+    expect(styles).toMatch(/\.thread-user-tick:is\(:hover, \.active\) span \{ width:20px;/);
+    expect(styles).toMatch(/background-color:color-mix\(in srgb, var\(--dim\) 55%, var\(--accent\)\)/);
+  });
+
+  it("coalesces scroll updates into one animation frame and reads the latest position", () => {
+    const scroller = mount();
+    const rows = scroller.querySelectorAll(".thread-message.user");
+    const ticks = scroller.querySelectorAll(".thread-user-tick");
+    let positions = [90, 180];
+    scroller.getBoundingClientRect = () => ({ top: 100 });
+    rows.forEach((row, index) => { row.getBoundingClientRect = () => ({ top: positions[index] }); });
+    const frames = [];
+    const originalFrame = window.requestAnimationFrame;
+    window.requestAnimationFrame = vi.fn((callback) => { frames.push(callback); return frames.length; });
+    try {
+      scheduleUserMessageTickSync(scroller);
+      scheduleUserMessageTickSync(scroller);
+      positions = [20, 120];
+      scheduleUserMessageTickSync(scroller);
+      expect(frames).toHaveLength(1);
+      expect(scroller.querySelector(".thread-user-tick.active")).toBeNull();
+      frames.shift()();
+      expect([...scroller.querySelectorAll(".thread-user-tick.active")]).toEqual([ticks[1]]);
+      scheduleUserMessageTickSync(scroller);
+      expect(frames).toHaveLength(1);
+    } finally {
+      window.requestAnimationFrame = originalFrame;
+    }
+  });
+
+  it("keeps the current pill visible when the pinned group has its own scroll", () => {
+    const scroller = mount();
+    const list = scroller.querySelector(".thread-user-nav-list");
+    const ticks = list.querySelectorAll(".thread-user-tick");
+    const rows = scroller.querySelectorAll(".thread-message.user");
+    scroller.getBoundingClientRect = () => ({ top: 100 });
+    rows.forEach((row) => { row.getBoundingClientRect = () => ({ top: 0 }); });
+    Object.defineProperty(list, "clientHeight", { value: 24 });
+    Object.defineProperty(ticks[1], "offsetTop", { value: 24 });
+    Object.defineProperty(ticks[1], "offsetHeight", { value: 24 });
+
+    syncUserMessageTicks(scroller);
+    expect(ticks[1].classList.contains("active")).toBe(true);
+    expect(list.scrollTop).toBe(24);
   });
 
   it("jumps from a keyboard-operable grouped line to its message", () => {

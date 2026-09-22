@@ -3,8 +3,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
-const themeBlock = (selector) => styles.match(new RegExp(`${selector} \\{([^}]+)\\}`))[1];
-const token = (block, name) => block.match(new RegExp(`--${name}:\\s*(#[0-9a-f]{6})`))?.[1];
+const themeBlocks = {
+  light: styles.match(/:root \{([^}]+)\}/)?.[1],
+  dark: styles.match(/:root\[data-theme="dark"\] \{([^}]+)\}/)?.[1],
+};
+const tokensIn = (block) => Object.fromEntries(
+  [...block.matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/g)].map((match) => [match[1], match[2]]),
+);
 
 function luminance(hex) {
   const channels = hex.slice(1).match(/../g).map((part) => Number.parseInt(part, 16) / 255);
@@ -19,12 +24,12 @@ function contrast(one, two) {
 }
 
 describe("chat bubble colours", () => {
-  it.each([":root", ':root\\[data-theme="dark"\\]'])("keeps every user bubble ink at WCAG AA contrast in %s", (selector) => {
-    const block = themeBlock(selector);
-    const background = token(block, "user-bubble");
+  it.each(["light", "dark"])("keeps every user bubble ink at WCAG AA contrast in %s", (theme) => {
+    const tokens = tokensIn(themeBlocks[theme]);
+    const background = tokens["user-bubble"];
     expect(background).toBeTruthy();
     for (const name of ["user-bubble-ink", "user-bubble-link", "user-bubble-muted", "user-bubble-warn", "user-bubble-error"]) {
-      const foreground = token(block, name);
+      const foreground = tokens[name];
       expect(foreground, name).toBeTruthy();
       expect(contrast(background, foreground), name).toBeGreaterThanOrEqual(4.5);
     }

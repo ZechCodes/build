@@ -151,6 +151,24 @@ describe("fetching what a run holds", () => {
     expect(runs.itemsOf(120)).toHaveLength(1);
   });
 
+  it("re-reads a run cache announcement and tells its view to redraw", async () => {
+    const paints = [];
+    let runs;
+    runs = runsOver([page([121])], [], {
+      onChange: () => paints.push((runs.itemsOf(120) || []).map((held) => held.data.sequence)),
+    });
+    await runs.open(DIGEST);
+
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: ACTIVITY_RECORD_KIND, sub: "ag-1:120" },
+      { items: [item(122)] },
+    );
+    await vi.waitFor(() => expect(paints).toContainEqual([122]));
+
+    expect(runs.itemsOf(120).map((held) => held.data.sequence)).toEqual([122]);
+    runs.dispose();
+  });
+
   it("never asks for a run it already holds", async () => {
     const calls = [];
     const runs = runsOver([page([121])], calls);

@@ -198,6 +198,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   let editor = null;
   let selectedPath = null;
   let savingState = null;
+  let pendingSave = null;
+  let fileRecordHeld = false;
   let fileRequest = 0;
 
   // On a narrow viewport the tree is a drawer over the preview. Only a file
@@ -283,14 +285,15 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
    *  hold is the answer. A workspace source's and a project's are not walked by
    *  anybody, so what they hold is the last visit's own work: a seed to paint
    *  at once, and never a reason to skip the read. */
-  const readsForItself = !syncWalksCheckout(scope);
+  const readsForItself = () => !syncWalksCheckout(scope);
   const treeAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
 
   const fileAddress = (path) =>
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: FILE_RECORD_KIND, sub: path }) || null : null;
 
-  const heldValue = async (address) => (address ? (await readCached(address))?.value : undefined);
+  const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
+  const heldValue = async (address) => (await heldRecord(address))?.value;
 
   let treeRequest = 0; // which navigation the paints below still speak for
   let unwatchTree = null; // the watch on the listing on screen
@@ -325,7 +328,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   /** The one on-demand listing: a directory nothing has ever been written
    *  for. It is written through, so the sync layer keeps it fresh from here. */
-  const listTree = async (nextDir, request) => {
+  const listTree = async (nextDir, request, previousAt) => {
     let res;
     try {
       res = await callRpc("fs.tree", { ...scope, path: nextDir });
@@ -335,62 +338,121 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     }
     if (!stillListing(request)) return;
     const listing = { path: res.path || "", entries: res.entries || [] };
-    paintListing(listing);
     const address = treeAddress(nextDir);
-    if (address) writeCached(address, listing);
+    if (!address) {
+      paintListing(listing);
+      return;
+    }
+    const current = await heldRecord(address);
+    if (!stillListing(request) || current?.at !== previousAt) return;
+    await writeCached(address, listing);
   };
 
   const loadTree = async (nextDir) => {
     const request = ++treeRequest;
     watchListing(nextDir, request);
-    const held = await heldValue(treeAddress(nextDir));
+    const address = treeAddress(nextDir);
+    const record = await heldRecord(address);
+    const held = record?.value;
     if (!stillListing(request)) return;
     if (held) {
       paintListing(held);
-      if (!readsForItself) return;
+      if (!readsForItself()) return;
     }
-    await listTree(nextDir, request);
+    await listTree(nextDir, request, record?.at);
   };
 
-  /** Keep what the reader just opened, under the recent-files rule. A body too
-   *  big for the cache is shown and not kept (core/cacheLifetime.js) — and it
-   *  takes any record of the same path with it, which is of a file that has
-   *  since grown out of the rule and must not be the next open's answer. */
-  const keepFileBody = (path, file) => {
+  let unwatchFile = null;
+
+  const stillSelected = (request, path) =>
+    !disposed && request === fileRequest && selectedPath === path;
+
+  const finishPendingSave = (file) => {
+    if (!pendingSave || savingState !== pendingSave.state) return false;
+    if (file.revision !== pendingSave.file.revision) return false;
+    finishSave(pendingSave.state, file, pendingSave.value);
+    return true;
+  };
+
+  const holdFileRecord = () => {
+    fileRecordHeld = true;
+    setText(previewEl.querySelector(".file-save-status"), "File changed on disk");
+    const reload = previewEl.querySelector(".file-reload");
+    if (reload) reload.hidden = false;
+  };
+
+  const viewerMatches = (snapshot, file) => {
+    if (!snapshot?.file) return false;
+    return snapshot.file.revision === file.revision && snapshot.file.content_b64 === file.content_b64;
+  };
+
+  const viewerBlocksFileRecord = (snapshot) =>
+    Boolean(snapshot?.dirty || (savingState && savingState === viewerState));
+
+  /** Take the selected file from its record. A record moving while somebody
+   *  is typing must not replace their draft; reload/save is the explicit
+   *  reconciliation path for that case. */
+  const takeSelectedFile = (path, request, file) => {
+    if (!file || !stillSelected(request, path)) return false;
+    if (finishPendingSave(file)) return true;
+    const snapshot = viewerState?.snapshot();
+    if (viewerBlocksFileRecord(snapshot)) {
+      holdFileRecord();
+      return false;
+    }
+    if (viewerMatches(snapshot, file)) return true;
+    fileRecordHeld = false;
+    editor?.dispose();
+    editor = null;
+    renderPreview(path, file);
+    return true;
+  };
+
+  const rereadSelectedFile = async (path, request) => {
+    const record = await heldRecord(fileAddress(path));
+    if (record?.value?.file) takeSelectedFile(path, request, record.value.file);
+    return record;
+  };
+
+  const watchFile = (path, request) => {
+    unwatchFile?.();
+    unwatchFile = null;
     const address = fileAddress(path);
     if (!address) return;
-    // Fire and forget, and forgiving: a disk that will not take the body is a
-    // cold second look, never something the reader is told about.
-    void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file })
-      .then((kept) => (kept ? null : deleteCached([address])))
-      .catch(() => {});
+    unwatchFile = subscribeCache(address, () => void rereadSelectedFile(path, request));
   };
 
-  /** The saved body is stale the moment this tab writes over it, and the write
-   *  answers with a revision rather than with the file. Let it go: the next
-   *  open reads the file the save made. */
-  const dropFileBody = (path) => {
+  const storedFileResult = async (address, file) => {
+    const stored = await heldRecord(address);
+    return stored?.value?.file ? { file: stored.value.file } : { file, direct: true };
+  };
+
+  const discardSupersededFile = async (address, previousAt) => {
+    const after = await heldRecord(address);
+    if (after && after.at === previousAt) await deleteCached([address]);
+  };
+
+  /** Store one pulled body and then read the stored record back. The narrow
+   *  direct result is the existing oversized/truncated exception: retention
+   *  policy forbids that body from entering IndexedDB, pending its owner
+   *  decision. */
+  const storePulledFile = async (path, file, request, previousAt) => {
     const address = fileAddress(path);
-    if (address) void deleteCached([address]);
+    if (!address) return { file, direct: true };
+    const current = await heldRecord(address);
+    if (!stillSelected(request, path)) return {};
+    if (current?.at !== previousAt) return { file: current?.value?.file };
+    const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file });
+    if (!stillSelected(request, path)) return {};
+    if (kept) return storedFileResult(address, file);
+    await discardSupersededFile(address, previousAt);
+    return { file, direct: true };
   };
 
-  /** One file's body: the record where there is one, else the one read off the
-   *  wire, written through. `fresh` is the reload verb, which exists to go
-   *  past whatever is held — as does a checkout nothing but this tab reads,
-   *  where the record is one visit old and no push has moved it since. */
-  const readFile = async (path, { fresh = false } = {}) => {
-    const held = fresh || readsForItself ? undefined : (await heldValue(fileAddress(path)))?.file;
-    if (held) {
-      // Opening it is what makes it recent — the five kept are the five last
-      // read, not the five first read, or the file the reader keeps coming
-      // back to is the one the trim drops.
-      keepFileBody(path, held);
-      return { file: held };
-    }
+  const pullFile = async (path, request, previousAt) => {
     try {
       const file = await callRpc("fs.read", { ...scope, path });
-      keepFileBody(path, file);
-      return { file };
+      return storePulledFile(path, file, request, previousAt);
     } catch (error) {
       return { error };
     }
@@ -411,6 +473,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   const finishSave = (submittedState, written, submittedValue) => {
     submittedState.saved(written, submittedValue);
     savingState = null;
+    pendingSave = null;
+    fileRecordHeld = false;
     if (disposed || viewerState !== submittedState) return;
     setText(previewEl.querySelector(".fpsize"), `${Number(written.size) || 0} bytes`);
     setText(treeEl.querySelector(".frow.sel .fsize"), String(Number(written.size) || 0));
@@ -420,6 +484,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const failSave = (submittedState, error) => {
     savingState = null;
+    pendingSave = null;
     if (disposed || viewerState !== submittedState) return;
     setText(previewEl.querySelector(".file-save-status"), error.message || "Save failed");
     const reload = previewEl.querySelector(".file-reload");
@@ -436,6 +501,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     editor?.dispose();
     editor = null;
     viewerState = null;
+    fileRecordHeld = false;
     selectedPath = path;
     drawer.refresh();
     viewingContext?.clearSelection?.();
@@ -443,11 +509,26 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     showPlaceholder("loading");
   };
 
-  const selectedFileIsCurrent = (request, path) =>
-    !disposed && request === fileRequest && selectedPath === path;
-
   const editorIsCurrent = (path, state) =>
     !disposed && selectedPath === path && viewerState === state;
+
+  const showFileResult = (path, request, result, errorPrefix = "cannot read") => {
+    if (!stillSelected(request, path)) return;
+    if (result.error) {
+      if (!viewerState) showPlaceholder("error", `${errorPrefix}: ${result.error.message || "error"}`);
+      return;
+    }
+    if (result.file) takeSelectedFile(path, request, result.file);
+  };
+
+  const takeHeldFile = (path, request, address, record) => {
+    const held = record?.value?.file;
+    if (!held) return false;
+    takeSelectedFile(path, request, held);
+    if (readsForItself()) return false;
+    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: held });
+    return true;
+  };
 
   const selectFile = async (path, row) => {
     if (disposed || path === selectedPath) return;
@@ -456,13 +537,13 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const request = ++fileRequest;
     // The tab names the file it is standing in, so the URL can say so too.
     beginFileSelection(path, row);
-    const result = await readFile(path);
-    if (!selectedFileIsCurrent(request, path)) return;
-    if (result.error) {
-      showPlaceholder("error", `cannot read: ${result.error.message || "error"}`);
-      return;
-    }
-    renderPreview(path, result.file);
+    watchFile(path, request);
+    const address = fileAddress(path);
+    const record = await heldRecord(address);
+    if (!stillSelected(request, path)) return;
+    if (takeHeldFile(path, request, address, record)) return;
+    const result = await pullFile(path, request, record?.at);
+    showFileResult(path, request, result);
   };
 
   // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
@@ -500,11 +581,37 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
         content_b64: encodeBase64Text(snapshot.value),
         expected_revision: snapshot.revision,
       });
-      dropFileBody(path);
-      finishSave(submittedState, written, submittedValue);
+      if (!editorIsCurrent(path, submittedState)) return;
+      pendingSave = { state: submittedState, file: written, value: submittedValue };
+      const address = fileAddress(path);
+      const kept = await storeWrittenFile(path, address, written);
+      if (!editorIsCurrent(path, submittedState) || savingState !== submittedState) return;
+      const savedFile = kept ? (await heldRecord(address))?.value?.file : written;
+      finishSave(submittedState, savedFile || written, submittedValue);
     } catch (error) {
       failSave(submittedState, error);
     }
+  };
+
+  const storeWrittenFile = async (path, address, written) => {
+    if (!address) return false;
+    const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: written });
+    if (!kept) await deleteCached([address]);
+    return kept;
+  };
+
+  const showReloadResult = (path, request, state, previousValue, result) => {
+    if (!stillSelected(request, path) || viewerState !== state) return;
+    if (state.snapshot().value !== previousValue) return;
+    if (result.error) {
+      previewEl.querySelector(".file-save-status").textContent = result.error.message || "Reload failed";
+      return;
+    }
+    editor?.dispose();
+    editor = null;
+    if (!result.file) return;
+    fileRecordHeld = false;
+    renderPreview(path, result.file);
   };
 
   const reloadEditor = async (path) => {
@@ -514,16 +621,10 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const reloadingState = viewerState;
     const reloadingValue = reloadingState.snapshot().value;
     const request = ++fileRequest;
-    const result = await readFile(path, { fresh: true });
-    if (!selectedFileIsCurrent(request, path) || viewerState !== reloadingState) return;
-    if (reloadingState.snapshot().value !== reloadingValue) return;
-    if (result.error) {
-      previewEl.querySelector(".file-save-status").textContent = result.error.message || "Reload failed";
-      return;
-    }
-    editor?.dispose();
-    editor = null;
-    renderPreview(path, result.file);
+    watchFile(path, request);
+    const before = await heldRecord(fileAddress(path));
+    const result = await pullFile(path, request, before?.at);
+    showReloadResult(path, request, reloadingState, reloadingValue, result);
   };
 
   const paintEditor = (path, snapshot) => {
@@ -641,6 +742,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
       fileRequest += 1;
       unwatchTree?.();
       unwatchTree = null;
+      unwatchFile?.();
+      unwatchFile = null;
       stopPreviewHeadMeasurement();
       editor?.dispose();
       viewingContext?.clear?.();
@@ -652,6 +755,12 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     hasUnsavedChanges: () => Boolean(viewerState?.snapshot().dirty),
     retargetScope: (nextScope) => {
       scope = nextScope;
+      void loadTree(dir);
+      if (selectedPath) {
+        const request = ++fileRequest;
+        watchFile(selectedPath, request);
+        if (!fileRecordHeld && !viewerState?.snapshot().dirty) void rereadSelectedFile(selectedPath, request);
+      }
     },
   };
 }

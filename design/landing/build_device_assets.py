@@ -65,6 +65,10 @@ def parse_args():
     parser.add_argument("--phone-screen", type=Path, default=DEFAULT_PHONE_SCREEN)
     parser.add_argument("--preview-dir", type=Path)
     parser.add_argument(
+        "--render-only", choices=("posters", "cutouts", "social", "all"),
+        help="render from the checked-in Blender source without rebuilding or exporting geometry",
+    )
+    parser.add_argument(
         "--models-only", "--skip-renders", action="store_true", dest="models_only",
         help="export GLBs, the Blender source, metadata, and contract without poster renders",
     )
@@ -1019,6 +1023,7 @@ def fit_device_framing(camera, margin=0.05):
 def render(path, width, height, camera_location, target, lens, transparent, floor=False, ortho_scale=None):
     clear_render_rig()
     setup_render(width, height, transparent)
+    bpy.context.scene.render.image_settings.file_format = "PNG" if path.suffix.lower() == ".png" else "WEBP"
     camera = add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
     fit_device_framing(camera)
     view_side = 1 if camera_location[1] > target[1] else -1
@@ -1046,6 +1051,114 @@ def render(path, width, height, camera_location, target, lens, transparent, floo
         add_floor(14, -0.075, black=True)
     bpy.context.scene.render.filepath = str(path)
     bpy.ops.render.render(write_still=True)
+
+
+def render_social(collections, mats):
+    laptop = collections["laptop"]
+    set_screen_texture(mats["desktop_screen"], SCREENS_DIR / "ui10-editor-macbook.webp")
+    laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(1.55, 0, -0.05), scale=0.72)
+    set_visible_collections(laptop)
+    bpy.ops.object.text_add(location=(-0.47, -0.08, 0.145), rotation=(math.radians(90), 0, 0))
+    headline = bpy.context.object
+    headline.name = "social_headline"
+    headline.data.body = "Your agents.\nYour machine.\nYour call."
+    headline.data.align_x = "LEFT"
+    headline.data.align_y = "CENTER"
+    headline.data.size = 0.072
+    headline.data.space_line = 0.92
+    headline.data.extrude = 0.0004
+    headline.data.materials.append(material("SocialHeadline", (0.87, 1.0, 0.94, 1), roughness=0.55))
+    paths = [OUTPUT_DIR / "social-preview.webp", ROOT / "assets" / "social-preview.png"]
+    for path in paths:
+        render(path, 1200, 630, (0.2, -7.4, 1.6), (0.0, -0.5, 0.75), 58, False, ortho_scale=5.6)
+    bpy.data.objects.remove(headline, do_unlink=True)
+    restore_matrices(laptop, laptop_state)
+    return paths
+
+
+def render_cutouts(collections, mats):
+    jobs = (
+        ("laptop", "desktop_screen", "ui10-editor-macbook.webp", "laptop.webp", 1200, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS),
+        ("tablet", "tablet_screen", "ui05-merged-ipad.webp", "tablet.webp", 1000, 760, (2.45, -5.0, 1.92), (0, 0, 0), 67),
+        ("phone", "phone_screen", "ui03-answer-iphone.webp", "phone.webp", 640, 1040, (1.45, -3.95, 1.10), (0, 0, 0), 72),
+    )
+    paths = []
+    for device, material_name, fixture, filename, width, height, camera, target, lens in jobs:
+        set_screen_texture(mats[material_name], SCREENS_DIR / fixture)
+        set_visible_collections(collections[device])
+        path = OUTPUT_DIR / filename
+        render(path, width, height, camera, target, lens, True)
+        paths.append(path)
+    return paths
+
+
+def update_render_metadata(paths, fixture_map):
+    metadata_path = OUTPUT_DIR / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    renders = metadata.setdefault("renders", {})
+    for path in paths:
+        info = image_info(path)
+        fixtures = fixture_map.get(path.stem, {})
+        info["provenance"] = {
+            "blend": BLEND_PATH.name,
+            "generator": Path(__file__).name,
+            "blender": bpy.app.version_string,
+            "screen_fixtures": {
+                device: {
+                    "file": str(fixture.relative_to(LANDING_ASSETS)),
+                    "sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
+                }
+                for device, fixture in fixtures.items()
+            },
+        }
+        renders[path.stem] = info
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+
+
+def render_only(group):
+    if Path(bpy.data.filepath).resolve() != BLEND_PATH.resolve():
+        raise RuntimeError(f"--render-only requires opening {BLEND_PATH} before --python")
+    collections = {name.lower(): bpy.data.collections[name] for name in ("Laptop", "Tablet", "Phone")}
+    mats = {
+        "desktop_screen": bpy.data.materials["ScreenDesktop"],
+        "tablet_screen": bpy.data.materials["ScreenTablet"],
+        "phone_screen": bpy.data.materials["ScreenPhone"],
+    }
+    defaults = {
+        "laptop": SCREENS_DIR / "ui10-editor-macbook.webp",
+        "tablet": SCREENS_DIR / "ui05-merged-ipad.webp",
+        "phone": SCREENS_DIR / "ui03-answer-iphone.webp",
+    }
+    groups = ("posters", "cutouts", "social") if group == "all" else (group,)
+    paths = []
+    fixture_map = {}
+    if "posters" in groups:
+        paths.extend(render_scene_posters(collections, mats, defaults))
+        scene_specs = {
+            1: {"laptop": "ui10-editor-macbook.webp"}, 2: {"laptop": "ui10-editor-macbook.webp"},
+            3: {"laptop": "ui12-issues-macbook.webp"},
+            4: {"laptop": "ui13-team-macbook.webp", "phone": "ui03-answer-iphone.webp"},
+            5: {"laptop": "ui16-builder-macbook.webp"}, 6: {"laptop": "ui14-git-macbook.webp"},
+            7: {"laptop": "ui05-merged-macbook.webp", "tablet": "ui05-merged-ipad.webp"},
+            8: {"laptop": "ui05-merged-macbook.webp", "tablet": "ui05-merged-ipad.webp", "phone": "ui05-merged-iphone.webp"},
+        }
+        for index, specs in scene_specs.items():
+            fixtures = {device: SCREENS_DIR / file for device, file in specs.items()}
+            fixture_map[f"scene-{index:02d}-desktop"] = fixtures
+            fixture_map[f"scene-{index:02d}-mobile"] = fixtures
+        fixture_map["desktop-poster"] = fixture_map["scene-08-desktop"]
+        fixture_map["mobile-poster"] = fixture_map["scene-08-mobile"]
+    if "cutouts" in groups:
+        cutouts = render_cutouts(collections, mats)
+        paths.extend(cutouts)
+        for name, fixture in defaults.items():
+            fixture_map[name] = {name: fixture}
+    if "social" in groups:
+        social = render_social(collections, mats)
+        paths.extend(social)
+        fixture_map["social-preview"] = {"laptop": defaults["laptop"]}
+    update_render_metadata([path for path in paths if path.parent == OUTPUT_DIR], fixture_map)
+    print(f"Rendered {group} assets from {BLEND_PATH}")
 
 
 def add_mobile_composition(tablet, phone):
@@ -1118,17 +1231,27 @@ def image_info(path):
     image = bpy.data.images.load(str(path), check_existing=False)
     dimensions = [image.size[0], image.size[1]]
     content_bounds = None
-    if image.channels == 4:
-        pixels = np.empty(image.size[0] * image.size[1] * 4, dtype=np.float32)
+    if image.channels >= 3:
+        pixels = np.empty(image.size[0] * image.size[1] * image.channels, dtype=np.float32)
         image.pixels.foreach_get(pixels)
-        alpha = pixels[3::4].reshape((image.size[1], image.size[0]))
-        visible_y, visible_x = np.where(alpha > 0.01)
+        pixels = pixels.reshape((image.size[1], image.size[0], image.channels))
+        if image.channels == 4 and np.any(pixels[:, :, 3] < 0.99):
+            visible = pixels[:, :, 3] > 0.01
+        else:
+            # Posters have a flat near-black world. Use the corner colour as the
+            # authored background so bounds describe lit hardware, not the canvas.
+            background = np.median(np.concatenate((pixels[:4, :4, :3], pixels[-4:, -4:, :3])), axis=(0, 1))
+            visible = np.max(np.abs(pixels[:, :, :3] - background), axis=2) > 0.012
+        visible_y, visible_x = np.where(visible)
         if visible_x.size:
             min_x, max_x = int(visible_x.min()), int(visible_x.max())
             min_y, max_y = int(visible_y.min()), int(visible_y.max())
             content_bounds = [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1]
     bpy.data.images.remove(image)
-    info = {"file": path.name, "width": dimensions[0], "height": dimensions[1], "bytes": path.stat().st_size}
+    info = {
+        "file": path.name, "width": dimensions[0], "height": dimensions[1],
+        "bytes": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
     if content_bounds:
         info["content_bounds_px_bottom_left"] = content_bounds
     return info
@@ -1136,15 +1259,24 @@ def image_info(path):
 
 def render_scene_posters(collections, mats, default_screens):
     laptop, tablet, phone = collections["laptop"], collections["tablet"], collections["phone"]
-    fixture_stems = ["ui01", "ui02", "ui03-resumed", "ui04", "ui05-approval", "ui05-merged"]
+    scenes = [
+        ("ui10-editor", None, None),
+        ("ui10-editor", None, None),
+        ("ui12-issues", None, None),
+        ("ui13-team", None, "ui03-answer"),
+        ("ui16-builder", None, None),
+        ("ui14-git", None, None),
+        ("ui05-merged", "ui05-merged", None),
+        ("ui05-merged", "ui05-merged", "ui05-merged"),
+    ]
     render_paths = []
-    for index, stem in enumerate(fixture_stems, start=1):
-        desktop_fixture = SCREENS_DIR / f"{stem}-macbook.webp"
-        mobile_fixture = SCREENS_DIR / f"{stem}-iphone.webp"
-        tablet_fixture = SCREENS_DIR / f"{stem}-ipad.webp"
+    for index, (laptop_stem, tablet_stem, phone_stem) in enumerate(scenes, start=1):
+        desktop_fixture = SCREENS_DIR / f"{laptop_stem}-macbook.webp"
         set_screen_texture(mats["desktop_screen"], desktop_fixture)
-        set_screen_texture(mats["tablet_screen"], tablet_fixture)
-        set_screen_texture(mats["phone_screen"], mobile_fixture)
+        if tablet_stem:
+            set_screen_texture(mats["tablet_screen"], SCREENS_DIR / f"{tablet_stem}-ipad.webp")
+        if phone_stem:
+            set_screen_texture(mats["phone_screen"], SCREENS_DIR / f"{phone_stem}-iphone.webp")
         desktop_path = OUTPUT_DIR / f"scene-{index:02d}-desktop.webp"
         mobile_path = OUTPUT_DIR / f"scene-{index:02d}-mobile.webp"
 
@@ -1153,22 +1285,41 @@ def render_scene_posters(collections, mats, default_screens):
             render(desktop_path, 1440, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, False)
             render(mobile_path, 720, 960, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS, False)
         elif index == 2:
-            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-0.72, 0, 0), scale=0.78)
-            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.35, -0.15, -0.20), scale=1.12)
-            set_visible_collections(laptop, phone)
+            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), scale=0.78, rotation=(0, 0, math.radians(12)))
+            set_visible_collections(laptop)
             render(desktop_path, 1440, 900, (0.9, -7.2, 1.55), (0.15, -0.55, 0.75), 58, False, ortho_scale=4.2)
+            render(mobile_path, 720, 960, (0.9, -7.2, 1.55), (0.15, -0.55, 0.75), 58, False, ortho_scale=4.2)
+            restore_matrices(laptop, laptop_state)
+        elif index == 3:
+            set_visible_collections(laptop)
+            render(desktop_path, 1440, 900, (-2.6, -6.2, 2.0), (0, -0.7, 0.8), 62, False)
+            render(mobile_path, 720, 960, (-2.6, -6.2, 2.0), (0, -0.7, 0.8), 62, False)
+        elif index == 4:
+            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-0.82, 0, 0), scale=0.72)
+            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.33, -0.10, -0.18), scale=1.05)
+            set_visible_collections(laptop, phone)
+            render(desktop_path, 1440, 900, (0.8, -7.0, 1.7), (0.1, -0.45, 0.72), 58, False, ortho_scale=4.5)
+            render(mobile_path, 720, 960, (0.8, -7.0, 1.7), (0.1, -0.45, 0.72), 58, False, ortho_scale=4.5)
             restore_matrices(laptop, laptop_state)
             restore_matrices(phone, phone_state)
-            set_visible_collections(phone)
-            render(mobile_path, 720, 960, (1.45, -3.95, 1.10), (0, 0, 0), 72, False)
-        elif index == 3:
-            set_visible_collections(phone)
-            render(desktop_path, 1440, 900, (1.7, -4.7, 1.25), (-0.55, 0, 0), 72, False)
-            render(mobile_path, 720, 960, (1.45, -3.95, 1.10), (0, 0, 0), 72, False)
-        elif index in {4, 5}:
-            set_visible_collections(tablet)
-            render(desktop_path, 1440, 900, (2.45, -5.0, 1.92), (0, 0, 0), 67, False)
-            render(mobile_path, 720, 960, (2.45, -5.0, 1.92), (0, 0, 0), 67, False)
+        elif index in {5, 6}:
+            set_visible_collections(laptop)
+            camera = LAPTOP_RENDER_CAMERA if index == 5 else (0.35, -6.0, 1.30)
+            target = LAPTOP_RENDER_TARGET if index == 5 else (0, -0.8, 1.05)
+            render(desktop_path, 1440, 900, camera, target, 64 if index == 5 else 72, False)
+            render(mobile_path, 720, 960, camera, target, 64 if index == 5 else 72, False)
+        elif index == 7:
+            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.05, 0, 0), scale=0.60)
+            # Face the tablet back into the offset camera so its review UI stays frontal.
+            tablet_state = transform_collection(
+                tablet, (0, 0, 0), offset=(0.92, 0.02, 0.31), scale=0.68,
+                rotation=(math.radians(-8), 0, math.radians(6)),
+            )
+            set_visible_collections(laptop, tablet)
+            render(desktop_path, 1440, 900, (0.9, -7.0, 1.6), (0.2, -0.4, 0.72), 58, False, ortho_scale=4.8)
+            render(mobile_path, 720, 960, (0.9, -7.0, 1.6), (0.2, -0.4, 0.72), 58, False, ortho_scale=4.8)
+            restore_matrices(laptop, laptop_state)
+            restore_matrices(tablet, tablet_state)
         else:
             laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.15, 0, 0), scale=0.62)
             tablet_state = transform_collection(tablet, (0, 0, 0), offset=(0.72, 0.05, 0.36), scale=0.62)
@@ -1178,19 +1329,23 @@ def render_scene_posters(collections, mats, default_screens):
             restore_matrices(laptop, laptop_state)
             restore_matrices(tablet, tablet_state)
             restore_matrices(phone, phone_state)
-            tablet_offsets, phone_offsets = add_mobile_composition(tablet, phone)
-            set_visible_collections(tablet, phone)
-            render(mobile_path, 720, 960, (2.85, -6.6, 2.20), (-0.15, 0, 0.02), 70, False)
-            restore_offsets(tablet, tablet_offsets)
-            restore_offsets(phone, phone_offsets)
+            # Keep the same physical scale and all three devices on mobile.
+            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-0.72, 0, 0.15), scale=0.62)
+            tablet_state = transform_collection(tablet, (0, 0, 0), offset=(0.48, 0.05, -0.52), scale=0.62)
+            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.12, -0.14, -0.77), scale=0.62)
+            set_visible_collections(laptop, tablet, phone)
+            render(mobile_path, 720, 960, (1.0, -7.2, 1.8), (0.1, -0.45, 0.45), 60, False, ortho_scale=5.1)
+            restore_matrices(laptop, laptop_state)
+            restore_matrices(tablet, tablet_state)
+            restore_matrices(phone, phone_state)
 
         render_paths.extend([desktop_path, mobile_path])
 
     set_screen_texture(mats["desktop_screen"], default_screens["laptop"])
     set_screen_texture(mats["tablet_screen"], default_screens["tablet"])
     set_screen_texture(mats["phone_screen"], default_screens["phone"])
-    shutil.copyfile(OUTPUT_DIR / "scene-06-desktop.webp", OUTPUT_DIR / "desktop-poster.webp")
-    shutil.copyfile(OUTPUT_DIR / "scene-06-mobile.webp", OUTPUT_DIR / "mobile-poster.webp")
+    shutil.copyfile(OUTPUT_DIR / "scene-08-desktop.webp", OUTPUT_DIR / "desktop-poster.webp")
+    shutil.copyfile(OUTPUT_DIR / "scene-08-mobile.webp", OUTPUT_DIR / "mobile-poster.webp")
     render_paths.extend([OUTPUT_DIR / "desktop-poster.webp", OUTPUT_DIR / "mobile-poster.webp"])
     return render_paths
 
@@ -1377,6 +1532,9 @@ def main():
     args = parse_args()
     SOURCE_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if args.render_only:
+        render_only(args.render_only)
+        return
     default_screens = {
         "laptop": args.laptop_screen.resolve(),
         "tablet": args.tablet_screen.resolve(),

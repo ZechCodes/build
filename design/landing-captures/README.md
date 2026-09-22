@@ -13,6 +13,10 @@ CAPTURE_SCENES=ui04,ui05 CAPTURE_PROFILES=ipad \
   CHROMIUM_PATH=/usr/bin/chromium node design/landing-captures/capture.mjs
 ```
 
+`CAPTURE_STATES` can narrow a multi-state scene such as `ui05` to `approval` or `merged`.
+Targeted runs update those entries in `capture-results.json` while retaining validation
+records for assets that were not regenerated.
+
 System-composited files keep the existing state stems and use platform suffixes:
 
 - `ui01-macbook.webp`, `ui01-ipad.webp`, and `ui01-iphone.webp`

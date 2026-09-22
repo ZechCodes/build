@@ -8,9 +8,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { defaultHarnessOf, defaultHarnessPanelHtml, mountDefaultHarness } from "../src/core/defaultHarness.js";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { renderDeviceSettingsPage } from "./deviceSettingsFixture.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -357,7 +361,9 @@ describe("the account page's creation defaults", () => {
     const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
     bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
-    App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
+    const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
+    App.devices = [{ id: "dev-1", name: "Laptop", status: "online", fingerprint: "dev-1-fingerprint" }];
+    await writeCached(DEVICES_ADDRESS, App.devices);
     App.selectedDeviceId = "dev-1";
     adoptDeviceSession(sessionAnswering(bridge));
 

@@ -36,11 +36,11 @@ vi.mock("../src/connection.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { refreshDevices } = await import("../src/devices.js");
+const { initDevicePicker, refreshDevices } = await import("../src/devices.js");
 // The one address, read from where both sides of it read it: the writer here
 // and the boot paint (views/gate.js) agree on it because there is one
 // constant, and a test that restated it would stay green while they drifted.
-const { DEVICES_ADDRESS, readCached } = await import("../src/core/localCache.js");
+const { DEVICES_ADDRESS, readCached, writeCached } = await import("../src/core/localCache.js");
 
 const online = (id) => ({ id, name: id, status: "online", fingerprint: `${id}-fp` });
 
@@ -48,6 +48,8 @@ beforeEach(() => {
   document.body.innerHTML = '<div id="devpick"></div>';
   App.devices = [];
   App.accountEpoch = 0;
+  App.gated = false;
+  App.deviceFilter = null;
   account.fetchDevices.mockReset();
 });
 
@@ -75,5 +77,29 @@ describe("the account's device list on disk", () => {
     });
     await expect(refreshDevices()).rejects.toThrow();
     expect((await readCached(DEVICES_ADDRESS)).value.map((device) => device.id)).toEqual(["dev-a"]);
+  });
+
+  it("paints the picker from the cached list while the account pull is late", async () => {
+    await writeCached(DEVICES_ADDRESS, [{ ...online("dev-cache"), name: "Cached laptop" }]);
+    App.devices = [];
+    account.fetchDevices.mockImplementation(() => new Promise(() => {}));
+
+    initDevicePicker();
+    void refreshDevices();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector(".device-picker-toggle")?.textContent).toContain("All devices");
+      expect(document.querySelector(".device-picker-menu")?.textContent).toContain("Cached laptop");
+    });
+  });
+
+  it("redraws through a real cache write, announcement, and readback", async () => {
+    initDevicePicker();
+    await writeCached(DEVICES_ADDRESS, [{ ...online("dev-new"), name: "Announced desktop" }]);
+
+    await vi.waitFor(() => {
+      expect(App.devices.map((device) => device.id)).toEqual(["dev-new"]);
+      expect(document.querySelector(".device-picker-menu")?.textContent).toContain("Announced desktop");
+    });
   });
 });

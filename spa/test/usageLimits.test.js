@@ -10,10 +10,12 @@ import {
   onUsageLimitsChanged,
   queuedReason,
   resetUsageLimits,
-  setUsageLimits,
+  setUsageLimitsForTest,
   usageLimitText,
   usageLimitsOf,
 } from "../src/core/usageLimits.js";
+
+const setUsageLimits = setUsageLimitsForTest;
 
 const NOW = Date.parse("2026-09-20T21:46:00Z");
 const SAID = "You've hit your session limit · resets 6:20pm (America/New_York)";

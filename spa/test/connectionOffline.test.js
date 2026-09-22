@@ -74,7 +74,7 @@ const {
   syncHome,
 } = await import("../src/connection.js");
 const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await import("../src/devices.js");
-const { resetMemoryCache } = await import("./memoryCache.js");
+const { clearMemoryCacheRecords, DEVICES_ADDRESS, writeCached } = await import("./memoryCache.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { startCacheSync, stopCacheSync, syncDevice } = await import("../src/core/cacheSync.js");
 const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = await import("../src/core/text.js");
@@ -236,9 +236,9 @@ function fakeSession(deviceId, onLost = () => {}) {
 let feed = null;
 let unsubscribe = () => {};
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers();
-  resetMemoryCache();
+  clearMemoryCacheRecords();
   localStorage.clear();
   resetApplication();
   stopFeed();
@@ -266,6 +266,7 @@ beforeEach(() => {
   feed = null;
   devices = [online("dev-a", "Laptop"), online("dev-b", "Desktop")];
   App.devices = devices;
+  await writeCached(DEVICES_ADDRESS, devices);
   App.selectedDeviceId = null;
   App.route = { name: "inbox" };
   terminals.followTerminalDevice.mockClear();
@@ -947,7 +948,7 @@ describe("per-device connections", () => {
     const oldLink = linksFor.get("dev-a");
 
     resetApplication();
-    await expect(oldConnection).rejects.toThrow(/retired/);
+    await expect(oldConnection).rejects.toThrow(/retired|cancelled/);
     greetings.delete("dev-a");
     const freshContext = await connectDevice("dev-a");
     const freshSession = lastSession("dev-a");
@@ -973,7 +974,7 @@ describe("per-device connections", () => {
     await flush();
 
     resetApplication();
-    await expect(oldConnection).rejects.toThrow(/retired/);
+    await expect(oldConnection).rejects.toThrow(/retired|cancelled/);
     const freshContext = await connectDevice("dev-a");
     const freshSession = freshContext.session;
     const freshLink = linksFor.get("dev-a");

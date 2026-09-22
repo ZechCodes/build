@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-const { App, go, markRoute, local, device, archive, paintDevicePicker, listeners } = vi.hoisted(() => ({
+const { App, go, markRoute, local, device, archive, paintDevicePicker, listeners, deviceListeners } = vi.hoisted(() => ({
   App: { route: { name: "account", page: "settings" }, devices: [], viewDispose: null },
-  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(),
+  go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(), deviceListeners: new Set(),
 }));
 vi.mock("../src/app.js", () => ({ App, go, markRoute }));
-vi.mock("../src/devices.js", () => ({ paintDevicePicker }));
+vi.mock("../src/devices.js", () => ({
+  paintDevicePicker,
+  readCachedDevices: async () => App.devices,
+  onDevicesChanged: (listener) => {
+    deviceListeners.add(listener);
+    return () => deviceListeners.delete(listener);
+  },
+}));
 vi.mock("../src/views/settings.js", () => ({ renderSettings: local }));
 vi.mock("../src/views/deviceSettings.js", () => ({ renderDeviceSettings: device }));
 vi.mock("../src/views/archive.js", () => ({ renderArchive: archive }));
@@ -24,6 +31,7 @@ const openModal = (returnRoute) => {
 };
 beforeEach(() => {
   vi.clearAllMocks();
+  deviceListeners.clear();
   document.body.innerHTML = '<div id="shell"><main id="root">Workspace content</main></div><div id="scrim"></div>';
   App.devices = [{ id: "a", name: "Laptop", status: "online" }, { id: "b", name: "Server", status: "offline" }];
   App.route = { name: "account", page: "settings" };
@@ -71,9 +79,10 @@ describe("settings modal", () => {
     document.querySelector('[data-local]').click();
     expect(dispose).toHaveBeenCalledOnce();
   });
-  it("opens device deep links and lets nested sheets own Escape", () => {
+  it("opens device deep links and lets nested sheets own Escape", async () => {
     App.route = { name: "device", id: "b" };
     openModal();
+    await flush();
     expect(device.mock.calls[0][0].deviceId).toBe("b");
     document.querySelector('#scrim').classList.add("show");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));

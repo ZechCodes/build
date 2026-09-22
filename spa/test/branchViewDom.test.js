@@ -130,6 +130,9 @@ beforeEach(async () => {
     "../src/core/deviceContexts.js"
   ));
   App.devices = [{ id: "dev-1", name: "This device", status: "online" }];
+  const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
+  await writeCached(DEVICES_ADDRESS, App.devices);
+  await (await import("../src/devices.js")).readCachedDevices();
   App.selectedDeviceId = "dev-1";
   const context = adoptDeviceSession({
     deviceId: "dev-1",

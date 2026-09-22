@@ -170,11 +170,17 @@ describe("the project-agent panel", () => {
     expect(bridge.calls.at(-1).params).toEqual({
       project_agent: { model: "claude-opus-5", effort: null },
     });
-    expect(values(effort())).toEqual(["", "low", "high"]);
+    await vi.waitFor(() => {
+      expect(values(effort())).toEqual(["", "low", "high"]);
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
 
     await change(effort(), "high");
     expect(bridge.calls.at(-1).params).toEqual({ project_agent: { effort: "high" } });
-    expect(effort().value).toBe("high");
+    await vi.waitFor(() => {
+      expect(effort().value).toBe("high");
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
   });
 
   it("clears a word the reader empties rather than saving the empty string", async () => {

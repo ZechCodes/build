@@ -52,7 +52,9 @@ vi.mock("../src/core/cachedRows.js", async (importOriginal) => {
 vi.mock("../src/terminal/pane.js", () => ({
   mountTerminalPane: async (host, opts) => {
     await opts.attach({ cols: 80, rows: 24, onSnapshot: () => {}, onOutput: () => {}, onClosed: () => {} });
-    return { host, opts, dispose() {} };
+    const pane = { host, opts, dispose() {} };
+    panes.push(pane);
+    return pane;
   },
 }));
 
@@ -69,6 +71,7 @@ const bar = () => region().querySelector(".console-bar");
 const tabs = () => [...region().querySelectorAll(".console-tab-name")].map((cell) => cell.textContent);
 
 let panel = null;
+const panes = [];
 
 const branchRow = (deviceId = "dev-1", over = {}) => ({
   kind: "branch",
@@ -114,6 +117,7 @@ beforeEach(async () => {
   manager.createTerminal.mockReset().mockResolvedValue({ term_id: "term-9" });
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
+  panes.length = 0;
   bridge.call = vi.fn(async () => ({}));
 });
 
@@ -137,7 +141,7 @@ describe("the tab strip", () => {
     expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-3" }, expect.anything());
   });
 
-  it("grows a tab when a push announces one", async () => {
+  it("redraws through a real cache write, announcement and record readback", async () => {
     await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
     await mountAndOpen();
     expect(tabs()).toEqual(["Terminal 1"]);
@@ -221,6 +225,30 @@ describe("opening and closing one", () => {
     expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-2"]);
   });
 
+  it("writes a terminal-close event through the record before its tab and pane leave", async () => {
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
+    await mountAndOpen();
+    expect(panes).toHaveLength(1);
+
+    panes[0].opts.onExit("exited");
+    await flush();
+
+    expect(tabs()).toEqual(["Terminal 1"]);
+    expect(manager.attachTerminal.mock.calls.map(([termId]) => termId)).toEqual(["term-1", "term-2"]);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-2"]);
+  });
+
+  it("writes an unknown attached terminal out of the record before the strip drops it", async () => {
+    manager.attachTerminal.mockRejectedValue(new Error("unknown term_id"));
+    await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }] });
+    await mountAndOpen();
+
+    expect(tabs()).toEqual([]);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs).toEqual([]);
+  });
+
   it("remembers which tab was open in the console record", async () => {
     await seedDevice("dev-1", { tabs: [{ term_id: "term-1" }, { term_id: "term-2" }] });
     await mountAndOpen();
@@ -281,6 +309,28 @@ describe("a checkout the cache has never spoken for", () => {
     expect(record.value.tabs.map((tab) => tab.term_id)).toEqual(["term-1", "term-2"]);
   });
 
+  it("paints an announced record while the list is absent, and rejects its late answer", async () => {
+    let answer;
+    manager.listTerminals.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+    await seedRowOnly();
+    await mountAndOpen();
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "terminals" },
+      { tabs: [{ term_id: "term-new" }] },
+    );
+    await flush();
+    expect(tabs()).toEqual(["Terminal 1"]);
+
+    answer([{ term_id: "term-late" }]);
+    await flush();
+
+    expect(tabs()).toEqual(["Terminal 1"]);
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs).toEqual([{ term_id: "term-new" }]);
+  });
+
   it("offers no new shell while what the checkout holds is still unknown", async () => {
     manager.listTerminals.mockReturnValue(new Promise(() => {}));
     await seedRowOnly();
@@ -335,5 +385,15 @@ describe("a checkout the board names no entity for", () => {
 
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
     expect(manager.listTerminals).toHaveBeenCalledTimes(1);
+  });
+
+  it("files an unlisted checkout's pull under its durable scope before painting it", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+    await seedUnlisted();
+    await mountAndOpen();
+
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
+    expect(record.value.tabs).toEqual([{ term_id: "term-1" }]);
+    expect(tabs()).toEqual(["Terminal 1"]);
   });
 });

@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { App, go } = vi.hoisted(() => ({ App: {}, go: vi.fn() }));
 vi.mock("../src/app.js", () => ({ App, go, DEVICE_FILTER_KEY: "build.deviceFilter" }));
 vi.mock("../src/api.js", () => ({ fetchDevices: vi.fn() }));
+vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 vi.mock("../src/connection.js", () => ({
   syncDeviceRecoveryPresence: vi.fn(), deviceRecoverySnapshot: () => [], onDeviceRecoveryChanged: () => () => {},
   // The wake listeners the gate arms and disarms (#60).
@@ -31,7 +32,8 @@ import { initDevicePicker, markNothingAnswers, paintDevicePicker } from "../src/
 import { rememberDeviceFilter } from "../src/core/deviceFilter.js";
 import { nothingAnswersMark } from "../src/core/text.js";
 import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
-import { resetUsageLimits, setUsageLimits } from "../src/core/usageLimits.js";
+import { resetUsageLimits, setUsageLimitsForTest as setUsageLimits } from "../src/core/usageLimits.js";
+import { clearMemoryCacheRecords } from "./memoryCache.js";
 
 const choices = () => [...document.querySelectorAll(".device-picker-choice")];
 const labelOf = (button) => button.querySelector("span").textContent;
@@ -49,6 +51,7 @@ beforeEach(() => {
   ] });
   resetDeviceContexts();
   resetUsageLimits();
+  clearMemoryCacheRecords();
   markNothingAnswers(false);
   initDevicePicker();
   paintDevicePicker();

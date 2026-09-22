@@ -10,7 +10,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
-import { refreshDevices } from "../devices.js";
+import { onDevicesChanged as onDeviceListChanged, readCachedDevices, refreshDevices } from "../devices.js";
 import { chooseCreationDevice, retireDevice } from "../connection.js";
 import { deviceNameOf, homeDeviceId } from "../core/devicePolicy.js";
 import { fetchDownloads, mintInstallCommand, revokeDevice } from "../api.js";
@@ -105,7 +105,13 @@ function mountCreationDevice(root, registerDispose) {
     chooseCreationDevice(select.value);
     paint(select.value);
   };
-  registerDispose(onDeviceStateChanged(() => paint(App.selectedDeviceId)));
+  const repaint = () => paint(App.selectedDeviceId);
+  const stopWatchingState = onDeviceStateChanged(repaint);
+  const stopWatchingDevices = onDeviceListChanged(repaint);
+  registerDispose(() => {
+    stopWatchingState();
+    stopWatchingDevices();
+  });
 }
 
 export async function renderSettings({ root = $("#root"), registerDispose = (dispose) => { App.viewDispose = dispose; }, isCurrent = () => true, onDevicesChanged = () => {} } = {}) {
@@ -113,7 +119,8 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   let disposeCreation = null;
   let disposePairing = null;
   let disposeDiagnostics = null;
-  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); });
+  let disposeDevices = null;
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); });
   root.innerHTML = `
     <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -162,6 +169,53 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       <div class="addproj"><button class="btn primary" id="adddev">Add a device…</button></div>
       <div class="adderr" id="deverr"></div>
     </div>`;
+
+  /** Paint the account list only from the canonical cache-backed projection. */
+  const paintDeviceList = () => {
+    if (!isCurrent() || !$("#devlist")) return;
+    const devices = App.devices;
+    $("#devlist").innerHTML = devices.length
+      ? devices.map(deviceRowHtml).join("")
+      : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
+    $("#devlist").querySelectorAll(".revoke").forEach(
+      (btn) =>
+        (btn.onclick = async () => {
+          btn.disabled = true;
+          $("#deverr").textContent = "";
+          try {
+            await revokeDevice(btn.dataset.id);
+            // A device the account no longer has cannot be asked anything:
+            // its drafts, its cached reads, its link and its session go with
+            // it, and every surface over it is told.
+            retireDevice(btn.dataset.id);
+            await refreshDeviceList();
+          } catch (error) {
+            $("#deverr").textContent = error.message;
+            btn.disabled = false;
+          }
+        }),
+    );
+  };
+
+  const refreshDeviceList = async () => {
+    try {
+      await refreshDevices();
+      if (isCurrent()) $("#deverr").textContent = "";
+    } catch (error) {
+      // A failed pull says nothing about the cached list already on screen.
+      if (isCurrent()) $("#deverr").textContent = error.message;
+    }
+  };
+
+  disposeDevices = onDeviceListChanged(() => {
+    paintDeviceList();
+    onDevicesChanged();
+  });
+  paintDeviceList();
+  void readCachedDevices();
+  void refreshDeviceList();
+  $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
+  mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
 
   await mountAgentDefaults();
   if (!isCurrent()) return;
@@ -215,43 +269,6 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     }
     await refreshPushToggle();
   };
-
-  // Devices: list the user's paired devices (over plain HTTP, not the bridge),
-  // each with its fingerprint, online/offline, and a revoke action.
-  const refreshDeviceList = async () => {
-    try {
-      const devices = await refreshDevices();
-      if (!isCurrent()) return;
-      onDevicesChanged();
-      $("#devlist").innerHTML = devices.length
-        ? devices.map(deviceRowHtml).join("")
-        : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
-      $("#devlist").querySelectorAll(".revoke").forEach(
-        (btn) =>
-          (btn.onclick = async () => {
-            btn.disabled = true;
-            $("#deverr").textContent = "";
-            try {
-              await revokeDevice(btn.dataset.id);
-              // A device the account no longer has cannot be asked anything:
-              // its drafts, its cached reads, its link and its session go with
-              // it, and every surface over it is told.
-              retireDevice(btn.dataset.id);
-              await refreshDeviceList();
-            } catch (e) {
-              $("#deverr").textContent = e.message;
-              btn.disabled = false;
-            }
-          }),
-      );
-    } catch (e) {
-      $("#devlist").innerHTML = `<div class="adderr">${esc(e.message)}</div>`;
-    }
-  };
-  await refreshDeviceList();
-  if (!isCurrent()) return;
-  $("#adddev").onclick = () => { disposePairing = openAddDevice(refreshDeviceList); };
-  mountCreationDevice(root, (dispose) => { disposeCreation = dispose; });
 
   // The connection dump. It reads the history through the module rather than
   // the `buildConnectionDiagnostics` global, and the machines through the

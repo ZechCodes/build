@@ -4,7 +4,7 @@ import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { renderSettings } from "./settings.js";
 import { renderDeviceSettings } from "./deviceSettings.js";
 import { renderArchive } from "./archive.js";
-import { paintDevicePicker } from "../devices.js";
+import { onDevicesChanged, paintDevicePicker, readCachedDevices } from "../devices.js";
 
 export function isSettingsRoute(route) {
   return route.name === "device" || route.name === "account";
@@ -134,11 +134,14 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
     close();
   };
   document.addEventListener("keydown", onKeydown, true);
-  const unsubscribe = onDeviceStateChanged(paintSidebar);
+  const unsubscribeState = onDeviceStateChanged(paintSidebar);
+  const unsubscribeDevices = onDevicesChanged(paintSidebar);
+  void readCachedDevices();
   const dispose = () => {
     generation += 1;
     disposePanel?.();
-    unsubscribe();
+    unsubscribeState();
+    unsubscribeDevices();
     document.removeEventListener("keydown", onKeydown, true);
     background.inert = wasInert;
     document.body.classList.remove("settings-open");

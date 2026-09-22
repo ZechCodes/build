@@ -108,6 +108,8 @@ import {
   digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
+  jumpToUserMessage,
+  syncUserMessageTicks,
   readThroughSequence,
   pressedActivityRunKey,
   revealThreadSequence,
@@ -161,6 +163,8 @@ import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
 import { createChatTitleMotion } from "./chatTitleMotion.js";
+import { createAgentOverview, overviewHtml } from "./agentOverview.js";
+import { ICON_MAXIMIZE } from "./icons.js";
 import "../styles/shell.css";
 
 /** How close to the top of the conversation counts as asking for the page
@@ -471,7 +475,7 @@ const stripRunsAcross = () => chatOverlaysPage();
 /** The count over a bubble's face, hidden while nothing is waiting. The `+` is
  *  a control rather than a conversation, so nothing is ever waiting on it. */
 const bubbleCountHtml = (bubble) => {
-  if (bubble.type === "add") return "";
+  if (bubble.type === "add" || bubble.type === "expand") return "";
   if (!bubble.unread) return `<span class="rail-count" hidden></span>`;
   return `<span class="rail-count">${esc(String(bubble.unread))}</span>`;
 };
@@ -480,6 +484,7 @@ const bubbleCountHtml = (bubble) => {
  *  core/agentCanvas.js to paint into. The `+`, and the project's own initial,
  *  speak in a glyph and keep a label. */
 const bubbleFaceHtml = (bubble) => {
+  if (bubble.type === "expand") return ICON_MAXIMIZE;
   const count = bubbleCountHtml(bubble);
   if (bubble.pattern) return `<canvas class="rail-glyph" aria-hidden="true"></canvas>${count}`;
   return `<span class="rail-bubble-label">${esc(bubble.label)}</span>${count}`;
@@ -500,6 +505,8 @@ export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says
   // nothing and is pressed by nobody, so it is not a button.
   if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
+  if (bubble.type === "expand") return `<button type="button" class="rail-expand" data-bubble="expand"
+    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_MAXIMIZE}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
@@ -919,6 +926,7 @@ function mountRailOnContext(host, context, swap) {
   // rewrites that choice.
   let pinned = readPinned();
   let panelVisible = panelStartsOut(context, pinned);
+  let overviewVisible = false;
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
@@ -1300,6 +1308,17 @@ function mountRailOnContext(host, context, swap) {
     alive: () => !disposed,
   });
 
+  const overview = createAgentOverview({
+    scope: cacheScope,
+    sources: () => [
+      { slot: "current", kind: context.kind, entityId: records.entityId() || entity.entityId,
+        address: records.rowAddress(records.entityId() || entity.entityId) },
+      ...(alongside ? [{ slot: "alongside", kind: alongside.kind, entityId: watchedAlongsideId,
+        address: records.rowAddress(watchedAlongsideId) }] : []),
+    ],
+    onRows: (rows) => paintOverviewRows(rows),
+  });
+
   const answerLostTheAgents = (answered) => {
     if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
     agentlessOnce = true;
@@ -1342,6 +1361,7 @@ function mountRailOnContext(host, context, swap) {
     chooseAgent(selectAgentId(visibleAgents(), selectedId));
     controllerForAgent(agentOf(selectedId))?.reconcileUncertain().then(syncChatRecovery);
     paint();
+    overview.refresh();
     showTaskCompletions(answered.agents);
   };
 
@@ -1468,6 +1488,7 @@ function mountRailOnContext(host, context, swap) {
     alongsideEntity = railEntity(row, alongside.kind);
     keepForSwap(alongside.kind, row);
     paint();
+    overview.refresh();
     standOnNamedConversation();
   };
 
@@ -1617,6 +1638,41 @@ function mountRailOnContext(host, context, swap) {
     syncStripPainters(bubbles, painted, faces);
   };
 
+  const openOverviewRow = (button) => {
+    const agentId = button.dataset.overviewAgent;
+    const source = button.dataset.overviewSource;
+    leaveOverview();
+    if (source === "alongside" && swap) {
+      if (onProjectAgentRail) swap.toWorkItem(agentId);
+      else swap.toProject(projectOwner, agentId);
+      return;
+    }
+    openAgent(agentId);
+    paint();
+  };
+
+  const paintOverviewRows = (rows) => {
+    const list = host.querySelector(".rail-overview-list");
+    if (!overviewVisible || !list) return;
+    const markup = overviewHtml(rows);
+    if (list.innerHTML !== markup) list.innerHTML = markup;
+    list.onclick = (event) => {
+      const button = event.target.closest?.("[data-overview-agent]");
+      if (button) openOverviewRow(button);
+    };
+  };
+
+  const paintOverviewFrame = (strip) => {
+    host.classList.toggle("rail-overview", overviewVisible);
+    if (!overviewVisible || host.querySelector("#rail-overview")) return;
+    const content = document.createElement("section");
+    content.id = "rail-overview";
+    content.className = "rail-overview-content";
+    content.setAttribute("aria-label", "Agent overview");
+    content.innerHTML = '<h2>Agents</h2><div class="rail-overview-list"></div>';
+    host.insertBefore(content, strip);
+  };
+
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".rail-strip")) {
@@ -1625,7 +1681,7 @@ function mountRailOnContext(host, context, swap) {
     }
     const strip = host.querySelector(".rail-strip");
     const below = belowTheLine();
-    paintStrip(strip, railBubbles({
+    const bubbles = railBubbles({
       // Below the line are the work item's agents, whichever side of the swap
       // this rail is standing on.
       agents: onProjectAgentRail ? alongsideEntity.agents : visibleAgents(),
@@ -1634,7 +1690,10 @@ function mountRailOnContext(host, context, swap) {
       canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
       projectName,
-    }));
+    });
+    paintStrip(strip, [...bubbles, { type: "expand", id: "", title: overviewVisible ? "Close agent overview" : "Show all agents",
+      active: overviewVisible, label: "", unread: 0, working: false }]);
+    paintOverviewFrame(strip);
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
       panel = document.createElement("div");
@@ -1670,15 +1729,18 @@ function mountRailOnContext(host, context, swap) {
     host.classList.toggle(POPOVER_CLASS, card);
     const panel = host.querySelector("#rail-panel");
     if (panel) {
-      panel.setAttribute("aria-hidden", String(!panelVisible));
-      panel.toggleAttribute("inert", !panelVisible);
+      panel.setAttribute("aria-hidden", String(!panelVisible || overviewVisible));
+      panel.toggleAttribute("inert", !panelVisible || overviewVisible);
       anchorPopover(panel, card);
     }
     host.querySelectorAll(".rail-bubble").forEach((bubble) => {
-      const expanded = panelVisible && bubble.classList.contains("active");
+      const expanded = panelVisible && !overviewVisible && bubble.classList.contains("active");
       bubble.setAttribute("aria-expanded", String(expanded));
       bubble.setAttribute("aria-controls", "rail-panel");
     });
+    const expand = host.querySelector(".rail-expand");
+    expand?.setAttribute("aria-expanded", String(overviewVisible));
+    expand?.setAttribute("aria-controls", "rail-overview");
   };
 
   /** Dock the panel, or let it go. Unpinning leaves the conversation on screen
@@ -1719,6 +1781,7 @@ function mountRailOnContext(host, context, swap) {
 
   const dismissOnEscape = (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
+    if (overviewVisible) { leaveOverview(); paint(); return; }
     dismissPopover({ restoreFocus: true });
   };
 
@@ -2345,13 +2408,14 @@ function mountRailOnContext(host, context, swap) {
     });
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
-    timedPaint("chat", () =>
+    timedPaint("chat", () => {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
         paintQueuedReasons();
-      }, { olderItemsPrepended }),
-    );
+      }, { olderItemsPrepended });
+      syncUserMessageTicks(body);
+    });
   };
 
   const chatIsVisible = () => panelVisible && !document.hidden && shownPanelMode() === "chat";
@@ -2379,10 +2443,12 @@ function mountRailOnContext(host, context, swap) {
     body.onscroll = () => {
       if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
+      syncUserMessageTicks(body);
       reportRead(body);
     };
     syncComposer();
     syncSurfaces();
+    syncUserMessageTicks(body);
     reportRead(body);
   };
 
@@ -2566,6 +2632,7 @@ function mountRailOnContext(host, context, swap) {
     // wrote, and a run that opens onto rows it has to fetch cannot be a fold
     // two writers share.
     body.onclick = (event) => {
+      if (jumpToUserMessage(event)) return;
       const runKey = pressedActivityRunKey(event.target);
       if (!runKey) return;
       event.preventDefault();
@@ -3164,7 +3231,26 @@ function mountRailOnContext(host, context, swap) {
     }
   };
 
+  const leaveOverview = () => {
+    overviewVisible = false;
+    overview.close();
+    host.querySelector("#rail-overview")?.remove();
+  };
+
+  const pressStripControl = (type) => {
+    if (type === "expand") {
+      if (overviewVisible) leaveOverview();
+      else overviewVisible = true;
+      paint();
+      if (overviewVisible) overview.open();
+      return true;
+    }
+    return false;
+  };
+
   const pressBubble = (type, agentId) => {
+    if (pressStripControl(type)) return;
+    leaveOverview();
     const swapping = swapForPress(type, agentId);
     if (swapping) {
       swapping();
@@ -3406,10 +3492,12 @@ function mountRailOnContext(host, context, swap) {
      *  docked the chat on a desktop would otherwise never get it out of the
      *  way on a phone. The preference itself is left exactly as it was. */
     collapse() {
+      if (overviewVisible) { leaveOverview(); paint(); }
       closePanel();
     },
     dispose() {
       disposed = true;
+      overview.close();
       activityRuns?.dispose();
       activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();

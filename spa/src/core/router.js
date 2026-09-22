@@ -1,7 +1,7 @@
 // Hash routes for the three-panel shell. There are two work items and two
 // global surfaces, and that is the whole vocabulary:
 //   #/inbox                                     — the landing surface
-//   #/project/<projectId>[?view=board]          — the project: its issue tracker
+//   #/project/<projectId>[?view=list|board]     — the project: its issue tracker
 //   #/project/<projectId>/workspaces            — the project: its workspaces
 //   #/project/<projectId>/issues[?view=board]   — an alias for the tracker
 //   #/project/<projectId>/issues/<issueId>      — one issue of the tracker
@@ -43,8 +43,10 @@ const ISSUES_TAB = "issues";
 /// every `/issues` link written before the flip still parses to the same place.
 const WORKSPACES_TAB = "workspaces";
 
-/// Which way the Issues tab is laid out. The list is the default and writes no
-/// query; the board says so, because a link to a board should open one.
+/// Which way the Issues tab is laid out. Dashboard is the project's default;
+/// the workspace Issues tab still opens on its list.
+const DASHBOARD_VIEW = "dashboard";
+const LIST_VIEW = "list";
 const BOARD_VIEW = "board";
 
 const isTermTab = (segment) => /^term-\d+$/.test(segment || "");
@@ -250,11 +252,14 @@ function railAgent(query) {
   return agent ? { agent } : null;
 }
 
-/// Which way the Issues tab is laid out, for a URL that says. The list is what
-/// a URL that says nothing opens, so only the board is ever written or read.
-function issuesView(query) {
+/// A project URL omits Dashboard, while a workspace URL omits List. The other
+/// modes name themselves so a reload returns to the same layout.
+function issuesView(query, route) {
   const view = query ? new URLSearchParams(query).get("view") : "";
-  return view === BOARD_VIEW ? { view: BOARD_VIEW } : null;
+  if (view === BOARD_VIEW) return { view: BOARD_VIEW };
+  if (route.name === "project" && view === LIST_VIEW) return { view: LIST_VIEW };
+  if (route.name === "workspace" && view === DASHBOARD_VIEW) return { view: DASHBOARD_VIEW };
+  return null;
 }
 
 /// Everything a surface reads off the query rather than off the path: where in
@@ -266,7 +271,7 @@ function placeInSurface(route, query) {
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
   // Both surfaces that HAVE an issues tab read it: the project's own, and a
   // workspace's (#29). They are the same tracker laid out the same two ways.
-  const view = ISSUES_SURFACES.has(route.name) && route.tab === ISSUES_TAB ? issuesView(query) : null;
+  const view = ISSUES_SURFACES.has(route.name) && route.tab === ISSUES_TAB ? issuesView(query, route) : null;
   return place || agent || view ? { ...place, ...agent, ...view } : null;
 }
 
@@ -389,10 +394,14 @@ const tabPlacePairs = (route, tab) =>
 /// The conversation the rail is standing on, where the route names one.
 const railAgentPairs = (route) => [["agent", route.agent || ""]];
 
-/// The Issues tab's layout, and nothing at all for the list or for the
-/// workspaces tab: a URL says only what is not the default.
-const issuesViewPairs = (route, standing = ISSUES_TAB) =>
-  [["view", route.tab === standing && route.view === BOARD_VIEW ? BOARD_VIEW : ""]];
+/// The Issues tab's layout, omitting its own default on each surface.
+const issuesViewPairs = (route, standing = ISSUES_TAB) => {
+  if (route.tab !== standing) return [["view", ""]];
+  if (route.view === BOARD_VIEW) return [["view", BOARD_VIEW]];
+  if (route.name === "project" && route.view === LIST_VIEW) return [["view", LIST_VIEW]];
+  if (route.name === "workspace" && route.view === DASHBOARD_VIEW) return [["view", DASHBOARD_VIEW]];
+  return [["view", ""]];
+};
 
 /// Which of the project page's two tabs a route stands on. Issues is the
 /// default (#46), so it writes nothing and a bare project link opens it;

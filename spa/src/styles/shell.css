@@ -748,6 +748,24 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   width:calc(var(--agent-panel) + var(--agent-strip));
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
 #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
+/* The overview is a full conversation-area sheet; the strip remains the
+   selector at its edge and the ordinary panel waits behind it. */
+#agent-rail.rail-overview { position:absolute; z-index:45; grid-column:1 / -1; grid-row:1 / -1;
+  top:var(--toolbar-h); right:0;
+  bottom:0; left:0; width:auto; margin:0; background:var(--panel); }
+#agent-rail.rail-overview .rail-panel { display:none; }
+.rail-overview-content { flex:1 1 auto; min-width:0; overflow-y:auto; padding:28px 36px; }
+.rail-overview-content h2 { margin:0 0 18px; color:var(--ink); font-size:20px; font-weight:650; }
+.rail-overview-list { display:flex; flex-direction:column; gap:8px; max-width:960px; }
+.rail-overview-row { display:grid; grid-template-columns:minmax(110px, 180px) minmax(0, 1fr) auto;
+  align-items:center; gap:18px; width:100%; padding:14px 18px; border:1px solid var(--line);
+  border-radius:10px; background:var(--panel2); color:var(--ink); text-align:left; cursor:pointer; font:inherit; }
+.rail-overview-row:hover { border-color:var(--accent); }
+.rail-overview-row:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.rail-overview-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+.rail-overview-snippet { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
+.rail-overview-state { color:var(--accent); font-size:11px; font-weight:650; }
+.rail-overview-empty { color:var(--dim); }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
 /* The foot of the column is the connection icon's (spa/src/styles.css), so the
@@ -784,6 +802,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
+.rail-expand { flex:none; display:grid; place-items:center; width:32px; height:32px;
+  margin-top:auto; padding:0; border:1px solid var(--line); border-radius:8px;
+  background:var(--panel2); color:var(--ink2); cursor:pointer; }
+.rail-expand:hover, .rail-expand[aria-expanded="true"] { border-color:var(--accent); color:var(--accent); }
+.rail-expand:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.rail-expand svg { display:block; width:17px; height:17px; }
 /* The project's agent is not one of this work item's: it wears the project's
    initial instead of a face off the same five tilings, and a squared-off
    bubble, so the strip says whose it is before the tip is read. */
@@ -948,7 +972,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    nothing on a tick that says nothing; this is the belt beside it. (Chrome and
    Android honour it; Safari ignores the property and loses nothing.) */
 .rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
-  padding:calc(var(--surface-head) + 14px) 16px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
+  padding:calc(var(--surface-head) + 14px) 20px calc(18px + var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px));
   scroll-padding-top:var(--surface-head);
   scroll-padding-bottom:calc(var(--rail-composer-clearance, 0px) + var(--surface-popover-clearance, 0px)); }
 /* A harness out of usage on this machine (#58, core/usageLimits.js): one line
@@ -981,8 +1005,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    pull back against this number to sit tight (styles/issues.css), and a rule
    that set one without the other is how they drifted — the rail said 22 and
    the variable said 18, so the lines sat 8 px apart instead of 4. */
-.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 0 16px; }
-.rail-body .thread-message.agent .thread-body { padding-right:8px; }
+.rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 12px 16px; }
+.rail-body .thread-message.agent .thread-body { padding-right:12px; }
 /* Where the conversation would be, on a branch that has no agent yet: which
    agent to start one on. Only the layout is said here — the cards stack,
    because the rail is a column 400px wide and three names side by side would
@@ -1286,6 +1310,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     flex-direction:row; align-items:center; gap:10px; padding:0 44px 0 10px;
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
+  .rail-expand { margin-top:0; margin-left:auto; }
+  #agent-rail.rail-overview { top:var(--toolbar-h); bottom:var(--console-space); }
+  .rail-overview-content { padding:18px 16px calc(var(--agent-strip) + 18px); }
+  .rail-overview-row { grid-template-columns:minmax(0, 1fr) auto; gap:2px 10px; }
+  .rail-overview-snippet { grid-column:1 / -1; grid-row:2; }
   /* The strip runs across the foot here, so the line under the project's agent
      is a rule beside it rather than under it. */
   .rail-sep { width:1px; height:16px; }

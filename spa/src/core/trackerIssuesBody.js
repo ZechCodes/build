@@ -21,6 +21,7 @@ import { KEYED_LIST_ATTRIBUTE, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { emptyListHtml, issueRowHtml } from "./trackerListRender.js";
 import { boardFrameHtml, issueCardHtml } from "./trackerBoardRender.js";
+import { esc } from "./text.js";
 
 const keyOf = (issue) => issue.id;
 
@@ -33,17 +34,53 @@ const keyOf = (issue) => issue.id;
  * list takes no height, so the reader sees the same thing either way, and the
  * patch above never has to tell a `<div>` apart from a `<ul>` in the same slot.
  */
-const listFrameHtml = (issues, filters) =>
-  `<ul class="issue-rows" ${KEYED_LIST_ATTRIBUTE}></ul>${issues.length ? "" : emptyListHtml(filters || {})}`;
+const listFrameHtml = (issues, filters, paging) =>
+  `<ul class="issue-rows" ${KEYED_LIST_ATTRIBUTE}></ul>${issues.length ? "" : emptyListHtml(filters || {})}` +
+  (paging?.total > 0
+    ? `<div class="issue-paging"><span>Showing ${issues.length} of ${paging.total}</span>${issues.length < paging.total
+      ? '<button class="btn mini" type="button" data-issue-more>Load more issues</button>' : ""}</div>`
+    : "");
 
 /** The list view: one keyed row per issue. */
 export function paintIssueRows(body, issues, context, wire) {
-  patchInnerHtml(body, listFrameHtml(issues, context.filters));
+  patchInnerHtml(body, listFrameHtml(issues, context.filters, context.paging));
   patchList(body.querySelector(".issue-rows"), issues, {
     keyOf,
     render: (issue) => issueRowHtml(issue, context),
     wire,
   });
+  const more = body.querySelector("[data-issue-more]");
+  if (more) more.onclick = context.paging.more;
+}
+
+/** Groups keep one keyed list each. Collapsing hides rows without discarding
+ *  their cached records or changing the order of the next page. */
+export function paintGroupedIssueRows(body, groups, context, wire) {
+  const loaded = groups.reduce((count, group) => count + group.issues.length, 0);
+  const sections = groups.map((group) => `<section class="issue-group" data-issue-group="${group.id}">
+    <button class="issue-group-heading" type="button" data-issue-group-toggle="${group.id}" aria-expanded="${!group.collapsed}">
+      <span>${esc(group.title)}</span><span class="issue-group-count">${group.count}</span>
+    </button>
+    <ul class="issue-rows" ${KEYED_LIST_ATTRIBUTE}${group.collapsed ? " hidden" : ""}></ul>
+  </section>`).join("");
+  const pager = context.paging?.total > 0
+    ? `<div class="issue-paging"><span>Showing ${loaded} of ${context.paging.total}</span>${loaded < context.paging.total
+      ? '<button class="btn mini" type="button" data-issue-more>Load more issues</button>' : ""}</div>` : "";
+  patchInnerHtml(body, sections + (context.paging?.total ? "" : emptyListHtml(context.filters || {})) + pager);
+  for (const group of groups) {
+    const section = [...body.querySelectorAll("[data-issue-group]")]
+      .find((element) => element.dataset.issueGroup === group.id);
+    patchList(section.querySelector(".issue-rows"), group.issues, {
+      keyOf,
+      render: (issue) => issueRowHtml(issue, context),
+      wire,
+    });
+  }
+  body.querySelectorAll("[data-issue-group-toggle]").forEach((button) => {
+    button.onclick = () => context.onToggleGroup(button.dataset.issueGroupToggle);
+  });
+  const more = body.querySelector("[data-issue-more]");
+  if (more) more.onclick = context.paging.more;
 }
 
 /** Each column's card list, found by the column it drops into rather than by a

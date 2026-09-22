@@ -123,8 +123,8 @@ export const filterIssues = (issues, filters = {}) => (issues || []).filter((iss
  * Clear press would never go away, and a project with no issues in it would
  * be reported as a filter that matched none.
  */
-export const filtersAreSet = (filters = {}) =>
-  Object.keys(DEFAULT_FILTERS).some((name) => !sameChoice(chosenOf(filters[name]), chosenOf(DEFAULT_FILTERS[name])));
+export const filtersAreSet = (filters = {}, baseline = DEFAULT_FILTERS) =>
+  Object.keys(baseline).some((name) => !sameChoice(chosenOf(filters[name]), chosenOf(baseline[name])));
 
 /**
  * Whether this read asks the bridge for less than the project's whole list.

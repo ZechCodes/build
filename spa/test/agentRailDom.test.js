@@ -817,6 +817,60 @@ describe("the rail over a machine that is asked nothing", () => {
 });
 
 describe("the bubble strip", () => {
+  it("wires a reader-message tick to its chat row after mounting the rail", async () => {
+    payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items: [
+      { type: "message", data: { sequence: 1, role: "user", body: "Find my question", created_at: "2026-09-22T12:00:00Z" } },
+      { type: "message", data: { sequence: 2, role: "agent", body: "Here is the answer" } },
+    ] } } });
+    await mount();
+
+    const tick = railHost().querySelector(".thread-user-tick");
+    const row = tick.closest(".thread-message.user");
+    row.scrollIntoView = vi.fn();
+    tick.click();
+
+    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+  });
+
+  it("opens a cache-backed agent overview and returns to the chosen chat", async () => {
+    payload = branchRow({ agents: [
+      agent({ id: "ag-1", name: "First agent", working: true }),
+      agent({ id: "ag-2", name: "Second agent", ordinal: 2, unread_count: 1, read_through_sequence: 0 }),
+    ] });
+    await writeRailThread("run-3", "ag-1", { items: [
+      { type: "event", data: { sequence: 1, event: "tool_use", summary: "Checking the build" } },
+    ] });
+    await writeRailThread("run-3", "ag-2", { items: [
+      { type: "message", data: { sequence: 2, role: "agent", body: "The diff is ready" } },
+    ] });
+    const originalCall = bridge.call;
+    bridge.call = (method, params) => method === "thread.page"
+      ? new Promise(() => {}) : originalCall(method, params);
+    await mount();
+
+    railHost().querySelector(".rail-expand").click();
+    await flush();
+    const rows = () => [...railHost().querySelectorAll(".rail-overview-row")];
+    expect(rows().map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Checking the build"),
+      expect.stringContaining("The diff is ready"),
+    ]);
+    expect(railHost().classList.contains("rail-overview")).toBe(true);
+    expect(panel().getAttribute("aria-hidden")).toBe("true");
+
+    await writeRailThread("run-3", "ag-1", { items: [
+      { type: "event", data: { sequence: 3, event: "tool_use", summary: "Running tests" } },
+    ] });
+    await flush();
+    expect(rows()[0].textContent).toContain("Running tests");
+
+    rows()[1].click();
+    await flush();
+    expect(railHost().querySelector("#rail-overview")).toBeNull();
+    expect(headWho(panel())).toBe("Second agent");
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+  });
+
   it("is one bubble per agent plus the one that adds another", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, unread_count: 4, working: true })] });
     await mount();

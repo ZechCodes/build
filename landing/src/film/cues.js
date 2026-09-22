@@ -17,12 +17,15 @@ export function upcomingCues(cues, time, lookahead) {
 }
 
 // A per-device screen resolver that reports only changes, so the stage is
-// asked for a display once per swap and not once per frame.
-export function createScreenResolver(cuesByDevice, apply) {
+// asked for a display once per swap and not once per frame. A scene may set
+// a display on the clock (`overrides`: device → { name, until }); it holds
+// until the timeline leaves the scene's act, where the scroll cues resume.
+export function createScreenResolver(cuesByDevice, apply, overrides = new Map()) {
   const current = new Map();
   return (time) => {
     for (const [device, cues] of Object.entries(cuesByDevice)) {
-      const wanted = cueAt(cues, time);
+      const override = overrides.get(device);
+      const wanted = override && time < override.until ? override.name : cueAt(cues, time);
       if (!wanted || current.get(device) === wanted) continue;
       current.set(device, wanted);
       apply(device, wanted);

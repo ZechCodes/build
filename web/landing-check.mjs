@@ -124,9 +124,14 @@ async function assertAligned(page, label, width, height) {
   }
 }
 
+// A storyboard beat: the wheel at the act's position and the act's scene,
+// which otherwise runs on the clock, held at the same local progress.
 async function checkAct(page, label, act, local, height) {
   await seek(page, act, local);
-  const heading = page.locator(`[data-act="${act}"]`).locator("h1, h2").first();
+  await page.evaluate(({ act, local }) => window.BuildFilm.sceneSeek(act, local), { act, local });
+  await page.waitForTimeout(100);
+  // The film root carries the current act as data-act too; the id is the act's.
+  const heading = page.locator(`#act-${act}-title`);
   const box = await heading.boundingBox();
   assert.ok(box && box.y >= 0 && box.y + box.height <= height, `${label}: act ${act} headline in view`);
   const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
@@ -169,26 +174,54 @@ async function inspectFilm(width, height) {
   await context.close();
 }
 
-// Scrubbing back over a labelled change hands back the label that was there
-// before it, not the markup's: the sequences Astra reproduced, forward and
-// back, plus the caption a finished node keeps and the hunk's count.
+// The clock, not the wheel: entering an act brings its copy in and plays its
+// scene through on its own; leaving it backwards rewinds both; a beat can be
+// held for a check. The label sequences Astra reproduced in round 1 run on
+// the scene's clock now.
 const SCRUBS = [
-  { name: "act 4 implement status", selector: '[data-row-status="implement"]', steps: [[4, 0.6, "Waiting", true], [4, 0.8, "Working", false], [4, 0.6, "Waiting", true]] },
-  { name: "act 5 implement caption", selector: '[data-node-status="implement"]', steps: [[5, 0.5, "Done · handoff pending"], [5, 0.82, "Done"], [5, 0.5, "Done · handoff pending"]] },
-  { name: "act 6 hunk count", selector: "[data-diff-add]", steps: [[6, 0.3, "+3"], [6, 0.8, "+4"], [6, 0.3, "+3"]] },
-  { name: "act 6 tree label", selector: "[data-tree-label]", steps: [[6, 0.7, "Staged"], [6, 0.9, "Working tree"], [6, 0.7, "Staged"], [6, 0.5, "Working tree"]] },
+  { name: "act 4 implement status", act: 4, selector: '[data-row-status="implement"]', steps: [[0.6, "Waiting", true], [0.8, "Working", false], [0.6, "Waiting", true]] },
+  { name: "act 5 implement caption", act: 5, selector: '[data-node-status="implement"]', steps: [[0.5, "Done · handoff pending"], [0.82, "Done"], [0.5, "Done · handoff pending"]] },
+  { name: "act 6 hunk count", act: 6, selector: "[data-diff-add]", steps: [[0.3, "+3"], [0.8, "+4"], [0.3, "+3"]] },
+  { name: "act 6 tree label", act: 6, selector: "[data-tree-label]", steps: [[0.7, "Staged"], [0.9, "Working tree"], [0.7, "Staged"], [0.5, "Working tree"]] },
 ];
 
-async function inspectScrubs(width, height) {
-  const label = `${width}x${height}-scrub`;
+const sceneTimeout = () => (gpu ? 20_000 : 60_000);
+
+async function opacityOf(page, selector) {
+  return page.evaluate((query) => getComputedStyle(document.querySelector(query)).opacity, selector);
+}
+
+async function waitForOpacity(page, selector, value) {
+  await page.waitForFunction(({ query, value }) => getComputedStyle(document.querySelector(query)).opacity === value, { query: selector, value }, { timeout: 5000 });
+}
+
+async function inspectScenes(width, height) {
+  const label = `${width}x${height}-scenes`;
   const { context, page, errors, state } = await openFilm(width, height, label);
-  for (const { name, selector, steps } of SCRUBS) {
-    for (const [act, local, expected, waiting] of steps) {
-      await seek(page, act, local);
-      const found = await page.evaluate((query) => {
-        const element = document.querySelector(query);
-        return { text: element.textContent, waiting: element.classList.contains("waiting") };
-      }, selector);
+  // Into act 3: the copy comes in and the scene plays to its end by itself.
+  await seek(page, 3, 0.5);
+  await page.waitForFunction(() => window.BuildFilm.scenes[3].isActive(), null, { timeout: 5000 });
+  await waitForOpacity(page, "#act-3-title", "1");
+  await waitForOpacity(page, "#act-2-title", "0");
+  await page.waitForFunction(() => window.BuildFilm.scenes[3].progress() === 1, null, { timeout: sceneTimeout() });
+  assert.equal(await opacityOf(page, '[data-column="progress"]'), "1", `${label}: the card reached In progress on the clock`);
+  await page.screenshot({ path: path.join(output, `${label}-act-3-played.png`) });
+  // Back into act 2: act 3 rewinds and its copy leaves.
+  await seek(page, 2, 0.5);
+  await waitForOpacity(page, "#act-3-title", "0");
+  await waitForOpacity(page, "#act-2-title", "1");
+  assert.equal(await page.evaluate(() => window.BuildFilm.scenes[3].progress()), 0, `${label}: act 3's scene rewound`);
+  assert.equal(await opacityOf(page, '[data-column="ready"]'), "1", `${label}: the card is back in Ready`);
+  // On to act 4: the scene runs through and Implement is back at work.
+  await seek(page, 4, 0.5);
+  await page.waitForFunction(() => window.BuildFilm.scenes[4].progress() === 1, null, { timeout: sceneTimeout() });
+  const status = await readLabel(page, '[data-row-status="implement"]');
+  assert.deepEqual(status, { text: "Working", waiting: false }, `${label}: act 4 finished on the clock`);
+  for (const { name, act, selector, steps } of SCRUBS) {
+    await seek(page, act, 0.5);
+    for (const [local, expected, waiting] of steps) {
+      await page.evaluate(({ act, local }) => window.BuildFilm.sceneSeek(act, local), { act, local });
+      const found = await readLabel(page, selector);
       assert.equal(found.text, expected, `${label}: ${name} at ${act}/${local}`);
       if (waiting !== undefined) assert.equal(found.waiting, waiting, `${label}: ${name} waiting class at ${act}/${local}`);
     }
@@ -196,6 +229,13 @@ async function inspectScrubs(width, height) {
   assert.deepEqual(errors, [], `${label}: browser errors`);
   findings.push({ label, viewport: [width, height], mode: state.mode });
   await context.close();
+}
+
+async function readLabel(page, selector) {
+  return page.evaluate((query) => {
+    const element = document.querySelector(query);
+    return { text: element.textContent, waiting: element.classList.contains("waiting") };
+  }, selector);
 }
 
 // A desktop window made smaller mid-film: the pin re-measures, the stage
@@ -222,7 +262,7 @@ try {
   await inspectDocument(1440, 900, { javaScriptEnabled: false }, "1440x900-no-javascript");
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await inspectResize([1440, 900], [1024, 768]);
-  await inspectScrubs(1440, 900);
+  await inspectScenes(1440, 900);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));
   console.log(`Passed ${findings.length} browser profiles. Artifacts: ${output}`);
 } finally {

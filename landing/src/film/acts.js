@@ -2,17 +2,55 @@
 // where each device sits, which display it shows. GSAP and the stage read it;
 // nothing here touches the DOM.
 
-// Pinned travel per act in viewport heights, from DIRECTION.md §2.
+// Pinned travel per act in viewport heights, from DIRECTION.md §2 as amended
+// in round 2: scroll only moves the devices between acts, so each act keeps a
+// hold after its arrival where nothing on the wheel changes and an overscroll
+// does not pull the next act in.
 export const ACTS = Object.freeze([
-  { id: 1, length: 100, layout: "left" },
-  { id: 2, length: 60, layout: "left" },
-  { id: 3, length: 100, layout: "left" },
-  { id: 4, length: 110, layout: "top" },
-  { id: 5, length: 120, layout: "top" },
-  { id: 6, length: 100, layout: "top" },
-  { id: 7, length: 140, layout: "top" },
+  { id: 1, length: 110, layout: "left" },
+  { id: 2, length: 90, layout: "left" },
+  { id: 3, length: 120, layout: "left" },
+  { id: 4, length: 120, layout: "top" },
+  { id: 5, length: 130, layout: "top" },
+  { id: 6, length: 120, layout: "top" },
+  { id: 7, length: 150, layout: "top" },
   { id: 8, length: 90, layout: "left" },
 ]);
+
+// Where, in each act, the device has settled and what a person reads begins.
+// From there the act's scene runs on the clock, in seconds, not on the wheel:
+// a scene's `at(act, local)` maps the storyboard's local progress onto those
+// seconds so the beats keep the numbers DIRECTION.md gives them.
+export const SCENES = Object.freeze({
+  1: { arrive: 0.2, seconds: 6 },
+  2: { arrive: 0.22, seconds: 3.5 },
+  3: { arrive: 0.2, seconds: 7 },
+  4: { arrive: 0.2, seconds: 7.5 },
+  5: { arrive: 0.15, seconds: 9.5 },
+  6: { arrive: 0.1, seconds: 8.5 },
+  7: { arrive: 0.25, seconds: 9.5 },
+});
+
+export function sceneClock(actId) {
+  const scene = SCENES[actId];
+  if (!scene) throw new Error(`act ${actId} has no scene`);
+  const scale = scene.seconds / (1 - scene.arrive);
+  return {
+    at: (act, local) => {
+      if (act !== actId) throw new Error(`scene ${actId} cannot place act ${act}`);
+      return Math.max(0, local - scene.arrive) * scale;
+    },
+    span: (act, fromLocal, toLocal) => {
+      if (act !== actId) throw new Error(`scene ${actId} cannot span act ${act}`);
+      return (toLocal - fromLocal) * scale;
+    },
+  };
+}
+
+// Where the copy of an act comes in and goes out, on the clock, as the
+// playhead crosses these; and where the next act's move begins.
+export const COPY_IN = 0.03;
+export const COPY_OUT = 0.86;
 
 export const TOTAL_TRAVEL = ACTS.reduce((total, act) => total + act.length, 0);
 
@@ -56,14 +94,15 @@ export function actAt(time) {
 
 // The devices at rest in each act, desktop profile. A device absent from an
 // act is hidden. `opacity` defaults to 1, `lidOpen` to 1, `faceCamera` to 1.
-const HERO = { x: 65, y: 57, w: 52, pitch: 4 };
+// The hero turns a little toward the copy on the left, not the visitor.
+const HERO = { x: 65, y: 57, w: 52, yaw: -10, pitch: 4 };
 const HOST = { x: 17, y: 74, w: 24, yaw: 14, pitch: 3, opacity: 0.9 };
 export const POSES = Object.freeze({
   laptop: Object.freeze({
     1: HERO,
     // The push-in while the visitor types: the editor's code pane fills the
     // right of the stage and the copy keeps the left.
-    "1-typing": { x: 68, y: 60, w: 62, pitch: 4 },
+    "1-typing": { x: 68, y: 60, w: 62, yaw: -8, pitch: 4 },
     2: { x: 61, y: 58, w: 40, yaw: -12, pitch: 3 },
     3: { x: 67, y: 58, w: 50, yaw: -12, pitch: 2 },
     4: { x: 27, y: 63, w: 38, yaw: 12, pitch: 3 },
@@ -123,7 +162,10 @@ export function fullPose(pose = {}) {
 }
 
 // What each display shows from a given moment on, in timeline units. Resolved
-// by cues.js so that scrubbing backwards restores the earlier display.
+// by cues.js so that scrubbing backwards restores the earlier display. A swap
+// that belongs to a scene (the phone's answer, the merge) is not here: the
+// scene sets it on the clock, scoped to its act, and SCENE_SCREENS names it
+// so it can be preloaded.
 export const SCREEN_CUES = Object.freeze({
   laptop: [
     [at(1, 0), "ui10-editor-macbook"],
@@ -131,19 +173,21 @@ export const SCREEN_CUES = Object.freeze({
     [at(4, 0), "ui13-team-macbook"],
     [at(5, 0), "ui16-builder-macbook"],
     [at(6, 0), "ui14-git-macbook"],
-    [at(7, 0.8), "ui05-merged-macbook"],
+    [at(8, 0), "ui05-merged-macbook"],
   ],
   phone: [
     [at(4, 0), "ui03-question-iphone"],
-    [at(4, 0.6), "ui03-answer-iphone"],
-    [at(4, 0.75), "ui03-resumed-iphone"],
     [at(8, 0), "ui05-merged-iphone"],
   ],
   tablet: [
     [at(7, 0), "ui15-triage-ipad"],
-    [at(7, 0.65), "ui05-approval-ipad"],
-    [at(7, 0.82), "ui05-merged-ipad"],
+    [at(8, 0), "ui05-merged-ipad"],
   ],
+});
+
+export const SCENE_SCREENS = Object.freeze({
+  4: { phone: ["ui03-answer-iphone", "ui03-resumed-iphone"] },
+  7: { laptop: ["ui05-merged-macbook"], tablet: ["ui05-approval-ipad", "ui05-merged-ipad"] },
 });
 
 // Native texture sizes, the coordinate space every close-up is authored in.

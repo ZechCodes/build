@@ -91,6 +91,17 @@ faceCamera). Copy is real draft copy in the brand voice: second person, short se
 one benefit per sentence, no buzzwords, no exclamation points. Screen textures named
 `ui1x-*` are new; `ui0x-*` already exist in `skriftapp/buildapp/landing/assets/screens/`.
 
+Round 2 amendment (Zech, 2026-09-22). Scroll drives only low-information motion: the
+device moves between acts and a close-up showing or going with its act. Nothing a person
+reads is scrubbed. When the playhead crosses an act's arrival (the device settled), the
+act's copy comes in on the clock and the act's scene (typing, the card's move, the team,
+the builder, the commit, the review) plays through in seconds on its own. Each act keeps
+a hold after arrival where the wheel changes nothing, so an overscroll does not pull the
+next act in; the pinned travel is about 930vh (110, 90, 120, 120, 130, 120, 150, 90).
+Scrolling back rewinds a scene at its act's arrival and shows an act as it finished
+between. The hero laptop turns a little toward the copy, not the visitor. In the builder
+the handoff is a highlight running each step's outline and the arrow after it, not a dot.
+
 Desktop and tablet viewports run the pinned film. Phones and reduced-motion readers get the
 document version: the same acts in order, each as a still plus copy plus one legible HTML
 close-up. Nothing depends on the 3D to be understood (see section 5).

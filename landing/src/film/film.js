@@ -1,22 +1,31 @@
-// The film: one pinned viewport, one scrubbed timeline, three devices and the
-// close-ups that sit on their screens. Everything time-based lives here; the
-// numbers live in acts.js.
+// The film: one pinned viewport, three devices and the close-ups that sit on
+// their screens. Scroll drives one scrubbed timeline of low-information
+// motion: device moves, and close-ups showing and going with their acts. As
+// the playhead crosses an act's arrival, the act's copy comes in and its
+// scene (what a person reads) plays on the clock, in seconds, so nobody has
+// to know where to stop the wheel. The numbers live in acts.js.
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { createDeviceStage } from "../stage/stage.js";
 import { STAGE_LIMITS, renderQualityScale } from "../stage/fallback.js";
 import {
   ACTS,
+  COPY_IN,
+  COPY_OUT,
   POSES,
+  SCENES,
+  SCENE_SCREENS,
   SCREEN_CUES,
   TOTAL_TRAVEL,
   at,
   actAt,
+  actStart,
   entrancePose,
   fullPose,
-  span,
+  sceneClock,
 } from "./acts.js";
 import { createScreenResolver, upcomingCues } from "./cues.js";
+import { createGates } from "./gates.js";
 import { createOverlays } from "./overlays.js";
 
 gsap.registerPlugin(ScrollTrigger);
@@ -36,31 +45,64 @@ function query(root, selector) {
   return element;
 }
 
-function copyTimeline(tl, acts) {
+// An act's copy comes in as the playhead enters the act and goes as it
+// leaves; both on the clock, both undone by scrolling back over the gate.
+function copyItems(act) {
+  const copy = query(act, ".act__copy");
+  return [...copy.children].filter((child) => !child.matches("[data-beat]"));
+}
+
+// One tween per act's copy at a time: the next move kills the last by its
+// handle, since a staggered tween does not go when asked by target.
+function showCopy(copy, instant, fromY = 28) {
+  copy.tween?.kill();
+  copy.tween = instant
+    ? gsap.set(copy.items, { autoAlpha: 1, y: 0 })
+    : gsap.fromTo(copy.items, { autoAlpha: 0, y: fromY }, { autoAlpha: 1, y: 0, duration: 0.7, stagger: 0.06, ease: "power2.out" });
+}
+
+function hideCopy(copy, instant, toY) {
+  copy.tween?.kill();
+  copy.tween = gsap.to(copy.items, { autoAlpha: 0, y: toY, duration: instant ? 0 : 0.35, ease: "power2.in" });
+}
+
+function copyGates(gates, acts) {
   for (const act of ACTS) {
-    const copy = query(acts[act.id - 1], ".act__copy");
-    const items = [...copy.children].filter((child) => !child.matches("[data-beat]"));
-    if (act.id !== 1) {
-      tl.fromTo(items, { autoAlpha: 0, y: 28 }, {
-        autoAlpha: 1, y: 0, duration: span(act.id, 0, 0.1), stagger: span(act.id, 0, 0.012), ease: "power2.out",
-      }, at(act.id, 0.02));
-    }
-    if (act.id !== 8) {
-      tl.to(items, { autoAlpha: 0, y: -18, duration: span(act.id, 0.86, 0.97), ease: "power2.in" }, at(act.id, 0.86));
-    }
+    const copy = { items: copyItems(acts[act.id - 1]), tween: null };
+    gates.add(at(act.id, act.id === 1 ? 0 : COPY_IN), (instant) => showCopy(copy, instant), () => hideCopy(copy, false, 28));
+    if (act.id !== 8) gates.add(at(act.id, COPY_OUT), (instant) => hideCopy(copy, instant, -18), () => showCopy(copy, false, -18));
   }
-  // Act 2's captions arrive one at a time, then hold.
-  const captions = acts[1].querySelectorAll(".captions li");
-  captions.forEach((caption, index) => {
-    const start = [0.25, 0.45, 0.65][index] ?? 0.65;
-    tl.fromTo(caption, { autoAlpha: 0, y: 16 }, { autoAlpha: 1, y: 0, duration: span(2, 0, 0.08), ease: "power2.out" }, at(2, start));
-  });
-  // Act 8's two beats over one pose.
+  // Act 8's two beats over one pose: the first comes with the act, the
+  // second replaces it further in.
   const beatA = query(acts[7], '[data-beat="a"]');
   const beatB = query(acts[7], '[data-beat="b"]');
-  tl.fromTo(beatA, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: span(8, 0, 0.1), ease: "power2.out" }, at(8, 0.02));
-  tl.to(beatA, { autoAlpha: 0, y: -18, duration: span(8, 0.6, 0.68), ease: "power2.in" }, at(8, 0.6));
-  tl.fromTo(beatB, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: span(8, 0.66, 0.78), ease: "power2.out" }, at(8, 0.66));
+  const enter = gsap.timeline({ paused: true })
+    .fromTo(beatA, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: "power2.out" });
+  const swap = gsap.timeline({ paused: true })
+    .to(beatA, { autoAlpha: 0, y: -18, duration: 0.35, ease: "power2.in" })
+    .fromTo(beatB, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: "power2.out" });
+  gates.add(at(8, COPY_IN), (instant) => (instant ? enter.progress(1) : enter.play()), () => enter.reverse());
+  gates.add(at(8, 0.6), (instant) => (instant ? swap.progress(1) : swap.play()), () => swap.reverse());
+}
+
+// A scene plays from its start each time its act arrives, and rewinds when
+// the playhead leaves the act backwards, so scrolling back shows an act as
+// it finished and scrolling on again shows it happen.
+function sceneGates(gates, scenes) {
+  for (const [actId, scene] of Object.entries(scenes)) {
+    gates.add(at(Number(actId), SCENES[actId].arrive), (instant) => {
+      scene.pause();
+      if (instant) {
+        scene.time(scene.duration());
+      } else {
+        scene.time(0);
+        scene.play();
+      }
+    }, () => {
+      scene.pause();
+      scene.time(0);
+    });
+  }
 }
 
 function deviceTimeline(tl, pose) {
@@ -91,14 +133,20 @@ function deviceTimeline(tl, pose) {
 
 function screenPreloader(stage) {
   const preloaded = new Set();
+  const preload = (device, name) => {
+    const key = `${device}:${name}`;
+    if (preloaded.has(key)) return;
+    preloaded.add(key);
+    stage.preloadScreen(device, name).catch(() => preloaded.delete(key));
+  };
   return (time) => {
     for (const [device, cues] of Object.entries(SCREEN_CUES)) {
-      for (const name of upcomingCues(cues, time, PRELOAD_LOOKAHEAD)) {
-        const key = `${device}:${name}`;
-        if (preloaded.has(key)) continue;
-        preloaded.add(key);
-        stage.preloadScreen(device, name).catch(() => preloaded.delete(key));
-      }
+      for (const name of upcomingCues(cues, time, PRELOAD_LOOKAHEAD)) preload(device, name);
+    }
+    for (const [actId, devices] of Object.entries(SCENE_SCREENS)) {
+      const start = actStart(Number(actId));
+      if (start > time + PRELOAD_LOOKAHEAD) continue;
+      for (const [device, names] of Object.entries(devices)) names.forEach((name) => preload(device, name));
     }
   };
 }
@@ -127,10 +175,12 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     tablet: fullPose(entrancePose("tablet", POSES.tablet["7-arrive"])),
   };
   const overlays = createOverlays({ film, stage, pose });
+  const sceneScreens = new Map();
   const resolveScreens = createScreenResolver(SCREEN_CUES, (device, name) => {
     stage.setScreen(device, name).catch(() => undefined);
-  });
+  }, sceneScreens);
   const preload = screenPreloader(stage);
+  const gates = createGates();
 
   const tl = gsap.timeline({
     defaults: { ease: "none" },
@@ -152,8 +202,10 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     },
   });
   deviceTimeline(tl, pose);
-  copyTimeline(tl, acts);
   overlays.addTo(tl);
+  const scenes = overlays.scenes(sceneScreens);
+  copyGates(gates, acts);
+  sceneGates(gates, scenes);
   // The scrub maps scroll onto the timeline's whole duration; the last beat
   // does not run to the end of act 8, so hold the clock open to it.
   tl.set({}, {}, TOTAL_TRAVEL);
@@ -164,6 +216,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   // the same clock, the timeline's, so a fast scroll cannot swap a screen
   // before the overlay that matches it arrives.
   const draw = () => {
+    gates.update(tl.time());
     resolveScreens(tl.time());
     for (const [device, current] of Object.entries(pose)) stage.setPose(device, current);
     stage.render();
@@ -198,6 +251,8 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     ScrollTrigger.removeEventListener("refresh", sync);
     tl.scrollTrigger.kill();
     tl.kill();
+    for (const scene of Object.values(scenes)) scene.kill();
+    gsap.set(acts.flatMap((act) => [...copyItems(act), ...act.querySelectorAll("[data-beat], .captions li")]), { clearProps: "all" });
     overlays.dispose();
     stage.dispose();
     delete root.dataset.mode;
@@ -219,16 +274,16 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     stage.setQualityScale(renderQualityScale(cost));
     root.dataset.stage = "ready";
     gsap.to(heroPoster, { autoAlpha: 0, duration: 0.45, ease: "power1.out" });
+    // A page that opens mid-film has its copy and scenes where the gates put
+    // them on the first frame; only the top gets the welcome.
     const copy = query(acts[0], ".act__copy");
     const opening = tl.scrollTrigger.progress * TOTAL_TRAVEL < at(1, 0.15);
     if (opening) {
       pose.laptop.lidOpen = LID_ENTRANCE_START;
       gsap.to(pose.laptop, { lidOpen: 1, duration: LID_ENTRANCE_SECONDS, ease: "power3.out" });
       gsap.fromTo(copy.children, { autoAlpha: 0, y: 24 }, {
-        autoAlpha: 1, y: 0, duration: 0.8, stagger: 0.08, ease: "power2.out", delay: 0.15,
+        autoAlpha: 1, y: 0, duration: 0.8, stagger: 0.08, ease: "power2.out", delay: 0.15, overwrite: "auto",
       });
-    } else {
-      gsap.set(copy.children, { autoAlpha: 1, y: 0 });
     }
   }
 
@@ -259,6 +314,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   stage.load(["laptop"])
     .then(() => stage.setScreen("laptop", SCREEN_CUES.laptop[0][1]))
     .then(() => {
+      gates.update(tl.time());
       resolveScreens(tl.time());
       stage.resize();
       gsap.ticker.add(frame);
@@ -279,6 +335,15 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     time: () => tl.scrollTrigger.progress * TOTAL_TRAVEL,
     sync,
     timeline: tl,
+    scenes,
+    // Put an act's scene at a storyboard beat and hold it there, for a check
+    // that wants a beat rather than the clock.
+    sceneSeek(actId, local) {
+      const scene = scenes[actId];
+      if (!scene) return;
+      scene.pause();
+      scene.time(Math.min(scene.duration(), sceneClock(actId).at(actId, local)));
+    },
     stage,
     pose,
     stop,

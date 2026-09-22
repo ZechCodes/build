@@ -37,10 +37,11 @@ const runRecordSub = (agentId, fromSequence) => `${agentId || ""}:${fromSequence
  *
  * `itemsOf(runKey)` answers the items held for a run, or undefined — a paint
  * asks it and never waits. `open(digest)` is the only thing that does: it
- * fetches the run the digest describes unless it is already in hand, and
- * answers whether anything new landed, so a pane repaints only on news.
+ * fetches the run the digest describes unless it is already in hand. A stored
+ * record landing calls `onChange`; that announcement, rather than the pull's
+ * return value, is what tells the pane to paint its new rows.
  */
-export function createActivityRuns({ deviceId, entityId, agentId, call }) {
+export function createActivityRuns({ deviceId, entityId, agentId, call, onChange = () => {} }) {
   const openRuns = new Set();
   // Where each fetched run starts and how far it reaches, learned from the
   // digest that opened it. The record is written under the start; the fold asks
@@ -83,6 +84,7 @@ export function createActivityRuns({ deviceId, entityId, agentId, call }) {
         : null,
     fetchMissing: (keys) => Promise.all(keys.map((key) => fetchRun(Number(key)))),
     valueOf: (run) => ({ key: run.fromSequence, value: { items: run.items } }),
+    onChange,
   });
 
   /// Where the run a fold's key sits in starts, or nothing for a key no fetched
@@ -127,5 +129,6 @@ export function createActivityRuns({ deviceId, entityId, agentId, call }) {
     },
 
     openKeys: () => new Set(openRuns),
+    dispose: () => bodies.dispose(),
   };
 }

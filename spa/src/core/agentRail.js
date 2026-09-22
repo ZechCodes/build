@@ -2166,12 +2166,21 @@ function mountRailOnContext(host, context, swap) {
     const identity = controllerInFocus().identity;
     const runsFor = `${identity.entityId || ""}:${identity.agentId || ""}:${identity.conversationId || ""}`;
     if (!activityRuns || activityRunsFor !== runsFor) {
+      activityRuns?.dispose();
       activityRunsFor = runsFor;
       activityRuns = createActivityRuns({
         deviceId: cacheScope?.deviceId,
         entityId: identity.entityId,
         agentId: identity.agentId,
         call: (method, params) => chatRepository.currentCall()(method, params),
+        onChange: () => {
+          if (disposed || activityRunsFor !== runsFor) return;
+          // Presence alone is in the ordinary paint fingerprint; a later
+          // announcement can replace the rows under the same run key, so the
+          // record moving explicitly invalidates that fingerprint.
+          paintedChat = null;
+          paintChat();
+        },
       });
       // Everything else the panel remembers about the conversation goes with
       // it: a line ruled in one thread marks nothing in the next, and how far
@@ -2399,11 +2408,9 @@ function mountRailOnContext(host, context, swap) {
       : null;
     paintChat();
     if (!digest) return;
-    const filled = await runs.open(digest).catch((error) => {
+    await runs.open(digest).catch((error) => {
       notifyError("Could not load this activity", error.message);
-      return false;
     });
-    if (filled && !disposed) paintChat();
   };
 
   const composerPlaceholder = () =>
@@ -3403,6 +3410,8 @@ function mountRailOnContext(host, context, swap) {
     },
     dispose() {
       disposed = true;
+      activityRuns?.dispose();
+      activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);
       panelMotion.cancel();

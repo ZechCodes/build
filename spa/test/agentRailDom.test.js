@@ -4272,6 +4272,55 @@ describe("a run of activity in the rail", () => {
     expect(callsTo("thread.activity")).toHaveLength(1);
   });
 
+  it("opens a cut run from its cached body without waiting for an activity pull", async () => {
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read y.js"), said(60, "Done.")],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
+    );
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: ACTIVITY_RECORD_KIND, sub: "ag-1:10" },
+      { items: [toolCall(10, "Read cached.js")] },
+    );
+    await mount();
+
+    runHead().click();
+    await flush();
+
+    expect(callsTo("thread.activity")).toEqual([]);
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]);
+    expect(railHost().textContent).toContain("Read cached.js");
+  });
+
+  it("repaints an open run from a real activity-record announcement", async () => {
+    payload = conversation(
+      [said(1, "Have a look."), toolCall(50, "Read y.js"), said(60, "Done.")],
+      [{ from_sequence: 10, through_sequence: 50, tool_calls: 40, rows: 40, last_tool_call: null }],
+    );
+    let answerActivity;
+    answering(new Promise((resolveAnswer) => {
+      answerActivity = resolveAnswer;
+    }));
+    await mount();
+
+    runHead().click();
+    await flush();
+    expect(callsTo("thread.activity")).toHaveLength(1);
+
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: ACTIVITY_RECORD_KIND, sub: "ag-1:10" },
+      { items: [toolCall(10, "Read announced.js")] },
+    );
+    await flush();
+
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]);
+    expect(railHost().textContent).toContain("Read announced.js");
+
+    answerActivity({ items: [toolCall(10, "Read late.js")], oldest_sequence: 10, has_more: false });
+    await flush();
+    expect(railHost().textContent).toContain("Read announced.js");
+    expect(railHost().textContent).not.toContain("Read late.js");
+  });
+
   // The tail run is the one still being written, and a record is kept until the
   // entity is evicted — so freezing a live run into one would hide every call it
   // grew afterwards. The window is where the tail's rows land instead.

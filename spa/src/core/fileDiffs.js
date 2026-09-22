@@ -109,7 +109,6 @@ export function createFileDiffs({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, truncated: Boolean(file.truncated) },
     }),
-    cacheDriven: Boolean(deviceId && entityId),
     onChange,
   });
 

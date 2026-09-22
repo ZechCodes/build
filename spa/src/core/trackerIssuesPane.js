@@ -42,7 +42,9 @@ import { actorName } from "./trackerLineWords.js";
 import { boardColumns, moveParams, nextColumn, withMovedIssue } from "./trackerBoardModel.js";
 import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import { BOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
-import { paintIssueBoard, paintIssueRows } from "./trackerIssuesBody.js";
+import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
+import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
+import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
 import { carriesIssueAttachments } from "./issueAttachments.js";
@@ -58,6 +60,7 @@ export function mountIssuesPane(host, options) {
     all: [], // the project's whole list, which the filter menus are built from
     shown: [], // the narrowed list, which is what is painted
     visibleCount: ISSUE_PAGE_SIZE,
+    collapsedGroups: new Set(),
     columns: [],
     // Open, not everything (#33): a closed issue is done, and done work is not
     // what the tab is for. It is still one press away on the state filter.
@@ -96,6 +99,7 @@ export function mountIssuesPane(host, options) {
   const previewQuery = () => {
     state.unscopedShown = filterIssues(state.unscoped, shownFilters());
     rescope();
+    details?.updateIssues(state.shown);
   };
 
   /** Where one issue opens. The project's tab opens the tracker's own page;
@@ -169,13 +173,37 @@ export function mountIssuesPane(host, options) {
         paint();
       },
     },
+    onToggleGroup: (id) => {
+      if (state.collapsedGroups.has(id)) state.collapsedGroups.delete(id);
+      else state.collapsedGroups.add(id);
+      paint();
+    },
   });
+
+  const groupLabels = [
+    [WORKING_GROUP, "In progress with an agent"],
+    [NEEDS_YOU_GROUP, "Needs you"],
+    [REST_GROUP, "Other issues"],
+  ];
+  let details;
+  const groupedRows = () => {
+    const attention = attentionGroups(state.shown, {
+      feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(),
+    });
+    let remaining = state.visibleCount;
+    return groupLabels.map(([id, title]) => {
+      const issues = attention[id];
+      const page = issues.slice(0, remaining);
+      remaining -= page.length;
+      return { id, title, issues: page, count: issues.length, collapsed: state.collapsedGroups.has(id) };
+    });
+  };
 
   /** The two drawings of one read, each as what it paints, what it paints from
    *  and what has to be wired onto an entry it had to make. Chosen by name
    *  rather than asked about: a view is a thing this tab HAS, not a branch. */
   const VIEWS = {
-    [LIST_VIEW]: { paint: paintIssueRows, entries: () => state.shown.slice(0, state.visibleCount), wire: wireRow },
+    [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },
     [BOARD_VIEW]: { paint: paintIssueBoard, entries: () => boardColumns(state.columns, state.shown), wire: wireCard },
   };
 
@@ -215,6 +243,7 @@ export function mountIssuesPane(host, options) {
     queryLoaded = true;
     state.unscopedShown = sortIssues(record.issues);
     state.shown = kept(state.unscopedShown);
+    details?.updateIssues(state.shown);
     // On a cold device the background whole-list pass may not have landed
     // yet. Until it does, this cache record is still the only cache-derived
     // source from which the menus can be built.
@@ -255,12 +284,20 @@ export function mountIssuesPane(host, options) {
       state.unscopedShown = filterIssues(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
     }
+    details?.updateIssues(state.shown);
     reads.seen(at); // this list is as old as the cache's stamp, not as old as now
     paint();
   }
 
   const wholeListWatcher = subscribeCache(issuesAddress(state.deviceId, state.projectId), () => {
     void paintFromCache();
+  });
+
+  details = createTrackerIssueDetailsFeed({
+    deviceId: state.deviceId,
+    projectId: state.projectId,
+    callRpc: state.callRpc,
+    onChange: () => paint(),
   });
 
   /** The board's columns ARE the statuses, so narrowing by one there would
@@ -528,12 +565,14 @@ export function mountIssuesPane(host, options) {
      *  paint names them again. Nothing is re-read from the bridge. */
     feedMoved() {
       rescope();
+      details.updateIssues(state.shown);
       paint();
     },
     dispose() {
       state.disposed = true;
       watcher.dispose();
       wholeListWatcher?.();
+      details.dispose();
       queryUnsubscribe?.();
       reads.dispose();
       chrome.dispose();

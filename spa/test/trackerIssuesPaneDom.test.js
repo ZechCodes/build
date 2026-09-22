@@ -242,6 +242,44 @@ describe("painting before the bridge is asked", () => {
 });
 
 describe("the list", () => {
+  it("groups cached working and review issues ahead of the remaining rows and collapses each group", async () => {
+    const issues = [
+      issue({ id: "rest", number: 4, title: "Other work" }),
+      issue({ id: "review", number: 3, title: "Review this", status: "in_review" }),
+      issue({ id: "working", number: 2, title: "Agent is working", assignee: { kind: "agent", agent_id: "agent-1" } }),
+      issue({ id: "mine", number: 1, title: "Assigned to me", assignee: { kind: "user" } }),
+    ];
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true }] }] };
+    await mount({ feed: () => activeFeed });
+
+    expect(titles()).toEqual(["Agent is working", "Review this", "Assigned to me", "Other work"]);
+    expect([...host.querySelectorAll(".issue-group-heading")].map((one) => one.textContent.trim()))
+      .toEqual(["In progress with an agent1", "Needs you2", "Other issues1"]);
+    host.querySelector('[data-issue-group-toggle="working"]').click();
+    expect(host.querySelector('[data-issue-group="working"] .issue-rows').hidden).toBe(true);
+    expect(host.querySelector('[data-issue-group-toggle="working"]').getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("moves a row into Needs you after a real issue-detail cache announcement", async () => {
+    const one = issue({ id: "watched", number: 8, title: "Watched work", watched: true });
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [one], columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    const inboxFeed = { ...feed, items: [...feed.items, {
+      kind: "tracker_issue", projectKey: PROJECT_KEY, issue_id: one.id, unread: 1,
+    }] };
+    await mount({ feed: () => inboxFeed });
+    expect(host.querySelector('[data-issue-group="rest"] [data-issue="watched"]')).not.toBeNull();
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", one.id, trackerCache.issueRecord(one, [{
+      type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Please take a look",
+    }]));
+    await flush();
+
+    expect(host.querySelector('[data-issue-group="needsYou"] [data-issue="watched"]')).not.toBeNull();
+  });
+
   it("shows cached issues a page at a time and appends the next page without a bridge answer", async () => {
     const issues = Array.from({ length: 54 }, (_, index) => issue({
       id: `issue-${54 - index}`, number: 54 - index, title: `Cached ${54 - index}`,
@@ -629,7 +667,7 @@ describe("the two presses", () => {
     await mount();
     const kept = host.querySelector('[data-issue="issue-12"]');
     await fileWithTheReadHeldOpen();
-    expect(titles()[0]).toBe("Just filed");
+    expect(host.querySelector('[data-issue-group="rest"] .issue-title').textContent).toBe("Just filed");
     expect(host.querySelector('[data-issue="issue-12"]')).toBe(kept);
   });
 

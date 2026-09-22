@@ -342,4 +342,22 @@ describe("workspace directories", () => {
     expect($("#wsdirerr").textContent).toContain("still running");
     expect($("#sheet [data-remove-directory]")).not.toBeNull();
   });
+
+  it("keeps a directory refusal visible when the project source list arrives later", async () => {
+    let finishProjectList;
+    const projectList = new Promise((resolve) => { finishProjectList = resolve; });
+    const callRpc = vi.fn(async (method) => {
+      if (method === "workspace.get") return DETAIL;
+      if (method === "project.list") return projectList;
+      throw new Error("another filesystem operation is still running");
+    });
+    open({ callRpc });
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.list"));
+    $("[data-remove-directory]").click();
+    await vi.waitFor(() => expect($("#wsdirerr").textContent).toContain("still running"));
+
+    finishProjectList({ projects: [PROJECT] });
+    await vi.waitFor(() => expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2"));
+    expect($("#wsdirerr").textContent).toContain("still running");
+  });
 });

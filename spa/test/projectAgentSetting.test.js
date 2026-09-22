@@ -160,9 +160,11 @@ describe("the project-agent panel", () => {
       method: "settings.set",
       params: { project_agent: { provider: "claude_adk", model: null, effort: null } },
     });
-    expect(harness().value).toBe("claude_adk");
-    expect(model().value).toBe("");
-    expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    await vi.waitFor(() => {
+      expect(harness().value).toBe("claude_adk");
+      expect(model().value).toBe("");
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
 
     await change(model(), "claude-opus-5");
     expect(bridge.calls.at(-1).params).toEqual({

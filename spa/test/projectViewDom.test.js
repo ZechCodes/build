@@ -301,7 +301,7 @@ describe("the project's two tabs", () => {
   // The page is the same page: a navigation would remount the rail beside it.
   it("rewrites the hash rather than navigating", async () => {
     await openProject();
-    await flush();
+    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
     mountAgentRail.mockClear();
     pressProjectTab("workspaces");
     await flush();

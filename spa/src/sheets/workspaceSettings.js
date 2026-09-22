@@ -159,8 +159,10 @@ function mountDirectories(workspace, { callRpc, current, deviceId }) {
     if (!host || !detail) return;
     const held = new Set((detail.directories || []).map((directory) => directory.source_id));
     const offered = (project?.sources || []).filter((source) => !held.has(source.id));
+    const errorText = host.querySelector("#wsdirerr")?.textContent || "";
     host.innerHTML = directoriesBodyHtml(detail, offered);
-    wireDirectories(workspace, { callRpc, record });
+    host.querySelector("#wsdirerr").textContent = errorText;
+    wireDirectories(workspace, { callRpc, record, current });
   };
   const record = watchSettingsRecord(workspaceSettingsAddress(deviceId, workspace.id), (value) => {
     detail = value;
@@ -191,7 +193,7 @@ function mountDirectories(workspace, { callRpc, current, deviceId }) {
   };
 }
 
-function wireDirectories(workspace, { callRpc, record }) {
+function wireDirectories(workspace, { callRpc, record, current }) {
   const write = async (method, params, button) => {
     const error = $("#wsdirerr");
     error.textContent = "";
@@ -200,7 +202,8 @@ function wireDirectories(workspace, { callRpc, record }) {
       await record.write(await callRpc(method, params));
     } catch (thrown) {
       button.disabled = false;
-      if (error.isConnected) error.textContent = thrown.message;
+      const visibleError = current() ? $("#wsdirerr") : null;
+      if (visibleError) visibleError.textContent = thrown.message;
       else notifyError("The workspace's directories were not changed", thrown.message);
     }
   };

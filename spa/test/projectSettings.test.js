@@ -143,12 +143,11 @@ describe("openProjectSettings", () => {
     await flush();
     await flush();
     expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
-    expect(select.value).toBe("rift");
-
     await vi.waitFor(() => {
       const current = document.querySelector("#sheet [data-isolation=select]");
       expect(current).not.toBe(select);
       expect(current.disabled).toBe(false);
+      expect(current.value).toBe("rift");
     });
     const refreshed = document.querySelector("#sheet [data-isolation=select]");
     refreshed.value = "";

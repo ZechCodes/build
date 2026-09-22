@@ -1,4 +1,5 @@
 import { DEVICE_CONTRACT } from "./assets/devices/device-contract.js";
+import { createDeviceEnvironment } from "./device-lighting.js";
 
 const DEVICE_NAMES = ["laptop", "phone", "tablet"];
 const MODEL_URLS = Object.freeze({
@@ -11,6 +12,11 @@ const EMPTY_POSE = Object.freeze({ x: 50, y: 58, w: 0, rotate: [0, 0, 0], opacit
 const VISIBLE_OPACITY = 0.015;
 const ARRIVAL_END = 0.45;
 const DEPARTURE_START = 0.55;
+const OPAQUE_OPACITY = 1 - Number.EPSILON;
+const ENTRANCE_OFFSETS = Object.freeze({
+  phone: Object.freeze({ x: 13, y: 10, scale: 0.72, rotate: [28, -8, 8] }),
+  tablet: Object.freeze({ x: 18, y: 12, scale: 0.78, rotate: [26, -6, 6] }),
+});
 
 export function getContainedTextureLayout(imageWidth, imageHeight, screenAspect) {
   const width = Math.max(1, Number(imageWidth) || 1);
@@ -26,6 +32,28 @@ export function getContainedTextureLayout(imageWidth, imageHeight, screenAspect)
   };
 }
 
+export function createDeviceScreenMaterial(three) {
+  return new three.MeshBasicMaterial({
+    color: 0xffffff,
+    toneMapped: false,
+  });
+}
+
+export function cloneDeviceSurfaceMaterial(material, maximumAnisotropy) {
+  const clone = material.clone();
+  if (clone.map) clone.map.anisotropy = Math.min(8, maximumAnisotropy);
+  if (clone.name === "FrontGlass") {
+    clone.metalness = 0;
+    clone.roughness = 0.3;
+    clone.specularIntensity = 0.18;
+    clone.clearcoat = 0.1;
+    clone.clearcoatRoughness = 0.3;
+    clone.envMapIntensity = 0.3;
+  }
+  clone.transparent = true;
+  return clone;
+}
+
 function deviceScreenAspect(deviceName) {
   const [width, height] = DEVICE_CONTRACT.devices[deviceName].screen.size_m;
   return width / height;
@@ -37,9 +65,13 @@ function deviceScreenToBoundsWidth(deviceName) {
 }
 
 function deviceAnchor(deviceName) {
-  if (deviceName !== "laptop") return [0, 0, 0];
-  const device = DEVICE_CONTRACT.devices.laptop;
-  return [0, device.bounds_size_m[1] / 2, device.body_size_m[2] / 2];
+  const device = DEVICE_CONTRACT.devices[deviceName];
+  if (deviceName === "laptop") {
+    return [0, device.bounds_size_m[1] / 2, device.body_size_m[2] / 2];
+  }
+  // Put the display glass on the layout plane. Perspective then preserves the
+  // exact review-panel alignment while the enclosure recedes behind it.
+  return [0, 0, device.screen.center_m[2] || 0];
 }
 
 function clamp(value, minimum = 0, maximum = 1) {
@@ -56,26 +88,36 @@ function smoothstep(value) {
 }
 
 function copyPose(pose = EMPTY_POSE) {
-  return {
+  const copy = {
     x: Number.isFinite(pose.x) ? pose.x : EMPTY_POSE.x,
     y: Number.isFinite(pose.y) ? pose.y : EMPTY_POSE.y,
     w: Number.isFinite(pose.w) ? pose.w : EMPTY_POSE.w,
     rotate: Array.isArray(pose.rotate) ? pose.rotate.slice(0, 3) : EMPTY_POSE.rotate.slice(),
     opacity: Number.isFinite(pose.opacity) ? pose.opacity : pose.w > 0 ? 1 : EMPTY_POSE.opacity,
   };
+  if (Number.isFinite(pose.lidOpen)) copy.lidOpen = clamp(pose.lidOpen);
+  if (Number.isFinite(pose.faceCamera)) copy.faceCamera = clamp(pose.faceCamera);
+  return copy;
 }
 
 function interpolatePose(from, to, amount) {
   const start = copyPose(from);
   const end = copyPose(to);
   const eased = smoothstep(amount);
-  return {
+  const pose = {
     x: mix(start.x, end.x, eased),
     y: mix(start.y, end.y, eased),
     w: mix(start.w, end.w, eased),
     rotate: start.rotate.map((value, index) => mix(value, end.rotate[index] || 0, eased)),
     opacity: mix(start.opacity, end.opacity, eased),
   };
+  if (Number.isFinite(start.lidOpen) || Number.isFinite(end.lidOpen)) {
+    pose.lidOpen = mix(start.lidOpen ?? 1, end.lidOpen ?? 1, eased);
+  }
+  if (Number.isFinite(start.faceCamera) || Number.isFinite(end.faceCamera)) {
+    pose.faceCamera = mix(start.faceCamera ?? 1, end.faceCamera ?? 1, eased);
+  }
+  return pose;
 }
 
 function profilePoses(scene, profile) {
@@ -83,15 +125,54 @@ function profilePoses(scene, profile) {
   return poses[profile] || poses.desktop || poses.tablet || poses.compact || {};
 }
 
-function scenePose(scenes, sceneIndex, profile, deviceName) {
+function scenePose(scenes, sceneIndex, profile, deviceName, stageAspect) {
   if (sceneIndex < 0 || sceneIndex >= scenes.length) return EMPTY_POSE;
-  return profilePoses(scenes[sceneIndex], profile)[deviceName] || EMPTY_POSE;
+  const settled = profilePoses(scenes[sceneIndex], profile)[deviceName] || EMPTY_POSE;
+  if (
+    sceneIndex !== 3
+    || profile !== "tablet"
+    || deviceName !== "tablet"
+    || !Number.isFinite(stageAspect)
+    || stageAspect <= 1
+  ) {
+    return settled;
+  }
+  const tablet = DEVICE_CONTRACT.devices.tablet;
+  const widthForThirtyPercentHeight = 30
+    * tablet.bounds_size_m[0] / tablet.bounds_size_m[1]
+    / stageAspect;
+  return { ...settled, y: 82, w: Math.min(settled.w, widthForThirtyPercentHeight) };
 }
 
-function initialPose(scenes, profile, deviceName) {
-  const settled = copyPose(scenePose(scenes, 0, profile, deviceName));
-  if (deviceName === "laptop") settled.w = Math.max(0, settled.w - 5);
+function initialPose(scenes, profile, deviceName, stageAspect) {
+  const settled = copyPose(scenePose(scenes, 0, profile, deviceName, stageAspect));
+  if (deviceName === "laptop") {
+    // The hinge supplies the hero entrance: the base stays planted while the
+    // display opens to the app rather than the whole laptop drifting upward.
+    settled.lidOpen = 0;
+  }
   return settled;
+}
+
+function entrancePose(settledPose, deviceName) {
+  const settled = copyPose(settledPose);
+  const offset = ENTRANCE_OFFSETS[deviceName];
+  if (!offset) return settled;
+  return {
+    ...settled,
+    x: settled.x + offset.x,
+    y: settled.y + offset.y,
+    w: settled.w * offset.scale,
+    rotate: settled.rotate.map((value, index) => value + offset.rotate[index]),
+    opacity: 0,
+  };
+}
+
+function transitionPose(fromPose, toPose, amount, deviceName) {
+  const from = copyPose(fromPose);
+  const to = copyPose(toPose);
+  const entering = from.opacity <= VISIBLE_OPACITY && to.opacity > VISIBLE_OPACITY;
+  return interpolatePose(entering ? entrancePose(to, deviceName) : from, to, amount);
 }
 
 function reviewAlignmentPose(scenes, profile, reviewWidth) {
@@ -100,26 +181,30 @@ function reviewAlignmentPose(scenes, profile, reviewWidth) {
   review.w *= deviceScreenToBoundsWidth("tablet");
   review.rotate = [0, 0, 0];
   review.opacity = 1;
+  // The tablet display must remain on the layout plane while it hands off to
+  // the HTML review surface. Camera-facing compensation would tilt its plane.
+  review.faceCamera = 0;
   return review;
 }
 
-function boundaryPose(scenes, beforeIndex, profile, deviceName, reviewWidth) {
+function boundaryPose(scenes, beforeIndex, profile, deviceName, reviewWidth, stageAspect) {
   if (beforeIndex === 3 && deviceName === "tablet") {
     return reviewAlignmentPose(scenes, profile, reviewWidth);
   }
-  return interpolatePose(
-    scenePose(scenes, beforeIndex, profile, deviceName),
-    scenePose(scenes, beforeIndex + 1, profile, deviceName),
+  return transitionPose(
+    scenePose(scenes, beforeIndex, profile, deviceName, stageAspect),
+    scenePose(scenes, beforeIndex + 1, profile, deviceName, stageAspect),
     0.5,
+    deviceName,
   );
 }
 
-function reviewFramePose(scenes, local, profile, deviceName, reviewWidth) {
-  const hidden = scenePose(scenes, 4, profile, deviceName);
+function reviewFramePose(scenes, local, profile, deviceName, reviewWidth, stageAspect) {
+  const hidden = scenePose(scenes, 4, profile, deviceName, stageAspect);
   const arrival = deviceName === "tablet"
     ? reviewAlignmentPose(scenes, profile, reviewWidth)
-    : boundaryPose(scenes, 3, profile, deviceName, reviewWidth);
-  const departure = boundaryPose(scenes, 4, profile, deviceName, reviewWidth);
+    : boundaryPose(scenes, 3, profile, deviceName, reviewWidth, stageAspect);
+  const departure = boundaryPose(scenes, 4, profile, deviceName, reviewWidth, stageAspect);
   if (local < 0.2) {
     if (deviceName !== "tablet") return interpolatePose(arrival, hidden, local / 0.2);
     return { ...arrival, opacity: mix(arrival.opacity, 0, smoothstep(local / 0.2)) };
@@ -128,16 +213,16 @@ function reviewFramePose(scenes, local, profile, deviceName, reviewWidth) {
   return copyPose(hidden);
 }
 
-function framePose(scenes, sceneIndex, local, profile, deviceName, reviewWidth) {
-  if (sceneIndex === 4) return reviewFramePose(scenes, local, profile, deviceName, reviewWidth);
-  const settled = scenePose(scenes, sceneIndex, profile, deviceName);
+function framePose(scenes, sceneIndex, local, profile, deviceName, reviewWidth, stageAspect) {
+  if (sceneIndex === 4) return reviewFramePose(scenes, local, profile, deviceName, reviewWidth, stageAspect);
+  const settled = scenePose(scenes, sceneIndex, profile, deviceName, stageAspect);
   const arrival = sceneIndex === 0
-    ? initialPose(scenes, profile, deviceName)
-    : boundaryPose(scenes, sceneIndex - 1, profile, deviceName, reviewWidth);
+    ? initialPose(scenes, profile, deviceName, stageAspect)
+    : boundaryPose(scenes, sceneIndex - 1, profile, deviceName, reviewWidth, stageAspect);
   const departure = sceneIndex === scenes.length - 1
     ? settled
-    : boundaryPose(scenes, sceneIndex, profile, deviceName, reviewWidth);
-  if (local < ARRIVAL_END) return interpolatePose(arrival, settled, local / ARRIVAL_END);
+    : boundaryPose(scenes, sceneIndex, profile, deviceName, reviewWidth, stageAspect);
+  if (local <= ARRIVAL_END) return interpolatePose(arrival, settled, local / ARRIVAL_END);
   if (local > DEPARTURE_START) {
     return interpolatePose(settled, departure, (local - DEPARTURE_START) / (1 - DEPARTURE_START));
   }
@@ -149,7 +234,15 @@ export function getDeviceFramePoses(scenes, candidate, options = {}) {
   return Object.fromEntries(
     DEVICE_NAMES.map((name) => [
       name,
-      framePose(scenes, frame.sceneIndex, frame.local, frame.profile, name, options.reviewWidth),
+      framePose(
+        scenes,
+        frame.sceneIndex,
+        frame.local,
+        frame.profile,
+        name,
+        options.reviewWidth,
+        options.stageAspect,
+      ),
     ]),
   );
 }
@@ -179,16 +272,39 @@ function shouldEnhance(frame) {
 function deviceNamesForScene(sceneIndex) {
   if (sceneIndex >= 5) return DEVICE_NAMES;
   if (sceneIndex >= 3) return ["tablet"];
-  if (sceneIndex >= 1) return ["laptop", "phone"];
-  return ["laptop"];
+  if (sceneIndex >= 2) return DEVICE_NAMES;
+  return ["laptop", "phone"];
+}
+
+export function getLaptopLidRotationDegrees(lidOpen = 1) {
+  const laptop = DEVICE_CONTRACT.devices.laptop;
+  return mix(
+    laptop.lid_hinge_closed_rotation_deg ?? 90,
+    laptop.lid_hinge_default_rotation_deg ?? -15,
+    clamp(lidOpen),
+  );
+}
+
+export function getCameraFacingRotation(pose, position, cameraPosition) {
+  const [yaw = 0, pitch = 0, roll = 0] = pose.rotate;
+  const amount = Number.isFinite(pose.faceCamera) ? clamp(pose.faceCamera) : 1;
+  const cameraDistance = cameraPosition.z - position.z;
+  return {
+    pitch: -Math.atan2(cameraPosition.y - position.y, cameraDistance) * amount
+      + pitch * Math.PI / 180,
+    yaw: Math.atan2(-position.x, cameraDistance) * amount + yaw * Math.PI / 180,
+    roll: roll * Math.PI / 180,
+  };
 }
 
 export function getDeviceScreenSource(deviceName, frame) {
+  const arriving = arrivingScreenSource(deviceName, frame);
+  if (arriving) return arriving;
   const states = {
-    0: { laptop: "ui01-desktop" },
-    1: { laptop: "ui02-desktop", phone: "ui02-mobile" },
-    3: { tablet: "ui04-tablet" },
-    5: { laptop: "ui05-merged-desktop", tablet: "ui05-merged-tablet", phone: "ui05-merged-mobile" },
+    0: { laptop: "ui01-macbook" },
+    1: { laptop: "ui02-macbook", phone: "ui02-iphone" },
+    3: { tablet: "ui04-ipad" },
+    5: { laptop: "ui05-merged-macbook", tablet: "ui05-merged-ipad", phone: "ui05-merged-iphone" },
   };
   const state = frame.sceneIndex === 2
     ? directionScreenState(deviceName, frame.checkpoint)
@@ -198,16 +314,24 @@ export function getDeviceScreenSource(deviceName, frame) {
   return state ? `${SCREEN_DIRECTORY}/${state}.webp` : null;
 }
 
+function arrivingScreenSource(deviceName, frame) {
+  // Load an arriving device's first complete display before its pivot begins.
+  if (frame.local < DEPARTURE_START) return null;
+  if (frame.sceneIndex === 0 && deviceName === "phone") return `${SCREEN_DIRECTORY}/ui02-iphone.webp`;
+  if (frame.sceneIndex === 2 && deviceName === "tablet") return `${SCREEN_DIRECTORY}/ui04-ipad.webp`;
+  return null;
+}
+
 function directionScreenState(deviceName, checkpoint) {
   if (deviceName !== "phone") return null;
   const state = ["question", "answer", "resumed"].includes(checkpoint) ? checkpoint : "question";
-  return `ui03-${state}-mobile`;
+  return `ui03-${state}-iphone`;
 }
 
 function reviewScreenState(deviceName, frame) {
   if (deviceName !== "tablet") return null;
-  if (frame.checkpoint === "merged" || frame.local >= 0.8) return "ui05-merged-tablet";
-  return frame.local < 0.2 ? "ui04-tablet" : "ui05-approval-tablet";
+  if (frame.checkpoint === "merged" || frame.local >= 0.8) return "ui05-merged-ipad";
+  return frame.local < 0.2 ? "ui04-ipad" : "ui05-approval-ipad";
 }
 
 const WARMUP_FRAMES = 4;
@@ -224,6 +348,57 @@ export function frameBudgetAction({ renderCount, slowFrameCount, qualityScale },
   if (slow < SLOW_FRAME_LIMIT) return { action: "none", slowFrameCount: slow, qualityScale };
   if (qualityScale > REDUCED_QUALITY) return { action: "reduce", slowFrameCount: 0, qualityScale: REDUCED_QUALITY };
   return { action: "posters", slowFrameCount: slow, qualityScale };
+}
+
+export function renderSolidDeviceFades(renderer, scene, camera, depthMaterial, visibleModels) {
+  const hasFadedModel = visibleModels.some(([, model]) => model.opacity < OPAQUE_OPACITY);
+  // Keep multi-device frames layered at opacity 1 too. Switching back to a
+  // combined depth buffer at the fade endpoint could reorder an overlap.
+  if (!hasFadedModel && visibleModels.length < 2) {
+    renderer.render(scene, camera);
+    return;
+  }
+
+  const previousOverrideMaterial = scene.overrideMaterial;
+  const previousAutoClear = renderer.autoClear;
+  const previousShadowAutoUpdate = renderer.shadowMap.autoUpdate;
+  const previousVisibility = visibleModels.map(([, model]) => model.root.visible);
+  try {
+    renderer.autoClear = true;
+    visibleModels.forEach(([, model]) => { model.root.visible = false; });
+    visibleModels.forEach(([, model], index) => {
+      model.root.visible = true;
+      if (index > 0) {
+        // Retain the previously composited device color while giving this
+        // device an independent depth buffer. A nearly invisible arrival can
+        // therefore never cut its opaque silhouette out of another device.
+        renderer.autoClear = false;
+        renderer.clearDepth();
+      }
+      if (model.opacity < OPAQUE_OPACITY) {
+        // Record only this device's nearest surface before its color pass.
+        // Rear shell, keyboard, and hinge fragments then fail the depth test
+        // instead of accumulating opacity through the foreground chassis.
+        scene.overrideMaterial = depthMaterial;
+        renderer.render(scene, camera);
+        // The depth pass has already updated the shadow map for this frame.
+        renderer.shadowMap.autoUpdate = false;
+        scene.overrideMaterial = previousOverrideMaterial;
+        renderer.autoClear = false;
+      }
+      renderer.render(scene, camera);
+      model.root.visible = false;
+      // An opaque first layer also completes the frame's shadow update.
+      renderer.shadowMap.autoUpdate = false;
+    });
+  } finally {
+    visibleModels.forEach(([, model], index) => {
+      model.root.visible = previousVisibility[index];
+    });
+    scene.overrideMaterial = previousOverrideMaterial;
+    renderer.autoClear = previousAutoClear;
+    renderer.shadowMap.autoUpdate = previousShadowAutoUpdate;
+  }
 }
 
 function idle(callback) {
@@ -352,9 +527,8 @@ class DeviceStage {
       Color,
       DirectionalLight,
       HemisphereLight,
-      OrthographicCamera,
-      PMREMGenerator,
-      RoomEnvironment,
+      PCFSoftShadowMap,
+      PerspectiveCamera,
       Scene,
       SRGBColorSpace,
       WebGLRenderer,
@@ -369,26 +543,35 @@ class DeviceStage {
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.04;
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = PCFSoftShadowMap;
+    this.solidFadeDepthMaterial = new this.three.MeshBasicMaterial();
+    this.solidFadeDepthMaterial.colorWrite = false;
+    this.solidFadeDepthMaterial.depthWrite = true;
+    this.solidFadeDepthMaterial.depthTest = true;
     if (this.isSoftwareRenderer()) throw new Error("software WebGL renderer");
     this.scene = new Scene();
-    const room = new RoomEnvironment();
-    const environmentGenerator = new PMREMGenerator(this.renderer);
-    this.environmentTarget = environmentGenerator.fromScene(room, 0.04);
+    this.environmentTarget = createDeviceEnvironment(this.three, this.renderer);
     this.scene.environment = this.environmentTarget.texture;
-    this.scene.environmentIntensity = 0.46;
-    room.dispose();
-    environmentGenerator.dispose();
-    this.camera = new OrthographicCamera(-1, 1, 1, -1, 0.01, 20);
-    this.camera.position.set(0, 0, 6);
+    this.scene.environmentIntensity = 1;
+    // Keep one vertical world unit at the layout plane, while giving the
+    // hardware photographic convergence and spatially varying reflections.
+    this.camera = new PerspectiveCamera(20, 1, 0.5, 8);
+    this.camera.position.set(0, 0, 0.5 / Math.tan(Math.PI / 18));
     this.camera.lookAt(0, 0, 0);
-    const sky = new HemisphereLight(0xf1f3f2, 0x202322, 1);
-    const key = new DirectionalLight(0xfffaf2, 1.9);
-    const fill = new DirectionalLight(0xdde2e1, 0.85);
-    const edge = new DirectionalLight(0xf2f4f3, 0.7);
+    const sky = new HemisphereLight(0xf1f3f2, 0x121820, 0.12);
+    const key = new DirectionalLight(0xfffcf6, 1.8);
+    const fill = new DirectionalLight(0xe8edf5, 0.35);
+    const edge = new DirectionalLight(0xf2f4f3, 1.1);
     key.position.set(-4, 5, 6);
     fill.position.set(5, 1, 4);
     edge.position.set(2, 4, -5);
-    this.scene.add(sky, key, fill, edge);
+    key.castShadow = true;
+    key.shadow.mapSize.set(2048, 2048);
+    key.shadow.bias = -0.000006;
+    key.shadow.normalBias = 0.000018;
+    this.keyLight = key;
+    this.scene.add(sky, key, key.target, fill, edge);
     this.loader = new this.three.GLTFLoader();
     this.textureLoader = new this.three.TextureLoader();
     const onResize = () => {
@@ -425,10 +608,7 @@ class DeviceStage {
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(width, height, false);
     const aspect = width / height;
-    this.camera.left = -aspect / 2;
-    this.camera.right = aspect / 2;
-    this.camera.top = 0.5;
-    this.camera.bottom = -0.5;
+    this.camera.aspect = aspect;
     this.camera.updateProjectionMatrix();
     this.aspect = aspect;
   }
@@ -482,29 +662,33 @@ class DeviceStage {
   }
 
   prepareModel(name, source) {
-    const { Group, Mesh, MeshBasicMaterial } = this.three;
+    const { Group, Mesh } = this.three;
     source.updateMatrixWorld(true);
     const [anchorX, anchorY, anchorZ] = deviceAnchor(name);
     source.position.set(-anchorX, -anchorY, -anchorZ);
     const screenMeshes = [];
     source.traverse((node) => {
       if (!(node instanceof Mesh)) return;
+      node.castShadow = !/screen|legend/.test(node.name);
+      node.receiveShadow = node.castShadow;
       if (node.name === DEVICE_CONTRACT.devices[name].screen.node) {
-        node.material = new MeshBasicMaterial({ color: 0x0b100e, toneMapped: false });
+        node.material = createDeviceScreenMaterial(this.three);
         node.material.transparent = true;
         node.userData.deviceScreen = name;
         screenMeshes.push(node);
         return;
       }
       const materials = Array.isArray(node.material) ? node.material : [node.material];
-      const clones = materials.map((material) => {
-        const clone = material.clone();
-        clone.transparent = true;
-        return clone;
-      });
+      const maximumAnisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      const clones = materials.map((material) => (
+        cloneDeviceSurfaceMaterial(material, maximumAnisotropy)
+      ));
       node.material = Array.isArray(node.material) ? clones : clones[0];
     });
     if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);
+    const hingeNodeName = DEVICE_CONTRACT.devices[name].lid_hinge_node;
+    const lidHinge = hingeNodeName ? source.getObjectByName(hingeNodeName) : null;
+    if (hingeNodeName && !lidHinge) throw new Error(`Missing ${name} lid hinge node`);
     const root = new Group();
     root.name = `device-${name}`;
     root.add(source);
@@ -513,6 +697,7 @@ class DeviceStage {
       root,
       source,
       screenMeshes,
+      lidHinge,
       screenUrl: null,
       screenKey: null,
       desiredScreenUrl: null,
@@ -526,19 +711,13 @@ class DeviceStage {
       const url = getDeviceScreenSource(name, this.frame);
       if (url === model.desiredScreenUrl) continue;
       model.desiredScreenUrl = url;
-      model.screenUrl = null;
-      model.screenKey = null;
-      model.ready = false;
-      this.showPoster(name);
-      for (const screen of model.screenMeshes) {
-        screen.material.map = null;
-        screen.material.color.setHex(0x0b100e);
-        screen.material.needsUpdate = true;
-      }
+      // Keep the current complete display during a checkpoint load or a
+      // departing pose. The system bars must never blink to an empty screen.
       if (!url) {
         this.releaseUnusedTextures();
         continue;
       }
+      if (!model.screenUrl) this.showPoster(name);
       this.assignScreenTexture(name, model, url);
     }
   }
@@ -575,6 +754,8 @@ class DeviceStage {
       }
       const texture = this.containScreenTexture(sourceTexture, deviceName);
       texture.colorSpace = this.three.SRGBColorSpace;
+      // Preserve small system glyphs and key legends as the display turns.
+      texture.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
       texture.flipY = false;
       texture.needsUpdate = true;
       this.textures.set(key, texture);
@@ -619,7 +800,8 @@ class DeviceStage {
 
   applyPose(model, pose) {
     const opacity = clamp(pose.opacity);
-    model.root.visible = opacity > VISIBLE_OPACITY && pose.w > 0;
+    model.opacity = opacity;
+    model.root.visible = opacity > VISIBLE_OPACITY && pose.w > 0 && Boolean(model.screenUrl);
     if (!model.root.visible) return;
     const worldWidth = (pose.w / 100) * this.aspect;
     const scale = worldWidth / model.width;
@@ -629,13 +811,18 @@ class DeviceStage {
       0.5 - (pose.y / 100),
       0,
     );
-    const [yaw = 0, pitch = 0, roll = 0] = pose.rotate;
+    const rotation = getCameraFacingRotation(pose, model.root.position, this.camera.position);
     model.root.rotation.set(
-      this.three.MathUtils.degToRad(pitch),
-      this.three.MathUtils.degToRad(yaw),
-      this.three.MathUtils.degToRad(roll),
+      rotation.pitch,
+      rotation.yaw,
+      rotation.roll,
       "YXZ",
     );
+    if (model.lidHinge) {
+      model.lidHinge.rotation.x = this.three.MathUtils.degToRad(
+        getLaptopLidRotationDegrees(pose.lidOpen),
+      );
+    }
     model.source.traverse((node) => {
       if (!node.isMesh) return;
       const materials = Array.isArray(node.material) ? node.material : [node.material];
@@ -662,9 +849,17 @@ class DeviceStage {
     const startedAt = performance.now();
     const poses = getDeviceFramePoses(this.scenes, this.frame, {
       reviewWidth: this.reviewWidth(),
+      stageAspect: this.aspect,
     });
     const visibleModels = this.poseModels(poses);
-    this.renderer.render(this.scene, this.camera);
+    this.fitKeyboardShadow();
+    renderSolidDeviceFades(
+      this.renderer,
+      this.scene,
+      this.camera,
+      this.solidFadeDepthMaterial,
+      visibleModels,
+    );
     this.renderCount += 1;
     this.publishFrame(visibleModels);
     this.measureFrame(performance.now() - startedAt);
@@ -672,6 +867,22 @@ class DeviceStage {
 
   canRender() {
     return this.enabled && this.visible && !this.page.hidden && Boolean(this.aspect);
+  }
+
+  fitKeyboardShadow() {
+    const laptop = this.models.get("laptop");
+    this.keyLight.castShadow = Boolean(laptop?.root.visible);
+    if (!this.keyLight.castShadow) return;
+    const center = laptop.root.position;
+    const span = laptop.width * laptop.root.scale.x * 0.72;
+    this.keyLight.target.position.copy(center);
+    this.keyLight.position.copy(center).add({ x: -2, y: 3, z: 4 });
+    const shadowCamera = this.keyLight.shadow.camera;
+    Object.assign(shadowCamera, {
+      left: -span, right: span, top: span, bottom: -span,
+      near: Math.sqrt(29) - span * 2, far: Math.sqrt(29) + span * 2,
+    });
+    shadowCamera.updateProjectionMatrix();
   }
 
   reviewWidth() {
@@ -725,6 +936,7 @@ class DeviceStage {
     poster.style.transition = "opacity 320ms ease";
     poster.style.setProperty("opacity", "0", "important");
     poster.dataset.webglDeviceReady = "true";
+    poster.dataset.webglScreenSource = this.models.get(name)?.screenUrl || "";
   }
 
   showPoster(name) {
@@ -733,6 +945,7 @@ class DeviceStage {
     const original = this.posterOpacity.get(name);
     poster.style.setProperty("opacity", original.value, original.priority);
     poster.removeAttribute("data-webgl-device-ready");
+    poster.removeAttribute("data-webgl-screen-source");
   }
 
   measureFrame(duration) {
@@ -753,6 +966,7 @@ class DeviceStage {
       element.style.setProperty("opacity", original.value, original.priority);
       element.style.transition = original.transition;
       element.removeAttribute("data-webgl-device-ready");
+      element.removeAttribute("data-webgl-screen-source");
     }
     this.stage.classList.remove("device-stage--enhanced");
     delete this.stage.dataset.webglReady;
@@ -769,6 +983,14 @@ class DeviceStage {
     this.enabled = false;
     this.restorePosters();
     if (this.canvas) this.canvas.style.opacity = "0";
+  }
+
+  disposeGraphics() {
+    this.environmentTarget?.dispose();
+    this.solidFadeDepthMaterial?.dispose();
+    this.renderer?.dispose();
+    this.renderer?.forceContextLoss();
+    this.canvas?.remove();
   }
 
   destroy() {
@@ -792,10 +1014,7 @@ class DeviceStage {
     this.models.clear();
     for (const texture of this.textures.values()) texture.dispose();
     this.textures.clear();
-    this.environmentTarget?.dispose();
-    this.renderer?.dispose();
-    this.renderer?.forceContextLoss();
-    this.canvas?.remove();
+    this.disposeGraphics();
     this.restorePosters();
   }
 }

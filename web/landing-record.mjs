@@ -3,8 +3,10 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs/promises";
 import { chromium } from "playwright";
 
-const output = fileURLToPath(new URL("../design/landing-review", import.meta.url));
+const output = process.env.LANDING_REVIEW_DIR
+  || fileURLToPath(new URL("../design/landing-review", import.meta.url));
 const profiles = [["desktop", 1440, 900], ["mobile", 390, 844]];
+const realGpuExpected = process.env.LANDING_HEADFUL === "1";
 
 function monitorDrawCalls() {
   window.__drawCount = 0;
@@ -15,6 +17,15 @@ function monitorDrawCalls() {
       return original.apply(this, args);
     };
   }
+}
+
+async function waitForStory(page) {
+  await page.waitForFunction(() => window.BuildLandingStory?.getState);
+  const enhanced = await page.evaluate(() => window.BuildLandingStory.getState().enhanced);
+  if (enhanced && realGpuExpected) {
+    await page.waitForFunction(() => document.querySelector('[data-webgl-ready="true"]'));
+  }
+  return enhanced;
 }
 
 // Playwright runs this function in the page, so its imports and helpers live here.
@@ -65,7 +76,7 @@ async function recordViewport(browser, [name, width, height]) {
   await context.addInitScript(monitorDrawCalls);
   const page = await context.newPage();
   await page.goto(process.env.LANDING_URL || "http://127.0.0.1:4173/", { waitUntil: "networkidle" });
-  await page.waitForFunction(() => document.querySelector('[data-webgl-ready="true"]'));
+  await waitForStory(page);
   await page.waitForTimeout(500);
   const drawsBefore = await page.evaluate(() => window.__drawCount);
   await page.waitForTimeout(500);
@@ -80,6 +91,34 @@ async function recordViewport(browser, [name, width, height]) {
   console.log(name, report);
 }
 
+async function captureOpeningStills(browser) {
+  if (!realGpuExpected) return;
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await context.newPage();
+  await page.goto(process.env.LANDING_URL || "http://127.0.0.1:4173/", { waitUntil: "networkidle" });
+  const enhanced = await waitForStory(page);
+  if (!enhanced) throw new Error("opening stills require the enhanced desktop story");
+  await page.waitForFunction(() => (
+    document.querySelector('[data-device="laptop"]')?.dataset.webglDeviceReady === "true"
+  ));
+  await page.waitForTimeout(400);
+
+  for (const [file, local] of [["opening-closed.png", 0], ["opening-half.png", 0.225]]) {
+    await page.evaluate(async (targetLocal) => {
+      const { travelAtFrame } = await import("/landing/story-manifest.js");
+      const story = document.querySelector("[data-story]");
+      const stage = document.querySelector("[data-story-stage]");
+      const state = window.BuildLandingStory.getState();
+      const origin = story.getBoundingClientRect().top + scrollY;
+      const top = origin + travelAtFrame(0, targetLocal, state.profile) * stage.getBoundingClientRect().height;
+      scrollTo({ top, behavior: "instant" });
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }, local);
+    await page.screenshot({ path: `${output}/${file}`, animations: "disabled" });
+  }
+  await context.close();
+}
+
 await fs.mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   headless: process.env.LANDING_HEADFUL !== "1",
@@ -88,6 +127,7 @@ const browser = await chromium.launch({
 });
 try {
   for (const profile of profiles) await recordViewport(browser, profile);
+  await captureOpeningStills(browser);
 } finally {
   await browser.close();
 }

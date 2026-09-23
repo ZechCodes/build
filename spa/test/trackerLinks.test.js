@@ -8,6 +8,7 @@ const PROJECT_KEY = "dev-1|proj-1";
 const HERE = { projectId: "proj-1", deviceId: "dev-1", projectKey: PROJECT_KEY };
 
 const feed = {
+  projects: [{ projectKey: PROJECT_KEY, entity_id: "run-9" }],
   workspaces: [
     { id: "ws-1", workspace_id: "ws-1", name: "wire-facade", projectKey: PROJECT_KEY, entity_id: "run-1" },
     { id: "ws-2", workspace_id: "ws-2", name: "issues-board", projectKey: PROJECT_KEY, entity_id: "run-2" },
@@ -22,6 +23,7 @@ describe("what an issue links", () => {
     expect(linksOf({ workspace_ids: ["ws-1"] })).toEqual([
       {
         kind: "workspace",
+        workspaceId: "ws-1",
         label: "wire-facade",
         route: { name: "workspace", projectId: "proj-1", deviceId: "dev-1", workspaceId: "ws-1", tab: "changes" },
       },
@@ -46,7 +48,7 @@ describe("what an issue links", () => {
 
   // The project's own agent has a conversation too, and it lives on the
   // project page.
-  it("opens a conversation no workspace owns on the project page", () => {
+  it("opens the project's own conversation on the project page", () => {
     const [row] = linksOf({ conversation_ids: ["run-9"] });
     expect([row.label, row.route.name]).toEqual(["Project agent · conversation", "project"]);
   });
@@ -75,9 +77,10 @@ describe("what an issue links", () => {
     ]);
   });
 
-  // A workspace the feed cannot name is still a workspace the link opens.
-  it("falls back to the id for a workspace this device has not listed", () => {
-    expect(linksOf({ workspace_ids: ["ws-9"] }, null)[0].label).toBe("ws-9");
+  // A deleted workspace keeps its id visible, without an unusable route.
+  it("shows deleted workspace and conversation destinations as plain text", () => {
+    expect(linksOf({ workspace_ids: ["ws-9"] }, null)[0]).toMatchObject({ label: "ws-9", route: null });
+    expect(linksOf({ conversation_ids: ["run-404"] }, feed)[0].route).toBeNull();
   });
 
   it("has nothing to say about an issue that links nothing", () => {

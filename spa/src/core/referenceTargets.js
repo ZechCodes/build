@@ -17,6 +17,7 @@
 // Pure: no DOM, no cache, no router.
 
 import { workspaceDisplayName } from "./workspaceModel.js";
+import { actorName } from "./trackerLineWords.js";
 
 /** The id a project's own agent is minted under — it stands in no workspace,
  *  so it is reached on the project's own page (core/markdownLinks.js). */
@@ -37,6 +38,14 @@ const workspaceNamed = (workspaces, said) =>
 const groupHolding = (groups, agentId) =>
   (groups || []).find((group) => (group.agents || []).some((agent) => agent.id === agentId)) || null;
 
+const identityAgent = (id, identity, identities, workspaces, at) => {
+  const workspaceId = identity.workspace_id;
+  if (!identity.available || !workspaceId || !workspaces.some((workspace) =>
+    (workspace.workspace_id || workspace.id) === workspaceId)) return null;
+  return { ...at, workspaceId, agentId: id,
+    name: actorName({ kind: "agent", agent_id: id }, { identities }) };
+};
+
 /**
  * The resolver core/markdownLinks.js asks, built from what this surface holds.
  *
@@ -50,7 +59,7 @@ const groupHolding = (groups, agentId) =>
  * paint from, so a link can only point at something the reader could have
  * opened anyway.
  */
-export function referenceLinks({ place, issues = [], workspaces = [], agentGroups = [] } = {}) {
+export function referenceLinks({ place, issues = [], workspaces = [], agentGroups = [], identities = {} } = {}) {
   const deviceId = place?.deviceId;
   const projectId = place?.projectId;
   if (!deviceId || !projectId) return null;
@@ -68,7 +77,11 @@ export function referenceLinks({ place, issues = [], workspaces = [], agentGroup
     },
 
     agent(id) {
-      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) return { ...at, agentId: id };
+      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) {
+        return identities[id]?.available === false ? null : { ...at, agentId: id };
+      }
+      const identity = identities[id];
+      if (identity) return identityAgent(id, identity, identities, workspaces, at);
       const group = groupHolding(agentGroups, id);
       if (!group) return null;
       const agent = group.agents.find((one) => one.id === id);

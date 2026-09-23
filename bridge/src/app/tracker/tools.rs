@@ -348,6 +348,10 @@ impl AppState {
             json!({ "title": draft.title }),
             &now,
         );
+        self.capture_issue_identities(
+            &mut draft,
+            &[crate::tracker::TimelineEntry::Event(created.clone())],
+        );
         let issue = self
             .tracker_store()?
             .create_tracker_issue(draft, std::slice::from_ref(&created))

@@ -2417,7 +2417,10 @@ function mountRailOnContext(host, context, swap) {
    *  row would have moved. */
   const refLinksSignature = () => {
     const issues = issuesBlock?.issues() || [];
-    return `${issues.length}:${issues.reduce((highest, issue) => Math.max(highest, issue.number || 0), 0)}`;
+    const workspaces = (feedView?.workspaces || []).filter((workspace) =>
+      workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId));
+    const ids = workspaces.map((workspace) => workspace.workspace_id || workspace.id).sort().join(",");
+    return `${issues.length}:${issues.reduce((highest, issue) => Math.max(highest, issue.number || 0), 0)}:${ids}`;
   };
 
   /** The names as the paint sees them. In the fingerprint because a feed that
@@ -2476,6 +2479,8 @@ function mountRailOnContext(host, context, swap) {
       threadState: controllerInFocus().threadState,
       unreadFrom,
       place: conversationPlace(),
+      workspaces: (feedView?.workspaces || []).filter((workspace) =>
+        workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId)),
       agentLabels: conversationAgentLabels(),
       refLinks: conversationRefLinks(),
       // So a timeline the level emptied says so, rather than claiming the

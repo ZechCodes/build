@@ -326,6 +326,10 @@ pub struct IssueView {
     /// nobody watches, so a client tells "nobody" from "this bridge is too old
     /// to answer it".
     pub trackers: Vec<String>,
+    /// Last known identities of agents this issue mentions, keyed by agent id.
+    /// Captured on writes so a finished workspace still names its agents.
+    #[serde(default)]
+    pub identities: std::collections::BTreeMap<String, crate::tracker::IssueAgentIdentity>,
     /// The files filed with it. Always present for the same reason `trackers`
     /// is: a client that sent files and got no key back is looking at a bridge
     /// that dropped them, and `[]` says it carried none.

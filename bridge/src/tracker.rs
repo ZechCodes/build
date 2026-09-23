@@ -243,6 +243,20 @@ impl IssueLinks {
     }
 }
 
+/// The last known identity of an agent mentioned by an issue. The four
+/// optional words are absent on old records when the agent cannot be found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueAgentIdentity {
+    pub agent_id: String,
+    pub name: Option<String>,
+    pub ordinal: Option<u32>,
+    pub workspace_id: Option<String>,
+    pub workspace_name: Option<String>,
+    pub provider: Option<String>,
+    /// Whether the workspace and conversation can currently be opened.
+    pub available: bool,
+}
+
 /// One tracker issue.
 ///
 /// `project_path` and not a `proj-N` id, for the reason [`PersistedPlan`] and
@@ -281,6 +295,11 @@ pub struct Issue {
     /// and an empty list is the right answer for them.
     #[serde(default)]
     pub trackers: Vec<String>,
+    /// Agent identities observed while this issue was written. A workspace
+    /// can be finished and its conversation removed; the issue still needs to
+    /// name the people in its timeline after that happens.
+    #[serde(default)]
+    pub identities: std::collections::BTreeMap<String, IssueAgentIdentity>,
     /// The files filed WITH the issue (spec: Issues → Attachments).
     ///
     /// The same record a message carries, because they are the same thing seen
@@ -400,6 +419,7 @@ impl Issue {
             assignee: None,
             links: IssueLinks::default(),
             trackers: Vec::new(),
+            identities: std::collections::BTreeMap::new(),
             attachments: Vec::new(),
             watched: false,
             read_through: None,

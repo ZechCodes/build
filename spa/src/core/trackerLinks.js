@@ -30,14 +30,16 @@ const workspacesOfProject = (feed, projectKey) =>
 
 const ownerOf = (workspace) => workspace.entity_id || workspace.run_id || workspace.id;
 
-const workspaceRow = (workspaceId, place, feed) => {
+const workspaceRow = (workspaceId, place, feed, identities = {}) => {
   const workspace = workspacesOfProject(feed, place.projectKey).find(
     (candidate) => (candidate.workspace_id || candidate.id) === workspaceId,
   );
   return {
     kind: "workspace",
-    label: workspace ? workspaceDisplayName(workspace) : workspaceId,
-    route: { name: "workspace", projectId: place.projectId, deviceId: place.deviceId, workspaceId, tab: "changes" },
+    workspaceId,
+    label: workspace ? workspaceDisplayName(workspace)
+      : Object.values(identities).find((identity) => identity.workspace_id === workspaceId)?.workspace_name || workspaceId,
+    route: workspace ? { name: "workspace", projectId: place.projectId, deviceId: place.deviceId, workspaceId, tab: "changes" } : null,
   };
 };
 
@@ -49,6 +51,11 @@ const branchRow = (branch, place) => ({
 
 /** A commit is shown, not linked: no surface is addressed by a bare hash. */
 const commitRow = (commit) => ({ kind: "commit", label: String(commit).slice(0, SHORT_HASH), title: commit, route: null });
+
+const isProjectConversation = (conversationId, place, feed) => {
+  const project = (feed?.projects || []).find((candidate) => candidate.projectKey === place.projectKey);
+  return (project?.entity_id || project?.run_id) === conversationId;
+};
 
 /** Which page a conversation owner belongs to. A workspace of this project
  *  owns it, or the project itself does — and an owner the feed does not place
@@ -67,7 +74,7 @@ function conversationRow(conversationId, place, feed) {
   return {
     kind: "conversation",
     label: workspace ? `${workspaceDisplayName(workspace)} · conversation` : "Project agent · conversation",
-    route: conversationRoute(page),
+    route: workspace || isProjectConversation(conversationId, place, feed) ? conversationRoute(page) : null,
   };
 }
 
@@ -87,7 +94,7 @@ const parentRow = (parentIssueId, place) => ({
 export function issueLinkRows(issue, place, feed = null) {
   const links = issueLinks(issue);
   return [
-    ...links.workspace_ids.map((workspaceId) => workspaceRow(workspaceId, place, feed)),
+    ...links.workspace_ids.map((workspaceId) => workspaceRow(workspaceId, place, feed, issue.identities)),
     ...links.branches.map((branch) => branchRow(branch, place)),
     ...links.conversation_ids.map((conversationId) => conversationRow(conversationId, place, feed)),
     ...links.commits.map(commitRow),

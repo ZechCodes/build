@@ -19,6 +19,7 @@ import {
   stateLabel,
 } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
+import { issueAvatarHtml } from "./issueAvatar.js";
 
 /** Open or closed, as a dot and its accessible name. A closed issue is drawn
  *  quiet rather than absent: it is still the project's history. */
@@ -114,9 +115,19 @@ export const priorityChipHtml = (priority) =>
 /** Who holds it. Unassigned is a state worth showing rather than a blank: on a
  *  card and on the issue's own page, where one issue is the subject and "who
  *  has this" is a question being answered. */
+const assigneeProvider = (assignee, reading) => {
+  const id = assignee?.agent_id;
+  return reading.identities?.[id]?.provider || reading.agentProviders?.[id] || "";
+};
+
+const isProjectAssignee = (assignee) =>
+  assignee?.kind === "project_agent" || Boolean(assignee?.agent_id?.startsWith("project-"));
+
 export const assigneeHtml = (assignee, reading) => {
   const label = assignee ? actorName(assignee, reading) : "Unassigned";
-  return `<span class="issue-assignee${assignee ? "" : " issue-unassigned"}">${esc(label)}</span>`;
+  const icon = isProjectAssignee(assignee) || assigneeProvider(assignee, reading)
+    ? issueAvatarHtml(assignee, reading) : "";
+  return `<span class="issue-assignee${assignee ? "" : " issue-unassigned"}">${icon}${esc(label)}</span>`;
 };
 
 /**
@@ -129,9 +140,7 @@ export const assigneeHtml = (assignee, reading) => {
  * a screen reader cannot find either.
  */
 export const rowAssigneeHtml = (assignee, reading) =>
-  assignee
-    ? `<span class="issue-assignee">${esc(actorName(assignee, reading))}</span>`
-    : `<span class="issue-assign-cue">Assign</span>`;
+  assignee ? assigneeHtml(assignee, reading) : `<span class="issue-assign-cue">Assign</span>`;
 
 /** What the press is called where it cannot be seen. It names the holder when
  *  there is one, because a control whose visible words are missing from its

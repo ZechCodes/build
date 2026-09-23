@@ -15,6 +15,7 @@ mod activity;
 mod attachments;
 mod dispatch;
 mod edits;
+mod identities;
 mod inbox;
 mod notices;
 mod refs;
@@ -106,13 +107,21 @@ impl AppState {
             .stored()?;
         let assignee = edits::optional_assignee_filter(params)?;
         let label = crate::app::optional_nonempty_string(params, "label")?.map(str::to_string);
-        let issues: Vec<Value> = issues
+        let mut rows = Vec::new();
+        for issue in issues
             .into_iter()
             .filter(|issue| assignee.matches(issue))
             .filter(|issue| edits::carries_label(issue, label.as_deref()))
-            .map(|issue| issue_json(&project_id, &issue))
-            .collect();
-        Ok(json!({ "project_id": project_id, "issues": issues }))
+        {
+            let timeline = self
+                .tracker_store()?
+                .load_tracker_timeline(&issue.id)
+                .stored()?;
+            let issue = self.backfill_issue_identities(issue, &timeline)?;
+            let issue = self.issue_with_read_identities(issue, &timeline);
+            rows.push(issue_json(&project_id, &issue));
+        }
+        Ok(json!({ "project_id": project_id, "issues": rows }))
     }
 
     /// `issues.get` — one issue and its whole timeline.
@@ -123,6 +132,8 @@ impl AppState {
             .tracker_store()?
             .load_tracker_timeline(&issue.id)
             .stored()?;
+        let issue = self.backfill_issue_identities(issue, &timeline)?;
+        let issue = self.issue_with_read_identities(issue, &timeline);
         Ok(issue_with_timeline_json(&project_id, &issue, &timeline))
     }
 
@@ -173,6 +184,10 @@ impl AppState {
             IssueEventKind::Created,
             json!({ "title": draft.title }),
             &now,
+        );
+        self.capture_issue_identities(
+            &mut draft,
+            &[crate::tracker::TimelineEntry::Event(created.clone())],
         );
         let issue = self
             .tracker_store()?
@@ -293,6 +308,26 @@ impl AppState {
         now: &str,
     ) -> Result<Value, String> {
         write.issue.updated_at = now.to_string();
+        let mut timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&write.issue.id)
+            .stored()?;
+        timeline.extend(
+            write
+                .comments
+                .iter()
+                .cloned()
+                .map(crate::tracker::TimelineEntry::Comment)
+                .chain(
+                    write
+                        .events
+                        .iter()
+                        .cloned()
+                        .map(crate::tracker::TimelineEntry::Event),
+                )
+                .collect::<Vec<_>>(),
+        );
+        self.capture_issue_identities(&mut write.issue, &timeline);
         self.tracker_store()?
             .save_tracker_issue_activity(&write.issue, &write.comments, &write.events)
             .stored()?;
@@ -303,7 +338,8 @@ impl AppState {
         self.notify_trackers(&write);
         // And the agent says, in its own conversation, what it just did.
         self.say_what_the_agent_did(&write);
-        Ok(json!({ "issue": issue_json(project_id, &write.issue) }))
+        let issue = self.issue_with_read_identities(write.issue, &timeline);
+        Ok(json!({ "issue": issue_json(project_id, &issue) }))
     }
 
     /// Add the links asked for, each checked against the issue's own project

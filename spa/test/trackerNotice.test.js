@@ -319,6 +319,6 @@ describe("the shape of the row", () => {
       { place: { ...PLACE, projectName: "Build" } },
     );
     expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 commented on by Build agent");
+      .toBe("#32 commented on by Build");
   });
 });

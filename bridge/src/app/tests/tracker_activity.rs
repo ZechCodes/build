@@ -384,6 +384,390 @@ fn done_on_a_workspace_closes_the_issues_that_link_it() {
     assert_eq!(why["payload"]["workspace_id"], ws.as_str());
 }
 
+/// The issue keeps an author's harness and name after Done removes the
+/// workspace and the conversation that originally supplied them.
+fn assert_historian_identity(identity: &Value, workspace_id: &str, available: bool) {
+    assert_eq!(identity["name"], "Historian");
+    assert_eq!(identity["ordinal"], 1);
+    assert_eq!(identity["provider"], "pi");
+    assert_eq!(identity["workspace_id"], workspace_id);
+    assert_eq!(identity["workspace_name"], "identity checkout");
+    assert_eq!(identity["available"], available);
+}
+
+#[test]
+fn issue_identity_survives_workspace_finish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "identity checkout");
+    let id = issue_id(&filed(&mut state, &project_id, "identity in history"));
+    let linked = state.handle(req(
+        "issues.link",
+        json!({ "issue_id": id, "workspace_id": ws }),
+    ));
+    assert_eq!(linked["ok"], true, "{linked:?}");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .set_agent_name(&entity_id, &agent_id, "Historian")
+        .unwrap();
+    state
+        .on_agent_mcp_action(
+            &entity_id,
+            &agent_id,
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "The fix is here.".into(),
+                refs: Vec::new(),
+                track: None,
+                attachments: Vec::new(),
+                notify_user: None,
+                mention_user: None,
+            },
+        )
+        .expect("agent comments");
+    // This record predates identity snapshots: the timeline still knows the
+    // author, and a read must persist the backfill before Done removes them.
+    let mut old = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_issue(&id)
+        .unwrap()
+        .unwrap();
+    old.identities.clear();
+    state
+        .tracker_store()
+        .unwrap()
+        .save_tracker_issue_activity(&old, &[], &[])
+        .unwrap();
+    let before = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &before["result"]["issue"]["identities"][&agent_id];
+    assert_historian_identity(identity, &ws, true);
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[&agent_id]
+            .name
+            .as_deref(),
+        Some("Historian"),
+        "the old author's backfill is durable"
+    );
+
+    let reassigned = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": id, "assignee": { "kind": "user" } }),
+    ));
+    assert_eq!(reassigned["ok"], true, "{reassigned:?}");
+    assert_eq!(
+        reassigned["result"]["issue"]["identities"][&agent_id]["name"], "Historian",
+        "reassignment retains the earlier author"
+    );
+
+    let finished = state.handle(req("workspace.finish", json!({ "workspace_id": ws })));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let after = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &after["result"]["issue"]["identities"][&agent_id];
+    assert_historian_identity(identity, &ws, false);
+    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    assert_eq!(
+        listed["result"]["issues"][0]["identities"][&agent_id],
+        *identity
+    );
+}
+
+#[test]
+fn user_create_captures_prose_agent_before_workspace_finish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "prose checkout");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+    state
+        .set_agent_name(entity_id, agent_id, "Prose agent")
+        .unwrap();
+    let created = state.handle(req(
+        "issues.create",
+        json!({ "project_id": project_id, "title": "Prose reference", "body": format!("Ask @agent:{agent_id}.") }),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let id = created["result"]["issue"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[agent_id]
+            .name
+            .as_deref(),
+        Some("Prose agent")
+    );
+    let finished = state.handle(req("workspace.finish", json!({ "workspace_id": ws })));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let after = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(
+        after["result"]["issue"]["identities"][agent_id]["name"],
+        "Prose agent"
+    );
+    assert_eq!(
+        after["result"]["issue"]["identities"][agent_id]["available"],
+        false
+    );
+}
+
+/// A failed migration must leave both the roster and automatic issue state
+/// untouched, before deferred filesystem work starts.
+fn refuse_removal_if_identity_save_fails(
+    state: &mut AppState,
+    state_root: &Path,
+    removal: &str,
+    params: &Value,
+    linked_issue_id: &str,
+) {
+    let store = state.tracker_store().unwrap();
+    let linked_before = store.load_tracker_issue(linked_issue_id).unwrap().unwrap();
+    let history_before = store.load_tracker_timeline(linked_issue_id).unwrap();
+    let connection = rusqlite::Connection::open(state_root.join("store/build.db")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER refuse_identity_save BEFORE UPDATE ON tracker_issues
+         WHEN json_extract(OLD.record, '$.title') = 'Unread history'
+         BEGIN SELECT RAISE(FAIL, 'identity snapshot refused'); END;",
+        )
+        .unwrap();
+    let refused = state.handle(req(removal, params.clone()));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(
+        refused["error"]
+            .to_string()
+            .contains("identity snapshot refused"),
+        "{refused:?}"
+    );
+    let workspace = state
+        .workspaces
+        .get(params["workspace_id"].as_str().unwrap())
+        .unwrap();
+    assert!(workspace.root.exists());
+    assert!(state
+        .entity_agents(params["entity_id"].as_str().unwrap())
+        .unwrap()
+        .by_id(params["agent_id"].as_str().unwrap())
+        .is_some());
+    assert!(state.deferred_work.is_none());
+    let store = state.tracker_store().unwrap();
+    assert_eq!(
+        store
+            .load_tracker_issue(linked_issue_id)
+            .unwrap()
+            .unwrap()
+            .closed_at,
+        linked_before.closed_at
+    );
+    assert_eq!(
+        store.load_tracker_timeline(linked_issue_id).unwrap(),
+        history_before
+    );
+    connection
+        .execute_batch("DROP TRIGGER refuse_identity_save")
+        .unwrap();
+}
+
+/// The upgrade must not require visiting an issue before its actor leaves.
+/// Neither workspace links nor open state determine which history we retain.
+#[test]
+fn unread_legacy_identities_survive_roster_removal() {
+    for removal in ["workspace.finish", "workspace.delete", "agent.remove"] {
+        for closed in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+            let (mut state, project_id) = tracked_with_origin(&state_root);
+            let ws = workspace(&mut state, &project_id, "identity checkout");
+            let ensured = state.handle(req(
+                "workspace.ensure_conversation",
+                json!({ "workspace_id": ws }),
+            ));
+            let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+            let added = state.handle(req(
+                "agent.add",
+                json!({ "entity_id": entity_id, "provider": "pi" }),
+            ));
+            let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+            state
+                .set_agent_name(&entity_id, &agent_id, "Historian")
+                .unwrap();
+            let id = issue_id(&filed(&mut state, &project_id, "Unread history"));
+            state
+                .on_agent_mcp_action(
+                    &entity_id,
+                    &agent_id,
+                    crate::mcp::BridgeAction::TrackerCommentIssue {
+                        issue_id: id.clone(),
+                        body: "The fix is here.".into(),
+                        refs: Vec::new(),
+                        track: Some(false),
+                        attachments: Vec::new(),
+                        notify_user: None,
+                        mention_user: None,
+                    },
+                )
+                .unwrap();
+            if closed {
+                let result = state.handle(req("issues.close", json!({ "issue_id": id })));
+                assert_eq!(result["ok"], true, "{result:?}");
+            }
+            let linked_id = issue_id(&filed(&mut state, &project_id, "Linked work"));
+            let linked = state.handle(req(
+                "issues.link",
+                json!({
+                    "issue_id": linked_id, "workspace_id": ws,
+                }),
+            ));
+            assert_eq!(linked["ok"], true, "{linked:?}");
+            let store = state.tracker_store().unwrap();
+            let mut old = store.load_tracker_issue(&id).unwrap().unwrap();
+            assert!(old.links.workspace_ids.is_empty());
+            old.identities.clear();
+            store.save_tracker_issue_activity(&old, &[], &[]).unwrap();
+            let timeline_before = store.load_tracker_timeline(&id).unwrap();
+            // No issue read/write between the simulated upgrade and removal.
+            let params = json!({
+                "workspace_id": ws, "entity_id": entity_id, "agent_id": agent_id,
+            });
+            refuse_removal_if_identity_save_fails(
+                &mut state,
+                &state_root,
+                removal,
+                &params,
+                &linked_id,
+            );
+            let removed = state.handle(req(removal, params));
+            assert_eq!(
+                removed["ok"], true,
+                "{removal}, closed={closed}: {removed:?}"
+            );
+            let saved = state
+                .tracker_store()
+                .unwrap()
+                .load_tracker_issue(&id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                saved
+                    .identities
+                    .get(&agent_id)
+                    .and_then(|actor| actor.name.as_deref()),
+                Some("Historian"),
+                "{removal}, closed={closed}: backfill must precede removal"
+            );
+            assert_eq!(saved.updated_at, old.updated_at);
+            assert_eq!(saved.closed_at, old.closed_at);
+            assert_eq!(
+                state
+                    .tracker_store()
+                    .unwrap()
+                    .load_tracker_timeline(&id)
+                    .unwrap(),
+                timeline_before
+            );
+            let after = state.handle(req("issues.get", json!({ "issue_id": id })));
+            assert_historian_identity(
+                &after["result"]["issue"]["identities"][&agent_id],
+                &ws,
+                false,
+            );
+            let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+            let row = listed["result"]["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|issue| issue["id"] == id)
+                .unwrap();
+            assert_historian_identity(&row["identities"][&agent_id], &ws, false);
+        }
+    }
+}
+
+#[test]
+fn old_actor_falls_back_to_stored_agent_without_live_roster() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "stored checkout");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .set_agent_name(&entity_id, &agent_id, "Stored agent")
+        .unwrap();
+    let id = issue_id(&filed(&mut state, &project_id, "Old actor"));
+    let mut old = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_issue(&id)
+        .unwrap()
+        .unwrap();
+    old.body = format!("Ask @agent:{agent_id}.");
+    old.identities.clear();
+    state
+        .tracker_store()
+        .unwrap()
+        .save_tracker_issue_activity(&old, &[], &[])
+        .unwrap();
+    state.runs.remove(&entity_id);
+    let answer = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &answer["result"]["issue"]["identities"][&agent_id];
+    assert_eq!(identity["name"], "Stored agent");
+    assert_eq!(identity["provider"], "pi");
+    assert_eq!(identity["workspace_name"], "stored checkout");
+    assert_eq!(identity["available"], false);
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[&agent_id]
+            .name
+            .as_deref(),
+        Some("Stored agent")
+    );
+}
+
 /// An issue already closed is left alone by a finish, so its `closed_at` and
 /// its reason are not rewritten by a workspace going away later.
 #[test]

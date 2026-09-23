@@ -28,9 +28,9 @@ async function chromiumExecutable() {
 
 /** Run a real Chromium layout check against the SPA's production renderers and
  * styles. Each call owns its Vite server and browser, so failures also clean up. */
-export async function withLayoutPage(check, { width = 1180, height = 840 } = {}) {
+export async function withLayoutPage(check, { width = 1180, height = 840, plugins = [] } = {}) {
   const chromiumPath = await chromiumExecutable();
-  const server = await createServer({ root: spaRoot, logLevel: "silent", server: { host: "127.0.0.1", port: 0 } });
+  const server = await createServer({ root: spaRoot, logLevel: "silent", plugins, server: { host: "127.0.0.1", port: 0 } });
   let browser;
   try {
     await server.listen();

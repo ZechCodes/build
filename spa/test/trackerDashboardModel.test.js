@@ -56,7 +56,7 @@ describe("Dashboard cache projection", () => {
       items: [{ projectKey: PROJECT, entity_id: "project-run", agents: [{ id: "project-agent", working: true }] }],
     };
     expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).inProgress[0].agentName)
-      .toBe("Build agent");
+      .toBe("Build");
   });
 
   it("includes only cached moves into Done in the last 24 hours, with the latest linked SHA", () => {

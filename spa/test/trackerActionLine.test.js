@@ -89,7 +89,7 @@ describe("the line", () => {
 
     expect(text({ action: "assigned", assignee: { kind: "user" } })).toBe("Assigned #14 to You");
     expect(text({ action: "assigned", assignee: { kind: "project_agent" } }, { projectName: "Build" }))
-      .toBe("Assigned #14 to Build agent");
+      .toBe("Assigned #14 to Build");
     expect(
       text(
         { action: "assigned", assignee: { kind: "agent", agent_id: "agent-1" } },

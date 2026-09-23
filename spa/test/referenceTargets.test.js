@@ -60,6 +60,20 @@ describe("what a reference names", () => {
   it("knows the project's own agent without a workspace", () => {
     expect(links().agent("project-01M2SCB")).toEqual({ deviceId: "dev-1", projectId: "proj-1", agentId: "project-01M2SCB" });
   });
+
+  it("leaves a deleted project agent's prose reference without a destination", () => {
+    const refLinks = referenceLinks({ place, identities: {
+      "project-01M2SCB": { agent_id: "project-01M2SCB", available: false },
+    } });
+    const html = threadHtml(
+      { id: "c-1", items: [{ type: "message", data: { id: "m-1", sequence: 1,
+        role: "agent", body: "Ask @agent:project-01M2SCB." } }] },
+      { place, refLinks },
+    );
+    expect(refLinks.agent("project-01M2SCB")).toBeNull();
+    expect(anchors(html)).toEqual([]);
+    expect(hostOf(html).textContent).toContain("@agent:project-01M2SCB");
+  });
 });
 
 // Every form, through the renderer the surfaces call.

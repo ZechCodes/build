@@ -38,6 +38,18 @@ impl AppState {
             // A write that changed nothing the timeline records is not news.
             return;
         };
+        let mut notice = notice;
+        notice.actor.identity = write
+            .actor
+            .agent_id()
+            .and_then(|id| write.issue.identities.get(id))
+            .cloned();
+        notice.assignee_identity = notice
+            .assignee
+            .as_ref()
+            .and_then(crate::tracker::Assignee::agent_id)
+            .and_then(|id| write.issue.identities.get(id))
+            .cloned();
         let who = self.actor_words(&write.actor);
         let envelope = notice_envelope(&write.issue);
         let holder = write
@@ -202,12 +214,14 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
         actor: crate::thread::NoticeActor {
             who: write.actor.clone(),
             name: actor_name.clone(),
+            identity: None,
         },
         action: action.to_string(),
         comment_id: None,
         from: None,
         to: None,
         assignee: None,
+        assignee_identity: None,
     };
     if let Some(comment) = write.comments.first() {
         return Some(IssueNotice {
@@ -267,12 +281,14 @@ pub(in crate::app) fn notice_of_entry(
         actor: crate::thread::NoticeActor {
             who: actor.clone(),
             name: None,
+            identity: None,
         },
         action: action.to_string(),
         comment_id: None,
         from: None,
         to: None,
         assignee: None,
+        assignee_identity: None,
     };
     match entry {
         crate::tracker::TimelineEntry::Comment(comment) => Some(IssueNotice {

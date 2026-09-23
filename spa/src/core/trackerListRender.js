@@ -22,6 +22,7 @@
 // is mounted once and lives in core/trackerPaneChrome.js.
 
 import { esc } from "./text.js";
+import { actorHref } from "./trackerIdentity.js";
 import { filtersAreSet } from "./trackerFilters.js";
 import {
   ageHtml,
@@ -77,11 +78,19 @@ const factsHtml = (issue, columns, nowMs) =>
  * the facts because it says how to READ the title, and the eye going down a
  * column of titles meets it on the way in (#45).
  */
-export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...reading }) =>
+export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...context }) => {
+  const reading = { ...context, identities: issue.identities || {} };
+  const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
+  const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, reading))}" title="Assign this issue">${assigneeHref ? "Change" : rowAssigneeHtml(issue.assignee, reading)}</button>`;
+  const assignee = assigneeHref
+    ? `<span class="issue-assignee-entry"><a class="issue-assignee-link" href="${esc(assigneeHref)}">${rowAssigneeHtml(issue.assignee, reading)}</a>${assignButton}</span>`
+    : assignButton;
+  return (
   `<li class="issue-row" data-issue="${esc(issue.id)}">
     <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span></a>
-    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, reading))}" title="Assign this issue">${rowAssigneeHtml(issue.assignee, reading)}</button></span>
-  </li>`;
+    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}${assignee}</span>
+  </li>`);
+};
 
 /** Nothing to show, said two ways: a project with no issues at all is at its
  *  first state and is told what to do about it, and a filter that matches

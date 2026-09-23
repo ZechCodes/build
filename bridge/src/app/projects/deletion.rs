@@ -149,6 +149,7 @@ impl AppState {
             })
         }));
         // Fail before touching files if the configuration is not writable.
+        self.preserve_project_issue_identities(&project_id)?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         self.persist_config(&config)?;
         let mut retirements = Vec::new();

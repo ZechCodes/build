@@ -78,14 +78,14 @@ describe("who did it", () => {
   // The reported defect. A project agent is not an agent of any workspace, so
   // the feed has no label for it and it fell through to four characters of id.
   it("names the project's own agent after the project", () => {
-    expect(actorName("project-01M2SCB", { projectName: "Build" })).toBe("Build agent");
-    expect(actorName({ kind: "project_agent" }, { projectName: "Build" })).toBe("Build agent");
-    expect(actorName("project-01M2SCB", { projectName: "wire-facade" })).toBe("wire-facade agent");
+    expect(actorName("project-01M2SCB", { projectName: "Build" })).toBe("Build");
+    expect(actorName({ kind: "project_agent" }, { projectName: "Build" })).toBe("Build");
+    expect(actorName("project-01M2SCB", { projectName: "wire-facade" })).toBe("wire-facade");
   });
 
   it("falls back to a name rather than an id when the project has none", () => {
-    expect(actorName("project-01M2SCB")).toBe("Build agent");
-    expect(actorName("project-01M2SCB", { projectName: "" })).toBe("Build agent");
+    expect(actorName("project-01M2SCB")).toBe("Build");
+    expect(actorName("project-01M2SCB", { projectName: "" })).toBe("Build");
   });
 
   it("says You for the reader", () => {

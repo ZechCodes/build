@@ -16,6 +16,7 @@
 // Pure: HTML in, no DOM, no app imports.
 
 import { esc } from "./text.js";
+import { actorHref } from "./trackerIdentity.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import { assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, stateDotHtml } from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
@@ -31,17 +32,22 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this issue b
  * keyboard needs. The card is not a link — it holds a link — because a
  * draggable anchor fights the browser's own drag of its href.
  */
-export const issueCardHtml = (issue, { columns, href, ...reading }) =>
+export const issueCardHtml = (issue, { columns, href, ...context }) => {
+  const reading = { ...context, identities: issue.identities || {} };
+  const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
+  const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">${assigneeHref ? "Change" : assigneeHtml(issue.assignee, reading)}</button>`;
+  return (
   `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
     <div class="issue-card-head">${stateDotHtml(issue.state)}${numberHtml(issue)}${priorityChipHtml(issue.priority)}</div>
     <a class="issue-card-title" href="${esc(href(issue))}">${esc(issue.title)}</a>
     ${issue.labels?.length ? `<div class="issue-card-labels">${labelsHtml(issue.labels)}</div>` : ""}
-    <button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">
-      ${assigneeHtml(issue.assignee, reading)}
-    </button>
-  </li>`;
+    ${assigneeHref
+      ? `<span class="issue-assignee-entry"><a class="issue-assignee-link" href="${esc(assigneeHref)}">${assigneeHtml(issue.assignee, reading)}</a>${assignButton}</span>`
+      : assignButton}
+  </li>`);
+};
 
 /**
  * What a column means, said twice over.

@@ -988,6 +988,7 @@ function noticeMessageHtml(message, context) {
   if (isIssueNotice(message)) {
     return row(issueNoticeLineHtml(issueNoticeOf(message), {
       place: context.place,
+      workspaces: context.workspaces,
       agentLabels: context.agentLabels,
       projectName: context.place?.projectName || "",
     }));
@@ -1682,6 +1683,7 @@ export function timelineEntries(
     // What this project's agents are called. Only one row reads them — a
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
+    workspaces,
     // What a written reference points at (core/referenceTargets.js): the
     // resolver #56 left injectable, so `#42` and `@workspace:build` in a
     // message open the thing they name. None, and they stay prose (#63).
@@ -1692,6 +1694,7 @@ export function timelineEntries(
   const view = {
     agentLabel,
     agentLabels,
+    workspaces,
     refLinks,
     threadId,
     threadState,

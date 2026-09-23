@@ -51,7 +51,7 @@ export function issueAvatarHtml(actor, context = {}) {
   // is a hint, and a hint nobody can resolve is a worse one.
   const title = ` title="${esc(actorName(actor, context))}"`;
   if (isProjectActor(actor)) return projectMarkHtml(actor, title, context.projectName);
-  const provider = harnessOf(actor, context.agentProviders || {});
+  const provider = harnessOf(actor, context.agentProviders || {}, context.identities || {});
   if (provider) return `<span class="issue-avatar is-harness"${title} aria-hidden="true">${harnessIconHtml(provider)}</span>`;
   return `<span class="issue-avatar"${title} aria-hidden="true">${esc(actorInitials(actor))}</span>`;
 }
@@ -64,5 +64,5 @@ const projectMarkHtml = (actor, title, projectName) =>
     esc(projectName ? projectInitial(projectName) : actorInitials(actor))}</span>`;
 
 /** The harness an agent author runs on, as far as this client knows. */
-const harnessOf = (actor, agentProviders) =>
-  (actor?.kind === "agent" ? agentProviders[actor.agent_id] || "" : "");
+const harnessOf = (actor, agentProviders, identities) =>
+  (actor?.kind === "agent" ? identities[actor.agent_id]?.provider || agentProviders[actor.agent_id] || "" : "");

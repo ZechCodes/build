@@ -19,6 +19,8 @@
 .issue-views { display:flex; gap:4px; }
 .issue-view.active { background:var(--accent-soft); border-color:var(--accent-soft); color:var(--accent); }
 .issue-new { margin-left:auto; display:inline-flex; align-items:center; gap:5px; }
+.issue-head .scope-link { margin-left:auto; }
+.issue-head .scope-link + .issue-new { margin-left:0; }
 .issue-new svg { width:14px; height:14px; }
 
 .issue-filters {
@@ -577,6 +579,11 @@
   }
   .issue-column { flex-basis:78vw; max-width:300px; scroll-snap-align:start; }
   .issue-head, .issue-filters { padding-left:var(--pane-gutter); padding-right:var(--pane-gutter); }
+  /* A phone has no room for the way out beside the views and New issue, so
+     it takes the line under them rather than pushing New issue off screen. */
+  .issue-head { flex-wrap:wrap; row-gap:6px; }
+  .issue-head .scope-link { order:1; margin-left:-6px; }
+  .issue-head .scope-link + .issue-new { margin-left:auto; }
   /* A sheet at the foot of the screen, like the filter menus: on a phone the
      form is the whole of what you are doing, and the list behind it is
      context rather than something to keep reaching past. */

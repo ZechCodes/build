@@ -1255,6 +1255,15 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }
 .srow.snav.active { background:var(--accent-soft); color:var(--accent); }
 .srow.snav .badge { margin-left:auto; }
+/* The way out of a narrowed view to the project's whole one (#117): a chat
+   overview's workspace scope, a workspace's Issues tab. Words first, then the
+   arrow, in the header just ahead of its own controls. */
+.scope-link { flex:none; display:inline-flex; align-items:center; gap:4px; padding:3px 6px;
+  border:0; border-radius:6px; background:none; color:var(--ink2); font:inherit; font-size:12px;
+  font-weight:600; text-decoration:none; white-space:nowrap; cursor:pointer; }
+.scope-link:hover { background:var(--line2); color:var(--accent); }
+.scope-link:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.scope-link svg { display:block; width:14px; height:14px; }
 .iconbtn { font:inherit; font-size:14px; line-height:1; color:var(--dim); background:none;
   border:none; border-radius:6px; padding:4px 7px; cursor:pointer;
   -webkit-tap-highlight-color:transparent; }

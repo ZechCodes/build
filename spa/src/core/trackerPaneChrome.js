@@ -26,6 +26,7 @@
 import { ICON_PLUS } from "./icons.js";
 import { chosenOf, DEFAULT_FILTERS, filtersAreSet, NO_FILTERS } from "./trackerFilters.js";
 import { mountFilterMenu } from "./filterMenuControl.js";
+import { scopeLinkHtml } from "./scopeLink.js";
 
 export const LIST_VIEW = "list";
 export const BOARD_VIEW = "board";
@@ -63,8 +64,9 @@ const FILTERS = [
 const viewButtonHtml = (view) =>
   `<button class="btn mini issue-view" type="button" data-issue-view="${view.id}">${view.label}</button>`;
 
-const chromeHtml = () => `<div class="issue-head">
+const chromeHtml = (scopeLink) => `<div class="issue-head">
     <div class="issue-views" role="group" aria-label="How to lay the issues out">${VIEWS.map(viewButtonHtml).join("")}</div>
+    ${scopeLink ? scopeLinkHtml({ ...scopeLink, className: "issue-scope-out" }) : ""}
     <button class="btn mini primary issue-new" type="button" data-issue-new>${ICON_PLUS}<span>New issue</span></button>
   </div>
   <div class="issue-filters" role="group" aria-label="Filter issues">
@@ -86,10 +88,12 @@ const showView = (button, view) => {
  * (#57), and an `update` that makes them say what the state says. The four
  * callbacks are the only way anything leaves here:
  * `onFilter` is given the filter's name and its new value, and the rest take
- * nothing — a press is a press.
+ * nothing — a press is a press. `scopeLink` (`{ label, href }`) is a narrowed
+ * tab's way out to the project's whole list (#117); the project's own tab has
+ * none.
  */
-export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear, menuAddressOf = () => null }) {
-  host.innerHTML = chromeHtml();
+export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear, menuAddressOf = () => null, scopeLink = null }) {
+  host.innerHTML = chromeHtml(scopeLink);
   const body = host.querySelector(".issue-body");
   // Between the bar and the rows, and OUTSIDE the body: the body is repainted
   // whenever a push says an issue moved, and a composer somebody is typing

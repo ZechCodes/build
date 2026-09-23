@@ -26,6 +26,7 @@ import { mountIssuesPane } from "./trackerIssuesPane.js";
 import { mountIssuePage } from "./trackerIssuePage.js";
 import { workspaceAgents } from "./trackerAssignee.js";
 import { assignedTo } from "./trackerAgentIssues.js";
+import { hashFromRoute } from "./router.js";
 
 /** The ids of the agents standing in one workspace, off the same groups the
  *  assignee picker is built from — so "an agent of this workspace" means the
@@ -60,6 +61,15 @@ export const workspaceIssuesPlace = (route) => ({
 /** The route one issue opens on from inside this workspace. Still the
  *  workspace, so the rail beside it never moves. */
 export const workspaceIssueRoute = (route, issueId) => ({ ...workspaceIssuesPlace(route), issueId });
+
+/** The way out of this tab to the project's whole tracker (#117): the same
+ *  arrow the chat overview's workspace scope wears to reach every workspace. */
+export const projectIssuesRoute = (route) => ({
+  name: "project",
+  deviceId: route.deviceId,
+  projectId: route.projectId,
+  tab: "issues",
+});
 
 /**
  * Mount the tab: one issue's page when the route names one, the list or the
@@ -106,6 +116,7 @@ export function mountWorkspaceIssuesTab(body, { route, context, feed, selection,
     projectName: route.projectId,
     view: route.view,
     defaultView: "list",
+    scopeLink: { label: "All project issues", href: hashFromRoute(projectIssuesRoute(route)) },
     only: (issue) => heldHere(issue, agentIdsOfWorkspace(feed(), projectKey, route.workspaceId)),
     issueRoute: (issue) => workspaceIssueRoute(route, issue.id),
     onViewChange: (view) => navigate?.({ ...workspaceIssuesPlace(route), view }),

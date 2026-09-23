@@ -1,6 +1,7 @@
 // One project on disk for the chat overview's browser checks (#117): its own
-// agent, the workspace the page stands on, a quiet workspace and a busy one
-// with more agents than the project's overview shows. Everything is written the
+// agent, the workspace the page stands on, a quiet workspace, a busy one with
+// more agents than the project's overview shows, one whose agents have all
+// gone and one that has never had any. Everything is written the
 // way the sync layer writes it, and the rail mounted on it is the production
 // one with nothing stood in.
 
@@ -54,6 +55,7 @@ export async function seedChatOverview() {
       ["busy-4", "Issue unread", "Issue unread line"],
       ["busy-5", "Comment links", "Comment and commit links"],
     ])],
+    ["idle-run", "workspace-idle", []],
   ];
   const replies = {
     "project-agent": "Queued #117 behind #114; rolling after review.",
@@ -83,6 +85,8 @@ export async function seedChatOverview() {
     { id: "workspace-current", project_id: projectId, entity_id: "current-run", name: "chat-overview-nav" },
     { id: "workspace-quiet", project_id: projectId, entity_id: "quiet-run", name: "landing-page" },
     { id: "workspace-busy", project_id: projectId, entity_id: "busy-run", name: "spa-flaky-tests" },
+    { id: "workspace-idle", project_id: projectId, entity_id: "idle-run", name: "relay-candidates" },
+    { id: "workspace-new", project_id: projectId, name: "review-system-plan" },
   ].map((workspace) => stampWorkspace(workspace, deviceId)));
   await startFeed();
   window.__overviewRail = mountAgentRail(document.querySelector("#agent-rail"), {

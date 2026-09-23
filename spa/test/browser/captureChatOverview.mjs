@@ -85,9 +85,14 @@ for (const [label, viewport] of VIEWPORTS) {
     await settled(page);
     await page.screenshot({ path: `${output}overview-workspace-${label}.png` });
     await page.locator("#rail-overview .rail-overview-up").click();
-    await sectionsAre(page, ["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav"]);
+    await sectionsAre(page, ["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav",
+      "relay-candidates", "review-system-plan"]);
     await settled(page);
     await page.screenshot({ path: `${output}overview-project-${label}.png` });
+    // The workspaces with no agents sit last, still headed and still with a +.
+    await page.locator('.rail-overview-section[aria-label="review-system-plan"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `${output}overview-empty-${label}.png` });
+    await page.locator(".rail-overview-list").evaluate((list) => { list.scrollTop = 0; });
     await page.locator('.rail-overview-see-all[data-overview-scope="workspace-busy"]').click();
     await sectionsAre(page, ["Project agents", "spa-flaky-tests"]);
     await settled(page);

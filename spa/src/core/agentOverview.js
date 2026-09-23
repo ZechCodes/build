@@ -73,19 +73,22 @@ const sectionTitleHtml = (section, opensWorkspace) => opensWorkspace
   : `<h2>${esc(section.name)}</h2>`;
 
 const byLatestAgentMessage = (one, other) => other.lastAgentMessageAt - one.lastAgentMessageAt;
-const latestAgentMessage = (section) => Math.max(...section.rows.map((row) => row.lastAgentMessageAt));
+const latestAgentMessage = (section) => Math.max(0, ...section.rows.map((row) => row.lastAgentMessageAt));
 
-/** The rows a scope shows: one workspace's scope drops every other
- *  workspace's, and keeps the project's agents beside it. */
-const rowsInScope = (rows, scope) => scope?.kind === "workspace"
-  ? rows.filter((row) => row.section !== "workspace" || row.workspaceId === scope.workspaceId)
-  : rows;
+/** Whether a workspace is in the scope: one workspace's scope drops every
+ *  other workspace, and keeps the project's agents beside it. */
+const inScope = (scope, workspaceId) => scope?.kind !== "workspace" || workspaceId === scope.workspaceId;
+const rowsInScope = (rows, scope) => rows.filter((row) => row.section !== "workspace" || inScope(scope, row.workspaceId));
 
 /** Sections in reading order: the project's agents first, then the one heard
- *  from most recently. */
-function overviewSections(rows, showProjectAgents) {
+ *  from most recently. Every workspace named gets its section, agents or none,
+ *  so an empty one still has its way in and its +; the quiet ones go last. */
+function overviewSections(rows, showProjectAgents, workspaces) {
   const sections = new Map();
   if (showProjectAgents) sections.set("project", { section: "project", name: "Project agents", workspaceId: "", rows: [] });
+  for (const { workspaceId, name } of workspaces) {
+    sections.set(`workspace:${workspaceId}`, { section: "workspace", name, workspaceId, rows: [] });
+  }
   for (const row of rows) {
     const key = row.section === "workspace" ? `workspace:${row.workspaceId}` : row.section;
     if (!sections.has(key)) sections.set(key, { section: row.section, name: row.sectionName, workspaceId: row.workspaceId, rows: [] });
@@ -119,11 +122,12 @@ function sectionHtml(section, projectScope) {
  *  workspace, each capped and opening its own overview; `{ kind: "workspace",
  *  workspaceId }` shows that one workspace beside the project's agents. Any
  *  other scope draws the rows as they are. */
-export function overviewHtml(rows, { showProjectAgents = false, scope = null } = {}) {
+export function overviewHtml(rows, { showProjectAgents = false, scope = null, workspaces = [] } = {}) {
   const shown = rowsInScope(rows, scope);
-  if (!shown.length && !showProjectAgents) return '<p class="rail-overview-empty">No agents here yet.</p>';
+  const named = workspaces.filter((workspace) => inScope(scope, workspace.workspaceId));
+  if (!shown.length && !showProjectAgents && !named.length) return '<p class="rail-overview-empty">No agents here yet.</p>';
   const projectScope = scope?.kind === "project";
-  return overviewSections(shown, showProjectAgents).map((section) => sectionHtml(section, projectScope)).join("");
+  return overviewSections(shown, showProjectAgents, named).map((section) => sectionHtml(section, projectScope)).join("");
 }
 
 const cachedConversationId = (agent, execution) => execution
@@ -156,6 +160,19 @@ function projectWorkspaceSources(workspaces, existing, projectId, scope) {
       address: scope.address({ entityId, kind: "row", sub: "" }) });
   }
   return sources;
+}
+
+/** Every workspace the overview can head: those with a row to read, then the
+ *  project's workspaces that have no entity yet, and so nothing to read. */
+function workspaceSections(rosterSources, workspaces, projectId) {
+  const named = rosterSources.filter((source) => source.section === "workspace" && source.workspaceId)
+    .map((source) => ({ workspaceId: source.workspaceId, name: source.sectionName }));
+  for (const workspace of workspaces) {
+    const workspaceId = workspace.workspace_id || workspace.id;
+    if (workspace.project_id !== projectId || !workspaceId || named.some((one) => one.workspaceId === workspaceId)) continue;
+    named.push({ workspaceId, name: workspaceDisplayName(workspace) });
+  }
+  return named;
 }
 
 function rosterEntries(sources, records, feed) {
@@ -218,7 +235,8 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     watch([...rosterSources.map((source) => source.address), ...addressed.map((entry) => entry.address), ...listAddresses]);
     const threadRecords = await readCachedMany(addressed.map((entry) => entry.address));
     if (stale()) return;
-    onRows(overviewRows(addressed, threadRecords.map((record) => record?.value)));
+    onRows(overviewRows(addressed, threadRecords.map((record) => record?.value)),
+      { workspaces: workspaceSections(rosterSources, workspaces, projectId) });
   };
 
   return {

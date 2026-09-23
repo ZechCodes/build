@@ -74,7 +74,9 @@ const route = (over = {}) => ({
   name: "workspace", deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1", tab: "issues", ...over,
 });
 
-const mount = async (over = {}) => {
+/** The tab, mounted and not yet waited on: a case that can name what it is
+ *  waiting for waits for that instead of a count of turns. */
+const mountTab = (over = {}) => {
   tab = mountWorkspaceIssuesTab(body, {
     route: route(over.route),
     context: { deviceId: "dev-1", rpc: call, modelCatalog: () => ({ providers: [] }), refreshModelCatalog: async () => ({ providers: [] }) },
@@ -83,6 +85,11 @@ const mount = async (over = {}) => {
     navigate: (to) => navigated.push(to),
     sayWhichIssue: (read) => stamped.push(read),
   });
+  return tab;
+};
+
+const mount = async (over = {}) => {
+  mountTab(over);
   await flush();
   return tab;
 };
@@ -213,7 +220,8 @@ describe("one issue, opened inside the tab", () => {
 describe("the way out to the project's issues", () => {
   it("links the list to the project's Issues view", async () => {
     const { routeFromHash } = await import("../src/core/router.js");
-    await mount();
+    mountTab();
+    await vi.waitFor(() => expect(titles()).toEqual(["Held by another agent here", "Held by an agent here"]));
     const out = body.querySelector(".issue-head a.scope-link.issue-scope-out");
     expect(out.textContent.trim()).toBe("All project issues");
     expect(out.querySelector("svg.lucide-arrow-up-right")).not.toBeNull();
@@ -230,7 +238,9 @@ describe("the way out to the project's issues", () => {
   });
 
   it("is not on an issue's own page inside the tab", async () => {
-    await mount({ route: { issueId: "i1" } });
+    mountTab({ route: { issueId: "i1" } });
+    await vi.waitFor(() => expect(body.querySelector(".issue-page-title")?.textContent).toBe("Held by an agent here"));
+    await vi.waitFor(() => expect(body.querySelector("[data-issue-composer]")).not.toBeNull());
     expect(body.querySelector(".scope-link")).toBeNull();
   });
 });

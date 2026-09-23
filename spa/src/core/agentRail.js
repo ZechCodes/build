@@ -960,7 +960,7 @@ function mountRailOnContext(host, context, swap) {
   // project's agent is one — keeps it.
   const overviewPage = overviewPageOf(context, alongside, projectId);
   let overviewScope = overviewPage.scope;
-  let overviewRowsRead = [];
+  let overviewRead = { rows: [], workspaces: [] };
   const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
     if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
     overviewScope = saved;
@@ -1414,7 +1414,7 @@ function mountRailOnContext(host, context, swap) {
     includeProjectWorkspaces: overviewReadsWorkspaces,
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
-    onRows: (rows) => paintOverviewRows(rows),
+    onRows: (rows, { workspaces }) => paintOverviewRows({ rows, workspaces }),
   });
 
   const answerLostTheAgents = (answered) => {
@@ -1767,11 +1767,11 @@ function mountRailOnContext(host, context, swap) {
     go({ name: "workspace", deviceId: context.deviceId, projectId, workspaceId, tab: "changes", newAgent: true });
   };
 
-  const paintOverviewRows = (rows) => {
-    overviewRowsRead = rows;
+  const paintOverviewRows = (read) => {
+    overviewRead = read;
     const list = host.querySelector(".rail-overview-list");
     if (!overviewVisible || !list) return;
-    const markup = overviewHtml(rows, { showProjectAgents: !!projectId, scope: overviewScope });
+    const markup = overviewHtml(read.rows, { showProjectAgents: !!projectId, scope: overviewScope, workspaces: read.workspaces });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
       const add = event.target.closest?.("[data-overview-add]");
@@ -1801,7 +1801,7 @@ function mountRailOnContext(host, context, swap) {
    *  at once, then whatever the new breadth has to read. */
   const showOverviewScope = () => {
     syncOverviewHead();
-    paintOverviewRows(overviewRowsRead);
+    paintOverviewRows(overviewRead);
     overview.refresh();
   };
 

@@ -120,6 +120,34 @@ describe("expanded agent overview", () => {
     }
   });
 
+  it("answers every workspace of the project, with agents or without, and keeps one whose last agent left", async () => {
+    await cache.writeCached(workspaceListAddress, [
+      { id: "ws-full", project_id: "project-1", entity_id: "run-full", name: "Full" },
+      { id: "ws-empty", project_id: "project-1", entity_id: "run-empty", name: "Empty" },
+      { id: "ws-bare", project_id: "project-1", name: "Bare" },
+      { id: "ws-other", project_id: "project-2", name: "Other project" },
+    ]);
+    await cache.writeCached(rowAddress("run-full"), { agents: [agent("full-agent")] });
+    await cache.writeCached(rowAddress("run-empty"), { agents: [] });
+
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope, projectId: "project-1", includeProjectWorkspaces: true,
+      sources: () => [], onRows: (rows, shape) => paints.push({ rows, shape }),
+    });
+    const workspaceNames = () => (paints.at(-1)?.shape?.workspaces || []).map((workspace) => workspace.name);
+    try {
+      reader.open();
+      await vi.waitFor(() => expect(workspaceNames()).toEqual(["Full", "Empty", "Bare"]));
+      expect(paints.at(-1).shape.workspaces.map((workspace) => workspace.workspaceId)).toEqual(["ws-full", "ws-empty", "ws-bare"]);
+
+      await cache.writeCached(rowAddress("run-full"), { agents: [] });
+      await vi.waitFor(() => expect(paints.at(-1).rows).toEqual([]));
+      expect(workspaceNames()).toEqual(["Full", "Empty", "Bare"]);
+    } finally {
+      reader.close();
+    }
+  });
+
   it("prefers current work activity, then unread agent words, then the latest message", () => {
     const thread = { items: [message(1, "agent", "Earlier answer"),
       message(2, "user", "Please check this"), activity(3, "Running tests\nwith details"),
@@ -248,6 +276,18 @@ describe("overview scopes (#117)", () => {
     expect(namesIn(html, "Workspace busy")).toEqual(["busy-4", "busy-3", "busy-2", "busy-1"]);
     expect(html).not.toContain("rail-overview-see-all");
     expect(html).not.toContain("rail-overview-open");
+  });
+
+  it("heads every workspace it is told of, agents or none, with its way in and its +", () => {
+    const workspaces = [{ workspaceId: "busy", name: "Workspace busy" }, { workspaceId: "idle", name: "Workspace idle" }];
+    const html = overview.overviewHtml(rows(), { showProjectAgents: true, scope: { kind: "project" }, workspaces });
+    expect(namesIn(html, "Workspace idle")).toEqual([]);
+    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="idle"><span>Workspace idle</span>');
+    expect(html).toContain('data-overview-add="idle" aria-label="Add an agent to Workspace idle"');
+    const scoped = overview.overviewHtml([], { showProjectAgents: false, scope: { kind: "workspace", workspaceId: "idle" }, workspaces });
+    expect(scoped).toContain('aria-label="Workspace idle"');
+    expect(scoped).not.toContain("Workspace busy");
+    expect(scoped).not.toContain("No agents here yet.");
   });
 
   it("draws every row unscoped when the page has no scope to move between", () => {

@@ -106,7 +106,7 @@ const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
-const { pushRailThreadItems, writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
+const { pushRailThreadItems, writeRailBoard, writeRailRow, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 /** The topic each fixture agent named its work with. The head and the bubbles
  *  say the topic now, so it is the topic — not a harness and an ordinal — that
@@ -1329,6 +1329,37 @@ describe("the bubble strip", () => {
         "Busy agent 5", "Busy agent 4", "Busy agent 3", "Busy agent 2", "Busy agent 1",
       ]);
       expect(railHost().querySelector(".rail-overview-see-all")).toBeNull();
+    });
+
+    it("lists a workspace with no agents on the project's overview, and keeps one whose last agent left", async () => {
+      await mountProjectPage();
+      await writeRailBoard({
+        projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+        workspaces: [
+          { id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" },
+          { id: "ws-two", project_id: "p1", name: "Second workspace", entity_id: "run-two" },
+          { id: "ws-busy", project_id: "p1", name: "Busy workspace", entity_id: "run-busy" },
+          { id: "ws-idle", project_id: "p1", name: "Idle workspace", entity_id: "run-idle" },
+          { id: "ws-bare", project_id: "p1", name: "Bare workspace" },
+        ],
+        items: [{ kind: "workspace", workspace_id: "ws-idle", project_id: "p1", entity_id: "run-idle", agents: [] }],
+      });
+      openOverview();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(expect.arrayContaining(["Idle workspace", "Bare workspace"])));
+      for (const name of ["Idle workspace", "Bare workspace"]) {
+        const section = sectionNamed(name);
+        expect(rowNames(section)).toEqual([]);
+        expect(section.querySelector(".rail-overview-open").textContent.trim()).toBe(name);
+        expect(section.querySelector(".rail-overview-add").getAttribute("aria-label")).toBe(`Add an agent to ${name}`);
+      }
+
+      await writeRailRow({ kind: "workspace", workspace_id: "ws-two", project_id: "p1", entity_id: "run-two", agents: [] });
+      await vi.waitFor(() => expect(rowNames(sectionNamed("Second workspace"))).toEqual([]));
+      expect(sectionNamed("Second workspace").querySelector(".rail-overview-add")).toBeTruthy();
+
+      sectionNamed("Bare workspace").querySelector(".rail-overview-open").click();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(["Project agents", "Bare workspace"]));
+      expect(sectionNamed("Bare workspace").querySelector(".rail-overview-add")).toBeTruthy();
     });
 
     it("keeps the scope the reader chose across a remount", async () => {

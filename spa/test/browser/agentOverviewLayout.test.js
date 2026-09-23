@@ -194,9 +194,15 @@ it("moves the chat overview between one workspace and the whole project", async 
     await page.locator(".rail-overview-toggle").click();
     await sectionsNamed(["Project agents", "chat-overview-nav"]);
     await page.locator("#rail-overview .rail-overview-up").click();
-    await sectionsNamed(["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav"]);
+    await sectionsNamed(["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav",
+      "relay-candidates", "review-system-plan"]);
     assert.deepEqual((await sections()).map(({ agents, seeAll }) => [agents.length, seeAll]),
-      [[1, false], [3, true], [2, false], [1, false]]);
+      [[1, false], [3, true], [2, false], [1, false], [0, false], [0, false]]);
+    // A workspace with no agents keeps its way in and its +.
+    assert.equal(await page.locator('.rail-overview-section[aria-label="review-system-plan"] .rail-overview-add').count(), 1);
+    await page.locator('.rail-overview-open[data-overview-scope="workspace-new"]').click();
+    await sectionsNamed(["Project agents", "review-system-plan"]);
+    await page.locator("#rail-overview .rail-overview-up").click();
     assert.equal(await page.locator("#rail-overview .rail-overview-up").count(), 0);
 
     await page.locator('.rail-overview-open[data-overview-scope="workspace-quiet"]').click();

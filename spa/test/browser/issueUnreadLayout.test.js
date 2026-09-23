@@ -29,13 +29,24 @@ const fixture = (readThrough = "ic-0016") => {
   };
 };
 
-const mountIssueFixture = async (page, basePath, { width = "100vw", height = "100vh", readThrough } = {}) => {
-  await mountLayout(page, '<main class="issue-surface" id="issue-layout"></main>', {
+const mountIssueFixture = async (page, basePath, { width = "100vw", height = "100vh", readThrough, shell = false } = {}) => {
+  const issue = '<main class="issue-surface" id="issue-layout"></main>';
+  const markup = shell ? `<div id="shell"><aside id="inbox-rail" aria-label="Inbox">Inbox</aside>
+    <div id="view"><div id="toolbar">Issue</div><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush">${issue}</div></main>
+    <aside id="agent-rail" aria-label="Chat"><div class="rail-panel"><div class="rail-body">Chat open</div></div></aside></div><div id="console-region"></div></div></div>` : issue;
+  await mountLayout(page, markup, {
     basePath,
     styles: `@import url("${basePath}src/styles/issues.css");
-      body{display:block;margin:0;width:100vw;height:100vh}
-      #issue-layout{height:${height};width:${width};max-width:none}`,
+      #issue-layout{height:${height};width:${width};max-width:none}
+      ${shell ? "#shell{height:100%;box-sizing:border-box} #root{min-height:0} #tabbody{height:100%;box-sizing:border-box}" : "body{display:block;margin:0;width:100vw;height:100vh}"}`,
   });
+  if (shell && (await page.evaluate(() => innerWidth)) <= 900) {
+    await page.evaluate(() => {
+      document.body.classList.add("inbox-collapsed");
+      document.querySelector("#agent-rail").classList.add("rail-collapsed");
+      document.querySelector(".rail-panel").setAttribute("aria-hidden", "true");
+    });
+  }
   await loadBrowserModules(page, {
     issueRender: "src/core/trackerIssueRender.js",
     timeline: "src/core/trackerTimeline.js",
@@ -70,11 +81,16 @@ for (const { label, width, height } of [
 ]) {
   it(`shows the issue unread line and pill, then jumps on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
-      await mountIssueFixture(page, basePath);
+      await mountIssueFixture(page, basePath, { shell: true, width: "100%", height: "100%" });
 
       await page.waitForSelector(".issue-comment", { state: "visible" });
       await page.waitForSelector(".thread-unread-line", { state: "attached" });
       await page.waitForSelector(".new-messages-pill", { state: "visible" });
+      const beforeScroll = await page.evaluate(() => ({
+        page: document.scrollingElement.scrollTop, shell: document.querySelector("#shell").scrollTop,
+        shellOverflow: getComputedStyle(document.querySelector("#shell")).overflowY,
+      }));
+      expect(beforeScroll).toEqual({ page: 0, shell: 0, shellOverflow: "clip" });
       expect(await page.locator(".issue-comment").count()).toBe(24);
       const overlay = await page.evaluate(() => {
         const host = document.querySelector("#issue-layout").getBoundingClientRect();
@@ -100,7 +116,8 @@ for (const { label, width, height } of [
         if (!host || !firstUnread || !pill) return false;
         const bounds = host.getBoundingClientRect();
         const row = firstUnread.getBoundingClientRect();
-        return row.top >= bounds.top && row.top < bounds.bottom && !pill.getClientRects().length;
+        return Math.abs(document.querySelector(".issue-unread-line").getBoundingClientRect().top - bounds.top) < 40
+          && row.top >= bounds.top && row.top < bounds.bottom && !pill.getClientRects().length;
       });
       const after = await page.evaluate(() => {
         const host = document.querySelector("#issue-layout");
@@ -111,11 +128,14 @@ for (const { label, width, height } of [
         return {
           firstUnreadTop: row.top, surfaceTop: bounds.top, surfaceBottom: bounds.bottom,
           pillVisible: Boolean(pill?.getClientRects().length), scrollTop: host.scrollTop,
+          pageScrollTop: document.scrollingElement.scrollTop, shellScrollTop: document.querySelector("#shell").scrollTop,
         };
       });
       expect(after.firstUnreadTop, JSON.stringify(after)).toBeGreaterThanOrEqual(after.surfaceTop);
       expect(after.firstUnreadTop, JSON.stringify(after)).toBeLessThan(after.surfaceBottom);
       expect(after.pillVisible, JSON.stringify(after)).toBe(false);
+      expect(after.pageScrollTop).toBe(0);
+      expect(after.shellScrollTop).toBe(0);
       await page.screenshot({ path: `/tmp/issue-unread-${label}-after.png` });
       await page.evaluate(() => window.__layoutPill.dispose());
     }, { width, height });

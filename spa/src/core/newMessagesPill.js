@@ -1,6 +1,8 @@
 // A floating jump control for any scroll surface with an unread divider.
 // The owner supplies the selector; the dock has zero height and cannot move
 // timeline content. Chat can adopt this without owning issue page markup.
+import { scrollWithin } from "./scrollWithin.js";
+
 export function mountNewMessagesPill(scroller, { targetSelector }) {
   let jumping = false;
   let dock = null;
@@ -26,7 +28,7 @@ export function mountNewMessagesPill(scroller, { targetSelector }) {
     if (!line) return;
     jumping = true;
     if (dock) dock.hidden = true;
-    line.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollWithin(scroller, line);
   };
   const sync = () => {
     if (!target()) { dock = null; resizeObserver?.disconnect(); return; }

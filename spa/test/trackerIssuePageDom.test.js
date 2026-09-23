@@ -170,6 +170,11 @@ describe("issue unread navigation", () => {
   });
 
   it("paints a cached pre-visit mark, then jumps from the floating pill to the first unread entry", async () => {
+    const shell = document.createElement("div");
+    host.before(shell);
+    shell.append(host);
+    shell.scrollTo = vi.fn();
+    document.documentElement.scrollTo = vi.fn();
     carriesWatching = true;
     const timeline = [
       event({ id: "ie-01M37FGQD48628P29BG1A4BB01", actor: { kind: "user" } }),
@@ -191,16 +196,17 @@ describe("issue unread navigation", () => {
     expect(line.previousElementSibling.id).toBe(`comment-${timeline[1].id}`);
     expect(listed("issues.read_through")[0][1].event_id).toBe(timeline[3].id);
 
-    const hostRect = vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ bottom: 600 });
+    const hostRect = vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ top: 0, bottom: 600 });
     const lineRect = vi.spyOn(line, "getBoundingClientRect").mockReturnValue({ top: 900 });
-    const scrollIntoView = vi.fn();
-    line.scrollIntoView = scrollIntoView;
+    host.scrollTo = vi.fn();
     host.dispatchEvent(new Event("scroll"));
     const pill = host.querySelector(".new-messages-pill");
     expect(pill.getAttribute("aria-label")).toBe("Jump to first unread activity");
     expect(pill.closest(".new-messages-dock").hidden).toBe(false);
     pill.click();
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(host.scrollTo).toHaveBeenCalledWith({ top: 900, behavior: "smooth" });
+    expect(shell.scrollTo).not.toHaveBeenCalled();
+    expect(document.documentElement.scrollTo).not.toHaveBeenCalled();
     expect(pill.closest(".new-messages-dock").hidden).toBe(true);
 
     lineRect.mockReturnValue({ top: 100 });
@@ -395,13 +401,12 @@ describe("the timeline", () => {
   });
 
   it("scrolls to and highlights a routed comment after the cache paints", async () => {
-    const scrollIntoView = vi.fn();
-    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    host.scrollTo = vi.fn();
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor());
     call = vi.fn(() => new Promise(() => {}));
     await mount({ commentId: "ic-2" }, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector("#comment-ic-2")?.classList.contains("issue-comment-target")).toBe(true));
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+    expect(host.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
   });
 
   it("opens a missing comment at the top without an error", async () => {

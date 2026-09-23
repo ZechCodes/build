@@ -240,6 +240,7 @@ const pushRow = async (row = payload) => {
 
 beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
+  HTMLElement.prototype.scrollTo = vi.fn();
   localStorage.clear();
   resetAgentRailMemory();
   resetOptimistic();
@@ -964,9 +965,10 @@ describe("the bubble strip", () => {
     const tick = navigator.querySelector(".thread-user-tick");
     const row = railHost().querySelector(".thread-items > .thread-message.user");
     expect(tick.closest(".thread-message")).toBeNull();
-    row.scrollIntoView = vi.fn();
+    const body = railHost().querySelector("#rail-body");
+    body.scrollTo = vi.fn();
     tick.click();
-    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(body.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
 
     await pushRailThreadItems("run-3", "ag-1", [
       { type: "message", data: { sequence: 3, role: "user", body: "One more question", created_at: "2026-09-22T13:00:00Z" } },

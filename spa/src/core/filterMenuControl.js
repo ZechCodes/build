@@ -21,6 +21,7 @@
 import { esc } from "./text.js";
 import { patchList } from "./patchList.js";
 import { watchUiState } from "./localUiState.js";
+import { scrollWithin } from "./scrollWithin.js";
 import {
   firstActive,
   menuPressLabel,
@@ -106,7 +107,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     const on = active >= 0 ? list.children[active] : null;
     if (on) search.setAttribute("aria-activedescendant", on.id);
     else search.removeAttribute("aria-activedescendant");
-    on?.scrollIntoView?.({ block: "nearest" });
+    if (on) scrollWithin(list, on, { block: "nearest", behavior: "auto" });
   };
 
   const paintRows = () => {

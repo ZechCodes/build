@@ -4,6 +4,7 @@
 // with a key rather than a diff.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { refetchEverything } from "../src/core/changeEvents.js";
@@ -23,17 +24,41 @@ const log = () => ({
   more: false,
 });
 
-const settle = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
-};
+// Observe the real body reader finishing, including a failed or unchanged
+// read: those passes intentionally have no new DOM to wait for.
+const bodyReads = vi.hoisted(() => new Map());
+vi.mock("../src/core/fileDiffs.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createFileDiffs(options) {
+      const reader = actual.createFileDiffs(options);
+      const reads = { completed: 0 };
+      bodyReads.set(options.call, reads);
+      return {
+        ...reader,
+        sync(options) {
+          const reading = reader.sync(options);
+          reading.then(() => reads.completed++, () => reads.completed++);
+          return reading;
+        },
+      };
+    },
+  };
+});
 
-const click = async (element) => {
-  element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  await settle();
+const click = (element) => element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+const reread = async (...panes) => {
+  const before = panes.map(({ callRpc }) => bodyReads.get(callRpc).completed);
+  refetchEverything();
+  await vi.advanceTimersByTimeAsync(0);
+  await waitFor(() => panes.forEach(({ callRpc }, index) => {
+    expect(bodyReads.get(callRpc).completed).toBeGreaterThan(before[index]);
+  }));
 };
 
 /** Mount the pane over a worktree fixture; `answers` overrides one verb. */
-async function mount({ tree, answers = {}, scope = { project_id: "p1" }, cacheScope = null } = {}) {
+async function mount({ tree, answers = {}, scope = { project_id: "p1" }, cacheScope = null, ready = null } = {}) {
   const calls = [];
   const callRpc = vi.fn(async (method, params) => {
     calls.push({ method, params });
@@ -46,7 +71,8 @@ async function mount({ tree, answers = {}, scope = { project_id: "p1" }, cacheSc
   const container = document.createElement("div");
   document.body.appendChild(container);
   const pane = mountGitPane(container, { scope, callRpc, cacheScope });
-  await settle();
+  if (ready) await waitFor(() => ready(container), { timeout: 5_000 });
+  else await waitFor(() => expect(bodyReads.get(callRpc)?.completed).toBeGreaterThan(0));
   return { container, pane, calls, callRpc };
 }
 
@@ -70,6 +96,7 @@ function refusingTheFirstBody(tree) {
 }
 
 beforeEach(async () => {
+  bodyReads.clear();
   await wipeCache();
   document.body.innerHTML = "";
 });
@@ -87,6 +114,7 @@ describe("the shape and its bodies", () => {
       tree,
       scope: { workspace_id: "ws-1", source_id: "dir-1" },
       cacheScope: testCacheScope,
+      ready: (container) => expect(container.textContent).toContain("dirty"),
       answers: {
         "git.unpushed": () => ({
           patch: aggregatePatch,
@@ -96,7 +124,7 @@ describe("the shape and its bodies", () => {
         }),
       },
     });
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const reviewRow = container.querySelector('.rrow[data-sel="review"]');
       expect(reviewRow).toBeTruthy();
       expect(reviewRow.querySelector(".rsub").textContent).toBe("vs fork/main");
@@ -119,7 +147,7 @@ describe("the shape and its bodies", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line" });
     const held = tree.status();
-    const { container, pane, calls } = await mount({ tree, answers: { "git.status": () => held } });
+    const { container, pane, calls, callRpc } = await mount({ tree, answers: { "git.status": () => held } });
     const stack = container.querySelector(".dstack");
     const before = fileOf(container, "src/a.js");
     const writes = [];
@@ -131,10 +159,8 @@ describe("the shape and its bodies", () => {
     const { status_key } = held;
     const answers = { "git.status": (params) => (params.if_status_key === status_key ? (unchangedAsked++, unchangedStatus(held)) : held) };
     // the pane's own poll re-asks with the key it holds
-    const { container: second, pane: secondPane, calls: secondCalls } = await mount({ tree, answers });
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    const { container: second, pane: secondPane, calls: secondCalls, callRpc: secondCall } = await mount({ tree, answers });
+    await reread({ callRpc }, { callRpc: secondCall });
     expect(unchangedAsked).toBeGreaterThan(0);
     expect(second.textContent).toContain("new line");
     observer.disconnect();
@@ -148,13 +174,11 @@ describe("the shape and its bodies", () => {
   it("asks again only for the file whose content moved", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line", "src/b.js": "second" });
-    const { container, pane, calls } = await mount({ tree });
+    const { container, pane, calls, callRpc } = await mount({ tree });
     const held = fileOf(container, "src/b.js");
     calls.length = 0;
     tree.write("src/a.js", "the agent moved on");
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    await reread({ callRpc });
     expect(pathsAsked(calls)).toEqual([["src/a.js"]]);
     expect(container.textContent).toContain("the agent moved on");
     expect(fileOf(container, "src/b.js")).toBe(held);
@@ -164,20 +188,19 @@ describe("the shape and its bodies", () => {
   it("leaves a file the reader folded shut unfetched until they open it again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line", "src/b.js": "second" });
-    const { container, pane, calls } = await mount({ tree });
+    const { container, pane, calls, callRpc } = await mount({ tree });
     const head = () => fileOf(container, "src/a.js").querySelector(".fhead");
-    await click(head()); // capped → shut
+    click(head()); // capped → shut
     expect(fileOf(container, "src/a.js").classList.contains("collapsed")).toBe(true);
 
     calls.length = 0;
     tree.write("src/a.js", "the agent moved on");
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    await reread({ callRpc });
     expect(pathsAsked(calls)).toEqual([]);
     expect(container.textContent).not.toContain("the agent moved on");
 
-    await click(head()); // shut → open, which is when the body is worth having
+    click(head()); // shut → open, which is when the body is worth having
+    await waitFor(() => expect(container.textContent).toContain("the agent moved on"));
     expect(pathsAsked(calls)).toEqual([["src/a.js"]]);
     expect(container.textContent).toContain("the agent moved on");
     pane.dispose();
@@ -186,12 +209,10 @@ describe("the shape and its bodies", () => {
   it("asks again after a body fetch fails, even though the shape has not moved", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line" });
-    const { container, pane, calls } = await mount({ tree, answers: refusingTheFirstBody(tree) });
+    const { container, pane, calls, callRpc } = await mount({ tree, answers: refusingTheFirstBody(tree) });
     expect(container.textContent).toContain("loading…");
 
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    await reread({ callRpc });
     expect(pathsAsked(calls)).toEqual([["src/a.js"], ["src/a.js"]]);
     expect(container.textContent).toContain("new line");
     pane.dispose();
@@ -200,19 +221,15 @@ describe("the shape and its bodies", () => {
   it("paints a body that landed while the reader was mid-draft on the next free turn", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const tree = worktreeOf({ "src/a.js": "new line" });
-    const { container, pane } = await mount({ tree, answers: refusingTheFirstBody(tree) });
+    const { container, pane, callRpc } = await mount({ tree, answers: refusingTheFirstBody(tree) });
     const draft = container.querySelector(".csinput");
     draft.value = "a commit message being typed";
 
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    await reread({ callRpc });
     expect(container.textContent).not.toContain("new line"); // the draft holds the repaint
 
     draft.value = "";
-    refetchEverything();
-    await vi.advanceTimersByTimeAsync(0);
-    await settle();
+    await reread({ callRpc });
     expect(container.textContent).toContain("new line");
     pane.dispose();
   });
@@ -222,7 +239,7 @@ describe("the shape and its bodies", () => {
     const tree = worktreeOf({ "src/a.js": long });
     const { container, pane } = await mount({ tree });
     expect(rowsIn(fileOf(container, "src/a.js"))).toBe(23);
-    await click(fileOf(container, "src/a.js").querySelector(".fhead")); // capped → shut
+    click(fileOf(container, "src/a.js").querySelector(".fhead")); // capped → shut
     expect(rowsIn(fileOf(container, "src/a.js"))).toBe(COLLAPSED_PREVIEW_ROWS);
     expect(fileOf(container, "src/a.js").textContent).toContain("src/a.js");
     pane.dispose();

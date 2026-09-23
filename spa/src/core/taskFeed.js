@@ -233,5 +233,5 @@ export function dropFeedProject(deviceId, projectKey) {
  *  comes back here as an announcement, the same way a push does. */
 export function refreshFeed(deviceId = null) {
   const ids = deviceId === null ? liveContexts().map((context) => context.deviceId) : [deviceId];
-  return Promise.all(ids.map((id) => syncDevice(id)));
+  return Promise.all(ids.map((id) => syncDevice(id, { fresh: true })));
 }

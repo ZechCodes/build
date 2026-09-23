@@ -5,6 +5,7 @@
 // posting anchored comments to the agent.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { mountGitPane, taskAgentCommitOptions } from "../src/core/gitPane.js";
 import { refetchEverything } from "../src/core/changeEvents.js";
 
@@ -38,7 +39,7 @@ const show = () => ({
   truncated: false,
 });
 
-/** Mount the pane over a scripted RPC channel, then let the first poll land. */
+/** Mount the pane over a scripted RPC channel, then wait for its first paint. */
 async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc = {}, review = null } = {}) {
   const calls = [];
   let currentStatus = status;
@@ -58,14 +59,15 @@ async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc 
   const container = document.createElement("div");
   document.body.appendChild(container);
   const pane = mountGitPane(container, { scope, callRpc, review });
-  await settle();
+  await waitFor(() => {
+    expect(container.querySelector(".crail")).toBeTruthy();
+    expect(container.querySelector(".cdetail-host")).toBeTruthy();
+    if (review) expect(container.querySelector(".cdetail-host").textContent).toContain("aggregate");
+    else if (status.files.length) expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy();
+    else expect(container.querySelector(".cdetail-host").textContent).toContain("Pick a commit");
+  });
   return { container, pane, callRpc, calls };
 }
-
-const settle = async () => {
-  for (let i = 0; i < 8; i++) await Promise.resolve();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-};
 
 /** The primary verb of the one box under the diff. Commenting leads wherever
  *  there is an agent to talk to, so committing is behind the caret. */
@@ -77,7 +79,6 @@ const pickCommit = async (container) => {
 
 const click = async (element) => {
   element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-  await settle();
 };
 
 beforeEach(() => {
@@ -208,7 +209,7 @@ describe("the rail's paint", () => {
       return {};
     });
     const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
-    await settle();
+    await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy());
     return { container, pane };
   };
 
@@ -224,7 +225,7 @@ describe("the rail's paint", () => {
         served.status = dirtyStatus({ head: "e".repeat(40) });
         refetchEverything();
         await vi.advanceTimersByTimeAsync(0);
-        await settle();
+        await waitFor(() => expect(container.textContent).toContain("the agent moved on"));
       });
       expect(container.textContent).toContain("the agent moved on"); // the pane did repaint
       expect(records).toEqual([]);
@@ -248,7 +249,7 @@ describe("the rail's paint", () => {
         served.log = { ...log(), commits: [landed, ...log().commits] };
         refetchEverything();
         await vi.advanceTimersByTimeAsync(0);
-        await settle();
+        await waitFor(() => expect(rail.querySelector(`.crow[data-hash="${"b".repeat(40)}"]`)).toBeTruthy());
       });
       const fresh = rail.querySelector(`.crow[data-hash="${"b".repeat(40)}"]`);
       expect(fresh.textContent).toContain("just landed");
@@ -278,6 +279,7 @@ describe("one renderer for every changeset", () => {
   it("renders a selected commit through the same stack, ✎ and all", async () => {
     const { container, pane } = await mount();
     await click(container.querySelector(".crow"));
+    await waitFor(() => expect(container.querySelector('.file[data-key$=":src/b.js"]')).toBeTruthy());
     const file = container.querySelector('.file[data-key$=":src/b.js"]');
     expect(file).toBeTruthy();
     expect(file.querySelector(".fcmt")).toBeTruthy();
@@ -430,6 +432,7 @@ describe("comments on any changeset", () => {
     await addCommentViaPop(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
     expect(container.querySelector(".pcomment").textContent).toContain("rename this");
     await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    await waitFor(() => expect(calls.some((c) => c.method === "run.request_changes")).toBe(true));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.run_id).toBe("run-1");
     expect(post.params.messages[0].body).toBe("rename this");
@@ -448,6 +451,7 @@ describe("comments on any changeset", () => {
     file.classList.remove("capped");
     await addCommentViaButton(file.querySelector('tr[data-ln="1"] td.code'));
     await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    await waitFor(() => expect(calls.some((c) => c.method === "run.request_changes")).toBe(true));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
     pane.dispose();
@@ -477,14 +481,14 @@ describe("comments on any changeset", () => {
 
     const row = file.querySelector('tr[data-ln="1"]');
     row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
-    await settle();
+    await waitFor(() => expect(row.querySelector("td.ln .dcmt")).toBeTruthy());
     const button = row.querySelector("td.ln .dcmt");
     expect(button, "on the row under the pointer").toBeTruthy();
     expect(container.querySelectorAll(".dcmt")).toHaveLength(1);
 
     // Off the rows entirely: nothing is being pointed at, so nothing is offered.
     file.querySelector(".fhead").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
-    await settle();
+    await waitFor(() => expect(container.querySelector(".dcmt")).toBeNull());
     expect(container.querySelector(".dcmt")).toBe(null);
     pane.dispose();
   });
@@ -495,13 +499,14 @@ describe("comments on any changeset", () => {
     file.classList.remove("capped");
     const row = file.querySelector('tr[data-ln="1"]');
     row.querySelector("td.ln").dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
-    await settle();
+    await waitFor(() => expect(row.querySelector(".dcmt")).toBeTruthy());
     await click(row.querySelector(".dcmt"));
     expect(document.querySelector(".cp-add"), "no button in the way").toBe(null);
     document.querySelector(".cp-input").value = "this line";
     await click(document.querySelector(".cp-save"));
 
     await click(container.querySelector(".csbox-actions .btn:not(.caret)"));
+    await waitFor(() => expect(calls.some((c) => c.method === "run.request_changes")).toBe(true));
     const post = calls.find((c) => c.method === "run.request_changes");
     expect(post.params.messages[0].anchor).toMatchObject({ path: "src/a.js", line_start: 1, line_end: 1 });
     pane.dispose();
@@ -530,7 +535,7 @@ describe("a poll preserves a review in progress", () => {
         return {};
       });
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy());
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       document.querySelector(".cp-input").value = "hold this thought";
       await click(document.querySelector(".cp-save"));
@@ -542,7 +547,7 @@ describe("a poll preserves a review in progress", () => {
       served = dirtyStatus({ head: "e".repeat(40) });
       refetchEverything();
       await vi.advanceTimersByTimeAsync(0);
-      await settle();
+      await waitFor(() => expect(container.textContent).toContain("the agent moved on"));
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
       expect(container.textContent).toContain("the agent moved on");
       pane.dispose();
@@ -573,7 +578,7 @@ describe("the poll freeze holds an open menu", () => {
         callRpc,
         agentCommitOptions: taskAgentCommitOptions("building", "ship it"),
       });
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy());
 
       await click(container.querySelector(".csbox-actions .caret"));
       const menu = container.querySelector(".csbox-actions .splitmenu");
@@ -582,7 +587,7 @@ describe("the poll freeze holds an open menu", () => {
       served = dirtyStatus({ head: "e".repeat(40) });
       refetchEverything();
       await vi.advanceTimersByTimeAsync(0);
-      await settle();
+      await waitFor(() => expect(container.querySelector(".csbox-actions .splitmenu")).toBe(menu));
 
       expect(container.querySelector(".csbox-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
       expect(menu.hidden).toBe(false);
@@ -609,7 +614,7 @@ describe("re-review memory on every stack", () => {
         return {};
       });
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy());
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
@@ -620,14 +625,14 @@ describe("re-review memory on every stack", () => {
       served = dirtyStatus();
       refetchEverything();
       await vi.advanceTimersByTimeAsync(0);
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"] .fchanged')).toBeTruthy());
       const changed = container.querySelector('.file[data-key$=":src/a.js"] .fchanged');
       expect(changed.textContent).toContain("changed since your review");
 
       // The stamp belongs to the changeset it was taken on: a commit's stack
       // has never been reviewed, so nothing in it is flagged.
       await click(container.querySelector(".crow[data-hash]"));
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/b.js"]')).toBeTruthy());
       expect(container.querySelector(".cdetail-host .fchanged")).toBe(null);
       pane.dispose();
     } finally {
@@ -652,21 +657,21 @@ describe("re-review memory on every stack", () => {
         return {};
       });
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
-      await settle();
+      await waitFor(() => expect(container.querySelector('.file[data-key$=":src/a.js"]')).toBeTruthy());
       await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
       container.querySelector(".csbox-actions .btn:not(.caret)").click();
-      await settle();
+      await waitFor(() => expect(callRpc).toHaveBeenCalledWith("run.request_changes", expect.anything()));
 
       await click(container.querySelector(".crow[data-hash]"));
       releaseRequest({ ok: true });
-      await settle();
+      await waitFor(() => expect(container.querySelector(".cdetail-host .file")).toBeTruthy());
       tree.write("src/a.js", "the agent moved after review");
       served = dirtyStatus();
       refetchEverything();
       await vi.advanceTimersByTimeAsync(0);
-      await settle();
+      await waitFor(() => expect(container.querySelector('.rrow[data-sel="uncommitted"]')).toBeTruthy());
       await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
 
       expect(container.querySelector('.file[data-key$=":src/a.js"] .fchanged').textContent)

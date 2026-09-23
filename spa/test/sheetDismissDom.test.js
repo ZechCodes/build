@@ -4,11 +4,10 @@
 // sheet demands the discard confirm first, and an open confirm modal owns
 // the screen (dismiss is a no-op).
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { requestSheetDismiss } from "../src/core/sheetDismiss.js";
 import { confirmAction } from "../src/core/confirm.js";
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function mountSheet({ draft = "", withCancel = true } = {}) {
   document.body.innerHTML = `
@@ -52,7 +51,7 @@ describe("requestSheetDismiss (DOM)", () => {
     expect(document.getElementById("confirm-scrim")).toBeTruthy(); // confirm shown, sheet intact
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     document.querySelector("[data-confirm-cancel]").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeNull());
     expect(cancelClicks).toHaveLength(0);
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
   });
@@ -61,7 +60,7 @@ describe("requestSheetDismiss (DOM)", () => {
     const { cancelClicks } = mountSheet({ draft: "half-typed goal" });
     requestSheetDismiss();
     document.querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(cancelClicks).toHaveLength(1));
     expect(cancelClicks).toHaveLength(1);
     expect(document.getElementById("scrim").classList.contains("show")).toBe(false);
   });

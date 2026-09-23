@@ -13,6 +13,7 @@
 // is tested in trackerWorkspaceIssuesTab.test.js and workspaceViewDom.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
@@ -30,23 +31,23 @@ let button, trackerCache, mountWorkspaceIssues, block, agents;
  *  passes `open`, because the toolbar is what knows where it is standing. */
 let opened = [];
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const held = (agentId, over = {}) => issue({ assignee: { kind: "agent", agent_id: agentId }, ...over });
 const putIssues = (issues) => trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
 
-const mount = async (over = {}) => {
+const mount = async (over = {}, expectedBadge = null) => {
+  let paints = 0;
   block = mountWorkspaceIssues(button, {
     deviceId: "dev-1",
     projectId: "proj-1",
     workspaceId: "ws-1",
-    agents: () => agents,
+    agents: () => { paints++; return agents; },
     open: (where) => opened.push(where),
     ...over,
   });
-  await flush();
+  // The first paint has no record yet; even an empty badge must wait for
+  // the cached issues to have been considered.
+  if (carriedKinds.includes("issues")) await waitFor(() => expect(paints).toBeGreaterThan(1));
+  if (expectedBadge !== null) expect(badge()).toBe(expectedBadge);
   return block;
 };
 
@@ -91,7 +92,7 @@ describe("the badge", () => {
       held(ONE, { number: 3, id: "i3", status: "done" }),
       held(ELSEWHERE, { number: 4, id: "i4", status: "in_progress" }),
     ]);
-    await mount();
+    await mount({}, "2");
     expect(badge()).toBe("2");
     expect(button.hidden).toBe(false);
   });
@@ -114,13 +115,13 @@ describe("the badge", () => {
 
   it("moves on the push, with nothing asked of the bridge", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "ready" })]);
-    await mount();
+    await mount({}, "1");
     expect(badge()).toBe("1");
     await putIssues([
       held(ONE, { number: 1, id: "i1", status: "ready" }),
       held(TWO, { number: 2, id: "i2", status: "in_progress" }),
     ]);
-    await flush();
+    await waitFor(() => expect(badge()).toBe("2"));
     expect(badge()).toBe("2");
   });
 
@@ -128,7 +129,7 @@ describe("the badge", () => {
   it("re-reads the agents when the bar says they moved", async () => {
     await putIssues([held(TWO, { number: 1, id: "i1", status: "in_progress" })]);
     agents = [{ id: ONE, ordinal: 1 }];
-    await mount();
+    await mount({}, "");
     expect(badge()).toBe("");
     agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
     block.refresh();
@@ -141,7 +142,7 @@ describe("the press", () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
-    await flush();
+    await waitFor(() => expect(opened).toHaveLength(1));
     expect(opened).toEqual([{ deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1" }]);
   });
 
@@ -150,7 +151,6 @@ describe("the press", () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
-    await flush();
     expect(document.querySelector(".modal-workspace-issues")).toBeNull();
     expect(document.querySelector("dialog")).toBeNull();
   });
@@ -159,7 +159,7 @@ describe("the press", () => {
     await putIssues([held(ELSEWHERE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
     button.click();
-    await flush();
+    await waitFor(() => expect(opened).toHaveLength(1));
     expect(opened).toHaveLength(1);
   });
 });

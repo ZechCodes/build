@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -63,8 +64,6 @@ import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { readCachedDevices } from "../src/devices.js";
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Open the page the way the app opens it. The rail and the console beside it
  *  are the SHELL's now (core/shell.js) — `render()` stands them on the route
@@ -201,13 +200,13 @@ describe("workspace surface", () => {
     passRan = false; // another tab holds the sync lock; nothing to establish here
 
     await openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#root").textContent).toBeTruthy());
 
     expect(document.querySelector("#root").textContent).not.toContain("unknown workspace_id");
     expect(renderFilesTab).not.toHaveBeenCalled();
 
     deliverWorkspaces([workspace]);
-    await flush();
+    await waitFor(() => expect(renderFilesTab).toHaveBeenCalled());
 
     expect(renderFilesTab).toHaveBeenCalled();
   });
@@ -217,7 +216,7 @@ describe("workspace surface", () => {
     device("dev-1", async () => workspace);
 
     await openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-9"));
 
     expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-9");
   });
@@ -229,11 +228,11 @@ describe("workspace surface", () => {
     device("dev-1", async () => workspace);
 
     await openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-1"));
     expect(document.querySelector("#root").textContent).toContain("unknown workspace_id: ws-1");
 
     deliverWorkspaces([workspace]);
-    await flush();
+    await waitFor(() => expect(renderFilesTab).toHaveBeenCalled());
 
     expect(renderFilesTab).toHaveBeenCalled();
   });
@@ -273,12 +272,12 @@ describe("workspace surface", () => {
       return {};
     });
     await standUp();
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-refpicker-toggle]")).not.toBeNull());
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
     document.querySelector('[data-ref="refs/tags/v1"]').click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".workspace-referror")?.textContent).toContain("local changes would be overwritten"));
     expect(call).toHaveBeenCalledWith("git.checkout_ref", {
       workspace_id: "ws-1", source_id: "repo", full_ref: "refs/tags/v1",
     });
@@ -300,13 +299,12 @@ describe("workspace surface", () => {
       return {};
     });
     await standUp();
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-refpicker-toggle]")).not.toBeNull());
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
     document.querySelector('[data-ref="refs/tags/v1"]').click();
-    await flush();
-    await flush();
+    await waitFor(() => expect(mountGitPane).toHaveBeenCalledTimes(2));
     expect(mountGitPane).toHaveBeenCalledTimes(2);
     const selection = mountAgentRail.mock.calls[0][1].selection;
     selection.set("second-agent");
@@ -328,7 +326,7 @@ describe("workspace surface", () => {
     device("dev-1", async () => workspace);
 
     await standUp();
-    await flush();
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalled());
 
     expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ openAgentId: "ag-2" }));
   });
@@ -338,7 +336,7 @@ describe("workspace surface", () => {
     device("dev-1", async () => workspace);
 
     await standUp();
-    await flush();
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalled());
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
   });
@@ -350,7 +348,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     device("dev-1", async () => workspace);
     await standUp();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#dir-rail .dirtab.active")).not.toBeNull());
     expect(document.querySelector("#tabbody [data-tab]")).toBeNull();
     expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("changes");
     // The rail belongs to the surface standing on it: leaving hands the shell's
@@ -364,7 +362,7 @@ describe("workspace surface", () => {
     let finishCheckout;
     const checkout = new Promise((resolve) => { finishCheckout = resolve; });
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
-    device("dev-1", async (method) => {
+    const call = device("dev-1", async (method) => {
       if (method === "workspace.get") return workspace;
       if (method === "git.refs") return {
         current: { kind: "branch", name: "main", full_ref: "refs/heads/main" },
@@ -374,14 +372,14 @@ describe("workspace surface", () => {
       return {};
     });
     await standUp();
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-refpicker-toggle]")).not.toBeNull());
     document.querySelector("[data-refpicker-toggle]").click();
     document.querySelector("[data-ref-kind=tag]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-ref="refs/tags/v1"]')).not.toBeNull());
     document.querySelector('[data-ref="refs/tags/v1"]').click();
     App.viewDispose();
     finishCheckout({});
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalledWith("git.checkout_ref", expect.anything()));
     expect(mountGitPane).toHaveBeenCalledTimes(1);
   });
 
@@ -401,7 +399,7 @@ describe("workspace surface", () => {
 
     const address = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
     await writeCached(address, [{ ...failed, status: "ready" }]);
-    await vi.waitFor(() => expect(document.querySelector("[data-workspace-action]")).toBeNull());
+    await waitFor(() => expect(document.querySelector("[data-workspace-action]")).toBeNull());
     expect((await readCached(address))?.value[0].status).toBe("ready");
     expect(call).not.toHaveBeenCalledWith("workspace.retry", expect.anything());
   });
@@ -414,7 +412,7 @@ describe("workspace surface", () => {
     const firstGuard = App.routeLeaveGuard;
     expect(document.querySelector("[data-workspace-action]").textContent).toBe("Retry");
     document.querySelector("[data-workspace-action]").click();
-    await vi.waitFor(() => expect(renderFilesTab).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(renderFilesTab).toHaveBeenCalledTimes(2));
     expect((await readCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }))?.value[0].status).toBe("ready");
     expect(call).toHaveBeenCalledWith("workspace.retry", { workspace_id: "ws-1" });
     expect(App.routeLeaveGuard).not.toBe(firstGuard);
@@ -443,7 +441,7 @@ describe("workspace surface", () => {
     const originalPane = renderFilesTab.mock.results[0].value;
     const originalGuard = App.routeLeaveGuard;
     document.querySelector("[data-workspace-action]").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".workspace-action-status")?.textContent).toBe("Workspace ready."));
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
     expect(originalPane.dispose).not.toHaveBeenCalled();
     expect(App.routeLeaveGuard).toBe(originalGuard);
@@ -461,10 +459,10 @@ describe("workspace surface", () => {
     const pane = renderFilesTab.mock.results[0].value;
     const guard = App.routeLeaveGuard;
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]));
+    await waitFor(() => expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]));
     expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
     expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
     expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
@@ -485,7 +483,7 @@ describe("workspace surface", () => {
     await standUp();
 
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/assets"));
+    await waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/assets"));
     expect(document.querySelector('[data-init-target="both"]')).not.toBeNull();
   });
 
@@ -497,10 +495,10 @@ describe("workspace surface", () => {
     await writeCached(address, initOptions);
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/assets"));
+    await waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/assets"));
 
     await writeCached(address, { ...initOptions, source: { ...initOptions.source, path: "/srv/projects/renamed-assets" } });
-    await vi.waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/renamed-assets"));
+    await waitFor(() => expect(document.querySelector(".workspace-init-source")?.textContent).toContain("/srv/projects/renamed-assets"));
     expect((await readCached(address))?.value.source.path).toBe("/srv/projects/renamed-assets");
   });
 
@@ -526,18 +524,18 @@ describe("workspace surface", () => {
     });
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-init-target="both"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-init-target="both"]')).not.toBeNull());
     document.querySelector('[data-init-target="both"]').click();
     expect(document.querySelector(".workspace-init-copy").textContent).toContain("/tmp/workspaces/ws-1/assets");
     expect(document.querySelector(".workspace-init-source").textContent).toContain("/srv/projects/assets");
     expect(document.querySelector(".workspace-init-note").textContent).toContain("independent repositories");
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied");
       expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
     });
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" }));
+    await waitFor(() => expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" }));
   });
 
   it("ignores an initialization response after the workspace view is disposed", async () => {
@@ -547,12 +545,13 @@ describe("workspace surface", () => {
     device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
     App.viewDispose();
     finish({ workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] }, outcomes: [] });
-    await flush();
+    await pending;
+    await waitFor(() => expect(document.querySelector(".modal-scrim")).toBeNull());
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
     expect(document.querySelector(".modal-scrim")).toBeNull();
   });
@@ -576,16 +575,16 @@ describe("workspace surface", () => {
     });
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="both"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed");
       expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
       expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
     });
     document.querySelector("[data-confirm-init-git]").click();
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" }));
     expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });
   });
 
@@ -594,12 +593,12 @@ describe("workspace surface", () => {
     const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 220));
+    await waitFor(() => expect(document.querySelector(".modal-scrim")).toBeNull());
     expect(document.querySelector(".modal-scrim")).toBeNull();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     // Two reads of the options, one per press, and no read of the workspace.
     expect(call).toHaveBeenCalledTimes(2);
   });
@@ -611,7 +610,7 @@ describe("workspace surface", () => {
       ...initOptions, workspace: { ...initOptions.workspace, is_git: true },
     } : initializedCopy);
     await standUp();
-    await vi.waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("original source"));
+    await waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("original source"));
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 
@@ -624,12 +623,12 @@ describe("workspace surface", () => {
     const address = { deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" };
     await writeCached(address, initOptions);
     await standUp();
-    await vi.waitFor(() => expect(call).toHaveBeenCalledWith("workspace.git_init_options", { workspace_id: "ws-1", source_id: "assets" }));
+    await waitFor(() => expect(call).toHaveBeenCalledWith("workspace.git_init_options", { workspace_id: "ws-1", source_id: "assets" }));
 
     const newer = { ...initOptions, source: { ...initOptions.source, path: "/srv/projects/newer-assets" } };
     await writeCached(address, newer);
     finishProbe({ ...initOptions, source: { ...initOptions.source, is_git: true } });
-    await vi.waitFor(() => expect((document.querySelector("[data-init-git]")?.textContent || "")).toContain("original source"));
+    await waitFor(() => expect((document.querySelector("[data-init-git]")?.textContent || "")).toContain("original source"));
     expect((await readCached(address))?.value.source.path).toBe("/srv/projects/newer-assets");
   });
 
@@ -646,12 +645,12 @@ describe("workspace surface", () => {
       results: [{ target: "workspace", status: "already_initialized", is_git: true }],
     } : initializedCopy);
     await standUp();
-    await vi.waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("Finish Git initialization"));
+    await waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("Finish Git initialization"));
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
+    await waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await new Promise((resolve) => setTimeout(resolve, 220));
+    await waitFor(() => expect(document.querySelector("[data-init-git]")).toBeNull());
     expect(document.querySelector("[data-init-git]")).toBeNull();
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
@@ -667,7 +666,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     await standUp();
     document.querySelector("[data-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
     App.route = { ...App.route, deviceId: "dev-2" };
@@ -675,7 +674,8 @@ describe("workspace surface", () => {
       workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
       source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
     });
-    await flush();
+    await pending;
+    await waitFor(() => expect(document.querySelector("[data-confirm-init-git]")).not.toBeNull());
     // A directory with no Git in it has no Changes; the workspace's Issues tab
     // is not the directory's and is offered whatever the directory is (#29).
     expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
@@ -690,7 +690,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", async () => workspace);
     await standUp();
-    await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
 
     setContextOffline("dev-1");
 
@@ -707,7 +707,7 @@ describe("workspace surface", () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
     device("dev-1", () => new Promise(() => {}));
     openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toBeTruthy());
 
     setContextOffline("dev-1");
 
@@ -728,7 +728,7 @@ describe("workspace surface", () => {
     setContextOffline("dev-1");
 
     await openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
 
     expect(document.getElementById("root").textContent).not.toContain("Connecting to");
     expect(document.getElementById("tabbody")).toBeTruthy();
@@ -745,7 +745,7 @@ describe("workspace surface", () => {
     feedWorkspaces = [workspace];
 
     await openWorkspace();
-    await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
 
     expect(document.getElementById("root").textContent).not.toContain("Connecting to");
     expect(document.getElementById("tabbody")).toBeTruthy();

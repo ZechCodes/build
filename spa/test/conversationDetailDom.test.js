@@ -6,6 +6,7 @@
 // head is where the reader says which they are reading, and the choice is
 // remembered for that conversation alone.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -137,12 +138,6 @@ const writeBoard = async () => {
   await writeRailWorkItem(projectPayload(), { deviceId: DEVICE_ID });
 };
 
-/// The rail settles over the disk — a row read, the conversation beside it,
-/// then the paint — and every one of those is a turn.
-const flush = async () => {
-  for (let count = 0; count < 16; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-};
-
 const host = () => document.querySelector("#agent-rail");
 const panel = () => host().querySelector("#rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
@@ -159,9 +154,35 @@ const rowKinds = () => ({
   activity: timeline().querySelectorAll(".thread-activity-group, .thread-activity").length,
 });
 
+const BASE_ROWS = { user: 1, agent: 1, arrived: 1, sent: 1, activity: 1 };
+const AGENT_ROWS = { user: 1, agent: 1, arrived: 0, sent: 0, activity: 0 };
+const EMPTY_ROWS = { user: 0, agent: 0, arrived: 0, sent: 0, activity: 0 };
+
+const expectedRows = (level) => {
+  const all = conversation === RELAY_CONVERSATION
+    ? { ...EMPTY_ROWS, arrived: 1, activity: 1 }
+    : conversation === NOTICE_CONVERSATION
+      ? { ...BASE_ROWS, sent: 0 }
+      : conversation.length === 0 ? EMPTY_ROWS : BASE_ROWS;
+  if (level === "all") return all;
+  if (level === "messages") return { ...all, activity: 0 };
+  return conversation === RELAY_CONVERSATION ? EMPTY_ROWS : AGENT_ROWS;
+};
+
+const waitForTimeline = async (level) => {
+  await waitFor(() => {
+    expect(markedLevel()).toBe(`detail:${level}`);
+    expect(rowKinds()).toEqual(expectedRows(level));
+    if (conversation === RELAY_CONVERSATION && level === "agent") {
+      expect(timeline().textContent).toContain("Nothing at this level");
+    }
+    if (conversation.length === 0) expect(timeline().textContent).toContain("No conversation yet");
+  }, { timeout: 5_000 });
+};
+
 let rail;
 
-const mountWorkspaceRail = async () => {
+const mountWorkspaceRail = async (level = "all") => {
   await writeBoard();
   rail = mountAgentRail(host(), {
     kind: "workspace",
@@ -171,10 +192,10 @@ const mountWorkspaceRail = async () => {
     cacheScope: contextFor(DEVICE_ID).cacheScope,
     chatRepository: contextFor(DEVICE_ID).chatRepository,
   });
-  await flush();
+  await waitForTimeline(level);
 };
 
-const mountProjectRail = async () => {
+const mountProjectRail = async (level = "agent") => {
   await writeBoard();
   rail = mountAgentRail(host(), {
     kind: "project",
@@ -184,7 +205,7 @@ const mountProjectRail = async () => {
     cacheScope: contextFor(DEVICE_ID).cacheScope,
     chatRepository: contextFor(DEVICE_ID).chatRepository,
   });
-  await flush();
+  await waitForTimeline(level);
 };
 
 /// The project agent above, mounted on a conversation its default level admits
@@ -197,7 +218,7 @@ const mountRelayRail = async () => {
 const choose = async (level) => {
   menuCaret().click();
   menuItem(`detail:${level}`).click();
-  await vi.waitFor(() => expect(markedLevel()).toBe(`detail:${level}`));
+  await waitForTimeline(level);
 };
 const detailAddress = (entityId, conversationId) => uiAddress({
   deviceId: DEVICE_ID, entityId, view: "thread", kind: "filter", sub: conversationId,
@@ -378,7 +399,7 @@ describe("the level a conversation opens at", () => {
   it("gives way to what the reader last chose for that conversation", async () => {
     await writeCached(detailAddress(PROJECT_OWNER, "conversation-pa-1"), { level: "all" });
 
-    await mountProjectRail();
+    await mountProjectRail("all");
 
     expect(markedLevel()).toBe("detail:all");
     expect(rowKinds().activity).toBe(1);
@@ -391,20 +412,26 @@ describe("remembering the choice", () => {
 
     await choose("agent");
 
-    expect((await readCached(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("agent");
+    await waitFor(async () => {
+      expect((await readCached(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("agent");
+    });
   });
 
   it("holds through a remount", async () => {
     await mountWorkspaceRail();
     await choose("messages");
+    await waitFor(async () => {
+      expect((await readCached(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("messages");
+    });
     rail.dispose();
     resetAgentRailMemory();
     document.body.innerHTML = '<div id="agent-rail"></div>';
 
-    await mountWorkspaceRail();
+    await mountWorkspaceRail("messages");
 
-    await vi.waitFor(() => expect(markedLevel()).toBe("detail:messages"));
-    expect(rowKinds().activity).toBe(0);
+    await waitFor(() => expect(markedLevel()).toBe("detail:messages"));
+    expect(rowKinds()).toEqual({ user: 1, agent: 1, arrived: 1, sent: 1, activity: 0 });
+    expect(timeline().textContent).toContain("the retry is fixed");
   });
 });
 

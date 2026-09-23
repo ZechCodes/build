@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { modalDialogHtml, openModal } from "../src/core/modal.js";
-import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
+import { modalDialogHtml, openModal as mountModal } from "../src/core/modal.js";
+import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
+
+import { motionSettled } from "../src/core/motion.js";
+import { waitFor } from "./waitFor.js";
+
+const opened = [];
+const openModal = (options) => {
+  const modal = mountModal(options);
+  opened.push(modal);
+  return modal;
+};
 
 const DIALOG = modalDialogHtml("<p>the words</p>");
 
@@ -9,6 +19,13 @@ const scrimOnScreen = () => document.querySelector(".modal-scrim");
 
 beforeEach(() => {
   document.body.innerHTML = "";
+});
+
+afterEach(async () => {
+  vi.useRealTimers();
+  const closing = opened.splice(0).map((modal) => modal.close());
+  await settleMotion();
+  await Promise.all(closing);
 });
 
 describe("modalDialogHtml", () => {
@@ -22,6 +39,7 @@ describe("modalDialogHtml", () => {
 });
 
 describe("openModal", () => {
+  beforeEach(() => vi.useFakeTimers());
   it("puts the dialog on screen and hands back the body to fill", () => {
     const { body } = openModal({ dialogHtml: DIALOG });
 
@@ -66,7 +84,7 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await motionBeat();
+    await vi.runAllTimersAsync();
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(underlyingSawEscape).toBe(false);
@@ -96,7 +114,7 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await motionBeat();
+    await vi.runAllTimersAsync();
 
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
@@ -107,12 +125,12 @@ describe("openModal", () => {
     const { body } = openModal({ dialogHtml: DIALOG, onClose });
 
     body.click();
-    await motionBeat();
+    await vi.runAllTimersAsync();
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
 
     scrimOnScreen().click();
-    await motionBeat();
+    await vi.runAllTimersAsync();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(scrimOnScreen()).toBe(null);
   });
@@ -131,16 +149,16 @@ describe("openModal", () => {
 
   it("puts focus in the dialog once it is on screen", async () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
-    await motionBeat();
+    await vi.runAllTimersAsync();
 
-    expect(document.activeElement).toBe(body.querySelector("button"));
+    await waitFor(() => expect(document.activeElement).toBe(body.querySelector("button")));
   });
 
   it("leaves focus where its caller put it", async () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
     const confirm = body.querySelectorAll("button")[1];
     confirm.focus();
-    await motionBeat();
+    await vi.runAllTimersAsync();
 
     expect(document.activeElement).toBe(confirm);
   });
@@ -164,7 +182,7 @@ describe("the modal's motion", () => {
     const { body } = openModal({ dialogHtml: DIALOG });
     const scrim = scrimOnScreen();
 
-    await motionBeat();
+    await waitFor(() => expect(started).toHaveLength(2));
 
     expect(started).toHaveLength(2);
     expect(started[0].element).toBe(scrim);
@@ -185,7 +203,7 @@ describe("the modal's motion", () => {
     started.length = 0;
 
     const closing = close();
-    await motionBeat();
+    await waitFor(() => expect(started).toHaveLength(2));
 
     expect(started).toHaveLength(2);
     expect(started.map((run) => run.element)).toEqual([body, scrim]);
@@ -207,13 +225,13 @@ describe("the modal's motion", () => {
     started.length = 0;
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await motionBeat();
+    await waitFor(() => expect(started).toHaveLength(2));
 
     expect(started).toHaveLength(2);
     expect(scrimOnScreen()).not.toBe(null);
 
     await settleMotion();
-    await motionBeat();
+    await motionSettled();
 
     expect(scrimOnScreen()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -226,13 +244,13 @@ describe("the modal's motion", () => {
     started.length = 0;
 
     scrimOnScreen().click();
-    await motionBeat();
+    await waitFor(() => expect(started).toHaveLength(2));
 
     expect(started).toHaveLength(2);
     expect(scrimOnScreen()).not.toBe(null);
 
     await settleMotion();
-    await motionBeat();
+    await motionSettled();
 
     expect(scrimOnScreen()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);

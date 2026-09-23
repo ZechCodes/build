@@ -7,6 +7,7 @@
 // asks its machine for is the project's conversation owner, which the bridge
 // mints in a scratch directory of its own.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 
 const mountAgentRail = vi.fn(() => ({ dispose: vi.fn() }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountAgentRail(...args) }));
@@ -48,8 +49,6 @@ import { pressProjectTab } from "../src/core/toolbar.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** Open the page the way the app opens it. The rail beside it is the SHELL's
  *  now (core/shell.js) — `render()` stands it on the route before the page
@@ -128,7 +127,7 @@ const rows = () => [...document.querySelectorAll("[data-workspace]")];
 describe("the project surface", () => {
   it("lists the project's workspaces, each opening its own surface", async () => {
     await openWorkspacesTab();
-    await flush();
+    await waitFor(() => expect(rows()).toHaveLength(2));
 
     expect(rows().map((row) => row.querySelector(".stitle").textContent)).toEqual(["ws-1", "docs"]);
     expect(rows()[0].textContent).toContain("build/login");
@@ -138,8 +137,7 @@ describe("the project surface", () => {
 
   it("repaints when the feed moves", async () => {
     await openWorkspacesTab();
-    await flush();
-    expect(rows()).toHaveLength(2);
+    await waitFor(() => expect(rows()).toHaveLength(2));
 
     snapshot = { ...snapshot, workspaces: [workspace("ws-1")] };
     deliver();
@@ -152,7 +150,7 @@ describe("the project surface", () => {
   it("says there are no workspaces yet and points at the +", async () => {
     snapshot = { ...snapshot, workspaces: [] };
     await openWorkspacesTab();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#root").textContent).toMatch(/no workspaces/i));
 
     expect(rows()).toHaveLength(0);
     expect(document.querySelector("#root").textContent).toMatch(/no workspaces/i);
@@ -164,7 +162,7 @@ describe("the project surface", () => {
   // it exactly the way a workspace asks for its own.
   it("mounts the rail on the owner project.ensure_conversation answers with", async () => {
     await openProject();
-    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
@@ -181,14 +179,14 @@ describe("the project surface", () => {
   it("opens the rail on the agent the route names", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", agent: "ag-2" };
     await openProject();
-    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe("ag-2");
   });
 
   it("names no agent where the route names none", async () => {
     await openProject();
-    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
 
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
   });
@@ -202,7 +200,7 @@ describe("the project surface", () => {
       provider: "codex", harnesses: { codex: { model: "gpt-5.6-sol", effort: "medium" } },
     }));
     await openProject();
-    await vi.waitFor(() => expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" }));
+    await waitFor(() => expect(here).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" }));
 
     const ensured = here.mock.calls.filter(([method]) => method === "project.ensure_conversation");
     expect(ensured).toHaveLength(1);
@@ -213,7 +211,7 @@ describe("the project surface", () => {
   // project they are about: the bar names one project, and so do they.
   it("offers the project's own verbs on the toolbar, named for it", async () => {
     await openProject();
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-project-create]")).not.toBeNull());
 
     const create = document.querySelector("[data-project-create]");
     const settings = document.querySelector("[data-project-settings]");
@@ -230,7 +228,7 @@ describe("the project surface", () => {
 
   it("hands the verb slot back when the surface goes", async () => {
     await openProject();
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-project-create]")).not.toBeNull());
     expect(document.querySelector("[data-project-create]")).toBeTruthy();
 
     App.viewDispose();
@@ -244,7 +242,7 @@ describe("the project surface", () => {
   it("names the machine instead when it cannot answer", async () => {
     App.route = { name: "project", deviceId: "dev-9", projectId: "proj-1" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#root").textContent).toBeTruthy());
 
     expect(mountAgentRail).not.toHaveBeenCalled();
     expect(rows()).toHaveLength(0);
@@ -263,7 +261,7 @@ describe("the project's two tabs", () => {
   // that names itself.
   it("opens on the issues, which is what a project URL opens on now", async () => {
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     expect(mountIssuesPane).toHaveBeenCalled();
     expect(document.querySelector(".project-rows")).toBeNull();
   });
@@ -271,7 +269,7 @@ describe("the project's two tabs", () => {
   it("opens the workspaces when the route names that tab", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "workspaces" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".project-rows")).not.toBeNull());
     expect(document.querySelector(".project-rows")).not.toBeNull();
     expect(mountIssuesPane).not.toHaveBeenCalled();
   });
@@ -279,7 +277,7 @@ describe("the project's two tabs", () => {
   it("mounts the Issues tab on the machine the project is on", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     const [host, given] = mountIssuesPane.mock.calls[0];
     expect(host.id).toBe("project-pane");
     expect([given.projectId, given.deviceId, given.projectKey]).toEqual(["proj-1", "dev-1", "dev-1/proj-1"]);
@@ -290,10 +288,10 @@ describe("the project's two tabs", () => {
   it("tears the Issues tab down on the way back to the workspaces", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     const pane = mountIssuesPane.mock.results[0].value;
     pressProjectTab("workspaces");
-    await flush();
+    await waitFor(() => expect(document.querySelector(".project-rows")).not.toBeNull());
     expect(pane.dispose).toHaveBeenCalled();
     expect(document.querySelector(".project-rows")).not.toBeNull();
   });
@@ -301,10 +299,10 @@ describe("the project's two tabs", () => {
   // The page is the same page: a navigation would remount the rail beside it.
   it("rewrites the hash rather than navigating", async () => {
     await openProject();
-    await vi.waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mountAgentRail).toHaveBeenCalledTimes(1));
     mountAgentRail.mockClear();
     pressProjectTab("workspaces");
-    await flush();
+    await waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/proj-1/workspaces"));
     expect(location.hash).toBe("#/device/dev-1/project/proj-1/workspaces");
     expect(mountAgentRail).not.toHaveBeenCalled();
   });
@@ -312,14 +310,14 @@ describe("the project's two tabs", () => {
   it("keeps a board link a board link", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues", view: "board" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     expect(mountIssuesPane.mock.calls[0][1].view).toBe("board");
   });
 
   it("writes the view the tab moved to into the hash", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     mountIssuesPane.mock.calls[0][1].onViewChange("board");
     expect(location.hash).toBe("#/device/dev-1/project/proj-1?view=board");
   });
@@ -327,7 +325,7 @@ describe("the project's two tabs", () => {
   it("takes the Issues tab down with the page", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
     await openProject();
-    await flush();
+    await waitFor(() => expect(mountIssuesPane).toHaveBeenCalled());
     const pane = mountIssuesPane.mock.results[0].value;
     App.viewDispose();
     App.viewDispose = null;

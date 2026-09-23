@@ -4,6 +4,7 @@
 // device — with the download the human needs before step 2 can happen at all.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
@@ -112,7 +113,6 @@ vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ initToolbar: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 
 let boot;
 
@@ -232,7 +232,7 @@ describe("the device connection gate", () => {
       .mockResolvedValueOnce({ deviceId: "dev-a" });
 
     const staleBoot = boot();
-    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
     await boot();
     expect(document.body.classList.contains("gated")).toBe(false);
 
@@ -256,9 +256,9 @@ describe("the device connection gate", () => {
     );
 
     const olderBoot = boot();
-    await vi.waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
     const newerBoot = boot();
-    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
     rejectConnection(new Error("relay warming up"));
     await Promise.all([olderBoot, newerBoot]);
 
@@ -313,7 +313,7 @@ describe("the device connection gate", () => {
     expect(document.getElementById("root").textContent).toContain("couldn’t refresh device status");
 
     await vi.advanceTimersByTimeAsync(3000);
-    await vi.waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     const { App } = await import("../src/app.js");
     clearInterval(App._watch);
     App._watch = null;
@@ -331,9 +331,9 @@ describe("the device connection gate", () => {
     );
 
     const olderBoot = boot();
-    await vi.waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
     const newerBoot = boot();
-    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
     const session = { deviceId: "dev-a" };
     finishConnection(session);
     await Promise.all([olderBoot, newerBoot]);
@@ -348,7 +348,7 @@ describe("the device connection gate", () => {
 describe("the first-run screen", () => {
   it("offers the download and the pairing code on the one screen", async () => {
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     expect(document.querySelector("#downloads a.btn.primary").getAttribute("href")).toBe(DOWNLOADS.platforms[0].url);
     expect(document.getElementById("installcmd").textContent).toBe(DOWNLOADS.install_command);
     expect(document.getElementById("ocode")).toBeTruthy();
@@ -357,7 +357,7 @@ describe("the first-run screen", () => {
 
   it("states the YOLO reality plainly instead of implying a sandbox", async () => {
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     expect(document.getElementById("root").textContent).toContain(
       "Agents run on your machine in YOLO mode",
     );
@@ -365,24 +365,24 @@ describe("the first-run screen", () => {
 
   it("no longer asks anyone to paste a development environment line", async () => {
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     expect(document.getElementById("root").innerHTML).not.toContain("BRIDGE_API_URL=");
   });
 
   it("pairs on the code the human typed, uppercased, then boots", async () => {
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     document.getElementById("ocode").value = "g6zp-kd2u";
     document.getElementById("olookup").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("opairbox").textContent).toContain("AAAA BBBB CCCC DDDD"));
     expect(lookupDevice).toHaveBeenCalledWith("G6ZP-KD2U");
     expect(document.getElementById("opairbox").textContent).toContain("AAAA BBBB CCCC DDDD");
 
     devices = [{ id: "d1", name: "studio", fingerprint: "AAAA", status: "online" }];
     document.getElementById("oapprove").click();
-    await flush();
+    await waitFor(() => expect(approveDevice).toHaveBeenCalledWith("G6ZP-KD2U"));
     expect(approveDevice).toHaveBeenCalledWith("G6ZP-KD2U");
-    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
   });
 
   // boot() swallows what enterApp throws (a stale status is the ordinary
@@ -392,18 +392,16 @@ describe("the first-run screen", () => {
     devices = [{ id: "d1", name: "studio", fingerprint: "AAAA", status: "online" }];
 
     await boot();
-    await flush();
-
-    expect(document.body.classList.contains("gated")).toBe(false);
+    await waitFor(() => expect(document.body.classList.contains("gated")).toBe(false));
   });
 
   it("names a lookup refusal without losing the screen", async () => {
     lookupDevice.mockRejectedValueOnce(new Error("no pending device for that code"));
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     document.getElementById("ocode").value = "ZZZZ-ZZZZ";
     document.getElementById("olookup").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("oerr").textContent).toBe("no pending device for that code"));
     expect(document.getElementById("oerr").textContent).toBe("no pending device for that code");
     expect(document.getElementById("ocode")).toBeTruthy();
   });
@@ -413,12 +411,12 @@ describe("the first-run screen", () => {
       throw new Error("invite only");
     };
     await boot();
-    await flush();
+    await waitFor(() => expect(document.getElementById("downloadserr").textContent).toBe("invite only"));
     expect(document.getElementById("downloadserr").textContent).toBe("invite only");
     expect(document.getElementById("installcmd")).toBe(null);
     document.getElementById("ocode").value = "g6zp-kd2u";
     document.getElementById("olookup").click();
-    await flush();
+    await waitFor(() => expect(lookupDevice).toHaveBeenCalledWith("G6ZP-KD2U"));
     expect(lookupDevice).toHaveBeenCalledWith("G6ZP-KD2U");
   });
 });

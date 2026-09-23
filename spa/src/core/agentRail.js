@@ -944,6 +944,7 @@ function mountRailOnContext(host, context, swap) {
   let watchedAlongsideId;
   let unwatchThread = null;
   let watchedThreadKey = null;
+  let watchedConversation = null;
   let tui = null; // the mounted PTY pane, in TUI mode
   let titleMotion = null;
   const transientThreadCache = createThreadCache();
@@ -2108,8 +2109,13 @@ function mountRailOnContext(host, context, swap) {
   /// controller that owns it, since every conversation keeps its own window
   /// across a remount (core/chatRepository.js).
   const threadWindow = () => {
-    if (threadAgentId !== selectedId) {
-      resetConversationCache();
+    if (threadAgentId !== selectedId) resetConversationCache();
+    const previous = conversationCache;
+    const conversation = bindConversationCache();
+    // A remembered selection can paint before its roster arrives. Bind again
+    // when that row supplies the controller, even though the selected id did
+    // not change: the temporary window is not the controller's conversation.
+    if (conversation !== previous) {
       threadAgentId = selectedId;
       // Fire and forget: the seed paints when it lands, and until it does the
       // panel shows the conversation it is already holding rather than a gap.
@@ -2122,19 +2128,23 @@ function mountRailOnContext(host, context, swap) {
   /// Open the record this conversation is held in, and hear it move. Every
   /// write to it — a page the sync layer pulled, a push it applied, a message
   /// this panel just sent — is a repaint from the record and nothing else.
+  const conversationStillCurrent = (conversation, key) =>
+    !disposed && conversation === conversationCache && key === threadAddressKey(conversation.address());
+
   const watchConversation = async () => {
     const conversation = bindConversationCache();
     const address = conversation.address();
-    if (watchedThreadKey !== threadAddressKey(address)) {
+    if (watchedThreadKey !== threadAddressKey(address) || watchedConversation !== conversation) {
       unwatchThread?.();
       unwatchThread = null;
       watchedThreadKey = threadAddressKey(address);
+      watchedConversation = conversation;
       if (address) unwatchThread = subscribeCache(address, () => void conversation.reread());
     }
-    if (await conversation.seed()) return;
     const identity = cacheIdentity();
     const askedKey = threadAddressKey(address);
-    if (!identity || !address || !askedKey) return;
+    if (await conversation.seed()) return;
+    if (!identity || !address || !askedKey || !conversationStillCurrent(conversation, askedKey)) return;
     await syncThreadWindow({
       deviceId: identity.deviceId,
       call: chatRepository.currentCall(),
@@ -3114,6 +3124,10 @@ function mountRailOnContext(host, context, swap) {
     };
 
     const onRevert = (error) => {
+      // The failed creation is over before its error/draft becomes visible.
+      // A retry must not queue behind its background refresh and then try to
+      // address a controller that never acquired an agent.
+      if (creating?.submission === submission) creating = null;
       if (operationIsUncertain(error)) {
         controller.recordOperationFailure(submission, error);
         if (selectedId === provisionalAgentId) {
@@ -3149,7 +3163,7 @@ function mountRailOnContext(host, context, swap) {
       await refreshFeed();
       await refresh();
     });
-    creating = { controller, promise: settling };
+    creating = { controller, submission, promise: settling };
     settling.finally(() => {
       if (creating && creating.promise === settling) {
         creating = null;
@@ -3536,6 +3550,9 @@ function mountRailOnContext(host, context, swap) {
     chooseAgent(selectAgentId(visibleAgents(), selectedId));
   }
   paint();
+  // Watch before resolving the route: a first row may be written while that
+  // asynchronous lookup is still reading an empty board.
+  records.watch(null);
   refresh();
   readProjectAgent();
   readProjectPageName();

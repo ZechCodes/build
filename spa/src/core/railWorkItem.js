@@ -63,11 +63,19 @@ export function createRailWorkItem({
     if (!address) return null;
     const row = (await readCached(address))?.value;
     if (row || !["workspace", "project"].includes(context.kind)) return row || null;
+    return cachedHiddenRun(entityId);
+  };
+
+  const cachedHiddenRun = async (entityId) => {
     // An unwatched conversation still has an agent, but its
     // run is deliberately absent from the inbox's `items`. The same board
     // record keeps it in `runs`; read that cached roster for the workspace
     // without putting it back into the inbox as a visible row.
-    const feed = (await readCached(cacheScope.address({ entityId: "", kind: "feed" })))?.value;
+    // The device can retire while the row read is in flight. Its scope then
+    // has no address; passing that to storage would disable the whole cache.
+    const feedAddress = cacheScope.address({ entityId: "", kind: "feed" });
+    if (!feedAddress) return null;
+    const feed = (await readCached(feedAddress))?.value;
     return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
   };
 

@@ -6,6 +6,7 @@
 // can, and a later greeting that does select an adapter hands the app back.
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -76,7 +77,6 @@ vi.mock("../src/core/inboxShell.js", () => ({ initInboxRail: () => {} }));
 vi.mock("../src/core/toolbar.js", () => ({ initToolbar: () => {} }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 const root = () => document.getElementById("root");
 
 let adoptBridgeSelection;
@@ -124,7 +124,6 @@ describe("the version gates", () => {
   it("gates a bridge above every adapter as the app being behind, naming the device", async () => {
     enterApp();
     greeted("d1", { unsupported: "app", version: "2.0.0" });
-    await flush();
 
     expect(App.gated).toBe(true);
     expect(document.body.classList.contains("gated")).toBe(true);
@@ -138,7 +137,6 @@ describe("the version gates", () => {
     enterApp();
     App.updateAvailable = true;
     greeted("d1", { unsupported: "app", version: "2.0.0" });
-    await flush();
 
     expect(root().querySelector("#gate-reload")).toBeTruthy();
   });
@@ -146,12 +144,11 @@ describe("the version gates", () => {
   it("gates a bridge below every adapter as the bridge needing updating, with the install line", async () => {
     enterApp();
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
-    await flush();
 
     expect(App.gated).toBe(true);
     expect(root().querySelector("h1").textContent).toBe("The bridge on studio needs updating");
     expect(mintInstallCommand).toHaveBeenCalledTimes(1);
-    expect(root().textContent).toContain("curl -fsSL https://getbuild.ing/i | sh");
+    await waitFor(() => expect(root().textContent).toContain("curl -fsSL https://getbuild.ing/i | sh"));
     expect(root().querySelector("#gate-install-copy")).toBeTruthy();
   });
 
@@ -159,7 +156,6 @@ describe("the version gates", () => {
     enterApp();
     mintInstallCommand.mockRejectedValueOnce(new Error("invite only"));
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
-    await flush();
 
     expect(root().querySelector("h1").textContent).toBe("The bridge on studio needs updating");
     expect(root().querySelector("#gate-install-copy")).toBe(null);
@@ -168,12 +164,10 @@ describe("the version gates", () => {
   it("lets the app back in when a later greeting selects an adapter", async () => {
     enterApp();
     greeted("d1", { unsupported: "bridge", version: "0.9.0" });
-    await flush();
 
     // The machine's bridge was updated: it re-greets, and this greeting is
     // claimed by an adapter this build carries.
     adoptBridgeSelection(contextFor("d1"), { major: 1, version: "1.1.0", unsupported: null });
-    await flush();
 
     expect(App.gated).toBe(false);
     expect(document.body.classList.contains("gated")).toBe(false);
@@ -193,7 +187,6 @@ describe("the version gates", () => {
     greeted("d2", { major: 1, version: "1.1.0", unsupported: null });
 
     greeted("d1", { unsupported: "app", version: "2.0.0" });
-    await flush();
 
     expect(App.gated).toBe(false);
     expect(document.body.classList.contains("gated")).toBe(false);
@@ -208,11 +201,9 @@ describe("the version gates", () => {
     ];
     greeted("d2", { major: 1, version: "1.1.0", unsupported: null });
     greeted("d1", { unsupported: "app", version: "2.0.0" });
-    await flush();
     unmountView.mockClear();
 
     setContextOffline("d2", { blocked: "lost" });
-    await flush();
 
     expect(App.gated).toBe(false);
     expect(unmountView).not.toHaveBeenCalled();
@@ -226,7 +217,6 @@ describe("the version gates", () => {
     greeted("d1", { unsupported: "app", version: "2.0.0" });
 
     gate.holdAppWhileNoDeviceAnswers();
-    await flush();
 
     expect(App.gated).toBe(true);
     expect(unmountView).toHaveBeenCalled();
@@ -242,13 +232,11 @@ describe("the version gates", () => {
     enterApp();
     App.devices = [{ id: "d1", name: "studio", status: "offline" }];
     setContextOffline("d1", { blocked: "lost" });
-    await flush();
     expect(App.gated).toBe(false); // the hold kept the app the cache painted
 
     // The greeting of the session that was lost lands late, and no adapter
     // here speaks to the bridge that sent it.
     adoptBridgeSelection(contextFor("d1"), { unsupported: "app", version: "2.0.0" });
-    await flush();
 
     expect(App.gated).toBe(true);
     expect(root().querySelector("h1").textContent).toBe("This app is behind the bridge on studio");
@@ -257,7 +245,6 @@ describe("the version gates", () => {
   it("does nothing for a supported selection when no version gate is up", async () => {
     enterApp();
     greeted("d1", { major: 1, version: "1.0.0", unsupported: null });
-    await flush();
 
     expect(App.gated).toBe(false);
     expect(startFeed).not.toHaveBeenCalled();

@@ -5,6 +5,7 @@
 // calls branch.get forever, and the app slows with each one).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -20,17 +21,18 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
-
 /** One pass of the sync layer, with the feed reading what it wrote. What
  *  `refreshFeed` did when the feed read the wire itself: the board, the two
  *  lists and a row per work item, on disk and delivered. */
 async function readTheBoard() {
   const { startCacheSync } = await import("../src/core/cacheSync.js");
   const { startFeed } = await import("../src/core/taskFeed.js");
+  const { readCached } = await import("../src/core/localCache.js");
   startCacheSync();
   await startFeed();
-  for (let index = 0; index < 20; index += 1) await flush();
+  await waitFor(async () =>
+    expect((await readCached({ deviceId: "dev-1", entityId: "", kind: "projects" }))?.value).toBeDefined(),
+  );
 }
 
 async function stopReaders() {
@@ -64,7 +66,6 @@ async function cacheBoard({
     if (entityId) await writeCached({ deviceId, entityId, kind: "row" }, item);
   }
   await startFeed();
-  for (let index = 0; index < 12; index += 1) await flush();
 }
 
 /** The one branch row this machine holds. */
@@ -181,11 +182,11 @@ describe("the branch surface", () => {
     });
     await cacheBoard({ projects: [{ project_id: "p1", name: "notes", is_git: false, base_branch: "main" }] });
     await openBranch();
-    await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
     expect(document.querySelector("#tabbody .files")).toBeTruthy();
     expect(document.querySelector("#tabbody .ffile").textContent).toContain("notes.txt");
     document.querySelector("#tabbody .ffile").click();
-    await vi.waitFor(() => expect(document.querySelector("#tabbody .fpbody")?.textContent).toContain("folder notes"));
+    await waitFor(() => expect(document.querySelector("#tabbody .fpbody")?.textContent).toContain("folder notes"));
     expect(bridge.call.mock.calls.some(([method]) => method === "branch.get" || method.startsWith("git."))).toBe(false);
     expect(document.querySelector('[data-tab="files"]').classList.contains("active")).toBe(true);
     await stopReaders();
@@ -193,10 +194,15 @@ describe("the branch surface", () => {
 
   it("offers Git initialization in Changes and remounts Git after it succeeds", async () => {
     let initialized = false;
+    let releaseInitialSync;
+    const initialSync = new Promise((resolve) => { releaseInitialSync = resolve; });
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized, base_branch: "main" }] };
+      // Keep the original pass alive after it published the non-Git project.
+      // Initialization must queue a fresh pass instead of dropping its refresh.
+      if (method === "issues.list" && !initialized) await initialSync;
       if (method === "project.init_git") {
         initialized = true;
         return { project_id: "p1", name: "notes", is_git: true, base_branch: "main" };
@@ -208,14 +214,17 @@ describe("the branch surface", () => {
     });
     await readTheBoard();
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#init-git")).toBeTruthy());
     expect(document.querySelector("#init-git")).toBeTruthy();
     expect(bridge.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
 
+    await waitFor(() => expect(bridge.call).toHaveBeenCalledWith("issues.list", { project_id: "p1" }, { priority: "background" }));
     document.querySelector("#init-git").click();
+    await waitFor(() => expect(initialized).toBe(true));
+    releaseInitialSync();
     // The pass the initialization asks for is what tells the surface the
     // project is a repository now, so the remount waits on the cache.
-    for (let index = 0; index < 20; index += 1) await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
     expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
@@ -232,8 +241,9 @@ describe("the branch surface", () => {
     });
     await readTheBoard();
     await openBranch();
+    await waitFor(() => expect(document.querySelector("#init-git")).toBeTruthy());
     document.querySelector("#init-git").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toContain("disk is read-only"));
     const status = document.querySelector('[role="status"]');
     expect(status.textContent).toContain("disk is read-only");
     expect(document.querySelector("#init-git").disabled).toBe(false);
@@ -247,7 +257,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => ({}));
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody")).toBeTruthy());
 
     App.viewDispose();
     document.querySelector("#tabbody").innerHTML = '<div id="next-view">next</div>';
@@ -256,8 +266,6 @@ describe("the branch surface", () => {
       { deviceId: "dev-1", entityId: "wt-1", kind: "row" },
       { ...row, deviceId: "dev-1", projectKey: "dev-1/p1", state: "review" },
     );
-    for (let index = 0; index < 12; index += 1) await flush();
-
     expect(document.querySelector("#next-view")).toBeTruthy();
   });
 
@@ -270,7 +278,7 @@ describe("the branch surface", () => {
     });
     await cacheBoard({ projects: [{ project_id: "p1", name: "notes", is_git: false }] });
     await openBranch();
-    expect(document.querySelector("#init-git")).toBeTruthy();
+    await waitFor(() => expect(document.querySelector("#init-git")).toBeTruthy());
 
     // Another client initialized it, and the pass that heard so rewrote the
     // project list. The surface hears that write, not a poll.
@@ -295,7 +303,7 @@ describe("the branch surface", () => {
     });
     await readTheBoard();
     openBranch(); // never resolves here — the first read is still in flight
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
   });
@@ -304,7 +312,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => ({}));
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(App.poll).not.toBeNull());
     expect(App.poll).not.toBeNull();
     expect(bridge.call.mock.calls.some(([method]) => method === "branch.get")).toBe(false);
   });
@@ -319,7 +327,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => ({}));
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
 
     adoptBridgeSelection(contextFor("dev-1"), { version: "9.0.0", unsupported: "bridge" }, null);
     bridge.call.mockClear();
@@ -337,7 +345,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => ({}));
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
 
     const asked = bridge.call.mock.calls.map(([method]) => method);
     expect(asked).not.toContain("branch.get");
@@ -353,7 +361,10 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => row);
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => {
+      expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
+      if (tab === "files") expect(App.routeLeaveGuard).toEqual(expect.any(Function));
+    });
     expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
     if (tab === "files") expect(App.routeLeaveGuard).toEqual(expect.any(Function));
   });
@@ -364,7 +375,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => row);
     App.focusComposerOnMount = true;
     await openBranch();
-    await vi.waitFor(() => expect(document.getElementById("railinput")).toBe(document.activeElement));
+    await waitFor(() => expect(document.getElementById("railinput")).toBe(document.activeElement));
     expect(document.getElementById("railinput")).toBe(document.activeElement);
     expect(App.focusComposerOnMount).toBe(false);
   });
@@ -373,7 +384,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => row);
     await cacheRow(row);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
     expect(document.getElementById("railinput")).not.toBe(document.activeElement);
   });
 
@@ -391,7 +402,6 @@ describe("the branch surface", () => {
     App.poll = null;
     answer(row);
     await mounting;
-    await flush();
     // A disposed view must not claim the poll slot the next view now owns.
     expect(App.poll).toBeNull();
   });
@@ -402,7 +412,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => ({}));
     await cacheBoard({ items: [] });
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#branchback")).toBeTruthy());
     const back = document.querySelector("#branchback");
     expect(back).toBeTruthy();
 
@@ -468,13 +478,13 @@ describe("a branch on another device", () => {
       projects: [{ project_id: "p1", name: "their notes", is_git: true }],
     });
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
   };
 
   it("the view calls the route device's call, not the home device's", async () => {
     await mountTheirs();
 
-    await vi.waitFor(() => expect(reachedGit(theirCall)).toBe(true));
+    await waitFor(() => expect(reachedGit(theirCall)).toBe(true));
     expect(reached(theirCall, "branch.get")).toBe(false);
     expect(reachedGit(bridge.call)).toBe(false);
   });
@@ -495,9 +505,9 @@ describe("a branch on another device", () => {
     theirRow = finishableRow({ branch: "main", run_id: "run-7" });
     await mountTheirs();
     document.querySelector("#tb-verb .btn.mini:not(.caret)").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeTruthy());
     document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(reached(theirCall, "branch.finish")).toBe(true));
 
     expect(theirCall.mock.calls.find(([method]) => method === "branch.finish")[1]).toEqual({
       project_id: "p1",
@@ -515,10 +525,10 @@ describe("a branch on another device", () => {
       projects: [{ project_id: "p1", name: "their notes", is_git: true }],
     });
     await openBranch();
-    await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
+    await waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
 
     document.querySelector("#tabbody .ffile").click();
-    await flush();
+    await waitFor(() => expect(location.hash).toContain("path=notes.txt"));
 
     expect(App.route.deviceId).toBe("dev-2");
     expect(location.hash).toContain("#/device/dev-2/project/p1/branch/main/files");
@@ -538,7 +548,7 @@ describe("a branch on another device", () => {
     await writeCached({ deviceId: "dev-1", entityId: "wt-9", kind: "status" }, { files: [], head: "mine", status_key: "mine" });
 
     await openBranch();
-    await vi.waitFor(async () =>
+    await waitFor(async () =>
       expect((await readCached({ deviceId: "dev-2", entityId: "wt-9", kind: "status" }))?.value.head).toBe("abc"),
     );
 
@@ -566,7 +576,7 @@ describe("a branch on another device", () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
     // Nothing on disk for that machine yet: the frame is up and empty.
     openBranch();
-    await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")?.textContent).toContain("loading…"));
     expect(document.getElementById("tabbody").textContent).toContain("loading…");
 
     setContextOffline("dev-2");
@@ -580,7 +590,7 @@ describe("a branch on another device", () => {
     await mountTheirs();
 
     document.querySelector('[data-tab="files"]').click();
-    await flush();
+    await waitFor(() => expect(location.hash).toBe("#/device/dev-2/project/p1/branch/main/files"));
 
     expect(location.hash).toBe("#/device/dev-2/project/p1/branch/main/files");
   });
@@ -595,7 +605,7 @@ describe("a branch on another device", () => {
     setContextOffline("dev-2");
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toContain("Desktop isn't connected"));
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
     expect(document.getElementById("tabbody")).toBeNull();
@@ -615,7 +625,7 @@ describe("a branch on a device this client has not opened", () => {
     bridge.call = vi.fn(async () => ({}));
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toContain("Desktop isn't connected"));
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
     expect(document.getElementById("tabbody")).toBeNull();
@@ -651,7 +661,7 @@ describe("a branch on a device this client has not opened", () => {
       { major: 1, version: "1.0.0" },
       {},
     );
-    await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
 
     expect(document.getElementById("root").textContent).not.toContain("isn't connected");
     expect(document.getElementById("tabbody")).toBeTruthy();
@@ -663,7 +673,7 @@ describe("a branch on a device this client has not opened", () => {
     bridge.call = vi.fn(async () => ({}));
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toContain("That device isn't connected"));
 
     expect(document.getElementById("root").textContent).toContain("That device isn't connected");
     expect(document.getElementById("tabbody")).toBeNull();
@@ -676,11 +686,11 @@ describe("a branch on a device this client has not opened", () => {
 describe("closing the branch out", () => {
   /** Answer the confirmation modal every close-out opens. */
   const answerConfirm = async (ok) => {
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeTruthy());
     const scrim = document.getElementById("confirm-scrim");
     expect(scrim, "a confirmation was expected").toBeTruthy();
     scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeNull());
   };
 
   const mountWith = async (branchRow, answers = {}) => {
@@ -690,7 +700,10 @@ describe("closing the branch out", () => {
     });
     await cacheRow(branchRow);
     await openBranch();
-    await flush();
+    await waitFor(() => {
+      if (branchRow.can_finish && !branchRow.primary) expect(doneButton()).toBeTruthy();
+      else expect(document.querySelector("#tabbody")).toBeTruthy();
+    });
   };
 
   const finishHost = () => document.querySelector("#tb-verb");
@@ -717,10 +730,10 @@ describe("closing the branch out", () => {
   it("deletes the branch, and says so before it does", async () => {
     await mountWith(finishableRow());
     doneButton().click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeTruthy());
     expect(document.getElementById("confirm-scrim").textContent).toContain("Delete branch build/login");
     document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(finishCalls()).toHaveLength(1));
     expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
   });
 
@@ -735,12 +748,12 @@ describe("closing the branch out", () => {
       }),
     );
     doneButton().click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeTruthy());
     const scrim = document.getElementById("confirm-scrim");
     expect(scrim.querySelector(".confirm-warnings").textContent).toContain("3 commits that main does not");
     expect(scrim.textContent.indexOf("3 commits")).toBeLessThan(scrim.textContent.indexOf("Delete branch"));
     scrim.querySelector("[data-confirm-cancel]").click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeNull());
   });
 
   it("does nothing at all when the confirmation is cancelled", async () => {
@@ -817,7 +830,7 @@ describe("closing the branch out", () => {
     });
     await cacheRow(boardRow);
     await openBranch();
-    await flush();
+    await waitFor(() => expect(doneButton()).toBeTruthy());
     doneButton().click();
     await answerConfirm(true);
 
@@ -843,7 +856,7 @@ describe("closing the branch out", () => {
     expect(seenCalls()).toHaveLength(0);
 
     deleted({ branch: "build/login" });
-    await flush();
+    await waitFor(() => expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1"]));
     expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1"]);
   });
 
@@ -877,7 +890,7 @@ describe("closing the branch out", () => {
     await answerConfirm(true);
 
     deleted({ branch: "build/login" });
-    await flush();
+    await waitFor(() => expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1", "iss-9"]));
 
     expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1", "iss-9"]);
   });
@@ -921,7 +934,7 @@ describe("the branch surface on the cache alone", () => {
     await readTheBoard();
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
 
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     expect(branchGets()).toHaveLength(0);
@@ -935,7 +948,7 @@ describe("the branch surface on the cache alone", () => {
     await readTheBoard();
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
 
     // The base a run's diff is measured against is on the run body, and the
     // Changes pane asks the review plug for it.
@@ -947,7 +960,7 @@ describe("the branch surface on the cache alone", () => {
     bridge.call = boardWith([finishableRow({ run_id: "run-1", can_finish: false })]);
     await readTheBoard();
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .gitpane")).toBeTruthy());
     expect(document.querySelector("#tb-verb .btn")).toBeNull();
 
     const { writeCached } = await import("../src/core/localCache.js");
@@ -955,7 +968,7 @@ describe("the branch surface on the cache alone", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "row" },
       { ...finishableRow({ run_id: "run-1" }), deviceId: "dev-1", projectKey: "dev-1/p1" },
     );
-    await vi.waitFor(() => expect(document.querySelector("#tb-verb .btn")).toBeTruthy(), { timeout: 5000 });
+    await waitFor(() => expect(document.querySelector("#tb-verb .btn")).toBeTruthy(), { timeout: 5000 });
   });
 
   it("says so when the cache names no checkout on this branch", async () => {
@@ -963,7 +976,7 @@ describe("the branch surface on the cache alone", () => {
     await readTheBoard();
 
     await openBranch();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy());
 
     expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy();
     expect(branchGets()).toHaveLength(0);
@@ -978,12 +991,12 @@ describe("the branch surface on the cache alone", () => {
     bridge.call = boardWith([]);
 
     await openBranch();
-    for (let index = 0; index < 8; index += 1) await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
     // Early is not wrong: nothing has been read, so nothing is claimed.
     expect(document.querySelector("#tabbody .empty.gone")).toBeNull();
 
     await readTheBoard();
-    for (let index = 0; index < 20; index += 1) await flush();
+    await waitFor(() => expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy());
 
     expect(document.querySelector("#tabbody .empty.gone")).toBeTruthy();
     expect(branchGets()).toHaveLength(0);
@@ -1003,7 +1016,7 @@ describe("the branch surface on the cache alone", () => {
     await cacheBoard({ deviceId: "dev-2", items: [finishableRow({ run_id: "run-2" })] });
 
     await openBranch();
-    for (let index = 0; index < 20; index += 1) await flush();
+    await waitFor(() => expect(document.getElementById("tabbody")).toBeTruthy());
 
     expect(document.querySelector("#tabbody .empty.gone")).toBeNull();
   });

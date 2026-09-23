@@ -6,6 +6,7 @@
 // owns it (connection.js chooseCreationDevice).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -89,7 +90,6 @@ vi.mock("../src/push.js", () => ({
 vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "linux-x86_64" }));
 vi.mock("../src/sheets/addDevice.js", () => ({ openAddDevice: () => {} }));
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 const $ = (selector) => document.querySelector(selector);
 
 let renderSettings;
@@ -129,10 +129,10 @@ it("paints the cached notification state before the browser answers, then writes
   let answer;
   pushReading = () => new Promise((resolve) => { answer = resolve; });
   const rendering = renderSettings();
-  await vi.waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
+  await waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
   answer("denied");
   await rendering;
-  await vi.waitFor(() => expect($("#pushtoggle").textContent).toBe("Blocked"));
+  await waitFor(() => expect($("#pushtoggle").textContent).toBe("Blocked"));
   expect((await readCached(address)).value).toMatchObject({ state: "denied", subscribed: false });
 });
 
@@ -143,16 +143,16 @@ it("wires a cached enabled notification toggle while the fresh state is pending"
   const read = vi.fn(() => new Promise(() => {}));
   pushReading = read;
   await renderSettings();
-  await vi.waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
+  await waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
   $("#pushtoggle").click();
-  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(read).toHaveBeenCalledTimes(2));
 });
 
 describe("Settings → Creation device", () => {
   it("offers the account's devices by name, with the one creation goes to shown", async () => {
     App.selectedDeviceId = "dev-2";
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.value).toBe("dev-2"));
 
     const select = $("#creationdev");
     expect([...select.options].map((option) => option.textContent)).toEqual(["Laptop", "Studio"]);
@@ -161,7 +161,7 @@ describe("Settings → Creation device", () => {
 
   it("shows the device creation falls back to while nothing is picked", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.value).toBe("dev-1"));
 
     expect($("#creationdev").value).toBe("dev-1");
   });
@@ -174,7 +174,8 @@ describe("Settings → Creation device", () => {
     devices[0].status = "offline"; // Laptop, the picked one
     App.selectedDeviceId = "dev-1";
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationfallback")?.textContent)
+      .toBe("Laptop is offline; new work goes to Studio until it returns."));
 
     expect($("#creationdev").value).toBe("dev-1");
     // …and where the work is going meanwhile is said, not left to be guessed.
@@ -184,7 +185,7 @@ describe("Settings → Creation device", () => {
   it("says nothing under the control while the machine picked is the one taking the work", async () => {
     App.selectedDeviceId = "dev-1";
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.value).toBe("dev-1"));
 
     expect($("#creationfallback").textContent).toBe("");
   });
@@ -193,7 +194,8 @@ describe("Settings → Creation device", () => {
     devices = devices.map((device) => ({ ...device, status: "offline" }));
     App.selectedDeviceId = "dev-2";
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationfallback")?.textContent)
+      .toBe("Studio is offline; new work waits until a device is back."));
 
     expect($("#creationdev").value).toBe("dev-2");
     expect($("#creationfallback").textContent).toBe("Studio is offline; new work waits until a device is back.");
@@ -206,7 +208,8 @@ describe("Settings → Creation device", () => {
     devices[0].status = "offline"; // Laptop, the picked one
     App.selectedDeviceId = "dev-1";
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationfallback")?.textContent)
+      .toBe("Laptop is offline; new work goes to Studio until it returns."));
     expect($("#creationfallback").textContent).toBe("Laptop is offline; new work goes to Studio until it returns.");
 
     const select = $("#creationdev");
@@ -222,7 +225,7 @@ describe("Settings → Creation device", () => {
     App.selectedDeviceId = "dev-1";
     adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.value).toBe("dev-1"));
     expect($("#creationfallback").textContent).toBe("");
 
     devices[0].status = "offline";
@@ -238,7 +241,7 @@ describe("Settings → Creation device", () => {
     App.selectedDeviceId = "dev-1";
     adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.value).toBe("dev-1"));
 
     App.viewDispose();
     App.viewDispose = null;
@@ -250,7 +253,7 @@ describe("Settings → Creation device", () => {
 
   it("writes the pick through the one function that owns it", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.options).toHaveLength(2));
 
     const select = $("#creationdev");
     select.value = "dev-2";
@@ -262,7 +265,8 @@ describe("Settings → Creation device", () => {
 
   it("says what the choice is for, and what it is not for", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.closest(".panel")?.textContent)
+      .toContain("New projects and captures go to"));
 
     const panel = $("#creationdev").closest(".panel");
     expect(panel.textContent).toContain("New projects and captures go to");
@@ -272,7 +276,7 @@ describe("Settings → Creation device", () => {
   it("says so plainly on an account with no devices yet", async () => {
     devices = [];
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.textContent).toContain("No devices yet"));
 
     expect($("#creationdev").textContent).toContain("No devices yet");
     expect($("#creationdev").disabled).toBe(true);
@@ -286,7 +290,7 @@ describe("Settings → agent defaults", () => {
   it("keeps the project agent off the browser's page", async () => {
     adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelectorAll("[data-harness-defaults]")).toHaveLength(1));
 
     expect([...document.querySelectorAll("[data-harness-defaults]")].map((panel) => panel.dataset.harnessDefaults))
       .toEqual(["def"]);
@@ -305,7 +309,7 @@ describe("Settings → what the account keeps", () => {
     pullDevices = () => new Promise(() => {});
 
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#devlist")?.textContent).toContain("Cached laptop"));
 
     expect($("#devlist").textContent).toContain("Cached laptop");
     expect([...$("#creationdev").options].map((option) => option.textContent)).toEqual(["Cached laptop"]);
@@ -314,7 +318,7 @@ describe("Settings → what the account keeps", () => {
   it("asks the bridge nothing on the account page", async () => {
     adoptDeviceSession({ deviceId: "dev-1", call, close: () => {} });
     await renderSettings();
-    await flush();
+    await waitFor(() => expect($("#creationdev")?.options).toHaveLength(2));
 
     const asked = call.mock.calls.map(([method]) => method);
     expect(asked).not.toContain("project.list");
@@ -326,7 +330,7 @@ describe("Settings → what the account keeps", () => {
 
   it("links each paired device to its own settings page", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelectorAll("#devlist a.devsettings")).toHaveLength(2));
 
     const links = [...document.querySelectorAll("#devlist a.devsettings")];
     expect(links.map((link) => link.getAttribute("href"))).toEqual(["#/device/dev-1/settings", "#/device/dev-2/settings"]);
@@ -339,11 +343,11 @@ describe("Settings → what the account keeps", () => {
   // (connection.js retireDevice), rather than only forgetting it.
   it("lets a revoked device go through the connection layer", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#devlist .revoke")).not.toBeNull());
 
     devices = devices.filter((device) => device.id !== "dev-1");
     document.querySelector("#devlist .revoke").click();
-    await flush();
+    await waitFor(() => expect(retireDevice).toHaveBeenCalledWith("dev-1"));
 
     expect(revokeDevice).toHaveBeenCalledWith("dev-1");
     expect(retireDevice).toHaveBeenCalledWith("dev-1");
@@ -363,7 +367,7 @@ describe("Settings → Diagnostics", () => {
     recordConnectionDiagnostic("dev-2:sess-2", "restart-failed", { reason: "timeout" });
 
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelectorAll(".diagrow")).toHaveLength(2));
 
     const rows = [...document.querySelectorAll(".diagrow")];
     expect(rows).toHaveLength(2);
@@ -379,7 +383,7 @@ describe("Settings → Diagnostics", () => {
     const dropped = vi.spyOn(globalThis, "clearInterval");
 
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(armed).toHaveBeenCalled());
     const ticker = armed.mock.results.at(-1)?.value;
     App.viewDispose?.();
     App.viewDispose = null;
@@ -397,7 +401,8 @@ describe("Settings → Diagnostics", () => {
 describe("Settings → the build it is running", () => {
   it("shows the line under Diagnostics, with the whole version in its title", async () => {
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#buildversion")?.textContent.replace(/\s+/g, " ").trim())
+      .toBe("Build dev Copy"));
 
     const line = document.querySelector("#buildversion");
     expect(line).not.toBeNull();
@@ -414,9 +419,9 @@ describe("Settings → the build it is running", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
 
     await renderSettings();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#buildversioncopy")).not.toBeNull());
     document.querySelector("#buildversioncopy").click();
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("dev"));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("dev"));
 
     if (had) Object.defineProperty(navigator, "clipboard", had);
     else delete navigator.clipboard;

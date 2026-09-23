@@ -4,6 +4,7 @@
 // messages, and the assignment control feeding the implement verbs.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountIssueView, openingStageId, docAnnotatable } from "../src/core/issueView.js";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
@@ -14,6 +15,21 @@ import { pendingIn, resetOptimistic } from "../src/core/optimistic.js";
 import { dismissAllNotices } from "../src/core/notify.js";
 import { armChangeEvents, dispatchChangeEvent, resetChangeEvents } from "../src/core/changeEvents.js";
 import { wipeCache } from "../src/core/localCache.js";
+
+// Keep the real push routing and await the read it triggers, including a
+// pass that intentionally leaves the existing DOM untouched.
+const pushedReads = vi.hoisted(() => []);
+vi.mock("../src/core/changeEvents.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, watchChanges: (options) => actual.watchChanges({
+    ...options,
+    refresh: (...args) => {
+      const reading = options.refresh(...args);
+      pushedReads.push(reading);
+      return reading;
+    },
+  }) };
+});
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -79,28 +95,30 @@ async function mount(overrides = {}) {
     },
     ...options,
   });
-  await settle(host);
+  await waitFor(() => {
+    if (fail?.["issue.get"]) {
+      expect(host.textContent).toContain("This Issue no longer exists");
+    } else if (fail?.["issue.stage_doc"]) {
+      expect(host.querySelector("#stagedocretry")).toBeTruthy();
+    } else if (stages.length === 0) {
+      const text = host.querySelector(".ivviewer")?.textContent;
+      expect(text).toContain(issue.state === "drafting" ? "drafting the plan" : issue.state === "created" ? "first message" : "The whole plan");
+    } else {
+      expect(host.querySelector("#stagedoc")?.textContent).toContain(doc.contents.replace(/^#\s*/, "").split("\n")[0]);
+    }
+  });
   return { host, view, calls };
 }
 
-const settle = async (host) => {
-  for (let i = 0; i < 30; i++) {
-    await new Promise((done) => setTimeout(done, 0));
-    if (host.querySelector(".ivsplit")) break;
-  }
-  for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
-const flush = async () => {
-  for (let i = 0; i < 30; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 /** The push that says this issue moved: what wakes the surface now that
  *  nothing polls it. */
-const pushMoved = async () => {
+const pushMoved = async (assertion) => {
+  const before = pushedReads.length;
   armChangeEvents({ push_events: true });
   dispatchChangeEvent({ type: "changes", items: [{ entity_id: "issue-1", state: { kind: "issue" } }] });
-  for (let i = 0; i < 40; i++) await new Promise((done) => setTimeout(done, 0));
+  await waitFor(() => expect(pushedReads.length).toBeGreaterThan(before));
+  await Promise.all(pushedReads.slice(before));
+  if (assertion) await waitFor(assertion);
 };
 
 /** Every `issue.get` made for `agentId` so far, once at least one has been. The
@@ -108,14 +126,11 @@ const pushMoved = async () => {
  *  by any given millisecond is not something a test can name — so a test about
  *  which read carries what waits for the read rather than for a wall clock. */
 const readsForAgent = async (calls, agentId) => {
-  const deadline = Date.now() + 2000;
-  for (;;) {
+  return waitFor(() => {
     const reads = calls.filter(([method, params]) => method === "issue.get" && params.agent_id === agentId);
-    if (reads.length) return reads;
-    if (Date.now() > deadline) throw new Error(`the poll never read the issue for ${agentId}`);
-    await new Promise((resolve) => setTimeout(resolve, 1));
-    await flush();
-  }
+    expect(reads.length, `the poll never read the issue for ${agentId}`).toBeGreaterThan(0);
+    return reads;
+  });
 };
 
 describe("openingStageId", () => {
@@ -147,11 +162,10 @@ describe("docAnnotatable", () => {
 });
 
 async function answerConfirm(ok) {
-  await flush();
+  await waitFor(() => expect(document.getElementById("confirm-scrim")).toBeTruthy());
   const scrim = document.getElementById("confirm-scrim");
   expect(scrim, "a confirmation was expected").toBeTruthy();
   scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
-  await flush();
 }
 
 describe("the issue view", () => {
@@ -181,6 +195,7 @@ describe("the issue view", () => {
       });
       host.querySelector("#issuedelete").click();
       await answerConfirm(true);
+      await waitFor(() => expect(gone).toEqual([true]));
 
       expect(gone).toEqual([true]);
       expect(calls.some(([method]) => method === "issue.delete")).toBe(true);
@@ -211,7 +226,7 @@ describe("the issue view", () => {
       });
       host.querySelector("#issuedelete").click();
       await answerConfirm(true);
-      await flush();
+      await waitFor(() => expect(document.querySelector(".notice-summary")?.textContent).toBe("Could not delete this issue"));
 
       expect(pendingIn(INBOX_SCOPE)).toEqual([]);
       const summaries = [...document.querySelectorAll(".notice-summary")].map((node) => node.textContent);
@@ -245,7 +260,7 @@ describe("the issue view", () => {
       doc: { stage_id: "s1", contents: "# Wire" },
     });
     host.querySelectorAll(".stagerow")[1].click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method, params]) => method === "issue.stage_doc" && params.stage_id === "s2")).toBe(true));
     // Both stages are still listed, the open one is marked, and nothing offers
     // a way back to a list that never left.
     expect(host.querySelectorAll(".stagerow")).toHaveLength(2);
@@ -267,7 +282,7 @@ describe("the issue view", () => {
     expect(host.querySelector(".stagenav-pos").textContent).toBe("1 / 3");
 
     host.querySelector('[data-stage-step="next"]').click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method, params]) => method === "issue.stage_doc" && params.stage_id === "s2")).toBe(true));
     expect(host.querySelector(".ivviewer .ivstagetitle").textContent).toBe("Render");
     expect(host.querySelector(".stagenav-pos").textContent).toBe("2 / 3");
     // One selection, both columns: the rail marks the stage the steps opened.
@@ -277,11 +292,11 @@ describe("the issue view", () => {
     expect(calls.some(([method, params]) => method === "issue.stage_doc" && params.stage_id === "s2")).toBe(true);
 
     host.querySelector('[data-stage-step="next"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".stagenav-pos").textContent).toBe("3 / 3"));
     expect(host.querySelector(".stagenav-pos").textContent).toBe("3 / 3");
 
     host.querySelector('[data-stage-step="prev"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".stagenav-pos").textContent).toBe("2 / 3"));
     expect(host.querySelector(".stagenav-pos").textContent).toBe("2 / 3");
     // The host's URL rode along with every step, and never doubled back.
     expect(opened).toEqual(["s1", "s2", "s3", "s2"]);
@@ -294,7 +309,7 @@ describe("the issue view", () => {
     expect(host.querySelector('[data-stage-step="prev"]').disabled).toBe(true);
     expect(host.querySelector('[data-stage-step="next"]').disabled).toBe(false);
     host.querySelector('[data-stage-step="next"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector('[data-stage-step="next"]').disabled).toBe(true));
     expect(host.querySelector('[data-stage-step="prev"]').disabled).toBe(false);
     expect(host.querySelector('[data-stage-step="next"]').disabled).toBe(true);
     view.dispose();
@@ -308,9 +323,10 @@ describe("the issue view", () => {
 
   it("leaves the steps alone across a push that changed nothing", async () => {
     const stages = [stage(), stage({ id: "s2", title: "Render" })];
-    const { host, view } = await mount({ stages });
+    const { host, view, calls } = await mount({ stages });
     const next = host.querySelector('[data-stage-step="next"]');
-    await pushMoved();
+    const readsBefore = calls.filter(([method]) => method === "issue.get").length;
+    await pushMoved(() => expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(readsBefore));
     expect(host.contains(next), "an idempotent pass replaced the step the reader is aiming at").toBe(true);
     view.dispose();
   });
@@ -330,8 +346,6 @@ describe("the issue view", () => {
       return seen;
     };
 
-    const poll = () => pushMoved();
-
     it("leaves every stage row alone when the pass changed only the issue", async () => {
       const stages = [stage(), stage({ id: "s2", title: "Render" })];
       const issue = issuePayload({ stages: [{ id: "s1", state: "planned" }, { id: "s2", state: "planned" }] });
@@ -339,7 +353,7 @@ describe("the issue view", () => {
       const rows = [...host.querySelectorAll(".stagerow")];
       const records = await churn(host.querySelector("#stagelist"), async () => {
         issue.state = "approved";
-        await poll();
+        await pushMoved(() => expect(host.querySelector(".ivhead").textContent).toContain("APPROVED"));
       });
       expect(host.querySelector(".ivhead").textContent).toContain("APPROVED"); // the head did move
       expect(records).toEqual([]);
@@ -354,7 +368,7 @@ describe("the issue view", () => {
       const second = host.querySelector('.stagerow[data-stage="s2"]');
       const records = await churn(host.querySelector("#stagelist"), async () => {
         stages[1].title = "Render, twice";
-        await poll();
+        await pushMoved(() => expect(second.textContent).toContain("Render, twice"));
       });
       expect(host.querySelector('.stagerow[data-stage="s1"]')).toBe(first);
       expect(host.querySelector('.stagerow[data-stage="s2"]')).toBe(second);
@@ -369,7 +383,7 @@ describe("the issue view", () => {
       const { host, view } = await mount({ stages });
       const rows = [...host.querySelectorAll(".stagerow")];
       rows[1].click();
-      await flush();
+      await waitFor(() => expect(rows[1].classList.contains("sel")).toBe(true));
       expect([...host.querySelectorAll(".stagerow")]).toEqual(rows);
       expect(rows[0].classList.contains("sel")).toBe(false);
       expect(rows[1].classList.contains("sel")).toBe(true);
@@ -386,7 +400,7 @@ describe("the issue view", () => {
     expect(host.textContent).toContain("the first cut of the plan.");
 
     doc.contents = "# Wire\n\nwhat the planner rewrote.";
-    await pushMoved();
+    await pushMoved(() => expect(host.textContent).toContain("what the planner rewrote."));
 
     expect(calls.filter(([method]) => method === "issue.stage_doc")).toHaveLength(2);
     expect(host.textContent).toContain("what the planner rewrote.");
@@ -397,7 +411,7 @@ describe("the issue view", () => {
   it("approves every planned stage from the list, one call per stage", async () => {
     const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
     host.querySelector("#approveall").click();
-    await flush();
+    await waitFor(() => expect(calls.filter(([method]) => method === "issue.stage_approve")).toHaveLength(2));
     const approvals = calls.filter(([method]) => method === "issue.stage_approve").map(([, params]) => params.stage_id);
     expect(approvals).toEqual(["s1", "s2"]);
     view.dispose();
@@ -406,7 +420,7 @@ describe("the issue view", () => {
   it("approves the open stage from the viewer", async () => {
     const { host, view, calls } = await mount();
     host.querySelector("#approvestage").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.stage_approve")).toBe(true));
     expect(calls).toContainEqual([
       "issue.stage_approve",
       { issue_id: "issue-1", stage_id: "s1", thread_limit: FIRST_PAGE_ITEMS },
@@ -440,7 +454,7 @@ describe("the issue view", () => {
     ];
     const { host, view } = await mount({ issue: issuePayload({ state: "approved" }), stages });
     host.querySelectorAll(".stagerow")[1].click();
-    await flush();
+    await waitFor(() => expect(host.querySelector("#implementstage")).toBeTruthy());
     expect(host.querySelector("#implementstage")).toBeTruthy();
     view.dispose();
   });
@@ -453,10 +467,10 @@ describe("the issue view", () => {
     const general = host.querySelector(".csgeneral");
     general.value = "have another look at the wire stage";
     general.dispatchEvent(new Event("input"));
-    await flush();
+    await waitFor(() => expect(host.querySelector(".cssend").disabled).toBe(false));
 
     host.querySelector(".cssend").click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".csgeneral").value).toBe(""));
 
     expect(calls.some(([method]) => method === "thread.post")).toBe(true);
     expect(document.querySelector("#notices .notice.error")).toBe(null);
@@ -480,14 +494,14 @@ describe("the issue view", () => {
     };
     vi.spyOn(window, "getSelection").mockReturnValue({ ...selection, removeAllRanges: () => {} });
     document.dispatchEvent(new Event("selectionchange"));
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await waitFor(() => expect(document.querySelector(".comment-pop .cp-add")).toBeTruthy());
     document.querySelector(".comment-pop .cp-add").click();
     document.querySelector(".comment-pop .cp-input").value = "why items[]?";
     document.querySelector(".comment-pop .cp-save").click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".pcomment")).toBeTruthy());
     expect(host.querySelector(".pcomment")).toBeTruthy();
     host.querySelector(".cssend").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.comment_add")).toBe(true));
     const posted = calls.find(([method]) => method === "issue.comment_add");
     expect(posted[1].issue_id).toBe("issue-1");
     expect(posted[1].stage_id).toBe("s1");
@@ -516,18 +530,18 @@ describe("the issue view", () => {
       removeAllRanges: () => {},
     });
     document.dispatchEvent(new Event("selectionchange"));
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    await waitFor(() => expect(document.querySelector(".comment-pop .cp-add")).toBeTruthy());
     document.querySelector(".comment-pop .cp-add").click();
     document.querySelector(".comment-pop .cp-input").value = "anchor this";
     document.querySelector(".comment-pop .cp-save").click();
     host.querySelector(".csgeneral").value = "general note";
     host.querySelector(".csgeneral").dispatchEvent(new Event("input"));
     host.querySelector(".cssend").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.comment_add")).toBe(true));
 
     selection.set("agent:two");
     releaseComment();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "thread.post")).toBe(true));
 
     const post = calls.find(([method]) => method === "thread.post");
     expect(post[1].agent_id).toBe("agent:one");
@@ -539,7 +553,7 @@ describe("the issue view", () => {
   // reader is holding a passage of this doc.
   it("leaves the doc alone while a passage is being selected on it", async () => {
     const stages = [stage()];
-    const { host, view } = await mount({ stages });
+    const { host, view, calls } = await mount({ stages });
     const heading = host.querySelector("#stagedoc h1");
     vi.spyOn(window, "getSelection").mockReturnValue({
       anchorNode: heading.firstChild,
@@ -552,13 +566,14 @@ describe("the issue view", () => {
     });
 
     stages[0].title = "Rewired underneath";
-    await pushMoved();
+    const readsBefore = calls.filter(([method]) => method === "issue.get").length;
+    await pushMoved(() => expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(readsBefore));
     expect(host.contains(heading), "the doc the selection points into was replaced").toBe(true);
     expect(host.textContent).not.toContain("Rewired underneath");
 
     // Letting go hands the surface back: the next push draws what moved.
     vi.restoreAllMocks();
-    await pushMoved();
+    await pushMoved(() => expect(host.textContent).toContain("Rewired underneath"));
     expect(host.textContent).toContain("Rewired underneath");
     view.dispose();
   });
@@ -576,7 +591,7 @@ describe("the issue view", () => {
     expect(marker.dataset.marker).toBe("wire");
     expect(host.querySelector('.commentcard[data-id="message-7"]')).toBeTruthy();
     host.querySelector(".commentcard .cc-x").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.comment_delete")).toBe(true));
     expect(calls).toContainEqual(["issue.comment_delete", { issue_id: "issue-1", comment_id: "message-7" }]);
     view.dispose();
   });
@@ -589,16 +604,16 @@ describe("the issue view", () => {
       loadCatalog: async () => ({ providers: [{ id: "claude", label: "Claude Code", models: [], efforts: ["high"] }] }),
     });
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop #assignbase")).toBeTruthy());
     const base = document.querySelector(".assign-pop #assignbase");
     base.value = "release";
     base.dispatchEvent(new Event("input"));
     host.querySelector("#implementall").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#confirm-scrim [data-confirm-ok]")).toBeTruthy());
     // Dispatch is a decisive gate: the modal outlines what happens, and taking
     // it is what sends the verb.
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.implement_all")).toBe(true));
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
     expect(dispatched[1]).toEqual({
       issue_id: "issue-1",
@@ -624,9 +639,9 @@ describe("the issue view", () => {
     const before = calls.filter(([method]) => method === "issue.get").length;
 
     host.querySelector("#implementall").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#confirm-scrim [data-confirm-ok]")).toBeTruthy());
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(before));
 
     expect(document.querySelectorAll(".notice")).toHaveLength(0);
     expect(routed).toEqual([]);
@@ -637,7 +652,7 @@ describe("the issue view", () => {
   it("offers either checkout, and refuses an existing agent because implementation is a handoff", async () => {
     const { host, view } = await mount();
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop")).toBeTruthy());
     const panel = document.querySelector(".assign-pop");
     const worktree = panel.querySelector("#assignworktree");
     expect([...worktree.options].map((option) => option.value)).toEqual(["new", "existing"]);
@@ -652,7 +667,7 @@ describe("the issue view", () => {
     const rail = host.querySelector(".ivstages");
     const rowsBefore = rail.querySelectorAll(".ivassign > *").length;
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop #assignbase")).toBeTruthy());
     // Open, and the rail says so — but the rail has not grown by a single node.
     expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("true");
     expect(rail.querySelectorAll(".ivassign > *")).toHaveLength(rowsBefore);
@@ -665,9 +680,9 @@ describe("the issue view", () => {
   it("shuts the overlay on Done, and says so back in the rail", async () => {
     const { host, view } = await mount();
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop [data-assign-close]")).toBeTruthy());
     document.querySelector(".assign-pop [data-assign-close]").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop")).toBeNull());
     expect(document.querySelector(".assign-pop")).toBeNull();
     expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("false");
     view.dispose();
@@ -676,21 +691,22 @@ describe("the issue view", () => {
   it("takes the overlay with it when the surface goes away", async () => {
     const { host, view } = await mount();
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop")).toBeTruthy());
     expect(document.querySelector(".assign-pop")).toBeTruthy();
     view.dispose();
     expect(document.querySelector(".assign-pop")).toBeNull();
   });
 
   it("holds a choice made in the overlay across a push", async () => {
-    const { host, view } = await mount({});
+    const { host, view, calls } = await mount({});
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop #assignworktree")).toBeTruthy());
     const worktree = document.querySelector(".assign-pop #assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));
-    await flush();
-    await pushMoved();
+    await waitFor(() => expect(host.querySelector(".ivassign-sum").textContent).toMatch(/existing worktree/i));
+    const readsBefore = calls.filter(([method]) => method === "issue.get").length;
+    await pushMoved(() => expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(readsBefore));
     expect(document.querySelector(".assign-pop #assignworktree").value).toBe("existing");
     expect(host.querySelector(".ivassign-sum").textContent).toMatch(/existing worktree/i);
     view.dispose();
@@ -707,21 +723,21 @@ describe("the issue view", () => {
       ],
     });
     host.querySelector("#assigntoggle").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop #assignworktree")).toBeTruthy());
     const target = document.querySelector(".assign-pop #assignworktree");
     target.value = "existing";
     target.dispatchEvent(new Event("change"));
-    await flush();
+    await waitFor(() => expect([...document.querySelector(".assign-pop #assignworktreeid").options].map((option) => option.value)).toEqual(["", "wt-1"]));
     const branch = document.querySelector(".assign-pop #assignworktreeid");
     // A row with no worktree has no checkout to hand over.
     expect([...branch.options].map((option) => option.value)).toEqual(["", "wt-1"]);
     branch.value = "wt-1";
     branch.dispatchEvent(new Event("change"));
-    await flush();
+    await waitFor(() => expect(document.querySelector(".assign-pop #assignworktreeid").value).toBe("wt-1"));
     host.querySelector("#implementall").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector("#confirm-scrim [data-confirm-ok]")).toBeTruthy());
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(calls.some(([method]) => method === "issue.implement_all")).toBe(true));
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
     expect(dispatched[1]).toEqual({
       issue_id: "issue-1",
@@ -785,7 +801,6 @@ describe("the issue view", () => {
     });
     expect(host.textContent).toContain("This Issue no longer exists");
     const fetched = calls.filter(([method]) => method === "issue.get").length;
-    await flush();
     expect(calls.filter(([method]) => method === "issue.get").length).toBe(fetched);
     host.querySelector("#goneback").click();
     expect(gone).toEqual([true]);

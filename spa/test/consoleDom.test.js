@@ -7,6 +7,7 @@
 // world on the disk and then mounts.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -50,6 +51,33 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+// A remembered size can arrive after the bar. Wait for that read before a
+// test presses the bar, so the initial cache paint cannot undo its click.
+const placeReads = vi.hoisted(() => []);
+vi.mock("../src/core/cachedRows.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    cachedFeedView(...args) {
+      const reading = actual.cachedFeedView(...args);
+      placeReads.push(reading);
+      return reading;
+    },
+  };
+});
+const sizeRecords = vi.hoisted(() => []);
+vi.mock("../src/core/localUiState.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    watchUiState(...args) {
+      const record = actual.watchUiState(...args);
+      sizeRecords.push(record);
+      return record;
+    },
+  };
+});
+
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notifySuccess: () => {} }));
 
@@ -61,9 +89,7 @@ const { consoleKey, markConsoleTerminal, takeConsoleTerminal } = await import(".
 const { readCached, writeCached } = await import("../src/core/localCache.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
+const until = (assertion) => waitFor(assertion);
 
 const region = () => document.getElementById("console-region");
 const bar = () => region().querySelector(".console-bar");
@@ -91,21 +117,29 @@ const sizeAddress = (context = branchAddress()) => uiAddress({
   kind: "fold",
 });
 
-const mount = async (context = branchAddress()) => {
+const mount = async (context = branchAddress(), terminals = null) => {
   panel = mountConsole(region(), context);
-  await flush();
+  await Promise.all(sizeRecords.map((record) => record.ready));
+  await Promise.all(placeReads.splice(0));
+  await until(() => expect(bar()).toBeTruthy());
+  if (terminals) {
+    await until(() => {
+      expect(tabs()).toEqual(terminals.map((_, index) => `Terminal ${index + 1}`));
+      expect(region().querySelector(".console-new")).toBeTruthy();
+    });
+  }
   return panel;
 };
 
 /** The world this suite's branch stands in, then the console over it. */
 const mountOver = async (terminals, context = branchAddress()) => {
   await seedConsoleWorld({ terminals });
-  return mount(context);
+  return mount(context, terminals);
 };
 
-const open = async () => {
+const open = async (expectedSize) => {
   bar().click();
-  await flush();
+  if (expectedSize) await until(() => expect(size()).toBe(expectedSize));
 };
 
 beforeEach(async () => {
@@ -130,9 +164,10 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (panel) panel.dispose();
   panel = null;
+  await Promise.all(sizeRecords.splice(0).map((record) => record.flush()));
 });
 
 // The console stands in one checkout on one machine, and the link that opened
@@ -144,8 +179,8 @@ describe("the machine it was mounted for", () => {
     const theirs = consoleBranchRow({ deviceId: "dev-2", projectKey: "dev-2:p1", run_id: "run-9", worktree_id: "wt-9" });
     await seedConsoleWorld({ deviceId: "dev-2", row: theirs, terminals: ["term-1"] });
 
-    await mount(branchAddress({ deviceId: "dev-2" }));
-    await open();
+    await mount(branchAddress({ deviceId: "dev-2" }), ["term-1"]);
+    await open("half");
 
     expect(tabs()).toEqual(["Terminal 1"]);
     expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { run_id: "run-9" }, expect.anything());
@@ -170,7 +205,7 @@ describe("the shut console", () => {
 describe("opening it", () => {
   it("puts it at half and shows the terminals of the branch's own worktree", async () => {
     await mountOver(["term-1", "term-2"]);
-    await open();
+    await open("half");
     expect(size()).toBe("half");
     expect(bar().getAttribute("aria-expanded")).toBe("true");
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
@@ -183,15 +218,15 @@ describe("opening it", () => {
   // whole conversation to answer.
   it("asks the machine nothing to say where it is standing", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     expect(calls).toEqual([]);
   });
 
   it("opens a checkout Build never cut by the worktree itself", async () => {
     const loose = consoleBranchRow({ branch: "loose", run_id: null, worktree_id: "wt-9" });
     await seedConsoleWorld({ row: loose, terminals: ["term-1"] });
-    await mount(branchAddress({ branch: "loose" }));
-    await open();
+    await mount(branchAddress({ branch: "loose" }), ["term-1"]);
+    await open("half");
     expect(manager.attachTerminal).toHaveBeenCalledWith(
       "term-1",
       { project_id: "p1", worktree_id: "wt-9" },
@@ -202,23 +237,23 @@ describe("opening it", () => {
   it("opens an issue's console on the primary checkout, without a row to read", async () => {
     await emptyConsoleWorld();
     await seedConsoleTerminals(["term-1"], { row: { run_id: "i-1" } });
-    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
-    await open();
+    await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() }, ["term-1"]);
+    await open("half");
     expect(manager.attachTerminal).toHaveBeenCalledWith("term-1", { project_id: "p1" }, expect.anything());
     expect(calls).toEqual([]);
   });
 
   it("never spawns a shell just because it was opened", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     expect(manager.createTerminal).not.toHaveBeenCalled();
   });
 
   it("says so when no row on this device names a directory to stand in", async () => {
     await seedConsoleWorld({ row: null });
     await mount();
-    await open();
-    expect(region().textContent).toContain("no checkout here");
+    await open("half");
+    await until(() => expect(region().textContent).toContain("no checkout here"));
   });
 
   it("stands itself up when the row it is waiting for lands", async () => {
@@ -226,7 +261,7 @@ describe("opening it", () => {
     await mount();
     expect(tabs()).toEqual([]);
     await seedConsoleWorld({ terminals: ["term-1"] });
-    await flush();
+    await until(() => expect(tabs()).toEqual(["Terminal 1"]));
     expect(tabs()).toEqual(["Terminal 1"]);
   });
 });
@@ -234,22 +269,24 @@ describe("opening it", () => {
 describe("the sizes", () => {
   it("grows to the overlay and back to half", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     region().querySelector(".console-grow").click();
-    await flush();
+    await until(() => expect(size()).toBe("full"));
     expect(size()).toBe("full");
     // The screen is not torn down to change how much room it has.
+    await until(() => expect(panes.length).toBe(1));
     expect(panes.length).toBe(1);
     region().querySelector(".console-grow").click();
-    await flush();
+    await until(() => expect(size()).toBe("half"));
     expect(size()).toBe("half");
     expect(panes.length).toBe(1);
   });
 
   it("shuts from the bar, dropping the screen and leaving the PTY running", async () => {
     await mountOver(["term-1"]);
-    await open();
-    await open(); // the same control shuts it
+    await open("half");
+    await open("collapsed"); // the same control shuts it
+    await until(() => expect(panes[0].disposed).toBe(true));
     expect(size()).toBe("collapsed");
     expect(panes[0].disposed).toBe(true);
     expect(manager.detach).toHaveBeenCalledWith("term-1");
@@ -258,9 +295,9 @@ describe("the sizes", () => {
 
   it("remembers the size per work item, and reopens there", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     panel.dispose();
-    await mount();
+    await mount(branchAddress(), ["term-1"]);
     expect(size()).toBe("half");
     // Another work item's console is its own, and starts shut.
     panel.dispose();
@@ -272,10 +309,10 @@ describe("the sizes", () => {
     await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
     await seedConsoleWorld({ terminals: ["term-1"] });
     panel = mountConsole(region(), branchAddress());
-    await vi.waitFor(() => expect(size()).toBe("half"));
+    await waitFor(() => expect(size()).toBe("half"));
 
     await writeCached(sizeAddress(), { size: "full", reopenSize: "full" });
-    await vi.waitFor(() => expect(size()).toBe("full"));
+    await waitFor(() => expect(size()).toBe("full"));
     expect(region().querySelector(".console-grow").getAttribute("aria-label")).toBe("Half the view");
   });
 });
@@ -283,9 +320,10 @@ describe("the sizes", () => {
 describe("the terminals", () => {
   it("opens one from the +, and lands on it", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     region().querySelector(".console-new").click();
-    await flush();
+    await until(() => expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]));
+    await until(() => expect(manager.attachTerminal).toHaveBeenCalledWith("term-9", expect.anything(), expect.anything()));
     expect(manager.createTerminal).toHaveBeenCalledWith({ run_id: "run-3" }, 80, 24);
     expect(tabs()).toEqual(["Terminal 1", "Terminal 2"]);
     expect(region().querySelector(".console-tab.active .console-tab-name").textContent).toBe("Terminal 2");
@@ -294,7 +332,11 @@ describe("the terminals", () => {
   it("opens the first one from the + in the shut head", async () => {
     await mountOver([]);
     region().querySelector(".console-new").click();
-    await flush();
+    await until(() => {
+      expect(manager.attachTerminal).toHaveBeenCalledWith("term-9", expect.anything(), expect.anything());
+      expect(tabs()).toEqual(["Terminal 1"]);
+      expect(size()).toBe("half");
+    });
     expect(manager.createTerminal).toHaveBeenCalled();
     expect(tabs()).toEqual(["Terminal 1"]);
     expect(size()).toBe("half");
@@ -303,18 +345,18 @@ describe("the terminals", () => {
 
   it("switches between them", async () => {
     await mountOver(["term-1", "term-2"]);
-    await open();
+    await open("half");
     [...region().querySelectorAll(".console-tab-name")][1].click();
-    await flush();
+    await until(() => expect(manager.attachTerminal.mock.calls.map((call) => call[0])).toEqual(["term-1", "term-2"]));
     expect(manager.attachTerminal.mock.calls.map((call) => call[0])).toEqual(["term-1", "term-2"]);
     expect(manager.detach).toHaveBeenCalledWith("term-1");
   });
 
   it("closes one from its ×, and falls back to what is left", async () => {
     await mountOver(["term-1", "term-2"]);
-    await open();
+    await open("half");
     region().querySelector('[data-close="term-1"]').click();
-    await flush();
+    await until(() => expect(tabs()).toEqual(["Terminal 1"]));
     expect(manager.closeTerminal).toHaveBeenCalledWith("term-1");
     expect(tabs()).toEqual(["Terminal 1"]); // the ordinals close up
     expect(region().querySelector(".console-tab.active")).toBeTruthy();
@@ -324,7 +366,7 @@ describe("the terminals", () => {
     manager.attachTerminal.mockRejectedValue(new Error("unknown term_id"));
     await mountOver(["term-1"]);
     await open();
-    expect(tabs()).toEqual([]);
+    await until(() => expect(tabs()).toEqual([]));
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-pane")).toBeNull();
   });
@@ -337,7 +379,8 @@ describe("a console with no terminals", () => {
     await mountOver(["term-1", "term-2"]);
     expect(size()).toBe("collapsed");
     [...region().querySelectorAll(".console-tab-name")][1].click();
-    await flush();
+    await until(() => expect(size()).toBe("half"));
+    await until(() => expect(manager.attachTerminal).toHaveBeenCalledWith("term-2", expect.anything(), expect.anything()));
     expect(size()).toBe("half");
     expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-2");
   });
@@ -353,23 +396,22 @@ describe("a console with no terminals", () => {
   it("is the same control under the backtick, and just as inert", async () => {
     await mountOver([]);
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "`", bubbles: true, cancelable: true }));
-    await flush();
     expect(size()).toBe("collapsed");
     expect(await storedSize()).toBeNull();
   });
 
   it("shuts when the last terminal is closed, and reopens at the size it was left", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     region().querySelector(".console-grow").click();
-    await flush();
+    await until(() => expect(size()).toBe("full"));
     expect(size()).toBe("full");
     region().querySelector('[data-close="term-1"]').click();
-    await flush();
+    await until(() => expect(size()).toBe("collapsed"));
     expect(size()).toBe("collapsed");
     expect(await storedSize()).toBe("full");
     region().querySelector(".console-new").click();
-    await flush();
+    await until(() => expect(size()).toBe("full"));
     expect(size()).toBe("full");
   });
 
@@ -384,7 +426,7 @@ describe("a console with no terminals", () => {
     manager.createTerminal.mockRejectedValue(new Error("no such directory"));
     await mountOver([]);
     region().querySelector(".console-new").click();
-    await flush();
+    await until(() => expect(notifyError).toHaveBeenCalledWith("Could not open a terminal", "no such directory"));
     expect(notifyError).toHaveBeenCalledWith("Could not open a terminal", "no such directory");
     expect(size()).toBe("collapsed");
   });
@@ -393,29 +435,29 @@ describe("a console with no terminals", () => {
     await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
     await seedConsoleWorld({ terminals: [] });
     panel = mountConsole(region(), branchAddress());
-    await flush();
+    await until(() => expect(region().querySelector(".console-new")).toBeTruthy());
 
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
 
     await seedConsoleTerminals(["term-1"]);
-    await flush();
+    await until(() => expect(size()).toBe("half"));
     expect(size()).toBe("half");
   });
 
   it("reopens at the size it was left at, not at half, once it has been shut", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     region().querySelector(".console-grow").click();
-    await flush();
+    await until(() => expect(size()).toBe("full"));
     expect(size()).toBe("full");
 
-    await open();
+    await open("collapsed");
     expect(size()).toBe("collapsed");
     panel.dispose();
 
-    await mount();
-    await open();
+    await mount(branchAddress(), ["term-1"]);
+    await open("full");
     expect(size()).toBe("full");
   });
 });
@@ -430,11 +472,11 @@ describe("the backtick", () => {
   it("opens and shuts the console from anywhere else on the page", async () => {
     await mountOver(["term-1"]);
     const opened = press();
-    await flush();
+    await until(() => expect(size()).toBe("half"));
     expect(size()).toBe("half");
     expect(opened.defaultPrevented).toBe(true);
     press();
-    await flush();
+    await until(() => expect(size()).toBe("collapsed"));
     expect(size()).toBe("collapsed");
   });
 
@@ -443,7 +485,6 @@ describe("the backtick", () => {
     const field = document.createElement("input");
     document.body.appendChild(field);
     press(field);
-    await flush();
     expect(size()).toBe("collapsed");
 
     const composer = document.createElement("div");
@@ -452,7 +493,6 @@ describe("the backtick", () => {
     composer.appendChild(child);
     document.body.appendChild(composer);
     press(child);
-    await flush();
     expect(size()).toBe("collapsed");
   });
 
@@ -460,7 +500,6 @@ describe("the backtick", () => {
     await mountOver([]);
     panel.dispose();
     press();
-    await flush();
     expect(region().innerHTML).toBe("");
     panel = null;
   });
@@ -470,8 +509,8 @@ describe("a pre-redesign term-<n> URL", () => {
   it("opens the branch's console on the terminal it named", async () => {
     await seedConsoleWorld({ terminals: ["term-1", "term-2"] });
     markConsoleTerminal("term-2");
-    await mount();
-    await flush();
+    await mount(branchAddress(), ["term-1", "term-2"]);
+    await until(() => expect(manager.attachTerminal).toHaveBeenCalledWith("term-2", expect.anything(), expect.anything()));
     expect(size()).toBe("half");
     expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-2");
     expect(region().querySelector(".console-tab.active .console-tab-name").textContent).toBe("Terminal 2");
@@ -480,7 +519,7 @@ describe("a pre-redesign term-<n> URL", () => {
   it("is spent once, so the next surface opens on what it remembers", async () => {
     await seedConsoleWorld({ terminals: ["term-1", "term-2"] });
     markConsoleTerminal("term-2");
-    await mount();
+    await mount(branchAddress(), ["term-1", "term-2"]);
     panel.dispose();
     await mount(branchAddress({ branch: "other" }));
     expect(size()).toBe("collapsed");
@@ -490,7 +529,7 @@ describe("a pre-redesign term-<n> URL", () => {
 describe("disposal", () => {
   it("leaves the region empty and the server PTY running", async () => {
     await mountOver(["term-1"]);
-    await open();
+    await open("half");
     panel.dispose();
     expect(region().innerHTML).toBe("");
     expect(region().dataset.size).toBeUndefined();

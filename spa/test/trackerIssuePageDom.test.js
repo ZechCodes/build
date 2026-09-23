@@ -6,6 +6,7 @@
 // it means. The page never sends a whole record.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, event, issue } from "./trackerWireFixture.js";
 import issuesGetFixture from "../../fixtures/api/v1/issues.get.json";
@@ -59,11 +60,12 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
   }),
 }));
 
+const failureHandled = () => waitFor(() => expect(movedListeners.size + notifyError.mock.calls.length).toBeGreaterThan(0));
 const reconnect = async () => {
+  await failureHandled();
   away = false;
   reconnecting = false;
   [...movedListeners].forEach((fn) => fn());
-  await flush();
 };
 
 const openAssigneePicker = vi.fn(() => ({ close: vi.fn(), setCatalog: vi.fn() }));
@@ -93,10 +95,6 @@ let host, call, page, trackerCache, mountIssuePage;
  *  captured at mount, so a case cannot hand over a new `call` afterwards. */
 let refuses = null;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const answerFor = (over = {}, timeline = TIMELINE) => ({
   issue: issue({ id: "issue-1", number: 12, status: "in_progress", ...over }),
   timeline,
@@ -115,7 +113,8 @@ const mount = async (over = {}, { waitForPaint = true } = {}) => {
     navigate: vi.fn(),
     ...over,
   });
-  if (waitForPaint) await flush();
+  if (waitForPaint) await waitFor(() => expect(host.querySelector(".issue-page-title, .gone")).not.toBeNull());
+  if (refuses?.method === "issues.get") await failureHandled();
   return page;
 };
 
@@ -164,7 +163,7 @@ afterEach(() => {
 describe("issue unread navigation", () => {
   it("does not claim unread history on a bridge without issue read marks", async () => {
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
+    await waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
     expect(host.querySelector(".issue-unread-line")).toBeNull();
     expect(host.querySelector(".new-messages-pill")).toBeNull();
   });
@@ -185,7 +184,7 @@ describe("issue unread navigation", () => {
     // actual cached issue-page wiring, before this visit's mark returns.
     call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({}));
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    await waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
     const line = host.querySelector(".issue-unread-line");
     expect(line.nextElementSibling.classList.contains("issue-event")).toBe(true);
     expect(line.previousElementSibling.id).toBe(`comment-${timeline[1].id}`);
@@ -230,20 +229,20 @@ describe("issue unread navigation", () => {
       read_through: timeline[2].id,
     } }));
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
-    await vi.waitFor(async () => expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1"))?.issue.read_through)
+    await waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    await waitFor(async () => expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1"))?.issue.read_through)
       .toBe(timeline[2].id));
 
     page.dispose();
     const seen = [];
     await mount({ onIssueRead: (one) => seen.push(one.read_through) }, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
+    await waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
     expect(host.querySelector(".issue-unread-line")).toBeNull();
     expect(host.querySelector(".new-messages-pill")).toBeNull();
 
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", stale);
     expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1")).issue.read_through).toBe(timeline[2].id);
-    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(1));
+    await waitFor(() => expect(seen.length).toBeGreaterThan(1));
     expect(host.querySelector(".issue-unread-line")).toBeNull();
   });
 
@@ -302,7 +301,7 @@ describe("the issue", () => {
     await mount();
     expect(host.querySelector(".issue-page-title").textContent).toBe("From the cache");
     settle(answerFor());
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
     expect(host.querySelector(".issue-page-title").textContent).toBe("Kanban drag does not persist");
   });
 
@@ -318,33 +317,33 @@ describe("the issue", () => {
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ deviceId: "dev-1", entityId: "issue-1", view: "tracker-issue", kind: "draft", sub: "proj-1" });
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    await waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
     const field = host.querySelector("#issue-comment");
     field.value = "Keep this thought";
     field.dispatchEvent(new Event("input", { bubbles: true }));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe("Keep this thought"));
+    await waitFor(async () => expect((await readCached(address))?.value.body).toBe("Keep this thought"));
     page.dispose();
     await mount({ issueId: "issue-2" }, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    await waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
     expect(host.querySelector("#issue-comment").value).toBe("");
     page.dispose();
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector("#issue-comment")?.value).toBe("Keep this thought"));
+    await waitFor(() => expect(host.querySelector("#issue-comment")?.value).toBe("Keep this thought"));
     host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
-    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe(""));
+    await waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    await waitFor(async () => expect((await readCached(address))?.value.body).toBe(""));
   });
 
   it("repaints from an issue-cache write while issues.get stays absent", async () => {
     call = vi.fn(() => new Promise(() => {}));
-    await mount();
+    await mount({}, { waitForPaint: false });
     expect(host.querySelector(".issue-page-title")).toBeNull();
 
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
       issue: issue({ id: "issue-1", number: 12, title: "Announced detail" }),
       timeline: [],
     });
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Announced detail"));
 
     expect(host.querySelector(".issue-page-title").textContent).toBe("Announced detail");
   });
@@ -356,7 +355,7 @@ describe("the timeline", () => {
     await mount({ issueId: issuesGetFixture.params.issue_id }, { waitForPaint: false });
 
     const mentioned = issuesGetFixture.result.timeline.find((entry) => entry.type === "comment" && entry.mentions_user);
-    await vi.waitFor(() => expect(host.querySelector(`#comment-${mentioned.id}`)).not.toBeNull());
+    await waitFor(() => expect(host.querySelector(`#comment-${mentioned.id}`)).not.toBeNull());
     const row = host.querySelector(`#comment-${mentioned.id}`);
     expect(row?.classList.contains("issue-comment-mentioned")).toBe(true);
     expect(row.querySelector(".issue-comment-body").textContent).toBe(mentioned.body);
@@ -374,7 +373,7 @@ describe("the timeline", () => {
 
     const marked = () => host.querySelector("#comment-ic-mention");
     const unmarked = () => host.querySelector("#comment-ic-plain");
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(marked()).not.toBeNull();
       expect(unmarked()).not.toBeNull();
       expect(listed("issues.get")).toHaveLength(1);
@@ -384,13 +383,13 @@ describe("the timeline", () => {
     expect(unmarked().classList.contains("issue-comment-mentioned")).toBe(false);
 
     settle(answerFor({ read_through: "ic-mention" }, [{ ...mentioned, body: "New live wording" }, plain]));
-    await vi.waitFor(() => expect(marked().querySelector(".issue-comment-body").textContent).toBe("New live wording"));
+    await waitFor(() => expect(marked().querySelector(".issue-comment-body").textContent).toBe("New live wording"));
     expect(marked().classList.contains("issue-comment-mentioned")).toBe(true);
 
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor({}, [
       { ...mentioned, mentions_user: false }, { ...plain, mentions_user: true },
     ]));
-    await vi.waitFor(() => expect(unmarked().classList.contains("issue-comment-mentioned")).toBe(true));
+    await waitFor(() => expect(unmarked().classList.contains("issue-comment-mentioned")).toBe(true));
     expect(marked().classList.contains("issue-comment-mentioned")).toBe(false);
   });
 
@@ -400,13 +399,13 @@ describe("the timeline", () => {
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor());
     call = vi.fn(() => new Promise(() => {}));
     await mount({ commentId: "ic-2" }, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector("#comment-ic-2")?.classList.contains("issue-comment-target")).toBe(true));
+    await waitFor(() => expect(host.querySelector("#comment-ic-2")?.classList.contains("issue-comment-target")).toBe(true));
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
   });
 
   it("opens a missing comment at the top without an error", async () => {
     await mount({ commentId: "ic-missing" }, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
+    await waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
     expect(host.querySelector(".issue-comment-target")).toBeNull();
     expect(host.scrollTop).toBe(0);
     expect(notifyError).not.toHaveBeenCalled();
@@ -444,7 +443,8 @@ describe("the composer", () => {
     field.dispatchEvent(new Event("input"));
     call.mockClear();
     host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
-    await flush();
+    await waitFor(() => expect(listed("issues.get")).toHaveLength(1));
+    expect(listed("issues.comment")).toHaveLength(1);
     expect(listed("issues.comment")[0][1]).toEqual({ issue_id: "issue-1", body: "Looking at the drag handler." });
     expect(listed("issues.get")).toHaveLength(1);
   });
@@ -486,7 +486,7 @@ describe("the composer", () => {
       value: { files: [new File(["png"], "shot.png", { type: "image/png" })] },
     });
     host.querySelector("[data-issue-composer]").dispatchEvent(event);
-    await flush();
+    await waitFor(() => expect(listed("issues.attach")).toHaveLength(1));
     expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
 
     // A comment that is only a screenshot is a comment: the press turns on
@@ -494,7 +494,7 @@ describe("the composer", () => {
     expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(false);
     call.mockClear();
     host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
-    await flush();
+    await waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
     expect(listed("issues.comment")[0][1]).toEqual({
       issue_id: "issue-1",
       body: "",
@@ -509,7 +509,7 @@ describe("the composer", () => {
     field.dispatchEvent(new Event("input"));
     refuses = { method: "issues.comment", message: "issue is closed" };
     host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not add this comment", "issue is closed"));
     expect(notifyError).toHaveBeenCalledWith("Could not add this comment", "issue is closed");
   });
 });
@@ -518,7 +518,7 @@ describe("the rail", () => {
   const railWrite = async (act) => {
     call.mockClear();
     await act();
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
   };
 
   it("closes an open issue and reopens a closed one", async () => {
@@ -575,7 +575,7 @@ describe("the rail", () => {
     call = vi.fn(async () => answerFor({ assignee: { kind: "agent", agent_id: "agent-1" } }));
     await mount();
     host.querySelector("[data-issue-assign]").click();
-    await flush();
+    await waitFor(() => expect(openAssigneePicker).toHaveBeenCalled());
     expect(openAssigneePicker.mock.calls[0][0].current).toBe("agent:agent-1");
   });
 
@@ -642,7 +642,7 @@ describe("the push", () => {
     await mount();
     call.mockClear();
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
-    await flush();
+    await waitFor(() => expect(listed("issues.get")).toHaveLength(1));
     expect(listed("issues.get")).toHaveLength(1);
   });
 
@@ -658,7 +658,7 @@ describe("the push", () => {
     typed.setSelectionRange(10, 10);
     call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({ status: "in_review" }) : {}));
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
-    await flush();
+    await waitFor(() => expect(host.textContent).toContain("In review"));
 
     const after = host.querySelector("#issue-comment");
     expect(host.textContent).toContain("In review");
@@ -684,7 +684,6 @@ describe("the push", () => {
     await mount();
     call.mockClear();
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-9"], truncated: false } }]);
-    await flush();
     expect(listed("issues.get")).toEqual([]);
   });
 
@@ -693,7 +692,7 @@ describe("the push", () => {
     await mount();
     call.mockClear();
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: [], truncated: true } }]);
-    await flush();
+    await waitFor(() => expect(listed("issues.get")).toHaveLength(1));
     expect(listed("issues.get")).toHaveLength(1);
   });
 });
@@ -718,10 +717,10 @@ describe("saying which issue is open", () => {
       navigate: vi.fn(),
       onIssueRead: (issue) => seen.push(issue),
     });
-    await flush();
+    await waitFor(() => expect(settle).toBeTypeOf("function"));
     expect(seen).toEqual([]);
     settle(answerFor());
-    await flush();
+    await waitFor(() => expect(seen).toHaveLength(1));
     expect(seen.map((one) => [one.number, one.title])).toEqual([[12, "Kanban drag does not persist"]]);
   });
 
@@ -730,7 +729,7 @@ describe("saying which issue is open", () => {
     await mount({ onIssueRead: (issue) => seen.push(issue.title) });
     expect(seen).toHaveLength(1);
     watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
-    await flush();
+    await waitFor(() => expect(seen.length).toBeGreaterThan(1));
     expect(seen.length).toBeGreaterThan(1);
   });
 });
@@ -771,6 +770,7 @@ describe("a read that fails because the session dropped", () => {
     refuses = null;
     await reconnect();
     expect(listed("issues.get")).toHaveLength(2);
+    await waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
     expect(host.querySelector(".issue-page-title").textContent).toBe("Kanban drag does not persist");
     expect(note()).toBeNull();
     expect(notifyError).not.toHaveBeenCalled();
@@ -788,9 +788,10 @@ describe("a read that fails because the session dropped", () => {
   // is said.
   it("waits with nothing on screen, then says so when the retry fails too", async () => {
     refuses = { method: "issues.get", message: WENT };
-    await mount();
+    await mount({}, { waitForPaint: false });
     expect(notifyError).not.toHaveBeenCalled();
     await reconnect();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not read this issue", WENT));
     expect(notifyError).toHaveBeenCalledWith("Could not read this issue", WENT);
   });
 });

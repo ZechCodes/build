@@ -9,8 +9,6 @@ import { confirmAction, confirmActionAt, isConfirmOpen } from "../src/core/confi
 
 const OPTS = { title: "Merge feat/x?", actions: ["Commit", "Merge", "Delete branch"], confirmLabel: "Merge", danger: true };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe("confirmAction (DOM)", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -62,7 +60,7 @@ describe("confirmAction (DOM)", () => {
     let settled = null;
     const pending = confirmAction(OPTS).then((v) => (settled = v));
     document.querySelector(".modal").click(); // inside — must not settle
-    await flush();
+    await Promise.resolve(); // Let the promise observer run if the click resolved it.
     expect(settled).toBeNull();
     expect(isConfirmOpen()).toBe(true);
     document.getElementById("confirm-scrim").click(); // the scrim itself
@@ -119,7 +117,6 @@ describe("confirmActionAt (DOM)", () => {
     anchor.getBoundingClientRect = () => ({ left: 20, right: 60, top: 20, bottom: 48, width: 40, height: 28 });
     const pending = confirmActionAt(anchor, OPTS);
     anchor.remove();
-    await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(pending).resolves.toBe(false);
     expect(document.querySelector(".confirm-popover")).toBeNull();
   });

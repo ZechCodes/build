@@ -2,6 +2,7 @@
 // that tell it the answer moved.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -10,7 +11,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { createRailWorkItem } = await import("../src/core/railWorkItem.js");
 const { createConversationCache } = await import("../src/core/conversationCache.js");
 const { createThreadCache } = await import("../src/core/thread.js");
-const { wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { wipeCache, writeCached, readCached } = await import("../src/core/localCache.js");
 const { writeRailBoard, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const DEVICE = "dev-1";
@@ -26,10 +27,6 @@ const branchContext = {
   projectId: "p1",
   branch: "build/login",
   feedRoute: () => ({ name: "branch", deviceId: DEVICE, projectId: "p1", branch: "build/login" }),
-};
-
-const flush = async () => {
-  for (let turn = 0; turn < 16; turn += 1) await new Promise((done) => setTimeout(done, 0));
 };
 
 const rowRecord = (id) => ({
@@ -82,16 +79,13 @@ describe("a rail waiting for a row of its own", () => {
     records.watch(null);
 
     await Promise.all(["run-1", "run-2", "run-3", "run-4", "run-5"].map(writeRow));
-    await flush();
-    expect(reread).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
 
     finish();
-    await flush();
-
     // One more, for everything that moved while the first was out.
-    expect(reread).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(2));
     finish();
-    await flush();
+    await reread.mock.results[1].value;
     expect(reread).toHaveBeenCalledTimes(2);
   });
 
@@ -99,24 +93,21 @@ describe("a rail waiting for a row of its own", () => {
   it("hears a row that arrives once the burst is over", async () => {
     records.watch(null);
     await writeRow("run-1");
-    await flush();
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
+    await reread.mock.results[0].value;
     reread.mockClear();
 
     await writeRow("run-2");
-    await flush();
-
-    expect(reread).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(reread).toHaveBeenCalledTimes(1));
   });
 
   // A record that is not a row says nothing about which row this route is on.
   it("ignores a write that is not a row", async () => {
     records.watch(null);
-    await flush();
     reread.mockClear();
 
     await writeCached({ deviceId: DEVICE, entityId: "run-1", kind: "status", sub: "" }, { head: "abc" });
-    await flush();
-
+    // Cache write announcements are synchronous before writeCached resolves.
     expect(reread).not.toHaveBeenCalled();
   });
 });
@@ -172,9 +163,26 @@ describe("a workspace whose cached records arrive independently", () => {
       run_id: "run-3",
       agents: [{ id: "ag-first", ordinal: 1 }],
     });
-    await flush();
-
-    expect(standing).toHaveLength(1);
+    await waitFor(() => expect(standing).toHaveLength(1));
     expect(standing[0].agents[0].id).toBe("ag-first");
   });
+});
+
+// A sign-out can retire the scope between the row read and the hidden-roster
+// fallback. That late read must leave storage usable for the next device.
+it("keeps the cache usable when the device retires during a missing row read", async () => {
+  let active = true;
+  records = createRailWorkItem({
+    context: { kind: "workspace", deviceId: DEVICE },
+    railContext: { kind: "workspace" },
+    cacheScope: { address: (parts) => active ? { ...parts, deviceId: DEVICE } : null },
+    alive: () => active,
+  });
+  const reading = records.cachedRow("missing-run");
+  active = false;
+  expect(await reading).toBeNull();
+
+  const address = { deviceId: "next-device", entityId: "", kind: "feed" };
+  await writeCached(address, { items: [] });
+  expect((await readCached(address))?.value).toEqual({ items: [] });
 });

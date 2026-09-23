@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { coreSourceOf } from "./coreSource.js";
 import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
 import { motionSettled } from "../src/core/motion.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
+import { readCached } from "../src/core/localCache.js";
+import { uiAddress } from "../src/core/localUiState.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
@@ -384,7 +387,7 @@ describe("painting the viewer", () => {
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");
 
     choices[1].click();
-    await vi.waitFor(() => expect(choices[1].getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(choices[1].getAttribute("aria-pressed")).toBe("true"));
 
     expect(choices[1].getAttribute("aria-pressed")).toBe("true");
     expect(choices[0].getAttribute("aria-pressed")).toBe("false");
@@ -549,7 +552,7 @@ describe("the fold the finished rows sit under", () => {
     expect(historyToggle().getAttribute("aria-pressed")).toBe("false");
 
     historyToggle().click();
-    await vi.waitFor(() => expect(completedFold().open).toBe(true));
+    await waitFor(() => expect(completedFold().open).toBe(true));
     expect(completedFold().open).toBe(true);
     expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
     expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (1)");
@@ -591,7 +594,7 @@ describe("the fold the finished rows sit under", () => {
     surfaces.set(snapshot());
     await pressPill(AGENT_ENTRY_KIND);
     historyToggle().click();
-    await vi.waitFor(() => expect(completedFold().open).toBe(true));
+    await waitFor(() => expect(completedFold().open).toBe(true));
     const fold = completedFold();
     const [finishedRow] = completedRows();
 
@@ -612,7 +615,10 @@ describe("the fold the finished rows sit under", () => {
     await pressPill(AGENT_ENTRY_KIND);
     const running = document.querySelector('.surface-running > [data-key="s2"]');
     running.querySelector(".surface-agent-summary").click();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await waitFor(async () => {
+      const fold = await readCached(uiAddress({ entityId: SURFACES_KEY, view: "surface-viewer", kind: "fold", sub: AGENT_ENTRY_KIND }));
+      expect(fold?.value?.["agent:s2"]).toBe(true);
+    });
 
     const finished = snapshot();
     finished.subagents[1] = { ...finished.subagents[1], state: "done", result: "Review complete" };
@@ -620,7 +626,7 @@ describe("the fold the finished rows sit under", () => {
 
     const completed = document.querySelector('.surface-completed-rows > [data-key="s2"]');
     expect(completed.open).toBe(true);
-    await vi.waitFor(() => expect(completedFold().open).toBe(true));
+    await waitFor(() => expect(completedFold().open).toBe(true));
     expect(completedFold().open).toBe(true);
     expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
     expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (2)");

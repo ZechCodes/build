@@ -3,6 +3,7 @@
 // where they are kept, and how agents run there — read and written over the
 // connection this page opens to that machine, and nothing else.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -121,14 +122,14 @@ describe("the machine's own panels", () => {
       ? new Promise(() => {})
       : Promise.resolve(method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS));
     void renderDeviceSettings();
-    await vi.waitFor(() => expect(document.querySelector("#device-projects-path")?.textContent).toBe("/cached-projects"));
+    await waitFor(() => expect(document.querySelector("#device-projects-path")?.textContent).toBe("/cached-projects"));
     expect(document.querySelector("#device-projects-change").disabled).toBe(false);
   });
 
   it("repaints the projects folder after a real settings cache write", async () => {
     await renderDeviceSettings();
     await writeCached(deviceSettingsAddress("other"), { ...SETTINGS, projects_dir: "/announced-projects" });
-    await vi.waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/announced-projects"));
+    await waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/announced-projects"));
     expect((await readCached(deviceSettingsAddress("other"))).value.projects_dir).toBe("/announced-projects");
   });
 
@@ -140,14 +141,14 @@ describe("the machine's own panels", () => {
       return Promise.resolve(SETTINGS);
     });
     await renderDeviceSettings();
-    await vi.waitFor(() => expect(document.querySelector("#projlist .projrow")?.textContent).toContain("relaydb"));
-    await vi.waitFor(() => expect(document.querySelector("#defaultharness")?.value).toBe("claude"));
+    await waitFor(() => expect(document.querySelector("#projlist .projrow")?.textContent).toContain("relaydb"));
+    await waitFor(() => expect(document.querySelector("#defaultharness")?.value).toBe("claude"));
     expect(session.call).toHaveBeenCalledWith("project.list");
   });
 
   it("lists the device's projects over its own connection, with Add project and Set remote on that connection", async () => {
     await renderDeviceSettings();
-    await vi.waitFor(() => expect(document.querySelectorAll("#projlist .projrow")).toHaveLength(1));
+    await waitFor(() => expect(document.querySelectorAll("#projlist .projrow")).toHaveLength(1));
 
     expect(session.call).toHaveBeenCalledWith("project.list");
     const rows = [...document.querySelectorAll("#projlist .projrow")];
@@ -171,7 +172,7 @@ describe("the machine's own panels", () => {
 
   it("mounts the agent modes, default harness and isolation panels over the same connection", async () => {
     await renderDeviceSettings();
-    await vi.waitFor(() => expect(document.getElementById("defaultharness")?.value).toBe("claude"));
+    await waitFor(() => expect(document.getElementById("defaultharness")?.value).toBe("claude"));
 
     expect(document.getElementById("agentmode-claude").value).toBe("tui");
     expect(document.getElementById("agentmode-codex").value).toBe("headless");
@@ -224,19 +225,19 @@ describe("the machine's own panels", () => {
     expect(document.querySelector("#device-settings-status").textContent).toContain("Bring this device online");
 
     document.querySelector("#device-settings-retry").click();
-    await vi.waitFor(() => expect(document.querySelector("#projlist").textContent).toContain("relaydb"));
+    await waitFor(() => expect(document.querySelector("#projlist").textContent).toContain("relaydb"));
     expect(document.getElementById("defaultharness").value).toBe("claude");
   });
 
   it("refreshes that device's model catalog when a harness setting is saved", async () => {
     await renderDeviceSettings();
-    await vi.waitFor(() => expect(document.getElementById("defaultharness")?.disabled).toBe(false));
+    await waitFor(() => expect(document.getElementById("defaultharness")?.disabled).toBe(false));
 
     const select = document.getElementById("defaultharness");
     select.value = "codex";
     select.dispatchEvent(new Event("change"));
 
-    await vi.waitFor(() => expect(refreshModelCatalog).toHaveBeenCalled());
+    await waitFor(() => expect(refreshModelCatalog).toHaveBeenCalled());
 
     expect(session.call).toHaveBeenCalledWith("settings.set", { default_harness: "codex" });
     expect(contextFor).toHaveBeenCalledWith("other");
@@ -246,12 +247,12 @@ describe("the machine's own panels", () => {
   it("saves for a machine the app holds no context for, and outlives a refused refresh", async () => {
     contextFor.mockReturnValue(null);
     await renderDeviceSettings();
-    await vi.waitFor(() => expect(document.getElementById("agentmode-claude")?.disabled).toBe(false));
+    await waitFor(() => expect(document.getElementById("agentmode-claude")?.disabled).toBe(false));
     const modes = document.getElementById("agentmode-claude");
     modes.value = "headless";
     modes.dispatchEvent(new Event("change"));
 
-    await vi.waitFor(() => expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved."));
+    await waitFor(() => expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved."));
     expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
 
     contextFor.mockImplementation(() => ({ refreshModelCatalog }));
@@ -259,7 +260,7 @@ describe("the machine's own panels", () => {
     modes.value = "tui";
     modes.dispatchEvent(new Event("change"));
 
-    await vi.waitFor(() => expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved."));
+    await waitFor(() => expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved."));
     expect(document.querySelector('[data-agent-mode-status="claude"]').textContent).toBe("Saved.");
     expect(document.querySelector("[data-agent-modes-error]").textContent).toBe("");
   });
@@ -273,7 +274,7 @@ describe("device settings", () => {
     expect(document.querySelector("h1").textContent).toBe("Other machine settings");
     await writeCached(DEVICES_ADDRESS, [{ id: "other", name: "Cached workshop", status: "online" }]);
 
-    await vi.waitFor(() => expect(document.querySelector("h1").textContent).toBe("Cached workshop settings"));
+    await waitFor(() => expect(document.querySelector("h1").textContent).toBe("Cached workshop settings"));
     expect(document.querySelector("#device-name").value).toBe("Cached workshop");
     expect(renameDevice).not.toHaveBeenCalled();
   });
@@ -287,13 +288,13 @@ describe("device settings", () => {
     expect(document.querySelector("h1").textContent).toBe("Other machine settings");
     name.value = "  Workshop  ";
     document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(renameDevice).toHaveBeenCalledWith("other", "Workshop"));
+    await waitFor(() => expect(renameDevice).toHaveBeenCalledWith("other", "Workshop"));
 
     expect(renameDevice).toHaveBeenCalledWith("other", "Workshop");
     expect(document.querySelector("h1").textContent).toBe("Other machine settings");
     expect((await readCached(DEVICES_ADDRESS)).value[0].name).toBe("Other machine");
     finishRename({ device_id: "other", name: "Workshop" });
-    await vi.waitFor(() => expect(document.querySelector("h1").textContent).toBe("Workshop settings"));
+    await waitFor(() => expect(document.querySelector("h1").textContent).toBe("Workshop settings"));
 
     expect(App.devices[0].name).toBe("Workshop");
     expect((await readCached(DEVICES_ADDRESS)).value[0].name).toBe("Workshop");
@@ -306,7 +307,7 @@ describe("device settings", () => {
     const name = document.querySelector("#device-name");
     name.value = "Workshop";
     document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(document.querySelector("#device-name-status").textContent).toBe("Name could not be saved"));
+    await waitFor(() => expect(document.querySelector("#device-name-status").textContent).toBe("Name could not be saved"));
 
     expect(App.devices[0].name).toBe("Other machine");
     expect(name.value).toBe("Other machine");
@@ -321,7 +322,7 @@ describe("device settings", () => {
     document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await writeCached(DEVICES_ADDRESS, [{ id: "other", name: "Other machine", status: "offline" }]);
     finishRename({ device_id: "other", name: "Workshop" });
-    await vi.waitFor(() => expect(App.devices[0].name).toBe("Workshop"));
+    await waitFor(() => expect(App.devices[0].name).toBe("Workshop"));
 
     expect((await readCached(DEVICES_ADDRESS)).value[0]).toMatchObject({ name: "Workshop", status: "offline" });
   });
@@ -334,7 +335,7 @@ describe("device settings", () => {
     document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     App.viewDispose();
     finishRename({ device_id: "other", name: "Workshop" });
-    await vi.waitFor(() => expect(App.devices[0].name).toBe("Workshop"));
+    await waitFor(() => expect(App.devices[0].name).toBe("Workshop"));
 
     expect((await readCached(DEVICES_ADDRESS)).value[0].name).toBe("Workshop");
   });
@@ -342,7 +343,7 @@ describe("device settings", () => {
   it("leaves the device paired when deactivation is cancelled", async () => {
     await renderDeviceSettings();
     document.querySelector("#device-deactivate").click();
-    await vi.waitFor(() => expect(document.querySelector("#device-deactivate")?.disabled).toBe(false));
+    await waitFor(() => expect(document.querySelector("#device-deactivate")?.disabled).toBe(false));
 
     expect(confirmAction).toHaveBeenCalledWith(expect.objectContaining({ danger: true }));
     expect(revokeDevice).not.toHaveBeenCalled();
@@ -355,7 +356,7 @@ describe("device settings", () => {
     await renderDeviceSettings();
     document.querySelector("#device-deactivate").click();
 
-    await vi.waitFor(() => expect(document.querySelector("#device-deactivate-status").textContent).toBe("Could not deactivate device"));
+    await waitFor(() => expect(document.querySelector("#device-deactivate-status").textContent).toBe("Could not deactivate device"));
 
     expect(App.devices).toHaveLength(1);
     expect(retireDevice).not.toHaveBeenCalled();
@@ -370,7 +371,7 @@ describe("device settings", () => {
     const onDeviceDeactivated = vi.fn();
     await renderDeviceSettings({ onDeviceDeactivated });
     document.querySelector("#device-deactivate").click();
-    await vi.waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
+    await waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
 
     expect(revokeDevice).toHaveBeenCalledWith("other");
     expect(App.devices).toEqual([]);
@@ -385,10 +386,10 @@ describe("device settings", () => {
     const onDeviceDeactivated = vi.fn();
     await renderDeviceSettings({ onDeviceDeactivated });
     document.querySelector("#device-deactivate").click();
-    await vi.waitFor(() => expect(revokeDevice).toHaveBeenCalledWith("other"));
+    await waitFor(() => expect(revokeDevice).toHaveBeenCalledWith("other"));
     App.viewDispose();
     finishRevoke();
-    await vi.waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
+    await waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
 
     expect(App.devices).toEqual([]);
     expect((await readCached(DEVICES_ADDRESS)).value).toEqual([]);
@@ -402,7 +403,7 @@ describe("device settings", () => {
     revokeDevice.mockResolvedValue();
     const rendering = renderDeviceSettings();
     document.querySelector("#device-deactivate").click();
-    await vi.waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
+    await waitFor(() => expect(retireDevice).toHaveBeenCalledWith("other"));
     finishOpen(session);
     await rendering;
 
@@ -419,12 +420,10 @@ describe("device settings", () => {
     expect(document.querySelector("#root").textContent).toContain("Fallback agent");
     expect(document.querySelector("#root").textContent).not.toContain("Diff triage");
     const select = document.querySelector("[data-isolation=select]");
-    await vi.waitFor(() => expect(select.value).toBe("worktree"));
+    await waitFor(() => expect(select.value).toBe("worktree"));
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
-    await new Promise((done) => setTimeout(done, 0));
-
-    expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
+    await waitFor(() => expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" }));
   });
 
   it("uses the named device's Rift capability rather than another machine's", async () => {
@@ -451,7 +450,7 @@ describe("device settings", () => {
 
     await renderDeviceSettings();
 
-    await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
+    await waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
     const rift = [...document.querySelector("[data-isolation=select]").options].find(({ value }) => value === "rift");
     expect(rift.disabled).toBe(true);
     expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift CLI was not found");
@@ -465,7 +464,6 @@ describe("device settings", () => {
 
     stale.value = "rift";
     stale.dispatchEvent(new Event("change"));
-    await new Promise((done) => setTimeout(done, 0));
 
     expect(session.call).not.toHaveBeenCalledWith("settings.set", expect.anything());
   });
@@ -501,7 +499,7 @@ describe("device settings", () => {
       };
       openSession.mockResolvedValueOnce(newSession);
       document.querySelector("#device-settings-retry").click();
-      await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
+      await waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
       const callsBeforeLateSave = newSession.call.mock.calls.length;
 
       if (completion === "resolve") resolveSave({ isolation: "rift", isolation_available: { rift: true } });
@@ -584,8 +582,7 @@ it("disables folder selection after disconnect and ignores old connection callba
   expect(document.querySelector("#device-settings-retry").hidden).toBe(false);
   expect(session.close).toHaveBeenCalled();
   document.querySelector("#device-settings-retry").click();
-  await new Promise((done) => setTimeout(done, 0));
-  expect(document.querySelector("#device-projects-change").disabled).toBe(false);
+  await waitFor(() => expect(document.querySelector("#device-projects-change").disabled).toBe(false));
   onLost();
   expect(document.querySelector("#device-projects-change").disabled).toBe(false);
 });
@@ -611,7 +608,7 @@ it.each(["resolve", "reject"])("ignores a stale save that %ss after reconnect, w
   const newSession = { deviceId: "other", close: vi.fn(), call: vi.fn().mockResolvedValue({ projects_dir: "/new" }) };
   openSession.mockResolvedValueOnce(newSession);
   document.querySelector("#device-settings-retry").click();
-  await vi.waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/new"));
+  await waitFor(() => expect(document.querySelector("#device-projects-path").textContent).toBe("/new"));
   document.querySelector("#device-projects-change").click();
   newSession.call.mockResolvedValueOnce({ projects_dir: "/latest" });
   await openBrowser.mock.calls[1][0].onChoose("/latest");

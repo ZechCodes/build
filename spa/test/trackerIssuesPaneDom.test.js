@@ -7,6 +7,7 @@
 // param rather than a pass over what happens to be in hand.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
@@ -64,11 +65,12 @@ vi.mock("../src/core/deviceReconnect.js", () => ({
   }),
 }));
 
+const failureHandled = () => waitFor(() => expect(movedListeners.size + notifyError.mock.calls.length).toBeGreaterThan(0));
 const reconnect = async () => {
+  await failureHandled();
   away = false;
   reconnecting = false;
   [...movedListeners].forEach((fn) => fn());
-  await flush();
 };
 
 const PROJECT_KEY = "dev-1|proj-1";
@@ -80,11 +82,7 @@ const feed = {
 
 let host, call, pane, cache, trackerCache, mountIssuesPane;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
-const mount = async (over = {}) => {
+const mount = async (over = {}, { waitForPaint = true } = {}) => {
   pane = mountIssuesPane(host, {
     projectId: "proj-1",
     projectName: "Build",
@@ -98,7 +96,7 @@ const mount = async (over = {}) => {
     navigate: vi.fn(),
     ...over,
   });
-  await flush();
+  if (waitForPaint) await waitFor(() => expect(host.querySelector(".issue-title, .issue-dashboard-row, .issue-card")).not.toBeNull());
   return pane;
 };
 
@@ -118,7 +116,7 @@ const newPress = () => host.querySelector("[data-issue-new]");
 const composer = () => host.querySelector(".issue-compose");
 const openComposer = async () => {
   newPress().click();
-  await flush();
+  await waitFor(() => expect(composer()).not.toBeNull());
   return composer();
 };
 const typeIn = (selector, value) => {
@@ -132,11 +130,12 @@ const chooseAssignee = async (optionId) => {
   const select = host.querySelector("#issue-new-assignee");
   select.value = optionId;
   select.dispatchEvent(new Event("change"));
-  await flush();
 };
 const fileIt = async () => {
+  const hasTitle = Boolean(host.querySelector(".issue-compose-title")?.value.trim());
   host.querySelector("[data-compose-file]").click();
-  await flush();
+  if (hasTitle) await waitFor(() => expect(composer()).toBeNull());
+  else await waitFor(() => expect(host.querySelector(".issue-compose-error")?.hidden).toBe(false));
 };
 
 const menu = (name) => host.querySelector(`[data-filter-menu="${name}"]`);
@@ -144,7 +143,7 @@ const menuPress = (name) => menu(name).querySelector(".fmenu-press");
 const openMenu = async (name) => {
   const press = menuPress(name);
   if (press.getAttribute("aria-expanded") !== "true") press.click();
-  await flush();
+  await waitFor(() => expect(menuPress(name).getAttribute("aria-expanded")).toBe("true"));
   return menu(name);
 };
 const menuRows = (name) => [...menu(name).querySelectorAll(".fmenu-row")];
@@ -155,15 +154,16 @@ const chooseFilter = async (name, value) => {
   await openMenu(name);
   const row = menuRows(name).find((one) => one.dataset.value === value);
   if (!row) throw new Error(`no "${value}" row in the ${name} menu: ${menuLabels(name).join(", ")}`);
+  const previousReads = listed("issues.list").length;
   row.click();
-  await flush();
+  await waitFor(() => expect(listed("issues.list").length).toBeGreaterThan(previousReads));
 };
 
 /** Clear one menu from inside it — the press in its own footer. */
 const clearMenu = async (name) => {
   await openMenu(name);
   menu(name).querySelector(".fmenu-clear").click();
-  await flush();
+  await waitFor(() => expect(menuPress(name).getAttribute("aria-expanded")).toBe("false"));
 };
 const titles = () => [...host.querySelectorAll(".issue-title")].map((one) => one.textContent);
 const columnNames = () => [...host.querySelectorAll(".issue-column-head h3")].map((one) => one.textContent);
@@ -216,7 +216,7 @@ describe("painting before the bridge is asked", () => {
     await mount();
     expect(titles()).toEqual(["From the cache"]);
     answer({ issues: [issue({ number: 12, id: "issue-12", title: "From the bridge" })] });
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["From the bridge"]));
     expect(titles()).toEqual(["From the bridge"]);
   });
 
@@ -227,7 +227,7 @@ describe("painting before the bridge is asked", () => {
 
   it("repaints from a query-cache write while the pulled payload is absent", async () => {
     call = vi.fn(() => new Promise(() => {}));
-    await mount();
+    await mount({}, { waitForPaint: false });
     expect(titles()).toEqual([]);
 
     await trackerCache.writeIssuesQueryRecord(
@@ -236,7 +236,7 @@ describe("painting before the bridge is asked", () => {
       { project_id: "proj-1", state: "open" },
       trackerCache.issuesRecord([issue({ id: "issue-cache", number: 30, title: "Announced from cache" })], columns()),
     );
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["Announced from cache"]));
 
     expect(titles()).toEqual(["Announced from cache"]);
   });
@@ -261,6 +261,11 @@ describe("the Dashboard", () => {
     const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1", name: "Writer" }] }] };
     call = vi.fn(() => new Promise(() => {}));
     await mount({ feed: () => activeFeed, defaultView: undefined });
+    await waitFor(() => {
+      expect(dashboardRows("doneToday")).toEqual(["done"]);
+      expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail')?.textContent)
+        .toContain("Writing summary");
+    });
 
     expect(host.querySelector('[data-issue-view="dashboard"]').getAttribute("aria-pressed")).toBe("true");
     expect(clearPress()).toBeNull();
@@ -290,7 +295,11 @@ describe("the Dashboard", () => {
     await trackerCache.writeIssueRecord("dev-1", "proj-1", done.id, trackerCache.issueRecord(done, [
       { type: "event", kind: "moved", at: new Date().toISOString(), payload: { to: "done" } },
     ]));
-    await flush();
+    await waitFor(() => {
+      expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail')?.textContent)
+        .toContain("Cached new activity");
+      expect(dashboardRows("doneToday")).toEqual(["done"]);
+    });
 
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
       .toContain("Cached new activity");
@@ -328,13 +337,13 @@ describe("the Dashboard", () => {
       navigate: vi.fn(),
     });
 
-    await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual(["unread"]));
+    await waitFor(() => expect(dashboardRows("needsYou")).toEqual(["unread"]));
 
     const read = { ...unread, read_through: "ic-02" };
     await trackerCache.writeIssueRecord("dev-1", "proj-1", unread.id, trackerCache.issueRecord(read, [{
       type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Could you review this?",
     }]));
-    await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual([]));
+    await waitFor(() => expect(dashboardRows("needsYou")).toEqual([]));
   });
 });
 
@@ -355,7 +364,7 @@ describe("the list", () => {
     expect([...host.querySelectorAll(".issue-group-heading")].map((one) => one.textContent.trim()))
       .toEqual(["In progress with an agent1", "Needs you2", "Other issues1"]);
     host.querySelector('[data-issue-group-toggle="working"]').click();
-    await vi.waitFor(() => expect(host.querySelector('[data-issue-group="working"] .issue-rows').hidden).toBe(true));
+    await waitFor(() => expect(host.querySelector('[data-issue-group="working"] .issue-rows').hidden).toBe(true));
     expect(host.querySelector('[data-issue-group-toggle="working"]').getAttribute("aria-expanded")).toBe("false");
   });
 
@@ -372,7 +381,7 @@ describe("the list", () => {
     await trackerCache.writeIssueRecord("dev-1", "proj-1", one.id, trackerCache.issueRecord(one, [{
       type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Please take a look",
     }]));
-    await vi.waitFor(() => expect(host.querySelector('[data-issue-group="needsYou"] [data-issue="watched"]')).not.toBeNull());
+    await waitFor(() => expect(host.querySelector('[data-issue-group="needsYou"] [data-issue="watched"]')).not.toBeNull());
   });
 
   it("shows cached issues a page at a time and appends the next page without a bridge answer", async () => {
@@ -387,10 +396,10 @@ describe("the list", () => {
     expect(titles()[0]).toBe("Cached 54");
     expect(host.querySelector(".issue-paging").textContent).toContain("25 of 54");
     host.querySelector("[data-issue-more]").click();
-    await vi.waitFor(() => expect(titles()).toHaveLength(50));
+    await waitFor(() => expect(titles()).toHaveLength(50));
     expect(titles()[25]).toBe("Cached 29");
     host.querySelector("[data-issue-more]").click();
-    await vi.waitFor(() => expect(titles()).toHaveLength(54));
+    await waitFor(() => expect(titles()).toHaveLength(54));
     expect(host.querySelector("[data-issue-more]")).toBeNull();
   });
 
@@ -404,7 +413,7 @@ describe("the list", () => {
     await mount();
     host.querySelector("[data-issue-more]").click();
     answer({ issues: [...issues, issue({ id: "issue-31", number: 31, title: "New issue" })] });
-    await flush();
+    await waitFor(() => expect(titles()).toHaveLength(31));
     expect(titles()).toHaveLength(31);
     expect(titles()[0]).toBe("New issue");
   });
@@ -461,7 +470,8 @@ describe("the list", () => {
 
   it("says nothing is here yet when the project has no issues", async () => {
     call = vi.fn(async () => ({ issues: [] }));
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await waitFor(() => expect(host.querySelector(".issue-empty h2")).not.toBeNull());
     expect(host.querySelector(".issue-empty h2").textContent).toBe("No issues yet");
   });
 });
@@ -492,7 +502,7 @@ describe("the filters", () => {
 
   it("says the filter is why the list is empty, not the project", async () => {
     call = vi.fn(async () => ({ issues: [] }));
-    await mount();
+    await mount({}, { waitForPaint: false });
     await chooseFilter("state", "closed");
     expect(host.querySelector(".issue-empty").textContent).toContain("No issue matches these filters");
   });
@@ -554,7 +564,7 @@ describe("the board", () => {
   it("says on the open/closed mark that it moves independently of the column", async () => {
     await mount();
     host.querySelector('[data-issue-view="board"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-card .issue-state")?.getAttribute("title")).toContain("The two move independently"));
     expect(host.querySelector(".issue-card .issue-state").getAttribute("title"))
       .toContain("The two move independently");
   });
@@ -563,7 +573,7 @@ describe("the board", () => {
     await mount();
     expect(host.querySelector(".issue-board")).toBeNull();
     host.querySelector('[data-issue-view="board"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-board")).not.toBeNull());
     expect(host.querySelector(".issue-board")).not.toBeNull();
     expect(host.querySelector(".issue-rows")).toBeNull();
   });
@@ -578,7 +588,7 @@ describe("moving a card", () => {
         dataTransfer: { getData: (key) => data.get(key) },
       }),
     );
-    await flush();
+    await waitFor(() => expect(listed("issues.update")).toHaveLength(1));
   };
 
   it("calls issues.update with the new status, and only that", async () => {
@@ -600,7 +610,7 @@ describe("moving a card", () => {
     await drop("issue-12", "done");
     expect(cardsIn("done")).toEqual(["issue-12"]);
     settle({});
-    await flush();
+    await waitFor(() => expect(cardsIn("done")).toEqual(["issue-12"]));
   });
 
   // A card that stayed put with no word is a card the reader will drag again.
@@ -612,6 +622,7 @@ describe("moving a card", () => {
     });
     await mount({ view: "board" });
     await drop("issue-12", "done");
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed"));
     expect(cardsIn("backlog")).toEqual(["issue-12"]);
     expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed");
   });
@@ -622,7 +633,7 @@ describe("moving a card", () => {
     call.mockClear();
     const card = host.querySelector('.issue-card[data-issue="issue-12"]');
     card.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await flush();
+    await waitFor(() => expect(listed("issues.update")).toHaveLength(1));
     expect(listed("issues.update")[0][1]).toEqual({ issue_id: "issue-12", status: "in_review" });
   });
 
@@ -632,7 +643,6 @@ describe("moving a card", () => {
     await mount({ view: "board" });
     call.mockClear();
     host.querySelector(".issue-card").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    await flush();
     expect(listed("issues.update")).toEqual([]);
   });
 });
@@ -641,7 +651,7 @@ describe("the two presses", () => {
   it("opens the picker on a row, standing on that issue's current assignee", async () => {
     await mount();
     host.querySelector("[data-issue-assign]").click();
-    await flush();
+    await waitFor(() => expect(openAssigneePicker).toHaveBeenCalled());
     const [given] = openAssigneePicker.mock.calls[0];
     expect([given.issue.id, given.current]).toEqual(["issue-12", "user"]);
   });
@@ -649,7 +659,7 @@ describe("the two presses", () => {
   it("offers the project's agents to the picker, grouped by workspace", async () => {
     await mount();
     host.querySelector("[data-issue-assign]").click();
-    await flush();
+    await waitFor(() => expect(openAssigneePicker).toHaveBeenCalled());
     const [given] = openAssigneePicker.mock.calls[0];
     expect(given.options.map((one) => one.id)).toEqual([
       "none", "user", "project_agent", "agent:agent-1", "new_agent:ws-1", "new_workspace",
@@ -659,7 +669,7 @@ describe("the two presses", () => {
   it("opens the picker from a card too", async () => {
     await mount({ view: "board" });
     host.querySelector(".issue-card [data-issue-assign]").click();
-    await flush();
+    await waitFor(() => expect(openAssigneePicker).toHaveBeenCalled());
     expect(openAssigneePicker).toHaveBeenCalled();
   });
 
@@ -734,7 +744,7 @@ describe("the two presses", () => {
     call.mockImplementation(async (method) =>
       method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {});
     watchers[0].refresh();
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["Fresh"]));
     expect(titles()).toEqual(["Fresh"]);
     expect(host.querySelector(".issue-compose-title")).toBe(title);
     expect(title.value).toBe("Half written");
@@ -756,6 +766,7 @@ describe("the two presses", () => {
         : new Promise(() => {}), // the list never answers
     );
     await fileIt();
+    await waitFor(() => expect(host.querySelector('[data-issue="issue-20"]')).not.toBeNull());
   };
 
   it("puts the new row in the list without rebuilding the rows around it", async () => {
@@ -769,7 +780,7 @@ describe("the two presses", () => {
   it("puts the focus on the row it just made", async () => {
     await mount();
     await fileWithTheReadHeldOpen();
-    expect(document.activeElement.closest(".issue-row")?.dataset.issue).toBe("issue-20");
+    await waitFor(() => expect(document.activeElement.closest(".issue-row")?.dataset.issue).toBe("issue-20"));
   });
 
   // Cancelling gives the keyboard back to the press that opened the form —
@@ -778,7 +789,7 @@ describe("the two presses", () => {
     await mount();
     await openComposer();
     host.querySelector("[data-compose-cancel]").click();
-    await flush();
+    await waitFor(() => expect(composer()).toBeNull());
     expect(composer()).toBeNull();
     expect(document.activeElement).toBe(newPress());
   });
@@ -811,7 +822,7 @@ describe("the two presses", () => {
       return { issues: [] };
     });
     drop(new File(["png"], "shot.png", { type: "image/png" }));
-    await flush();
+    await waitFor(() => expect(listed("issues.attach")).toHaveLength(1));
     expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
     expect(host.querySelector(".composer-tray").hidden).toBe(false);
 
@@ -856,7 +867,7 @@ describe("the two presses", () => {
       return { issues: [] };
     });
     drop(new File(["png"], "shot.png", { type: "image/png" }));
-    await flush();
+    await waitFor(() => expect(listed("issues.attach")).toHaveLength(1));
     typeIn(".issue-compose-title", "Kanban drag");
     await fileIt();
     expect(notifyError).toHaveBeenCalledWith(
@@ -900,7 +911,7 @@ describe("the filter bar, mounted once", () => {
       method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh" })], columns: columns() } : {});
     for (let i = 0; i < 5; i++) {
       watchers[0].refresh();
-      await flush();
+      await waitFor(() => expect(titles()).toEqual(["Fresh"]));
     }
     expect(titles()).toEqual(["Fresh"]);
     expect(controls()).toEqual(before);
@@ -914,7 +925,7 @@ describe("the filter bar, mounted once", () => {
     call.mockImplementation(async (method) =>
       method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh", labels: ["bug"] })], columns: columns() } : {});
     watchers[0].refresh();
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["Fresh"]));
     expect(titles()).toEqual(["Fresh"]);
     expect(menuPress("label")).toBe(press);
     expect(document.activeElement).toBe(press);
@@ -930,13 +941,13 @@ describe("the filter bar, mounted once", () => {
     const search = menu("label").querySelector(".fmenu-search");
     search.value = "bu";
     search.dispatchEvent(new Event("input"));
-    await flush();
+    await waitFor(() => expect(menuRows("label")).toHaveLength(1));
     search.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     const walked = menu("label").querySelector(".fmenu-row.is-active");
     call.mockImplementation(async (method) =>
       method === "issues.list" ? { issues: [issue({ id: "issue-9", number: 9, title: "Fresh", labels: ["bug"] })], columns: columns() } : {});
     watchers[0].refresh();
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["Fresh"]));
     expect(titles()).toEqual(["Fresh"]);
     expect(menuPress("label").getAttribute("aria-expanded")).toBe("true");
     expect(search.value).toBe("bu");
@@ -990,9 +1001,9 @@ describe("the filter bar, mounted once", () => {
     await mount();
     const before = controls();
     host.querySelector('[data-issue-view="board"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-board")).not.toBeNull());
     host.querySelector('[data-issue-view="list"]').click();
-    await flush();
+    await waitFor(() => expect(host.querySelector(".issue-rows")).not.toBeNull());
     expect(controls()).toEqual(before);
   });
 });
@@ -1026,7 +1037,7 @@ describe("the push", () => {
           }
         : {});
     watchers[0].refresh();
-    await flush();
+    await waitFor(() => expect(changed.querySelector(".issue-title")?.textContent).toBe("Renamed"));
     expect(host.querySelector('[data-issue="issue-11"]')).toBe(kept);
     expect(host.querySelector('[data-issue="issue-12"]')).toBe(changed);
     expect(changed.querySelector(".issue-title").textContent).toBe("Renamed");
@@ -1041,7 +1052,7 @@ describe("the push", () => {
     await mount();
     call.mockClear();
     watchers[0].refresh();
-    await flush();
+    await waitFor(() => expect(listed("issues.list")).toHaveLength(1));
     expect(listed("issues.list")).toHaveLength(1);
   });
 
@@ -1081,6 +1092,7 @@ describe("a read that fails because the session dropped", () => {
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: CACHED, columns: columns() });
     call = refusing(message);
     await mount();
+    await failureHandled();
   };
 
   it("keeps the cached list and says nothing", async () => {
@@ -1099,6 +1111,7 @@ describe("a read that fails because the session dropped", () => {
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: CACHED, columns: columns() });
     call = refusing(WENT);
     await mount({ view: "board" });
+    await failureHandled();
     expect(cardsIn("ready")).toEqual(["issue-9"]);
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -1111,6 +1124,7 @@ describe("a read that fails because the session dropped", () => {
     );
     await reconnect();
     expect(listed("issues.list")).toHaveLength(2);
+    await waitFor(() => expect(titles()).toEqual(["Kanban drag does not persist"]));
     expect(titles()).toEqual(["Kanban drag does not persist"]);
     expect(note()).toBeNull();
     expect(notifyError).not.toHaveBeenCalled();
@@ -1123,9 +1137,11 @@ describe("a read that fails because the session dropped", () => {
 
   it("waits with nothing on screen, then says so when the retry fails too", async () => {
     call = refusing(WENT);
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await failureHandled();
     expect(notifyError).not.toHaveBeenCalled();
     await reconnect();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not read this project's issues", WENT));
     expect(notifyError).toHaveBeenCalledWith("Could not read this project's issues", WENT);
   });
 });
@@ -1146,7 +1162,11 @@ describe("what the tab opens on", () => {
       return { issues: wanted ? OPEN_AND_CLOSED.filter((one) => one.state === wanted) : OPEN_AND_CLOSED };
     });
 
-  const chooseState = (value) => chooseFilter("state", value);
+  const chooseState = async (value) => {
+    await chooseFilter("state", value);
+    const wanted = OPEN_AND_CLOSED.filter((one) => !value || one.state === value).map((one) => one.title);
+    await waitFor(() => expect(titles()).toEqual(wanted));
+  };
 
   it("asks the bridge for open issues, and draws only those", async () => {
     call = listing();
@@ -1202,7 +1222,7 @@ describe("what the tab opens on", () => {
     await chooseState("");
     expect(titles()).toEqual(["Still open", "Finished with"]);
     clearPress().click();
-    await flush();
+    await waitFor(() => expect(titles()).toEqual(["Still open"]));
     expect(titles()).toEqual(["Still open"]);
     expect(clearPress()).toBeNull();
   });
@@ -1211,7 +1231,8 @@ describe("what the tab opens on", () => {
   // filter that matched none.
   it("still says the project is empty rather than blaming the filter", async () => {
     call = vi.fn(async () => ({ issues: [] }));
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await waitFor(() => expect(host.querySelector(".issue-empty h2")).not.toBeNull());
     expect(host.querySelector(".issue-empty h2").textContent).toBe("No issues yet");
   });
 });

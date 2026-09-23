@@ -3,7 +3,8 @@
 // primary + caret disabled, menu invokes ignored — and the shared-flight form
 // (a remount mid-flight keeps the latch, so no concurrent destructive RPCs).
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { mountSplitButton, createSingleFlight } from "../src/core/splitButton.js";
 
 const OPTIONS = [
@@ -34,29 +35,29 @@ function mount(runSpec, flight) {
   };
 }
 
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe("mountSplitButton in-flight guard (DOM)", () => {
   it("disables primary + caret and shows the busy label while run() is pending", async () => {
     const spec = pendingRun();
-    const { primary, caret } = mount(spec);
+    const flight = createSingleFlight();
+    const { primary, caret } = mount(spec, flight);
     primary.click();
     expect(primary.disabled).toBe(true);
     expect(caret.disabled).toBe(true);
     expect(primary.textContent).toBe("merging…");
     spec.settle();
-    await tick();
+    await waitFor(() => expect(flight.active()).toBe(false));
     expect(spec.calls).toEqual(["merge_prune"]);
   });
 
   it("ignores menu invokes while in flight (single flight)", async () => {
     const spec = pendingRun();
-    const { primary, menu } = mount(spec);
+    const flight = createSingleFlight();
+    const { primary, menu } = mount(spec, flight);
     primary.click();
     menu.querySelector('[data-action="commit"]').click();
     expect(spec.calls).toEqual(["merge_prune"]);
     spec.settle();
-    await tick();
+    await waitFor(() => expect(flight.active()).toBe(false));
   });
 
   it("a rejection restores label + enabled so the user can retry", async () => {
@@ -70,11 +71,11 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
     mountSplitButton(container, { options: OPTIONS, run });
     const primary = container.querySelector(".btn.primary:not(.caret)");
     primary.click();
-    await tick();
+    await waitFor(() => expect(primary.disabled).toBe(false));
     expect(primary.disabled).toBe(false);
     expect(primary.textContent).toBe("Merge");
     primary.click();
-    await tick();
+    await waitFor(() => expect(primary.disabled).toBe(false));
     expect(calls).toEqual(["merge_prune", "merge_prune"]);
   });
 
@@ -289,7 +290,7 @@ describe("mountSplitButton in-flight guard (DOM)", () => {
 
     // Once the original flight settles, the latch re-arms.
     first.settle();
-    await tick();
+    await waitFor(() => expect(flight.active()).toBe(false));
     b.primary.click();
     expect(second.calls).toEqual(["merge_prune"]);
   });

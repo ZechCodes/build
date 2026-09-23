@@ -4,6 +4,7 @@
 // is tested against an injected caller in issueViewDom.test.js.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -13,10 +14,6 @@ import { resolve } from "node:path";
 const bridge = { call: null };
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
-
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
 
 const stage = (id, title) => ({ id, title, state: "planned", approval: "planned", execution: "pending", open_comments: 0, comments: [] });
 
@@ -82,7 +79,7 @@ describe("an issue on another device", () => {
 
   it("calls the route device's call for entity.seen and the issue read", async () => {
     await renderIssue();
-    await flush();
+    await waitFor(() => expect(reached(theirCall, "issue.get")).toBe(true));
 
     expect(reached(theirCall, "entity.seen")).toBe(true);
     expect(reached(theirCall, "issue.get")).toBe(true);
@@ -92,13 +89,14 @@ describe("an issue on another device", () => {
 
   it("syncHash keeps the device segment when the open stage changes", async () => {
     await renderIssue();
-    await flush();
+    await waitFor(() => expect(location.hash).toBe("#/device/dev-2/project/p1/issue/issue-1/stage/s1"));
 
     expect(location.hash).toBe("#/device/dev-2/project/p1/issue/issue-1/stage/s1");
     expect(App.route.deviceId).toBe("dev-2");
 
+    await waitFor(() => expect(document.querySelector('.stagerow[data-stage="s2"]')).not.toBeNull());
     document.querySelector('.stagerow[data-stage="s2"]').click();
-    await flush();
+    await waitFor(() => expect(location.hash).toBe("#/device/dev-2/project/p1/issue/issue-1/stage/s2"));
 
     expect(location.hash).toBe("#/device/dev-2/project/p1/issue/issue-1/stage/s2");
     expect(App.route.deviceId).toBe("dev-2");
@@ -114,7 +112,7 @@ describe("an issue on a device that has gone offline", () => {
     contexts.setContextOffline("dev-2");
 
     await renderIssue();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toContain("Desktop isn't connected"));
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
     expect(document.getElementById("tabbody")).toBeNull();
@@ -132,7 +130,7 @@ describe("an issue on a device this client has not opened", () => {
     App.route = { name: "issue", deviceId: "dev-3", projectId: "p1", id: "issue-1" };
 
     await renderIssue();
-    await flush();
+    await waitFor(() => expect(document.getElementById("root").textContent).toContain("Desktop isn't connected"));
 
     expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
     expect(bridge.call).not.toHaveBeenCalled();
@@ -151,7 +149,7 @@ describe("an issue on a device this client has not opened", () => {
     expect(document.getElementById("tabbody")).toBeNull();
 
     contexts.adoptDeviceSession({ deviceId: "dev-3", call: lateCall, close: () => {}, peer: () => {}, onCarrier: () => {} });
-    await flush();
+    await waitFor(() => expect(lateCall.mock.calls.some(([method]) => method === "issue.get")).toBe(true));
 
     expect(document.getElementById("tabbody")).toBeTruthy();
     expect(lateCall.mock.calls.some(([method]) => method === "issue.get")).toBe(true);

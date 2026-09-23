@@ -5,6 +5,7 @@
 // teardown that takes the surface with it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 
 const mountIssuePage = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
 const mountAgentRail = vi.fn(() => ({ dispose: vi.fn() }));
@@ -33,8 +34,6 @@ import { App } from "../src/app.js";
 import { renderTrackerIssue } from "../src/views/trackerIssueView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
-
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const device = (deviceId) => {
   const call = vi.fn(async () => ({}));
@@ -75,7 +74,7 @@ describe("the issue route", () => {
   // so the project in the URL is the project — there is nothing to look up.
   it("mounts the surface on the issue and the project the URL names", async () => {
     await renderTrackerIssue();
-    await flush();
+    await waitFor(() => expect(mountIssuePage).toHaveBeenCalled());
     const [host, given] = mountIssuePage.mock.calls[0];
     expect(host.id).toBe("issue-pane");
     expect([given.projectId, given.deviceId, given.issueId, given.projectKey]).toEqual([
@@ -92,7 +91,6 @@ describe("the issue route", () => {
   it("mounts no rail of its own, so it cannot forget one", async () => {
     const call = device("dev-1");
     await renderTrackerIssue();
-    await flush();
     expect(mountAgentRail).not.toHaveBeenCalled();
     expect(call).not.toHaveBeenCalledWith("project.ensure_conversation", expect.anything());
   });
@@ -100,7 +98,7 @@ describe("the issue route", () => {
   it("leaves the rail standing when the page goes, because it is not the page's", async () => {
     document.querySelector("#agent-rail").innerHTML = '<div class="rail-strip"></div>';
     await renderTrackerIssue();
-    await flush();
+    await waitFor(() => expect(mountIssuePage).toHaveBeenCalled());
     App.viewDispose();
     App.viewDispose = null;
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
@@ -109,13 +107,13 @@ describe("the issue route", () => {
   it("hands over the feed the links and the assignee names are read off", async () => {
     snapshot = { ...snapshot, projects: [{ id: "proj-1" }] };
     await renderTrackerIssue();
-    await flush();
+    await waitFor(() => expect(mountIssuePage).toHaveBeenCalled());
     expect(mountIssuePage.mock.calls[0][1].feed().projects).toHaveLength(1);
   });
 
   it("repaints the surface when the feed moves, asking the bridge nothing", async () => {
     await renderTrackerIssue();
-    await flush();
+    await waitFor(() => expect(mountIssuePage).toHaveBeenCalled());
     const page = mountIssuePage.mock.results[0].value;
     page.feedMoved.mockClear();
     subscribers.forEach((fn) => fn(snapshot));
@@ -126,14 +124,13 @@ describe("the issue route", () => {
   it("names the machine rather than standing a page up over refused calls", async () => {
     App.route = { name: "trackerIssue", deviceId: "dev-9", projectId: "proj-1", issueId: "issue-1" };
     await renderTrackerIssue();
-    await flush();
     expect(mountIssuePage).not.toHaveBeenCalled();
     expect(document.querySelector("#root").textContent).not.toBe("");
   });
 
   it("takes the surface down with the route", async () => {
     await renderTrackerIssue();
-    await flush();
+    await waitFor(() => expect(mountIssuePage).toHaveBeenCalled());
     const page = mountIssuePage.mock.results[0].value;
     App.viewDispose();
     App.viewDispose = null;

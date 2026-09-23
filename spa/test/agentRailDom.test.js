@@ -4,6 +4,7 @@
 // on a checkout Build owns nothing in is what brings the agent into being.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -87,6 +88,54 @@ vi.mock("../src/core/agentCanvas.js", () => ({
   animatingRendererCount: () => painters.filter((painter) => painter.working && !painter.destroyed).length,
 }));
 
+// Retiring a fixture must finish its durable writes before the next test
+// wipes the same database. These wrappers observe the real implementations.
+const cacheWork = vi.hoisted(() => ({ ui: [], messages: new Set() }));
+vi.mock("../src/core/localUiState.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, watchUiState: (...args) => {
+    const record = actual.watchUiState(...args);
+    cacheWork.ui.push(record);
+    return record;
+  } };
+});
+vi.mock("../src/core/conversationCache.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  const observed = (write) => (...args) => {
+    const writing = write(...args);
+    cacheWork.messages.add(writing);
+    writing.finally(() => cacheWork.messages.delete(writing));
+    return writing;
+  };
+  return { ...actual,
+    writeProvisionalMessage: observed(actual.writeProvisionalMessage),
+    acknowledgeProvisionalMessage: observed(actual.acknowledgeProvisionalMessage),
+    withdrawProvisionalMessage: observed(actual.withdrawProvisionalMessage),
+  };
+});
+
+const rowReads = vi.hoisted(() => ({ delivered: 0, started: [] }));
+vi.mock("../src/core/railWorkItem.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createRailWorkItem: (options) => {
+      const reader = actual.createRailWorkItem({
+        ...options,
+        standOn: (row) => {
+          options.standOn(row);
+          rowReads.delivered += 1;
+        },
+      });
+      return { ...reader, read: (...args) => {
+        const reading = reader.read(...args);
+        rowReads.started.push(reading);
+        return reading;
+      } };
+    },
+  };
+});
+
 const { App } = await import("../src/app.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
@@ -140,17 +189,9 @@ let catalog = null;
 let calls = [];
 let rail = null;
 
-// The rail settles over the disk: its row, and the conversation in it —
-// every record it opens is a turn.
-const flush = async () => {
-  for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
-const finishTitleMotion = async (titleElement) => {
-  for (let turn = 0; turn < 80 && titleElement.dataset.titleMotion; turn += 1) {
-    await new Promise((done) => setTimeout(done, 10));
-  }
-};
+const finishTitleMotion = (titleElement) => waitFor(() => {
+  expect(titleElement.dataset.titleMotion).toBeUndefined();
+});
 
 const CATALOG = {
   default_provider: "claude_adk",
@@ -189,8 +230,13 @@ const railStatus = () => railHost().querySelector("#rail-status");
 const railStatusLead = () => railHost().querySelector("#rail-status-lead");
 const railStatusPills = () => railHost().querySelector("#rail-status-pills");
 const openSurfacePill = async (kind) => {
-  railHost().querySelector(`[data-surface-kind="${kind}"]`).click();
-  await vi.waitFor(() => expect(railHost().querySelector(`.surface-${kind}`)).toBeTruthy());
+  const pill = await waitFor(() => {
+    const button = railHost().querySelector(`[data-surface-kind="${kind}"]`);
+    expect(button).not.toBeNull();
+    return button;
+  });
+  pill.click();
+  await waitFor(() => expect(railHost().querySelector(`.surface-${kind}`)).toBeTruthy());
 };
 const railStatusGit = () => railHost().querySelector("#rail-status-git");
 const workingWord = () => railHost().querySelector(".rail-status-working-word");
@@ -198,7 +244,6 @@ const workingWord = () => railHost().querySelector(".rail-status-working-word");
 const pushFeed = async (snapshot) => {
   feedSnapshot = snapshot;
   feedSubscribers.forEach((fn) => fn(snapshot));
-  await flush();
 };
 
 /** The rail as a surface mounts it: the work item, plus the machine's cache,
@@ -214,16 +259,52 @@ const railAddress = (over = {}) => ({
   ...over,
 });
 
-const mount = async (context = {}) => {
-  await writeRailWorkItem(payload);
+const clockSpies = [];
+const freezeClock = () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+  clockSpies.push(clock);
+  return clock;
+};
+
+const typeMessage = (input, body) => {
+  input.value = body;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+};
+
+const mount = async (context = {}, ready = null) => {
+  const entityId = await writeRailWorkItem(payload);
+  const readsBefore = rowReads.started.length;
+  const shouldOpen = context.autofocusComposer || ((await pinnedValue()) ?? window.innerWidth > 760);
   rail = mountAgentRail(railHost(), railAddress(context));
-  await flush();
+  if (entityId && !ready) {
+    await waitFor(() => expect(rowReads.started.length).toBeGreaterThan(readsBefore));
+    await Promise.all(rowReads.started.slice(readsBefore));
+  }
+  await Promise.all(cacheWork.ui.map((record) => record.ready));
+  if (ready) return waitFor(ready);
+  await contextFor(context.deviceId || "dev-1")?.modelCatalog();
+  await waitFor(() => {
+    const agents = payload.agents || [];
+    const extra = context.kind === "issue" ? [] : [agents.length ? "add" : "ghost"];
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual([...agents.map(() => "agent"), ...extra]);
+    if (shouldOpen) expect(panel()).not.toBeNull();
+    if (panel() && panel().getAttribute("aria-hidden") !== "true") {
+      expect(panel().querySelector("#railinput, .rail-tui.on")).toBeTruthy();
+      if (!agents.length) expect(panel().querySelector(".rail-harness-choice.chosen")).toBeTruthy();
+      const items = (payload.run?.thread || payload.thread)?.items || [];
+      if (items.length && !panel().querySelector(".rail-tui.on")) {
+        const selected = agents.find((agent) => agent.id === bubbles().find((bubble) => bubble.classList.contains("active"))?.dataset.agent);
+        const conversationId = payload.execution_context?.conversation_id || selected?.conversation_id || selected?.id;
+        expect(chatRepository.history(conversationId)?.threadCache.readWindow()?.items).toEqual(items);
+      }
+    }
+  });
 };
 
 const mountOverviewReady = async (context = {}) => {
   await writeRailWorkItem(payload);
   rail = mountAgentRail(railHost(), railAddress(context));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(railHost().querySelector('[data-bubble="agent"]')).toBeTruthy();
     expect(panel()?.querySelector(".rail-head")).toBeTruthy();
     expect(railHost().querySelector(".rail-expand")).toBeTruthy();
@@ -232,10 +313,12 @@ const mountOverviewReady = async (context = {}) => {
 
 /** The row moved: the sync layer writes what the bridge pushed, and every rail
  *  reading that record hears it. */
-const pushRow = async (row = payload) => {
+const pushRow = async (row = payload, ready = null) => {
   payload = row;
-  await writeRailWorkItem(row);
-  await flush();
+  const delivered = rowReads.delivered;
+  const entityId = await writeRailWorkItem(row);
+  if (entityId) await waitFor(() => expect(rowReads.delivered).toBeGreaterThan(delivered));
+  if (ready) await waitFor(ready);
 };
 
 beforeEach(async () => {
@@ -247,6 +330,7 @@ beforeEach(async () => {
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
+  let postedSequence = 6;
   payload = branchRow();
   painters.length = 0;
   feedSubscribers.clear();
@@ -263,7 +347,7 @@ beforeEach(async () => {
     if (method === "run.adopt") return { run_id: "run-9" };
     if (method === "agent.start") return { agent_id: params.agent_id || "ag-new", term_id: `agent:${params.agent_id || "ag-new"}` };
     if (method === "agent.add") return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
-    if (method === "thread.post") return { posted_sequence: 7 };
+    if (method === "thread.post") return { posted_sequence: ++postedSequence };
     return {};
   });
   chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
@@ -272,11 +356,14 @@ beforeEach(async () => {
   adoptDeviceSession(sessionAnswering(bridge));
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (rail) rail.dispose();
   rail = null;
   chatRepository?.dispose();
   chatRepository = null;
+  await Promise.all(cacheWork.ui.splice(0).map((record) => record.flush()));
+  while (cacheWork.messages.size) await Promise.all([...cacheWork.messages]);
+  for (const clock of clockSpies.splice(0)) clock.mockRestore();
   vi.useRealTimers();
 });
 
@@ -307,13 +394,10 @@ describe("where the conversation panel starts", () => {
     await mount();
 
     bubbles()[0].click();
-    await flush();
-    expect(panel()).toBeTruthy();
+    await waitFor(() => expect(panel()).toBeTruthy());
 
     bubbles()[0].click();
-    await flush();
-    expect(panel()).toBeTruthy();
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
     expect(panel().hasAttribute("inert")).toBe(true);
   });
 
@@ -321,12 +405,12 @@ describe("where the conversation panel starts", () => {
     atWidth(390);
     await mount();
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(panel()).toBeTruthy());
     // A press on a bubble is a look at one conversation, not a change of mind
     // about the layout: it opens the popover and leaves the choice alone. The
     // pin in the panel's head is what the reader chooses with.
     panel().querySelector(".pinbtn").click();
-    await flush();
+    await waitFor(async () => expect(await pinnedValue()).toBe(true));
     rail.dispose();
 
     await mount();
@@ -387,7 +471,7 @@ describe("the conversation panel's pin", () => {
     atWidth(1024);
     await mount();
     pin().click();
-    await flush();
+    await waitFor(async () => expect(await pinnedValue()).toBe(false));
     // The conversation stays on screen, as a card over the work rather than a
     // column beside it — the same move the inbox's pin makes.
     expect(railHost().classList.contains("rail-popover")).toBe(true);
@@ -408,7 +492,7 @@ describe("the conversation panel's pin", () => {
     const standingPanel = panel();
     const input = standingPanel.querySelector("#railinput");
     const history = standingPanel.querySelector(".rail-body");
-    input.value = "still drafting";
+    typeMessage(input, "still drafting");
     Object.defineProperties(history, {
       clientHeight: { configurable: true, value: 100 },
       scrollHeight: { configurable: true, value: 500 },
@@ -417,8 +501,7 @@ describe("the conversation panel's pin", () => {
     input.focus();
 
     pin().click();
-    await flush();
-
+    await waitFor(() => expect(pin().getAttribute("aria-pressed")).toBe("false"));
     expect(panel()).toBe(standingPanel);
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("still drafting");
@@ -430,10 +513,9 @@ describe("the conversation panel's pin", () => {
     atWidth(390);
     await mount();
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(panel()).toBeTruthy());
     pin().click();
-    await flush();
-    expect(railHost().classList.contains("rail-popover")).toBe(false);
+    await waitFor(() => expect(railHost().classList.contains("rail-popover")).toBe(false));
     expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(await pinnedValue()).toBe(true);
 
@@ -455,8 +537,7 @@ describe("the unpinned panel's popover", () => {
   it("opens on the bubble it was pressed on, and says which one", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
-    expect(panel().dataset.anchor).toBe("ag-2");
+    await waitFor(() => expect(panel().dataset.anchor).toBe("ag-2"));
     // Where the notch sits along the panel's edge. jsdom lays nothing out, so
     // every box it measures is at the origin; the browser check is the
     // orchestrator's.
@@ -467,17 +548,15 @@ describe("the unpinned panel's popover", () => {
   it("re-anchors on the next bubble rather than closing", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     bubbles()[0].click();
-    await flush();
-    expect(panel()).toBeTruthy();
-    expect(panel().dataset.anchor).toBe("ag-1");
+    await waitFor(() => expect(panel().dataset.anchor).toBe("ag-1"));
   });
 
   it("is dismissed by an outside press without consuming the target click", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     const outside = document.createElement("button");
     const clicked = vi.fn();
     outside.onclick = clicked;
@@ -485,8 +564,7 @@ describe("the unpinned panel's popover", () => {
     const press = new MouseEvent("pointerdown", { bubbles: true, cancelable: true });
     outside.dispatchEvent(press);
     outside.click();
-    await flush();
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
     expect(press.defaultPrevented).toBe(false);
     expect(clicked).toHaveBeenCalledOnce();
     // Dismissing a popover is not unpinning anything: the choice stands.
@@ -496,45 +574,41 @@ describe("the unpinned panel's popover", () => {
   it("leaves the panel's confirmation popover usable", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     panel().querySelector(".rail-remove").click();
-    await flush();
+    await waitFor(() => expect(document.querySelector(".confirm-popover")).toBeTruthy());
     const confirm = document.querySelector(".confirm-popover");
     const cancel = confirm.querySelector("[data-confirm-cancel]");
     cancel.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
     expect(panel().getAttribute("aria-hidden")).toBe("false");
     cancel.click();
-    await flush();
-    expect(confirm.isConnected).toBe(false);
+    await waitFor(() => expect(confirm.isConnected).toBe(false));
   });
 
   it("is dismissed by Escape", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await flush();
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
   });
 
   it("leaves Escape to a surface that already answered it", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
     event.preventDefault();
     document.dispatchEvent(event);
-    await flush();
-    expect(panel()).toBeTruthy();
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("false"));
   });
 
   it("is dismissed by navigating", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     window.dispatchEvent(new window.HashChangeEvent("hashchange"));
-    await flush();
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
   });
 
   it("does not report reading from the retained panel while it is collapsed", async () => {
@@ -547,10 +621,10 @@ describe("the unpinned panel's popover", () => {
     });
     await mount();
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("false"));
     const history = panel().querySelector(".rail-body");
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
     markSeen.mockClear();
 
     payload = branchRow({
@@ -561,21 +635,20 @@ describe("the unpinned panel's popover", () => {
         { id: "m-3", type: "message", data: { sequence: 3, role: "agent", body: "three" } },
       ], sessions: [] } },
     });
-    await pushRow();
+    await pushRow(payload, () => expect(countOn(bubbles()[0]).textContent).toBe("3"));
 
     expect(markSeen).not.toHaveBeenCalled();
     expect(history.textContent).not.toContain("three");
 
     bubbles()[0].click();
-    await flush();
-    expect(history.textContent).toContain("three");
+    await waitFor(() => expect(history.textContent).toContain("three"));
     expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3);
   });
 
   it("takes its listeners with it when the rail goes", async () => {
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(panel()?.dataset.anchor).toBe("ag-2"));
     rail.dispose();
     rail = null;
     expect(() =>
@@ -619,13 +692,10 @@ describe("the rail over a machine that is asked nothing", () => {
     await wipeCache();
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     rail = mountAgentRail(railHost(), railAddress());
-    await flush();
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual([""]);
+    await waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual([""]));
 
     await writeRailWorkItem(payload);
-    await flush();
-
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+    await waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]));
   });
 
   it("never takes a painted cold-start conversation down during a sync rewrite", async () => {
@@ -643,8 +713,7 @@ describe("the rail over a machine that is asked nothing", () => {
     observer.observe(body, { childList: true, subtree: true, characterData: true });
 
     await writeRailThread("run-3", "ag-1", { items: [said(1, "first sync paint")] });
-    await flush();
-    expect(body.textContent).toContain("first sync paint");
+    await waitFor(() => expect(body.textContent).toContain("first sync paint"));
     const paintedAt = states.findIndex((state) => state.text.includes("first sync paint"));
     expect(paintedAt).toBeGreaterThanOrEqual(0);
 
@@ -652,12 +721,11 @@ describe("the rail over a machine that is asked nothing", () => {
     // ordered thread read writes the replacement window. The live timeline is
     // retained across that gap and then reconciled to the fresh record.
     await evictEntity("dev-1", "run-3");
-    await flush();
-    expect(body.textContent).toContain("first sync paint");
+    await waitFor(() => expect(body.textContent).toContain("first sync paint"));
     await writeRailThread("run-3", "ag-1", {
       items: [said(1, "first sync paint"), said(2, "second sync paint")],
     });
-    await flush();
+    await waitFor(() => expect(body.textContent).toContain("second sync paint"));
 
     observer.disconnect();
     expect(states.slice(paintedAt).some((state) => state.empty)).toBe(false);
@@ -667,9 +735,11 @@ describe("the rail over a machine that is asked nothing", () => {
   it("adds the bubble a row brings without asking anything", async () => {
     payload = branchRow({ agents: three() });
     await mount();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
     calls.length = 0;
 
-    await pushRow(branchRow({ agents: [...three(), agent({ id: "ag-4", ordinal: 4 })] }));
+    await pushRow(branchRow({ agents: [...three(), agent({ id: "ag-4", ordinal: 4 })] }),
+      () => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]));
 
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", "ag-3", "ag-4", ""]);
     expect(calls).toEqual([]);
@@ -678,9 +748,12 @@ describe("the rail over a machine that is asked nothing", () => {
   it("reads only cold conversations off the wire where the board writes the work item row", async () => {
     payload = branchRow({ agents: three() });
     await mount();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
     bubbles()[1].click();
-    await flush();
-    await pushRow(branchRow({ agents: three().slice(0, 2) }));
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(2));
+    expect(headWho(panel())).toBe("Polish the rail");
+    await pushRow(branchRow({ agents: three().slice(0, 2) }),
+      () => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]));
 
     const workItemReads = ["branch.get", "issue.get", "run.get", "workspace.get"];
     expect(calls.filter((call) => workItemReads.includes(call.method))).toEqual([]);
@@ -688,6 +761,43 @@ describe("the rail over a machine that is asked nothing", () => {
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
       { entity_id: "run-3", agent_id: "ag-2", limit: LATEST_THREAD_ITEMS },
     ]);
+  });
+
+  it("does not refresh the new agent through a seed started for the previous conversation", async () => {
+    const caches = await import("../src/core/conversationCache.js");
+    const sync = await import("../src/core/threadSync.js");
+    const makeCache = caches.createConversationCache;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const held = [];
+    const factory = vi.spyOn(caches, "createConversationCache").mockImplementation((options) => {
+      const cache = makeCache(options);
+      return { ...cache, seed: () => {
+        const agentId = options.addressOf()?.agentId;
+        const reading = cache.seed();
+        if (agentId !== "ag-1") return reading;
+        const pending = reading.then(async (result) => { await gate; return result; });
+        held.push(pending);
+        return pending;
+      } };
+    });
+    const refresh = vi.spyOn(sync, "syncThreadWindow");
+    try {
+      payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+      await mount();
+      await waitFor(() => expect(held.length).toBeGreaterThan(0));
+      bubbles()[1].click();
+      await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+      release();
+      await Promise.all(held);
+      await Promise.all(refresh.mock.results.map((result) => result.value));
+      expect(refresh.mock.calls.map(([options]) => options.agentId)).toEqual(["ag-2"]);
+      expect(headWho()).toBe(TOPICS["ag-2"]);
+    } finally {
+      release();
+      factory.mockRestore();
+      refresh.mockRestore();
+    }
   });
 
   // An issue left the board (bridge board/views.rs), so nothing pushes one a
@@ -700,7 +810,7 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the issue")] });
     payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the issue")] } };
     rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
-    await flush();
+    await waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("on the issue"));
 
     // One bubble and no `+`: an issue carries exactly one agent.
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
@@ -723,7 +833,7 @@ describe("the rail over a machine that is asked nothing", () => {
     });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
-    await flush();
+    await waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("remembered cached words"));
 
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("remembered cached words");
@@ -734,10 +844,8 @@ describe("the rail over a machine that is asked nothing", () => {
       project_id: "p1",
       agents: [agent({ id: "ag-first", ordinal: 1 })],
     });
-    await flush();
-
+    await waitFor(() => expect(body.textContent).toContain("first delivered agent words"));
     expect(railHost().querySelector("#rail-body")).toBe(body);
-    expect(body.textContent).toContain("first delivered agent words");
     expect(bubbles().find((bubble) => bubble.dataset.agent === "ag-first").classList).toContain("active");
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
@@ -753,17 +861,47 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("run-3", "ag-first", { items: [said(1, "workspace fallback words")] });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-late" }));
-    await flush();
+    await waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("workspace words before roster"));
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("workspace words before roster");
     expect(railHost().querySelector("#railinput")).toBeNull();
 
     await writeRailWorkItem(branchRow({ agents: [agent({ id: "ag-first", ordinal: 1 })] }));
-    await flush();
+    await waitFor(() => expect(body.textContent).toContain("workspace fallback words"));
     expect(railHost().querySelector("#rail-body")).toBe(body);
-    expect(body.textContent).toContain("workspace fallback words");
     expect(headWho()).toBe(TOPICS["ag-first"] || "Claude Code");
     expect(railHost().querySelector("#railinput")).not.toBeNull();
+  });
+
+  it.each(["ag-1", "conversation-ag-1"])("rebinds a remembered %s transcript when the roster supplies its controller", async (conversationId) => {
+    chatRepository.railView("workspace:ws-late").chooseAgent("ag-1");
+    await writeRailBoard({
+      workspaces: [{ id: "ws-late", project_id: "p1", name: "late", entity_id: "run-3" }],
+    });
+    const items = Array.from({ length: 5 }, (_, index) => said(index + 1, `Cached message ${index + 1}`));
+    await writeRailThread("run-3", conversationId, { items });
+    rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-late" }));
+    if (conversationId === "ag-1") {
+      await waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("Cached message 5"));
+    } else {
+      // The remembered agent id cannot name its canonical conversation until
+      // the roster arrives. Finish that temporary reader before delivering it.
+      await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    }
+    expect(railHost().querySelector("#railinput")).toBeNull();
+
+    await writeRailWorkItem(branchRow({ agents: [agent({ conversation_id: conversationId })] }));
+    await waitFor(() => {
+      expect(railHost().querySelectorAll(".thread-message")).toHaveLength(5);
+      expect(railHost().querySelector("#railinput")).not.toBeNull();
+    });
+    expect(chatRepository.history(conversationId).threadCache.readWindow().items).toEqual(items);
+
+    // When the address itself did not change, the cache subscription must
+    // nevertheless follow the new reader's window rather than the temporary one.
+    await pushRailThreadItems("run-3", conversationId, [said(6, "After the roster")]);
+    await waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("After the roster"));
+    expect(railHost().querySelectorAll(".thread-message")).toHaveLength(6);
   });
 
   it("recovers an unwatched workspace agent whose owner is absent from the board", async () => {
@@ -780,10 +918,8 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("run-3", "ag-1", { items: [said(1, "A full cached conversation")] });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
-    await flush();
-
-    expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation");
-    expect(headWho()).toBe(TOPICS["ag-1"]);
+    await waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("A full cached conversation"));
+    await waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
     expect(callsTo("workspace.get")).toHaveLength(0);
   });
@@ -796,17 +932,14 @@ describe("the rail over a machine that is asked nothing", () => {
     });
     await writeRailThread("run-3", "ag-1", { items: [said(1, "Already cached words")] });
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-unwatched" }));
-    await flush();
-    expect(headWho()).toBe("New agent");
+    await waitFor(() => expect(headWho()).toBe("New agent"));
     expect(railHost().querySelector("#railinput")).toBeNull();
 
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
       items: [], runs: [{ run_id: "run-3", project_id: "p1", agents: [agent({ watched: false })] }],
     });
-    await flush();
-
-    expect(railHost().querySelector("#rail-body").textContent).toContain("Already cached words");
-    expect(headWho()).toBe(TOPICS["ag-1"]);
+    await waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
+    await waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("Already cached words"));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
@@ -821,10 +954,8 @@ describe("the rail over a machine that is asked nothing", () => {
     rail = mountAgentRail(railHost(), railAddress({
       kind: "project", projectId: "p1", entityId: "run-3", openAgentId: "ag-1",
     }));
-    await flush();
-
-    expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words");
-    expect(headWho()).toBe(TOPICS["ag-1"]);
+    await waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("Project conversation words"));
+    await waitFor(() => expect(headWho()).toBe(TOPICS["ag-1"]));
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
@@ -838,14 +969,13 @@ describe("the rail over a machine that is asked nothing", () => {
     await writeRailThread("run-3", "ag-removed", { items: [said(1, "removed agent words")] });
 
     rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", projectId: "p1", workspaceId: "ws-empty" }));
-    await flush();
+    await waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("removed agent words"));
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("removed agent words");
 
     await writeRailWorkItem(branchRow({ agents: [] }));
-    await flush();
+    await waitFor(() => expect(body.querySelector(".rail-newagent")).not.toBeNull());
     expect(railHost().querySelector("#rail-body")).toBe(body);
-    expect(body.querySelector(".rail-newagent")).not.toBeNull();
     expect(headWho()).toBe("New agent");
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
@@ -873,8 +1003,7 @@ describe("the bubble strip", () => {
     await pushRailThreadItems("run-3", "ag-1", [
       { type: "message", data: { sequence: 3, role: "user", body: "One more question", created_at: "2026-09-22T13:00:00Z" } },
     ]);
-    await flush();
-    expect(navigator.querySelectorAll(".thread-user-tick")).toHaveLength(2);
+    await waitFor(() => expect(navigator.querySelectorAll(".thread-user-tick")).toHaveLength(2));
     expect(railHost().querySelector(".thread-items").textContent).toContain("One more question");
   });
 
@@ -892,14 +1021,14 @@ describe("the bubble strip", () => {
     const body = () => railHost().querySelector("#rail-body");
     const indexes = () => [...(body()?.querySelectorAll(".thread-user-tick") || [])]
       .map((tick) => Number(tick.dataset.userTickIndex));
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
       expect(body()?.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("12");
       expect(body()?.querySelector(".thread-items")?.textContent).toContain("Cached question 13");
     }, { timeout: 5000 });
 
     await pushRailThreadItems("run-3", "ag-1", [userMessage(13)]);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 2));
       expect(body()?.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("13");
       expect(body()?.querySelector(".thread-items")?.textContent).toContain("Cached question 14");
@@ -925,7 +1054,7 @@ describe("the bubble strip", () => {
     railHost().querySelector(".rail-expand").click();
     const rows = () => [...railHost().querySelectorAll(".rail-overview-row")];
     const rowFor = (agentId) => rows().find((row) => row.dataset.overviewAgent === agentId);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(rowFor("ag-1")?.textContent).toContain("Checking the build");
       expect(rowFor("ag-2")?.textContent).toContain("The diff is ready");
     });
@@ -937,10 +1066,10 @@ describe("the bubble strip", () => {
     await writeRailThread("run-3", "ag-1", { items: [
       { type: "event", data: { sequence: 3, event: "tool_use", summary: "Running tests" } },
     ] });
-    await vi.waitFor(() => expect(rowFor("ag-1")?.textContent).toContain("Running tests"));
+    await waitFor(() => expect(rowFor("ag-1")?.textContent).toContain("Running tests"));
 
     rowFor("ag-2").click();
-    await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
+    await waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
     expect(railHost().querySelector("#rail-overview")).toBeNull();
     expect(headWho(panel())).toBe("Second agent");
     expect(panel().getAttribute("aria-hidden")).toBe("false");
@@ -969,7 +1098,7 @@ describe("the bubble strip", () => {
     await mountOverviewReady({ kind: "project", projectId: "p1", entityId: "run-project" });
 
     railHost().querySelector(".rail-expand").click();
-    await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(3));
+    await waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(3));
     const sections = [...railHost().querySelectorAll(".rail-overview-section")];
     expect(sections.map((section) => section.getAttribute("aria-label"))).toEqual([
       "Project agents", "First workspace", "Second workspace",
@@ -1015,12 +1144,12 @@ describe("the bubble strip", () => {
     });
     await mountOverviewReady({ kind: "workspace", workspaceId: "ws-one",
       projectAgent: { projectId: "p1", entityId: "run-project" } });
-    await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="project"][data-agent="run-project"]')).toBeTruthy());
+    await waitFor(() => expect(railHost().querySelector('[data-bubble="project"][data-agent="run-project"]')).toBeTruthy());
 
     railHost().querySelector('[data-bubble="project"]').click();
-    await vi.waitFor(() => expect(headWho(panel())).toBe("Project agent"));
+    await waitFor(() => expect(headWho(panel())).toBe("Project agent"));
     railHost().querySelector(".rail-expand").click();
-    await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
+    await waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
     const sections = [...railHost().querySelectorAll(".rail-overview-section")];
     expect(sections[0].getAttribute("aria-label")).toBe("Project agents");
     expect(sections[1].querySelector('[data-overview-workspace="ws-one"]')).toBeTruthy();
@@ -1039,10 +1168,10 @@ describe("the bubble strip", () => {
     const pinButton = head.querySelector(".pinbtn");
     expect(pinButton.getAttribute("aria-pressed")).toBe("true");
     pinButton.click();
-    await vi.waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("false"));
+    await waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("false"));
     expect(await pinnedValue()).toBe(false);
     pinButton.click();
-    await vi.waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("true"));
     expect(await pinnedValue()).toBe(true);
   });
 
@@ -1053,7 +1182,7 @@ describe("the bubble strip", () => {
       railHost().querySelector(".rail-expand").click();
       const overview = railHost().querySelector("#rail-overview");
       expect(overview).toBeTruthy();
-      await vi.waitFor(() => expect(animations.some((run) => run.element === overview)).toBe(true));
+      await waitFor(() => expect(animations.some((run) => run.element === overview)).toBe(true));
       const opening = animations.find((run) => run.element === overview);
       expect(opening.options.duration).toBe(160);
       expect(opening.keyframes[0]).toMatchObject({ opacity: "0" });
@@ -1065,7 +1194,7 @@ describe("the bubble strip", () => {
       expect(overview.getAttribute("aria-hidden")).toBe("true");
       expect(overview.hasAttribute("inert")).toBe(true);
       expect(railHost().classList.contains("rail-overview")).toBe(true);
-      await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
+      await waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
       expect(railHost().classList.contains("rail-overview")).toBe(false);
     } finally {
       stopRecordingAnimations();
@@ -1102,12 +1231,10 @@ describe("the bubble strip", () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     await mount();
     bubbles()[1].click();
-    await flush();
-    expect(headWho(panel())).toBe("Polish the rail");
+    await waitFor(() => expect(headWho(panel())).toBe("Polish the rail"));
     expect(bubbles()[1].classList.contains("active")).toBe(true);
     bubbles()[1].click();
-    await flush();
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    await waitFor(() => expect(panel().getAttribute("aria-hidden")).toBe("true"));
     // …and the strip is still there with the panel shut.
     expect(bubbles().length).toBe(3);
   });
@@ -1116,20 +1243,18 @@ describe("the bubble strip", () => {
     await mount();
     const standing = panel();
     const input = standing.querySelector("#railinput");
-    input.value = "kept draft";
+    typeMessage(input, "kept draft");
     input.focus();
 
     bubbles()[0].click();
-    await flush();
-    expect(panel()).toBe(standing);
+    await waitFor(() => expect(panel()).toBe(standing));
     expect(panel().getAttribute("aria-hidden")).toBe("true");
     expect(bubbles()[0].getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(bubbles()[0]);
     expect(await pinnedValue()).toBeUndefined();
 
     bubbles()[0].click();
-    await flush();
-    expect(panel()).toBe(standing);
+    await waitFor(() => expect(panel()).toBe(standing));
     expect(panel().getAttribute("aria-hidden")).toBe("false");
     expect(panel().querySelector("#railinput").value).toBe("kept draft");
     expect(bubbles()[0].getAttribute("aria-expanded")).toBe("true");
@@ -1151,8 +1276,11 @@ describe("the bubble strip", () => {
     const drop = new Event("drop", { bubbles: true, cancelable: true });
     drop.dataTransfer = { files: [png], items: [], types: ["Files"] };
     bubbles()[1].dispatchEvent(drop);
-    await flush();
     expect(drop.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      expect(callsTo("thread.attach")).toHaveLength(1);
+      expect(panel().querySelector(".composer-chip.uploading")).toBeNull();
+    });
     expect(bubbles()[1].classList.contains("is-dropping")).toBe(false);
     expect(headWho(panel())).toBe("Polish the rail");
     expect(bubbles()[1].classList.contains("active")).toBe(true);
@@ -1167,8 +1295,7 @@ describe("the bubble strip", () => {
     const drop = new Event("drop", { bubbles: true, cancelable: true });
     drop.dataTransfer = { files: [new File(["x"], "x.txt")], items: [], types: ["Files"] };
     railHost().querySelector('[data-bubble="add"]').dispatchEvent(drop);
-    await flush();
-    expect(drop.defaultPrevented).toBe(false);
+    await waitFor(() => expect(drop.defaultPrevented).toBe(false));
     expect(panel().querySelectorAll(".composer-chip")).toHaveLength(0);
     expect(callsTo("thread.attach")).toEqual([]);
   });
@@ -1178,7 +1305,7 @@ describe("the bubble strip", () => {
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("claude_adk");
 
     payload = branchRow({ agents: [agent({ provider: "codex_app_server", topic: "" })] });
-    await pushRow();
+    await pushRow(payload, () => expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server"));
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
     // Nothing named yet, so the hover falls back to the harness — the new one.
@@ -1209,7 +1336,7 @@ describe("the bubble strip", () => {
     const before = bubbles()[0];
     payload = branchRow({ agents: [agent({ unread_count: 3, working: true })] });
 
-    await pushRow();
+    await pushRow(payload, () => expect(countOn(bubbles()[0]).textContent).toBe("3"));
 
     expect(bubbles()[0]).toBe(before);
     expect(countOn(bubbles()[0]).textContent).toBe("3");
@@ -1220,7 +1347,7 @@ describe("the bubble strip", () => {
 
     // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });
-    await pushRow();
+    await pushRow(payload, () => expect(countOn(bubbles()[0]).hidden).toBe(true));
     expect(bubbles()[0]).toBe(before);
     expect(countOn(bubbles()[0]).hidden).toBe(true);
     expect(bubbles()[0].classList.contains("working")).toBe(false);
@@ -1232,7 +1359,7 @@ describe("the bubble strip", () => {
     const painter = livePainters()[0];
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
 
-    await pushRow();
+    await pushRow(payload, () => expect(bubbles()).toHaveLength(3));
 
     expect(bubbles()).toHaveLength(3);
     expect(bubbles()[0]).toBe(before);
@@ -1285,8 +1412,7 @@ describe("the bubble strip", () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
-    await flush();
-    expect(callsTo("agent.add")).toEqual([]);
+    await waitFor(() => expect(callsTo("agent.add")).toEqual([]));
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
     expect(chooser.querySelector(".rail-harness-choice.chosen").dataset.provider).toBe("codex");
@@ -1298,10 +1424,10 @@ describe("the bubble strip", () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
-    await flush();
-    railHost().querySelector("#railinput").value = "start here";
+    await waitFor(() => expect(railHost().querySelector(".rail-newagent")).toBeTruthy());
+    typeMessage(railHost().querySelector("#railinput"), "start here");
     railHost().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
     expect(railHost().querySelector(".rail-newagent")).toBeNull();
@@ -1314,18 +1440,15 @@ describe("the bubble strip", () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "claude", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
-    await flush();
-    expect(railHost().querySelector(".rail-newagent .rail-harness-choice.chosen").dataset.provider).toBe("claude_adk");
+    await waitFor(() => expect(railHost().querySelector(".rail-newagent .rail-harness-choice.chosen").dataset.provider).toBe("claude_adk"));
   });
 
   it("backs out of the chooser onto whichever bubble is pressed", async () => {
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
-    await flush();
-    expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
+    await waitFor(() => expect(railHost().querySelector(".rail-newagent")).toBeTruthy());
     bubbles()[0].click();
-    await flush();
-    expect(railHost().querySelector(".rail-newagent")).toBeNull();
+    await waitFor(() => expect(railHost().querySelector(".rail-newagent")).toBeNull());
     expect(callsTo("agent.add")).toEqual([]);
   });
 
@@ -1339,8 +1462,7 @@ describe("the bubble strip", () => {
     expect(selection.get()).toBe("ag-1");
 
     bubbles()[1].click();
-    await flush();
-    expect(selection.get()).toBe("ag-2");
+    await waitFor(() => expect(selection.get()).toBe("ag-2"));
     // A row arriving does not move the reader off the bubble they opened.
     await pushRow();
     expect(selection.get()).toBe("ag-2");
@@ -1351,12 +1473,12 @@ describe("the bubble strip", () => {
     const selection = createAgentSelection();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
     bubbles()[1].click();
-    await flush();
-    expect(selection.get()).toBe("ag-2");
+    await waitFor(() => expect(selection.get()).toBe("ag-2"));
 
     // The run behind the branch was replaced: its row names another agent, and
     // the one the reader had open is not on the work item any more.
-    await pushRow(branchRow({ agents: [agent()] }));
+    await pushRow(branchRow({ agents: [agent()] }),
+      () => expect(selection.get()).toBe("ag-1"));
 
     expect(selection.get()).toBe("ag-1");
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", ""]);
@@ -1393,11 +1515,11 @@ describe("the painter behind a bubble", () => {
     expect(livePainters()[0].working).toBe(false);
 
     payload = branchRow({ agents: [agent({ working: true })] });
-    await pushRow();
+    await pushRow(payload, () => expect(livePainters()[0].working).toBe(true));
     expect(livePainters()[0].working).toBe(true);
 
     payload = branchRow({ agents: [agent()] });
-    await pushRow();
+    await pushRow(payload, () => expect(livePainters()[0].working).toBe(false));
     expect(livePainters()[0].working).toBe(false);
   });
 
@@ -1411,7 +1533,7 @@ describe("the painter behind a bubble", () => {
     expect(countOn(bubbles()[0]).hidden).toBe(true);
 
     payload = branchRow({ agents: [agent({ unread_count: 2 })] });
-    await pushRow();
+    await pushRow(payload, () => expect(painter.dimmed).toBe(true));
     expect(painter.dimmed).toBe(true);
     expect(painter.ink).toBeTruthy();
     expect(painter.ink).not.toBe(resting);
@@ -1419,7 +1541,7 @@ describe("the painter behind a bubble", () => {
     expect(countOn(bubbles()[0]).textContent).toBe("2");
 
     payload = branchRow({ agents: [agent()] });
-    await pushRow();
+    await pushRow(payload, () => expect(painter.dimmed).toBe(false));
     expect(painter.dimmed).toBe(false);
     expect(painter.ink).toBe(resting);
     expect(countOn(bubbles()[0]).hidden).toBe(true);
@@ -1444,7 +1566,7 @@ describe("the painter behind a bubble", () => {
     const [, second] = livePainters();
 
     payload = branchRow({ agents: [agent()] });
-    await pushRow();
+    await pushRow(payload, () => expect(second.destroyed).toBe(true));
 
     expect(second.destroyed).toBe(true);
     expect(livePainters()).toHaveLength(1);
@@ -1470,7 +1592,7 @@ describe("taking an agent back off the branch", () => {
     payload = twoAgents();
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(headWho(panel())).toBe("Polish the rail"));
   };
 
   const holdRemove = () => {
@@ -1497,21 +1619,19 @@ describe("taking an agent back off the branch", () => {
     // The rail opens on the first agent, and that one may go too.
     expect(removeButton()).toBeTruthy();
     bubbles()[1].click();
-    await flush();
-    expect(removeButton()).toBeTruthy();
+    await waitFor(() => expect(removeButton()).toBeTruthy());
   });
 
   it("leaves a branch whose last agent went with the view that asks for a new one", async () => {
     await mount();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
     payload = branchRow({ agents: [] });
-    await flush();
     // An answer that loses the agents has to say it twice — a poll hiccup must
     // not close the conversation under a reader. A real remove-all says it
     // every tick.
-    await pushRow();
+    await pushRow(payload, () => expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]));
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-1" });
     // A working branch, not a broken one: the strip drops to its ghost and the
@@ -1535,8 +1655,7 @@ describe("taking an agent back off the branch", () => {
     expect(removeButton().title).toBe('Remove "Polish the rail" from this branch');
     expect(removeButton().getAttribute("aria-label")).toBe('Remove "Polish the rail" from this branch');
     removeButton().click();
-    await flush();
-    expect(confirmModal().textContent).toContain('Remove "Polish the rail" from this branch?');
+    await waitFor(() => expect(confirmModal().textContent).toContain('Remove "Polish the rail" from this branch?'));
   });
 
   // A topic arriving keeps the head mounted — it is the title that moves, not
@@ -1549,7 +1668,7 @@ describe("taking an agent back off the branch", () => {
     expect(standing.title).toBe("Remove this Claude Code agent from this branch");
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
-    await pushRow();
+    await pushRow(payload, () => expect(standing.title).toBe('Remove "Unify prompt delivery" from this branch'));
 
     expect(removeButton()).toBe(standing);
     expect(standing.title).toBe('Remove "Unify prompt delivery" from this branch');
@@ -1564,38 +1683,30 @@ describe("taking an agent back off the branch", () => {
     await mount();
     expect(headWho(panel())).toBe("Claude Code");
     bubbles()[1].click();
-    await flush();
-    expect(headWho(panel())).toBe("Claude Code");
+    await waitFor(() => expect(headWho(panel())).toBe("Claude Code"));
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
-
-    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    await waitFor(() => expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" }));
   });
 
   it("asks before it removes, and does nothing at all when the answer is no", async () => {
     await openSecondAgent();
     removeButton().click();
-    await flush();
-    expect(confirmModal()).toBeTruthy();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     expect(document.getElementById("confirm-scrim")).toBeNull();
     confirmModal().querySelector("[data-confirm-cancel]").click();
-    await flush();
-    expect(callsTo("agent.remove")).toEqual([]);
+    await waitFor(() => expect(callsTo("agent.remove")).toEqual([]));
   });
 
   it("cancels the question when the conversation changes", async () => {
     await openSecondAgent();
     removeButton().click();
-    await flush();
-    expect(confirmModal()).toBeTruthy();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
 
     bubbles()[0].click();
-    await flush();
-
-    expect(confirmModal()).toBeNull();
+    await waitFor(() => expect(confirmModal()).toBeNull());
     expect(headWho(panel())).toBe("Fix login redirect");
     expect(callsTo("agent.remove")).toEqual([]);
   });
@@ -1603,25 +1714,21 @@ describe("taking an agent back off the branch", () => {
   it("cancels the question when the rail is disposed", async () => {
     await mount();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     rail.dispose();
     rail = null;
-    await flush();
-
-    expect(confirmModal()).toBeNull();
+    await waitFor(() => expect(confirmModal()).toBeNull());
     expect(callsTo("agent.remove")).toEqual([]);
   });
 
   it("removes the agent the panel is open on, and falls back to the one that is left", async () => {
     await openSecondAgent();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
     // The agent is gone from the work item the next read answers with.
     payload = branchRow();
-    await flush();
-
-    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    await waitFor(() => expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" }));
     expect(headWho(panel())).toBe("Fix login redirect");
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
@@ -1632,15 +1739,13 @@ describe("taking an agent back off the branch", () => {
     const selection = createAgentSelection();
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
     bubbles()[1].click();
-    await flush();
-    expect(selection.get()).toBe("ag-2");
+    await waitFor(() => expect(selection.get()).toBe("ag-2"));
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
     payload = branchRow();
-    await flush();
-    expect(selection.get()).toBe("ag-1");
+    await waitFor(() => expect(selection.get()).toBe("ag-1"));
   });
 
   // An older bridge binary has no agent.remove at all. The rail must say so the
@@ -1655,11 +1760,9 @@ describe("taking an agent back off the branch", () => {
     });
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
-
-    expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove"));
     // Still open on the agent it failed to remove, still offering to try again.
     expect(headWho(panel())).toBe("Polish the rail");
     expect(removeButton()).toBeTruthy();
@@ -1673,16 +1776,16 @@ describe("taking an agent back off the branch", () => {
     await writeRailThread("run-3", "ag-2", {
       items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }],
     });
-    await mount();
+    await mount({}, () => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1", "ag-2", ""]));
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1));
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     holdRemove();
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]));
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
@@ -1697,9 +1800,9 @@ describe("taking an agent back off the branch", () => {
     holdRemove();
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]));
 
     expect(payload.agents.map((each) => each.id)).toEqual(["ag-1"]);
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
@@ -1712,13 +1815,13 @@ describe("taking an agent back off the branch", () => {
     await openSecondAgent();
     holdRemove();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]));
 
     // The board has not caught up with a removal the daemon has not answered
     // for yet; the reader is not shown the bubble they just took off.
-    await pushRow(twoAgents());
+    await pushRow(twoAgents(), () => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]));
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
     expect(notifyError).not.toHaveBeenCalled();
@@ -1733,17 +1836,17 @@ describe("taking an agent back off the branch", () => {
     });
     await mount();
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1));
     expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     const held = holdRemove();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]));
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
 
     held.refuse(new Error("agent is mid-spawn"));
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]));
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(headWho(panel())).toBe("Polish the rail");
@@ -1757,9 +1860,9 @@ describe("taking an agent back off the branch", () => {
     await openSecondAgent();
     const held = holdRemove();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]));
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -1768,7 +1871,7 @@ describe("taking an agent back off the branch", () => {
     });
 
     held.refuse(new Error("agent is mid-spawn"));
-    await flush();
+    await waitFor(() => expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]));
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(bubbles()[1].classList.contains("active")).toBe(true);
@@ -1778,15 +1881,18 @@ describe("taking an agent back off the branch", () => {
   it("removes an agent the create record still names", async () => {
     payload = branchRow({ agents: [] });
     await mount();
-    panel().querySelector("#railinput").value = "start here";
+    typeMessage(panel().querySelector("#railinput"), "start here");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubbles()[0].dataset.agent).toBe("ag-2");
+      expect(callsTo("agent.start")).toHaveLength(1);
+    });
     expect(bubbles()[0].dataset.agent).toBe("ag-2");
 
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmModal().querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" }));
 
     expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
@@ -1798,9 +1904,9 @@ describe("taking an agent back off the branch", () => {
 
     removeButton().click();
     removeButton().click();
-    await flush();
+    await waitFor(() => expect(confirmModal()).toBeTruthy());
     confirmEveryModal();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.remove")).toHaveLength(1));
 
     expect(callsTo("agent.remove")).toHaveLength(1);
   });
@@ -1822,13 +1928,13 @@ describe("the conversation panel", () => {
 
     // An unchanged poll neither rebuilds the head nor starts title motion.
     vi.advanceTimersByTime(1600);
-    await flush();
+    await waitFor(() => expect(panel().querySelector(".rail-head")).toBe(standingHead));
     expect(panel().querySelector(".rail-head")).toBe(standingHead);
     expect(standingTitle.dataset.titleMotion).toBeUndefined();
     expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
-    await pushRow();
+    await pushRow(payload, () => expect(standingTitle.dataset.titleMotion).toBe("erasing"));
 
     expect(panel().querySelector(".rail-head")).toBe(standingHead);
     expect(panel().querySelector(".pinbtn")).toBe(standingPin);
@@ -1863,14 +1969,14 @@ describe("the conversation panel", () => {
   it("drops to the screen and comes back on the same button", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBe(null));
     expect(panel().querySelector("#railinput")).toBe(null);
     expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
     expect(tuiToggle().classList.contains("on")).toBe(true);
     expect(tuiToggle().title).toBe("Back to the conversation");
 
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBeTruthy());
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(tuiToggle().getAttribute("aria-pressed")).toBe("false");
     expect(tuiToggle().classList.contains("on")).toBe(false);
@@ -1879,7 +1985,7 @@ describe("the conversation panel", () => {
   it("keeps the terminal mounted when returning to the browser tab", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(tuiToggle().getAttribute("aria-pressed")).toBe("true"));
     const body = railHost().querySelector("#rail-body");
     const terminal = document.createElement("div");
     terminal.textContent = "live terminal";
@@ -1893,7 +1999,7 @@ describe("the conversation panel", () => {
   it("remembers the face per work item, reopening on the screen the reader left the branch on", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(tuiToggle().getAttribute("aria-pressed")).toBe("true"));
     rail.dispose();
 
     await mount();
@@ -1904,7 +2010,7 @@ describe("the conversation panel", () => {
   it("swaps the same panel onto the agent's screen, addressed by that agent", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
     expect(mountAgentTab).toHaveBeenCalled();
     expect(mountAgentTab.mock.calls[0][1]).toEqual({ id: "run-3", agent_id: "ag-1" });
     expect(panel().querySelector("#railinput")).toBe(null);
@@ -1916,7 +2022,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
 
     await mountAgentTab.mock.calls[0][2].onStart();
 
@@ -1930,7 +2036,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
 
     await mountAgentTab.mock.calls[0][2].onStart();
 
@@ -1938,7 +2044,7 @@ describe("the conversation panel", () => {
     expect(bubbles()[0].title).toContain("starting…");
 
     payload = branchRow({ agents: [agent({ state: "live" })] });
-    await pushRow();
+    await pushRow(payload, () => expect(bubbles()[0].classList.contains("starting")).toBe(false));
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
   });
@@ -1950,7 +2056,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
 
     await mountAgentTab.mock.calls[0][2].onStart();
     expect(bubbles()[0].classList.contains("starting")).toBe(true);
@@ -1958,7 +2064,7 @@ describe("the conversation panel", () => {
     payload = branchRow({
       agents: [agent({ state: "idle", start_error: "could not reach the agent: no such worktree" })],
     });
-    await pushRow();
+    await pushRow(payload, () => expect(bubbles()[0].title).toContain("could not reach the agent"));
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
     expect(bubbles()[0].title).toContain("could not reach the agent");
@@ -1974,7 +2080,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
@@ -1995,7 +2101,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
@@ -2006,12 +2112,12 @@ describe("the conversation panel", () => {
     });
 
     mountAgentTab.mock.calls[0][2].onStart();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.start")).toHaveLength(1));
     tuiToggle().click();
-    await flush();
-    panel().querySelector("#railinput").value = "carry on";
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBeTruthy());
+    typeMessage(panel().querySelector("#railinput"), "carry on");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
 
     expect(callsTo("thread.post")).toHaveLength(1);
     expect(callsTo("agent.start")).toHaveLength(1);
@@ -2033,14 +2139,17 @@ describe("the conversation panel", () => {
       return answering(method, params);
     });
 
-    panel().querySelector("#railinput").value = "wake up";
+    typeMessage(panel().querySelector("#railinput"), "wake up");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(bubbles()[0].classList.contains("starting")).toBe(true));
     expect(bubbles()[0].classList.contains("starting")).toBe(true);
 
-    panel().querySelector("#railinput").value = "and carry on";
+    typeMessage(panel().querySelector("#railinput"), "and carry on");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => {
+      expect(callsTo("thread.post")).toHaveLength(2);
+      expect(callsTo("agent.start")).toHaveLength(1);
+    });
 
     expect(callsTo("thread.post")).toHaveLength(2);
     expect(callsTo("agent.start")).toHaveLength(1);
@@ -2054,15 +2163,15 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
 
-    panel().querySelector("#railinput").value = "wake up";
+    typeMessage(panel().querySelector("#railinput"), "wake up");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(bubbles()[0].classList.contains("starting")).toBe(true));
     expect(bubbles()[0].classList.contains("starting")).toBe(true);
 
     payload = branchRow({
       agents: [agent({ state: "exited", start_error: "no session to open: this entity's session is over" })],
     });
-    await pushRow();
+    await pushRow(payload, () => expect(bubbles()[0].title).toContain("no session to open"));
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
     expect(bubbles()[0].title).toContain("no session to open");
@@ -2080,7 +2189,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
@@ -2103,7 +2212,7 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalled());
     const answering = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
       if (method === "agent.start") {
@@ -2117,10 +2226,10 @@ describe("the conversation panel", () => {
     expect(notifyError).not.toHaveBeenCalled();
 
     tuiToggle().click();
-    await flush();
-    panel().querySelector("#railinput").value = "try again";
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBeTruthy());
+    typeMessage(panel().querySelector("#railinput"), "try again");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.start")).toHaveLength(2));
 
     expect(callsTo("agent.start")).toHaveLength(2);
   });
@@ -2151,11 +2260,11 @@ describe("the conversation panel", () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, has_terminal: false })] });
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalledTimes(1));
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
 
     bubbles()[1].click();
-    await flush();
+    await waitFor(() => expect(headWho(panel())).toBe("Polish the rail"));
 
     expect(headWho(panel())).toBe("Polish the rail");
     expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
@@ -2165,7 +2274,7 @@ describe("the conversation panel", () => {
     // …and the choice is not spent: the agent that does have a terminal is
     // still where it was left.
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(tuiToggle()).toBeTruthy());
     expect(tuiToggle()).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(2);
   });
@@ -2176,11 +2285,11 @@ describe("the conversation panel", () => {
   it("takes the terminal away from a panel standing on one when the agent loses it", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBe(null));
     expect(panel().querySelector("#railinput")).toBe(null);
 
     payload = branchRow({ agents: [agent({ has_terminal: false })] });
-    await pushRow();
+    await pushRow(payload, () => expect(panel().querySelector("#railinput")).toBeTruthy());
 
     expect(panel().querySelector(".rail-tui")).toBe(null);
     expect(panel().querySelector("#railinput")).toBeTruthy();
@@ -2189,11 +2298,11 @@ describe("the conversation panel", () => {
   it("leaves a live screen alone while the rail keeps polling", async () => {
     await mount();
     tuiToggle().click();
-    await flush();
+    await waitFor(() => expect(mountAgentTab).toHaveBeenCalledTimes(1));
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
     const before = panel();
     vi.advanceTimersByTime(5000);
-    await flush();
+    await waitFor(() => expect(panel()).toBe(before));
     // The same panel element, the same pane: a poll must not re-attach a PTY.
     expect(panel()).toBe(before);
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
@@ -2213,7 +2322,7 @@ describe("the conversation panel", () => {
         },
       },
     });
-    await mount();
+    await mount({}, () => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12));
     // The floor is the oldest message the panel holds, and 12 is the newest its
     // viewport reached — which over a conversation that arrived whole is all of
     // it.
@@ -2245,7 +2354,7 @@ describe("the conversation panel", () => {
 
   it("rules a line above the first message the reader has not read", async () => {
     conversationReadThrough(11, 1);
-    await mount();
+    await mount({}, () => expect(railHost().querySelector(".thread-unread-line")).toBeTruthy());
 
     const line = railHost().querySelector(".thread-unread-line");
     expect(line).toBeTruthy();
@@ -2273,12 +2382,12 @@ describe("the conversation panel", () => {
 
   it("clears New when leaving mid-grace, including with a stale digest on reopening", async () => {
     conversationReadThrough(11, 1);
-    await mount();
+    await mount({}, () => expect(railHost().querySelector(".thread-unread-line")).toBeTruthy());
     expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBeTruthy());
     bubbles()[0].click();
-    await flush();
+    await waitFor(() => expect(railHost().querySelector(".thread-unread-line")).toBeNull());
     expect(railHost().querySelector(".thread-unread-line")).toBeNull();
   });
 
@@ -2311,12 +2420,12 @@ describe("the conversation panel", () => {
 
     it("shows the conversation of the agent it switched to, off the disk, asking nothing", async () => {
       await twoAgents();
-      await mount();
+      await mount({}, () => expect(panel().textContent).toContain("words from ag-1"));
       expect(panel().textContent).toContain("words from ag-1");
       const asked = calls.length;
 
       bubbles()[1].click();
-      await flush();
+      await waitFor(() => expect(panel().textContent).toContain("words from ag-2"));
 
       expect(headWho(panel())).toBe("Polish the rail");
       expect(panel().textContent).toContain("words from ag-2");
@@ -2326,7 +2435,7 @@ describe("the conversation panel", () => {
 
     it("never shows one agent's words under another's name while the record is being opened", async () => {
       await twoAgents();
-      await mount();
+      await mount({}, () => expect(panel().textContent).toContain("words from ag-1"));
       expect(panel().textContent).toContain("words from ag-1");
 
       // The press repaints before the record can be read. Whatever the panel
@@ -2334,7 +2443,7 @@ describe("the conversation panel", () => {
       bubbles()[1].click();
       expect(panel().textContent).not.toContain("words from ag-1");
 
-      await flush();
+      await waitFor(() => expect(panel().textContent).toContain("words from ag-2"));
       expect(panel().textContent).toContain("words from ag-2");
     });
   });
@@ -2376,10 +2485,10 @@ describe("reading back past the top of a paged conversation", () => {
 
   it("asks the daemon for the page above the window when the reader reaches the top", async () => {
     pagedConversation(true);
-    await mount();
+    await mount({}, () => expect(railBody().textContent).toContain("the newest"));
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
 
     expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", before_sequence: 98 },
@@ -2388,11 +2497,11 @@ describe("reading back past the top of a paged conversation", () => {
 
   it("folds the older items in above the ones already on screen", async () => {
     pagedConversation(true);
-    await mount();
+    await mount({}, () => expect(railBody().textContent).toContain("the newest"));
     expect(panel().textContent).not.toContain("one before the window");
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(railBody().textContent).toContain("one before the window"));
 
     const bodies = [...railBody().querySelectorAll(".thread-body")].map((node) => node.textContent);
     expect(bodies).toEqual([
@@ -2405,10 +2514,10 @@ describe("reading back past the top of a paged conversation", () => {
 
   it("asks nothing when the window already holds the start of the conversation", async () => {
     pagedConversation(false);
-    await mount();
+    await mount({}, () => expect(railBody().textContent).toContain("the newest"));
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(railBody().textContent).toContain("the newest"));
 
     expect(callsTo("thread.page")).toEqual([]);
   });
@@ -2419,14 +2528,14 @@ describe("reading back past the top of a paged conversation", () => {
     // through the cache on its way — and that page still says there is more
     // above a floor the reader has now scrolled past.
     pagedConversation(true, false);
-    await mount();
+    await mount({}, () => expect(railBody().textContent).toContain("the newest"));
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
     expect(callsTo("thread.page")).toHaveLength(1);
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
 
     expect(callsTo("thread.page")).toHaveLength(1);
   });
@@ -2438,7 +2547,7 @@ describe("reading back past the top of a paged conversation", () => {
   // waiting below it.
   it("reports how much of the conversation it holds when it reports it read", async () => {
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
-    await mount();
+    await mount({}, () => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99));
 
     expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99);
   });
@@ -2448,23 +2557,23 @@ describe("reading back past the top of a paged conversation", () => {
     // making again once that history has landed, so a window reaching further
     // back is news even when the reader got no further down.
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
-    await mount();
+    await mount({}, () => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99));
     markSeen.mockClear();
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99));
 
     expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99);
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {
     pagedConversation(true);
-    await mount();
+    await mount({}, () => expect(railBody().textContent).toContain("the newest"));
 
     railBody().dispatchEvent(new Event("scroll"));
     railBody().dispatchEvent(new Event("scroll"));
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
 
     expect(callsTo("thread.page")).toHaveLength(1);
   });
@@ -2522,7 +2631,7 @@ describe("the count on a folded run of activity", () => {
 
   it("shows what the bridge counted rather than the rows the page shipped", async () => {
     conversationOf(bigRun());
-    await mount();
+    await mount({}, () => expect(foldCount()).toBe("1000"));
 
     expect(foldCount()).toBe("1000");
     expect(railBody().querySelector(".thread-activity-preview").textContent).toBe("Bash(cargo test)");
@@ -2530,7 +2639,7 @@ describe("the count on a folded run of activity", () => {
 
   it("keeps the count through the repaints a poll and a feed snapshot make", async () => {
     conversationOf(bigRun());
-    await mount();
+    await mount({}, () => expect(foldCount()).toBe("1000"));
 
     await pushFeed({ items: [], projects: [] });
     expect(foldCount()).toBe("1000");
@@ -2538,10 +2647,10 @@ describe("the count on a folded run of activity", () => {
 
   it("takes in the digest of the run an older page reaches back to", async () => {
     conversationOf(bigRun());
-    await mount();
+    await mount({}, () => expect(foldCount()).toBe("1000"));
 
     railBody().dispatchEvent(new Event("scroll"));
-    await flush();
+    await waitFor(() => expect(foldCount()).toBe("1040"));
 
     // One run on screen now: the page above ended in a tool call, so what the
     // reader sees is a single fold over both bridge runs, counting both.
@@ -2584,7 +2693,7 @@ describe("focusing the composer on a freshly created branch", () => {
     expect(document.activeElement).not.toBe(panel().querySelector("#railinput"));
 
     vi.advanceTimersByTime(1600);
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railinput")).toBeTruthy());
     expect(document.activeElement).not.toBe(panel().querySelector("#railinput"));
   });
 });
@@ -2611,7 +2720,7 @@ describe("the pinned status line above the composer", () => {
       },
     });
 
-    await mount({ deviceId: "dev-2" });
+    await mount({ deviceId: "dev-2" }, () => expect(railStatus().textContent).toContain("+4"));
 
     expect(railStatus().textContent).toContain("+4");
     expect(railStatus().textContent).toContain("−1");
@@ -2625,6 +2734,7 @@ describe("the pinned status line above the composer", () => {
   });
 
   it("pulses and clocks the turn while the branch is working", async () => {
+    freezeClock();
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 } })] });
     await pushFeed({
       items: [{
@@ -2633,7 +2743,7 @@ describe("the pinned status line above the composer", () => {
       }],
       projects: [],
     });
-    await mount();
+    await mount({}, () => expect(railStatusLead().textContent).toBe("Working 12:30"));
     expect(railStatus().hidden).toBe(false);
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
     expect(railStatusLead().textContent).toBe("Working 12:30");
@@ -2681,6 +2791,7 @@ describe("the pinned status line above the composer", () => {
   });
 
   it("shows the startup event in the working slot while no turn is in flight", async () => {
+    freezeClock();
     payload = branchRow({
       run: {
         run_id: "run-3",
@@ -2690,7 +2801,7 @@ describe("the pinned status line above the composer", () => {
         },
       },
     });
-    await mount();
+    await mount({}, () => expect(railStatus().textContent).toContain("Run started · 2m ago"));
     expect(railStatus().hidden).toBe(false);
     expect(railStatus().textContent).toContain("Run started · 2m ago");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-starting");
@@ -2706,7 +2817,7 @@ describe("the pinned status line above the composer", () => {
       ...payload,
       agents: [agent({ ...payload.agents[0], working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })],
     });
-    await pushRow();
+    await pushRow(payload, () => expect(railStatus().textContent).toContain("Working 0:05"));
     expect(railStatus().textContent).toContain("Working 0:05");
     expect(railStatus().textContent).not.toContain("Run started");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
@@ -2723,15 +2834,14 @@ describe("the pinned status line above the composer", () => {
         },
       },
     });
-    await mount();
+    await mount({}, () => expect(railStatus().textContent).toContain("Codex TUI session started"));
     expect(railStatus().textContent).toContain("Codex TUI session started");
   });
 
   it("ticks the elapsed time between feed reads", async () => {
-    // The ticker's Date.now() has to move with the fake clock for this one, so
-    // this test fakes Date too — the others read `since` off the real clock at
-    // mount and never advance timers far enough to notice the difference.
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    // Advance the elapsed clock explicitly: polling for the initial paint
+    // must not consume the seconds this assertion is measuring.
+    const clock = freezeClock();
     payload = branchRow({ agents: [agent({ working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 } })] });
     await pushFeed({
       items: [{
@@ -2740,10 +2850,11 @@ describe("the pinned status line above the composer", () => {
       }],
       projects: [],
     });
-    await mount();
+    await mount({}, () => expect(railStatus().textContent).toContain("Working 0:05"));
     expect(railStatus().textContent).toContain("Working 0:05");
+    clock.mockReturnValue(Date.now() + 3000);
     vi.advanceTimersByTime(3000);
-    await flush();
+    await waitFor(() => expect(railStatus().textContent).toContain("Working 0:08"));
     expect(railStatus().textContent).toContain("Working 0:08");
   });
 });
@@ -2752,9 +2863,9 @@ describe("the first message", () => {
   it("posts to the agent that is there, and starts it when no session is live", async () => {
     payload = branchRow({ agents: [agent({ state: "idle" })] });
     await mount();
-    panel().querySelector("#railinput").value = "please look at this";
+    typeMessage(panel().querySelector("#railinput"), "please look at this");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.start")).toHaveLength(1));
     expect(callsTo("thread.post")[0].params).toMatchObject({
       entity_id: "run-3", agent_id: "ag-1", body: "please look at this",
     });
@@ -2768,17 +2879,17 @@ describe("the first message", () => {
   it("names a page on the post it is about to throw away", async () => {
     payload = branchRow({ agents: [agent({ state: "idle" })] });
     await mount();
-    panel().querySelector("#railinput").value = "one more word";
+    typeMessage(panel().querySelector("#railinput"), "one more word");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")[0].params.thread_limit).toBe(FIRST_PAGE_ITEMS));
     expect(callsTo("thread.post")[0].params.thread_limit).toBe(FIRST_PAGE_ITEMS);
   });
 
   it("says nothing twice to an agent already listening", async () => {
     await mount();
-    panel().querySelector("#railinput").value = "hi";
+    typeMessage(panel().querySelector("#railinput"), "hi");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
     expect(callsTo("agent.start")).toEqual([]);
   });
 
@@ -2789,11 +2900,12 @@ describe("the first message", () => {
     payload = branchRow({ run_id: null, run: null, agents: [] });
     const shared = createAdoptingCall((method, params) => bridge.call(method, params), "p1", "wt-3");
     await shared.adopt();
-    await mount({ kind: "branch", projectId: "p1", branch: "build/login", adopting: () => shared });
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", adopting: () => shared },
+      () => expect(panel().querySelector("#railsend")).toBeTruthy());
 
-    panel().querySelector("#railinput").value = "start here";
+    typeMessage(panel().querySelector("#railinput"), "start here");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
 
     expect(callsTo("run.adopt")).toHaveLength(1);
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", body: "start here" });
@@ -2802,9 +2914,9 @@ describe("the first message", () => {
   it("leaves an issue's first message to start its own planning agent", async () => {
     payload = { issue_id: "plan-1", project_id: "p1", agents: [agent({ state: "idle" })], thread: { items: [] } };
     await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
-    panel().querySelector("#railinput").value = "plan this";
+    typeMessage(panel().querySelector("#railinput"), "plan this");
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" }));
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" });
     expect(callsTo("agent.start")).toEqual([]);
   });
@@ -2820,9 +2932,9 @@ describe("the chat tab of a branch with no agent", () => {
   const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
   const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
   const send = async (body) => {
-    panel().querySelector("#railinput").value = body;
+    typeMessage(panel().querySelector("#railinput"), body);
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.start")).toHaveLength(1));
   };
 
   it("offers the two agents, with the account's default already chosen", async () => {
@@ -2853,7 +2965,7 @@ describe("the chat tab of a branch with no agent", () => {
 
     // The branch has the agent the send made, and the panel is open on it.
     payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
-    await pushRow();
+    await pushRow(payload, () => expect(headWho(panel())).toBe("Polish the rail"));
     expect(headWho(panel())).toBe("Polish the rail");
   });
 
@@ -2862,7 +2974,7 @@ describe("the chat tab of a branch with no agent", () => {
     await mount();
 
     card("codex").click();
-    await flush();
+    await waitFor(() => expect(chosenCard().dataset.provider).toBe("codex"));
     expect(chosenCard().dataset.provider).toBe("codex");
 
     await send("start here");
@@ -2877,7 +2989,7 @@ describe("the chat tab of a branch with no agent", () => {
     await mount();
 
     chosenCard().click();
-    await flush();
+    await waitFor(() => expect(document.activeElement).toBe(chosenCard()));
     expect(document.activeElement).toBe(chosenCard());
 
     await send("start here");
@@ -2899,9 +3011,9 @@ describe("the chat tab of a branch with no agent", () => {
     expect(chosenCard().dataset.provider).toBe("codex");
 
     card("claude_adk").click();
-    await flush();
+    await waitFor(() => expect(chosenCard().dataset.provider).toBe("claude_adk"));
     expect(chosenCard().dataset.provider).toBe("claude_adk");
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
     expect(reasoningMenuButton().textContent).toContain("high");
 
     await send("start here");
@@ -2918,7 +3030,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = agentless();
     await mount();
     expect(chosenCard().dataset.provider).toBe("claude_adk");
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({
@@ -2957,11 +3069,11 @@ describe("the chat tab of a branch with no agent", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
-    await flush();
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
     // Nothing on the wire: there is no agent yet to hold a choice, and this
     // checkout may never be adopted at all.
     expect(callsTo("agent.choose")).toEqual([]);
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
 
     await send("start here");
     expect(callsTo("agent.add")[0].params).toMatchObject({
@@ -2992,7 +3104,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = agentless();
     await mount();
     card("claude").click();
-    await flush();
+    await waitFor(() => expect(chosenCard().dataset.provider).toBe("claude"));
 
     rail.dispose();
     catalog = CATALOG;
@@ -3012,7 +3124,7 @@ describe("the chat tab of a branch with no agent", () => {
     await mount();
     const before = cards();
 
-    await pushRow();
+    await pushRow(payload, () => expect(cards().every((entry, index) => entry === before[index])).toBe(true));
 
     expect(cards().every((entry, index) => entry === before[index])).toBe(true);
   });
@@ -3027,7 +3139,7 @@ describe("the composer's model menu", () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
     expect(reasoningMenuButton().textContent).toContain("low");
     modelMenuButton().click();
     expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
@@ -3045,7 +3157,7 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(1));
 
     expect(callsTo("agent.choose")[0].params).toEqual({
       entity_id: "run-3", agent_id: "ag-1", model: "claude-opus-5", effort: "", expected_choice_revision: 0,
@@ -3058,15 +3170,15 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(1));
     reasoningMenuButton().click();
     reasoningMenuItem("effort:high").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(2));
 
     payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
-    await pushRow();
+    await pushRow(payload, () => expect(reasoningMenuButton().textContent).toContain("high"));
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
     expect(reasoningMenuButton().textContent).toContain("high");
   });
 
@@ -3074,7 +3186,7 @@ describe("the composer's model menu", () => {
     payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5", active_effort: "high" })] });
     await mount();
 
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
     expect(reasoningMenuButton().textContent).toContain("high");
     expect(callsTo("agent.choose")).toEqual([]);
   });
@@ -3096,7 +3208,7 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
-    await flush();
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5"));
 
     expect(callsTo("agent.choose")[0].params).toEqual({
       entity_id: "run-3", agent_id: "ag-1", model: "claude-haiku-4-5", effort: "", expected_choice_revision: 0,
@@ -3130,7 +3242,7 @@ describe("the composer's model menu", () => {
 
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
     expect(callsTo("agent.choose")).toHaveLength(1);
-    await flush();
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5"));
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
   });
 
@@ -3150,7 +3262,7 @@ describe("the composer's model menu", () => {
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
     const composer = panel().querySelector("#railinput");
-    composer.value = "use the new model";
+    typeMessage(composer, "use the new model");
     composer.dispatchEvent(new Event("input", { bubbles: true }));
     panel().querySelector("#railsend").click();
 
@@ -3166,10 +3278,10 @@ describe("the composer's model menu", () => {
       effort: "",
       choice_revision: 1,
     });
-    await flush();
+    await waitFor(() => expect(panel().querySelector("#railsend").disabled).toBe(false));
     expect(panel().querySelector("#railsend").disabled).toBe(false);
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
 
     expect(callsTo("thread.post")[0].params).toMatchObject({
       agent_id: "ag-1",
@@ -3186,19 +3298,19 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(1));
     modelMenuButton().click();
     menuItem("model:claude-opus-5").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(2));
     reasoningMenuButton().click();
     reasoningMenuItem("effort:high").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.choose")).toHaveLength(3));
 
     const composer = panel().querySelector("#railinput");
-    composer.value = "continue with these settings";
+    typeMessage(composer, "continue with these settings");
     composer.dispatchEvent(new Event("input", { bubbles: true }));
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
 
     expect(callsTo("agent.choose").at(-1).params).toMatchObject({
       agent_id: "ag-1",
@@ -3226,10 +3338,10 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
-    await flush();
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5"));
 
     vi.advanceTimersByTime(1600);
-    await flush();
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5"));
 
     expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
     modelMenuButton().click();
@@ -3248,13 +3360,13 @@ describe("the composer's model menu", () => {
 
     modelMenuButton().click();
     menuItem("model:claude-haiku-4-5").click();
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not set the model", "agent.choose: the agent is locked to Claude Code"));
 
     expect(notifyError).toHaveBeenCalledWith(
       "Could not set the model",
       "agent.choose: the agent is locked to Claude Code",
     );
-    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
   });
 });
 
@@ -3286,7 +3398,7 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
     send().click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.interrupt")).toHaveLength(1));
     expect(callsTo("agent.interrupt")[0].params).toMatchObject({
       entity_id: "run-3", agent_id: "ag-1", conversation_id: "ag-1",
     });
@@ -3296,11 +3408,11 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
     await mount();
     const input = panel().querySelector("#railinput");
-    input.value = "when you get a moment";
+    typeMessage(input, "when you get a moment");
     input.dispatchEvent(new Event("input"));
     expect(send().dataset.action).toBe("send");
     send().click();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment"));
     expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment");
     expect(callsTo("agent.interrupt")).toHaveLength(0);
   });
@@ -3312,11 +3424,11 @@ describe("interrupting the turn", () => {
     payload = branchRow({ agents: [agent({ working: true })] });
     await mount();
     const input = panel().querySelector("#railinput");
-    input.value = "half a sent";
+    typeMessage(input, "half a sent");
     expect(send().dataset.action).toBe("send");
 
     payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
-    await pushRow();
+    await pushRow(payload, () => expect(panel().querySelector("#railinput")).toBe(input));
 
     expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
@@ -3324,7 +3436,7 @@ describe("interrupting the turn", () => {
 
     // …and back to the plain button when the turn it could have stopped ends.
     payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
-    await pushRow();
+    await pushRow(payload, () => expect(panel().querySelector("#railinput")).toBe(input));
     expect(send().dataset.action).toBe("send");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
@@ -3357,10 +3469,10 @@ describe("the conversation's local cache", () => {
 
     await mount();
 
-    await vi.waitFor(() => expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+    await waitFor(() => expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
     ]));
-    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
+    await waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
     expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
   });
@@ -3371,8 +3483,7 @@ describe("the conversation's local cache", () => {
       { items: [threadItem(1, "what was said before")], olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
     );
     feedSnapshot = { items: feedItems, projects: [] };
-    await mount();
-    await flush(); // the auto-selected agent's record is opened
+    await mount({}, () => expect(railHost().querySelector("#rail-body")?.textContent).toContain("what was said before"));
 
     expect(railHost().querySelector("#rail-body").textContent).toContain("what was said before");
     // The conversation is on the disk; the wire is only ever asked for the
@@ -3399,8 +3510,7 @@ describe("the conversation's local cache", () => {
       },
     );
     feedSnapshot = { items: feedItems, projects: [] };
-    await mount();
-    await flush();
+    await mount({}, () => expect(railHost().querySelector(".thread-activity-count")?.textContent).toBe("1000"));
 
     expect(railHost().querySelector(".thread-activity-count").textContent).toBe("1000");
   });
@@ -3417,13 +3527,13 @@ describe("the conversation's local cache", () => {
       },
     });
     await mount();
-    panel().querySelector("#railinput").value = "and mine";
+    typeMessage(panel().querySelector("#railinput"), "and mine");
     panel().querySelector("#railsend").click();
-    await flush();
-
-    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
-    expect(record.value.items.map((entry) => entry.data.body)).toEqual(["fresh words", "and mine"]);
-    expect(record.value.items[1].data.sequence).toBe(7); // the sequence thread.post answered with
+    await waitFor(async () => {
+      const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
+      expect(record.value.items.map((entry) => entry.data.body)).toEqual(["fresh words", "and mine"]);
+      expect(record.value.items[1].data.sequence).toBe(7); // the sequence thread.post answered with
+    });
   });
 });
 
@@ -3449,8 +3559,7 @@ describe("revisiting a conversation", () => {
       calls.push({ method, params });
       return new Promise(() => {});
     });
-    await mount();
-    await flush();
+    await mount({}, () => expect(railHost().querySelector("#rail-body")?.textContent).toContain("the history"));
     expect(bubbles().length).toBeGreaterThan(0);
     expect(railHost().querySelector("#rail-body").textContent).toContain("the history");
   });
@@ -3462,14 +3571,12 @@ describe("revisiting a conversation", () => {
   it("paints the saved history at once, and a row that says nothing does not blank it", async () => {
     feedSnapshot = { items: feedItems, projects: [] };
     payload = branchRow({ run: { run_id: "run-3", thread: historyThread() } });
-    await mount();
-    await flush();
+    await mount({}, () => expect(railHost().querySelector("#rail-body")?.textContent).toContain("the history"));
     rail.dispose();
     rail = null;
 
-    await mount();
-    await flush();
-    await pushRow(branchRow({ agents: [agent({ unread_count: 1 })] }));
+    await mount({}, () => expect(railHost().querySelector("#rail-body")?.textContent).toContain("the history"));
+    await pushRow(branchRow({ agents: [agent({ unread_count: 1 })] }), () => expect(countOn(bubbles()[0])?.textContent).toContain("1"));
 
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("the history");
@@ -3484,7 +3591,7 @@ describe("the agent's surfaces, carried by the status row", () => {
 
   const openPanelWithSurfaces = async () => {
     payload = branchRow({ agents: [agent({ surfaces: shellSurfaces })] });
-    await mount();
+    await mount({}, () => expect(railHost().querySelector('[data-surface-kind="shells"]')).not.toBeNull());
   };
 
   it("mounts the pills in the scroller between the lead and the git facts", async () => {
@@ -3508,13 +3615,15 @@ describe("the agent's surfaces, carried by the status row", () => {
   it("opens a viewer with no row menu, leaving the draft and the focus alone", async () => {
     await openPanelWithSurfaces();
     const input = railHost().querySelector("#railinput");
-    input.value = "half a sentence";
+    typeMessage(input, "half a sentence");
     input.focus();
 
     await openSurfacePill("shells");
-    await flush();
-
-    const row = railHost().querySelector(".surface-shells .surface-row");
+    const row = await waitFor(() => {
+      const surfaceRow = railHost().querySelector(".surface-shells .surface-row");
+      expect(surfaceRow).not.toBeNull();
+      return surfaceRow;
+    });
     expect(row.querySelector(".splitbtn")).toBe(null);
     expect(callsTo("thread.post")).toEqual([]);
     expect(railHost().querySelector("#railinput").value).toBe("half a sentence");
@@ -3534,15 +3643,13 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    const callLink = await vi.waitFor(() => {
+    const callLink = await waitFor(() => {
       const link = railHost().querySelector(".surface-subagents [data-call-sequence]");
       expect(link).not.toBeNull();
       return link;
     }, { timeout: 5000 });
     callLink.click();
-    await flush();
-
-    expect(notifyError).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1));
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
   });
 });
@@ -3588,7 +3695,10 @@ describe("the agent's surfaces, seeded from the local cache", () => {
 
   beforeEach(() => {
     feedSnapshot = { items: feedItems, projects: [] };
-    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    payload = branchRow({
+      agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
+      run: { run_id: "run-3", thread: { items: [{ type: "message", data: { sequence: 1, role: "agent", body: "A cached conversation" } }] } },
+    });
   });
 
   it("paints the saved pills before the first read answers", async () => {
@@ -3620,10 +3730,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("seeds the same snapshot whole while the grace still holds", async () => {
     await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
     answerNothing();
-    await mount();
-    expect(pillKinds()).toEqual(["shells", "checklist"]);
+    await mount({}, () => expect(pillKinds()).toEqual(["shells", "checklist"]));
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
+    await waitFor(() => expect(railHost().querySelector(".surface-checklist-context")?.textContent).toContain("Last known"));
   });
 
   it("offers the seeded kinds in the header menu before the first read answers", async () => {
@@ -3638,7 +3747,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
     await mount();
-    expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+    await waitFor(() => expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test"));
   });
 
   it("repaints an open surface when its local cache record changes externally", async () => {
@@ -3647,9 +3756,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await mount();
     const address = uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" });
     await writeCached(address, { kind: "shells" });
-    await vi.waitFor(() => expect(railHost().querySelector(".surface-shells")?.textContent).toContain("cargo test"));
+    await waitFor(() => expect(railHost().querySelector(".surface-shells")?.textContent).toContain("cargo test"));
     await writeCached(address, { kind: null });
-    await vi.waitFor(() => expect(railHost().querySelector('[data-surface-kind="shells"]')?.getAttribute("aria-pressed")).toBe("false"));
+    await waitFor(() => expect(railHost().querySelector('[data-surface-kind="shells"]')?.getAttribute("aria-pressed")).toBe("false"));
   });
 
   const shapelessRecords = [{ surfaces: "boom" }, { surfaces: { shells: "boom" } }, {}];
@@ -3665,8 +3774,9 @@ describe("the agent's surfaces, seeded from the local cache", () => {
           knownTotalItems: 1,
         },
       );
+      payload.run.thread = { items: [] };
       answerNothing();
-      await mount();
+      await mount({}, () => expect(railHost().querySelector("#rail-body").textContent).toContain("the history"));
       expect(pillKinds()).toEqual([]);
       expect(menuKinds()).toEqual([]);
       expect(railHost().querySelector("#rail-body").textContent).toContain("the history");
@@ -3680,8 +3790,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     bubbles()[1].click();
-    await flush();
-    expect(pillKinds()).toEqual(["checklist"]);
+    await waitFor(() => expect(pillKinds()).toEqual(["checklist"]));
     await openTasks();
     expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
@@ -3691,7 +3800,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     rail = mountAgentRail(railHost(), railContext());
     bubbles()[1].click(); // ag-1's seed is still in flight
-    await flush();
+    await waitFor(() => expect(headWho(panel())).toBe("Polish the rail"));
     expect(pillKinds()).toEqual([]);
   });
 
@@ -3711,7 +3820,10 @@ describe("the agent's surfaces, seeded from the local cache", () => {
 
     await pushRow(branchRow({
       agents: [agent({ surface_session_generation: "surface-session-2", surfaces: null })],
-    }));
+    }), () => {
+      expect(railHost().querySelector(".agent-observation-host")?.hidden).toBe(true);
+      expect(pillKinds()).toEqual([]);
+    });
 
     expect(railHost().querySelector(".agent-observation-host").hidden).toBe(true);
     expect(pillKinds()).toEqual([]);
@@ -3724,7 +3836,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await mount();
     expect(pillCount("shells")).toBe("2");
 
-    await pushRow(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }));
+    await pushRow(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }), () => expect(pillCount("shells")).toBe("1"));
 
     expect(pillCount("shells")).toBe("1");
   });
@@ -3732,12 +3844,47 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   it("leaves no seed landing after the rail is gone", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
-    rail = mountAgentRail(railHost(), railContext());
-    rail.dispose();
-    rail = null;
-    await flush();
-    expect(railHost().querySelector(".surface-pill")).toBe(null);
-    expect(notifyError).not.toHaveBeenCalled();
+    await writeRailWorkItem(payload);
+    const storage = await import("../src/core/localCache.js");
+    const caches = await import("../src/core/conversationCache.js");
+    const read = storage.readCached;
+    const makeCache = caches.createConversationCache;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const pendingSeeds = [];
+    const heldReads = [];
+    const reading = vi.spyOn(storage, "readCached").mockImplementation((address) => {
+      const result = read(address);
+      if (address?.kind !== surfacesAddress("ag-1").kind || address?.sub !== "ag-1") return result;
+      const held = result.then(async (record) => { await gate; return record; });
+      heldReads.push(held);
+      return held;
+    });
+    const factory = vi.spyOn(caches, "createConversationCache").mockImplementation((options) => {
+      const cache = makeCache(options);
+      return { ...cache, seed: () => {
+        const pending = cache.seed();
+        pendingSeeds.push(pending);
+        return pending;
+      } };
+    });
+    const seed = vi.spyOn(chatRepository.history("ag-1").threadCache, "seedWindow");
+    try {
+      rail = mountAgentRail(railHost(), railContext());
+      await waitFor(() => expect(heldReads.length).toBeGreaterThan(0));
+      rail.dispose();
+      rail = null;
+      release();
+      await Promise.all(pendingSeeds);
+      expect(seed).not.toHaveBeenCalled();
+      expect(railHost().querySelector(".surface-pill")).toBe(null);
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      release();
+      reading.mockRestore();
+      factory.mockRestore();
+      seed.mockRestore();
+    }
   });
 });
 
@@ -3760,7 +3907,7 @@ describe("task completion notifications", () => {
     expect(document.querySelector(".task-completion-toast")).toBe(null);
 
     payload = branchRow({ agents: [checklistAgent("completed", 2)] });
-    await pushRow();
+    await pushRow(payload, () => expect(document.querySelector(".task-completion-toast")?.textContent).toContain("Ship the release"));
     expect(document.querySelector(".task-completion-toast")?.textContent).toContain("Ship the release");
 
     await pushRow();
@@ -3799,16 +3946,14 @@ describe("a workspace's conversation", () => {
     await mount({ kind: "workspace", projectId: "p1", workspaceId: "ws-1", sourceId: "root" });
     const input = railHost().querySelector("#railinput");
     expect(input).not.toBeNull();
-    input.value = "fix the deployed workspace";
+    typeMessage(input, "fix the deployed workspace");
     railHost().querySelector("#railsend").click();
-    await flush();
-
-    expect(callsTo("thread.post")[0].params).toMatchObject({
+    await waitFor(() => expect(callsTo("thread.post")[0]?.params).toMatchObject({
       entity_id: "run-3",
       agent_id: "ag-workspace",
       conversation_id: "conversation-workspace",
       body: "fix the deployed workspace",
-    });
+    }));
   });
 
   it("shows the shared new-conversation composer without creating storage on open", async () => {
@@ -3819,10 +3964,11 @@ describe("a workspace's conversation", () => {
       return {};
     });
 
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" });
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1" },
+      () => expect(railHost().querySelector(".rail-harness-choice.chosen")).toBeTruthy());
     if (!panel()) {
       railHost().querySelector('[data-bubble="ghost"]').click();
-      await flush();
+      await waitFor(() => expect(railHost().querySelector(".rail-newagent")).not.toBeNull());
     }
 
     expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
@@ -3846,13 +3992,13 @@ describe("a workspace's conversation", () => {
       return {};
     });
 
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
-    railHost().querySelector("#railinput").value = "start in this workspace";
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true },
+      () => expect(railHost().querySelector(".rail-harness-choice.chosen")).toBeTruthy());
+    await waitFor(() => expect(modelMenuButton().textContent).toContain("Claude Opus 5"));
+    typeMessage(railHost().querySelector("#railinput"), "start in this workspace");
     railHost().querySelector("#railsend").click();
-    await flush();
-
-    expect(calls.filter((entry) => ["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"].includes(entry.method))
-      .map((entry) => entry.method)).toEqual(["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"]);
+    await waitFor(() => expect(calls.filter((entry) => ["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"].includes(entry.method))
+      .map((entry) => entry.method)).toEqual(["workspace.ensure_conversation", "agent.add", "thread.post", "agent.start"]));
     expect(callsTo("workspace.ensure_conversation")[0].params).toEqual({ workspace_id: "workspace-1" });
     expect(callsTo("agent.add")[0].params).toMatchObject({
       entity_id: "run-workspace", provider: "claude_adk", model: "claude-opus-5", effort: "high",
@@ -3864,6 +4010,8 @@ describe("a workspace's conversation", () => {
   });
 
   it("restores the draft and retries workspace creation after ensure fails", async () => {
+    let releaseRefresh;
+    refreshFeed.mockImplementationOnce(() => new Promise((resolve) => { releaseRefresh = resolve; }));
     let ensureAttempts = 0;
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -3878,10 +4026,11 @@ describe("a workspace's conversation", () => {
       return {};
     });
 
-    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true });
-    railHost().querySelector("#railinput").value = "keep this draft";
+    await mount({ kind: "workspace", projectId: "p1", workspaceId: "workspace-1", autofocusComposer: true },
+      () => expect(railHost().querySelector(".rail-harness-choice.chosen")).toBeTruthy());
+    typeMessage(railHost().querySelector("#railinput"), "keep this draft");
     railHost().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "workspace unavailable"));
     expect(railHost().querySelector("#railinput").value).toBe("keep this draft");
     expect(railHost().querySelector(".rail-newagent")).not.toBeNull();
     expect(callsTo("agent.add")).toEqual([]);
@@ -3890,9 +4039,12 @@ describe("a workspace's conversation", () => {
     expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "workspace unavailable");
 
     railHost().querySelector("#railsend").click();
-    await flush();
-    expect(callsTo("workspace.ensure_conversation")).toHaveLength(2);
-    expect(callsTo("agent.add")).toHaveLength(1);
+    await waitFor(() => {
+      expect(callsTo("workspace.ensure_conversation")).toHaveLength(2);
+      expect(callsTo("agent.add")).toHaveLength(1);
+      expect(callsTo("agent.start")).toHaveLength(1);
+    });
+    releaseRefresh();
   });
 });
 
@@ -3925,10 +4077,13 @@ describe("creating an agent, before the daemon has answered for it", () => {
     });
   };
 
-  const press = async (body) => {
-    composer().value = body;
+  const press = async (body, ready = null) => {
+    typeMessage(composer(), body);
     railHost().querySelector("#railsend").click();
-    await flush();
+    await waitFor(ready || (() => {
+      expect(timeline()?.textContent).toContain(body);
+      expect(composer().value).toBe("");
+    }));
   };
 
   it("paints a pending agent the daemon has not answered for yet", async () => {
@@ -3944,12 +4099,9 @@ describe("creating an agent, before the daemon has answered for it", () => {
       call: () => held,
       failureSummary: "Could not start the agent",
     });
-    await flush();
+    await waitFor(() => expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]));
 
-    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
-
-    vi.advanceTimersByTime(3200);
-    await flush();
+    await vi.advanceTimersByTimeAsync(3200);
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
 
     release();
@@ -3961,7 +4113,11 @@ describe("creating an agent, before the daemon has answered for it", () => {
     await mount();
     const release = holdAgentAdd();
 
-    await press("start here");
+    await press("start here", () => {
+      expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
+      expect(timeline()?.textContent).toContain("start here");
+      expect(composer().value).toBe("");
+    });
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
@@ -3973,14 +4129,17 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(callsTo("thread.post")).toEqual([]);
 
     release();
-    await flush();
+    await waitFor(() => {
+      expect(bubbles()[0].dataset.agent).toBe("ag-2");
+      expect(callsTo("agent.start")).toHaveLength(1);
+    });
   });
 
   it("renames the bubble to the agent the daemon made, without rebuilding anything", async () => {
     payload = agentless();
     await mount();
     const release = holdAgentAdd();
-    await press("start here");
+    await press("start here", () => expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]));
     const bubble = bubbles()[0];
     const painter = livePainters().at(-1);
     const body = railHost().querySelector("#rail-body");
@@ -3988,7 +4147,10 @@ describe("creating an agent, before the daemon has answered for it", () => {
     input.focus();
 
     release();
-    await flush();
+    await waitFor(() => {
+      expect(bubbles()[0].dataset.agent).toBe("ag-2");
+      expect(callsTo("agent.start")).toHaveLength(1);
+    });
 
     expect(bubbles()[0]).toBe(bubble);
     expect(bubble.dataset.agent).toBe("ag-2");
@@ -4016,14 +4178,17 @@ describe("creating an agent, before the daemon has answered for it", () => {
       return { posted_sequence: 7 };
     });
 
-    await press("start here");
+    await press("start here", () => {
+      expect(bubbles()[0]?.dataset.agent).toBe("ag-2");
+      expect(timeline()?.textContent).toContain("start here");
+      expect(releasePost).toBeTypeOf("function");
+    });
 
     expect(bubbles()[0].dataset.agent).toBe("ag-2");
     expect(timeline().textContent).toContain("start here");
 
     releasePost();
-    await flush();
-    expect(timeline().textContent).toContain("start here");
+    await waitFor(() => expect(timeline().textContent).toContain("start here"));
   });
 
   it("keeps the bubble it painted when the read that names the real agent lands", async () => {
@@ -4057,7 +4222,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(bubbles()).toHaveLength(2);
 
     release();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.start")).toHaveLength(1));
   });
 
   it("puts the message back in the box when the agent could not be created", async () => {
@@ -4065,7 +4230,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
     await mount();
     refuseCall("agent.add", "no room");
 
-    await press("start here");
+    await press("start here", () => expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room"));
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]);
     expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
@@ -4080,7 +4245,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
     await mount();
     refuseCall("thread.post", "no conversation");
 
-    await press("start here");
+    await press("start here", () => expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no conversation"));
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].dataset.agent).toBe("ag-2");
@@ -4095,11 +4260,10 @@ describe("creating an agent, before the daemon has answered for it", () => {
     await mount();
     const release = holdAgentAdd();
     await press("start here");
-    await press("and this too");
+    await press("and this too", () => expect(composer().value).toBe(""));
 
     release();
-    await flush();
-    await flush();
+    await waitFor(() => expect(callsTo("thread.post").map((call) => call.params.body)).toEqual(["start here", "and this too"]));
 
     const posts = callsTo("thread.post");
     expect(posts.map((call) => call.params.body)).toEqual(["start here", "and this too"]);
@@ -4136,10 +4300,13 @@ describe("sending to an agent that is already there", () => {
     });
   };
 
-  const press = async (body) => {
-    composer().value = body;
+  const press = async (body, ready = null) => {
+    typeMessage(composer(), body);
     railHost().querySelector("#railsend").click();
-    await flush();
+    await waitFor(ready || (() => {
+      expect(timeline()?.textContent).toContain(body);
+      expect(composer().value).toBe("");
+    }));
   };
 
   // Issue #58: the device's limit remains visible while the conversation
@@ -4173,7 +4340,7 @@ describe("sending to an agent that is already there", () => {
     expect(panel().querySelector(".usage-limit-banner")).toBeNull();
     expect(timeline().querySelector('[data-delivery-status="queued"]').hasAttribute("title")).toBe(false);
     release();
-    await flush();
+    await waitFor(() => expect(timeline().querySelector('[data-sequence="7"]')).not.toBeNull());
   });
 
   it("shows the message and clears the box before thread.post answers", async () => {
@@ -4190,7 +4357,7 @@ describe("sending to an agent that is already there", () => {
     expect(callsTo("thread.post")).toHaveLength(1);
 
     release();
-    await flush();
+    await waitFor(() => expect(timeline().querySelector('[data-sequence="7"]')).not.toBeNull());
   });
 
   it("keeps the sent message standing through a read that does not carry it yet", async () => {
@@ -4204,7 +4371,7 @@ describe("sending to an agent that is already there", () => {
     expect(copiesOf("look at the login flow")).toBe(1);
 
     release();
-    await flush();
+    await waitFor(() => expect(timeline().querySelector('[data-sequence="7"]')).not.toBeNull());
   });
 
   it("rekeys the sent message onto the sequence thread.post names, without a second copy", async () => {
@@ -4238,7 +4405,10 @@ describe("sending to an agent that is already there", () => {
       throw new Error("no session could be spawned");
     });
 
-    await press("look at the login flow");
+    await press("look at the login flow", () => {
+      expect(notifyError).toHaveBeenCalledTimes(1);
+      expect(copiesOf("look at the login flow")).toBe(1);
+    });
 
     expect(callsTo("thread.post")).toHaveLength(1);
     expect(copiesOf("look at the login flow")).toBe(1);
@@ -4265,7 +4435,7 @@ describe("sending to an agent that is already there", () => {
     await press("look at the login flow");
 
     expect(callsTo("thread.post")).toHaveLength(1);
-    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
+    await waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
     expect(composer().value).toBe("");
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -4286,10 +4456,11 @@ describe("sending to an agent that is already there", () => {
       throw timedOut;
     });
 
-    await press("look at the login flow");
-
-    expect(copiesOf("look at the login flow")).toBe(1);
-    expect(composer().value).toBe("");
+    await press("look at the login flow", () => {
+      expect(callsTo("thread.post")).toHaveLength(1);
+      expect(copiesOf("look at the login flow")).toBe(1);
+      expect(composer().value).toBe("");
+    });
     expect(notifyError).not.toHaveBeenCalled();
   });
 
@@ -4311,7 +4482,7 @@ describe("sending to an agent that is already there", () => {
     });
 
     await press("look at the login flow");
-    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
+    await waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
 
     const operationId = callsTo("thread.post")[0].params.operation_id;
     expect(operationId).toBeTruthy();
@@ -4319,9 +4490,8 @@ describe("sending to an agent that is already there", () => {
       type: "message",
       data: { sequence: 7, role: "user", body: "look at the login flow", operation_id: operationId },
     }]);
-    await flush();
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(timeline().querySelector('[data-sequence="7"]')).not.toBeNull();
       expect(copiesOf("look at the login flow")).toBe(1);
     }, { timeout: 5000 });
@@ -4332,9 +4502,13 @@ describe("sending to an agent that is already there", () => {
     await mount();
     refuseThreadPost("the conversation is gone");
 
-    await press("look at the login flow");
+    await press("look at the login flow", () => {
+      expect(notifyError).toHaveBeenCalledTimes(1);
+      expect(copiesOf("look at the login flow")).toBe(0);
+      expect(composer().value).toBe("look at the login flow");
+    });
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(copiesOf("look at the login flow")).toBe(0);
       expect(composer().value).toBe("look at the login flow");
       expect(document.activeElement).not.toBe(composer());
@@ -4426,6 +4600,7 @@ describe("the one status row", () => {
   });
 
   it("reads Working and the clock while no pill is asking for the room", async () => {
+    freezeClock();
     await aTurnInFlight();
     await mount();
     await motionSettled();
@@ -4572,16 +4747,12 @@ describe("a run of activity in the rail", () => {
     expect(runBox().open).toBe(false);
 
     runHead().click();
-    await flush();
-
-    expect(runRows()).toHaveLength(2);
+    await waitFor(() => expect(runRows()).toHaveLength(2));
     expect(runBox().open).toBe(true);
     expect(callsTo("thread.activity")).toEqual([]);
 
     runHead().click();
-    await flush();
-
-    expect(runRows()).toHaveLength(0);
+    await waitFor(() => expect(runRows()).toHaveLength(0));
     expect(runBox().open).toBe(false);
   });
 
@@ -4594,7 +4765,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
 
     expect(callsTo("thread.activity").map((call) => call.params)).toEqual([{
       entity_id: "run-3",
@@ -4604,9 +4775,9 @@ describe("a run of activity in the rail", () => {
       limit: 200,
     }]);
     runHead().click();
+    await waitFor(() => expect(runBox().open).toBe(false));
     runHead().click();
-    await flush();
-
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
     expect(callsTo("thread.activity")).toHaveLength(1);
   });
 
@@ -4622,8 +4793,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
-
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]));
     expect(callsTo("thread.activity")).toEqual([]);
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]);
     expect(railHost().textContent).toContain("Read cached.js");
@@ -4641,20 +4811,17 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
-    expect(callsTo("thread.activity")).toHaveLength(1);
+    await waitFor(() => expect(callsTo("thread.activity")).toHaveLength(1));
 
     await writeCached(
       { deviceId: "dev-1", entityId: "run-3", kind: ACTIVITY_RECORD_KIND, sub: "ag-1:10" },
       { items: [toolCall(10, "Read announced.js")] },
     );
-    await flush();
-
-    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]);
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50"]));
     expect(railHost().textContent).toContain("Read announced.js");
 
     answerActivity({ items: [toolCall(10, "Read late.js")], oldest_sequence: 10, has_more: false });
-    await flush();
+    await waitFor(() => expect(railHost().textContent).toContain("Read announced.js"));
     expect(railHost().textContent).toContain("Read announced.js");
     expect(railHost().textContent).not.toContain("Read late.js");
   });
@@ -4670,8 +4837,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
-
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51"]));
     expect(callsTo("thread.activity")).toEqual([]);
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51"]);
   });
@@ -4689,10 +4855,10 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     await pushRailThreadItems("run-3", "ag-1", [toolCall(52, "Read q.js")]);
-    await flush();
+    await waitFor(() => expect(railHost().textContent).toContain("Read q.js"));
 
     runHead().click();
-    await flush();
+    await waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50", "51", "52"]));
 
     expect(callsTo("thread.activity")).toEqual([]);
     expect(
@@ -4718,9 +4884,7 @@ describe("a run of activity in the rail", () => {
     await pushRow(branchRow({ agents: [agent({ unread_count: 1 })] }));
 
     runHead().click();
-    await flush();
-
-    expect(callsTo("thread.activity").map((call) => call.params.from_sequence)).toEqual([10]);
+    await waitFor(() => expect(callsTo("thread.activity").map((call) => call.params.from_sequence)).toEqual([10]));
   });
 
   it("opens the run a surface's call is folded into before reaching for the row", async () => {
@@ -4732,7 +4896,7 @@ describe("a run of activity in the rail", () => {
 
     await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
-    await flush();
+    await waitFor(() => expect(railHost().querySelector('[data-sequence="2"]')).not.toBeNull());
 
     expect(notifyError).not.toHaveBeenCalled();
     expect(railHost().querySelector('[data-sequence="2"]')).not.toBe(null);
@@ -4756,9 +4920,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
-
-    expect(notifyError).toHaveBeenCalledWith("Could not load this activity", "entity is not loaded");
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not load this activity", "entity is not loaded"));
     expect(runRows().map((row) => row.dataset.sequence)).toEqual(["50"]);
   });
 
@@ -4780,9 +4942,8 @@ describe("a run of activity in the rail", () => {
 
     await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
-    await flush();
 
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(railHost().querySelector('[data-sequence="12"]')).not.toBeNull();
       expect(notifyError).not.toHaveBeenCalled();
     }, { timeout: 5000 });
@@ -4829,7 +4990,7 @@ describe("a chat paint with nothing to say", () => {
     markTheFirstRow();
 
     payload = conversationOf([said(1, "the first thing said"), said(2, "and the next")]);
-    await pushRow();
+    await pushRow(payload, () => expect(railHost().querySelector(".thread-items").textContent).toContain("and the next"));
 
     expect(markSurvived()).toBe(false);
     expect(railHost().querySelector(".thread-items").textContent).toContain("and the next");
@@ -4915,7 +5076,7 @@ describe("what the conversation points at", () => {
 
     const open = async () => {
       railHost().querySelector(".thread-revision-link").click();
-      await flush();
+      await waitFor(() => expect(railHost().querySelector(".thread-revision-view")?.textContent).toContain("+renamed"));
     };
     await open();
     expect(railHost().querySelector(".thread-revision-view").textContent).toContain("+renamed");
@@ -4945,8 +5106,7 @@ describe("the project's own page", () => {
     });
     payload = { entity_id: "run-project", project_id: "p1", agents: [agent({ id: "ag-project", ordinal: 1, state: "idle" })] };
     await writeRailBoard({ items: [payload], projects: [{ project_id: "p1", name: "build" }] });
-    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
-    await flush();
+    await mount({ kind: "project", projectId: "p1", entityId: "run-project" }, () => expect(railHost().querySelector('[data-bubble="agent"] .rail-bubble-label')?.textContent).toBe("B"));
 
     const bubble = railHost().querySelector('[data-bubble="agent"]');
     expect(bubble.classList.contains("rail-bubble-project")).toBe(true);
@@ -4958,8 +5118,7 @@ describe("the project's own page", () => {
     bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
     payload = { entity_id: "run-project", project_id: "p1", agents: [] };
     await writeRailBoard({ items: [payload], projects: [{ project_id: "p1", name: "build" }] });
-    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
-    await flush();
+    await mount({ kind: "project", projectId: "p1", entityId: "run-project" }, () => expect(railHost().querySelector('[data-bubble="ghost"] .rail-bubble-label')?.textContent).toBe("B"));
 
     const ghost = railHost().querySelector('[data-bubble="ghost"]');
     expect(ghost.classList.contains("rail-bubble-project")).toBe(true);
@@ -4988,12 +5147,20 @@ describe("a new agent on a project's rail", () => {
     // page mints the owner, the sync layer writes the row, the rail reads it.
     payload = { entity_id: "run-project", project_id: "p1", agents: [] };
     await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
+    await waitFor(() => {
+      expect(chosenCard().dataset.provider).toBe(settings.project_agent?.provider || "claude_adk");
+      if (settings.project_agent?.provider === "claude_adk" && settings.project_agent.model) {
+        const offered = CATALOG.providers.find((provider) => provider.id === "claude_adk");
+        const model = offered.models.find((model) => model.id === settings.project_agent.model);
+        expect(modelMenuButton().textContent).toContain(model.label);
+      }
+    });
   };
 
   const send = async (body) => {
-    panel().querySelector("#railinput").value = body;
+    typeMessage(panel().querySelector("#railinput"), body);
     panel().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(callsTo("agent.add")).toHaveLength(1));
   };
 
   it("starts on the harness, model and effort the device chose for project agents", async () => {
@@ -5032,10 +5199,9 @@ describe("a new agent on a project's rail", () => {
     expect(chosenCard().dataset.provider).toBe("claude_adk");
 
     card("codex").click();
-    await flush();
-    expect(chosenCard().dataset.provider).toBe("codex");
+    await waitFor(() => expect(chosenCard().dataset.provider).toBe("codex"));
     card("claude_adk").click();
-    await flush();
+    await waitFor(() => expect(chosenCard().dataset.provider).toBe("claude_adk"));
 
     await send("what is in this project?");
     expect(callsTo("agent.add")[0].params).toMatchObject({

@@ -7,6 +7,7 @@
 // open the harness/model/effort selects.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { assignRefusalText, assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
 import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
 import { attachmentsWentNowhere, composedIssueParams, openIssueComposer } from "../src/core/issueComposer.js";
@@ -27,10 +28,6 @@ const CATALOG = {
   ],
 };
 
-const flush = async () => {
-  for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const options = () => assigneeOptions(workspaceAgents(feed, PROJECT_KEY));
 
 let call, handle;
@@ -39,7 +36,7 @@ const choose = async (id) => {
   const select = document.querySelector("[data-assignee-select]");
   select.value = id;
   select.dispatchEvent(new Event("change"));
-  await flush();
+
 };
 
 const press = (selector) => document.querySelector(selector).click();
@@ -115,7 +112,7 @@ describe("the picker", () => {
     open();
     await choose("agent:agent-1");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalledWith("issues.assign", expect.anything()));
     expect(call).toHaveBeenCalledWith("issues.assign", {
       issue_id: "issue-1", assignee: { kind: "agent", agent_id: "agent-1" },
     });
@@ -124,7 +121,7 @@ describe("the picker", () => {
   it("unassigns with a null assignee", async () => {
     open();
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1].assignee).toBeNull();
   });
 
@@ -137,7 +134,7 @@ describe("the picker", () => {
     note.value = "  look at the drag handler  ";
     note.dispatchEvent(new Event("input"));
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1].note).toBe("look at the drag handler");
   });
 
@@ -147,7 +144,7 @@ describe("the picker", () => {
     open();
     await choose("new_workspace");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1].assignee).toEqual({ kind: "new_workspace", provider: "claude" });
   });
 
@@ -158,7 +155,7 @@ describe("the picker", () => {
     open({ callRpc: call });
     await choose("agent:agent-1");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(document.querySelector(".create-error")?.textContent).toBe("agent agent-1 is not in project proj-1"));
     expect(document.querySelector(".create-error").textContent).toBe("agent agent-1 is not in project proj-1");
     expect(document.querySelector("[data-assign-go]").disabled).toBe(false);
   });
@@ -169,7 +166,7 @@ describe("the picker", () => {
     open({ callRpc: call, onAssigned });
     await choose("project_agent");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(onAssigned).toHaveBeenCalled());
     expect(onAssigned.mock.calls[0][0].dispatch.workspace_id).toBe("ws-9");
     handle = null; // the dialog closed itself
   });
@@ -205,7 +202,7 @@ describe("the inline issue composer", () => {
   const menu = (name) => document.querySelector(`[data-filter-menu="${name}"]`);
   const pickInMenu = async (name, value) => {
     menu(name).querySelector(".fmenu-press").click();
-    await vi.waitFor(() => expect(menu(name).querySelector(".fmenu-press").getAttribute("aria-expanded")).toBe("true"));
+    await waitFor(() => expect(menu(name).querySelector(".fmenu-press").getAttribute("aria-expanded")).toBe("true"));
     const row = [...menu(name).querySelectorAll(".fmenu-row")].find((one) => one.dataset.value === value);
     row.click();
   };
@@ -244,7 +241,7 @@ describe("the inline issue composer", () => {
     open({ attachable: false });
     type("#issue-new-title", "Kanban drag");
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1]).toEqual({ project_id: "proj-1", title: "Kanban drag" });
   });
 
@@ -253,14 +250,14 @@ describe("the inline issue composer", () => {
     slot.querySelector(".issue-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
-    await flush();
+    await waitFor(() => expect(slot.querySelector(".issue-compose")).toBeNull());
     expect(slot.querySelector(".issue-compose")).toBeNull();
   });
 
   it("will not file an issue with no title", async () => {
     open();
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(document.querySelector(".issue-compose-error")?.textContent).toBe("An issue needs a title."));
     expect(call).not.toHaveBeenCalled();
     expect(document.querySelector(".issue-compose-error").textContent).toBe("An issue needs a title.");
   });
@@ -271,7 +268,7 @@ describe("the inline issue composer", () => {
     open();
     type("#issue-new-title", " Kanban drag does not persist ");
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call).toHaveBeenCalledWith("issues.create", {
       project_id: "proj-1", title: "Kanban drag does not persist",
     });
@@ -286,7 +283,7 @@ describe("the inline issue composer", () => {
     await pickInMenu("priority", "high");
     await pickInMenu("status", "ready");
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1]).toEqual({
       project_id: "proj-1", title: "Kanban drag", body: "Dragging a card…",
       labels: ["bug", "ui"], priority: "high", status: "ready",
@@ -302,12 +299,12 @@ describe("the inline issue composer", () => {
     const search = menu("labels").querySelector(".fmenu-search");
     search.value = "kanban";
     search.dispatchEvent(new Event("input"));
-    await vi.waitFor(() => expect([...menu("labels").querySelectorAll(".fmenu-row")].at(-1)?.textContent).toContain("Create"));
+    await waitFor(() => expect([...menu("labels").querySelectorAll(".fmenu-row")].at(-1)?.textContent).toContain("Create"));
     const coined = [...menu("labels").querySelectorAll(".fmenu-row")].at(-1);
     expect(coined.textContent).toContain("Create");
     coined.click();
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1].labels).toEqual(["kanban"]);
   });
 
@@ -318,7 +315,7 @@ describe("the inline issue composer", () => {
     type("#issue-new-title", "Kanban drag");
     await choose("project_agent");
     press("[data-compose-file]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1].assignee).toEqual({ kind: "project_agent" });
   });
 
@@ -339,7 +336,7 @@ describe("the inline issue composer", () => {
     name.focus();
     name.value = "kanban-fix";
     name.dispatchEvent(new Event("input"));
-    await flush();
+
     expect(document.querySelector("#issue-new-name")).toBe(name);
     expect(document.activeElement).toBe(name);
   });
@@ -351,7 +348,7 @@ describe("the inline issue composer", () => {
     type("#issue-new-title", "Kanban drag");
     const title = document.querySelector("#issue-new-title");
     title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    await flush();
+
     expect(document.activeElement).toBe(document.querySelector("#issue-new-body"));
     expect(call).not.toHaveBeenCalled();
   });
@@ -364,7 +361,7 @@ describe("the inline issue composer", () => {
       document.querySelector(field).dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", [modifier]: true, bubbles: true, cancelable: true }),
       );
-      await flush();
+      await waitFor(() => expect(slot.querySelector(".issue-compose")).toBeNull());
       expect(call.mock.calls[0][0]).toBe("issues.create");
       handle = null;
     }
@@ -377,7 +374,7 @@ describe("the inline issue composer", () => {
     slot.querySelector(".issue-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
-    await flush();
+    await waitFor(() => expect(slot.querySelector(".issue-compose")).toBeNull());
     expect(slot.querySelector(".issue-compose")).toBeNull();
 
     open();
@@ -385,12 +382,12 @@ describe("the inline issue composer", () => {
     slot.querySelector(".issue-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
-    await flush();
+    await waitFor(() => expect(document.querySelector("[data-confirm-ok]")).not.toBeNull());
     // Still there, behind a confirm that has not been answered.
     expect(slot.querySelector(".issue-compose")).not.toBeNull();
     expect(document.querySelector("[data-confirm-ok]")).not.toBeNull();
     document.querySelector("[data-confirm-ok]").click();
-    await flush();
+    await waitFor(() => expect(slot.querySelector(".issue-compose")).toBeNull());
     expect(slot.querySelector(".issue-compose")).toBeNull();
   });
 
@@ -405,7 +402,7 @@ describe("the inline issue composer", () => {
       open({ callRpc: call, onFiled });
       type("#issue-new-title", "Kanban drag");
       press("[data-compose-file]");
-      await flush();
+      await waitFor(() => expect(onFiled).toHaveBeenCalled());
       expect(onFiled.mock.calls[0][0].issue.id).toBe("issue-1");
       handle = null; // the composer closed itself on success
     }
@@ -466,7 +463,7 @@ describe("the one kind that makes you wait", () => {
     open({ callRpc: wire.call });
     await choose("new_workspace");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(pressText()).toBe("cutting the workspace…"));
     expect(pressText()).toBe("cutting the workspace…");
     expect(document.querySelector(".issue-assign-waiting").textContent)
       .toContain("This can take a minute on a large repository");
@@ -478,7 +475,7 @@ describe("the one kind that makes you wait", () => {
     open({ callRpc: wire.call });
     await choose("project_agent");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(pressText()).toBe("assigning…"));
     expect(pressText()).toBe("assigning…");
     expect(document.querySelector(".issue-assign-waiting")).toBeNull();
   });
@@ -500,7 +497,7 @@ describe("the one kind that makes you wait", () => {
     open({ callRpc: call });
     await choose("new_workspace");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(document.querySelector(".create-error")?.textContent).toContain("busy"));
     expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
     expect(document.querySelector("[data-assign-go]").disabled).toBe(false);
     expect(pressText()).toBe("Assign and start");
@@ -545,7 +542,7 @@ describe("what the picker leaves to the issue", () => {
     openOn({ callRpc: call, onAssigned });
     await choose("agent:agent-1");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(onAssigned).toHaveBeenCalled());
     // The whole answer goes back untouched; nothing here reads into it.
     expect(onAssigned.mock.calls[0][0].dispatch.workspace_id).toBeNull();
     handle = null;
@@ -558,7 +555,7 @@ describe("what the picker leaves to the issue", () => {
     openOn();
     await choose("project_agent");
     press("[data-assign-go]");
-    await flush();
+    await waitFor(() => expect(call).toHaveBeenCalled());
     expect(call.mock.calls[0][1]).not.toHaveProperty("status");
   });
 });
@@ -584,7 +581,7 @@ describe("what a bridge dropped on the floor", () => {
     title.dispatchEvent(new Event("input"));
     await choose("project_agent");
     document.querySelector("[data-compose-file]").click();
-    await flush();
+    await waitFor(() => expect(onFiled).toHaveBeenCalled());
     handle = null;
   };
 

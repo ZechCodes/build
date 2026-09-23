@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 let openBrowser;
 let browserListingAddress;
@@ -19,7 +20,7 @@ it("paints a cached folder while its pull is absent", async () => {
   await writeCached(address, { ...listing("/projects"), entries: [{ name: "cached", path: "/projects/cached", is_git: false, is_hidden: false }] });
   const callRpc = vi.fn(() => new Promise(() => {}));
   void openBrowser({ title: "Projects", deviceId: "dev-1", callRpc, startPath: "/projects", onChoose: vi.fn() });
-  await vi.waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("cached"));
+  await waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("cached"));
   expect(callRpc).toHaveBeenCalledWith("fs.list", { path: "/projects" });
 });
 it("redraws after a real cache write and address announcement", async () => {
@@ -27,7 +28,7 @@ it("redraws after a real cache write and address announcement", async () => {
   void openBrowser({ title: "Projects", deviceId: "dev-1", callRpc, startPath: "/projects", onChoose: vi.fn() });
   const address = browserListingAddress("dev-1", "/projects");
   await writeCached(address, { ...listing("/projects"), entries: [{ name: "fresh", path: "/projects/fresh", is_git: false, is_hidden: false }] });
-  await vi.waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("fresh"));
+  await waitFor(() => expect(document.querySelector(".browse-list")?.textContent).toContain("fresh"));
 });
 it("uses the supplied device connection and initial folder", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/device-projects"));
@@ -58,10 +59,9 @@ it("creates a directory in the current folder and opens it", async () => {
   await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, onChoose: vi.fn() });
   document.querySelector("#bdirname").value = " new source ";
   document.querySelector("#bmkdir").click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" });
-  await vi.waitFor(() => expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" }));
-  await vi.waitFor(() => expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source"));
+  await waitFor(() => expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" }));
+  await waitFor(() => expect(callRpc).toHaveBeenNthCalledWith(3, "fs.list", { path: "/projects/new source" }));
+  await waitFor(() => expect(document.querySelector(".browse-path").textContent).toBe("/projects/new source"));
 });
 it("validates directory names before calling the device", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/projects"));
@@ -82,9 +82,10 @@ it("ignores a directory created after the embedded picker is replaced", async ()
   await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, container: host, onChoose: vi.fn() });
   host.querySelector("#bdirname").value = "later";
   host.querySelector("#bmkdir").click();
+  await waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
   host.innerHTML = "Project form restored";
   finishCreate({ path: "/projects/later" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await callRpc.mock.results[1].value;
   expect(host.textContent).toBe("Project form restored");
   expect(callRpc).toHaveBeenCalledTimes(2);
 });
@@ -127,7 +128,7 @@ it("does not fall back when later navigation reaches a missing folder", async ()
     .mockRejectedValueOnce(new Error("cannot open /projects/gone: No such file or directory (os error 2)"));
   await openBrowser({ title: "Projects", callRpc, startPath: "/projects", fallbackFromMissingStart: true });
   document.querySelectorAll(".browse-nav")[1].click();
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(callRpc).toHaveBeenCalledTimes(2);
     expect(document.querySelector("#berr").textContent).toContain("No such file or directory");
   });
@@ -157,7 +158,7 @@ it("does not paint a home fallback that completes after its embedded host is rep
     .mockRejectedValueOnce(new Error("cannot open /gone: No such file or directory (os error 2)"))
     .mockImplementationOnce(() => new Promise((resolve) => { resolveHome = resolve; }));
   const opening = openBrowser({ title: "Projects", callRpc, startPath: "/gone", fallbackFromMissingStart: true, container: host });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
   host.innerHTML = "New content";
   resolveHome(listing("/home/me"));
   await opening;

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -33,6 +34,32 @@ vi.mock("../src/core/agentCanvas.js", () => ({
     setWorking() {},
   }),
 }));
+
+// Retiring a fixture must finish its durable writes before the next test
+// wipes the same database. These wrappers observe the real implementations.
+const cacheWork = vi.hoisted(() => ({ ui: [], messages: new Set() }));
+vi.mock("../src/core/localUiState.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, watchUiState: (...args) => {
+    const record = actual.watchUiState(...args);
+    cacheWork.ui.push(record);
+    return record;
+  } };
+});
+vi.mock("../src/core/conversationCache.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  const observed = (write) => (...args) => {
+    const writing = write(...args);
+    cacheWork.messages.add(writing);
+    writing.finally(() => cacheWork.messages.delete(writing));
+    return writing;
+  };
+  return { ...actual,
+    writeProvisionalMessage: observed(actual.writeProvisionalMessage),
+    acknowledgeProvisionalMessage: observed(actual.acknowledgeProvisionalMessage),
+    withdrawProvisionalMessage: observed(actual.withdrawProvisionalMessage),
+  };
+});
 
 const { resetApplication } = await import("../src/app.js");
 const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
@@ -83,12 +110,6 @@ const branchPayload = () => ({
   run: { run_id: "run-1", thread: { items: [], sessions: [] } },
 });
 
-// The rail settles over the disk: its row, and the conversation in it —
-// every record it opens is a turn.
-const flush = async () => {
-  for (let count = 0; count < 12; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-};
-
 const host = () => document.querySelector("#agent-rail");
 const input = () => host().querySelector("#railinput");
 const bubble = (agentId) => host().querySelector(`[data-bubble="agent"][data-agent="${agentId}"]`);
@@ -127,7 +148,12 @@ const mountBranch = async () => {
     cacheScope: device().cacheScope,
     chatRepository: device().chatRepository,
   });
-  return flush();
+  await waitFor(() => {
+    expect([...host().querySelectorAll('[data-bubble="agent"]')].map((bubble) => bubble.dataset.agent))
+      .toEqual(payload.agents.map((agent) => agent.id));
+    expect(input()).not.toBeNull();
+  });
+  await device().modelCatalog();
 };
 
 beforeEach(async () => {
@@ -140,12 +166,13 @@ beforeEach(async () => {
   notifyError.mockClear();
   payload = branchPayload();
   calls = [];
+  let postedSequence = 6;
   call = vi.fn(async (method, params = {}) => {
     calls.push({ method, params });
     if (method === "models.list") return CATALOG;
     if (method === "branch.get") return payload;
     if (method === "issue.get") return payload;
-    if (method === "thread.post") return { posted_sequence: 7 };
+    if (method === "thread.post") return { posted_sequence: ++postedSequence };
     if (method === "agent.choose") {
       return {
         entity_id: params.entity_id,
@@ -162,10 +189,12 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });
 
-afterEach(() => {
+afterEach(async () => {
   rail?.dispose();
   rail = null;
   resetApplication();
+  await Promise.all(cacheWork.ui.splice(0).map((record) => record.flush()));
+  while (cacheWork.messages.size) await Promise.all([...cacheWork.messages]);
   resetChangeEvents();
   vi.useRealTimers();
 });
@@ -186,19 +215,25 @@ describe("agent rail chat ownership", () => {
     await mountBranch();
 
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     writeDraft("the original B message");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(rejectPost).toBeTypeOf("function"));
     writeDraft("B has a newer draft");
 
     bubble("agent-a").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-a").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-a"]);
+    });
     writeDraft("A stays in focus");
     const focusedInput = input();
     focusedInput.focus();
     rejectPost(new Error("B refused the message"));
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
 
     expect(input()).toBe(focusedInput);
     expect(document.activeElement).toBe(focusedInput);
@@ -206,13 +241,19 @@ describe("agent rail chat ownership", () => {
     expect(host().querySelector(".rail-who").getAttribute("title")).toBe("Fix login redirect");
 
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     expect(input().value).toBe("B has a newer draft");
     expect(host().querySelector(".chat-recovery-entry").textContent).toContain("Message not sent");
 
     const firstPost = calls.filter((entry) => entry.method === "thread.post")[0];
     host().querySelector(".chat-recovery-entry button").click();
-    await flush();
+    await waitFor(() => {
+      expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(2);
+      expect(host().querySelector(".chat-recovery-entry")).toBeNull();
+    });
     const posts = calls.filter((entry) => entry.method === "thread.post");
     expect(posts).toHaveLength(2);
     expect(posts[1].params).toMatchObject({
@@ -229,17 +270,23 @@ describe("agent rail chat ownership", () => {
   it("retains controller drafts across remounts and returns to the selected agent composer", async () => {
     await mountBranch();
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     writeDraft("agent B draft");
     addBubble().click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".rail-newagent")).not.toBeNull());
     writeDraft("new agent draft");
 
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     expect(input().value).toBe("agent B draft");
     addBubble().click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".rail-newagent")).not.toBeNull());
     expect(input().value).toBe("new agent draft");
 
     rail.dispose();
@@ -249,7 +296,7 @@ describe("agent rail chat ownership", () => {
     expect(input().value).toBe("agent B draft");
     writeDraft("message after returning");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(1));
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.filter((entry) => entry.method === "thread.post").at(-1).params).toMatchObject({
       entity_id: "run-1",
@@ -258,16 +305,25 @@ describe("agent rail chat ownership", () => {
       body: "message after returning",
     });
     bubble("agent-a").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-a").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-a"]);
+    });
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     expect(input().value).toBe("");
   });
 
   it("restores the remembered conversation and draft without posting during hydration", async () => {
     await mountBranch();
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     writeDraft("agent B draft");
     rail.dispose();
     rail = null;
@@ -286,7 +342,7 @@ describe("agent rail chat ownership", () => {
       chatRepository: device().chatRepository,
     });
 
-    await vi.waitFor(() => expect(input()?.value).toBe("agent B draft"));
+    await waitFor(() => expect(input()?.value).toBe("agent B draft"));
     expect(host().querySelector("#rail-body").textContent).toContain("No conversation yet.");
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(0);
@@ -294,7 +350,7 @@ describe("agent rail chat ownership", () => {
     expect(input().disabled).toBe(false);
     writeDraft("send after hydration");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(1));
 
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.find((entry) => entry.method === "thread.post").params).toMatchObject({
@@ -321,17 +377,17 @@ describe("agent rail chat ownership", () => {
     provisionalInput.focus();
     writeDraft("create this agent");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(resolveAdd).toBeTypeOf("function"));
     writeDraft("send this when ready");
 
     expect(input()).toBe(provisionalInput);
     expect(document.activeElement).toBe(provisionalInput);
     expect(input().value).toBe("send this when ready");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(input().value).toBe(""));
 
     resolveAdd({ entity_id: "run-1", agent: agent("created-agent", 1) });
-    await flush();
+    await waitFor(() => expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(2));
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(1);
     expect(calls.filter((entry) => entry.method === "thread.post").map((entry) => entry.params.body)).toEqual([
       "create this agent",
@@ -351,18 +407,21 @@ describe("agent rail chat ownership", () => {
     await mountBranch();
 
     addBubble().click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".rail-newagent")).not.toBeNull());
     writeDraft("create another agent");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(resolveAdd).toBeTypeOf("function"));
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     writeDraft("agent B stays here");
     const selectedInput = input();
     selectedInput.focus();
 
     resolveAdd({ entity_id: "run-1", agent: agent("created-agent", 3) });
-    await flush();
+    await waitFor(() => expect(calls.some((entry) => entry.method === "agent.start")).toBe(true));
 
     expect(input()).toBe(selectedInput);
     expect(document.activeElement).toBe(selectedInput);
@@ -388,7 +447,7 @@ describe("agent rail chat ownership", () => {
 
     writeDraft("start the agent");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".chat-recovery-entry")?.textContent).toContain("Agent creation uncertain"));
     const recovery = host().querySelector(".chat-recovery-entry");
     expect(recovery.textContent).toContain("Agent creation uncertain");
     expect(recovery.querySelector("button")).not.toBeNull();
@@ -407,7 +466,7 @@ describe("agent rail chat ownership", () => {
     await mountBranch();
 
     host().querySelector(".chat-recovery-entry button").click();
-    await flush();
+    await waitFor(() => expect(reconnectedCall).toHaveBeenCalledWith("agent.start", expect.anything()));
 
     const adds = calls.filter((entry) => entry.method === "agent.add");
     expect(adds).toHaveLength(2);
@@ -438,7 +497,7 @@ describe("agent rail chat ownership", () => {
 
     writeDraft("start after reconnect");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".chat-recovery-entry button")).not.toBeNull());
     const firstAdd = calls.find((entry) => entry.method === "agent.add");
     expect(host().querySelector(".chat-recovery-entry button")).not.toBeNull();
 
@@ -453,7 +512,7 @@ describe("agent rail chat ownership", () => {
     });
     bridgeAnswersWith(newCall);
     host().querySelector(".chat-recovery-entry button").click();
-    await flush();
+    await waitFor(() => expect(newMethods).toContain("agent.start"));
 
     const retriedAdd = calls.filter((entry) => entry.method === "agent.add").at(-1);
     const retriedPost = calls.filter((entry) => entry.method === "thread.post").at(-1);
@@ -477,19 +536,25 @@ describe("agent rail chat ownership", () => {
     await mountBranch();
 
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     addBubble().click();
-    await flush();
+    await waitFor(() => expect(host().querySelector(".rail-newagent")).not.toBeNull());
     writeDraft("make another agent");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(rejectCreation).toBeTypeOf("function"));
 
     bubble("agent-b").click();
-    await flush();
+    await waitFor(() => {
+      expect(bubble("agent-b").classList.contains("active")).toBe(true);
+      expect(host().querySelector(".rail-who").getAttribute("title")).toBe(TOPICS["agent-b"]);
+    });
     writeDraft("agent B remains selected");
     const selectedInput = input();
     rejectCreation(Object.assign(new Error("connection lost after agent.add"), { uncertain: true }));
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalled());
 
     expect(input()).toBe(selectedInput);
     expect(input().value).toBe("agent B remains selected");
@@ -535,7 +600,7 @@ describe("agent rail chat ownership", () => {
       cacheScope: device().cacheScope,
       chatRepository: device().chatRepository,
     });
-    await flush();
+    await waitFor(() => expect(host().querySelector(".thread-unread-line")).not.toBeNull());
 
     const unreadLine = host().querySelector(".thread-unread-line");
     expect(unreadLine).toBeTruthy();
@@ -543,10 +608,10 @@ describe("agent rail chat ownership", () => {
 
     host().querySelector(".composer-model .caret").click();
     host().querySelector('[data-action="model:claude-opus-5"]').click();
-    await flush();
+    await waitFor(() => expect(host().querySelector("#railsend").disabled).toBe(false));
     writeDraft("continue the implementation");
     host().querySelector("#railsend").click();
-    await flush();
+    await waitFor(() => expect(calls.some((entry) => entry.method === "thread.post")).toBe(true));
 
     expect(calls.find((entry) => entry.method === "agent.choose").params).toMatchObject({
       entity_id: "run-live",

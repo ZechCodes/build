@@ -34,7 +34,6 @@ function mount(handlers = {}) {
 
 const menu = () => document.querySelector(".tabmenu");
 const click = (element) => element.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   document.body.innerHTML = "";

@@ -8,6 +8,7 @@
 // leaves for the agent beside it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, event, issue } from "./trackerWireFixture.js";
 
@@ -66,10 +67,6 @@ const PROJECT_ISSUES = [
 
 let body, trackerCache, mountWorkspaceIssuesTab, tab, navigated, stamped, call;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const route = (over = {}) => ({
   name: "workspace", deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1", tab: "issues", ...over,
 });
@@ -83,7 +80,16 @@ const mount = async (over = {}) => {
     navigate: (to) => navigated.push(to),
     sayWhichIssue: (read) => stamped.push(read),
   });
-  await flush();
+  if (over.route?.issueId) {
+    await waitFor(() => expect(body.querySelector(".issue-page-title")).toBeTruthy());
+  } else if (over.route?.view === "board") {
+    await waitFor(() => expect(numbers().sort()).toEqual(["#1", "#2"]));
+  } else {
+    const agentIds = over.route?.workspaceId === "ws-9" ? [] : feed.items.find((item) => item.run_id === "run-1")?.agents.map((agent) => agent.id) || [];
+    const expected = over.expectedRows ?? PROJECT_ISSUES.filter((item) => agentIds.includes(item.assignee?.agent_id)).length;
+    await waitFor(() => expect(titles()).toHaveLength(expected));
+    await waitFor(() => expect(call.mock.calls.some(([method]) => method === "issues.list")).toBe(true));
+  }
   return tab;
 };
 
@@ -128,10 +134,10 @@ describe("the list", () => {
     }));
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
     call = vi.fn(() => new Promise(() => {}));
-    await mount();
+    await mount({ expectedRows: 25 });
     expect(titles()).toHaveLength(25);
     body.querySelector("[data-issue-more]").click();
-    await vi.waitFor(() => expect(titles()).toHaveLength(28));
+    await waitFor(() => expect(titles()).toHaveLength(28));
     expect(titles()[27]).toBe("Held 1");
   });
 
@@ -179,7 +185,7 @@ describe("the list", () => {
 
     feed.items[0].agents = [{ id: HERE, ordinal: 1 }, { id: ALSO, ordinal: 2 }];
     tab.feedMoved();
-
+    await waitFor(() => expect(titles()).toHaveLength(2));
     expect(titles()).toEqual(["Held by another agent here", "Held by an agent here"]);
   });
 

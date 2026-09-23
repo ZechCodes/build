@@ -197,13 +197,20 @@ function dirsOf(paths) {
  * Answers whether the pass got all the way to the subscriptions — what the
  * caller needs to know to decide whether this session has been read at all.
  */
-export async function syncDevice(deviceId) {
+export async function syncDevice(deviceId, { fresh = false } = {}) {
   if (!holdingLock) return false;
   const running = passes.get(deviceId);
   if (running) {
     // The same session asking twice is one pass: a tab coming back while its
     // own pass is out has nothing to add.
-    if (running.session === sessionOf(deviceId)) return false;
+    if (running.session === sessionOf(deviceId)) {
+      // A mutation needs a pass that starts after it. Reusing the in-flight
+      // pass can leave its older list authoritative forever; coalesce these
+      // explicit refreshes into one following pass.
+      if (!fresh) return false;
+      running.refresh ||= running.done.then(() => syncDevice(deviceId, { fresh: true }));
+      return running.refresh;
+    }
     // A newer session, though, is a different machine's answer — possibly a
     // different bridge — and the pass out is reading a session that has gone.
     // It is stood down and waited out rather than this ask being dropped: a

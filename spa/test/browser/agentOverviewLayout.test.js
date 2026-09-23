@@ -25,6 +25,14 @@ const rects = () => {
   };
 };
 
+// Presence precedes the rail's width/position transitions. Measure only after
+// finite layout motion settles; the working indicator may animate forever.
+const waitForRailMotion = (page) => page.waitForFunction(() => {
+  const rail = document.querySelector("#agent-rail");
+  return rail && !rail.hasAttribute("data-panel-transition") && !rail.getAnimations({ subtree: true }).some((animation) =>
+    animation.playState === "running" && Number.isFinite(animation.effect?.getComputedTiming().endTime));
+});
+
 const sameRect = (actual, expected) => {
   for (const key of ["x", "y", "width", "height"]) {
     assert.ok(Math.abs(actual[key] - expected[key]) <= 1,
@@ -64,11 +72,12 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
 
     await page.waitForSelector(".rail-panel:not([aria-hidden='true'])");
     await page.waitForSelector(".rail-expand");
+    await waitForRailMotion(page);
     const dockedPanel = await page.evaluate(rects);
     assert.ok(dockedPanel.panel.width > 0);
     await page.locator(".rail-expand").click();
     await page.waitForSelector(".rail-overview-content");
-    await page.waitForFunction(() => !document.querySelector(".rail-overview-content")?.getAnimations().length);
+    await waitForRailMotion(page);
     const dockedOverview = await page.evaluate(rects);
     sameRect(dockedOverview.overview, dockedPanel.panel);
     sameRect(dockedOverview.strip, dockedPanel.strip);
@@ -80,6 +89,7 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
 
     await page.locator("#rail-overview .pinbtn").click();
     await page.waitForSelector("#agent-rail.rail-popover:not([data-panel-transition])");
+    await waitForRailMotion(page);
     const popoverOverview = await page.evaluate(rects);
     assert.equal(popoverOverview.workHit, "root");
     assert.equal(Math.round(popoverOverview.rail.width), Math.round(popoverOverview.strip.width));
@@ -89,6 +99,7 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
     await page.locator(".rail-expand").click();
     await page.waitForSelector(".rail-overview-content", { state: "detached" });
     await page.waitForFunction(() => document.querySelector(".rail-panel")?.getAttribute("aria-hidden") === "false");
+    await waitForRailMotion(page);
     const popoverPanel = await page.evaluate(rects);
     sameRect(popoverOverview.overview, popoverPanel.panel);
     sameRect(popoverOverview.strip, popoverPanel.strip);

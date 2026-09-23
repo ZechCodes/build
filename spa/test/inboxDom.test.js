@@ -7,6 +7,7 @@
 // is away is greyed with its verbs shut, and the picker narrows the list
 // without touching the route.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -191,10 +192,10 @@ describe("the workspace inbox", () => {
     unmountInboxList();
     await writeCached(address, { key: "workspace:dev-1/workspace-1" });
     mountInboxList();
-    await vi.waitFor(() => expect(rows()[0]?.dataset.key).toBe("workspace:dev-1/workspace-1"));
+    await waitFor(() => expect(rows()[0]?.dataset.key).toBe("workspace:dev-1/workspace-1"));
     expect((await readCached(address)).value.key).toBe("workspace:dev-1/workspace-1");
-    await vi.waitFor(async () => {
-      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    await waitFor(async () => {
       expect((await readCached(address))?.value.key).toBeNull();
     });
   });
@@ -306,7 +307,7 @@ describe("a workspace's Done", () => {
     rows()[0].querySelector("[data-workspace-done]").click();
     expect(workshopCall).toHaveBeenCalledTimes(1);
     resolveFinish({});
-    await vi.waitFor(() => expect(rows()).toHaveLength(0));
+    await waitFor(() => expect(rows()).toHaveLength(0));
   });
 
   // Done removes the workspace, so standing in one when it goes leaves the page
@@ -322,7 +323,7 @@ describe("a workspace's Done", () => {
     };
     feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-1" }),
     );
     expect(workshopCall).toHaveBeenCalledWith("workspace.finish", { workspace_id: "workspace-1" });
@@ -332,7 +333,7 @@ describe("a workspace's Done", () => {
     App.route = { name: "inbox" };
     feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
-    await vi.waitFor(() => expect(rows()).toHaveLength(0));
+    await waitFor(() => expect(rows()).toHaveLength(0));
     expect(navigate).not.toHaveBeenCalled();
   });
 
@@ -343,7 +344,7 @@ describe("a workspace's Done", () => {
     });
     feed([workspace(finishable)]);
     rows()[0].querySelector("[data-workspace-done]").click();
-    await vi.waitFor(() => expect(rows()[0].querySelector("[data-done-error]").hidden).toBe(false));
+    await waitFor(() => expect(rows()[0].querySelector("[data-done-error]").hidden).toBe(false));
     expect(rows()[0].querySelector("[data-done-error]").textContent).toBe("Workspace has local changes");
     expect(rows()[0].querySelector("[data-workspace-done]").disabled).toBe(false);
   });
@@ -358,9 +359,9 @@ describe("the projects face", () => {
     mountInboxList();
     feed([workspace()]);
     setInboxView("projects");
-    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
+    await waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
     await writeCached(address, { entries: [["dev-1/project-1", false]] });
-    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
+    await waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
   });
   it("opens settings on the owning device and leaves a deleted project's route", async () => {
     feed([], [project("project-1", "Website", "dev-2")]);
@@ -400,7 +401,7 @@ describe("the projects face", () => {
     setInboxView("projects");
     const first = rows()[0];
     document.querySelector('[data-project-fold="dev-1/project-1"]').click();
-    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
+    await waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
     feed([workspace({ name: "Checkout updated" }), workspace({ id: "workspace-2", name: "Refunds" })]);
     expect(rows()[0]).toBe(first);
     expect(rows()[0].textContent).toContain("Checkout updated");
@@ -657,10 +658,9 @@ describe("an account with more than one device", () => {
 
 const captureRowFor = (id) => document.querySelector(`.capture-entry[data-capture="${id}"]`);
 const waitForRerouteMenu = async () => {
-  await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).not.toBeNull());
+  await waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).not.toBeNull());
   return captureRowFor("cap-1").querySelector(".reroute-menu");
 };
-const flush = () => new Promise((done) => setTimeout(done, 0));
 
 /** A branch the feed still carries. The rail no longer lists branches, but the
  *  reroute picker still offers the ones a project already has. */
@@ -696,7 +696,7 @@ describe("captures on the rail", () => {
     await waitForRerouteMenu();
 
     await writeCached(address, { key: null, branchProject: null });
-    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).toBeNull());
+    await waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).toBeNull());
   });
 
   // A capture leaves the inbox by being routed, so there is nothing to clear —
@@ -712,7 +712,7 @@ describe("captures on the rail", () => {
     feed([], undefined, [capture()]);
     expect(captureRowFor("cap-1").textContent).toContain("Deciding where this goes");
     captureRowFor("cap-1").click();
-    await flush();
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" }));
     expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" });
     // A capture holds no conversation, so there is nothing to read through.
     expect(workshopCall).not.toHaveBeenCalledWith("entity.seen", expect.anything());
@@ -734,7 +734,7 @@ describe("captures on the rail", () => {
     expect(row.textContent).toContain("Which project?");
     expect(row.querySelector("[data-capture-answer]")).toBeNull();
     row.click();
-    await flush();
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" }));
     expect(navigate).toHaveBeenCalledWith({ name: "capture", id: "cap-1" });
     expect(workshopCall).not.toHaveBeenCalledWith("capture.answer", expect.anything());
   });
@@ -742,7 +742,7 @@ describe("captures on the rail", () => {
   it("opens a routed capture where it was routed, on its own machine", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").click();
-    await flush();
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ name: "branch", branch: "build/login" })));
     expect(navigate).toHaveBeenCalledWith({
       name: "branch",
       deviceId: "dev-1",
@@ -755,7 +755,7 @@ describe("captures on the rail", () => {
   it("re-fires the router on a route that gave up", async () => {
     feed([], undefined, [failedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
-    await flush();
+    await waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" }));
     expect(workshopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" });
     expect(laptopCall).not.toHaveBeenCalled();
   });
@@ -765,9 +765,9 @@ describe("captures on the rail", () => {
     feed([], undefined, [failedCapture(), failedCapture({ capture_id: "cap-2" })]);
 
     captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
-    await flush();
+    await waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" }));
     captureRowFor("cap-2").querySelector("[data-capture-retry]").click();
-    await flush();
+    await waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-2" }));
 
     const rerouted = workshopCall.mock.calls.filter(([method]) => method === "capture.reroute");
     expect(rerouted.map(([, params]) => params.capture_id)).toEqual(["cap-1", "cap-2"]);
@@ -780,7 +780,7 @@ describe("captures on the rail", () => {
     });
     feed([], undefined, [failedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
-    await vi.waitFor(() => expect(captureRowFor("cap-1").querySelector("[data-capture-error]").hidden).toBe(false));
+    await waitFor(() => expect(captureRowFor("cap-1").querySelector("[data-capture-error]").hidden).toBe(false));
     expect(captureRowFor("cap-1").querySelector("[data-capture-error]").textContent).toContain("unknown project_id");
   });
 
@@ -794,9 +794,9 @@ describe("captures on the rail", () => {
     ]);
 
     picker.querySelector('[data-reroute-branch-open="project-2"]').click();
-    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    await waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     captureRowFor("cap-1").querySelector('[data-reroute-project="project-2"][data-reroute-kind="branch"]').click();
-    await flush();
+    await waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", expect.objectContaining({ project_id: "project-2" })));
 
     // A branch left unnamed is the daemon naming it after what was said.
     expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
@@ -811,7 +811,7 @@ describe("captures on the rail", () => {
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
     await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    await waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
@@ -820,7 +820,7 @@ describe("captures on the rail", () => {
 
     field.value = "build/csv-export";
     captureRowFor("cap-1").querySelector('[data-reroute-project="project-1"][data-reroute-kind="branch"]').click();
-    await flush();
+    await waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", expect.objectContaining({ branch: "build/csv-export" })));
     expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
       capture_id: "cap-1",
       project_id: "project-1",
@@ -836,7 +836,7 @@ describe("captures on the rail", () => {
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
     await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    await waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     field.focus();
@@ -869,7 +869,7 @@ describe("a capture on another device", () => {
     expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual(["their notes"]);
 
     picker.querySelector('[data-reroute-branch-open="project-1"]').click();
-    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    await waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
       "build/away",
     ]);
@@ -879,7 +879,7 @@ describe("a capture on another device", () => {
     const theirCapture = failedCapture({ deviceId: "dev-2", projectKey: key("dev-2", "project-1") });
     feed([], undefined, [theirCapture]);
     captureRowFor("cap-1").querySelector("[data-capture-retry]").click();
-    await flush();
+    await waitFor(() => expect(laptopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" }));
     expect(laptopCall).toHaveBeenCalledWith("capture.reroute", { capture_id: "cap-1" });
     expect(workshopCall).not.toHaveBeenCalledWith("capture.reroute", expect.anything());
   });
@@ -900,7 +900,10 @@ describe("a capture on another device", () => {
     document.querySelector("#compose-open").click();
     document.querySelector("#compose-text").value = "ship it";
     document.querySelector("#compose-send").click();
-    await vi.waitFor(() => expect(captureRowFor("cap-9")).toBeTruthy());
+    await waitFor(() => {
+      expect(captureRowFor("cap-9")).toBeTruthy();
+      expect(document.querySelector("#compose-open")).toBeTruthy();
+    });
 
     await rememberDeviceFilter("dev-2");
     expect(captureRowFor("cap-9")).toBeNull();
@@ -921,7 +924,10 @@ describe("a capture on another device", () => {
     document.querySelector("#compose-open").click();
     document.querySelector("#compose-text").value = "ship it";
     document.querySelector("#compose-send").click();
-    await vi.waitFor(() => expect(captureRowFor("cap-late")).toBeTruthy());
+    await waitFor(() => {
+      expect(captureRowFor("cap-late")).toBeTruthy();
+      expect(document.querySelector("#compose-open")).toBeTruthy();
+    });
 
     unmountInboxList();
     const savedDocument = globalThis.document;

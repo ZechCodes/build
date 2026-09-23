@@ -12,6 +12,7 @@
 // fold for finished work without a second one being invented beside it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
@@ -27,10 +28,6 @@ const THEM = "agent-01M2THEM";
 
 let trackerCache, mountAgentIssues, entry, changes;
 
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const mine = (over = {}) => issue({ assignee: { kind: "agent", agent_id: ME }, ...over });
 
 /** Put a project's issues on disk, the way the sync layer does. */
@@ -39,7 +36,7 @@ const putIssues = (issues) =>
 
 const mount = async (over = {}) => {
   entry = mountAgentIssues({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++, ...over });
-  await flush();
+  if (carriedKinds.includes("issues")) await waitFor(() => expect(changes).toBeGreaterThan(0));
   return entry;
 };
 
@@ -159,7 +156,7 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
 
     changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
-    await flush();
+    await waitFor(() => expect(rows()).toEqual(["in_progress:#1"]));
 
     expect(rows()).toEqual(["in_progress:#1"]);
     expect(changes).toBeGreaterThan(0);
@@ -171,7 +168,7 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
     expect(entry.entriesFor(ME)).toBeNull();
 
     await putIssues([mine({ number: 9, id: "i9", status: "in_progress" })]);
-    await flush();
+    await waitFor(() => expect(rows()).toEqual(["in_progress:#9"]));
 
     expect(rows()).toEqual(["in_progress:#9"]);
   });
@@ -183,7 +180,6 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
 
     changes = 0;
     await putIssues([mine({ number: 1, id: "i1", status: "in_progress" })]);
-    await flush();
 
     expect(changes).toBe(0);
     entry = null;

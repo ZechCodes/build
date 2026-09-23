@@ -12,6 +12,7 @@
 // the timeline and is not sent twice for the same point.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, event, issue } from "./trackerWireFixture.js";
 
@@ -28,7 +29,6 @@ vi.mock("../src/core/changeEvents.js", () => ({
 /** The bridge saying this issue moved, which is what makes the page re-read. */
 const pushed = async () => {
   for (const one of watchers) one.onChanges?.([{ issues: { issue_ids: ["issue-1"] } }]);
-  await flush();
 };
 
 vi.mock("../src/core/deviceReconnect.js", () => ({
@@ -53,10 +53,6 @@ const TIMELINE = [
 ];
 
 let host, call, page, mountIssuePage, refuses, answer;
-const flush = async () => {
-  for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const button = () => host.querySelector(".rail-watch");
 const listed = (method) => call.mock.calls.filter(([name]) => name === method);
 
@@ -69,7 +65,7 @@ const mount = async () => {
     feed: () => ({ workspaces: [], items: [], projects: [] }),
     navigate: vi.fn(),
   });
-  await flush();
+  await waitFor(() => expect(host.querySelector(".issue-page-title")).toBeTruthy());
   return page;
 };
 
@@ -81,7 +77,6 @@ const scrollToEnd = async (element = host) => {
   Object.defineProperty(element, "clientHeight", { value: 400, configurable: true });
   element.scrollTop = 600;
   element.dispatchEvent(new Event("scroll"));
-  await flush();
 };
 
 beforeEach(async () => {
@@ -136,7 +131,7 @@ describe("the watch switch", () => {
     button().click();
     expect(button().getAttribute("aria-pressed")).toBe("true");
     expect(button().getAttribute("title")).toBe("Watching · 3");
-    await flush();
+    await waitFor(() => expect(listed("issues.watch")).toHaveLength(1));
     expect(listed("issues.watch")[0][1]).toEqual({ issue_id: "issue-1" });
   });
 
@@ -144,7 +139,7 @@ describe("the watch switch", () => {
     answer.issue = issue({ id: "issue-1", number: 65, watched: true, trackers: ["agent-1"] });
     await mount();
     button().click();
-    await flush();
+    await waitFor(() => expect(listed("issues.unwatch")).toHaveLength(1));
     expect(listed("issues.unwatch")[0][1]).toEqual({ issue_id: "issue-1" });
     expect(button().getAttribute("aria-pressed")).toBe("false");
   });
@@ -153,7 +148,7 @@ describe("the watch switch", () => {
     refuses = "issues.watch";
     await mount();
     button().click();
-    await flush();
+    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not change whether you are watching this issue"));
     expect(button().getAttribute("aria-pressed")).toBe("false");
     expect(button().getAttribute("title")).toBe("Not watching · 2");
     expect(notifyError).toHaveBeenCalledWith("Could not change whether you are watching this issue");
@@ -171,10 +166,10 @@ describe("the watch switch", () => {
     await mount();
     button().click();
     page.feedMoved();
-    await flush();
+    await waitFor(() => expect(button().hasAttribute("disabled")).toBe(true));
     expect(button().hasAttribute("disabled")).toBe(true);
     settle({});
-    await flush();
+    await waitFor(() => expect(button().hasAttribute("disabled")).toBe(false));
     expect(button().hasAttribute("disabled")).toBe(false);
   });
 
@@ -186,7 +181,7 @@ describe("the watch switch", () => {
     field.value = "half a thought";
     field.focus();
     button().click();
-    await flush();
+    await waitFor(() => expect(listed("issues.watch")).toHaveLength(1));
     expect(host.querySelector("#issue-comment").value).toBe("half a thought");
     expect(document.activeElement.id).toBe("issue-comment");
   });
@@ -214,7 +209,7 @@ describe("the read mark", () => {
       feed: () => ({ workspaces: [], items: [], projects: [] }),
       navigate: vi.fn(),
     });
-    await vi.waitFor(() => expect(host.textContent).toContain("A legacy comment without an id."));
+    await waitFor(() => expect(host.textContent).toContain("A legacy comment without an id."));
     expect(listed("issues.read_through")).toHaveLength(0);
     Object.defineProperty(host, "scrollHeight", { value: 1000, configurable: true });
     Object.defineProperty(host, "clientHeight", { value: 400, configurable: true });
@@ -239,6 +234,7 @@ describe("the read mark", () => {
       timeline: [...TIMELINE, comment({ id: "ic-2", created_at: "2026-09-21T10:05:00Z", body: "The last word." })],
     };
     await pushed();
+    await waitFor(() => expect(host.textContent).toContain("The last word."));
     await scrollToEnd();
     const marks = listed("issues.read_through");
     expect(marks.at(-1)[1]).toEqual({ issue_id: "issue-1", event_id: "ic-2" });

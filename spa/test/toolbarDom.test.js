@@ -5,6 +5,7 @@
 // the machine the route names.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -101,18 +102,17 @@ const workshopCall = vi.fn(async () => ({}));
 const laptopCall = vi.fn(async () => ({}));
 const openSession = (deviceId, call) => adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
 const menu = () => document.querySelector(".tbmenu");
 const names = () => [...bar().querySelectorAll(".tb-name")].map((name) => name.textContent);
 const openJump = async (which = "project") => {
   bar().querySelector(`[data-select="${which}"]`).click();
   const list = { project: "projects", workspace: "workspaces", directory: "directories" }[which];
-  await vi.waitFor(() => expect(menu()?.dataset.list).toBe(list));
+  await waitFor(() => expect(menu()?.dataset.list).toBe(list));
   return menu();
 };
-const waitMenuList = (list) => vi.waitFor(() => expect(menu()?.dataset.list).toBe(list));
-const waitMenuClosed = () => vi.waitFor(() => expect(menu()).toBeNull());
+const waitMenuList = (list) => waitFor(() => expect(menu()?.dataset.list).toBe(list));
+const waitMenuClosed = () => waitFor(() => expect(menu()).toBeNull());
 const labels = (selector) => [...menu().querySelectorAll(selector)].map((row) => row.querySelector(".mt").textContent);
 
 /** The workspace the workshop is holding, with two directories in it. */
@@ -142,8 +142,8 @@ const workshopHolds = (byProject) => {
 const standOnWorkspace = async () => {
   App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
   toolbarRouteChanged();
-  await flush();
-  await flush();
+  const workspaceName = feed.workspaces?.find((item) => (item.workspace_id || item.id) === "ws-1")?.name || "ws-1";
+  await waitFor(() => expect(bar()?.querySelector('[data-select="workspace"] .tb-name')?.textContent).toBe(workspaceName));
 };
 
 beforeEach(async () => {
@@ -302,13 +302,13 @@ describe("the workspace's Issues, in the bar", () => {
 
     App.route = { ...App.route, tab: "issues" };
     toolbarRouteChanged();
-    await flush();
+    await waitFor(() => expect(issues()?.classList.contains("current")).toBe(true));
     expect(issues().classList.contains("current")).toBe(true);
     expect(issues().getAttribute("aria-current")).toBe("page");
 
     App.route = { ...App.route, tab: "issues", issueId: "issue-1" };
     toolbarRouteChanged();
-    await flush();
+    await waitFor(() => expect(issues()?.classList.contains("current")).toBe(true));
     expect(issues().classList.contains("current")).toBe(true);
   });
 
@@ -316,7 +316,7 @@ describe("the workspace's Issues, in the bar", () => {
     for (const route of [{ name: "project", deviceId: "dev-1", projectId: "p1" }, { name: "inbox" }]) {
       App.route = route;
       toolbarRouteChanged();
-      await flush();
+      await waitFor(() => expect(bar()?.querySelector("[data-workspace-issues]")).toBeNull());
       expect([route.name, bar().querySelector("[data-workspace-issues]")]).toEqual([route.name, null]);
     }
   });
@@ -363,7 +363,7 @@ describe("the workspace toolbar", () => {
     expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
     menu().querySelector('[data-project="dev-1/p1"]').click();
     await waitMenuList("workspaces");
-    await flush();
+    await waitFor(() => expect(labels("[data-workspace]")).toEqual(["payment-work"]));
 
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
     expect(menu().querySelector("[data-work]")).toBeNull();
@@ -385,7 +385,7 @@ describe("the workspace toolbar", () => {
     };
     workshopHolds({ p1: [payments, broken] });
     toolbarRouteChanged();
-    await flush();
+    await waitFor(() => expect(bar()?.querySelector('[data-select="workspace"]')).toBeTruthy());
     const row = (await openJump("workspace")).querySelector('[data-workspace="dev-1/ws-2"]');
     expect(row.querySelector(".md").textContent).toBe("Failed: directory exists");
   });
@@ -395,7 +395,7 @@ describe("the workspace toolbar", () => {
     const sandbox = { ...payments, id: "ws-2", workspace_id: "ws-2", name: "prototype", directories: [] };
     workshopHolds({ p1: [payments, sandbox] });
     toolbarRouteChanged();
-    await flush();
+    await waitFor(() => expect(bar()?.querySelector('[data-select="workspace"]')).toBeTruthy());
     (await openJump("workspace")).querySelector('[data-workspace="dev-1/ws-2"]').click();
     await waitMenuClosed();
     expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-2/changes");
@@ -412,7 +412,7 @@ describe("the workspace toolbar", () => {
     await waitMenuList("workspaces");
     expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
     expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
-    await flush();
+    await waitFor(() => expect(labels("[data-workspace]")).toEqual(["prototype"]));
     expect(labels("[data-workspace]")).toEqual(["prototype"]);
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -432,7 +432,7 @@ describe("the workspace toolbar", () => {
     await waitMenuList("projects");
     menu().querySelector('[data-project="dev-1/p1"]').click();
     await waitMenuList("workspaces");
-    await flush();
+    await waitFor(() => expect(labels("[data-workspace]")).toEqual(["payment-work"]));
 
     expect(workshopCall).not.toHaveBeenCalledWith("workspace.get", expect.anything());
     expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
@@ -517,7 +517,7 @@ describe("the back chevron", () => {
     back().click();
     // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
     // so the navigation settles a tick later.
-    await flush();
+    await waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1"));
     expect(location.hash).toBe("#/device/dev-1/project/p1");
     // …which is the Issues tab, the project's default (#46). The inbox's
     // project name writes this same link (core/projectModel.js mints both), so
@@ -551,7 +551,7 @@ describe("the workspace settings cog", () => {
   it("opens the sheet on the workspace the bar is naming", async () => {
     await standOnWorkspace();
     cog().click();
-    await flush();
+    await waitFor(() => expect(document.getElementById("scrim").classList.contains("show")).toBe(true));
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     expect(document.getElementById("wsname").value).toBe("payment-work");
     document.getElementById("wscancel").click();
@@ -584,7 +584,7 @@ describe("the project menu", () => {
     await writeCached(menuAddress, { open: true, select: "project", list: "projects", query: "" });
     await waitMenuList("projects");
     await writeCached(scopeAddress, { projectKey: "dev-1/p2" });
-    await vi.waitFor(() => expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot"));
+    await waitFor(() => expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot"));
     await writeCached(menuAddress, { open: false });
     await waitMenuClosed();
   });
@@ -603,14 +603,14 @@ describe("the project menu", () => {
     const filter = (await openJump("project")).querySelector(".tb-filter");
     filter.value = "masc";
     filter.dispatchEvent(new Event("input"));
-    await vi.waitFor(() => expect(labels("[data-project]")).toEqual(["mascot"]));
+    await waitFor(() => expect(labels("[data-project]")).toEqual(["mascot"]));
   });
 
   it("hands a picked project to its workspaces, without leaving the page", async () => {
     const popup = await openJump("project");
     popup.querySelector('[data-project="dev-1/p2"]').click();
     await waitMenuList("workspaces");
-    await flush();
+    await waitFor(() => expect(menu()?.querySelector(".tb-scope > span")?.textContent).toBe("mascot"));
     expect(menu()).toBeTruthy();
     expect(menu().querySelectorAll("[data-project]").length).toBe(0);
     expect(menu().querySelector(".tb-scope > span").textContent).toBe("mascot");
@@ -723,7 +723,7 @@ describe("the project you pick, against a feed that keeps ticking", () => {
     await waitMenuClosed();
     App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
-    await vi.waitFor(async () => expect((await readCached(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }))).value.projectKey).toBe("dev-1/p1"));
+    await waitFor(async () => expect((await readCached(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }))).value.projectKey).toBe("dev-1/p1"));
     expect((await openJump("project")).querySelector(".mi.current .mt").textContent).toBe("relaydb");
   });
 });
@@ -759,7 +759,7 @@ describe("creating from the menu", () => {
     await waitMenuList("projects");
     menu().querySelector('[data-project="dev-2/p1"]').click();
     await waitMenuList("workspaces");
-    await flush();
+    await waitFor(() => expect(menu()?.querySelector('[data-create="workspace"]')).toBeTruthy());
     menu().querySelector('[data-create="workspace"]').click();
     expect(openCreateWork).toHaveBeenCalledWith({
       projectId: "p1",

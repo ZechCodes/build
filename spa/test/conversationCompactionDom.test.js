@@ -6,6 +6,7 @@
 // goes out through the device's real `call`; and a refusal is read off the
 // notices the real notify module draws.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor } from "./waitFor.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -92,10 +93,6 @@ const machineCall = async (method, params) => {
   return {};
 };
 
-const flush = async () => {
-  for (let count = 0; count < 16; count += 1) await new Promise((resolve) => setTimeout(resolve, 0));
-};
-
 const host = () => document.querySelector("#agent-rail");
 const panel = () => host().querySelector("#rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
@@ -121,13 +118,18 @@ const mountWorkspaceRail = async (apiVersion = "1.10.0") => {
     cacheScope: contextFor(DEVICE_ID).cacheScope,
     chatRepository: contextFor(DEVICE_ID).chatRepository,
   });
-  await flush();
+  await waitFor(() => {
+    const gauge = panel()?.querySelector("#railinputgauge");
+    expect(gauge).toBeTruthy();
+    expect(gauge.hidden).toBe(digestCompaction.last_context_tokens === null);
+    if (!gauge.hidden) expect(gauge.textContent).toBe(`${Math.round(120000 / (digestCompaction.compact_at_tokens || 1000000) * 100)}%`);
+  });
 };
 
 const choose = async (optionId) => {
   menuCaret().click();
   panel().querySelector(`.rail-surface-menu .mi[data-action="${optionId}"]`).click();
-  await flush();
+  await waitFor(() => expect(settingsAsked).toHaveLength(1));
 };
 
 beforeEach(async () => {
@@ -187,7 +189,7 @@ describe("the context gauge beside the paperclip", () => {
 
     digestCompaction = { ...digestCompaction, last_context_tokens: 190000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
-    await flush();
+    await waitFor(() => expect(gauge().textContent).toBe("95%"));
 
     expect(gauge().textContent).toBe("95%");
     expect(gauge().dataset.step).toBe("warning");
@@ -252,6 +254,7 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:default");
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
+    await waitFor(() => expect(rowLabel(markedRow())).toBe("Compact at: Default (200k)"));
     expect(rowLabel(markedRow())).toBe("Compact at: Default (200k)");
   });
 
@@ -260,6 +263,7 @@ describe("compaction on the conversation's menu", () => {
 
     await choose("compact:off");
 
+    await waitFor(() => expect(markedRow().dataset.action).toBe("compact:off"));
     expect(markedRow().dataset.action).toBe("compact:off");
   });
 
@@ -271,6 +275,7 @@ describe("compaction on the conversation's menu", () => {
 
     await choose("compact:150000");
 
+    await waitFor(() => expect(errorNotices().some((text) => text.includes("Build could not change when this chat compacts."))).toBe(true));
     expect(errorNotices().some((text) => text.includes("Build could not change when this chat compacts."))).toBe(true);
     expect(markedRow().dataset.action).toBe("compact:default");
   });

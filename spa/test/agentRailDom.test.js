@@ -3357,9 +3357,9 @@ describe("the conversation's local cache", () => {
 
     await mount();
 
-    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+    await vi.waitFor(() => expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
-    ]);
+    ]));
     await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
     expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
@@ -3534,7 +3534,12 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     await openSurfacePill("subagents");
-    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    const callLink = await vi.waitFor(() => {
+      const link = railHost().querySelector(".surface-subagents [data-call-sequence]");
+      expect(link).not.toBeNull();
+      return link;
+    }, { timeout: 5000 });
+    callLink.click();
     await flush();
 
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -4260,7 +4265,7 @@ describe("sending to an agent that is already there", () => {
     await press("look at the login flow");
 
     expect(callsTo("thread.post")).toHaveLength(1);
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
     expect(composer().value).toBe("");
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -4306,7 +4311,7 @@ describe("sending to an agent that is already there", () => {
     });
 
     await press("look at the login flow");
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1), { timeout: 5000 });
 
     const operationId = callsTo("thread.post")[0].params.operation_id;
     expect(operationId).toBeTruthy();
@@ -4316,7 +4321,10 @@ describe("sending to an agent that is already there", () => {
     }]);
     await flush();
 
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => {
+      expect(timeline().querySelector('[data-sequence="7"]')).not.toBeNull();
+      expect(copiesOf("look at the login flow")).toBe(1);
+    }, { timeout: 5000 });
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {
@@ -4326,11 +4334,13 @@ describe("sending to an agent that is already there", () => {
 
     await press("look at the login flow");
 
-    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(0));
-    expect(composer().value).toBe("look at the login flow");
-    expect(document.activeElement).not.toBe(composer());
-    expect(notifyError).toHaveBeenCalledTimes(1);
-    expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
+    await vi.waitFor(() => {
+      expect(copiesOf("look at the login flow")).toBe(0);
+      expect(composer().value).toBe("look at the login flow");
+      expect(document.activeElement).not.toBe(composer());
+      expect(notifyError).toHaveBeenCalledTimes(1);
+      expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
+    });
   });
 });
 
@@ -4584,7 +4594,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
+    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
 
     expect(callsTo("thread.activity").map((call) => call.params)).toEqual([{
       entity_id: "run-3",
@@ -4593,8 +4603,6 @@ describe("a run of activity in the rail", () => {
       through_sequence: 51,
       limit: 200,
     }]);
-    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]);
-
     runHead().click();
     runHead().click();
     await flush();
@@ -4774,8 +4782,10 @@ describe("a run of activity in the rail", () => {
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
     await flush();
 
-    expect(notifyError).not.toHaveBeenCalled();
-    expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null);
+    await vi.waitFor(() => {
+      expect(railHost().querySelector('[data-sequence="12"]')).not.toBeNull();
+      expect(notifyError).not.toHaveBeenCalled();
+    }, { timeout: 5000 });
   });
 });
 

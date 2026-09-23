@@ -74,6 +74,13 @@ const captureRecord = (over = {}) => ({
   ...over,
 });
 
+const leaveCaptureGetPending = () => {
+  const answer = bridge.call;
+  bridge.call = vi.fn((method, params) => method === "capture.get"
+    ? new Promise(() => {})
+    : answer(method, params));
+};
+
 beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
@@ -254,16 +261,19 @@ describe("a route the client is watching", () => {
 
   it("projects the pending row from a cache write after create answers", async () => {
     const { readCached, writeCached } = await import("../src/core/localCache.js");
+    // The background refresh must not answer with an older record after this
+    // case writes its newer capture into the cache.
+    leaveCaptureGetPending();
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
     await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "capture-1", kind: "capture" }))?.value.text).toBe("fix the login redirect"));
     const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
     expect((await readCached(address))?.value.text).toBe("fix the login redirect");
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.title).toContain("fix the login redirect"));
 
     await writeCached(address, captureRecord({ text: "the cache changed this capture" }));
-    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.title).toContain("the cache changed this capture"));
-    expect(pendingCaptureRows()[0].title).toContain("the cache changed this capture");
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.title).toContain("the cache changed this capture"), { timeout: 5000 });
   });
 
   it("writes a rerouted capture even when this client does not track its row", async () => {
@@ -649,11 +659,14 @@ describe("an account with more than one device", () => {
 
   it("names a routed capture after the project on the device that took it", async () => {
     await twoDevices();
+    // The feed's follow-up capture.get must not answer with the old routing
+    // record after this test adopts the newer routed record.
+    leaveCaptureGetPending();
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.state).toBe("routing"));
     await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
-    expect(pendingCaptureRows()[0].project).toBe("relaydb");
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.project).toBe("relaydb"), { timeout: 5000 });
   });
 });

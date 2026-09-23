@@ -532,9 +532,10 @@ describe("workspace surface", () => {
     expect(document.querySelector(".workspace-init-source").textContent).toContain("/srv/projects/assets");
     expect(document.querySelector(".workspace-init-note").textContent).toContain("independent repositories");
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied"));
-    expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied");
-    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
+    await vi.waitFor(() => {
+      expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied");
+      expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
+    });
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" }));
   });
@@ -578,9 +579,11 @@ describe("workspace surface", () => {
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="both"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed"));
-    expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
-    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
+    await vi.waitFor(() => {
+      expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed");
+      expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
+      expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
+    });
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
     expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });

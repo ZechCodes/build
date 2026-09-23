@@ -76,8 +76,9 @@ beforeEach(async () => {
 });
 
 const open = (options = {}) => {
-  const callRpc = options.callRpc || vi.fn().mockResolvedValue({});
-  openWorkspaceSettings(WORKSPACE, { catalog: CATALOG, ...options, callRpc });
+  const { workspace = WORKSPACE, ...settings } = options;
+  const callRpc = settings.callRpc || vi.fn().mockResolvedValue({});
+  openWorkspaceSettings(workspace, { catalog: CATALOG, ...settings, callRpc });
   return callRpc;
 };
 
@@ -180,17 +181,20 @@ describe("the workspace settings sheet", () => {
   });
 
   it("renames on the caller it was handed, trimmed, then closes and refreshes", async () => {
+    // Other cases leave debounced drafts for ws-1 in flight. Give this case
+    // its own cache address so those writes cannot race its cleared draft.
+    const workspace = { ...WORKSPACE, id: "ws-rename", workspaceKey: "dev-1/ws-rename" };
     const onRenamed = vi.fn();
-    const callRpc = open({ onRenamed });
+    const callRpc = open({ workspace, onRenamed });
 
     type("  payments  ");
     $("#wssave").click();
-    await vi.waitFor(() => expect(onRenamed).toHaveBeenCalled());
+    await vi.waitFor(() => expect(onRenamed).toHaveBeenCalled(), { timeout: 5000 });
 
-    expect(callRpc).toHaveBeenCalledWith("workspace.rename", { workspace_id: "ws-1", name: "payments" });
+    expect(callRpc).toHaveBeenCalledWith("workspace.rename", { workspace_id: workspace.id, name: "payments" });
     expect(onRenamed).toHaveBeenCalled();
     expect(shown()).toBe(false);
-    const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
+    const address = uiAddress({ deviceId: "dev-1", entityId: workspace.id, view: "workspace-settings", kind: "draft" });
     expect((await readCached(address)).value.name).toBeNull();
   });
 

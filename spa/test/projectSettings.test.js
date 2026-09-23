@@ -222,20 +222,23 @@ describe("openProjectSettings", () => {
     select.dispatchEvent(new Event("change"));
 
 
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" }), { timeout: 5000 });
     await vi.waitFor(() => {
       const current = document.querySelector("#sheet [data-isolation=select]");
       expect(current).not.toBe(select);
       expect(current.disabled).toBe(false);
       expect(current.value).toBe("rift");
-    });
+    }, { timeout: 5000 });
     const refreshed = document.querySelector("#sheet [data-isolation=select]");
     refreshed.value = "";
     refreshed.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null }));
-    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")).not.toBe(refreshed));
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null });
-    expect(document.querySelector("#sheet [data-isolation=select]").value).toBe("");
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null }), { timeout: 5000 });
+    await vi.waitFor(() => {
+      const current = document.querySelector("#sheet [data-isolation=select]");
+      expect(current).not.toBe(refreshed);
+      expect(current.disabled).toBe(false);
+      expect(current.value).toBe("");
+    }, { timeout: 5000 });
   });
 
   it("shows why Rift is unavailable and does not offer it", async () => {

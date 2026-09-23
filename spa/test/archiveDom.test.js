@@ -307,10 +307,21 @@ describe("the account archive page", () => {
     await settle();
     const before = archiveReads();
 
-    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
-    for (const entityId of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
-      await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+    const frames = [];
+    const animationFrame = vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+      for (const entityId of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
+        await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+      }
+      expect(frames).toHaveLength(1);
+    } finally {
+      animationFrame.mockRestore();
     }
+    frames[0]();
     await settle();
 
     expect(archiveReads() - before).toBe(App.devices.length);

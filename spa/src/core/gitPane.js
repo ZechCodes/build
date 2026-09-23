@@ -1418,8 +1418,13 @@ export function mountGitPane(
   const openHeldCommit = () => {
     const hash = commitInLog(lastLog, requestedCommit);
     if (!hash) return false;
+    requestedCommit = null;
+    missingCommit = false;
     if (selected !== hash) selectRail(hash);
-    else if (!patchHeld(hash)) void fetchShow(hash);
+    else {
+      onCommitSelection?.(hash);
+      if (!patchHeld(hash)) void fetchShow(hash);
+    }
     return true;
   };
 
@@ -1811,6 +1816,10 @@ export function mountGitPane(
     lastLog = held.log;
     lastHighlightKey = held.log.highlight_key ?? null;
     selected = recordSelection();
+    // A direct link stays pending after a miss. Any log or patch announcement
+    // can now answer it, including while this checkout's refresh is still on
+    // the wire; the diff is requested from this cached selection immediately.
+    openHeldCommit();
     // Asked whatever the freeze says: a body fetch that failed leaves the
     // shape where it was, so a retry gated on the shape moving would never
     // come. A quiet repo asks for nothing.

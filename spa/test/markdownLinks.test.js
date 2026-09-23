@@ -90,6 +90,18 @@ describe("a reference that does not resolve", () => {
 });
 
 describe("what it will not reach into", () => {
+  it("leaves issue-shaped URL fragments and link targets literal", () => {
+    const html = expandReferences("https://example.test/#42 https://example.test/?q=1&amp;next=2#42/c/ic-7 #42/c/ic-7", links);
+    expect(html).toContain("https://example.test/#42");
+    expect(html).toContain("https://example.test/?q=1&amp;next=2#42/c/ic-7");
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(href(html)).toBe(hashFromRoute({ ...WHERE, name: "trackerIssue", issueId: "issue-42", commentId: "ic-7" }));
+
+    const target = expandReferences("[outside](./#42/c/ic-7) and #42", links);
+    expect(target).toContain("[outside](./#42/c/ic-7)");
+    expect(target.match(/<a /g)).toHaveLength(1);
+  });
+
   it("leaves a reference inside a code span alone", () => {
     const html = expandReferences("write <code>#42</code> to link it", links);
     expect(html).toBe("write <code>#42</code> to link it");

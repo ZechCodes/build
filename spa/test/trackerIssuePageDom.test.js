@@ -100,7 +100,7 @@ const answerFor = (over = {}, timeline = TIMELINE) => ({
   timeline,
 });
 
-const mount = async (over = {}) => {
+const mount = async (over = {}, { waitForPaint = true } = {}) => {
   page = mountIssuePage(host, {
     projectId: "proj-1",
     deviceId: "dev-1",
@@ -113,7 +113,7 @@ const mount = async (over = {}) => {
     navigate: vi.fn(),
     ...over,
   });
-  await flush();
+  if (waitForPaint) await flush();
   return page;
 };
 
@@ -228,13 +228,14 @@ describe("the timeline", () => {
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
     await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor());
     call = vi.fn(() => new Promise(() => {}));
-    await mount({ commentId: "ic-2" });
-    expect(host.querySelector("#comment-ic-2").classList.contains("issue-comment-target")).toBe(true);
+    await mount({ commentId: "ic-2" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#comment-ic-2")?.classList.contains("issue-comment-target")).toBe(true));
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
   });
 
   it("opens a missing comment at the top without an error", async () => {
-    await mount({ commentId: "ic-missing" });
+    await mount({ commentId: "ic-missing" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
     expect(host.querySelector(".issue-comment-target")).toBeNull();
     expect(host.scrollTop).toBe(0);
     expect(notifyError).not.toHaveBeenCalled();

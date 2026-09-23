@@ -200,6 +200,14 @@ describe("references an agent writes", () => {
     expect(html.match(/<a /g)).toHaveLength(1);
   });
 
+  it("keeps URL fragments literal while linking issue references beside them", () => {
+    const html = renderMarkdown("https://example.test/#42/c/ic-7 and https://example.test/?a=1&b=2#42. See #42/c/ic-7", { links });
+    expect(html).toContain("https://example.test/#42/c/ic-7");
+    expect(html).toContain("https://example.test/?a=1&amp;b=2#42");
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toContain(">#42/c/ic-7</a>");
+  });
+
   it("renders as plain words with no resolver, which is every caller today", () => {
     expect(renderMarkdown("see #42")).toBe("<p>see #42</p>");
   });

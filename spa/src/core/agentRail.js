@@ -736,6 +736,10 @@ export function mountAgentRail(host, context) {
     live?.dispose();
     live = mountRailOnContext(host, {
       ...standing,
+      // The rail can stand on the project's conversation while the route is
+      // still a workspace. Overview breadth belongs to the page, not the
+      // conversation selected on its strip.
+      overviewPageKind: context.kind,
       payload: payloads.get(standing.kind) || null,
       alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
       panelOpen,
@@ -1349,7 +1353,7 @@ function mountRailOnContext(host, context, swap) {
   const overview = createAgentOverview({
     scope: cacheScope,
     projectId,
-    includeProjectWorkspaces: context.kind === "project",
+    includeProjectWorkspaces: (context.overviewPageKind || context.kind) === "project",
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
     onRows: (rows) => paintOverviewRows(rows),

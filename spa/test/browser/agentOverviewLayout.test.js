@@ -121,3 +121,53 @@ it("opens the existing create-agent view for a workspace route", async () => {
     await page.waitForSelector(".rail-panel:not([aria-hidden='true']) .rail-newagent");
   });
 }, 30_000);
+
+it("keeps overview scope on the workspace page after opening the project agent", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, markup, { basePath });
+    await loadBrowserModules(page, {
+      rail: "src/core/agentRail.js",
+      cache: "src/core/localCache.js",
+      merge: "src/core/feedMerge.js",
+    }, basePath);
+    await page.evaluate(async () => {
+      const { mountAgentRail } = window.__layoutModules.rail;
+      const { writeCached } = window.__layoutModules.cache;
+      const { stampWorkspace } = window.__layoutModules.merge;
+      const deviceId = "layout-device";
+      const projectId = "layout-project";
+      const row = (entityId, agentId, name) => ({
+        entity_id: entityId, project_id: projectId,
+        agents: [{ id: agentId, name, ordinal: 1, provider: "codex", state: "live" }],
+      });
+      for (const [entityId, agentId, name] of [
+        ["project-run", "project-agent", "Project agent"],
+        ["workspace-run", "workspace-agent", "Current workspace agent"],
+        ["other-run", "other-agent", "Other workspace agent"],
+      ]) {
+        await writeCached({ deviceId, entityId, kind: "row", sub: "" }, row(entityId, agentId, name));
+      }
+      await writeCached({ deviceId, entityId: "", kind: "workspaces" }, [
+        { id: "workspace-1", project_id: projectId, entity_id: "workspace-run", name: "Current workspace" },
+        { id: "workspace-2", project_id: projectId, entity_id: "other-run", name: "Other workspace" },
+      ].map((workspace) => stampWorkspace(workspace, deviceId)));
+      window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), {
+        kind: "workspace", deviceId, projectId, workspaceId: "workspace-1", entityId: "workspace-run",
+        projectAgent: { projectId, entityId: "project-run", name: "Build" },
+        call: async (method) => method === "models.list"
+          ? { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] }
+          : { items: [] },
+      });
+    });
+
+    await page.waitForSelector('[data-bubble="agent"][data-agent="workspace-agent"]', { timeout: 5000 });
+    await page.waitForSelector('[data-bubble="project"][data-agent="project-run"]', { timeout: 5000 });
+    await page.locator('[data-bubble="project"]').click();
+    await page.waitForFunction(() => document.querySelector("#rail-panel .rail-who")?.title === "Project agent", null, { timeout: 5000 });
+    await page.waitForSelector('[data-bubble="agent"][data-agent="workspace-agent"]', { timeout: 5000 });
+    await page.locator(".rail-expand").click();
+    await page.waitForSelector('[data-overview-agent="workspace-agent"]', { timeout: 5000 });
+    const agents = await page.locator(".rail-overview-row").evaluateAll((rows) => rows.map((row) => row.dataset.overviewAgent));
+    assert.deepEqual(agents.sort(), ["project-agent", "workspace-agent"]);
+  });
+}, 30_000);

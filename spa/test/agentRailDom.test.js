@@ -220,6 +220,16 @@ const mount = async (context = {}) => {
   await flush();
 };
 
+const mountOverviewReady = async (context = {}) => {
+  await writeRailWorkItem(payload);
+  rail = mountAgentRail(railHost(), railAddress(context));
+  await vi.waitFor(() => {
+    expect(railHost().querySelector('[data-bubble="agent"]')).toBeTruthy();
+    expect(panel()?.querySelector(".rail-head")).toBeTruthy();
+    expect(railHost().querySelector(".rail-expand")).toBeTruthy();
+  });
+};
+
 /** The row moved: the sync layer writes what the bridge pushed, and every rail
  *  reading that record hears it. */
 const pushRow = async (row = payload) => {
@@ -910,12 +920,15 @@ describe("the bubble strip", () => {
     const originalCall = bridge.call;
     bridge.call = (method, params) => method === "thread.page"
       ? new Promise(() => {}) : originalCall(method, params);
-    await mount();
+    await mountOverviewReady();
 
     railHost().querySelector(".rail-expand").click();
-    await flush();
     const rows = () => [...railHost().querySelectorAll(".rail-overview-row")];
     const rowFor = (agentId) => rows().find((row) => row.dataset.overviewAgent === agentId);
+    await vi.waitFor(() => {
+      expect(rowFor("ag-1")?.textContent).toContain("Checking the build");
+      expect(rowFor("ag-2")?.textContent).toContain("The diff is ready");
+    });
     expect(rowFor("ag-1").textContent).toContain("Checking the build");
     expect(rowFor("ag-2").textContent).toContain("The diff is ready");
     expect(railHost().classList.contains("rail-overview")).toBe(true);
@@ -924,8 +937,7 @@ describe("the bubble strip", () => {
     await writeRailThread("run-3", "ag-1", { items: [
       { type: "event", data: { sequence: 3, event: "tool_use", summary: "Running tests" } },
     ] });
-    await flush();
-    expect(rowFor("ag-1").textContent).toContain("Running tests");
+    await vi.waitFor(() => expect(rowFor("ag-1")?.textContent).toContain("Running tests"));
 
     rowFor("ag-2").click();
     await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
@@ -954,7 +966,7 @@ describe("the bubble strip", () => {
           agents: [agent({ id: "ag-outside", name: "Outside agent" })] },
       ],
     });
-    await mount({ kind: "project", projectId: "p1", entityId: "run-project" });
+    await mountOverviewReady({ kind: "project", projectId: "p1", entityId: "run-project" });
 
     railHost().querySelector(".rail-expand").click();
     await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(3));
@@ -975,13 +987,48 @@ describe("the bubble strip", () => {
       expect(add.getAttribute("aria-label")).toBe(`Add an agent to ${section.getAttribute("aria-label")}`);
     }
 
+    const beforeRoute = window.location.href;
+    const navigated = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
     sections[2].querySelector(".rail-overview-add").click();
-    await vi.waitFor(() => expect(window.location.hash).toContain("/workspace/ws-two/changes"));
+    await navigated;
+    expect(window.location.hash).toContain("/workspace/ws-two/changes");
     expect(window.location.hash).toContain("newAgent=1");
+    window.history.replaceState({}, "", beforeRoute);
+  });
+
+  it("keeps workspace-page scope after switching to the project agent", async () => {
+    payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+      agents: [agent({ id: "ag-one", name: "First workspace agent" })] };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+      workspaces: [
+        { id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" },
+        { id: "ws-two", project_id: "p1", name: "Second workspace", entity_id: "run-two" },
+      ],
+      items: [
+        payload,
+        { kind: "project", project_id: "p1", entity_id: "run-project",
+          agents: [agent({ id: "ag-project", name: "Project agent" })] },
+        { kind: "workspace", workspace_id: "ws-two", project_id: "p1", entity_id: "run-two",
+          agents: [agent({ id: "ag-two", name: "Second workspace agent" })] },
+      ],
+    });
+    await mountOverviewReady({ kind: "workspace", workspaceId: "ws-one",
+      projectAgent: { projectId: "p1", entityId: "run-project" } });
+    await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="project"][data-agent="run-project"]')).toBeTruthy());
+
+    railHost().querySelector('[data-bubble="project"]').click();
+    await vi.waitFor(() => expect(headWho(panel())).toBe("Project agent"));
+    railHost().querySelector(".rail-expand").click();
+    await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
+    const sections = [...railHost().querySelectorAll(".rail-overview-section")];
+    expect(sections[0].getAttribute("aria-label")).toBe("Project agents");
+    expect(sections[1].querySelector('[data-overview-workspace="ws-one"]')).toBeTruthy();
+    expect(railHost().textContent).not.toContain("Second workspace agent");
   });
 
   it("gives the overview a chat header with only a working pin", async () => {
-    await mount();
+    await mountOverviewReady();
     railHost().querySelector(".rail-expand").click();
     const head = railHost().querySelector("#rail-overview .rail-head");
     expect(head).toBeTruthy();
@@ -1000,7 +1047,7 @@ describe("the bubble strip", () => {
   });
 
   it("keeps the overview mounted while it closes and animates opening", async () => {
-    await mount();
+    await mountOverviewReady();
     const animations = recordAnimations();
     try {
       railHost().querySelector(".rail-expand").click();
@@ -1026,7 +1073,7 @@ describe("the bubble strip", () => {
   });
 
   it("opens and closes the overview immediately when reduced motion is requested", async () => {
-    await mount();
+    await mountOverviewReady();
     const originalMatchMedia = window.matchMedia;
     window.matchMedia = (query) => ({ matches: query === "(prefers-reduced-motion: reduce)" });
     const animations = recordAnimations();

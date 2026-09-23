@@ -206,7 +206,7 @@ describe("completed history", () => {
     const history = viewerHost().querySelector(".surface-history-toggle");
     started.length = 0;
     history.click();
-    await motionBeat();
+    await vi.waitFor(() => expect(animationsOn(completed)).toHaveLength(1));
 
     expect(history.getAttribute("aria-pressed")).toBe("true");
     expect(animationsOn(completed)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
@@ -215,7 +215,7 @@ describe("completed history", () => {
 
     started.length = 0;
     history.click();
-    await motionBeat();
+    await vi.waitFor(() => expect(animationsOn(completed)).toHaveLength(1));
     expect(history.getAttribute("aria-pressed")).toBe("false");
     expect(animationsOn(completed)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
     await settleMotion();
@@ -232,6 +232,7 @@ describe("completed history", () => {
     const completed = viewerHost().querySelector(".surface-completed");
     const history = viewerHost().querySelector(".surface-history-toggle");
     history.click();
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("true"));
     await settleMotion();
     completed.querySelector(".surface-agent-summary").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -240,6 +241,7 @@ describe("completed history", () => {
     const updated = surfacesSnapshot();
     updated.subagents[0] = { ...updated.subagents[0], tokens: 1400 };
     surfaces.set(updated);
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("false"));
     await settleMotion();
 
     expect(history.getAttribute("aria-pressed")).toBe("false");
@@ -247,6 +249,7 @@ describe("completed history", () => {
     expect(completed.hidden).toBe(false);
 
     history.click();
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("true"));
     await settleMotion();
     expect(history.getAttribute("aria-pressed")).toBe("true");
     expect(completed.open).toBe(true);

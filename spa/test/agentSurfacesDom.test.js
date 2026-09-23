@@ -384,6 +384,7 @@ describe("painting the viewer", () => {
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");
 
     choices[1].click();
+    await vi.waitFor(() => expect(choices[1].getAttribute("aria-pressed")).toBe("true"));
 
     expect(choices[1].getAttribute("aria-pressed")).toBe("true");
     expect(choices[0].getAttribute("aria-pressed")).toBe("false");
@@ -548,6 +549,7 @@ describe("the fold the finished rows sit under", () => {
     expect(historyToggle().getAttribute("aria-pressed")).toBe("false");
 
     historyToggle().click();
+    await vi.waitFor(() => expect(completedFold().open).toBe(true));
     expect(completedFold().open).toBe(true);
     expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
     expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (1)");
@@ -589,6 +591,7 @@ describe("the fold the finished rows sit under", () => {
     surfaces.set(snapshot());
     await pressPill(AGENT_ENTRY_KIND);
     historyToggle().click();
+    await vi.waitFor(() => expect(completedFold().open).toBe(true));
     const fold = completedFold();
     const [finishedRow] = completedRows();
 
@@ -617,6 +620,7 @@ describe("the fold the finished rows sit under", () => {
 
     const completed = document.querySelector('.surface-completed-rows > [data-key="s2"]');
     expect(completed.open).toBe(true);
+    await vi.waitFor(() => expect(completedFold().open).toBe(true));
     expect(completedFold().open).toBe(true);
     expect(historyToggle().getAttribute("aria-pressed")).toBe("true");
     expect(historyToggle().getAttribute("aria-label")).toBe("Hide completed history (2)");

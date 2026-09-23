@@ -158,10 +158,9 @@ pub enum StoreError {
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
 ///
-/// 8 added the tracker's three tables. They are `CREATE TABLE IF NOT EXISTS`
-/// with nothing to backfill, so a v7 store gains them on its next open and
-/// reads exactly as it did.
-pub const SCHEMA_VERSION: i64 = 8;
+/// 9 added retained inbox timestamps for finished workspaces. The table is
+/// empty on upgrade; older finished conversations were already deleted.
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

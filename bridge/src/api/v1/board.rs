@@ -541,8 +541,15 @@ pub struct ListedProjectRow {
     #[serde(flatten)]
     pub project: ProjectRow,
     pub entity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     /// The same id, under the name the run verbs take.
     pub run_id: Option<String>,
+    /// Every conversation belonging to the project's own agent rail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversations: Option<Vec<super::thread::ConversationActivity>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

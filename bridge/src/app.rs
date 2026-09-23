@@ -25,6 +25,7 @@ mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
+mod session_summaries;
 mod streams;
 mod tracker;
 mod transactions;
@@ -296,6 +297,10 @@ pub struct AppState {
     plans: HashMap<String, ActivePlan>,
     /// Worktree-scoped runs, keyed by `run_id`.
     runs: HashMap<String, ActiveRun>,
+    /// Running inbox sessions by conversation owner and project. Replayed from
+    /// indexed messages after recovery; updated once per appended live message.
+    session_summaries: HashMap<String, crate::session_summary::SessionSummary>,
+    session_seen: HashMap<(String, String), u64>,
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
@@ -565,6 +570,8 @@ impl AppState {
             harness,
             plans: HashMap::new(),
             runs: HashMap::new(),
+            session_summaries: HashMap::new(),
+            session_seen: HashMap::new(),
             store: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),

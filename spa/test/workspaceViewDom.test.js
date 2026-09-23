@@ -423,6 +423,26 @@ describe("workspace surface", () => {
     expect(document.querySelector(".workspace-action-status").textContent).toBe("Workspace ready.");
   });
 
+  it("keeps a newer summary and another workspace through a late retry result", async () => {
+    const failed = { ...workspace, status: "failed", session_started_ms: 100, last_activity_ms: 200 };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async (method) => method === "workspace.retry"
+      ? { ...workspace, status: "ready", session_started_ms: 100, last_activity_ms: 200 }
+      : failed);
+    await standUp();
+    const address = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
+    await writeCached(address, [
+      { ...failed, session_started_ms: 50_000_000, last_activity_ms: 50_000_000 },
+      { id: "ws-2", project_id: "p-1", status: "ready" },
+    ]);
+    document.querySelector("[data-workspace-action]").click();
+    await vi.waitFor(async () => {
+      const rows = (await readCached(address))?.value;
+      expect(rows?.[0]).toMatchObject({ status: "ready", session_started_ms: 50_000_000, last_activity_ms: 50_000_000 });
+      expect(rows?.[1]).toMatchObject({ id: "ws-2", status: "ready" });
+    });
+  });
+
   it("preserves edits in an already-ready source while Retry repairs another source", async () => {
     const mixedWorkspace = {
       ...workspace,

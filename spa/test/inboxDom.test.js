@@ -65,12 +65,13 @@ vi.mock("../src/core/projectHide.js", () => ({
 const key = (deviceId, id) => `${deviceId}/${id}`;
 
 /** A project as the feed stamps it. */
-const project = (id, name, deviceId = "dev-1") => ({
+const project = (id, name, deviceId = "dev-1", over = {}) => ({
   id,
   project_id: id,
   name,
   deviceId,
   projectKey: key(deviceId, id),
+  ...over,
 });
 
 /** A workspace as the feed stamps it: the machine it is on, and the two
@@ -183,6 +184,15 @@ beforeEach(async () => {
 afterEach(() => unmountInboxList?.());
 
 describe("the workspace inbox", () => {
+  it("moves a workspace into the flat face's Recent after a day without a message", async () => {
+    const old = Date.now() - 25 * 60 * 60 * 1000;
+    feed([workspace({ session_started_ms: old, last_activity_ms: old })]);
+    expect(document.querySelectorAll('#inbox-list > [data-key^="workspace:"]')).toHaveLength(0);
+    expect(document.querySelector('[data-recent-toggle="inbox"]')).not.toBeNull();
+    document.querySelector('[data-recent-toggle="inbox"]').click();
+    await vi.waitFor(() => expect(document.querySelector('.inbox-recent [data-key="workspace:dev-1/workspace-1"]')).not.toBeNull());
+  });
+
   it("closes a restored menu state when the reader presses outside it", async () => {
     const { writeCached, readCached } = await import("../src/core/localCache.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
@@ -350,6 +360,24 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
+  it("orders live projects by their bridge summaries and folds aged projects into Recent", async () => {
+    const hour = 60 * 60 * 1000;
+    const now = Date.now();
+    const session = (time) => ({ session_started_ms: time, last_activity_ms: time });
+    feed([
+      workspace(session(now - 2 * hour)),
+      workspace({ id: "workspace-2", project_id: "project-2", ...session(now - 26 * hour) }),
+    ], [
+      project("project-1", "Zulu", "dev-1", session(now - 2 * hour)),
+      project("project-2", "Alpha", "dev-1", session(now - 26 * hour)),
+    ]);
+    setInboxView("projects");
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
+    expect(document.querySelector('[data-recent-toggle="projects"]')).not.toBeNull();
+    document.querySelector('[data-recent-toggle="projects"]').click();
+    await vi.waitFor(() => expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]));
+  });
+
   it("restores a project fold from cache and repaints an external fold write", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
     const address = { deviceId: "", entityId: "", kind: "ui-fold", sub: "inbox:projects" };

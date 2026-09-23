@@ -78,6 +78,7 @@ impl AppState {
     ) -> Result<(), String> {
         if self.store.is_none() {
             self.operation_ledger.remember_in_memory_acceptance(run_id);
+            self.note_run_messages(run_id, active);
             return Ok(());
         }
         let now = now_rfc3339();
@@ -135,6 +136,7 @@ impl AppState {
                 .map(|()| None),
         }
         .map_err(|e| format!("run store: {e}"))?;
+        self.note_run_messages(run_id, active);
         Ok(())
     }
 

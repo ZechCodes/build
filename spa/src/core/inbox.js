@@ -11,19 +11,16 @@
 // with an event on its conversation naming the branch it lost (the bridge writes
 // that; this list just stops hiding it). Nothing that is over is ever a row.
 //
-// The order is the anchor's, oldest first. An anchor is seeded when a thing is
-// created and moved only by the user picking the work back up, so an agent
-// working all night, a diff landing and a doc being read leave a row exactly
-// where it is. The top of the list is what has been waiting longest; a fresh
-// pickup appends to the bottom instead of shoving everything down.
+// Workspaces use the bridge's first message after their latest silence of at
+// least 12 hours as the anchor. Other row
+// kinds retain their bridge anchor. All rows sort by anchor, oldest first.
 //
 // A row is two lines: what it is, with the unread count pulled to the right
 // edge, and what it weighs — files touched, ahead/behind, +/−. A row with
 // nothing to weigh yet says so.
 //
-// Everything that has said nothing for a day is partitioned off into Recent at
-// the end of the list: still there, just not what today is about. It starts
-// shut, always — opening it is the user's, and holds until they shut it.
+// A workspace whose last message is more than a day old goes into Recent at
+// the end of the list. Its rows keep the same anchor order there.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -34,6 +31,7 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
+import { sessionTimes } from "./sessionSpans.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -121,11 +119,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     adopted,
     facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
     route: workspaceRoute(workspace),
-    // The conversation owns the inbox anchor whenever there is one: this is
-    // the same user-pickup ordering used by ordinary work rows. The workspace
-    // creation date is only the fallback for one that has never spoken.
-    anchorMs: ms(firstText(activity.anchor, workspace.created_at, workspace.updated_at)),
-    lastActivityMs: ms(workspace.updated_at),
+    ...sessionTimes(workspace),
   };
 }
 
@@ -175,6 +169,12 @@ export function watchedWorkspaceEntries(workspaces = [], projects = [], items = 
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
 export const RECENT_AFTER_MS = DAY_MS;
+
+/** A workspace belongs in Recent once its newest message is over a day old.
+ * An older bridge is anchored today; an empty new workspace uses creation. */
+export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
+  entry.kind === "workspace" && entry.lastActivityMs !== null
+  && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";

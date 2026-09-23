@@ -577,6 +577,13 @@ pub struct AgentDigest {
     pub surfaces: Option<AgentSurfaces>,
 }
 
+/// One conversation's bounded message sessions on a workspace or project
+/// list row. The list lets the inbox pool conversations without fetching them.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ConversationActivity {
+    pub conversation_id: String,
+}
+
 /// Whether one conversation is in the user's inbox.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationWatch {

@@ -8,12 +8,18 @@
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
+// Blocks use the bridge's project session summary, oldest anchor first. The
+// summary includes finished workspaces and the project's own conversation.
+// More than a day without a message moves a block
+// into the projects face's Recent section; workspaces inside keep their own
+// session order and Recent partition.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
-import { clashingNames, dimDeviceHtml } from "./inbox.js";
+import { RECENT_AFTER_MS, clashingNames, dimDeviceHtml, workspaceIsRecent } from "./inbox.js";
+import { sessionTimes } from "./sessionSpans.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
  *  asked anything: the reader's question about such a block is never "which
@@ -32,10 +38,8 @@ const bareProjectIdOf = (row) => row.project_id || row.projectId || "";
 
 /** The blocks' identity and names: every device's projects, plus one for any
  *  project a row names that its device has not listed — the row is still work,
- *  and it is still somewhere. The final blocks are ordered by name after every
- *  device is merged, so a machine's arrival order never partitions the rail.
- *  Work rows and
- *  workspace rows are named the same way, because they name the same projects.
+ *  and it is still somewhere. Work rows and workspace rows are named the same
+ *  way, because they name the same projects.
  *
  *  Keyed by the account-wide project key, never the bare id: both machines call
  *  their first project `proj-1`, and those are two projects. */
@@ -53,7 +57,12 @@ function projectsNamed(projects, rows) {
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
  *  always routable, however empty it is. */
-function workspaceBlockFor(project, grouped, tag) {
+function workspaceBlockFor(project, grouped, tag, nowMs) {
+  grouped = [...grouped].sort((left, right) =>
+    (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity));
+  const { anchorMs, lastActivityMs } = sessionTimes(project, nowMs);
+  const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
+  const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -62,9 +71,12 @@ function workspaceBlockFor(project, grouped, tag) {
     ...tag,
     name: projectNameOf(project),
     isGit: project.is_git !== false,
-    entries: grouped,
-    recent: [],
-    flat: grouped.length === 0,
+    entries,
+    recent,
+    anchorMs,
+    lastActivityMs,
+    isRecent: lastActivityMs !== null && nowMs - lastActivityMs > RECENT_AFTER_MS,
+    flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
   };
@@ -75,20 +87,27 @@ function workspaceBlockFor(project, grouped, tag) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null) {
+export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now()) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
-  const blocks = [...named.values()].sort((left, right) =>
-    projectNameOf(left).localeCompare(projectNameOf(right), undefined, { sensitivity: "base" })
-      || left.projectKey.localeCompare(right.projectKey),
-  ).map((project) =>
+  const blocks = [...named.values()].map((project) =>
     workspaceBlockFor(
       project,
       entries.filter((entry) => entry.projectKey === project.projectKey),
       tags.get(project.projectKey),
+      nowMs,
     ),
+  ).sort((left, right) =>
+    (left.anchorMs === null) - (right.anchorMs === null)
+      || (left.anchorMs === null ? 0 : left.anchorMs - right.anchorMs)
+      || left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
+      || left.projectKey.localeCompare(right.projectKey),
   );
-  return { unsorted: entries.filter((entry) => !entry.projectKey), blocks };
+  return {
+    unsorted: entries.filter((entry) => !entry.projectKey),
+    blocks: blocks.filter((block) => !block.isRecent),
+    recentBlocks: blocks.filter((block) => block.isRecent),
+  };
 }
 
 

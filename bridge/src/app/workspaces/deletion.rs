@@ -271,13 +271,24 @@ impl AppState {
         workspace_id: &str,
         run_ids: &[String],
     ) -> Result<(), String> {
+        let project_id = self
+            .workspaces
+            .get(workspace_id)
+            .map(|workspace| workspace.project_id.clone());
         for run_id in run_ids {
             if let Some(store) = &self.store {
-                store.delete_run(run_id).map_err(|error| {
+                let result = if let Some(project_id) = project_id.as_deref() {
+                    store.delete_run_retaining_inbox_messages(run_id, project_id)
+                } else {
+                    store.delete_run(run_id)
+                };
+                result.map_err(|error| {
                     format!("delete workspace conversation: {error}; retry the deletion")
                 })?;
             }
             self.runs.remove(run_id);
+            self.session_summaries.remove(run_id);
+            self.session_seen.retain(|(owner, _), _| owner != run_id);
             self.forget_run(run_id);
         }
         self.workspaces.forget(workspace_id);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { workspaceKey } from "../src/core/deviceKey.js";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
-import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries } from "../src/core/inbox.js";
+import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries, workspaceIsRecent } from "../src/core/inbox.js";
 
 const DEVICE = "dev-1";
 
@@ -20,19 +20,62 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
-  it("sorts every device's workspaces together by the existing anchor order", () => {
+  it("orders bridge workspace sessions without fetching a thread", () => {
+    const hour = 60 * 60 * 1000;
+    const workspace = (id, started, last = started) => ({
+      id, project_id: "project-1", session_started_ms: started, last_activity_ms: last,
+    });
+    const earlier = workspace("earlier", 10 * hour);
+    const later = workspace("later", 20 * hour);
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["earlier", "later"]);
+
+    earlier.last_activity_ms = 21 * hour;
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["earlier", "later"]);
+
+    earlier.session_started_ms = 34 * hour;
+    earlier.last_activity_ms = 34 * hour;
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["later", "earlier"]);
+  });
+
+  it("ages a workspace into Recent at 24 hours using the newest message", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const [entry] = entriesOf([{ id: "quiet", project_id: "project-1",
+      session_started_ms: 100, last_activity_ms: 200 }]);
+    expect(workspaceIsRecent(entry, 200 + day - 1)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + day)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + day + 1)).toBe(true);
+  });
+
+  it("anchors an old bridge's workspace today", () => {
+    const now = Date.now();
+    const [entry] = entriesOf([{ id: "empty", project_id: "project-1",
+      created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-03T00:00:00Z",
+    }]);
+    expect(entry.anchorMs).toBeGreaterThanOrEqual(now);
+    expect(entry.lastActivityMs).toBe(entry.anchorMs);
+  });
+
+  it("anchors a new bridge's empty workspace at creation", () => {
+    const [entry] = entriesOf([{ id: "empty", project_id: "project-1",
+      created_at: "2026-08-01T00:00:00Z", session_started_ms: null, last_activity_ms: null,
+    }]);
+    expect(entry.anchorMs).toBe(Date.parse("2026-08-01T00:00:00Z"));
+    expect(entry.lastActivityMs).toBe(entry.anchorMs);
+  });
+
+  it("sorts every device's workspaces together by the bridge anchor", () => {
     const workspaces = [
-      { id: "new", project_id: "project-1", created_at: "2026-08-03T00:00:00Z" },
-      { id: "old", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
-      { id: "middle", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+      { id: "new", project_id: "project-1", session_started_ms: 3, last_activity_ms: 3 },
+      { id: "old", project_id: "project-1", session_started_ms: 1, last_activity_ms: 1 },
+      { id: "middle", project_id: "project-1", session_started_ms: 2, last_activity_ms: 2 },
     ];
     expect(entriesOf(workspaces).map((row) => row.workspaceId)).toEqual(["old", "middle", "new"]);
   });
 
-  it("uses a conversation's pickup anchor ahead of the workspace creation date", () => {
+  it("uses the bridge session anchor ahead of a row's original anchor", () => {
     const rows = entriesOf([
-      { id: "run-1", project_id: "project-1", created_at: "2026-08-01T00:00:00Z" },
-      { id: "run-2", project_id: "project-1", created_at: "2026-08-02T00:00:00Z" },
+      { id: "run-1", project_id: "project-1", session_started_ms: 3, last_activity_ms: 3 },
+      { id: "run-2", project_id: "project-1", session_started_ms: 2, last_activity_ms: 2 },
     ], [
       { kind: "branch", project_id: "project-1", run_id: "run-1", anchor: "2026-08-03T00:00:00Z" },
       { kind: "branch", project_id: "project-1", run_id: "run-2", anchor: "2026-08-02T00:00:00Z" },

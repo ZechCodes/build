@@ -31,6 +31,7 @@ import {
   recentToggleHtml,
   watchedWorkspaceEntries,
   workspaceEntryKey,
+  workspaceIsRecent,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
@@ -196,10 +197,12 @@ function drawWorkspaceList(list, shown) {
   entries = shown;
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
-  list.querySelector(":scope > .inbox-recent")?.remove();
   list.querySelector(":scope > .inbox-unsorted")?.remove();
   list.querySelector(":scope > .inbox-projects")?.remove();
-  patchList(list, entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  const active = shown.filter((entry) => !workspaceIsRecent(entry));
+  const recent = shown.filter((entry) => workspaceIsRecent(entry));
+  patchList(list, active, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintRecent(list, recent, ui, "inbox");
 }
 
 /** What every row is painted with. `showProject` is whether a row names its
@@ -248,14 +251,34 @@ const offlineDeviceIds = () =>
  *  block per project — every machine's, each head naming its machine where two
  *  machines use that project name. */
 function drawProjects(list, shown) {
-  const { unsorted, blocks } = workspaceProjectBlocks(shown, projects, App.devices, offlineDeviceIds());
-  entries = [...unsorted, ...blocks.flatMap((block) => [...block.entries, ...block.recent])];
-  blocksPainted = new Map(blocks.map((block) => [block.projectKey, block]));
-  const folded = new Set(blocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
+  const { unsorted, blocks, recentBlocks } = workspaceProjectBlocks(shown, projects, App.devices, offlineDeviceIds());
+  const allBlocks = [...blocks, ...recentBlocks];
+  entries = [...unsorted, ...allBlocks.flatMap((block) => [...block.entries, ...block.recent])];
+  blocksPainted = new Map(allBlocks.map((block) => [block.projectKey, block]));
+  const folded = new Set(allBlocks.filter((block) => blockIsFolded(block, folds)).map((block) => block.projectKey));
   const ui = { ...rowUi(false), folded };
   const frame = projectsFrame(list);
   patchList(frame.unsorted, unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintBlocks(frame.blocks, blocks, ui);
+  paintRecentProjects(list, recentBlocks, ui);
+}
+
+/** A project's whole block, including its workspaces, moves into this
+ * disclosure after a day without a message. The block remains keyed. */
+function paintRecentProjects(list, blocks, ui) {
+  let section = list.querySelector(":scope > .inbox-recent");
+  if (!blocks.length) {
+    section?.remove();
+    return;
+  }
+  if (!section) {
+    section = el('<div class="inbox-recent"><div class="inbox-projects"></div></div>');
+    section.prepend(el(recentToggleHtml(blocks, false, "projects")));
+  }
+  if (list.lastElementChild !== section) list.appendChild(section);
+  const open = recentIsOpen(recentOpen.get("projects"));
+  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(blocks, open, "projects")));
+  paintBlocks(section.querySelector(":scope > .inbox-projects"), open ? blocks : [], ui);
 }
 
 /** The projects face's frame, built once: the new-project control, the loose

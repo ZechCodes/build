@@ -732,6 +732,11 @@ impl AppState {
         if active.run.plan_id.is_some() {
             return Ok(json!({ "ok": true, "retained_as_issue_lineage": true }));
         }
+        if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
+            return Err(format!(
+                "run.delete: {run_id} owns workspace {workspace_id}; delete the workspace instead"
+            ));
+        }
         let checkout_path = active.worktree.path.clone();
         // A failed run still holds its worktree; deleting an adopted run's card
         // must never delete the user's files (delete removes the card, not the
@@ -882,13 +887,20 @@ impl AppState {
                 run_state_str(&active.run.state)
             ));
         }
-        self.preserve_entity_issue_identities(&run_id)?;
-        if let Some(store) = &self.store {
-            store
-                .delete_run(&run_id)
-                .map_err(|e| format!("run store: {e}"))?;
+        if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
+            return Err(format!(
+                "run.release: {run_id} owns workspace {workspace_id}; delete the workspace instead"
+            ));
         }
+        self.preserve_entity_issue_identities(&run_id)?;
         let project_id = self.projects.project_id_of(&run_id).map(str::to_string);
+        if let Some(store) = &self.store {
+            match project_id.as_deref() {
+                Some(project_id) => store.delete_run_retaining_inbox_messages(&run_id, project_id),
+                None => store.delete_run(&run_id),
+            }
+            .map_err(|e| format!("run store: {e}"))?;
+        }
         let active = self.runs.remove(&run_id).expect("checked above");
         // Un-adopting hands the worktree back to the human; Build's agent in it
         // reported `done` to a run that no longer exists, so it goes with the

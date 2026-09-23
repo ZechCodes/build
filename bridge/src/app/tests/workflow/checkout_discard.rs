@@ -235,6 +235,32 @@ fn run_delete_clears_an_adopted_card_and_leaves_the_checkout_standing() {
     assert!(pending_on_the_board(&board).is_empty(), "{board:?}");
 }
 
+#[test]
+fn deleting_a_nonworkspace_run_keeps_its_project_message_after_restart() {
+    let (dir, repo) = init_repo();
+    let anchor = crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap();
+    {
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "delete-history");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let mut active = state.runs.remove(&run_id).unwrap();
+        active
+            .agents
+            .by_id_mut(&agent_id)
+            .unwrap()
+            .thread
+            .post_user("project history", None, "2026-09-01T00:00:00Z");
+        active.run.state = RunState::Failed;
+        state.finish_run_mutation(run_id.clone(), active).unwrap();
+        let deleted = state.handle(req("run.delete", json!({"run_id":run_id})));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+    }
+    let restarted = qa_state(&repo, dir.path());
+    let project = &restarted.project_list()["projects"][0];
+    assert_eq!(project["session_started_ms"], anchor);
+    assert_eq!(project["last_activity_ms"], anchor);
+}
+
 /// The run is off the board for the length of the removal, and the record
 /// is the one thing the board can rebuild it from — so a delete the store
 /// refuses puts the run back where the decide phase took it from, answers

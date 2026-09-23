@@ -15,7 +15,8 @@ const on = (deviceId, project) => ({ ...project, deviceId, projectKey: `${device
 const keys = (entries) => entries.map((entry) => entry.key);
 
 /** One workspace row as the rail hands it to the model. */
-const entry = (id, projectId, project, unreadCount = 0) => ({
+const entry = (id, projectId, project, unreadCount = 0, over = {}) => ({
+  kind: "workspace",
   key: `workspace:dev-1/${id}`,
   workspaceId: id,
   workspaceKey: `dev-1/${id}`,
@@ -25,9 +26,59 @@ const entry = (id, projectId, project, unreadCount = 0) => ({
   project,
   unreadCount,
   route: { name: "workspace", deviceId: "dev-1", projectId, workspaceId: id, tab: "changes" },
+  ...over,
 });
 
 describe("workspace project blocks", () => {
+  it("orders blocks by bridge project summaries, then rows within each project", () => {
+    const hour = 60 * 60 * 1000;
+    const session = (start, last = start) => ({ session_started_ms: start * hour, last_activity_ms: last * hour });
+    const projects = [
+      { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Zulu", ...session(10, 20) },
+      { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Alpha", ...session(25) },
+    ];
+    const rows = [
+      entry("late", "p1", "Zulu", 0, { anchorMs: 20 * hour, lastActivityMs: 20 * hour }),
+      entry("early", "p1", "Zulu", 0, { anchorMs: 10 * hour, lastActivityMs: 10 * hour }),
+      entry("other", "p2", "Alpha", 0, { anchorMs: 25 * hour, lastActivityMs: 25 * hour }),
+    ];
+    const { blocks } = workspaceProjectBlocks(rows, projects, [], null, 30 * hour);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1", "dev-1/p2"]);
+    expect(blocks[0].entries.map((row) => row.workspaceId)).toEqual(["early", "late"]);
+    expect(blocks[0].anchorMs).toBe(10 * hour);
+  });
+
+  it("puts an aged project block in Recent while a fresh project agent keeps another live", () => {
+    const hour = 60 * 60 * 1000;
+    const session = (time) => ({ session_started_ms: time * hour, last_activity_ms: time * hour });
+    const projects = [
+      { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Fresh", ...session(40) },
+      { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Old", ...session(20) },
+    ];
+    const rows = [
+      entry("old-in-fresh", "p1", "Fresh", 0, { anchorMs: 10 * hour, lastActivityMs: 10 * hour }),
+      entry("old", "p2", "Old", 0, { anchorMs: 20 * hour, lastActivityMs: 20 * hour }),
+    ];
+    const { blocks, recentBlocks } = workspaceProjectBlocks(rows, projects, [], null, 50 * hour);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1"]);
+    expect(blocks[0].recent.map((row) => row.workspaceId)).toEqual(["old-in-fresh"]);
+    expect(recentBlocks.map((block) => block.projectKey)).toEqual(["dev-1/p2"]);
+  });
+
+  it("uses finished-workspace activity in the bridge project summary", () => {
+    const recent = 200;
+    const project = { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Done work",
+      session_started_ms: recent, last_activity_ms: recent };
+    // The bridge counted a finished workspace, which no longer has an inbox
+    // row. The project summary alone keeps its block in the active section.
+    const visibleRows = [];
+    const { blocks, recentBlocks } = workspaceProjectBlocks(visibleRows, [project], [], null, recent + 24 * 60 * 60 * 1000);
+    expect(blocks[0].anchorMs).toBe(recent);
+    expect(recentBlocks).toEqual([]);
+    const aged = workspaceProjectBlocks(visibleRows, [project], [], null, recent + 24 * 60 * 60 * 1000 + 1);
+    expect(aged.recentBlocks[0].anchorMs).toBe(recent);
+  });
+
   // A workspace and a project each belong to one machine, so both are grouped
   // and marked by their account-wide names, never by the bare ids a bridge
   // minted: two machines each hold a `proj-1`.

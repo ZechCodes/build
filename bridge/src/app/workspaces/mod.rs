@@ -271,6 +271,15 @@ impl AppState {
                     // under it without asking for the row.
                     let owner = self.workspace_conversation_owner(workspace);
                     let mut value = workspace_json(workspace);
+                    let summary = owner
+                        .as_deref()
+                        .map(|id| self.session_summary(id))
+                        .unwrap_or_default();
+                    value["session_started_ms"] = json!(summary.session_started_ms);
+                    value["last_activity_ms"] = json!(summary.last_activity_ms);
+                    value["conversations"] = json!(owner.as_deref()
+                        .map(|id| self.conversation_activity_rows(id))
+                        .unwrap_or_default());
                     value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
                     value
                 })
@@ -305,6 +314,16 @@ impl AppState {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
         let mut value = workspace_json(&workspace);
+        let summary = owner
+            .as_deref()
+            .map(|id| self.session_summary(id))
+            .unwrap_or_default();
+        value["session_started_ms"] = json!(summary.session_started_ms);
+        value["last_activity_ms"] = json!(summary.last_activity_ms);
+        value["conversations"] = json!(owner
+            .as_deref()
+            .map(|id| self.conversation_activity_rows(id))
+            .unwrap_or_default());
         let Some(run_id) = owner else {
             if let Some(agent_id) = params.get("agent_id").and_then(Value::as_str) {
                 return Err(format!("unknown agent_id: {agent_id}"));
@@ -366,6 +385,23 @@ impl AppState {
             .into_iter()
             .find(|workspace| {
                 self.workspace_conversation_owner(workspace).as_deref() == Some(entity_id)
+            })
+            .map(|workspace| workspace.id.clone())
+    }
+
+    /// A run about to lose its durable record must not leave an existing
+    /// workspace with a conversation id that can no longer be replayed. The
+    /// ordinary owner lookup deliberately ignores terminal runs in its path
+    /// fallback; deletion still needs to recognize one on that root.
+    pub(in crate::app) fn surviving_workspace_of_run(&self, run_id: &str) -> Option<String> {
+        let active = self.runs.get(run_id)?;
+        let project_id = self.projects.project_id_of(run_id)?;
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .find(|workspace| {
+                workspace.project_id == project_id
+                    && (workspace.id == run_id || same_path(&workspace.root, &active.worktree.path))
             })
             .map(|workspace| workspace.id.clone())
     }

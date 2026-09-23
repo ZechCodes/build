@@ -1410,6 +1410,27 @@ impl AppState {
             .collect()
     }
 
+    /// Conversation identities for rail navigation; inbox sessions live on
+    /// workspace and project rows, pooling messages from all their agents.
+    pub(in crate::app) fn conversation_activity_rows(&self, entity_id: &str) -> Vec<Value> {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        roster
+            .iter()
+            .filter_map(|agent| {
+                let conversation_id = agent.conversation_id();
+                if !seen.insert(conversation_id.to_string()) {
+                    return None;
+                }
+                Some(json!({
+                    "conversation_id": conversation_id,
+                }))
+            })
+            .collect()
+    }
+
     /// One bubble: who the agent is, what it runs on, whether it is live, and
     /// how much of its conversation is waiting for the human.
     ///

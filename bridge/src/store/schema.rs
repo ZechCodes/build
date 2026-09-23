@@ -38,6 +38,26 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 CREATE INDEX IF NOT EXISTS agents_by_owner ON agents(owner_id, ordinal);
 
+-- User/agent message times from a workspace removed by Done. Its run and
+-- conversation are intentionally deleted, but the project's inbox session
+-- must still include those messages after a bridge restart.
+CREATE TABLE IF NOT EXISTS inbox_retained_messages (
+    project_id TEXT NOT NULL,
+    ts_ms      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inbox_retained_by_project
+    ON inbox_retained_messages(project_id, ts_ms);
+
+-- Message times from removed agents on a still-live run. The conversation
+-- goes away with the agent, but its activity still belongs to the workspace
+-- and project session until the run itself is removed.
+CREATE TABLE IF NOT EXISTS inbox_retained_run_messages (
+    run_id TEXT NOT NULL,
+    ts_ms  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS inbox_retained_by_run
+    ON inbox_retained_run_messages(run_id, ts_ms);
+
 -- One conversation item. `sequence` orders the conversation and
 -- `updated_sequence` carries an in-place mutation (seen, resolved), which is
 -- what the client cursor compares against — so both are columns rather than

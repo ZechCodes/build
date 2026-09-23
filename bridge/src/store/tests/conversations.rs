@@ -29,6 +29,146 @@ fn a_runs_conversation_survives_a_store_reopen() {
     );
 }
 
+#[test]
+fn message_index_rebuilds_sessions_beyond_the_resident_tail_in_timestamp_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    let agent_id = record.agents[0].id.clone();
+    for day in 1..=10 {
+        record.agents[0].thread.post_user(
+            format!("day {day}"),
+            None,
+            format!("2026-09-{day:02}T00:00:00Z"),
+        );
+    }
+    for _ in 0..=RESIDENT_CONVERSATION_TAIL {
+        record.agents[0].thread.push_event(
+            crate::thread::ThreadEventKind::ToolUse,
+            None,
+            None,
+            None,
+            "2026-09-11T00:00:00Z",
+        );
+    }
+    store.save_run(&record).unwrap();
+    let loaded = reload_run(&Store::new(dir.path().join("tasks")).unwrap(), "run-1");
+    let thread = &loaded.agents[0].thread;
+    assert!(thread
+        .items
+        .iter()
+        .all(|item| !matches!(item, ThreadItem::Message(_))));
+    let times = store.session_message_times().unwrap();
+    assert_eq!(times.len(), 10);
+    assert!(times
+        .iter()
+        .all(|row| row.0.as_deref() == Some("run-1") && row.2 == agent_id));
+    assert!(times.windows(2).all(|pair| pair[0].4 <= pair[1].4));
+}
+
+#[test]
+fn deleted_workspace_message_times_survive_reopen_for_project_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    let mut record = run_record("run-finished", None, NOW);
+    record.agents[0]
+        .thread
+        .post_user("first", None, "2026-09-01T00:00:00Z");
+    record.agents[0]
+        .thread
+        .post_agent("later", None, "2026-09-02T00:00:00Z");
+    store.save_run(&record).unwrap();
+    store
+        .delete_run_retaining_inbox_messages("run-finished", "proj-1")
+        .unwrap();
+    let reopened = Store::new(&root).unwrap();
+    assert!(reopened.load_all_runs().unwrap().is_empty());
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times
+        .iter()
+        .all(|row| row.0.is_none() && row.1.as_deref() == Some("proj-1")));
+    assert!(times[0].4 < times[1].4);
+}
+
+#[test]
+fn removed_agent_times_survive_reopen_and_transfer_to_finished_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    let mut roster = AgentRoster::restore(
+        "run-1",
+        record.agents.clone(),
+        Default::default(),
+        ModelChoice::default(),
+        NOW,
+    );
+    let removed = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+    roster
+        .by_id_mut(&removed)
+        .unwrap()
+        .thread
+        .post_user("early", None, "2026-09-01T00:00:00Z");
+    record.agents = roster.agents().to_vec();
+    store.save_run(&record).unwrap();
+    roster.remove(&removed).unwrap();
+    record.agents = roster.agents().to_vec();
+    store.save_run(&record).unwrap();
+
+    let reopened = Store::new(&root).unwrap();
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 1);
+    assert_eq!(times[0].0.as_deref(), Some("run-1"));
+    assert_eq!(
+        times[0].4,
+        crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap()
+    );
+
+    reopened
+        .delete_run_retaining_inbox_messages("run-1", "proj-1")
+        .unwrap();
+    let times = Store::new(&root).unwrap().session_message_times().unwrap();
+    assert_eq!(times.len(), 1);
+    assert_eq!(times[0].0, None);
+    assert_eq!(times[0].1.as_deref(), Some("proj-1"));
+}
+
+#[test]
+fn project_history_survives_each_run_delete_until_explicit_project_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    for (run_id, at) in [
+        ("run-a", "2026-09-01T00:00:00Z"),
+        ("run-b", "2026-09-01T08:00:00Z"),
+    ] {
+        let mut run = run_record(run_id, None, NOW);
+        run.agents[0].thread.post_user("activity", None, at);
+        store.save_run(&run).unwrap();
+    }
+    store
+        .delete_run_retaining_inbox_messages("run-a", "proj-1")
+        .unwrap();
+    let reopened = Store::new(&root).unwrap();
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times.iter().any(|row| row.1.as_deref() == Some("proj-1")));
+    reopened
+        .delete_run_retaining_inbox_messages("run-b", "proj-1")
+        .unwrap();
+    let times = Store::new(&root).unwrap().session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times.iter().all(|row| row.1.as_deref() == Some("proj-1")));
+    reopened.clear_retained_project_messages("proj-1").unwrap();
+    assert!(Store::new(&root)
+        .unwrap()
+        .session_message_times()
+        .unwrap()
+        .is_empty());
+}
+
 /// Appending one message writes ONE row. This is the whole reason the store
 /// changed: the JSON records it replaced rewrote every conversation on the
 /// Issue for every append, and a store that upserted all N items per save

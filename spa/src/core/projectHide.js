@@ -22,7 +22,7 @@
 // memory would bring it back on the next reload.
 
 import { projectEntityIds, rowsWithoutProject, withoutProject } from "./feedMerge.js";
-import { evictEntity, readCachedMany, writeCached } from "./localCache.js";
+import { evictEntity, mergeCachedAtomically, readCachedMany, writeCached } from "./localCache.js";
 import { dropFeedProject } from "./taskFeed.js";
 
 /** The three records a device's board is cached in — the same addresses the
@@ -85,7 +85,10 @@ export async function hideProject({ deviceId, projectKey }) {
   // again between the two halves of its own removal.
   for (const [index, kind] of RECORDS.entries()) {
     const held = records[index];
-    if (held) await writeCached(recordAddress(deviceId, kind), withoutProjectIn(kind, held.value, projectKey));
+    if (!held) continue;
+    const address = recordAddress(deviceId, kind);
+    if (kind === "feed") await writeCached(address, withoutProjectIn(kind, held.value, projectKey));
+    else await mergeCachedAtomically(address, (current) => current && withoutProjectIn(kind, current, projectKey));
   }
   for (const entityId of entitiesOf(views, projectKey)) {
     await evictEntity(deviceId, entityId);

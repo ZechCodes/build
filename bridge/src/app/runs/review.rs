@@ -362,6 +362,13 @@ impl AppState {
         } else {
             MergeCleanup::Prune
         };
+        if cleanup == MergeCleanup::Release {
+            if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
+                return Err(format!(
+                    "run.git_action: {run_id} owns workspace {workspace_id}; delete the workspace instead of release cleanup"
+                ));
+            }
+        }
         let mut active = self.take_run(&run_id)?;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
 
@@ -537,8 +544,9 @@ impl AppState {
                     return;
                 }
                 if let Some(store) = &self.store {
-                    if let Err(e) = store.delete_run(run_id) {
+                    if let Err(e) = store.delete_run_retaining_inbox_messages(run_id, project_id) {
                         eprintln!("merge cleanup release {run_id}: run store: {e}");
+                        return;
                     }
                 }
                 self.runs.remove(run_id);

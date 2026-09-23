@@ -501,9 +501,29 @@ impl AppState {
                     Some((since, items)) => (Some(since), items),
                     None => (None, Vec::new()),
                 };
+                let project_id = self.projects.project_id_of(entity_id).map(str::to_owned);
+                let workspace_id = if self.is_project_conversation_owner(entity_id) {
+                    None
+                } else {
+                    self.workspaces
+                        .list(project_id.as_deref())
+                        .into_iter()
+                        .find(|workspace| {
+                            self.workspace_conversation_owner(workspace).as_deref()
+                                == Some(entity_id)
+                        })
+                        .map(|workspace| workspace.id.clone())
+                };
                 ThreadTip {
                     agent_id: agent.id.clone(),
+                    conversation_id: Some(agent.conversation_id().to_string()),
                     last_sequence: thread.last_sequence(),
+                    workspace_session: workspace_id
+                        .as_deref()
+                        .map(|_| self.session_summary(entity_id)),
+                    project_session: project_id.as_deref().map(|id| self.session_summary(id)),
+                    workspace_id,
+                    project_id,
                     items,
                     since_sequence,
                 }

@@ -235,7 +235,13 @@ impl LifecycleSettlement<()> for DeleteSettlement {
             return Err(error);
         }
         if let Some(store) = &state.store {
-            if let Err(error) = store.delete_run(&self.run_id) {
+            let deletion = match self.project_id.as_deref() {
+                Some(project_id) => {
+                    store.delete_run_retaining_inbox_messages(&self.run_id, project_id)
+                }
+                None => store.delete_run(&self.run_id),
+            };
+            if let Err(error) = deletion {
                 state.runs.insert(self.run_id, *self.active);
                 return Err(format!("run store: {error}"));
             }

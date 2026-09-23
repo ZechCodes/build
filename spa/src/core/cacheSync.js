@@ -34,6 +34,7 @@ import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
+import { replaceSessionList, updateSessionSummary } from "./sessionListCache.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -306,8 +307,8 @@ async function readLists(context) {
 
 async function writeLists(context, view) {
   await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
-  await writeCached(addressOf(context, "", "projects"), view.projects);
-  await writeCached(addressOf(context, "", "workspaces"), view.workspaces);
+  await writeSessionList(context, "projects", view.projects);
+  await writeSessionList(context, "workspaces", view.workspaces);
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
     if (!entityId) continue;
@@ -949,6 +950,14 @@ async function refollowRoute(deviceId) {
 
 const BOARD_ENTITY = "board";
 
+const validSession = (record) => Number.isSafeInteger(record?.session_started_ms)
+  && Number.isSafeInteger(record?.last_activity_ms)
+  && record.session_started_ms <= record.last_activity_ms;
+
+async function writeSessionList(context, kind, incoming) {
+  await replaceSessionList(addressOf(context, "", kind), kind, incoming);
+}
+
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context || !holdingLock) return;
@@ -981,10 +990,7 @@ async function applyBoard(context, state) {
   const removed = (state.removed || []).map((entityId) => String(entityId)).filter(Boolean);
   if (removed.length) await dropRemovedRows(context, removed);
   if (state.projects) {
-    await writeCached(
-      addressOf(context, "", "projects"),
-      state.projects.map((project) => stampProject(project, context.deviceId)),
-    );
+    await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
   if (state.workspaces) {
     // A row that names its own verdict — a list a git flush re-sent, with the
@@ -992,11 +998,8 @@ async function applyBoard(context, state) {
     // (a list that moved because a workspace came or went) keeps the verdict
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
-    await writeCached(
-      addressOf(context, "", "workspaces"),
-      state.workspaces.map((workspace) =>
-        stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])),
-    );
+    await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
+      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
   }
 }
 
@@ -1083,9 +1086,22 @@ const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Numbe
 const tipRunsOnFromRecord = (tip, held) =>
   Number(tip.since_sequence || 0) <= Number(held.deliveredSequence || 0);
 
+/** A thread tip carries the summaries changed by its message. Project agent
+ * tips update only the project; workspace tips update both owning records. */
+async function applySessionTip(context, tip) {
+  for (const [kind, id, session] of [
+    ["workspaces", tip.workspace_id, tip.workspace_session],
+    ["projects", tip.project_id, tip.project_session],
+  ]) {
+    if (!id || !validSession(session)) continue;
+    await updateSessionSummary(addressOf(context, "", kind), kind, id, session);
+  }
+}
+
 async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
+  await applySessionTip(context, tip);
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!tipIsNews(tip, held)) return;
@@ -1098,7 +1114,9 @@ async function applyThreadTip(context, entityId, tip) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;
   }
-  await mergeCached(address, (current) => threadWindow(current, { items, thread_total: tip.thread_total }));
+  await mergeCached(address, (current) => threadWindow(current, {
+    items, thread_total: tip.thread_total,
+  }));
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things

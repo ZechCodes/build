@@ -494,7 +494,20 @@ pub struct FactsRequest {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ThreadTip {
     pub agent_id: String,
+    /// Canonical conversation identity, which can differ from `agent_id`
+    /// when an implementation agent continues an issue agent's conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
     pub last_sequence: u64,
+    /// The inbox row this conversation belongs to, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_session: Option<crate::session_summary::SessionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_session: Option<crate::session_summary::SessionSummary>,
     /// The conversation items after [`since_sequence`](Self::since_sequence),
     /// in the order they happened.
     #[serde(default)]
@@ -3174,6 +3187,7 @@ mod subscriptions {
                         last_sequence: 812,
                         items,
                         since_sequence: since,
+                        ..ThreadTip::default()
                     }],
                     ..EntityFacts::default()
                 }]
@@ -3248,6 +3262,7 @@ mod subscriptions {
                             last_sequence: 5,
                             items: Vec::new(),
                             since_sequence: since,
+                            ..ThreadTip::default()
                         }],
                         ..EntityFacts::default()
                     }
@@ -3433,6 +3448,7 @@ mod subscriptions {
                             .iter()
                             .find(|(agent, _)| agent == "a1")
                             .map(|(_, sequence)| *sequence),
+                        ..ThreadTip::default()
                     }],
                     ..EntityFacts::default()
                 }]

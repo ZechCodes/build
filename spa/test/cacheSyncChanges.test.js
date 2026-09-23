@@ -492,6 +492,59 @@ describe("applying one item", () => {
     expect(calls("thread.page")).toEqual([]);
   });
 
+  it("keeps cached workspace and project summaries monotonic across tips and lists", async () => {
+    const old = { session_started_ms: 100, last_activity_ms: 200 };
+    const fresh = { session_started_ms: 50_000_000, last_activity_ms: 50_000_000 };
+    script["workspace.list"] = () => ({ workspaces: [{
+      id: "workspace-1", project_id: "p1", entity_id: "run-1",
+      ...old,
+    }] });
+    script["project.list"] = () => ({ projects: [{
+      project_id: "p1", name: "build",
+      ...old,
+    }] });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "conv-1" }, {
+      items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1,
+    });
+    board = [branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-1" }] })];
+    sync.startCacheSync();
+    await vi.waitFor(async () => {
+      expect((await read("", "workspaces"))?.value?.[0]?.last_activity_ms).toBe(200);
+      expect(subscription("s-inbox")).not.toBeNull();
+    });
+    subscription("s-inbox").onChanges([{ entity_id: "run-1", thread: [{
+      agent_id: "ag-1", conversation_id: "conv-1", last_sequence: 2, since_sequence: 1,
+      workspace_id: "workspace-1", project_id: "p1",
+      workspace_session: fresh, project_session: fresh,
+      items: [{ id: "m-2", data: { sequence: 2 } }],
+    }] }]);
+    await vi.waitFor(async () => {
+      const workspaces = (await read("", "workspaces")).value;
+      const projects = (await read("", "projects")).value;
+      const thread = (await read("run-1", "thread", "conv-1")).value;
+      expect(workspaces[0]).toMatchObject(fresh);
+      expect(projects[0]).toMatchObject(fresh);
+      expect(thread.deliveredSequence).toBe(2);
+    });
+
+    // An old tip can arrive after a newer one. Its summary must not regress
+    // even if its thread cursor makes it a duplicate.
+    subscription("s-inbox").onChanges([{ entity_id: "run-1", thread: [{
+      agent_id: "ag-1", conversation_id: "conv-1", last_sequence: 1, since_sequence: 0,
+      workspace_id: "workspace-1", project_id: "p1",
+      workspace_session: old, project_session: old,
+      items: [{ id: "m-1", data: { sequence: 1 } }],
+    }] }]);
+    subscription("s-inbox").onChanges([{ entity_id: "board", state: {
+      projects: [{ project_id: "p1", name: "old again", ...old }],
+      workspaces: [{ id: "workspace-1", project_id: "p1", entity_id: "run-1", ...old }],
+    } }]);
+    await vi.waitFor(async () => {
+      expect((await read("", "workspaces"))?.value?.[0]).toMatchObject(fresh);
+      expect((await read("", "projects"))?.value?.[0]).toMatchObject({ name: "old again", ...fresh });
+    });
+  });
+
   // A message sent from this tab stands in the record until the conversation
   // carries it. The push that carries it is what takes the stand-in away —
   // nobody should see their own message twice, once queued and once sent.

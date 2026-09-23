@@ -19,6 +19,7 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
+import { upsertSessionRow } from "../core/sessionListCache.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { mountWorkspaceIssuesTab } from "../core/workspaceIssuesTab.js";
 import { issueContextItem } from "../core/trackerViewingContext.js";
@@ -77,14 +78,7 @@ const gitOptionsAddress = (state, sourceId) =>
 async function writeWorkspaceResult(state, workspace) {
   const address = workspaceListAddress(state);
   if (!address || !workspace) return;
-  await mergeCached(address, (held) => {
-    if (!routeHoldsWorkspace(state)) return null;
-    const rows = Array.isArray(held) ? held : [];
-    const id = workspace.workspace_id || workspace.id;
-    const present = rows.some((row) => (row.workspace_id || row.id) === id);
-    const next = rows.map((row) => (row.workspace_id || row.id) === id ? { ...row, ...workspace } : row);
-    return present ? next : [...next, workspace];
-  });
+  await upsertSessionRow(address, "workspaces", workspace, () => routeHoldsWorkspace(state));
   await state.workspaceRead;
 }
 

@@ -80,6 +80,10 @@ export async function mergeCached(address, merge) {
   await writeCached(address, merged);
 }
 
+// A Map read and write run synchronously in this double. IndexedDB's version
+// keeps those steps in one readwrite transaction across browser tabs.
+export const mergeCachedAtomically = mergeCached;
+
 export async function evictEntity(deviceId, entityId) {
   for (const key of keysUnder({ deviceId, entityId })) records.delete(key);
   announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);

@@ -200,9 +200,11 @@ impl AppState {
             .collect();
         for id in run_ids {
             if let Some(store) = &self.store {
-                store.delete_run(&id).map_err(|error| {
-                    format!("delete project run: {error}; retry project deletion")
-                })?;
+                store
+                    .delete_run_retaining_inbox_messages(&id, project_id)
+                    .map_err(|error| {
+                        format!("delete project run: {error}; retry project deletion")
+                    })?;
             }
             self.runs.remove(&id);
             self.forget_run(&id);
@@ -243,6 +245,13 @@ impl AppState {
             .expect("project config array")
             .retain(|entry| entry["id"].as_str() != Some(project_id));
         self.persist_config(&config)?;
+        if let Some(store) = &self.store {
+            store
+                .clear_retained_project_messages(project_id)
+                .map_err(|error| {
+                    format!("delete project history: {error}; retry project deletion")
+                })?;
+        }
         self.workspaces.forget_project(project_id);
         self.projects.remove(project_id);
         self.board.diff_mut().remove_project(project_id);

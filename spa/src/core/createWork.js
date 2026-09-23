@@ -13,7 +13,7 @@ import { isolationOptionsHtml } from "./isolation.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { workspaceRoute } from "./projectModel.js";
 import { stampWorkspace } from "./feedMerge.js";
-import { readCached, writeCached } from "./localCache.js";
+import { upsertSessionRow } from "./sessionListCache.js";
 import { esc } from "./text.js";
 
 export const CREATE_KINDS = ["workspace"];
@@ -44,9 +44,8 @@ function createdWorkspaceRoute(answer) {
 export async function cacheCreatedWorkspace(deviceId, answer) {
   const workspace = answer?.workspace || answer;
   const address = { deviceId, entityId: "", kind: "workspaces" };
-  const held = (await readCached(address))?.value || [];
   const stamped = stampWorkspace(workspace, deviceId);
-  await writeCached(address, [...held.filter((entry) => entry.id !== stamped.id), stamped]);
+  await upsertSessionRow(address, "workspaces", stamped);
 }
 
 export function createWorkBodyHtml(state) {

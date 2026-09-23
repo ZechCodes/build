@@ -464,6 +464,57 @@ pub(super) fn stored_conversation_summary(
     Ok(summary)
 }
 
+type SessionMessageTime = (Option<String>, Option<String>, String, u64, i64);
+
+impl Store {
+    /// Every user/agent message timestamp and its stored owner. The partial
+    /// message index excludes tool/event rows before JSON is touched. Sorting
+    /// parsed milliseconds in Rust handles valid RFC 3339 offsets correctly.
+    pub fn session_message_times(&self) -> Result<Vec<SessionMessageTime>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(
+            "SELECT a.owner_id, t.agent_id, t.sequence, json_extract(t.item, '$.data.created_at') \
+             FROM thread_items t JOIN agents a ON a.id = t.agent_id \
+             WHERE t.message = 1 AND COALESCE(json_extract(t.item, '$.data.from_build'), 0) = 0",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut messages = Vec::new();
+        while let Some(row) = rows.next()? {
+            let at: Option<String> = row.get(3)?;
+            if let Some(ts) = at
+                .as_deref()
+                .and_then(crate::session_summary::message_millis)
+            {
+                let sequence: i64 = row.get(2)?;
+                messages.push((Some(row.get(0)?), None, row.get(1)?, sequence as u64, ts));
+            }
+        }
+        drop(rows);
+        drop(statement);
+        let mut retained_runs =
+            connection.prepare("SELECT run_id, ts_ms FROM inbox_retained_run_messages")?;
+        let run_rows = retained_runs.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in run_rows {
+            let (run_id, ts) = row?;
+            messages.push((Some(run_id), None, String::new(), 0, ts));
+        }
+        drop(retained_runs);
+        let mut retained =
+            connection.prepare("SELECT project_id, ts_ms FROM inbox_retained_messages")?;
+        let retained_rows = retained.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in retained_rows {
+            let (project_id, ts) = row?;
+            messages.push((None, Some(project_id), String::new(), 0, ts));
+        }
+        messages.sort_by_key(|row| row.4);
+        Ok(messages)
+    }
+}
+
 /// Turn stored item TEXT into conversation items, naming the conversation in
 /// the error so a corrupt row says which agent's history stopped parsing.
 ///

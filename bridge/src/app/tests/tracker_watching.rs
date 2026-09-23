@@ -280,7 +280,7 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "unread", None);
+    let id = agent_files(&mut state, &who, "unread", Some(true));
     for body in ["one", "two"] {
         state
             .on_agent_mcp_action(
@@ -380,7 +380,7 @@ fn dismissing_clears_the_row_until_the_next_event() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "done with this", None);
+    let id = agent_files(&mut state, &who, "done with this", Some(true));
     assert_eq!(row_for(&mut state, &id)["done_until_next"], false);
 
     let cleared = state.handle(req("issues.dismiss", json!({ "issue_id": id })));
@@ -422,7 +422,7 @@ fn an_inbox_row_says_what_last_happened_in_the_readers_voice() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "Kanban drag does not persist", None);
+    let id = agent_files(&mut state, &who, "Kanban drag does not persist", Some(true));
     state
         .on_agent_mcp_action(
             &who.0,

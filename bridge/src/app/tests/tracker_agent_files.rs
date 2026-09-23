@@ -508,3 +508,31 @@ fn one_bad_file_refuses_the_call_before_any_is_copied() {
         .unwrap_err();
     assert_eq!(store_leaves(&scene.state), before, "nothing was copied");
 }
+
+/// What is stored is exactly the bytes that were checked. The agent's file is
+/// rewritten in place — the same inode, so the open handle sees it — between
+/// the check and the copy; the issue still gets the picture that passed.
+#[test]
+fn a_file_rewritten_between_the_check_and_the_copy_stores_what_was_checked() {
+    for rewrite in [&b""[..], &b"MZ\x90\x00 not a picture any more"[..]] {
+        let mut scene = scene();
+        let shot = scene.made("board.png", PNG);
+        let target = shot.clone();
+        crate::app::tracker::between_check_and_copy::set(move || {
+            // Truncate and rewrite through the same inode, never a new file.
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&target)
+                .unwrap();
+            std::io::Write::write_all(&mut file, rewrite).unwrap();
+        });
+
+        let said = scene.comment(vec![json!({ "path": shot })]).unwrap();
+        let files = &said["comment"]["attachments"];
+        assert_eq!(files[0]["size"], PNG.len(), "{said:?}");
+        assert_eq!(files[0]["mime"], "image/png");
+        let path = files[0]["path"].clone();
+        assert_eq!(scene.bytes_of(&path), PNG.to_vec());
+    }
+}

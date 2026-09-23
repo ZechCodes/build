@@ -26,6 +26,8 @@ mod tools;
 mod tracking;
 mod views;
 
+#[cfg(test)]
+pub(in crate::app) use agent_files::between_check_and_copy;
 pub use agent_files::AGENT_ATTACHMENT_MAX_BYTES;
 pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 

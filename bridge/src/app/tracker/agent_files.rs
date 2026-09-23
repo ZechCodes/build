@@ -17,6 +17,9 @@
 //!   everything after that asks the open handle: a path swapped for a link or
 //!   a FIFO between a look and a read has nothing to swap, and a FIFO named
 //!   `run.log` is refused rather than waited on.
+//! - It is read once. The bytes read are the bytes checked and the bytes
+//!   stored: a handle does not freeze a file another writer truncates or
+//!   rewrites in place, so the copy never goes back to it.
 //! - Media is what its bytes say it is, not what its name says; text is UTF-8.
 //! - Every file of a call is opened and checked before any is copied, so a
 //!   refused call leaves the store as it found it.
@@ -32,7 +35,7 @@ use crate::app::conversations::{
 use crate::app::sha256_hex;
 use serde_json::{json, Value};
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
 use std::path::Path;
 
 /// The largest file an agent may attach. Recordings are the reason it is well
@@ -43,9 +46,6 @@ pub const AGENT_ATTACHMENT_MAX_BYTES: u64 = 50 * 1_048_576;
 /// What a text file may be typed as. HTML and SVG are text too, and are left
 /// out on purpose: a file an issue carries is never markup a reader renders.
 const TEXT_MIMES: [&str; 3] = ["text/plain", "text/markdown", "application/json"];
-
-/// How many leading bytes the media sniff reads.
-const MAGIC_BYTES: usize = 16;
 
 /// One media kind: the extensions that claim it, what to call it in a
 /// refusal, and the bytes that prove it.
@@ -93,11 +93,12 @@ const MEDIA: [Media; 6] = [
 enum Intake {
     /// Already an attachment: handed on as it came.
     PassThrough(Value),
-    /// A file the agent made, open and checked, waiting to be copied.
+    /// A file the agent made, read and checked, waiting to be stored: the
+    /// bytes here are the ones that passed.
     Copy {
         entry: Value,
         path: String,
-        file: File,
+        content: Vec<u8>,
     },
 }
 
@@ -107,7 +108,8 @@ impl AppState {
     /// what `parse_issue_attachments` reads, the same as a client's list.
     ///
     /// All or nothing: the count, and every file's type, size and contents,
-    /// are checked before the first copy is written.
+    /// are checked before the first copy is written. A call holds at most ten
+    /// files of at most 50 MB each in memory until they are stored.
     pub(in crate::app) fn take_in_agent_files(
         &self,
         listed: &[Value],
@@ -121,6 +123,8 @@ impl AppState {
             .iter()
             .map(|entry| self.check_agent_file(entry))
             .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(test)]
+        between_check_and_copy::run();
         checked
             .into_iter()
             .map(|intake| self.copy_in(intake))
@@ -146,7 +150,7 @@ impl AppState {
         Ok(Intake::Copy {
             entry: entry.clone(),
             path: path.to_string(),
-            file: checked_agent_file(path)?,
+            content: checked_agent_file(path)?,
         })
     }
 
@@ -163,20 +167,19 @@ impl AppState {
     fn copy_in(&self, intake: Intake) -> Result<Value, String> {
         match intake {
             Intake::PassThrough(entry) => Ok(entry),
-            Intake::Copy { entry, path, file } => self.copy_file_in(entry, &path, file),
+            Intake::Copy {
+                entry,
+                path,
+                content,
+            } => self.store_file(entry, &path, &content),
         }
     }
 
-    fn copy_file_in(&self, entry: Value, path: &str, mut file: File) -> Result<Value, String> {
-        let content = read_from_start(&mut file).map_err(|_| cannot_be_read(path))?;
-        if content.len() as u64 > AGENT_ATTACHMENT_MAX_BYTES {
-            // It grew between the check and the copy.
-            return Err(over_the_cap());
-        }
+    fn store_file(&self, entry: Value, path: &str, content: &[u8]) -> Result<Value, String> {
         let leaf = sanitize_attachment_name(path);
-        let stored = format!("{}-{leaf}", &sha256_hex(&content)[..12]);
+        let stored = format!("{}-{leaf}", &sha256_hex(content)[..12]);
         let home = self.local_attachments_dir();
-        write_attachment(&home, &stored, &content)?;
+        write_attachment(&home, &stored, content)?;
         let mut taken = entry.clone();
         taken["path"] = json!(home.join(&stored).display().to_string());
         let named = entry
@@ -190,9 +193,10 @@ impl AppState {
     }
 }
 
-/// Open the file an agent named and check it from the handle: a regular file,
-/// within the cap, not empty, and what it claims to be.
-fn checked_agent_file(path: &str) -> Result<File, String> {
+/// Open the file an agent named, check its type from the handle, and read it
+/// once: the bytes answered are within the cap, not empty, and what the file
+/// claims to be. They are what is stored.
+fn checked_agent_file(path: &str) -> Result<Vec<u8>, String> {
     let source = Path::new(path);
     let mut file = open_without_following(source).map_err(|error| unopenable(path, &error))?;
     let metadata = file.metadata().map_err(|_| cannot_be_read(path))?;
@@ -207,20 +211,26 @@ fn checked_agent_file(path: &str) -> Result<File, String> {
         ));
     }
     if metadata.len() > AGENT_ATTACHMENT_MAX_BYTES {
+        // Refused before reading a byte of it.
         return Err(over_the_cap());
     }
-    if metadata.len() == 0 {
+    let content = read_capped(&mut file).map_err(|_| cannot_be_read(path))?;
+    // The length the handle reported is only a hint: the file may have
+    // changed since, so the bytes in hand are what is measured.
+    if content.len() as u64 > AGENT_ATTACHMENT_MAX_BYTES {
+        return Err(over_the_cap());
+    }
+    if content.is_empty() {
         return Err(format!("Build cannot attach {path}: it is empty."));
     }
-    check_contents(path, source, &mut file)?;
-    Ok(file)
+    check_contents(path, source, &content)?;
+    Ok(content)
 }
 
 /// Media by its magic bytes, anything else as UTF-8 text.
-fn check_contents(path: &str, source: &Path, file: &mut File) -> Result<(), String> {
+fn check_contents(path: &str, source: &Path, content: &[u8]) -> Result<(), String> {
     if let Some(media) = media_named(source) {
-        let head = read_head(file).map_err(|_| cannot_be_read(path))?;
-        return if (media.is)(&head) {
+        return if (media.is)(content) {
             Ok(())
         } else {
             Err(format!(
@@ -229,11 +239,7 @@ fn check_contents(path: &str, source: &Path, file: &mut File) -> Result<(), Stri
             ))
         };
     }
-    let content = read_from_start(file).map_err(|_| cannot_be_read(path))?;
-    if content.len() as u64 > AGENT_ATTACHMENT_MAX_BYTES {
-        return Err(over_the_cap());
-    }
-    if is_plain_text(source, &content) {
+    if is_plain_text(source, content) {
         return Ok(());
     }
     Err(format!(
@@ -282,21 +288,13 @@ fn unopenable(path: &str, error: &std::io::Error) -> String {
     }
 }
 
-/// The whole file from its first byte, and at most one byte past the cap, so
-/// a file that grows under the read is caught without reading all of it.
-fn read_from_start(file: &mut File) -> std::io::Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(0))?;
+/// The whole file, and at most one byte past the cap, so a file that grows
+/// under the read is caught without reading all of it.
+fn read_capped(file: &mut File) -> std::io::Result<Vec<u8>> {
     let mut content = Vec::new();
     file.take(AGENT_ATTACHMENT_MAX_BYTES + 1)
         .read_to_end(&mut content)?;
     Ok(content)
-}
-
-fn read_head(file: &mut File) -> std::io::Result<Vec<u8>> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut head = Vec::new();
-    file.take(MAGIC_BYTES as u64).read_to_end(&mut head)?;
-    Ok(head)
 }
 
 fn media_named(source: &Path) -> Option<&'static Media> {
@@ -310,4 +308,25 @@ fn is_plain_text(source: &Path, content: &[u8]) -> bool {
     TEXT_MIMES.contains(&mime_hint(source, content))
         && !content.contains(&0)
         && std::str::from_utf8(content).is_ok()
+}
+
+/// A test's hand between the check and the copy: what a writer racing the
+/// intake can do to a file there, a test does there, without timing.
+#[cfg(test)]
+pub(in crate::app) mod between_check_and_copy {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::new(None);
+    }
+
+    pub(in crate::app) fn set(hook: impl FnOnce() + 'static) {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn run() {
+        if let Some(hook) = HOOK.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
 }

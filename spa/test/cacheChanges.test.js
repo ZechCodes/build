@@ -79,7 +79,7 @@ const liveRpc = () =>
 
 describe("the cached first paint", () => {
   it("keeps inline comments from the mounted Git pane across uncommitted and commit views", async () => {
-    const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:comments" };
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:inline-comments" };
     const first = mountPaneNow(liveRpc());
     await vi.waitFor(() => expect(first.container.querySelector(".fcmt")).not.toBeNull());
     first.container.querySelector(".fcmt").click();
@@ -87,6 +87,7 @@ describe("the cached first paint", () => {
     document.querySelector(".cp-input").value = "Keep this inline note";
     document.querySelector(".cp-save").click();
     await vi.waitFor(async () => expect((await cache.readCached(address))?.value.comments).toHaveLength(1));
+    expect(await cache.readCached({ ...address, sub: "changes:comments" })).toBeUndefined();
     first.pane.dispose();
 
     const sendRpc = liveRpc();

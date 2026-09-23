@@ -852,7 +852,9 @@ export function mountGitPane(
           reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
         },
         revisionId,
-        cacheAddressOf: () => cacheAddress("ui-draft", "changes:comments"),
+        // The aggregate review plug has its own pending set at
+        // changes:comments; this layer follows Uncommitted/commit selection.
+        cacheAddressOf: () => cacheAddress("ui-draft", "changes:inline-comments"),
         onChange: () => {
           render();
           renderComposer();

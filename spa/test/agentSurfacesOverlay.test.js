@@ -414,6 +414,7 @@ describe("the agent's goal and observed checklist", () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
     panel().querySelector('[data-surface-kind="checklist"]').click();
+    await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("Run verification"));
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("0/1");
   });
@@ -432,6 +433,7 @@ describe("the agent's goal and observed checklist", () => {
     await mount();
 
     panel().querySelector('[data-surface-kind="checklist"]').click();
+    await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("1 known completed"));
     const context = panel().querySelector(".surface-checklist-context");
     expect(context.textContent).toContain("1 known completed · 3 omitted");
     expect(context.textContent).toContain("Last known");

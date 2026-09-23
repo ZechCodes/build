@@ -364,7 +364,7 @@ describe("the branch surface", () => {
     bridge.call = vi.fn(async () => row);
     App.focusComposerOnMount = true;
     await openBranch();
-    await flush();
+    await vi.waitFor(() => expect(document.getElementById("railinput")).toBe(document.activeElement));
     expect(document.getElementById("railinput")).toBe(document.activeElement);
     expect(App.focusComposerOnMount).toBe(false);
   });

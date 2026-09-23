@@ -45,13 +45,15 @@ import { canAnswer, contextFor } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
 import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { deviceView } from "./feedMerge.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { directoryTab, standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
 
-const SCOPE_KEY = "build.toolbar.project";
+const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
+const MENU_ADDRESS = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
 
 // Every machine's rows: where you are standing, and what the project menu lists.
 let feed = { items: [], projects: [] };
@@ -72,6 +74,14 @@ let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
 let verbRender = null; // (host) => void, the standing view's own verb-slot paint
 let toolbarResizeObserver = null;
+let scopeRecord = null;
+let menuRecord = null;
+let scopeReady = false;
+let pendingMenuFocus = false;
+let cachedMenuValue = null;
+let unsubscribeFeed = null;
+let toolbarReady = Promise.resolve();
+let toolbarRun = 0;
 
 /** Register the standing view's verb-slot content — called every repaint the
  *  toolbar does, poll-driven ticks included, so the caller's own function must
@@ -151,13 +161,8 @@ function scopedProject() {
 }
 
 function rememberScope(projectKey) {
-  if (!projectKey || projectKey === scopedProjectKey) return;
-  scopedProjectKey = projectKey;
-  try {
-    localStorage.setItem(SCOPE_KEY, projectKey);
-  } catch {
-    /* private mode: the scope just lasts the session */
-  }
+  if (!projectKey || projectKey === scopedProjectKey) return Promise.resolve();
+  return scopeRecord ? scopeRecord.write({ projectKey }) : Promise.resolve();
 }
 
 /** One project's workspaces, off the cache the feed is a view over. The rows
@@ -286,7 +291,7 @@ function identity() {
 // eslint-disable-next-line complexity -- ratchet: paint is at 13, cap 10 — reduce it, then drop this line
 function paint({ entering = false } = {}) {
   const host = $("#toolbar");
-  if (!host) return;
+  if (!host || !scopeReady) return;
   const standing = identity();
   // Navigating into a work item scopes the menu to its project — the toolbar
   // reads as one sentence, so the two halves can never name different projects.
@@ -319,8 +324,10 @@ function paint({ entering = false } = {}) {
           closeMenu();
           return;
         }
-        closeMenu();
-        openJumpMenu(control);
+        const select = control.dataset.select;
+        const list = MENU_FOR_SELECTOR[select] || "workspaces";
+        pendingMenuFocus = true;
+        if (menuRecord) void menuRecord.write({ open: true, select, list, query: "" });
       };
     });
     host.querySelectorAll("[data-directory]").forEach((control) => {
@@ -407,7 +414,16 @@ function menuShell(anchor, className) {
   };
 }
 
-function closeMenu({ restoreFocus = false } = {}) {
+function closeMenu({ restoreFocus = false, persist = true } = {}) {
+  if (persist && menuRecord) {
+    pendingMenuFocus = restoreFocus;
+    void menuRecord.write({ open: false });
+    return;
+  }
+  removeMenu(restoreFocus);
+}
+
+function removeMenu(restoreFocus) {
   if (!open) return;
   const anchor = open.anchor;
   open.anchor?.setAttribute("aria-expanded", "false");
@@ -432,30 +448,75 @@ function observeToolbar(host) {
   toolbarResizeObserver.observe(host);
 }
 
-function openJumpMenu(anchor) {
-  const list = MENU_FOR_SELECTOR[anchor.dataset.select] || "workspaces";
-  if (list === "workspaces" && App.route.name === "workspace") rememberScope(routeProjectKey(App.route));
+function openJumpMenu(anchor, { list = MENU_FOR_SELECTOR[anchor.dataset.select] || "workspaces", query = "", focus = false } = {}) {
   open = {
     ...menuShell(anchor, "tbmenu"),
     select: anchor.dataset.select,
     mode: "jump",
     list,
-    query: "",
+    query,
   };
   anchor.setAttribute("aria-expanded", "true");
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
   const initialChoice = open.element.querySelector('[aria-checked="true"]') || open.element.querySelector("[role=menuitem]");
-  (filter || initialChoice)?.focus();
+  if (focus) (filter || initialChoice)?.focus();
+}
+
+function applyMenuRecord(saved) {
+  cachedMenuValue = saved;
+  if (!scopeReady) return;
+  if (!saved?.open) {
+    return paintClosedMenu();
+  }
+  const anchor = $("#toolbar")?.querySelector(`[data-select="${saved.select}"]`);
+  if (!anchor) return;
+  const list = menuList(saved);
+  if (waitForRouteScope(list, saved)) return;
+  paintOpenMenu(anchor, list, typeof saved.query === "string" ? saved.query : "", saved.select);
+}
+
+function paintClosedMenu() {
+  removeMenu(pendingMenuFocus);
+  pendingMenuFocus = false;
+}
+
+const menuList = (saved) => MENU_LISTS[saved.list] ? saved.list : (MENU_FOR_SELECTOR[saved.select] || "workspaces");
+
+function waitForRouteScope(list, saved) {
+  if (open || list !== "workspaces" || App.route.name !== "workspace") return false;
+  const routeKey = routeProjectKey(App.route);
+  if (!routeKey || scopedProjectKey === routeKey) return false;
+  void rememberScope(routeKey).then(() => {
+    if (cachedMenuValue === saved) applyMenuRecord(saved);
+  });
+  return true;
+}
+
+function paintOpenMenu(anchor, list, query, select) {
+  if (!open || open.select !== select) {
+    removeMenu(false);
+    openJumpMenu(anchor, { list, query, focus: pendingMenuFocus });
+  } else {
+    open.list = list;
+    open.query = query;
+    paintMenu();
+    const filter = open.element.querySelector(".tb-filter");
+    if (filter && filter.value !== query) filter.value = query;
+    if (pendingMenuFocus) focusMenuChoice(filter);
+  }
+  pendingMenuFocus = false;
+}
+
+function focusMenuChoice(filter) {
+  (filter || open.element.querySelector('[aria-checked="true"]') || open.element.querySelector('[role="menuitem"]'))?.focus();
 }
 
 /** Move the open menu to the other list. The query goes with the list it was
  *  typed against — the two lists hold different kinds of name. */
 function showList(list) {
-  open.list = list;
-  open.query = "";
-  paintMenu();
-  open.element.querySelector(".tb-filter").focus();
+  pendingMenuFocus = true;
+  if (menuRecord) void menuRecord.write({ open: true, select: open.select, list, query: "" });
 }
 
 /// Whichever list the open menu is showing. Repainted in place as the query
@@ -485,8 +546,7 @@ function paintMenuShell() {
   open.element.onclick = onMenuClick;
   const filter = open.element.querySelector(".tb-filter");
   if (filter) filter.oninput = () => {
-    open.query = filter.value;
-    paintMenu();
+    if (menuRecord) void menuRecord.write({ open: true, select: open.select, list: open.list, query: filter.value });
   };
 }
 
@@ -497,9 +557,11 @@ function paintMenuShell() {
 function pickProject(element) {
   if (!element) return false;
   const project = projectFor(element.dataset.project);
-  rememberScope(element.dataset.project);
-  showList("workspaces");
-  loadWorkspaces(project);
+  void rememberScope(element.dataset.project).then(() => {
+    if (!open) return;
+    showList("workspaces");
+    loadWorkspaces(project);
+  });
   return true;
 }
 
@@ -692,15 +754,13 @@ export function initToolbar() {
   if (mounted) {
     paint({ entering: true });
     observeToolbar($("#toolbar"));
-    return;
+    return toolbarReady;
   }
   mounted = true;
-  try {
-    scopedProjectKey = localStorage.getItem(SCOPE_KEY) || null;
-  } catch {
-    scopedProjectKey = null;
-  }
-  subscribeFeed((next) => {
+  const run = ++toolbarRun;
+  scopedProjectKey = null;
+  scopeReady = false;
+  unsubscribeFeed = subscribeFeed((next) => {
     feed = next;
     shownFeed = filterByDevice(next, App.deviceFilter);
     // The menu is a view over the same records: a workspace made, renamed or
@@ -708,26 +768,54 @@ export function initToolbar() {
     loadStandingWorkspaces();
     paint();
   });
-  paint({ entering: true });
-  observeToolbar($("#toolbar"));
-  loadStandingWorkspaces();
+  scopeRecord = watchUiState(SCOPE_ADDRESS, (saved) => {
+    scopedProjectKey = typeof saved?.projectKey === "string" ? saved.projectKey : null;
+    paint();
+  });
+  toolbarReady = scopeRecord.ready.then(async () => {
+    if (!mounted || run !== toolbarRun) return;
+    scopeReady = true;
+    const routeKey = routeProjectKey(App.route);
+    if (routeKey) await rememberScope(routeKey);
+    if (!mounted || run !== toolbarRun) return;
+    paint({ entering: true });
+    observeToolbar($("#toolbar"));
+    loadStandingWorkspaces();
+    menuRecord = watchUiState(MENU_ADDRESS, applyMenuRecord);
+    return menuRecord.ready;
+  });
+  return toolbarReady;
 }
 
 /** Repaint for the route the shell just entered — the one paint that re-scopes,
  *  because it is the one that follows a move. */
 export function toolbarRouteChanged() {
   if (!mounted) return;
-  closeMenu();
   paint({ entering: true });
+  if (cachedMenuValue?.open) applyMenuRecord(cachedMenuValue);
   loadStandingWorkspaces();
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
+  const settled = Promise.all([scopeRecord?.flush(), menuRecord?.flush()]);
+  mounted = false;
+  toolbarRun += 1;
+  scopeRecord?.dispose({ flushPending: false });
+  menuRecord?.dispose({ flushPending: false });
+  scopeRecord = null;
+  menuRecord = null;
+  scopeReady = false;
+  cachedMenuValue = null;
+  scopedProjectKey = null;
+  pendingMenuFocus = false;
+  unsubscribeFeed?.();
+  unsubscribeFeed = null;
   workspacesByProject.clear();
   toolbarResizeObserver?.disconnect();
   toolbarResizeObserver = null;
   issuesBlock?.dispose();
   issuesBlock = null;
-  closeMenu();
+  closeMenu({ persist: false });
+  return settled;
 }

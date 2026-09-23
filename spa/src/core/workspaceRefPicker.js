@@ -1,5 +1,7 @@
 import { esc } from "./text.js";
 import { refLabel } from "./workspaceModel.js";
+import { directoryCacheId } from "./directoryScope.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 
 const kindLabel = (kind) => kind === "tag" ? "Tags" : "Branches";
 
@@ -18,7 +20,7 @@ function rowHtml(ref) {
   </button>`;
 }
 
-export function mountWorkspaceRefPicker(host, { scope, callRpc, onCheckout } = {}) {
+export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCheckout } = {}) {
   host.innerHTML = `<div class="workspace-refpicker">
     <button type="button" class="workspace-reftrigger" data-refpicker-toggle aria-haspopup="listbox" aria-expanded="false" disabled>
       <span class="workspace-reftrigger-kind">Branch</span><span class="workspace-reftrigger-name">Loading refs…</span><span aria-hidden="true">⌄</span>
@@ -47,6 +49,10 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, onCheckout } = {
   let disposed = false;
   let pending = false;
   let loadRequest = 0;
+  let readRequest = 0;
+  let cacheWrites = 0;
+  const entityId = directoryCacheId(scope);
+  const address = entityId ? cacheScope?.address({ entityId, kind: "refs" }) : null;
 
   const close = () => {
     menu.hidden = true;
@@ -70,15 +76,30 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, onCheckout } = {
     search.placeholder = `Search ${kindLabel(kind).toLowerCase()}…`;
     renderRows();
   };
-  const load = async () => {
-    const request = ++loadRequest;
-    const answer = await callRpc("git.refs", scope);
-    if (disposed || request !== loadRequest || pending) return;
-    refs = answer.refs || [];
-    current = answer.current || refs.find((ref) => ref.current) || null;
+  const readRecord = async () => {
+    if (!address) return;
+    const version = ++readRequest;
+    const record = await readCached(address);
+    if (disposed || version !== readRequest) return;
+    const listing = record?.value;
+    if (!listing) return;
+    refs = listing.refs || [];
+    current = listing.current || refs.find((ref) => ref.current) || null;
     renderCurrent();
     renderRows();
-    trigger.disabled = refs.length === 0;
+    trigger.disabled = pending || refs.length === 0;
+  };
+  const unwatch = address ? subscribeCache(address, () => {
+    cacheWrites += 1;
+    void readRecord();
+  }) : null;
+  const load = async () => {
+    const request = ++loadRequest;
+    const before = cacheWrites;
+    const answer = await callRpc("git.refs", scope);
+    if (disposed || request !== loadRequest || pending) return;
+    if (!address || cacheScope.active?.() === false || cacheWrites !== before) return;
+    await writeCached(address, answer);
   };
   const checkout = async (fullRef) => {
     if (pending) return;
@@ -122,13 +143,15 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, onCheckout } = {
   const keydown = (event) => { if (event.key === "Escape") { close(); trigger.focus(); } };
   document.addEventListener("pointerdown", outside);
   picker.addEventListener("keydown", keydown);
+  void readRecord();
   load().catch((error) => {
     if (disposed) return;
-    triggerName.textContent = "Refs unavailable";
+    if (!refs.length) triggerName.textContent = "Refs unavailable";
     errorHost.textContent = error?.message || String(error);
   });
   return { dispose() {
     disposed = true;
+    unwatch?.();
     document.removeEventListener("pointerdown", outside);
     picker.removeEventListener("keydown", keydown);
   } };

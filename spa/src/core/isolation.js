@@ -12,6 +12,7 @@
 // label, an RPC shape or a locked look.
 
 import { esc } from "./text.js";
+import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "./settingsRecords.js";
 
 /** The two isolations, in the order every control offers them. */
 export const ISOLATIONS = [
@@ -121,14 +122,14 @@ const lockLine = (available) => {
  *  answer, so it shows what the bridge holds rather than what was merely asked
  *  for; a refusal is the bridge's own sentence, and the control goes back to the
  *  answer it last had. */
-export async function mountIsolation(host, { callRpc, target, settings }) {
+export async function mountIsolation(host, { callRpc, target, settings, deviceId = "", fromProjectRecord = false }) {
   const select = host.querySelector("[data-isolation=select]");
   if (!select) return;
   const lock = host.querySelector("[data-isolation=lock]");
   const saved = host.querySelector("[data-isolation=saved]");
   const error = host.querySelector("[data-isolation=error]");
 
-  let held = settings;
+  let held;
   const paint = (state) => {
     held = state;
     const available = state && state.isolation_available;
@@ -137,31 +138,41 @@ export async function mountIsolation(host, { callRpc, target, settings }) {
     });
     lock.textContent = lockLine(available);
   };
-
-  if (settings) paint(settings);
-  else {
-    try {
-      paint(await callRpc("settings.get"));
-    } catch (refusal) {
-      error.textContent = refusal.message;
-      return;
-    }
-  }
-  select.disabled = false;
-
+  const address = target.inherits
+    ? projectSettingsAddress(deviceId, target.params.project_id)
+    : deviceSettingsAddress(deviceId);
+  const record = watchSettingsRecord(address, (state) => {
+    if (!select.isConnected) { record.dispose(); return; }
+    if (!state) return;
+    paint(state);
+    select.disabled = false;
+  }, { owner: select });
   select.onchange = async () => {
     const chosen = select.value || null;
     select.disabled = true;
     error.textContent = "";
     saved.textContent = "Saving…";
     try {
-      paint(await callRpc(target.rpc, { ...target.params, isolation: chosen }));
+      const changed = await callRpc(target.rpc, { ...target.params, isolation: chosen });
+      if (!select.isConnected) { record.dispose(); return; }
+      if (target.inherits) {
+        await writeProjectSetting(deviceId, changed);
+        await record.read();
+      } else await record.write(changed);
       saved.textContent = "Saved. New tasks use this isolation; existing checkouts and their caches stay as they are.";
     } catch (refusal) {
+      if (!select.isConnected) { record.dispose(); return; }
       error.textContent = refusal.message;
       saved.textContent = "";
-      paint(held);
+      await record.read();
     }
     select.disabled = false;
   };
+  try {
+    if (fromProjectRecord) await record.read();
+    else if (settings) await record.pull(async () => settings);
+    else await record.pull(() => callRpc("settings.get"));
+  } catch (refusal) {
+    if (!held) error.textContent = refusal.message;
+  }
 }

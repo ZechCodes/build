@@ -16,6 +16,7 @@ import { cacheRenamedDevice, cacheRevokedDevice, onDevicesChanged } from "../dev
 import { openDeviceSettingsSession, retireDevice } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
+import { deviceSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
 
 export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
   let device = App.devices.find((item) => item.id === deviceId);
@@ -67,10 +68,18 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   let active = true;
   let connectionAttempt = 0;
   let session = null;
+  let disposePanels = null;
   let browserOpen = false;
   let savingAttempt = null;
   let savingName = false;
   let deactivating = false;
+  let projectsPath = null;
+  const settingsRecord = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    if (!active || !settings) return;
+    projectsPath = settings.projects_dir;
+    pathLabel.textContent = projectsPath || "Unavailable";
+    if (session && projectsPath) change.disabled = false;
+  });
   const stopWatchingDevices = onDevicesChanged((devices) => {
     if (!active) return;
     const current = devices.find((item) => item.id === deviceId);
@@ -79,6 +88,9 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       connectionAttempt += 1;
       session?.close();
       session = null;
+      disposePanels?.();
+      disposePanels = null;
+      settingsRecord.dispose();
       stopWatchingDevices();
       showDeactivated(root, onDeviceDeactivated, deviceId);
       return;
@@ -86,7 +98,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     device = current;
     nameTitle.textContent = `${current.name} settings`;
     projectsDeviceName.textContent = current.name;
-    if (savingName || document.activeElement !== nameInput) nameInput.value = current.name;
+    if (savingName || nameInput.ownerDocument.activeElement !== nameInput) nameInput.value = current.name;
   });
   const closeBrowser = () => {
     if (browserOpen) $("#scrim").classList.remove("show");
@@ -96,6 +108,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     active = false;
     stopWatchingDevices();
     closeBrowser();
+    disposePanels?.();
+    settingsRecord.dispose();
     session?.close();
   });
   nameForm.onsubmit = async (event) => {
@@ -146,6 +160,9 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       connectionAttempt += 1;
       session?.close();
       session = null;
+      disposePanels?.();
+      disposePanels = null;
+      settingsRecord.dispose();
       retireDevice(device.id);
     } catch (error) {
       if (!active) return;
@@ -165,13 +182,15 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   // Every panel here is this machine's answer, so none of them exists until the
   // machine is answering: a page that cannot connect says that once, in its
   // status line, rather than standing up six panels that all say it again.
-  const standUpPanels = () =>
-    standUpDevicePanels({
+  const standUpPanels = () => {
+    disposePanels?.();
+    disposePanels = standUpDevicePanels({
       projectsHost: root.querySelector("#device-projects-panel"),
       bridgeHost: root.querySelector("#device-bridge-panels"),
       callRpc,
       device,
     });
+  };
   const save = async (path) => {
     const attempt = connectionAttempt;
     const owner = session;
@@ -181,7 +200,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     try {
       const settings = await callRpc("settings.set", { projects_dir: path });
       if (!current()) return;
-      pathLabel.textContent = settings.projects_dir;
+      await settingsRecord.write(settings);
+      if (!current()) return;
       status.textContent = "Saved. New projects will use this folder.";
       closeBrowser();
     } catch (error) {
@@ -197,6 +217,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     browserOpen = true;
     void openBrowser({
       title: `Choose a projects folder on ${device.name}`,
+      deviceId,
       gitOnly: false,
       fallbackFromMissingStart: true,
       startPath: pathLabel.textContent,
@@ -210,11 +231,18 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     connectionAttempt += 1;
     session?.close();
     session = null;
+    disposePanels?.();
+    disposePanels = null;
     closeBrowser();
     change.disabled = true;
     status.textContent = "Device disconnected. Bring it online, then retry.";
     retry.hidden = false;
   };
+  const refreshSettings = (current) => settingsRecord.pull(async () => {
+    const settings = await callRpc("settings.get");
+    if (!current()) throw new Error("The device connection changed.");
+    return settings;
+  });
   const connect = async () => {
     const attempt = ++connectionAttempt;
     const current = () => active && attempt === connectionAttempt;
@@ -226,18 +254,20 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       const opened = await openDeviceSettingsSession(device.id, { onLost: () => disconnected(attempt) });
       if (!current()) { opened.close(); return; }
       session = opened;
-      const settings = await callRpc("settings.get");
+      change.disabled = !projectsPath;
+      standUpPanels();
+      await refreshSettings(current);
       if (!current()) return;
-      pathLabel.textContent = settings.projects_dir;
       status.textContent = "";
-      change.disabled = false;
-      await standUpPanels();
+      change.disabled = !projectsPath;
     } catch (error) {
       if (!current()) return;
       session?.close();
       session = null;
+      disposePanels?.();
+      disposePanels = null;
       if (!active) return;
-      pathLabel.textContent = "Unavailable";
+      if (!projectsPath) pathLabel.textContent = "Unavailable";
       status.textContent = error.message;
       retry.hidden = false;
     }

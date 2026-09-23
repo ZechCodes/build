@@ -4,6 +4,8 @@
 // its checkouts with it.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { deviceModelsAddress, projectSettingsAddress, workspaceSettingsAddress } from "../src/core/settingsRecords.js";
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({
@@ -51,7 +53,6 @@ const CATALOG = {
   ],
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const $ = (selector) => document.querySelector(selector);
 const shown = () => document.getElementById("scrim").classList.contains("show");
 const type = (value) => {
@@ -65,7 +66,8 @@ const pick = (selector, value) => {
 /** This workspace's own slot, as the account's savers write into it. */
 const slot = () => workspaceDefaultsStorage("dev-1/ws-1");
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   confirmAction.mockReset();
   notifyError.mockReset();
   localStorage.clear();
@@ -79,9 +81,56 @@ const open = (options = {}) => {
 };
 
 describe("the workspace settings sheet", () => {
+  it("updates its open picker on a catalog cache write without losing the workspace name draft", async () => {
+    await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+    open({ callRpc: vi.fn(() => new Promise(() => {})) });
+    await vi.waitFor(() => expect($("#wsdefmodel-claude_adk")?.textContent).toContain("Claude Opus 5"));
+    type("unsaved name");
+    $("#wsdefmodel-claude_adk").focus();
+    await writeCached(deviceModelsAddress("dev-1"), {
+      ...CATALOG,
+      providers: CATALOG.providers.map((provider) => provider.id === "claude_adk"
+        ? { ...provider, models: [...provider.models, { id: "claude-new", label: "Claude New", supports_effort: true }] }
+        : provider),
+    });
+    await vi.waitFor(() => expect($("#wsdefmodel-claude_adk").textContent).toContain("Claude New"));
+    expect($("#wsname").value).toBe("unsaved name");
+    expect(document.activeElement).toBe($("#wsdefmodel-claude_adk"));
+
+    pick("#wsdefmodel-claude_adk", "claude-opus-5");
+    $("#wsdefeffort-claude_adk").focus();
+    await writeCached(deviceModelsAddress("dev-1"), {
+      ...CATALOG,
+      providers: CATALOG.providers.map((provider) => provider.id === "claude_adk"
+        ? { ...provider, models: [...provider.models, { id: "claude-next", label: "Claude Next", supports_effort: true }] }
+        : provider),
+    });
+    await vi.waitFor(() => expect($("#wsdefmodel-claude_adk").textContent).toContain("Claude Next"));
+    expect(document.activeElement).toBe($("#wsdefeffort-claude_adk"));
+    expect($("#wsdefmodel-claude_adk").value).toBe("claude-opus-5");
+  });
+  it("paints cached directories and offered sources while both pulls are absent", async () => {
+    await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), {
+      id: WORKSPACE.id,
+      project_id: "proj-1",
+      directories: [{ id: "dir-1", source_id: "source-1", name: "bridge", path: "/w/bridge" }],
+    });
+    await writeCached(projectSettingsAddress("dev-1", "proj-1"), {
+      project_id: "proj-1",
+      sources: [{ id: "source-1", name: "bridge" }, { id: "source-2", name: "spa" }],
+    });
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    open({ callRpc });
+    await vi.waitFor(() => {
+      expect($("[data-remove-directory]")?.dataset.removeDirectory).toBe("dir-1");
+      expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2");
+    });
+    expect(callRpc).toHaveBeenCalledWith("workspace.get", { workspace_id: WORKSPACE.id });
+  });
+
   it("opens on the workspace's own name, with Save off until it changes", async () => {
     open();
-    await flush();
+
     expect(shown()).toBe(true);
     expect($("#sheet .settings-sheet-header h3").textContent).toBe("Workspace settings");
     expect($("#wsname").value).toBe("payment-work");
@@ -93,7 +142,7 @@ describe("the workspace settings sheet", () => {
 
   it("keeps Save off for a blank name, and for the same name typed again", async () => {
     open();
-    await flush();
+
     type("   ");
     expect($("#wssave").disabled).toBe(true);
     type("  payment-work  ");
@@ -103,10 +152,10 @@ describe("the workspace settings sheet", () => {
   it("renames on the caller it was handed, trimmed, then closes and refreshes", async () => {
     const onRenamed = vi.fn();
     const callRpc = open({ onRenamed });
-    await flush();
+
     type("  payments  ");
     $("#wssave").click();
-    await flush();
+    await vi.waitFor(() => expect(onRenamed).toHaveBeenCalled());
 
     expect(callRpc).toHaveBeenCalledWith("workspace.rename", { workspace_id: "ws-1", name: "payments" });
     expect(onRenamed).toHaveBeenCalled();
@@ -116,10 +165,10 @@ describe("the workspace settings sheet", () => {
   it("says in the sheet why a rename was refused, and leaves it open to try again", async () => {
     const callRpc = vi.fn().mockRejectedValue(new Error("unknown workspace_id: ws-1"));
     open({ callRpc });
-    await flush();
+
     type("payments");
     $("#wssave").click();
-    await flush();
+    await vi.waitFor(() => expect($("#wserr").textContent).toBe("unknown workspace_id: ws-1"));
 
     expect($("#wserr").textContent).toBe("unknown workspace_id: ws-1");
     expect(shown()).toBe(true);
@@ -128,7 +177,7 @@ describe("the workspace settings sheet", () => {
 
   it("offers one defaults row per creatable harness, stored against this workspace alone", async () => {
     open();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelectorAll("#sheet [data-harness]")).toHaveLength(2));
     const rows = [...document.querySelectorAll("#sheet [data-harness]")].map((row) => row.dataset.harness);
     expect(rows).toEqual(["claude_adk", "codex_app_server"]);
 
@@ -143,9 +192,9 @@ describe("the workspace settings sheet", () => {
   it("names the workspace and its checkouts in the confirmation, and deletes only on yes", async () => {
     confirmAction.mockResolvedValue(false);
     const callRpc = open();
-    await flush();
+
     $("#wsdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(confirmAction).toHaveBeenCalled());
 
     const asked = confirmAction.mock.calls[0][0];
     expect(asked.title).toBe("Delete payment-work?");
@@ -159,11 +208,11 @@ describe("the workspace settings sheet", () => {
     confirmAction.mockResolvedValue(true);
     const onDeleted = vi.fn();
     const callRpc = open({ onDeleted });
-    await flush();
+    await vi.waitFor(() => expect($("#wsdefmodel-codex_app_server")).toBeTruthy());
     pick("#wsdefmodel-codex_app_server", "gpt-5.6-sol");
 
     $("#wsdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(onDeleted).toHaveBeenCalled());
 
     expect(callRpc).toHaveBeenCalledWith("workspace.delete", { workspace_id: "ws-1" });
     expect(JSON.parse(localStorage.getItem(WORKSPACE_DEFAULTS_KEY))["dev-1/ws-1"]).toBeUndefined();
@@ -176,9 +225,9 @@ describe("the workspace settings sheet", () => {
     const callRpc = vi.fn().mockRejectedValue(new Error("Stop running agents before deleting the workspace"));
     const onDeleted = vi.fn();
     open({ callRpc, onDeleted });
-    await flush();
+
     $("#wsdelete").click();
-    await flush();
+    await vi.waitFor(() => expect($("#wserr").textContent).toBe("Stop running agents before deleting the workspace"));
 
     expect($("#wserr").textContent).toBe("Stop running agents before deleting the workspace");
     expect(shown()).toBe(true);
@@ -255,7 +304,7 @@ describe("workspace directories", () => {
   it("lists the directories the workspace holds, each with a way to remove it", async () => {
     const callRpc = caller();
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("#sheet [data-remove-directory]")).toBeTruthy());
     expect(callRpc).toHaveBeenCalledWith("workspace.get", { workspace_id: "ws-1" });
     expect($("#sheet [data-remove-directory]").dataset.removeDirectory).toBe("ws-1:source-1");
     expect($("#wsdirs").textContent).toContain("bridge");
@@ -264,9 +313,9 @@ describe("workspace directories", () => {
   it("removes one on the caller it was handed and repaints from the answer", async () => {
     const callRpc = caller({ ...DETAIL, directories: [] });
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("[data-remove-directory]")).toBeTruthy());
     $("[data-remove-directory]").click();
-    await flush();
+    await vi.waitFor(() => expect($("#sheet [data-remove-directory]")).toBeNull());
     expect(callRpc).toHaveBeenCalledWith("workspace.remove_directory", {
       workspace_id: "ws-1",
       directory_id: "ws-1:source-1",
@@ -278,14 +327,14 @@ describe("workspace directories", () => {
     const grown = { ...DETAIL, directories: [...DETAIL.directories, { id: "ws-1:source-2", source_id: "source-2", name: "spa", path: "/w/ws-1/spa", is_git: true, status: "ready" }] };
     const callRpc = caller(grown);
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2"));
     const offered = [...$("#wsdiradd").options].map((option) => option.value);
     expect(offered).toContain("source-2");
     expect(offered).not.toContain("source-1");
 
     pick("#wsdiradd", "source-2");
     $("#wsdiraddgo").click();
-    await flush();
+    await vi.waitFor(() => expect($("#sheet").textContent).toContain("spa"));
 
     expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", { workspace_id: "ws-1", source_id: "source-2" });
     expect($("#sheet").textContent).toContain("spa");
@@ -294,12 +343,12 @@ describe("workspace directories", () => {
   it("adds a Git remote as a directory of its own", async () => {
     const callRpc = caller();
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("#wsdiradd")).toBeTruthy());
     pick("#wsdiradd", "remote");
     $("#wsdirremote").value = "git@github.com:8ly/tokens.git";
     $("#wsdirname").value = "tokens";
     $("#wsdiraddgo").click();
-    await flush();
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
     expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", {
       workspace_id: "ws-1",
       remote: "git@github.com:8ly/tokens.git",
@@ -314,10 +363,28 @@ describe("workspace directories", () => {
       throw new Error("another filesystem operation is still running");
     });
     open({ callRpc });
-    await flush();
+    await vi.waitFor(() => expect($("[data-remove-directory]")).toBeTruthy());
     $("[data-remove-directory]").click();
-    await flush();
+    await vi.waitFor(() => expect($("#wsdirerr").textContent).toContain("still running"));
     expect($("#wsdirerr").textContent).toContain("still running");
     expect($("#sheet [data-remove-directory]")).not.toBeNull();
+  });
+
+  it("keeps a directory refusal visible when the project source list arrives later", async () => {
+    let finishProjectList;
+    const projectList = new Promise((resolve) => { finishProjectList = resolve; });
+    const callRpc = vi.fn(async (method) => {
+      if (method === "workspace.get") return DETAIL;
+      if (method === "project.list") return projectList;
+      throw new Error("another filesystem operation is still running");
+    });
+    open({ callRpc });
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.list"));
+    $("[data-remove-directory]").click();
+    await vi.waitFor(() => expect($("#wsdirerr").textContent).toContain("still running"));
+
+    finishProjectList({ projects: [PROJECT] });
+    await vi.waitFor(() => expect([...$("#wsdiradd").options].map((option) => option.value)).toContain("source-2"));
+    expect($("#wsdirerr").textContent).toContain("still running");
   });
 });

@@ -562,6 +562,7 @@ function openStandingWorkspaceSettings() {
     },
     {
       callRpc: context.rpc,
+      deviceId,
       catalog: deviceCatalog(deviceId),
       // The name is printed by this bar and by every inbox row, so both are
       // told rather than left to their next poll.

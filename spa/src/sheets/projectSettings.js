@@ -5,6 +5,8 @@ import { esc } from "../core/text.js";
 import { isolationFieldHtml, mountIsolation, projectIsolationTarget } from "../core/isolation.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
+import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
+import { deleteCached, readCached } from "../core/localCache.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
@@ -40,25 +42,77 @@ const addSourceHtml = () => `<div class="field">
       <button class="btn primary" id="pssourceadd" type="button" style="margin-left:auto">Add folder</button></div>
   </div>`;
 
+/** Keep edits that have not been sent to the bridge when a project record
+ * changes underneath this sheet. The add-source form is a second local draft. */
+function focusedDraft(sheet) {
+  const focused = sheet.ownerDocument.activeElement;
+  return {
+    focusId: focused && sheet.contains(focused) ? focused.id : "",
+    selection: focused?.id === "psremote" ? [focused.selectionStart, focused.selectionEnd] : null,
+  };
+}
+
+function sourceDraft(sheet) {
+  const sourceUrl = sheet.querySelector("#psremoteurl");
+  return sourceUrl ? { url: sourceUrl.value, name: sheet.querySelector("#pssourcename").value } : null;
+}
+
+function captureDraft(sheet, paintedRemote) {
+  const remote = sheet.querySelector("#psremote");
+  return {
+    remote: remote && remote.value !== paintedRemote ? remote.value : null,
+    ...focusedDraft(sheet),
+    source: sourceDraft(sheet),
+    remoteError: sheet.querySelector("#pserr")?.textContent || "",
+    sourceError: sheet.querySelector("#pssrcerr")?.textContent || "",
+  };
+}
+
+function restoreDraft(sheet, draft) {
+  if (draft.remote !== null) sheet.querySelector("#psremote").value = draft.remote;
+  if (draft.source) {
+    sheet.querySelector("#psaddremote").click();
+    sheet.querySelector("#psremoteurl").value = draft.source.url;
+    sheet.querySelector("#pssourcename").value = draft.source.name;
+  }
+  sheet.querySelector("#pserr").textContent = draft.remoteError;
+  sheet.querySelector("#pssrcerr").textContent = draft.sourceError;
+  const focused = draft.focusId && sheet.querySelector(`#${draft.focusId}`);
+  if (focused) {
+    focused.focus();
+    if (draft.selection) focused.setSelectionRange(...draft.selection);
+  }
+}
+
 /** Opened with the caller of the machine this project is on: whoever opens the
  *  sheet has already resolved that, so nothing here asks which device it is. */
-export function openProjectSettings(projectId, { callRpc, onDeleted }) {
+export function openProjectSettings(projectId, { callRpc, deviceId = "", onDeleted }) {
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
-
-  const close = () => $("#scrim").classList.remove("show");
+  let frame = sheet.firstElementChild;
+  let view = "settings";
+  let paintedRemote = "";
+  const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
+  const close = () => {
+    record.dispose();
+    $("#scrim").classList.remove("show");
+  };
 
   const paintMissing = (message) => {
+    if (!current() || view !== "settings") return;
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `<div class="sub">${esc(message)}</div>
         <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
+    frame = sheet.firstElementChild;
     $("#pscancel").onclick = close;
   };
 
   const paint = (project) => {
+    if (!current() || view !== "settings") return;
+    const draft = captureDraft(sheet, paintedRemote);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
@@ -79,17 +133,25 @@ export function openProjectSettings(projectId, { callRpc, onDeleted }) {
         <button class="btn danger" id="psdelete">Delete project…</button>
       </section>`,
     });
-    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), settings: project });
-    mountSources(project, { callRpc, paint });
+    frame = sheet.firstElementChild;
+    paintedRemote = project.remote || "";
+    mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
+    mountSources(project, {
+      callRpc, record, deviceId,
+      onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
+      onReturn: () => { view = "settings"; void record.read(); },
+    });
+    restoreDraft(sheet, draft);
     $("#pscancel").onclick = close;
-    $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close });
+    $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
     $("#pssave").onclick = async () => {
       const save = $("#pssave");
       save.disabled = true;
       save.textContent = "saving…";
       $("#pserr").textContent = "";
       try {
-        await callRpc("project.set_remote", { project_id: projectId, url: $("#psremote").value.trim() });
+        const changed = await callRpc("project.set_remote", { project_id: projectId, url: $("#psremote").value.trim() });
+        if (changed?.project_id) await writeProjectSetting(deviceId, changed);
         close();
       } catch (e) {
         $("#pserr").textContent = e.message;
@@ -98,27 +160,33 @@ export function openProjectSettings(projectId, { callRpc, onDeleted }) {
       }
     };
   };
-
-  callRpc("project.list")
-    .then((listed) => {
-      const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
-      if (project) paint(project);
-      else paintMissing("This project is no longer registered on this device.");
-    })
-    .catch((e) => paintMissing(`Project settings are unavailable: ${e.message}`));
+  const record = watchSettingsRecord(projectSettingsAddress(deviceId, projectId), (project) => {
+    if (project) paint(project);
+  });
+  void record.pull(async () => {
+    const listed = await callRpc("project.list");
+    const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
+    if (!project) throw new Error("This project is no longer registered on this device.");
+    return project;
+  }).catch((error) => {
+    if (!$("#psname")) paintMissing(`Project settings are unavailable: ${error.message}`);
+  });
+  return { whenCachePainted: record.whenPainted };
 }
 
 /** The source controls: a Remove per folder, and the two ways one is added.
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, paint }) {
+function mountSources(project, { callRpc, record, deviceId, onFrameChange, onReturn }) {
   const write = async (method, params, button) => {
     const error = $("#pssrcerr");
     error.textContent = "";
     button.disabled = true;
     try {
-      paint(await callRpc(method, params));
+      const changed = await callRpc(method, params);
+      await writeProjectSetting(deviceId, changed);
+      await record.read();
     } catch (thrown) {
       button.disabled = false;
       if (error.isConnected) error.textContent = thrown.message;
@@ -134,7 +202,7 @@ function mountSources(project, { callRpc, paint }) {
       );
   });
   $("#psaddremote").onclick = () => openAddRemote(project, write);
-  $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, paint });
+  $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
 
 /** Say where to clone the remote from, and what to call it. */
@@ -160,17 +228,20 @@ function openAddRemote(project, write) {
 
 /** Pick a folder on this device, in the browser the rest of the app uses. The
  *  sheet's body is handed over to it and comes back on Back or on a choice. */
-async function browseForSource(project, { callRpc, paint }) {
+async function browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn }) {
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({
     title: "Add folder",
     subtitleHtml: `Choose a folder to add to ${esc(project.name || "this project")}.`,
     bodyHtml: '<div id="psbrowser"></div><div class="row"><button class="btn" id="psbrowseback" type="button">Back</button></div><div class="adderr" id="psbrowseerr" role="alert"></div>',
   });
-  $("#psbrowseback").onclick = () => paint(project);
+  onFrameChange();
+  $("#psbrowseback").onclick = onReturn;
   const chosen = async (path) => {
     try {
-      paint(await callRpc("project.add_source", { project_id: project.project_id, path }));
+      const changed = await callRpc("project.add_source", { project_id: project.project_id, path });
+      await writeProjectSetting(deviceId, changed);
+      onReturn();
     } catch (thrown) {
       const error = $("#psbrowseerr");
       if (error) error.textContent = thrown.message;
@@ -178,15 +249,32 @@ async function browseForSource(project, { callRpc, paint }) {
     }
   };
   try {
-    const startPath = (await callRpc("settings.get")).projects_dir;
+    const address = deviceSettingsAddress(deviceId);
+    let ready;
+    const cached = new Promise((resolve) => { ready = resolve; });
+    const settingsRecord = watchSettingsRecord(address, (settings) => {
+      if (settings?.projects_dir) ready();
+    });
+    await settingsRecord.read();
+    const pull = settingsRecord.pull(() => callRpc("settings.get"));
+    const result = await Promise.race([
+      cached.then(() => ({ ready: true })),
+      pull.then(() => ({ ready: true }), (error) => ({ error })),
+    ]);
+    if (result.error) settingsRecord.dispose();
+    else void pull.catch(() => {}).finally(settingsRecord.dispose);
+    if (result.error) throw result.error;
+    const startPath = (await readCached(address))?.value?.projects_dir;
+    if (!$("#psbrowser")) return;
     await openBrowser({
       title: "Add folder",
       gitOnly: false,
       fallbackFromMissingStart: true,
       startPath,
       callRpc,
+      deviceId,
       container: $("#psbrowser"),
-      onCancel: () => paint(project),
+      onCancel: onReturn,
       onChoose: (path) => void chosen(path),
     });
   } catch (thrown) {
@@ -195,7 +283,7 @@ async function browseForSource(project, { callRpc, paint }) {
   }
 }
 
-async function deleteProject(project, { callRpc, onDeleted, close }) {
+async function deleteProject(project, { callRpc, onDeleted, close, deviceId }) {
   const button = $("#psdelete");
   const sheet = button.closest("#sheet");
   const errorMessage = sheet.querySelector("#pserr");
@@ -219,6 +307,8 @@ async function deleteProject(project, { callRpc, onDeleted, close }) {
   controls.forEach((control) => { control.disabled = true; });
   try {
     await callRpc("project.delete", { project_id: project.project_id, confirm: true });
+    await deleteCached([projectSettingsAddress(deviceId, project.project_id)]);
+    await removeProjectSetting(deviceId, project.project_id);
     if (sheet.contains(button)) close();
   } catch (error) {
     errorMessage.textContent = error.message;

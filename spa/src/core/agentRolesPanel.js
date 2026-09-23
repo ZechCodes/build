@@ -9,6 +9,7 @@
 // the wire.
 
 import { esc } from "./text.js";
+import { deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
 import {
   AGENT_CAPABILITIES,
   AGENT_ROLES,
@@ -60,16 +61,6 @@ const rowHtml = (row, index, last) => `<tr data-row="${index}" title="${esc(rowS
     </td>
   </tr>`;
 
-/** What the machine holds, or why it could not be asked. */
-async function firstRead(callRpc) {
-  try {
-    const settings = await callRpc("settings.get");
-    return { models: settings?.role_models || [], failed: "" };
-  } catch (error) {
-    return { models: [], failed: String(error?.message || error) };
-  }
-}
-
 /**
  * Mount the panel on one machine's connection.
  *
@@ -77,7 +68,7 @@ async function firstRead(callRpc) {
  * so the panel shows what the device actually holds and never what somebody
  * merely tried to put there.
  */
-export async function mountAgentRoles(host, { callRpc, onSaved = async () => {} }) {
+export async function mountAgentRoles(host, { callRpc, deviceId = "", onSaved = async () => {} }) {
   const root = host.querySelector(".aroles");
   if (!root) return;
   const body = root.querySelector("[data-aroles-rows]");
@@ -88,6 +79,11 @@ export async function mountAgentRoles(host, { callRpc, onSaved = async () => {} 
   const paint = () => {
     body.innerHTML = models.map((row, index) => rowHtml(row, index, index === models.length - 1)).join("");
   };
+  const record = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    if (!settings) return;
+    models = settings.role_models || [];
+    paint();
+  }, { owner: root });
 
   const save = async (next) => {
     const unsavable = whyUnsavable(next);
@@ -98,9 +94,8 @@ export async function mountAgentRoles(host, { callRpc, onSaved = async () => {} 
     failed.textContent = "";
     try {
       const settings = await callRpc("settings.set", { role_models: next });
-      models = settings?.role_models || [];
+      await record.write(settings);
       saved.textContent = "Saved.";
-      paint();
       await onSaved();
     } catch (error) {
       failed.textContent = String(error?.message || error);
@@ -134,9 +129,10 @@ export async function mountAgentRoles(host, { callRpc, onSaved = async () => {} 
     save(withModel(models, { model }));
   };
 
-  const read = await firstRead(callRpc);
-  if (read.failed) failed.textContent = read.failed;
-  models = read.models;
-  paint();
-  return { dispose: () => {} };
+  try {
+    await record.pull(() => callRpc("settings.get"));
+  } catch (error) {
+    failed.textContent = String(error?.message || error);
+  }
+  return { dispose: record.dispose };
 }

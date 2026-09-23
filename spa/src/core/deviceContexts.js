@@ -313,6 +313,7 @@ export function retireDeviceContext(deviceId) {
   contexts.delete(deviceId);
   deviceEras.set(deviceId, (deviceEras.get(deviceId) || 0) + 1);
   context.chatRepository?.dispose();
+  context.disposeModelCatalog?.();
   dropFeedDevice(deviceId);
   disarmChangeEvents(deviceId);
   releaseScope(deviceId);

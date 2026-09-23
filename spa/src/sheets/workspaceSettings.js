@@ -22,6 +22,8 @@ import { notifyError } from "../core/notify.js";
 import { harnessDefaultsPanelHtml, mountHarnessDefaults } from "../core/harnessDefaults.js";
 import { forgetWorkspaceDefaults, workspaceDefaultsStorage } from "../core/workspaceDefaults.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
+import { deviceModelsAddress, projectSettingsAddress, watchSettingsRecord, workspaceSettingsAddress } from "../core/settingsRecords.js";
+import { deleteCached } from "../core/localCache.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -106,7 +108,7 @@ const dangerZoneHtml = () => `
  * fills in when that machine answers, and a sheet closed first takes its
  * question with it.
  */
-export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = localStorage, onRenamed, onDeleted }) {
+export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = workspace.workspaceKey?.split("/")[0] || "", storage = localStorage, onRenamed, onDeleted }) {
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({
     title: "Workspace settings",
@@ -116,24 +118,41 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = l
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
-  const close = () => $("#scrim").classList.remove("show");
+  let disposeDirectories = () => {};
+  let disposeCatalog = () => {};
+  const close = () => {
+    disposeDirectories();
+    disposeCatalog();
+    $("#scrim").classList.remove("show");
+  };
   const opened = sheet.firstElementChild;
   /** Still the sheet this call opened: an answer that lands after the reader
    *  moved on must not write into whatever is on screen now. */
-  const current = () => sheet.firstElementChild === opened;
+  const current = () => sheet.isConnected && sheet.firstElementChild === opened;
 
   $("#wscancel").onclick = close;
   wireName(workspace, { callRpc, close, onRenamed });
-  $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage });
-  void mountDirectories(workspace, { callRpc, current });
-  Promise.resolve(catalog)
-    .then((offered) => {
-      if (!current()) return;
-      mountHarnessDefaults(sheet, {
-        catalog: offered,
-        prefix: PREFIX,
-        storage: workspaceDefaultsStorage(workspace.workspaceKey, storage),
-      });
+  $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId });
+  disposeDirectories = mountDirectories(workspace, { callRpc, current, deviceId });
+  const defaultsStorage = workspaceDefaultsStorage(workspace.workspaceKey, storage);
+  let cacheCatalogSeen = false;
+  const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (offered) => {
+    if (!current() || !offered) return;
+    cacheCatalogSeen = true;
+    const focused = sheet.ownerDocument.activeElement;
+    const defaultsPanel = sheet.querySelector(`[data-harness-defaults="${PREFIX}"]`);
+    const focusId = defaultsPanel?.contains(focused) ? focused.id : null;
+    mountHarnessDefaults(sheet, { catalog: offered, prefix: PREFIX, storage: defaultsStorage });
+    if (focusId) sheet.querySelector(`#${focusId}`)?.focus();
+  }, { owner: opened });
+  disposeCatalog = () => catalogRecord.dispose();
+  void catalogRecord.read()
+    .then(() => {
+      // A caller may already hold the catalog, but the sheet still paints it
+      // only after it becomes this device's cached record. A later cache write
+      // wins over an older promise that settles afterward.
+      if (!cacheCatalogSeen && catalog) return catalogRecord.pull(() => Promise.resolve(catalog));
+      return undefined;
     })
     .catch(() => {});
 }
@@ -142,48 +161,62 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, storage = l
 /** Read what this workspace holds and what its project could give it, then
  *  paint the panel. An answer that lands after the reader moved on writes
  *  nothing: the sheet on screen is somebody else's now. */
-async function mountDirectories(workspace, { callRpc, current }) {
-  let offered = [];
-  const paint = (detail) => {
+function mountDirectories(workspace, { callRpc, current, deviceId }) {
+  let detail;
+  let project;
+  let projectRecord;
+  let projectId;
+  const paint = () => {
     if (!current()) return;
     const host = $("#wsdirs");
-    if (!host) return;
+    if (!host || !detail) return;
+    const held = new Set((detail.directories || []).map((directory) => directory.source_id));
+    const offered = (project?.sources || []).filter((source) => !held.has(source.id));
+    const errorText = host.querySelector("#wsdirerr")?.textContent || "";
     host.innerHTML = directoriesBodyHtml(detail, offered);
-    wireDirectories(workspace, { callRpc, paint });
+    host.querySelector("#wsdirerr").textContent = errorText;
+    wireDirectories(workspace, { callRpc, record, current });
   };
-  let detail;
-  try {
-    detail = await callRpc("workspace.get", { workspace_id: workspace.id });
-    offered = await offeredSources(detail, callRpc);
-  } catch (thrown) {
-    if (!current()) return;
+  const record = watchSettingsRecord(workspaceSettingsAddress(deviceId, workspace.id), (value) => {
+    detail = value;
+    if (detail?.project_id && detail.project_id !== projectId) {
+      projectRecord?.dispose();
+      projectId = detail.project_id;
+      const sourceProjectId = projectId;
+      project = undefined;
+      projectRecord = watchSettingsRecord(projectSettingsAddress(deviceId, sourceProjectId), (value) => {
+        project = value;
+        paint();
+      });
+      void projectRecord.pull(async () => {
+        const listed = await callRpc("project.list");
+        return (listed.projects || []).find((candidate) => candidate.project_id === sourceProjectId) || null;
+      }).catch(() => {});
+    }
+    paint();
+  });
+  void record.pull(() => callRpc("workspace.get", { workspace_id: workspace.id })).catch((thrown) => {
+    if (!current() || detail) return;
     const host = $("#wsdirs");
     if (host) host.innerHTML = `<h4>Directories</h4><div class="sub">${esc(thrown.message)}</div>`;
-    return;
-  }
-  paint(detail);
+  });
+  return () => {
+    record.dispose();
+    projectRecord?.dispose();
+  };
 }
 
-/** The project's sources this workspace has no directory for. A bridge that
- *  cannot answer the project list offers none rather than failing the panel. */
-async function offeredSources(detail, callRpc) {
-  if (!detail.project_id) return [];
-  const listed = await callRpc("project.list").catch(() => ({}));
-  const project = (listed.projects || []).find((candidate) => candidate.project_id === detail.project_id);
-  const held = new Set((detail.directories || []).map((directory) => directory.source_id));
-  return (project?.sources || []).filter((source) => !held.has(source.id));
-}
-
-function wireDirectories(workspace, { callRpc, paint }) {
+function wireDirectories(workspace, { callRpc, record, current }) {
   const write = async (method, params, button) => {
     const error = $("#wsdirerr");
     error.textContent = "";
     button.disabled = true;
     try {
-      paint(await callRpc(method, params));
+      await record.write(await callRpc(method, params));
     } catch (thrown) {
       button.disabled = false;
-      if (error.isConnected) error.textContent = thrown.message;
+      const visibleError = current() ? $("#wsdirerr") : null;
+      if (visibleError) visibleError.textContent = thrown.message;
       else notifyError("The workspace's directories were not changed", thrown.message);
     }
   };
@@ -276,7 +309,7 @@ function confirmDeletion(workspace) {
   });
 }
 
-async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage }) {
+async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId }) {
   const button = $("#wsdelete");
   const error = $("#wserr");
   error.textContent = "";
@@ -289,6 +322,7 @@ async function deleteWorkspace(workspace, { callRpc, close, onDeleted, storage }
   button.textContent = "Deleting…";
   try {
     await callRpc("workspace.delete", { workspace_id: workspace.id });
+    await deleteCached([workspaceSettingsAddress(deviceId, workspace.id)]);
   } catch (thrown) {
     button.disabled = false;
     button.textContent = "Delete workspace…";

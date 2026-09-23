@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { downloadsPlaceholderHtml, mountDownloads } from "../src/core/downloads.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { downloadsAddress } from "../src/core/settingsRecords.js";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
 
 const DOWNLOADS = downloadsPayload({
@@ -30,8 +32,9 @@ const copy = async () => {
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useRealTimers();
+  await wipeCache();
   clock = 1_000_000;
   clipboard = { writeText: vi.fn() };
   mintInstallCommand = vi.fn(async () => ({ install_command: mintedCommand(), expires_in_s: 600 }));
@@ -39,6 +42,14 @@ beforeEach(() => {
 });
 
 describe("mountDownloads", () => {
+  it("paints cached download links while the API has no answer", async () => {
+    await writeCached(downloadsAddress, DOWNLOADS);
+    const fetchDownloads = vi.fn(() => new Promise(() => {}));
+    void mount({ fetchDownloads });
+    await vi.waitFor(() => expect(document.querySelector("#downloads a.btn.primary")?.getAttribute("href")).toBe(DOWNLOADS.platforms[0].url));
+    await vi.waitFor(() => expect(fetchDownloads).toHaveBeenCalledOnce());
+  });
+
   it("paints the api's answer, one-liner and all, into the placeholder slot", async () => {
     await mount();
     await flush();
@@ -66,8 +77,8 @@ describe("mountDownloads", () => {
   });
 
   it("says Copied for a moment, then goes back to Copy", async () => {
-    vi.useFakeTimers();
     await mount();
+    vi.useFakeTimers();
     const button = document.getElementById("copycmd");
     button.click();
     await vi.advanceTimersByTimeAsync(0);

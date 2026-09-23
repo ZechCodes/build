@@ -6,6 +6,7 @@
 // the bridge holds and writes back to it, beside the fallback agent.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 import {
   mountProjectAgentSetting,
   projectAgentChoiceOf,
@@ -66,7 +67,8 @@ const bridgeHolding = (settings) => {
   return { call, calls };
 };
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = "";
 });
 
@@ -158,19 +160,27 @@ describe("the project-agent panel", () => {
       method: "settings.set",
       params: { project_agent: { provider: "claude_adk", model: null, effort: null } },
     });
-    expect(harness().value).toBe("claude_adk");
-    expect(model().value).toBe("");
-    expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    await vi.waitFor(() => {
+      expect(harness().value).toBe("claude_adk");
+      expect(model().value).toBe("");
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
 
     await change(model(), "claude-opus-5");
     expect(bridge.calls.at(-1).params).toEqual({
       project_agent: { model: "claude-opus-5", effort: null },
     });
-    expect(values(effort())).toEqual(["", "low", "high"]);
+    await vi.waitFor(() => {
+      expect(values(effort())).toEqual(["", "low", "high"]);
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
 
     await change(effort(), "high");
     expect(bridge.calls.at(-1).params).toEqual({ project_agent: { effort: "high" } });
-    expect(effort().value).toBe("high");
+    await vi.waitFor(() => {
+      expect(effort().value).toBe("high");
+      expect(document.getElementById("projectagentsaved").textContent).toContain("Saved");
+    });
   });
 
   it("clears a word the reader empties rather than saving the empty string", async () => {
@@ -199,10 +209,12 @@ describe("the project-agent panel", () => {
 
     await change(harness(), "claude_adk");
 
-    expect(document.getElementById("projectagenterr").textContent).toContain("cannot write the config file");
-    expect(document.getElementById("projectagentsaved").textContent).toBe("");
-    expect(harness().value).toBe("codex");
-    expect(harness().disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(document.getElementById("projectagenterr").textContent).toContain("cannot write the config file");
+      expect(document.getElementById("projectagentsaved").textContent).toBe("");
+      expect(harness().value).toBe("codex");
+      expect(harness().disabled).toBe(false);
+    });
   });
 
   it("offers nothing it cannot keep when the machine will not answer", async () => {

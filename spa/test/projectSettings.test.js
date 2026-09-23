@@ -5,6 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { projectSettingsAddress } from "../src/core/settingsRecords.js";
 
 const confirmAction = vi.fn();
 vi.mock("../src/core/confirm.js", () => ({ confirmAction: (...args) => confirmAction(...args) }));
@@ -17,18 +19,90 @@ const PROJECT = {
   remote: "git@github.com:8ly/build.git",
 };
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   confirmAction.mockReset();
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
 describe("openProjectSettings", () => {
+  it("keeps a focused remote draft when a delayed project.list repaints the sheet", async () => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    let answerList;
+    const callRpc = vi.fn(() => new Promise((resolve) => { answerList = resolve; }));
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe(PROJECT.remote));
+    const remote = document.querySelector("#psremote");
+    remote.value = "my unsaved remote";
+    remote.focus();
+    remote.setSelectionRange(3, 3);
+    answerList({ projects: [{ ...PROJECT, name: "from bridge" }] });
+    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("from bridge"));
+    expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
+    expect(document.activeElement).toBe(document.querySelector("#psremote"));
+    expect(document.querySelector("#psremote").selectionStart).toBe(3);
+  });
+
+  it("keeps a focused remote draft through a project cache announcement", async () => {
+    const address = projectSettingsAddress("dev-1", PROJECT.project_id);
+    await writeCached(address, PROJECT);
+    const sheet = openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe(PROJECT.remote));
+    const remote = document.querySelector("#psremote");
+    remote.value = "my unsaved remote";
+    remote.focus();
+    await writeCached(address, { ...PROJECT, name: "renamed" });
+    await sheet.whenCachePainted();
+    expect(document.querySelector("#psname").value).toBe("renamed");
+    expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
+    expect(document.activeElement).toBe(document.querySelector("#psremote"));
+  });
+
+  it("keeps an unfinished add-remote form when the project record changes", async () => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
+    document.querySelector("#psaddremote").click();
+    document.querySelector("#psremoteurl").value = "git@github.com:8ly/draft.git";
+    document.querySelector("#pssourcename").value = "draft";
+    document.querySelector("#pssourcename").focus();
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
+    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("renamed"));
+    expect(document.querySelector("#psremoteurl").value).toBe("git@github.com:8ly/draft.git");
+    expect(document.querySelector("#pssourcename").value).toBe("draft");
+    expect(document.activeElement).toBe(document.querySelector("#pssourcename"));
+  });
+
+  it("keeps the folder browser open through a project record announcement", async () => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    const callRpc = vi.fn(async (method) => {
+      if (method === "settings.get") return { projects_dir: "/Users/z/Projects" };
+      if (method === "fs.list") return { path: "/Users/z/Projects", parent: "/Users/z", is_git: false, entries: [] };
+      return new Promise(() => {});
+    });
+    const sheet = openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psaddfolder")).toBeTruthy());
+    document.querySelector("#psaddfolder").click();
+    await vi.waitFor(() => expect(document.querySelector("#psbrowseback")).toBeTruthy());
+    const back = document.querySelector("#psbrowseback");
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
+    await sheet.whenCachePainted();
+    expect(document.querySelector("#psbrowseback")).toBe(back);
+    back.click();
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("renamed"));
+  });
+  it("paints the cached project while project.list has no answer", async () => {
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
+    expect(callRpc).toHaveBeenCalledWith("project.list");
+  });
+
   it("shows the project's identity read-only and its remote as the one editable field", async () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");
@@ -49,10 +123,10 @@ describe("openProjectSettings", () => {
     // one device's project through another's bridge.
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
     document.getElementById("psremote").value = "git@github.com:8ly/other.git";
     document.getElementById("pssave").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
     expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
       project_id: "proj-1",
       url: "git@github.com:8ly/other.git",
@@ -64,10 +138,10 @@ describe("openProjectSettings", () => {
       method === "project.list" ? Promise.resolve({ projects: [PROJECT] }) : Promise.resolve({}),
     );
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
     document.getElementById("psremote").value = "git@github.com:8ly/other.git";
     document.getElementById("pssave").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
     expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
       project_id: "proj-1",
       url: "git@github.com:8ly/other.git",
@@ -82,9 +156,9 @@ describe("openProjectSettings", () => {
         : Promise.reject(new Error("not a git remote")),
     );
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#pssave")).toBeTruthy());
     document.getElementById("pssave").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toContain("not a git remote"));
     expect(document.getElementById("pserr").textContent).toContain("not a git remote");
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
   });
@@ -92,7 +166,7 @@ describe("openProjectSettings", () => {
   it("reports a project the bridge no longer knows rather than an empty sheet", async () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [] });
     openProjectSettings("proj-9", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#sheet").textContent).toContain("no longer"));
     expect(document.getElementById("sheet").textContent).toContain("no longer");
     expect(document.getElementById("psremote")).toBeNull();
   });
@@ -105,7 +179,8 @@ describe("openProjectSettings", () => {
       projects: [{ ...PROJECT, isolation: null, isolation_default: "rift", isolation_available: { rift: true } }],
     });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     expect([...select.options].map((option) => option.value)).toEqual(["", "worktree", "rift"]);
@@ -122,20 +197,26 @@ describe("openProjectSettings", () => {
         : Promise.resolve({ ...row, isolation: params.isolation }),
     );
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
-    expect(select.value).toBe("rift");
 
-    select.value = "";
-    select.dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+
+    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: "rift" });
+    await vi.waitFor(() => {
+      const current = document.querySelector("#sheet [data-isolation=select]");
+      expect(current).not.toBe(select);
+      expect(current.disabled).toBe(false);
+      expect(current.value).toBe("rift");
+    });
+    const refreshed = document.querySelector("#sheet [data-isolation=select]");
+    refreshed.value = "";
+    refreshed.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null }));
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")).not.toBe(refreshed));
     expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null });
     expect(document.querySelector("#sheet [data-isolation=select]").value).toBe("");
   });
@@ -152,7 +233,8 @@ describe("openProjectSettings", () => {
       ],
     });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
 
     expect([...document.querySelector("#sheet [data-isolation=select]").options].map((o) => o.disabled)).toEqual([
       false,
@@ -172,13 +254,13 @@ describe("openProjectSettings", () => {
         : Promise.reject(new Error("Rift isolation is unavailable: Rift CLI was not found")),
     );
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")?.disabled).toBe(false));
     const select = document.querySelector("#sheet [data-isolation=select]");
 
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
+
+    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=error]")?.textContent).toContain("Rift CLI was not found"));
 
     expect(document.querySelector("#sheet [data-isolation=error]").textContent).toContain("Rift CLI was not found");
     expect(document.getElementById("pserr").textContent).toBe("");
@@ -191,7 +273,7 @@ describe("openProjectSettings", () => {
       projects: [{ ...PROJECT, name: '"><img src=x>', path: "<b>p</b>" }],
     });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe('"><img src=x>'));
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector("img")).toBeNull();
     expect(sheet.querySelector("b")).toBeNull();
@@ -206,9 +288,9 @@ describe("project deletion", () => {
     confirmAction.mockResolvedValue(false);
     const callRpc = caller();
     openProjectSettings(PROJECT.project_id, { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psdelete").disabled).toBe(false));
     expect(confirmAction).toHaveBeenCalledWith(expect.objectContaining({ danger: true, title: "Delete build?" }));
     expect(callRpc).not.toHaveBeenCalledWith("project.delete", expect.anything());
     expect(document.querySelector("#psdelete").disabled).toBe(false);
@@ -220,9 +302,9 @@ describe("project deletion", () => {
     const callRpc = caller();
     const onDeleted = vi.fn();
     openProjectSettings(PROJECT.project_id, { callRpc, onDeleted });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(onDeleted).toHaveBeenCalledWith(PROJECT));
     expect(callRpc).toHaveBeenCalledWith("project.delete", { project_id: PROJECT.project_id, confirm: true });
     expect(onDeleted).toHaveBeenCalledWith(PROJECT);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
@@ -234,14 +316,15 @@ describe("project deletion", () => {
     const callRpc = vi.fn((method) => method === "project.list"
       ? Promise.resolve({ projects: [PROJECT] })
       : new Promise((resolve) => { finishDelete = resolve; }));
-    openProjectSettings(PROJECT.project_id, { callRpc });
-    await flush();
+    const onDeleted = vi.fn();
+    openProjectSettings(PROJECT.project_id, { callRpc, onDeleted });
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(finishDelete).toBeTypeOf("function"));
     expect(document.querySelector("#pssave").disabled).toBe(true);
     document.querySelector("#sheet").innerHTML = "Another sheet";
     finishDelete({ deleted: true });
-    await flush();
+    await vi.waitFor(() => expect(onDeleted).toHaveBeenCalled());
     expect(document.querySelector("#sheet").textContent).toBe("Another sheet");
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   });
@@ -253,9 +336,9 @@ describe("project deletion", () => {
       throw new Error("Workspace is busy");
     });
     openProjectSettings(PROJECT.project_id, { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psdelete")).toBeTruthy());
     document.querySelector("#psdelete").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy"));
     expect(document.querySelector("#pserr").textContent).toBe("Workspace is busy");
     expect(document.querySelector("#psdelete").disabled).toBe(false);
     expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
@@ -279,11 +362,11 @@ describe("project sources", () => {
     const shrunk = { ...SOURCED, sources: [SOURCED.sources[0]] };
     const callRpc = vi.fn(async (method) => (method === "project.list" ? { projects: [SOURCED] } : shrunk));
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelectorAll("#sheet [data-remove-source]")).toHaveLength(2));
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(2);
 
     document.querySelector('[data-remove-source="source-2"]').click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelectorAll("#sheet [data-remove-source]")).toHaveLength(1));
 
     expect(callRpc).toHaveBeenCalledWith("project.remove_source", { project_id: "proj-1", source_id: "source-2" });
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(1);
@@ -295,9 +378,9 @@ describe("project sources", () => {
       throw new Error("a project must have at least one source");
     });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector('[data-remove-source="source-2"]')).toBeTruthy());
     document.querySelector('[data-remove-source="source-2"]').click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#pssrcerr").textContent).toContain("at least one source"));
     expect(document.getElementById("pssrcerr").textContent).toContain("at least one source");
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(2);
   });
@@ -305,12 +388,12 @@ describe("project sources", () => {
   it("adds a Git remote as a folder, under the name it was given", async () => {
     const callRpc = caller();
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
     document.getElementById("psaddremote").click();
     document.getElementById("psremoteurl").value = "git@github.com:8ly/tokens.git";
     document.getElementById("pssourcename").value = "tokens";
     document.getElementById("pssourceadd").click();
-    await flush();
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.add_source", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
 
     expect(callRpc).toHaveBeenCalledWith("project.add_source", {
       project_id: "proj-1",
@@ -329,12 +412,12 @@ describe("project sources", () => {
       return { ...SOURCED, sources: [...SOURCED.sources, { id: "source-3", name: "docs", mount: "docs", path: params.path, is_git: false }] };
     });
     openProjectSettings("proj-1", { callRpc });
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector("#psaddfolder")).toBeTruthy());
 
     document.getElementById("psaddfolder").click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelector('#sheet .use[data-path="/Users/z/Projects/docs"]')).toBeTruthy());
     document.querySelector('#sheet .use[data-path="/Users/z/Projects/docs"]').click();
-    await flush();
+    await vi.waitFor(() => expect(document.querySelectorAll("#sheet [data-remove-source]")).toHaveLength(3));
 
     expect(callRpc).toHaveBeenCalledWith("project.add_source", { project_id: "proj-1", path: "/Users/z/Projects/docs" });
     expect(document.querySelectorAll("#sheet [data-remove-source]").length).toBe(3);

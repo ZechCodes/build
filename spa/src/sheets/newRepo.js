@@ -1,6 +1,8 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { openBrowser } from "./browser.js";
+import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
+import { readCached } from "../core/localCache.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -14,10 +16,11 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const choices = selectable ? devices : [{ id: deviceId || "pinned", name: deviceName }];
   let selectedDeviceId = defaultDeviceId && choices.some((device) => device.id === defaultDeviceId) ? defaultDeviceId : (selectable ? "" : choices[0].id);
   let active = true, busy = false, serial = 0, version = 0, projectsDir;
+  let projectsDirRecord = null;
   const selectedDevice = () => choices.find((device) => device.id === selectedDeviceId) || null;
   const selectedCall = () => selectable ? callRpcFor(selectedDeviceId) : callRpc;
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
-  const close = () => { active = false; version += 1; scrim.classList.remove("show"); };
+  const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
   const finish = (project, target) => {
     close();
@@ -46,7 +49,10 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     try {
       const project = await targetCall("project.create", params);
       if (!visible(anchor)) return;
-      finish(project, target);
+      await writeProjectSetting(target.id, project);
+      const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
+      if (!stored) throw new Error("The new project could not be read from the local cache.");
+      finish(stored, target);
     } catch (error) { if (visible(anchor)) $("#nrerr").textContent = error.message; }
     finally {
       busy = false;
@@ -89,9 +95,25 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const currentBrowser = (requestVersion, host) => requestVersion === version && visible(host);
   const loadProjectsDir = async (targetCall, requestVersion, targetId) => {
     if (projectsDir !== undefined) return true;
-    const nextProjectsDir = (await targetCall("settings.get")).projects_dir;
+    projectsDirRecord?.dispose();
+    let ready;
+    const cached = new Promise((resolve) => { ready = resolve; });
+    const record = watchSettingsRecord(deviceSettingsAddress(targetId), (settings) => {
+      if (targetId !== selectedDeviceId) return;
+      projectsDir = settings?.projects_dir;
+      if (projectsDir) ready();
+    });
+    projectsDirRecord = record;
+    await record.read();
+    const pull = record.pull(() => targetCall("settings.get"));
+    const result = await Promise.race([
+      cached.then(() => ({ ready: true })),
+      pull.then(() => ({ ready: true }), (error) => ({ error })),
+    ]);
+    if (result.error) record.dispose();
+    else void pull.catch(() => {}).finally(() => record.dispose());
+    if (result.error) throw result.error;
     if (requestVersion !== version || targetId !== selectedDeviceId) return false;
-    projectsDir = nextProjectsDir;
     return true;
   };
   const chooseSource = (sourceId, requestVersion, targetId, host, path) => {
@@ -115,7 +137,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       const host = $("#nrbrowser");
       if (!currentBrowser(requestVersion, host)) return;
       if (!projectsDir) throw new Error("This device did not return a projects folder.");
-      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, fallbackFromMissingStart: true, startPath: projectsDir, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
+      await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, fallbackFromMissingStart: true, startPath: projectsDir, deviceId: targetId, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
     } catch (error) { if (currentBrowser(requestVersion, $("#nrbrowser"))) $("#nrerr").textContent = error.message; }
   };
   const paintSources = () => {
@@ -131,6 +153,8 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     $("#nrcancel").onclick = close;
     if (selectable) $("#nrdevice").onchange = (event) => {
       remember();
+      projectsDirRecord?.dispose();
+      projectsDirRecord = null;
       selectedDeviceId = event.target.value;
       projectsDir = undefined;
       let cleared = false;

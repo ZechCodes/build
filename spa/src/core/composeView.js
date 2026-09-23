@@ -41,12 +41,14 @@ import {
 } from "./compose.js";
 import { replyOrNothing } from "./session.js";
 import { esc, messageOf } from "./text.js";
+import { captureRecordAddress } from "./captureRecords.js";
+import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 import "../styles/shell.css";
 
 const CHOICE_PREFIX = "compose-choice";
 
 let queue = []; // captures this client is holding for an absent device
-const tracked = new Map(); // capture id → { row, settledAt, settling }
+const tracked = new Map(); // capture id → cache-backed row and its settling state
 const listeners = new Set(); // who repaints when the held captures change
 // The home device's slice of the feed, never the merge: a capture goes to the
 // device creation goes to, so the destinations this box offers and the project
@@ -88,9 +90,12 @@ function heldCaptureRow(capture, deviceId = captureDeviceId()) {
  *  these with the feed's own, which win on a tie. */
 export function pendingCaptureRows(nowMs = Date.now()) {
   for (const [id, entry] of tracked) {
-    if (routedCaptureExpired({ state: entry.row.state, settledAt: entry.settledAt }, nowMs)) tracked.delete(id);
+    if (routedCaptureExpired({ state: entry.row?.state, settledAt: entry.settledAt }, nowMs)) {
+      entry.unwatch();
+      tracked.delete(id);
+    }
   }
-  return [...queue.map(queuedCaptureRow), ...[...tracked.values()].map((entry) => entry.row)];
+  return [...queue.map(queuedCaptureRow), ...[...tracked.values()].map((entry) => entry.row).filter(Boolean)];
 }
 
 function announce() {
@@ -107,20 +112,41 @@ function announce() {
  * acted on it, and the window is there to let them see and undo what they did.
  * One the feed still carries keeps the feed as its record.
  */
-export function adoptCaptureRecord(capture) {
-  const held = capture && capture.id ? tracked.get(capture.id) : null;
-  if (!held) return;
-  tracked.set(capture.id, {
-    row: heldCaptureRow(capture, held.row.deviceId),
-    settledAt: held.settledAt ? Date.now() : null,
-    settling: false,
-  });
-  announce();
+const captureRecordDevice = (held, namedDeviceId) => held?.deviceId || namedDeviceId || captureDeviceId();
+
+export async function adoptCaptureRecord(capture, deviceId = null) {
+  if (!capture?.id) return;
+  const held = tracked.get(capture.id);
+  if (held) {
+    held.settledAt = held.settledAt ? Date.now() : null;
+    held.settling = false;
+  }
+  await writeCached(captureRecordAddress(captureRecordDevice(held, deviceId), capture.id), capture);
+  if (held) await readTracked(capture.id);
 }
 
 export function forgetCaptureRecord(captureId) {
-  if (!tracked.delete(captureId)) return;
+  const held = tracked.get(captureId);
+  if (!held) return;
+  held.unwatch();
+  tracked.delete(captureId);
+  void deleteCached([captureRecordAddress(held.deviceId, captureId)]);
   announce();
+}
+
+/** A tracked row is a projection of the committed capture record. Serialize
+ *  reads because an earlier announcement can finish after a later write. */
+function readTracked(captureId) {
+  const entry = tracked.get(captureId);
+  if (!entry) return Promise.resolve();
+  const read = async () => {
+    const held = await readCached(captureRecordAddress(entry.deviceId, captureId));
+    if (tracked.get(captureId) !== entry) return;
+    if (!entry.inFeed) entry.row = held ? heldCaptureRow(held.value, entry.deviceId) : null;
+    announce();
+  };
+  entry.read = (entry.read || Promise.resolve()).then(read, read);
+  return entry.read;
 }
 
 /** Repaint when the held captures change. Returns unsubscribe. */
@@ -141,9 +167,16 @@ function hold(text) {
   announce();
 }
 
-function track(capture) {
-  tracked.set(capture.id, { row: heldCaptureRow(capture), settledAt: null, settling: false });
-  announce();
+async function track(capture, deviceId) {
+  const entry = { row: null, deviceId, settledAt: null, settling: false, inFeed: false, read: null, revision: 0, unwatch: () => {} };
+  tracked.set(capture.id, entry);
+  const address = captureRecordAddress(deviceId, capture.id);
+  entry.unwatch = subscribeCache(address, () => {
+    entry.revision += 1;
+    void readTracked(capture.id);
+  });
+  await writeCached(address, capture);
+  await readTracked(capture.id);
 }
 
 /**
@@ -154,9 +187,10 @@ function track(capture) {
  */
 export async function flushCaptures() {
   if (!queue.length || !canSend()) return;
+  const deviceId = captureDeviceId();
   const { sent, remaining } = await flushCaptureQueue(queue, (text) => homeCall("capture.create", { text }));
   queue = saveCaptureQueue(remaining);
-  sent.forEach(({ capture }) => track(capture));
+  await Promise.all(sent.map(({ capture }) => track(capture, deviceId)));
   announce();
   if (sent.length) await refreshFeed();
 }
@@ -181,20 +215,30 @@ function syncTracked() {
       // The feed's copy is the record. Adopting it every tick would repaint the
       // inbox twice a tick, so it is adopted only when it actually moved.
       if (live !== entry.row || entry.settledAt) {
-        tracked.set(id, { row: live, settledAt: null, settling: false });
+        entry.row = live;
+        entry.inFeed = true;
+        entry.settledAt = null;
+        entry.settling = false;
         changed = true;
       }
       continue;
     }
     if (entry.settledAt || entry.settling || !canSend()) continue;
     entry.settling = true;
+    entry.inFeed = false;
     changed = true;
+    const startedRevision = entry.revision;
     homeCall("capture.get", { capture_id: id })
-      .then((capture) => {
-        tracked.set(id, { row: heldCaptureRow(capture, entry.row.deviceId), settledAt: Date.now(), settling: false });
+      .then(async (capture) => {
+        if (tracked.get(id) !== entry || entry.inFeed) return;
+        entry.settledAt = Date.now();
+        entry.settling = false;
+        if (entry.revision === startedRevision) {
+          await writeCached(captureRecordAddress(entry.deviceId, id), capture);
+        }
+        await readTracked(id);
       })
-      .catch(() => tracked.delete(id))
-      .then(announce);
+      .catch(() => forgetCaptureRecord(id));
   }
   if (changed) announce();
 }
@@ -279,6 +323,10 @@ function wireBox(host) {
   host.querySelector("#compose-advanced").onclick = () => {
     box.value = text.value;
     box.advancedOpen = !box.advancedOpen;
+    if (!box.advancedOpen) {
+      box.stopCatalog?.();
+      box.stopCatalog = null;
+    }
     paintBox({ focus: false });
     if (box.advancedOpen) loadCatalogForPanel();
   };
@@ -338,6 +386,15 @@ function repaintChoice(host) {
   wireChoice(host);
 }
 
+function repaintCatalogChoice() {
+  const host = $("#compose");
+  if (!host) return;
+  const focused = host.ownerDocument.activeElement;
+  const focusId = focused?.id?.startsWith(`${CHOICE_PREFIX}-`) ? focused.id : null;
+  repaintChoice(host);
+  if (focusId) host.querySelector(`#${focusId}`)?.focus();
+}
+
 /** The catalog is the creation device's, so the panel opens on what the box
  *  has — nothing, the first time it is opened — and repaints once that machine
  *  answers. A repaint mid-typing is avoided by only doing it when the answer
@@ -345,15 +402,23 @@ function repaintChoice(host) {
  *  question with it. */
 function loadCatalogForPanel() {
   const asked = box;
+  const context = homeContext();
+  let heardCatalog = false;
+  const showCatalog = (loaded) => {
+    if (box !== asked || !box.advancedOpen || !loaded || loaded === box.catalog) return;
+    box.catalog = loaded;
+    // Preserve a choice made while the catalog was refreshing. Only the
+    // initially empty choice takes its default from the catalog.
+    if (!box.choice.provider) box.choice = agentDefaultsIn(loaded);
+    repaintCatalogChoice();
+  };
+  box.stopCatalog?.();
+  box.stopCatalog = context?.onModelCatalogChanged((loaded) => {
+    heardCatalog = true;
+    showCatalog(loaded);
+  }) || null;
   deviceCatalog(null)
-    .then((loaded) => {
-      if (box !== asked || loaded === box.catalog) return;
-      box.catalog = loaded;
-      // The stored defaults name no harness until one is chosen; the catalog
-      // says which one that is, and brings that harness's preference with it.
-      if (!box.choice.provider) box.choice = agentDefaultsIn(loaded);
-      if (box.advancedOpen) paintBox({ focus: false });
-    })
+    .then((loaded) => { if (!heardCatalog) showCatalog(loaded); })
     .catch(() => {});
 }
 
@@ -384,6 +449,7 @@ export function openCompose() {
 
 export function closeCompose() {
   if (!box) return;
+  box.stopCatalog?.();
   box = null;
   paintPrompt();
 }
@@ -411,7 +477,7 @@ async function submitCapture() {
   box.error = "";
   paintBox({ focus: false });
   try {
-    track(await homeCall("capture.create", { text }));
+    await track(await homeCall("capture.create", { text }), captureDeviceId());
     closeCompose();
     await refreshFeed();
   } catch {

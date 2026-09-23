@@ -7,6 +7,7 @@
 // asked, and a second browser must not disagree.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wipeCache } from "../src/core/localCache.js";
 
 import { mountWatchSetting, watchSettingPanelHtml, watchesAgentFiledIssues } from "../src/core/watchSetting.js";
 
@@ -14,7 +15,8 @@ const host = () => document.querySelector("#panels");
 const box = () => host().querySelector("#watchagentissues");
 const error = () => host().querySelector("#watchagentissueserr").textContent;
 
-beforeEach(() => {
+beforeEach(async () => {
+  await wipeCache();
   document.body.innerHTML = `<div id="panels">${watchSettingPanelHtml()}</div>`;
 });
 

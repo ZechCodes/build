@@ -1,6 +1,10 @@
 /** @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mountWorkspaceRefPicker } from "../src/core/workspaceRefPicker.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+let mountWorkspaceRefPicker;
+let writeCached;
+let cacheScope;
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const scope = { workspace_id: "ws-1", source_id: "repo" };
@@ -54,24 +58,51 @@ function refNames(host) {
   return [...host.querySelectorAll("[data-ref]")].map((row) => row.textContent);
 }
 
-async function mount({ checkoutError } = {}) {
+async function mount({ checkoutError, refsResponse = listing } = {}) {
   const host = document.querySelector("#host");
   const callRpc = vi.fn(async (method) => {
-    if (method === "git.refs") return listing;
+    if (method === "git.refs") return refsResponse;
     if (method === "git.checkout_ref" && checkoutError) throw checkoutError;
     return {};
   });
   const onCheckout = vi.fn();
-  const mounted = mountWorkspaceRefPicker(host, { scope, callRpc, onCheckout });
+  const mounted = mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCheckout });
   await flush();
+  if (refsResponse === listing) await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
   return { host, callRpc, onCheckout, mounted };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  ({ mountWorkspaceRefPicker } = await import("../src/core/workspaceRefPicker.js"));
+  ({ writeCached } = await import("../src/core/localCache.js"));
+  cacheScope = { address: ({ entityId, kind }) => ({ deviceId: "dev-1", entityId, kind }) };
   document.body.innerHTML = '<div id="host"></div>';
 });
 
 describe("workspace ref picker", () => {
+  it("paints cached refs while the pull is absent", async () => {
+    const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+    await writeCached(address, listing);
+    const { host, mounted } = await mount({ refsResponse: new Promise(() => {}) });
+    await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
+    host.querySelector("[data-refpicker-toggle]").click();
+    expect(refNames(host).join(" ")).toContain("feature/search");
+    mounted.dispose();
+  });
+
+  it("redraws only after the real cache announces a new refs record", async () => {
+    const { host, mounted } = await mount({ refsResponse: new Promise(() => {}) });
+    const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+    await writeCached(address, { current: { kind: "tag", name: "v3", full_ref: "refs/tags/v3" }, refs: [{ kind: "tag", name: "v3", full_ref: "refs/tags/v3", current: true }] });
+    await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("v3"));
+    host.querySelector("[data-refpicker-toggle]").click();
+    host.querySelector('[data-ref-kind="tag"]').click();
+    expect(refNames(host).map((name) => name.trim())).toEqual(["v3Current"]);
+    mounted.dispose();
+  });
   it("separates branches from tags and searches within the active tab", async () => {
     const { host } = await mount();
     host.querySelector("[data-refpicker-toggle]").click();

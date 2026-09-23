@@ -3,10 +3,11 @@
 // three-step gate it has always been — the pairing code is still what pairs a
 // device — with the download the human needs before step 2 can happen at all.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { asset, downloadsPayload, mintedCommand } from "./downloadsFixture.js";
+import { wipeCache } from "../src/core/localCache.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -117,6 +118,7 @@ let boot;
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  await wipeCache();
   devices = [];
   landed.length = 0;
   securityStop = "";
@@ -132,6 +134,8 @@ beforeEach(async () => {
   Object.assign(App, { devices: [], gated: true, selectedDeviceId: null, _connecting: false, _watch: null });
   ({ boot } = await import("../src/views/gate.js"));
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe("the device connection gate", () => {
   it("opens every online device at once and enters on the first that answers", async () => {
@@ -282,7 +286,9 @@ describe("the device connection gate", () => {
   });
 
   it("keeps waiting through a failed presence read instead of inferring onboarding", async () => {
-    vi.useFakeTimers();
+    // The cache uses IndexedDB's own task queue; only the gate's cadence needs
+    // a clock here, so leave the database callbacks on the real clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     devices = [{ id: "dev-a", name: "Studio", fingerprint: "AAAA", status: "offline" }];
     const { App } = await import("../src/app.js");
     App.devices = devices;
@@ -300,14 +306,14 @@ describe("the device connection gate", () => {
   });
 
   it("automatically retries a cold device-api failure", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
     refresh = vi.fn().mockRejectedValueOnce(new Error("api unavailable")).mockResolvedValueOnce([]);
 
     await boot();
     expect(document.getElementById("root").textContent).toContain("couldn’t refresh device status");
 
     await vi.advanceTimersByTimeAsync(3000);
-    expect(document.getElementById("ocode")).toBeTruthy();
+    await vi.waitFor(() => expect(document.getElementById("ocode")).toBeTruthy());
     const { App } = await import("../src/app.js");
     clearInterval(App._watch);
     App._watch = null;
@@ -376,7 +382,7 @@ describe("the first-run screen", () => {
     document.getElementById("oapprove").click();
     await flush();
     expect(approveDevice).toHaveBeenCalledWith("G6ZP-KD2U");
-    expect(refreshDevices).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(refreshDevices).toHaveBeenCalledTimes(2));
   });
 
   // boot() swallows what enterApp throws (a stale status is the ordinary

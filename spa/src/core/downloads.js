@@ -8,6 +8,7 @@
 // answers, so a slow or refusing api never leaves a blank screen behind.
 
 import { esc } from "./text.js";
+import { downloadsAddress, watchSettingsRecord } from "./settingsRecords.js";
 
 const UNAVAILABLE = "Downloads aren't available right now.";
 const dim = (text, extra = "") => `<div class="dim" style="font-size:12.5px;${extra}">${text}</div>`;
@@ -40,8 +41,8 @@ const desktopHtml = (downloads) => `
       ${downloads?.desktop_install_command ? installLineHtml(downloads.desktop_install_command, "desktop", "Install the desktop app on macOS or Linux") : ""}
       ${downloads?.desktop_releases_url ? dim(`<a href="${esc(downloads.desktop_releases_url)}">Desktop app releases</a>`, "margin-top:8px") : ""}`;
 
-/** The block, painted from the api's payload. `platformKey` is looked up in the
- *  payload rather than branched on: this module knows the four keys only as
+/** The block, painted from the cached downloads record. `platformKey` is looked up in the
+ *  record rather than branched on: this module knows the four keys only as
  *  strings the api also uses. */
 export function downloadsHtml(downloads, platformKey) {
   const platforms = Array.isArray(downloads?.platforms) ? downloads.platforms : [];
@@ -72,7 +73,8 @@ export function bindCopyButton(button, resolveText, clipboard) {
   };
 }
 
-/** Fill the host's placeholder from the api. A refusal names itself in
+/** Fill the host's placeholder from the cache, then refresh its record from
+ * the api. A refusal names itself in
  *  #downloadserr and leaves every other control on the page usable — on the
  *  first-run screen the pairing code is what actually pairs a device, and it
  *  must survive a downloads route that is missing or closed. */
@@ -82,16 +84,24 @@ export async function mountDownloads(
 ) {
   const slot = host?.querySelector?.("#downloads");
   if (!slot) return;
-  let downloads;
+  let painted = false;
+  const record = watchSettingsRecord(downloadsAddress, (downloads) => {
+    if (!host.querySelector("#downloads")) {
+      record.dispose();
+      return;
+    }
+    if (!downloads) return;
+    painted = true;
+    host.querySelector("#downloads").outerHTML = downloadsHtml(downloads, platformKey);
+    bindCopyButton(host.querySelector("#copycmd"), () => downloads.install_command ?? "", clipboard);
+    bindCopyButton(host.querySelector("#desktopcopycmd"), () => downloads.desktop_install_command ?? "", clipboard);
+  });
   try {
-    downloads = await fetchDownloads();
+    await record.read();
+    await record.pull(fetchDownloads);
   } catch (failure) {
-    slot.innerHTML = dim(UNAVAILABLE);
+    if (!painted) slot.innerHTML = dim(UNAVAILABLE);
     const error = host.querySelector("#downloadserr");
     if (error) error.textContent = failure.message;
-    return;
   }
-  slot.outerHTML = downloadsHtml(downloads, platformKey);
-  bindCopyButton(host.querySelector("#copycmd"), () => downloads?.install_command ?? "", clipboard);
-  bindCopyButton(host.querySelector("#desktopcopycmd"), () => downloads?.desktop_install_command ?? "", clipboard);
 }

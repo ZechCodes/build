@@ -48,10 +48,10 @@ async function refreshAccountCatalog(deviceId) {
  * The markup is rebuilt on each call, so a reconnect starts from what the
  * machine says now and not from the last connection's refusal.
  */
-export async function standUpDevicePanels({ projectsHost, bridgeHost, callRpc, device }) {
+export function standUpDevicePanels({ projectsHost, bridgeHost, callRpc, device }) {
   projectsHost.innerHTML = deviceProjectsPanelHtml();
   bridgeHost.innerHTML = BRIDGE_PANELS.map((panel) => panel.html()).join("");
-  await mountDeviceProjects(projectsHost, {
+  const mounts = [mountDeviceProjects(projectsHost, {
     callRpc,
     deviceId: device.id,
     deviceName: device.name,
@@ -59,7 +59,12 @@ export async function standUpDevicePanels({ projectsHost, bridgeHost, callRpc, d
     // context for this machine reads it again. It has none while the machine
     // has never answered the app itself, and then there is nothing to re-read.
     onProjectCreated: (_project, target) => refreshFeed(target.id),
-  });
-  const options = { callRpc, onSaved: () => refreshAccountCatalog(device.id) };
-  for (const panel of BRIDGE_PANELS) await panel.mount(bridgeHost, options);
+  })];
+  const options = { callRpc, deviceId: device.id, onSaved: () => refreshAccountCatalog(device.id) };
+  for (const panel of BRIDGE_PANELS) mounts.push(panel.mount(bridgeHost, options));
+  void Promise.allSettled(mounts);
+  return () => {
+    projectsHost.innerHTML = "";
+    bridgeHost.innerHTML = "";
+  };
 }

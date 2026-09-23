@@ -5,6 +5,7 @@
 // never takes the box being typed into.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
@@ -50,7 +51,6 @@ let entryKeyOf;
 let host;
 let surface;
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 
 // Every destination the router can offer is a branch: filing an issue is
 // retired (core/captureDecision.js drops an issue option that names no branch),
@@ -93,15 +93,17 @@ let record = asking();
 
 /** Answer the confirmation modal a destructive verb opens. */
 async function answerConfirm(ok) {
-  await flush();
+  await vi.waitFor(() => expect(document.querySelector("#confirm-scrim [data-confirm-ok]")).toBeTruthy());
   const scrim = document.getElementById("confirm-scrim");
   expect(scrim, "a confirmation was expected").toBeTruthy();
   scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
-  await flush();
+  await vi.waitFor(() => expect(document.querySelector("#confirm-scrim [data-confirm-ok]")).toBeNull());
 }
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = '<main id="root"><div id="capture-page"></div></main>';
   location.hash = "#/capture/capture-1";
   ({ App } = await import("../src/app.js"));
@@ -159,6 +161,69 @@ afterEach(() => {
 const choices = () => [...host.querySelectorAll("[data-capture-option]")];
 
 describe("the capture decision page", () => {
+  it("paints a stored capture before a late reply and redraws from a cache write", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    await writeCached(address, asking({ question: { text: "The stored question" } }));
+    surface.dispose();
+    homeCall = vi.fn(() => new Promise(() => {}));
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await vi.waitFor(() => expect(host.textContent).toContain("The stored question"));
+
+    expect(host.textContent).toContain("The stored question");
+    await writeCached(address, asking({ question: { text: "The newly stored question" } }));
+    await vi.waitFor(() => expect(host.textContent).toContain("The newly stored question"));
+    expect(host.textContent).toContain("The newly stored question");
+  });
+
+  it("keeps a newer cache write when an older capture.get reply lands", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      await writeCached(address, asking({ question: { text: "The stored question" } }));
+      surface.dispose();
+      let finishRead;
+      homeCall = vi.fn(() => new Promise((resolve) => { finishRead = resolve; }));
+      host.innerHTML = "";
+      surface = mountCaptureDecision(host, "capture-1");
+      await vi.waitFor(() => expect(host.textContent).toContain("The stored question"));
+      const pending = surface.load();
+      await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+      await writeCached(address, asking({ question: { text: "The newer question" } }));
+      await vi.waitFor(() => expect(host.textContent).toContain("The newer question"));
+      finishRead(asking({ question: { text: "The stale reply" } }));
+      await pending;
+
+      expect(host.textContent).toContain("The newer question");
+      expect(host.textContent).not.toContain("The stale reply");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("finds a non-home capture's stored record before its feed row arrives", async () => {
+    const { deleteCached, writeCached } = await import("../src/core/localCache.js");
+    await deleteCached([{ deviceId: "dev-1", entityId: "capture-1", kind: "capture" }]);
+    await writeCached(
+      { deviceId: "dev-2", entityId: "capture-1", kind: "capture" },
+      asking({ question: { text: "The away device's question" } }),
+    );
+    surface.dispose();
+    homeCall = vi.fn(() => new Promise(() => {}));
+    awayCall.mockImplementation(() => new Promise(() => {}));
+    host.innerHTML = "";
+    surface = mountCaptureDecision(host, "capture-1");
+    await vi.waitFor(() => expect(host.textContent).toContain("The away device's question"));
+    expect(host.textContent).toContain("The away device's question");
+
+    void surface.load();
+    await vi.waitFor(() => expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" }));
+    expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
+    expect(homeCall).not.toHaveBeenCalled();
+  });
+
   it("states what was said, what the router asked, and the choices it offered", () => {
     expect(homeCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
     expect(host.textContent).toContain("fix the login redirect");
@@ -171,10 +236,11 @@ describe("the capture decision page", () => {
   it("answers with the choice that was tapped, and shows the router deciding again", async () => {
     record = capture({ state: "routing", question: { ...asking().question, answer: "…", chosen_option_id: "option-1" } });
     choices()[0].click();
-    await flush();
     expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-1" });
-    expect(refreshFeed).toHaveBeenCalled();
-    expect(host.textContent).toContain("Deciding where this goes");
+    await vi.waitFor(() => {
+      expect(refreshFeed).toHaveBeenCalled();
+      expect(host.textContent).toContain("Deciding where this goes");
+    });
   });
 
   it("goes back to the inbox once the router has routed it", async () => {
@@ -190,7 +256,7 @@ describe("the capture decision page", () => {
     project.dispatchEvent(new Event("change"));
     host.querySelector("#capture-branch").value = "build/csv-export";
     host.querySelector("#capture-route").click();
-    await flush();
+    await vi.waitFor(() => expect(homeCall).toHaveBeenCalledWith("capture.answer", expect.objectContaining({ capture_id: "capture-1" })));
     expect(homeCall).toHaveBeenCalledWith("capture.answer", {
       capture_id: "capture-1",
       text: "Route this to project p2 as a branch, on the branch build/csv-export",
@@ -207,7 +273,7 @@ describe("the capture decision page", () => {
     await surface.load();
     expect(host.querySelector("#capture-answer-send").disabled).toBe(true);
     host.querySelector("#capture-route").click();
-    await flush();
+    await vi.waitFor(() => expect(homeCall).toHaveBeenCalledWith("capture.reroute", expect.objectContaining({ capture_id: "capture-1" })));
     expect(homeCall).toHaveBeenCalledWith("capture.reroute", {
       capture_id: "capture-1",
       project_id: "p1",
@@ -220,7 +286,7 @@ describe("the capture decision page", () => {
     box.value = "neither, it is the relay";
     box.dispatchEvent(new Event("input"));
     host.querySelector("#capture-answer-send").click();
-    await flush();
+    await vi.waitFor(() => expect(homeCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", text: "neither, it is the relay" }));
     expect(homeCall).toHaveBeenCalledWith("capture.answer", {
       capture_id: "capture-1",
       text: "neither, it is the relay",
@@ -229,7 +295,7 @@ describe("the capture decision page", () => {
 
   it("says nothing to the daemon when the answer box is empty", async () => {
     host.querySelector("#capture-answer-send").click();
-    await flush();
+
     expect(homeCall).not.toHaveBeenCalledWith("capture.answer", expect.anything());
   });
 
@@ -282,7 +348,7 @@ describe("the capture decision page", () => {
     });
     host.querySelector("#capture-cancel").click();
     await answerConfirm(true);
-    await flush();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledTimes(1));
 
     expect(pendingIn("inbox")).toEqual([]);
     expect(notifyError).toHaveBeenCalledTimes(1);
@@ -295,11 +361,11 @@ describe("the capture decision page", () => {
     // projects, so all four of this page's calls go there — never through the
     // App alias, and never to the other device that happens to be connected.
     choices()[1].click();
-    await flush();
+    await vi.waitFor(() => expect(host.querySelector("#capture-route")?.disabled).toBe(false));
     record = capture({ state: "failed" });
     await surface.load();
     host.querySelector("#capture-route").click();
-    await flush();
+    await vi.waitFor(() => expect(host.querySelector("#capture-cancel")?.disabled).toBe(false));
     host.querySelector("#capture-cancel").click();
     await answerConfirm(true);
 
@@ -318,7 +384,7 @@ describe("the capture decision page", () => {
       return record;
     });
     choices()[0].click();
-    await flush();
+    await vi.waitFor(() => expect(host.querySelector(".capture-decide-error")?.textContent).toContain("already been answered"));
     const error = host.querySelector(".capture-decide-error");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toContain("already been answered");
@@ -352,7 +418,7 @@ describe("a capture taken on a device that is not home", () => {
     expect(awayCall).toHaveBeenCalledWith("capture.get", { capture_id: "capture-1" });
 
     choices()[1].click();
-    await flush();
+    await vi.waitFor(() => expect(awayCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" }));
 
     expect(awayCall).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", option_id: "option-2" });
     expect(homeCall).not.toHaveBeenCalled();

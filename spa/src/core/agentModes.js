@@ -2,6 +2,8 @@
 // preferences; this panel only paints confirmed values and sends one family at
 // a time so changing Codex cannot overwrite Claude Code (or vice versa).
 
+import { deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js";
+
 export const AGENT_MODE_FAMILIES = [
   { id: "claude", label: "Claude Code" },
   { id: "codex", label: "Codex" },
@@ -47,7 +49,7 @@ export function agentModesPanelHtml() {
     </div>`;
 }
 
-export async function mountAgentModes(host, { callRpc, onSaved }) {
+export async function mountAgentModes(host, { callRpc, deviceId = "", onSaved }) {
   const panel = host.querySelector("[data-agent-modes-panel]");
   if (!panel) return;
   const error = panel.querySelector("[data-agent-modes-error]");
@@ -77,14 +79,18 @@ export async function mountAgentModes(host, { callRpc, onSaved }) {
     });
   };
 
-  try {
-    paintConfirmedSettings(await callRpc("settings.get"));
-  } catch (readError) {
-    disableAll();
-    error.textContent = readError.message;
-    return;
-  }
-
+  let painted = false;
+  const record = watchSettingsRecord(deviceSettingsAddress(deviceId), (settings) => {
+    if (!settings) return;
+    try {
+      paintConfirmedSettings(settings);
+      painted = true;
+      error.textContent = "";
+    } catch (readError) {
+      disableAll();
+      error.textContent = readError.message;
+    }
+  }, { owner: panel });
   controls.forEach((control, family) => {
     control.select.onchange = async () => {
       const chosen = control.select.value;
@@ -93,24 +99,30 @@ export async function mountAgentModes(host, { callRpc, onSaved }) {
       error.textContent = "";
       try {
         const settings = await callRpc("settings.set", { agent_modes: { [family]: chosen } });
-        control.confirmed = confirmedMode(settings, family);
-        control.select.innerHTML = optionsHtml(control.confirmed);
+        confirmedMode(settings, family);
+        await record.write(settings);
         control.status.textContent = "Saved.";
         await onSaved?.(settings);
       } catch (saveError) {
         control.status.textContent = "";
-        error.textContent = saveError.message;
+        await record.read();
         try {
-          const settings = await callRpc("settings.get");
-          paintConfirmedSettings(settings);
-          await onSaved?.(settings);
+          await record.pull(() => callRpc("settings.get"));
+          await onSaved?.();
+          error.textContent = saveError.message;
         } catch (reloadError) {
-          disableAll();
           error.textContent = `${saveError.message}. Reload failed: ${reloadError.message}`;
-          return;
         }
       }
-      control.select.disabled = false;
+      control.select.disabled = !painted;
     };
   });
+  try {
+    await record.pull(() => callRpc("settings.get"));
+  } catch (readError) {
+    if (!painted) {
+      disableAll();
+      error.textContent = readError.message;
+    }
+  }
 }

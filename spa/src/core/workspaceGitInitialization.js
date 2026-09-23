@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { modalDialogHtml, openModal } from "./modal.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 
 const TARGET_LABEL = { workspace: "Workspace copy", source: "Original source", both: "Both" };
 
@@ -82,8 +83,8 @@ async function submitInitialization(context) {
     const answer = await callRpc("workspace.init_git", { workspace_id: workspaceId, source_id: sourceId, target: state.target });
     if (!requestBelongsToView(isActive)) return;
     state.results = resultList(answer);
-    syncOptions(options, answer, sourceId);
-    onUpdate(answer);
+    const cachedOptions = await onUpdate(answer);
+    syncOptions(options, cachedOptions, sourceId);
     if (prepareRetry(state)) return;
     await modal.close();
   } catch (error) {
@@ -96,10 +97,10 @@ async function submitInitialization(context) {
   }
 }
 
-function syncOptions(options, answer, sourceId) {
-  const directory = answer.workspace?.directories?.find((entry) => (entry.source_id || entry.id) === sourceId);
-  if (directory) options.workspace.is_git = directory.is_git;
-  if (answer.source && typeof answer.source.is_git === "boolean") options.source.is_git = answer.source.is_git;
+function syncOptions(options, cached, sourceId) {
+  if (!cached || cached.source_id !== sourceId) return;
+  options.workspace = { ...options.workspace, ...cached.workspace };
+  options.source = { ...options.source, ...cached.source };
 }
 
 /** Whether this answer still belongs to the view that asked for it. The view's
@@ -131,13 +132,21 @@ function createDialogController({ options, callRpc, workspaceId, sourceId, isAct
     if (confirm) confirm.onclick = () => submitInitialization({ state, options, modal, isActive, callRpc, workspaceId, sourceId, onUpdate, render });
   };
   modal = openModal({ dialogHtml: modalDialogHtml("", { className: "modal-workspace-init" }), onClose: onClosed });
+  modal.updateOptions = (next) => {
+    options = { ...next, workspace: { ...next.workspace }, source: { ...next.source } };
+    render();
+  };
   render();
   return modal;
 }
 
-export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, callRpc, isActive, onUpdate }) {
+export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, callRpc, cacheScope, isActive, onUpdate }) {
   let dialog = null;
   let loading = false;
+  let opening = false;
+  let revision = 0;
+  let latestRead = Promise.resolve();
+  const address = cacheScope?.address({ entityId: workspaceId, kind: "git-init-options", sub: sourceId });
   const button = document.createElement("button");
   button.className = "workspace-init-open";
   button.type = "button";
@@ -148,20 +157,41 @@ export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, c
   status.className = "workspace-init-open-status";
   status.setAttribute("role", "status");
   host.appendChild(status);
+  const paintFromCache = async () => {
+    if (!address) return;
+    const options = (await readCached(address))?.value;
+    if (!options || !opening || !isActive()) return;
+    if (dialog) dialog.updateOptions(options);
+    else dialog = createDialogController({ options, callRpc, workspaceId, sourceId, isActive, onUpdate, onClosed: () => {
+      dialog = null;
+      opening = false;
+      loading = false;
+      button.disabled = false;
+    } });
+  };
+  const unwatch = address ? subscribeCache(address, () => {
+    revision += 1;
+    latestRead = paintFromCache();
+  }) : () => {};
   button.onclick = async () => {
     if (loading || dialog) return;
     loading = true;
+    opening = true;
     button.disabled = true;
     try {
-      const options = await callRpc("workspace.git_init_options", { workspace_id: workspaceId, source_id: sourceId });
+      await paintFromCache();
+      const startedAt = revision;
+      const pulled = await callRpc("workspace.git_init_options", { workspace_id: workspaceId, source_id: sourceId });
       if (!isActive()) return;
-      dialog = createDialogController({ options, callRpc, workspaceId, sourceId, isActive, onUpdate, onClosed: () => { dialog = null; } });
+      if (!address || revision !== startedAt) return;
+      await writeCached(address, pulled);
+      await latestRead;
     } catch (error) {
-      if (isActive()) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
+      if (isActive() && !dialog) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
     } finally {
       loading = false;
       if (isActive()) button.disabled = false;
     }
   };
-  return { dispose: () => dialog?.close() };
+  return { dispose: () => { opening = false; unwatch(); dialog?.close(); } };
 }

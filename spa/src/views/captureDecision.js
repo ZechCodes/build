@@ -25,9 +25,8 @@ export function renderCaptureDecision() {
   // A capture IS a feed row, so the page reads again when a machine's board
   // moves — the whole list a pass writes, and the single row a `state` push
   // writes, which is what a capture moving from routing to awaiting-answer
-  // actually is. Captures were not in the cache-first brief and carry no
-  // record of their own, so this is the whole of what wakes the page. If it
-  // proves too little it is a follow-up here, not a poll back.
+  // actually is. The resulting capture.get reply writes the capture's own
+  // cache record; that record's announcement repaints the page.
   // The read is handed over rather than fired and forgotten: what keeps a
   // pass's dozen row writes from being a dozen reads is the wake knowing when
   // this one is still out (core/feedRows.js).

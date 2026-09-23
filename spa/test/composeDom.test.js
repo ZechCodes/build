@@ -7,6 +7,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -50,7 +51,6 @@ let modelCatalog;
 // it, so a test that hands over a new one is that bridge answering differently.
 const bridge = { call: null };
 
-const flush = () => new Promise((done) => setTimeout(done, 0));
 const $ = (selector) => document.querySelector(selector);
 const type = (selector, value) => {
   const control = $(selector);
@@ -76,6 +76,8 @@ const captureRecord = (over = {}) => ({
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   localStorage.clear();
   document.body.innerHTML = bodyHtml;
   const composeHost = document.createElement("div");
@@ -194,9 +196,9 @@ describe("capture first", () => {
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await flush();
+
     expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "fix the login redirect" });
-    expect(refreshFeed).toHaveBeenCalled();
+    await vi.waitFor(() => expect(refreshFeed).toHaveBeenCalled());
     expect($("#compose-text")).toBeNull(); // the box is done with it
   });
 
@@ -204,7 +206,7 @@ describe("capture first", () => {
     press("c");
     type("#compose-text", "   ");
     $("#compose-send").click();
-    await flush();
+
     expect(bridge.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
     expect($(".compose-error").hidden).toBe(false);
   });
@@ -213,7 +215,7 @@ describe("capture first", () => {
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["routing"]));
     const rows = pendingCaptureRows();
     expect(rows.map((row) => [row.capture_id, row.state])).toEqual([["capture-1", "routing"]]);
   });
@@ -226,7 +228,7 @@ describe("capture first", () => {
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]));
     expect(pendingCaptureRows().map((row) => row.deviceId)).toEqual(["dev-1"]);
   });
 
@@ -234,7 +236,7 @@ describe("capture first", () => {
     press("c");
     const text = type("#compose-text", "ship it");
     text.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }));
-    await flush();
+    await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "ship it" }));
     expect(bridge.call).toHaveBeenCalledWith("capture.create", { text: "ship it" });
   });
 });
@@ -243,6 +245,53 @@ describe("capture first", () => {
 // minutes after — the window where the routing is still visible and reversible.
 describe("a route the client is watching", () => {
   const routedTo = (over) => ({ ...captureRecord({ state: "routed" }), ...over });
+
+  it("projects the pending row from a cache write after create answers", async () => {
+    const { readCached, writeCached } = await import("../src/core/localCache.js");
+    press("c");
+    type("#compose-text", "fix the login redirect");
+    $("#compose-send").click();
+    await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "capture-1", kind: "capture" }))?.value.text).toBe("fix the login redirect"));
+    const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+    expect((await readCached(address))?.value.text).toBe("fix the login redirect");
+
+    await writeCached(address, captureRecord({ text: "the cache changed this capture" }));
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.title).toContain("the cache changed this capture"));
+    expect(pendingCaptureRows()[0].title).toContain("the cache changed this capture");
+  });
+
+  it("writes a rerouted capture even when this client does not track its row", async () => {
+    const { readCached } = await import("../src/core/localCache.js");
+    await adoptCaptureRecord(captureRecord({ state: "routed" }), "dev-1");
+    const held = await readCached({ deviceId: "dev-1", entityId: "capture-1", kind: "capture" });
+    expect(held?.value.state).toBe("routed");
+  });
+
+  it("keeps a newer cache write when a settled capture.get reply arrives in the same tick", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    try {
+      let finishRead;
+      bridge.call = vi.fn(async (method) => {
+        if (method === "capture.create") return captureRecord();
+        if (method === "capture.get") return new Promise((resolve) => { finishRead = resolve; });
+        return { ok: true };
+      });
+      press("c");
+      type("#compose-text", "fix the login redirect");
+      $("#compose-send").click();
+
+      await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
+      const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
+      await writeCached(address, routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/new" } }));
+      finishRead(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-old" } }));
+      await vi.waitFor(() => expect(pendingCaptureRows()[0]?.routing?.target_id).toBe("build/new"));
+
+      expect(pendingCaptureRows()[0].routing.target_id).toBe("build/new");
+    } finally {
+      clock.mockRestore();
+    }
+  });
 
   /** Send one, then let the feed drop it: the route settled, so the client asks
    *  once where it went and keeps the row on screen. */
@@ -255,10 +304,10 @@ describe("a route the client is watching", () => {
     press("c");
     type("#compose-text", "add a CSV export");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
     feedItems = [];
     await refreshFeed();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.routing?.kind).toBe("issue"));
   }
 
   it("says where a settled capture went", async () => {
@@ -273,7 +322,7 @@ describe("a route the client is watching", () => {
 
     // What `capture.reroute` answers with. Nothing else will ever correct this
     // row: the feed stopped carrying the capture when its route settled.
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
 
     const [row] = pendingCaptureRows();
     expect(row.routing.kind).toBe("branch");
@@ -293,7 +342,7 @@ describe("a route the client is watching", () => {
     // The user reroutes it just before it would have dropped off.
     await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
     const clock = vi.spyOn(Date, "now").mockReturnValue(nearlyGone);
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
     clock.mockRestore();
 
     expect(pendingCaptureRows(wouldHaveGone).length).toBe(1);
@@ -316,9 +365,9 @@ describe("a route the client is watching", () => {
     press("c");
     type("#compose-text", "add a CSV export");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
 
-    adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
+    await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
 
     expect(pendingCaptureRows(Date.now() + 10).length).toBe(1);
   });
@@ -338,7 +387,7 @@ describe("while the device is away", () => {
     press("c");
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]));
 
     press("c");
     expect($(".compose-note").textContent).toBe("1 capture is waiting for Laptop.");
@@ -348,7 +397,7 @@ describe("while the device is away", () => {
     press("c");
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]));
     expect(bridge.call).not.toHaveBeenCalledWith("capture.create", expect.anything());
     const queued = JSON.parse(localStorage.getItem(CAPTURE_QUEUE_KEY));
     expect(queued.map((entry) => entry.text)).toEqual(["remember the redirect"]);
@@ -361,7 +410,7 @@ describe("while the device is away", () => {
     press("c");
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]));
 
     setContextOffline("dev-1", { offline: false });
     await flushCaptures();
@@ -373,7 +422,7 @@ describe("while the device is away", () => {
     press("c");
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
-    await flush();
+    await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]));
 
     setContextOffline("dev-1", { offline: false });
     bridge.call = vi.fn(async () => {
@@ -388,10 +437,21 @@ describe("while the device is away", () => {
 describe("the advanced panel", () => {
   // The panel's harness picker is filled from the creation device's catalog, so
   // opening it is a round trip the tests below wait out.
-  const openAdvanced = async () => {
+  const openAdvanced = async ({ catalog = true } = {}) => {
     press("c");
     $("#compose-advanced").click();
-    await flush();
+    if (!catalog) {
+      await vi.waitFor(() => expect($("#compose-project")).toBeTruthy());
+      return;
+    }
+    const { readCached } = await import("../src/core/localCache.js");
+    const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
+    await vi.waitFor(async () => expect((await readCached(deviceModelsAddress("dev-1")))?.value).toEqual(modelCatalog));
+    const claude = modelCatalog.providers.find((provider) => provider.id === "claude" || provider.id === "claude_adk");
+    await vi.waitFor(() => {
+      const offered = [...document.querySelectorAll("#compose-choice-provider option")].map((option) => option.value);
+      expect(offered).toContain(claude.id);
+    });
   };
 
   it("offers the projects and the branches there are, with no issue destination", async () => {
@@ -416,6 +476,27 @@ describe("the advanced panel", () => {
     expect($("#compose-choice-effort")).toBeTruthy();
   });
 
+  it("updates an open picker after a catalog cache write and keeps the chosen agent", async () => {
+    await openAdvanced();
+    $("[data-agent-choice-toggle]").click();
+    $("#compose-choice-provider").value = "codex";
+    $("#compose-choice-provider").dispatchEvent(new Event("change", { bubbles: true }));
+    $("#compose-choice-provider").focus();
+    type("#compose-text", "keep this draft");
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
+    await writeCached(deviceModelsAddress("dev-1"), {
+      ...modelCatalog,
+      providers: [...modelCatalog.providers, {
+        id: "codex", label: "Codex", models: [{ id: "new-model", label: "New model" }], efforts: [],
+      }],
+    });
+    await vi.waitFor(() => expect($("#compose-choice-model").textContent).toContain("New model"));
+    expect($("#compose-choice-provider").value).toBe("codex");
+    expect(document.activeElement).toBe($("#compose-choice-provider"));
+    expect($("#compose-text").value).toBe("keep this draft");
+  });
+
   it("seeds a newly picked agent with that harness's saved model and effort", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({
       provider: "claude",
@@ -434,7 +515,7 @@ describe("the advanced panel", () => {
     $("#compose-project").value = "p2";
     $("#compose-project").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
-    await flush();
+    await vi.waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes"));
     expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
       instruction: "add a /health endpoint",
       project_id: "p2",
@@ -453,7 +534,7 @@ describe("the advanced panel", () => {
     $("#compose-choice-model").value = "opus";
     $("#compose-choice-model").dispatchEvent(new Event("change", { bubbles: true }));
     $("#compose-manual-go").click();
-    await flush();
+    await vi.waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes"));
     expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
       project_id: "p1",
       instruction: "finish the redirect",
@@ -475,11 +556,11 @@ describe("the advanced panel", () => {
       timedOut.uncertain = true;
       throw timedOut;
     });
-    await openAdvanced();
+    await openAdvanced({ catalog: false });
     type("#compose-text", "finish the redirect");
     $('[data-compose-kind="branch"]').click();
     $("#compose-manual-go").click();
-    await flush();
+    await vi.waitFor(() => expect($(".compose-box")).toBeNull());
     expect($(".compose-box")).toBeNull();
     expect(location.hash).toBe("");
   });
@@ -499,7 +580,7 @@ describe("the advanced panel", () => {
     type("#compose-branch", "build/login");
     expect($("#compose-choice-provider").value).toBe("claude_adk");
     $("#compose-manual-go").click();
-    await flush();
+    await vi.waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1/branch/build%2Flogin/changes"));
     expect(bridge.call).toHaveBeenCalledWith("branch.dispatch", {
       project_id: "p1",
       instruction: "finish the redirect",
@@ -512,10 +593,10 @@ describe("the advanced panel", () => {
     bridge.call = vi.fn(async () => {
       throw new Error("unknown project_id: p9");
     });
-    await openAdvanced();
+    await openAdvanced({ catalog: false });
     type("#compose-text", "add a /health endpoint");
     $("#compose-manual-go").click();
-    await flush();
+    await vi.waitFor(() => expect($(".compose-error")?.textContent).toContain("unknown project_id"));
     expect($(".compose-error").textContent).toContain("unknown project_id");
     expect($("#compose-text").value).toBe("add a /health endpoint");
   });
@@ -561,8 +642,8 @@ describe("an account with more than one device", () => {
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await flush();
-    adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
+    await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
+    await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });
 });

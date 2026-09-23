@@ -456,6 +456,7 @@ function settingsForBlock(projectKey) {
   if (!block) return;
   openProjectSettings(block.id, {
     callRpc: verbCall(block),
+    deviceId: block.deviceId,
     onDeleted: async () => {
       if (routeProjectKey(App.route) === block.projectKey) goFromInbox({ name: "inbox" });
       await refreshFeed(block.deviceId);
@@ -675,6 +676,18 @@ async function optimisticVerb(entry, { write, call, failureSummary }) {
 }
 
 let mounted = false;
+let stopSubscriptions = [];
+
+/** Let a rail that is leaving release its callbacks, including captures that
+ *  can settle after its DOM has gone. The app normally keeps the rail mounted;
+ *  a test or an account teardown may remove it. */
+export function unmountInboxList() {
+  if (!mounted) return;
+  mounted = false;
+  stopSubscriptions.forEach((stop) => stop());
+  stopSubscriptions = [];
+  initCaptureRows({ onChange: () => {}, entryOf: () => null });
+}
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
 export function mountInboxList() {
@@ -688,29 +701,31 @@ export function mountInboxList() {
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost
   // device holds and shutting the verbs that would have asked it.
-  onDeviceStateChanged(draw);
-  subscribePendingCaptures(drawFromFeed);
-  subscribeOptimistic(INBOX_SCOPE, draw);
-  subscribeFeed((next) => {
-    // Which machines the rail lists is the picker's, and it is answered once,
-    // here: everything below paints whatever this snapshot holds.
-    snapshot = filterByDevice(next, App.deviceFilter);
-    items = snapshot.items || [];
-    pendingLifecycle = snapshot.pending || [];
-    projects = snapshot.projects || [];
-    workspaces = snapshot.workspaces || [];
-    const live = new Set([
-      ...items.map(entryKeyOf),
-      ...workspaces.map(workspaceEntryKey),
-    ]);
-    for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
-    const merged = mergedItems();
-    // Every verb that names only an entity — a read report, a self-action —
-    // finds its row, and so its device, through this.
-    indexRowsByEntity(merged);
-    reconcileOptimistic(INBOX_SCOPE, merged, { keyOf: entryKeyOf });
-    drawFromFeed();
-  });
+  stopSubscriptions = [
+    onDeviceStateChanged(draw),
+    subscribePendingCaptures(drawFromFeed),
+    subscribeOptimistic(INBOX_SCOPE, draw),
+    subscribeFeed((next) => {
+      // Which machines the rail lists is the picker's, and it is answered once,
+      // here: everything below paints whatever this snapshot holds.
+      snapshot = filterByDevice(next, App.deviceFilter);
+      items = snapshot.items || [];
+      pendingLifecycle = snapshot.pending || [];
+      projects = snapshot.projects || [];
+      workspaces = snapshot.workspaces || [];
+      const live = new Set([
+        ...items.map(entryKeyOf),
+        ...workspaces.map(workspaceEntryKey),
+      ]);
+      for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
+      const merged = mergedItems();
+      // Every verb that names only an entity — a read report, a self-action —
+      // finds its row, and so its device, through this.
+      indexRowsByEntity(merged);
+      reconcileOptimistic(INBOX_SCOPE, merged, { keyOf: entryKeyOf });
+      drawFromFeed();
+    }),
+  ];
 }
 
 /** Repaint so the entry the route stands on is the marked one. */

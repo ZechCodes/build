@@ -4595,7 +4595,7 @@ describe("a run of activity in the rail", () => {
       through_sequence: 51,
       limit: 200,
     }]);
-    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]);
 
     runHead().click();
     runHead().click();
@@ -4777,7 +4777,7 @@ describe("a run of activity in the rail", () => {
     await flush();
 
     expect(notifyError).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null));
+    expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null);
   });
 });
 

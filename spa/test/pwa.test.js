@@ -84,7 +84,7 @@ describe("standalone shell styles", () => {
     expect(bodyRule).toContain("height:100dvh");
     expect(bodyRule).toContain("flex-direction:column");
     const shellRule = stylesSource.match(/\n#shell \{[^}]+\}/)?.[0] ?? "";
-    expect(shellRule).toContain("overflow:clip");
+    expect(shellRule).toContain("overflow:hidden");
     expect(shellRule).toContain("min-height:0");
   });
 

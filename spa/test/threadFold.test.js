@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { revealThreadSequence, threadHtml } from "../src/core/thread.js";
 
 const SPAWNING_CALL_SEQUENCE = 10;
@@ -64,7 +64,9 @@ const EVERY_RUN_OPEN = { has: () => true };
 
 const paint = (items) => {
   document.body.innerHTML = threadHtml({ items }, { openRuns: EVERY_RUN_OPEN });
-  return document.querySelector(".thread-items");
+  const scroller = document.querySelector(".thread-items");
+  scroller.scrollTo = vi.fn();
+  return scroller;
 };
 
 const rowOfSequence = (sequence) => document.querySelector(`[data-sequence="${sequence}"]`);

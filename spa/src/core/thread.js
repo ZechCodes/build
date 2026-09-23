@@ -31,6 +31,7 @@ import { issueActionLineHtml } from "./trackerActionLine.js";
 import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
 import { isTransientTransportError } from "./transientRead.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
+import { scrollWithin } from "./scrollWithin.js";
 import { buildNoticeSummary, noticeHasMore } from "./buildNoticeLine.js";
 
 const MINUTE_MS = 60_000;
@@ -1190,7 +1191,8 @@ export function jumpToUserMessage(event) {
   const index = Number(tick.dataset.userTickIndex);
   const row = tick.closest(".review-thread")?.querySelectorAll(".thread-items > .thread-message.user")[index];
   if (!row) return false;
-  row.scrollIntoView({ behavior: "smooth", block: "start" });
+  const scroller = tick.closest(".rail-body, #tabbody") || tick.closest(".review-thread")?.parentElement;
+  if (scroller) scrollWithin(scroller, row);
   return true;
 }
 
@@ -1570,7 +1572,7 @@ export function revealThreadSequence(scroller, sequence) {
   for (let node = row; node && node !== scroller; node = node.parentElement) {
     if (node.tagName === "DETAILS") node.open = true;
   }
-  if (row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  scrollWithin(scroller, row, { block: "center" });
   return true;
 }
 

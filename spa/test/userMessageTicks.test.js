@@ -27,6 +27,7 @@ function mountMany(count) {
     type: "message", data: { sequence: index + 1, role: "user", body: `Message ${index + 1}` },
   })) })}</div>`;
   const scroller = document.querySelector("#scroller");
+  scroller.scrollTo = vi.fn();
   const rows = [...scroller.querySelectorAll(".thread-items > .thread-message.user")];
   scroller.getBoundingClientRect = () => ({ top: 100 });
   let active = -1;
@@ -136,12 +137,12 @@ describe("grouped user message navigator", () => {
   it("jumps from a keyboard-operable grouped line to its message", () => {
     const scroller = mount();
     const row = scroller.querySelectorAll(".thread-message.user")[1];
-    row.scrollIntoView = vi.fn();
+    scroller.scrollTo = vi.fn();
     const tick = scroller.querySelectorAll(".thread-user-tick")[1];
     expect(tick.tagName).toBe("BUTTON");
     expect(tick.type).toBe("button");
     expect(jumpToUserMessage({ target: tick.querySelector("span") })).toBe(true);
-    expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(scroller.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
     expect(jumpToUserMessage({ target: scroller })).toBe(false);
   });
 
@@ -184,10 +185,9 @@ describe("grouped user message navigator", () => {
   it("jumps from a window-edge pill to the matching global message", () => {
     const { scroller, rows, setActive } = mountMany(20);
     setActive(19);
-    rows[8].scrollIntoView = vi.fn();
     const edge = scroller.querySelector('.thread-user-tick[data-user-tick-index="8"]');
     expect(edge.type).toBe("button");
     expect(jumpToUserMessage({ target: edge.querySelector("span") })).toBe(true);
-    expect(rows[8].scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(scroller.scrollTo).toHaveBeenCalledWith({ top: -860, behavior: "smooth" });
   });
 });

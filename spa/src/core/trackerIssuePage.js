@@ -44,6 +44,7 @@ import { uiAddress, watchUiState } from "./localUiState.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
 import { issueUnreadReading, issueUnreadRules, latestIssueMark } from "./trackerUnread.js";
 import { mountNewMessagesPill } from "./newMessagesPill.js";
+import { scrollWithin } from "./scrollWithin.js";
 
 /** Whether one flush of `issues` items says anything about this issue. */
 const namesIssue = (items, issueId) =>
@@ -57,7 +58,7 @@ export function focusIssueComment(host, commentId, { scroll = true } = {}) {
     .find((entry) => entry.id === `comment-${commentId}`);
   if (!row) return false;
   row.classList.add("issue-comment-target");
-  if (scroll) row.scrollIntoView?.({ block: "center" });
+  if (scroll) scrollWithin(host, row, { block: "center" });
   return true;
 }
 

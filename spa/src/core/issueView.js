@@ -72,6 +72,7 @@ import {
   readStoredIssueRecord,
 } from "./issueCache.js";
 import { subscribeCache } from "./localCache.js";
+import { scrollWithin } from "./scrollWithin.js";
 
 /** Bind an async RPC to a button: disable + label while in flight, restore and
  *  raise a persistent expandable error notification on failure. */
@@ -701,11 +702,11 @@ export function mountIssueView(
         (element) => element.dataset.marker === (key || ""),
       );
       const target = crumb ? crumb.closest(".commentcard") : null;
-      if (target && target.scrollIntoView) target.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (target) scrollWithin(container.querySelector(".ivviewer"), target, { block: "center" });
       return;
     }
     const heading = headingForKey(container, key);
-    if (heading && heading.scrollIntoView) heading.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (heading) scrollWithin(container.querySelector(".ivviewer"), heading, { block: "center" });
   };
 
   const withdrawComment = async (commentId) => {

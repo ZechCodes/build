@@ -82,6 +82,9 @@ export default defineConfig({
     // timeout means something is genuinely stuck.
     hookTimeout: 60_000,
     testTimeout: 20_000,
+    // Large DOM suites contend for the same CPU when every available core
+    // starts a worker; run files serially so async paint checks can settle.
+    maxWorkers: 1,
     // Node 22+ defines a global `localStorage` that is unusable without
     // `--localstorage-file`, and its presence stops the jsdom environment
     // from installing its own. Off, so the DOM suites get jsdom's.

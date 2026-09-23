@@ -98,7 +98,7 @@ describe("the shape and its bodies", () => {
     });
     expect(container.querySelector('.rrow[data-sel="review"]')).toBeTruthy();
     expect(container.querySelector('.rrow[data-sel="review"] .rsub').textContent).toBe("vs fork/main");
-    expect(container.textContent).toContain("dirty");
+    await vi.waitFor(() => expect(container.textContent).toContain("dirty"));
     expect(calls.some(({ method, params }) => method === "git.unpushed" && params.workspace_id === "ws-1")).toBe(true);
     pane.dispose();
   });

@@ -534,7 +534,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied"));
     expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: permission denied");
-    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source");
+    await vi.waitFor(() => expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry original source"));
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "source" }));
   });
@@ -580,7 +580,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed"));
     expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
-    expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
+    await vi.waitFor(() => expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both"));
     document.querySelector("[data-confirm-init-git]").click();
     await flush();
     expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });

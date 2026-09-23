@@ -49,7 +49,7 @@
   padding:var(--region-gap);
   background:var(--bg);
   min-height:0;
-  overflow:hidden; position:relative;
+  overflow:clip; position:relative;
   transition:grid-template-columns 240ms cubic-bezier(.2,.8,.2,1);
 }
 /* No rail, no band: the gap belongs to the seam between two regions, and with

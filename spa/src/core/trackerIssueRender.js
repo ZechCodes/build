@@ -13,8 +13,8 @@ import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { hashFromRoute } from "./router.js";
 import { columnsOf, PRIORITIES, stateLabel } from "./trackerModel.js";
-import { actorName } from "./trackerLineWords.js";
 import { issueAvatarHtml } from "./issueAvatar.js";
+import { actorIdentityHtml, actorHref } from "./trackerIdentity.js";
 import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { issueUnreadKey } from "./trackerUnread.js";
@@ -93,7 +93,7 @@ const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.a
 const commentHtml = (row, context) => `<li class="issue-entry issue-comment${row.mentionsUser ? " issue-comment-mentioned" : ""}" id="comment-${esc(row.key)}">
     ${issueAvatarHtml(row.actor, context)}
     <div class="issue-comment-card">
-      <div class="issue-entry-head"><strong>${esc(actorName(row.actor, context))}</strong>${whenHtml(row)}</div>
+      <div class="issue-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
       <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body, { links: context.refLinks })}</div>
     </div>
   </li>`;
@@ -101,9 +101,34 @@ const commentHtml = (row, context) => `<li class="issue-entry issue-comment${row
 /** An event is one line: who, what they did, and when. It is history, so it is
  *  drawn quieter than a comment — but never hidden, because "the board moved
  *  and nobody said anything" is exactly what a timeline is for. */
+const assignedDetailHtml = (row, context) =>
+  `assigned this to ${row.payload?.assignee ? actorIdentityHtml(row.payload.assignee, context, { icon: true }) : "nobody"}`;
+
+const workspaceMentionHtml = (workspaceId, context) => {
+  const workspace = (context.links || []).find((link) => link.kind === "workspace" && link.workspaceId === workspaceId);
+  const label = esc(workspace?.label || workspaceId);
+  return workspace?.route ? `<a href="${esc(hashFromRoute(workspace.route))}">${label}</a>` : label;
+};
+
+const dispatchedDetailHtml = (row, context) => {
+  const agent = actorIdentityHtml({ kind: "agent", agent_id: row.payload.agent_id }, context, { icon: true });
+  const where = row.payload.workspace_id ? ` in ${workspaceMentionHtml(row.payload.workspace_id, context)}` : "";
+  return `started ${agent}${where} on this`;
+};
+
+const linkedWorkspaceHtml = (row, context) =>
+  `linked workspace ${workspaceMentionHtml(row.payload.workspace_id, context)}`;
+
+const eventDetailHtml = (row, context) => {
+  if (row.kind === "assigned") return assignedDetailHtml(row, context);
+  if (row.kind === "dispatched" && row.payload?.agent_id) return dispatchedDetailHtml(row, context);
+  if (row.kind === "linked" && row.payload?.workspace_id) return linkedWorkspaceHtml(row, context);
+  return esc(eventSentence(row, context));
+};
+
 const eventHtml = (row, context) => `<li class="issue-entry issue-event">
     <span class="issue-event-dot" aria-hidden="true"></span>
-    <span class="issue-event-text"><strong>${esc(actorName(row.actor, context))}</strong> ${esc(eventSentence(row, context))}</span>
+    <span class="issue-event-text"><strong>${actorIdentityHtml(row.actor, context, { icon: true })}</strong> ${eventDetailHtml(row, context)}</span>
     ${whenHtml(row)}
   </li>`;
 
@@ -218,13 +243,16 @@ const linksHtml = (rows) =>
  */
 export function issueRailHtml(issue, context) {
   const { columns, links, labelsDraft, busy } = context;
+  const assigneeLink = issue.assignee && actorHref(issue.assignee, context);
   return `<aside class="issue-rail" aria-label="About this issue">
     ${stateControlHtml(issue, busy)}
     ${railSection("Column", selectRow("issue-status", "Column", columnOptionsHtml(columns, issue.status), busy))}
     ${railSection("Labels", `<input id="issue-labels" type="text" autocomplete="off" placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
       <p class="sub">Comma separated. Enter saves.</p>`)}
     ${railSection("Priority", selectRow("issue-priority", "Priority", priorityOptionsHtml(issue.priority), busy))}
-    ${railSection("Assignee", `<button class="btn issue-assign-open" type="button" data-issue-assign="${esc(issue.id)}"${busy ? " disabled" : ""}>${assigneeHtml(issue.assignee, context)}</button>
+    ${railSection("Assignee", `${assigneeLink
+      ? `<div class="issue-assignee-current">${actorIdentityHtml(issue.assignee, context, { icon: true })}</div>` : ""}
+      <button class="btn issue-assign-open" type="button" data-issue-assign="${esc(issue.id)}"${busy ? " disabled" : ""}>${assigneeLink ? "Change assignee" : assigneeHtml(issue.assignee, context)}</button>
       <p class="sub">Assigning hands the issue to an agent and starts it.</p>`)}
     ${railSection("Links", linksHtml(links))}
   </aside>`;

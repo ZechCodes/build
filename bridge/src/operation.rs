@@ -546,12 +546,14 @@ mod tests {
             actor: crate::thread::NoticeActor {
                 who: crate::tracker::Actor::User,
                 name: None,
+                identity: None,
             },
             action: "moved".into(),
             comment_id: None,
             from: Some("in_progress".into()),
             to: Some("in_review".into()),
             assignee: None,
+            assignee_identity: None,
         };
         let watching = OperationPayload {
             messages: vec![ThreadMessage {

@@ -288,6 +288,18 @@ fn notices(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> 
 }
 
 /// A change reaches every tracker and never the agent that made it.
+fn assert_moved_notice_identity(notice: &Value, agent_id: &str) {
+    assert_eq!(notice["issue_notice"]["actor"]["agent_id"], agent_id);
+    assert_eq!(notice["issue_notice"]["action"], "moved");
+    assert_eq!(notice["issue_notice"]["from"], "backlog");
+    assert_eq!(notice["issue_notice"]["to"], "in_review");
+    let identity = &notice["issue_notice"]["actor"]["identity"];
+    assert_eq!(identity["agent_id"], agent_id);
+    assert_eq!(identity["workspace_name"], "actor");
+    assert_eq!(identity["provider"], "claude_adk");
+    assert_eq!(identity["available"], true);
+}
+
 #[test]
 fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     let tmp = tempfile::tempdir().unwrap();
@@ -333,21 +345,70 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
 
     // And the same thing structured, so a client draws that line with a link
     // rather than parsing it back out of prose (spec: Issues → Tracking).
-    assert_eq!(
-        notice["issue_notice"],
-        json!({
-            "actor": { "kind": "agent", "agent_id": actor.1 },
-            "action": "moved",
-            "from": "backlog",
-            "to": "in_review",
-        }),
-        "{notice:?}"
-    );
+    assert_moved_notice_identity(notice, &actor.1);
 
     assert!(
         notices(&mut state, &actor.0, &actor.1).is_empty(),
         "nobody is told what they just did"
     );
+}
+
+#[test]
+fn a_notice_names_an_actor_who_was_not_tracking_the_issue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let actor = coding_agent(&mut state, &project_id, "author workspace");
+    let watcher = coding_agent(&mut state, &project_id, "reader workspace");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+    state
+        .on_agent_mcp_action(
+            &actor.0,
+            &actor.1,
+            crate::mcp::BridgeAction::TrackerMoveIssue {
+                issue_id: id,
+                status: "in_review".into(),
+                track: None,
+            },
+        )
+        .expect("author moves the issue");
+
+    let told = notices(&mut state, &watcher.0, &watcher.1);
+    let identity = &told[0]["issue_notice"]["actor"]["identity"];
+    assert_eq!(identity["agent_id"], actor.1);
+    assert_eq!(identity["workspace_name"], "author workspace");
+    assert_eq!(identity["provider"], "claude_adk");
+}
+
+#[test]
+fn an_assignment_notice_names_an_unwatched_target_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let target = coding_agent(&mut state, &project_id, "target workspace");
+    let watcher = coding_agent(&mut state, &project_id, "reader workspace");
+    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let tracked = state.handle(req(
+        "issues.track",
+        json!({ "issue_id": id, "agent_id": watcher.1 }),
+    ));
+    assert_eq!(tracked["ok"], true, "{tracked:?}");
+    let assigned = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": id, "assignee": { "kind": "agent", "agent_id": target.1 } }),
+    ));
+    assert_eq!(assigned["ok"], true, "{assigned:?}");
+
+    let told = notices(&mut state, &watcher.0, &watcher.1);
+    let identity = &told[0]["issue_notice"]["assignee_identity"];
+    assert_eq!(identity["agent_id"], target.1);
+    assert_eq!(identity["workspace_name"], "target workspace");
+    assert_eq!(identity["provider"], "claude_adk");
+    assert_eq!(identity["ordinal"], 1);
 }
 
 /// A comment's body does NOT ride the notice (#61).

@@ -31,7 +31,9 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this issue b
  * keyboard needs. The card is not a link — it holds a link — because a
  * draggable anchor fights the browser's own drag of its href.
  */
-export const issueCardHtml = (issue, { columns, href, ...reading }) =>
+export const issueCardHtml = (issue, { columns, href, ...context }) => {
+  const reading = { ...context, identities: issue.identities || {} };
+  return (
   `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
@@ -41,7 +43,8 @@ export const issueCardHtml = (issue, { columns, href, ...reading }) =>
     <button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">
       ${assigneeHtml(issue.assignee, reading)}
     </button>
-  </li>`;
+  </li>`);
+};
 
 /**
  * What a column means, said twice over.

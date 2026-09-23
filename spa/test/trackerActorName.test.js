@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 // #63.1: one name for an actor, everywhere the tracker prints one.
 //
-// The project's agent read "Build agent" on a notice line in the conversation
+// The project's agent read "Build" on a notice line in the conversation
 // (#49) and "Agent 01M2" on its own comment on the issue page, because there
 // were two functions: `actorLabel` in core/trackerModel.js, which every
 // tracker surface called, and `actorName` in core/trackerLineWords.js, which
@@ -36,8 +36,8 @@ const text = (html) => {
 
 describe("who an actor is", () => {
   const KINDS = [
-    { name: "the project's own agent, written as its own kind", actor: { kind: "project_agent" }, reads: "Build agent" },
-    { name: "the project's own agent, written as an agent id", actor: PROJECT, reads: "Build agent" },
+    { name: "the project's own agent, written as its own kind", actor: { kind: "project_agent" }, reads: "Build" },
+    { name: "the project's own agent, written as an agent id", actor: PROJECT, reads: "Build" },
     { name: "an agent of a workspace", actor: { kind: "agent", agent_id: "agent-01M2A" }, reads: "issues-spa · Agent 1" },
     { name: "the reader", actor: { kind: "user" }, reads: "You" },
     { name: "an agent nothing can name", actor: { kind: "agent", agent_id: "agent-01K5ZABC" }, reads: "Agent 01K5" },
@@ -54,9 +54,9 @@ describe("who an actor is", () => {
   });
 
   // Without a project to name it after there is still a project agent, and
-  // "Build agent" is this product's own name for it.
+  // "Build" is this product's own name for it.
   it("names the project's agent after Build when the project has no name here", () => {
-    expect(actorName(PROJECT, { agentLabels: {} })).toBe("Build agent");
+    expect(actorName(PROJECT, { agentLabels: {} })).toBe("Build");
   });
 });
 
@@ -69,32 +69,33 @@ describe("the surfaces that print it", () => {
   it("names the author of a comment on the issue page", () => {
     const rows = [{ type: "comment", key: "c1", actor: PROJECT, body: "Rolled.", at: "2026-09-21T00:00:00Z" }];
     const html = issuePageHtml(issue, { ...reading, columns, rows, links: [], draft: "", labelsDraft: "", busy: false, sending: false });
-    expect(text(html)).toContain("Build agent");
+    expect(text(html)).toContain("Build");
     expect(text(html)).not.toContain("Agent 01M2");
   });
 
   it("names the actor of an event on the issue page", () => {
     const rows = [{ type: "event", key: "e1", kind: "moved", actor: PROJECT, payload: { from: "ready", to: "in_progress" }, at: "2026-09-21T00:00:00Z" }];
     const html = issuePageHtml(issue, { ...reading, columns, rows, links: [], draft: "", labelsDraft: "", busy: false, sending: false });
-    expect(text(html)).toContain("Build agent");
+    expect(text(html)).toContain("Build");
   });
 
   it("names the assignee on a list row", () => {
-    expect(text(issueRowHtml(issue, { ...reading, columns, href: () => "#/x" }))).toContain("Build agent");
+    expect(text(issueRowHtml(issue, { ...reading, columns, href: () => "#/x" }))).toContain("Build");
   });
 
   it("names the assignee on a board card", () => {
-    expect(text(issueCardHtml(issue, { ...reading, columns, href: () => "#/x" }))).toContain("Build agent");
+    expect(text(issueCardHtml(issue, { ...reading, columns, href: () => "#/x" }))).toContain("Build");
   });
 
   it("names the assignee on the issue's own rail", () => {
-    expect(text(assigneeHtml(PROJECT, reading))).toBe("Build agent");
+    expect(text(assigneeHtml(PROJECT, reading))).toBe("BBuild");
+    expect(assigneeHtml(PROJECT, reading)).toContain("is-project");
   });
 
   // The line that started it: #49's notice, which was right all along. Both
   // surfaces now read the same actor through the same function.
   it("says the same as the notice line in the conversation", () => {
     const notice = { number: 63, title: "An issue", action: "commented", actor: PROJECT };
-    expect(noticeLineText(notice, reading)).toBe("#63 commented on by Build agent");
+    expect(noticeLineText(notice, reading)).toBe("#63 commented on by Build");
   });
 });

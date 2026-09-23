@@ -132,6 +132,9 @@ pub struct IssueNotice {
     /// Who an `assigned` handed it to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<crate::tracker::Assignee>,
+    /// The target agent's durable name and harness on an assignment notice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee_identity: Option<crate::tracker::IssueAgentIdentity>,
 }
 
 /// Who a notice says did the thing, as a client draws it.
@@ -150,6 +153,9 @@ pub struct NoticeActor {
     /// id, as it did before names existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The author as this issue knew them when the notice was written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<crate::tracker::IssueAgentIdentity>,
 }
 
 /// What an agent did to an issue, on the message it posted saying so (spec:

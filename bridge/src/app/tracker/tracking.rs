@@ -74,7 +74,7 @@ impl AppState {
             // set does not record being told twice, and a timeline that said
             // otherwise would be claiming a second fact for one truth.
             return Ok(json!({
-                "issue": super::issue_json(project_id, &write.issue),
+                "issue": self.issue_json_with_live_identities(project_id, &write.issue),
             }));
         }
         let mut payload = json!({ "agent_id": agent_id });
@@ -122,7 +122,7 @@ impl AppState {
         let mut write = IssueWrite::by(actor.clone(), issue);
         if !write.issue.set_watched(watching) {
             return Ok(json!({
-                "issue": super::issue_json(project_id, &write.issue),
+                "issue": self.issue_json_with_live_identities(project_id, &write.issue),
             }));
         }
         let kind = if watching {
@@ -156,7 +156,7 @@ impl AppState {
             .is_some_and(already_read)
         {
             return Ok(json!({
-                "issue": super::issue_json(&project_id, &write.issue),
+                "issue": self.issue_json_with_live_identities(&project_id, &write.issue),
             }));
         }
         write.issue.read_through = Some(event_id);

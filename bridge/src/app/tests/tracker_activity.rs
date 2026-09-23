@@ -384,6 +384,84 @@ fn done_on_a_workspace_closes_the_issues_that_link_it() {
     assert_eq!(why["payload"]["workspace_id"], ws.as_str());
 }
 
+/// The issue keeps an author's harness and name after Done removes the
+/// workspace and the conversation that originally supplied them.
+fn assert_historian_identity(identity: &Value, workspace_id: &str, available: bool) {
+    assert_eq!(identity["name"], "Historian");
+    assert_eq!(identity["ordinal"], 1);
+    assert_eq!(identity["provider"], "pi");
+    assert_eq!(identity["workspace_id"], workspace_id);
+    assert_eq!(identity["workspace_name"], "identity checkout");
+    assert_eq!(identity["available"], available);
+}
+
+#[test]
+fn issue_identity_survives_workspace_finish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "identity checkout");
+    let id = issue_id(&filed(&mut state, &project_id, "identity in history"));
+    let linked = state.handle(req(
+        "issues.link",
+        json!({ "issue_id": id, "workspace_id": ws }),
+    ));
+    assert_eq!(linked["ok"], true, "{linked:?}");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .set_agent_name(&entity_id, &agent_id, "Historian")
+        .unwrap();
+    state
+        .on_agent_mcp_action(
+            &entity_id,
+            &agent_id,
+            crate::mcp::BridgeAction::TrackerCommentIssue {
+                issue_id: id.clone(),
+                body: "The fix is here.".into(),
+                refs: Vec::new(),
+                track: None,
+                attachments: Vec::new(),
+                notify_user: None,
+                mention_user: None,
+            },
+        )
+        .expect("agent comments");
+    let before = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &before["result"]["issue"]["identities"][&agent_id];
+    assert_historian_identity(identity, &ws, true);
+
+    let reassigned = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": id, "assignee": { "kind": "user" } }),
+    ));
+    assert_eq!(reassigned["ok"], true, "{reassigned:?}");
+    assert_eq!(
+        reassigned["result"]["issue"]["identities"][&agent_id]["name"], "Historian",
+        "reassignment retains the earlier author"
+    );
+
+    let finished = state.handle(req("workspace.finish", json!({ "workspace_id": ws })));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let after = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &after["result"]["issue"]["identities"][&agent_id];
+    assert_historian_identity(identity, &ws, false);
+    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    assert_eq!(
+        listed["result"]["issues"][0]["identities"][&agent_id],
+        *identity
+    );
+}
+
 /// An issue already closed is left alone by a finish, so its `closed_at` and
 /// its reason are not rewritten by a workspace going away later.
 #[test]

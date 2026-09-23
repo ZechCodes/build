@@ -217,6 +217,10 @@ export function mountIssuePage(host, options) {
       columns: state.columns,
       agentLabels: agentLabels(groups()),
       agentProviders: agentProviders(groups()),
+      agentGroups: groups(),
+      identities: state.issue.identities || {},
+      deviceId: state.deviceId,
+      projectId: state.projectId,
       projectName: projectName(state.feed(), state.projectKey),
       refLinks: referenceLinks({
         place: place(),

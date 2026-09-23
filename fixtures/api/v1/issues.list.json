@@ -49,6 +49,17 @@
         "trackers": [
           "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
         ],
+        "identities": {
+          "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+            "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+            "name": "Fix drag",
+            "ordinal": 1,
+            "workspace_id": "ws-3f2a91c4",
+            "workspace_name": "spa-flaky-tests",
+            "provider": "codex_app_server",
+            "available": true
+          }
+        },
         "attachments": [],
         "created_by": {
           "kind": "user"

@@ -82,7 +82,7 @@ export function actionPhrase(action) {
  *  the right one of several. */
 const BUILD = "Build";
 
-const projectAgentName = (projectName) => `${String(projectName || "").trim() || BUILD} agent`;
+const projectAgentName = (projectName) => String(projectName || "").trim() || BUILD;
 
 /** The id a project's own agent is minted under. The wire writes it as its own
  *  actor kind on some paths and as an ordinary agent actor on others, so the
@@ -103,7 +103,18 @@ const shortAgentLabel = (agentId) => {
 
 /** An agent of a workspace: what the rest of the project calls it, or the
  *  four characters it wears where nothing can. */
-const agentName = (agentId, agentLabels) => agentLabels[agentId] || shortAgentLabel(agentId);
+const agentName = (agentId, agentLabels, identities = {}) => {
+  const identity = identities[agentId];
+  if (identity?.workspace_name) {
+    const name = String(identity.name || "").trim() || `Agent ${identity.ordinal || 1}`;
+    return `${identity.workspace_name} · ${name}`;
+  }
+  if (identity?.name) return String(identity.name).trim();
+  return agentLabels[agentId] || shortAgentLabel(agentId);
+};
+
+const actorIdentities = (actor, identities) =>
+  actor.identity ? { ...identities, [actor.agent_id]: actor.identity } : identities;
 
 /**
  * Who did it, as a reader knows them.
@@ -123,21 +134,22 @@ export function actorName(actor, reading = {}) {
 }
 
 /** The wire's tagged shape, which every field but a notice's actor uses. */
-function taggedActorName(actor, { agentLabels = {}, projectName = "" }) {
+function taggedActorName(actor, { agentLabels = {}, identities = {}, projectName = "" }) {
   if (actor.kind === "project_agent") return projectAgentName(projectName);
   if (actor.kind === "user") return "You";
   if (actor.kind !== "agent") return String(actor.kind || "");
   const id = String(actor.agent_id || "");
-  return id.startsWith(PROJECT_AGENT_PREFIX) ? projectAgentName(projectName) : agentName(id, agentLabels);
+  return id.startsWith(PROJECT_AGENT_PREFIX) ? projectAgentName(projectName)
+    : agentName(id, agentLabels, actorIdentities(actor, identities));
 }
 
 /** A bare string: an id off the structured field, or a word out of the body's
  *  prose. Both reach this, because a notice's actor arrives either way
  *  depending on whether the bridge carries the field yet. */
-function writtenActorName(said, { agentLabels = {}, projectName = "" }) {
+function writtenActorName(said, { agentLabels = {}, identities = {}, projectName = "" }) {
   if (!said) return "";
   if (said.startsWith("project-")) return projectAgentName(projectName);
-  if (said.startsWith("agent-")) return agentName(said, agentLabels);
+  if (said.startsWith("agent-")) return agentName(said, agentLabels, identities);
   if (said === "user" || said === "you") return "You";
   return said;
 }

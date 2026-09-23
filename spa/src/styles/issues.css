@@ -157,6 +157,8 @@
 /* The files an issue was filed with, on its own page. The conversation's own
    attachment styles already draw these; this only says where they sit. */
 .issue-page-attachments { margin:10px 0 0; }
+/* A comment's files sit under its words, inside the card, flush with them. */
+.issue-comment-attachments { margin:8px 0 0; padding:0; }
 
 /* ---- the marks an issue wears -------------------------------------------- */
 

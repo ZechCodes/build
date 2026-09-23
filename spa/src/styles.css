@@ -1855,6 +1855,17 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-attachment-size { flex:0 0 auto; color:var(--dim); font-size:11px; font-family:var(--mono); }
 .thread-attachment-figure figcaption { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .thread-attachment-figure figcaption .thread-attachment-name { flex:0 1 auto; color:var(--dim); }
+/* A video's tile is its first frame with a play mark over it. Before the
+   frame is here (or for a recording too long to fetch for a thumbnail) it is
+   a dark 16:9 card the mark sits on, the same bounds a frame would take. */
+.thread-attachment-video-figure .thread-attachment-preview { position:relative; cursor:pointer; }
+.thread-attachment-video { display:block; width:min(240px, 70vw); max-width:100%; max-height:320px; aspect-ratio:16 / 9;
+  object-fit:contain; border:1px solid var(--line); border-radius:8px; background:#000; pointer-events:none; }
+.thread-attachment-play { position:absolute; top:50%; left:50%; display:grid; place-items:center;
+  width:40px; height:40px; margin:-20px 0 0 -20px; border-radius:50%;
+  background:rgb(0 0 0 / 0.6); color:#fff; pointer-events:none; }
+.thread-attachment-play svg { width:18px; height:18px; margin-left:2px; fill:currentColor; }
+.thread-attachment-video-figure .thread-attachment-preview:hover .thread-attachment-play { background:rgb(0 0 0 / 0.8); }
 
 /* Conversation treatment shared by the full-page thread and the agent rail.
    Messages keep their metadata and rich children, but the transcript reads as
@@ -1976,6 +1987,32 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
   width:28px; height:28px; border:0; border-radius:7px; background:none; color:var(--ink2);
   cursor:pointer; font:22px/1 var(--sans); }
 .thread-lightbox-close:hover { background:var(--panel2); }
+/* The stage holds whichever item is showing; a video takes the same bounds a
+   picture does, with its own controls. */
+.thread-lightbox-stage { display:flex; align-items:center; justify-content:center; min-width:min(240px, 80vw); min-height:120px;
+  touch-action:pan-y; }
+.thread-lightbox-video { display:block; max-width:min(calc(94vw - 24px), 1174px); max-height:calc(92vh - 46px);
+  background:#000; }
+.thread-lightbox-note { margin:0; padding:24px; color:var(--ink2); font-size:13px; }
+/* Previous and next ride the dialog's edges, over the picture, so they cost
+   no width at mobile; the count sits in the close button's row. */
+.thread-lightbox-step { position:absolute; top:50%; display:grid; place-items:center; width:36px; height:36px;
+  margin-top:-18px; border:0; border-radius:50%; background:rgb(0 0 0 / 0.55); color:#fff; cursor:pointer; }
+.thread-lightbox-step svg { width:20px; height:20px; }
+.thread-lightbox-step:hover { background:rgb(0 0 0 / 0.8); }
+.thread-lightbox-step:focus-visible, .thread-lightbox-close:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.thread-lightbox-prev { left:10px; }
+.thread-lightbox-next { right:10px; }
+.thread-lightbox-count { position:absolute; top:9px; left:12px; margin:0; color:var(--ink2); font:12px var(--mono); }
+@media (max-width: 720px) {
+  .thread-lightbox { max-width:100vw; max-height:100dvh; padding:40px 0 0; border-radius:0; }
+  .thread-lightbox-image, .thread-lightbox-video { max-width:100vw; max-height:calc(100dvh - 40px); }
+  /* At phone width the steps move up into the close button's row, off the
+     picture and clear of a video's own controls along its bottom edge. */
+  .thread-lightbox-step { top:4px; width:32px; height:32px; margin-top:0; background:none; color:var(--ink2); }
+  .thread-lightbox-prev { left:auto; right:80px; }
+  .thread-lightbox-next { right:44px; }
+}
 .thread-event { min-height:24px; padding:1px 0 1px 20px; }
 .thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;
   background:transparent; font-size:9px; }

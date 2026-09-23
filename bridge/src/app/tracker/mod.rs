@@ -12,6 +12,7 @@
 //! [`refs`].
 
 mod activity;
+mod agent_files;
 mod attachments;
 mod dispatch;
 mod edits;
@@ -24,6 +25,11 @@ mod said;
 mod tools;
 mod tracking;
 mod views;
+
+#[cfg(test)]
+pub(in crate::app) use agent_files::between_check_and_copy;
+pub use agent_files::AGENT_ATTACHMENT_MAX_BYTES;
+pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 
 pub(in crate::app) use dispatch::AssignTarget;
 pub(in crate::app) use views::{columns_json, issue_json, issue_with_timeline_json};

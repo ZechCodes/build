@@ -153,6 +153,13 @@ pub struct IssuesAttachParams {
 pub struct IssuesAttachmentParams {
     pub issue_id: String,
     pub path: String,
+    /// Where the piece starts (1.19). Absent is the start of the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    /// How many bytes to read from there, at most one piece (1.19). Absent is
+    /// one piece.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -368,12 +375,16 @@ pub struct IssueAttachment {
     pub size: u64,
 }
 
-/// One attachment's bytes, for a surface that cannot reach the disk.
+/// One attachment's bytes, for a surface that cannot reach the disk — or one
+/// piece of them (1.19): `size` is always the whole file's, and `offset` says
+/// where this piece starts.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct IssueAttachmentBytes {
     pub path: String,
     pub size: u64,
     pub mime: String,
+    #[serde(default)]
+    pub offset: u64,
     pub content_b64: String,
 }
 

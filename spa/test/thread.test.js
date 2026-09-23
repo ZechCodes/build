@@ -505,17 +505,40 @@ describe("attachments on the record", () => {
     wireThreadAttachments(document.body, async () => ({ mime: "image/png", content_b64: "AAAA" }), threadState);
     preview.focus();
     preview.click();
-    await Promise.resolve();
-    await Promise.resolve();
 
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")).toBeTruthy());
     const lightbox = document.querySelector(".thread-lightbox");
     expect(lightbox.querySelector("img").src).toBe("data:image/png;base64,AAAA");
     expect(lightbox.querySelector("img").alt).toBe("shot.png");
     lightbox.querySelector("button").focus();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.querySelector(".thread-lightbox")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox")).toBeNull());
     expect(document.activeElement).toBe(preview);
+  });
+
+  it("opens a sent video in the same lightbox, playing inline with its controls (#116)", async () => {
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = threadHtml(withAttachments([
+      { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
+      { name: "clip.mp4", path: ".build/attachments/cd34-clip.mp4", mime: "video/mp4", size: 4 },
+    ]), { threadState });
+    wireThreadAttachments(document.body, async (path) => (
+      path.endsWith(".mp4") ? { mime: "video/mp4", content_b64: "BBBB" } : { mime: "image/png", content_b64: "AAAA" }
+    ), threadState);
+    const clip = document.querySelector('button.thread-attachment-preview[data-attachment-kind="video"]');
+    expect(clip.getAttribute("aria-label")).toBe("Play clip.mp4");
+
+    clip.click();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox video")).toBeTruthy());
+    const video = document.querySelector(".thread-lightbox video");
+    expect(video.hasAttribute("controls")).toBe(true);
+    expect(video.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
+    expect(document.querySelector(".thread-lightbox-count").textContent).toBe("2 of 2");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox")).toBeNull());
+    expect(document.activeElement).toBe(document.querySelector('button.thread-attachment-preview[data-attachment-kind="image"]'));
   });
 
   it("escapes an attachment name rather than rendering it", () => {

@@ -11,7 +11,7 @@ use super::*;
 use crate::mcp::{BridgeAction, DoneServer, McpSurface};
 
 /// A coding agent on a workspace of this project, as `(entity_id, agent_id)`.
-fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {
+pub(super) fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {
     let workspace_id = workspace(state, project_id, name);
     let conversation = state.handle(req(
         "workspace.ensure_conversation",
@@ -28,7 +28,7 @@ fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, 
     (entity_id, agent_id)
 }
 
-fn call(
+pub(super) fn call(
     state: &mut AppState,
     who: &(String, String),
     action: BridgeAction,

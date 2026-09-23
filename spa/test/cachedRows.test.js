@@ -86,6 +86,7 @@ describe("patching a row a press has moved", () => {
 
     const rewritten = await readCached(feedAddress);
     expect(rewritten.value.items[0].dismissed).toBe(true);
+    expect(rewritten.value.items[0].__cacheObserved).toEqual({ at: observed.at, order: observed.order });
     expect(rewritten.value.runs[0].__cacheObserved).toEqual({ at: observed.at, order: observed.order });
   });
 });

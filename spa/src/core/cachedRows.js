@@ -107,11 +107,11 @@ async function writeRowEverywhere(deviceId, target, rewrite) {
     else await deleteCached([address]);
   }
   if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
-    preserveFeedFreshness(board, heldFeedRecord, (field, item) => field === "items" && namesRow(item, target)));
+    preserveFeedFreshness(board, heldFeedRecord));
   return async () => {
     if (address && heldRow) await writeCached(address, heldRow);
     if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
-      preserveFeedFreshness(heldFeed, heldFeedRecord, (field, item) => field === "items" && namesRow(item, target)));
+      preserveFeedFreshness(heldFeed, heldFeedRecord));
   };
 }
 

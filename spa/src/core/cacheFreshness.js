@@ -15,19 +15,19 @@ export const withCacheFreshness = (row, record) => {
   return { ...visible, [CACHE_FRESHNESS]: freshnessOf(row, record) };
 };
 
-/** Carry untouched rows' observation times through a local or pruning feed
- * rewrite. A changed row gets the new feed write time instead. A fresh board
- * read does not use this helper: every row in that response was observed. */
-export function preserveFeedFreshness(next, oldRecord, changed = () => false) {
+/** Carry rows' observation times through a local or pruning feed rewrite.
+ * Even a locally edited row's agent roster was not observed again. A fresh
+ * board read does not use this helper: every row in it was observed. */
+export function preserveFeedFreshness(next, oldRecord) {
   if (!oldRecord) return next;
-  const keep = (field, row) => {
+  const keep = (row) => {
     const { [OBSERVED]: _previous, ...plain } = row;
-    return changed(field, row) ? plain : { ...plain, [OBSERVED]: freshnessOf(row, oldRecord) };
+    return { ...plain, [OBSERVED]: freshnessOf(row, oldRecord) };
   };
   return {
     ...next,
     ...Object.fromEntries(["items", "runs"].filter((field) => Array.isArray(next[field]))
-      .map((field) => [field, next[field].map((row) => keep(field, row))])),
+      .map((field) => [field, next[field].map(keep)])),
   };
 }
 

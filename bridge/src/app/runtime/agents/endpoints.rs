@@ -1299,6 +1299,7 @@ impl AppState {
             ));
         }
         self.preserve_entity_issue_identities(&entity_id)?;
+        let issue_refresh = self.issues_with_agent_identity(&entity_id, &agent_id)?;
         let removed_agent_revived_clear = self
             .entity_agents(&entity_id)
             .ok()
@@ -1330,6 +1331,12 @@ impl AppState {
             }
         };
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
+        // finish_run_mutation installs the changed live roster even if its
+        // persistence fails. Invalidate wherever that availability is cached;
+        // issues.get/list retain the historical facts and resolve availability.
+        if let Some((project_id, issue_ids)) = issue_refresh {
+            self.changes.note_issues(&project_id, &issue_ids);
+        }
         self.retire_agent(&root, &removed.id);
         // Nothing prunes cursors by agent, so one left behind here would
         // outlive the daemon it was written in.

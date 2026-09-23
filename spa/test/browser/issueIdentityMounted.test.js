@@ -1,25 +1,7 @@
 import { expect, it } from "vitest";
 import answer from "../../../fixtures/api/v1/issues.get.json";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-
-// The page needs no device connection for this cache-driven check. Keep every
-// issue component real and replace only the connection recovery subscription.
-const deviceShim = {
-  name: "issue-identity-device-recovery-shim",
-  enforce: "pre",
-  resolveId(source, importer) {
-    return source === "./deviceReconnect.js" && importer?.includes("/src/core/")
-      ? "\0issue-identity-device-recovery" : null;
-  },
-  load(id) {
-    if (id !== "\0issue-identity-device-recovery") return null;
-    return `export const onDeviceMoved=()=>()=>{};
-      export const deviceIsReconnecting=()=>false;
-      export const deviceIsAway=()=>false;
-      export const onDeviceReachable=()=>()=>{};
-      export const deviceWatch=()=>({away:()=>false,reconnecting:()=>false,moved:()=>()=>{}});`;
-  },
-};
+import { deviceShim } from "./issueIdentityHarness.mjs";
 
 it.each(["list", "board"])("opens the mounted %s assignment picker before and after its cached target disappears", async (view) => {
   await withLayoutPage(async ({ page, basePath }) => {

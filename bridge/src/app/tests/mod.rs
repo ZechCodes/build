@@ -222,6 +222,7 @@ mod shell;
 mod tracker;
 mod tracker_activity;
 mod tracker_dispatch;
+mod tracker_identity_removal;
 mod tracker_tools;
 mod tracker_tracking;
 mod tracker_watching;

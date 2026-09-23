@@ -130,6 +130,32 @@ impl AppState {
         Ok(())
     }
 
+    /// Resolve the invalidation before changing the roster: a store failure
+    /// must not remove an agent and then leave other clients' issue caches
+    /// pointing at it. Preservation has already filled historical identities,
+    /// including those on closed issues with no workspace link.
+    pub(in crate::app) fn issues_with_agent_identity(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<(String, Vec<String>)>, String> {
+        let Some(project_id) = self.projects.project_id_of(entity_id) else {
+            return Ok(None);
+        };
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        let project_path = self.tracker_project_path(project_id)?;
+        let issue_ids: Vec<_> = store
+            .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
+            .stored()?
+            .into_iter()
+            .filter(|issue| issue.identities.contains_key(agent_id))
+            .map(|issue| issue.id)
+            .collect();
+        Ok((!issue_ids.is_empty()).then(|| (project_id.to_string(), issue_ids)))
+    }
+
     pub(super) fn issue_json_with_live_identities(
         &self,
         project_id: &str,

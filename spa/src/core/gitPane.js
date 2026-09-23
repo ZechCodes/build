@@ -67,7 +67,7 @@ import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
-import { loadDiffSort, saveDiffSort } from "./diffSort.js";
+import { DIFF_SORT_LATEST } from "./diffSort.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { watchUiState } from "./localUiState.js";
 
@@ -599,12 +599,21 @@ export function mountGitPane(
   let fileMenuPath = null; // the file whose header ⋯ is open
   const noiseExpanded = new Set(); // changesets whose collapsed noise group is open
   const fileFolds = new Map();
+  const uiAddress = cacheAddress("ui-presentation", "changes");
+  let uiRecord = null;
+  const uiSnapshot = () => ({
+    fileMenuPath,
+    noiseExpanded: [...noiseExpanded],
+    fileFolds: Object.fromEntries([...fileFolds].map(([key, folds]) => [key, folds.snapshot()])),
+    sortOrder,
+  });
+  const saveUi = () => { if (uiRecord) void uiRecord.write(uiSnapshot()); };
   // Re-review memory, per changeset: what the reviewer saw when they last sent
   // comments on it, so the next pass can mark what moved. renderedViews is the
   // OPEN changeset's files as the stack draws them, which is what a stamp is of.
   let reviewStamps = new Map();
   let renderedViews = [];
-  let sortOrder = loadDiffSort();
+  let sortOrder = DIFF_SORT_LATEST;
   let uncommittedSource = null;
   let uncommittedSourceViews = [];
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
@@ -798,7 +807,7 @@ export function mountGitPane(
 
   const foldsOfOpenChangeset = () => {
     const key = String(selected);
-    if (!fileFolds.has(key)) fileFolds.set(key, createFileFolds());
+    if (!fileFolds.has(key)) fileFolds.set(key, createFileFolds(saveUi));
     return fileFolds.get(key);
   };
 
@@ -864,7 +873,6 @@ export function mountGitPane(
       ...viewport.renderOptions(),
     });
     if (selected === "uncommitted") {
-      sortOrder = loadDiffSort();
       renderedViews = hasUncommittedChanges(lastStatus) ? uncommittedViews() : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
@@ -1338,6 +1346,7 @@ export function mountGitPane(
     viewingContext?.clearSelection();
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
+    saveUi();
     renderAndFetch();
     if (sel !== "review" && sel !== "uncommitted" && !patchHeld(sel)) fetchShow(sel);
   };
@@ -1491,6 +1500,7 @@ export function mountGitPane(
       // The menu belonged to a file that may not exist any more — and an open
       // menu freezes the poll, so it closes with the action that fired from it.
       fileMenuPath = null;
+      saveUi();
       await applyStatusResult(status);
     });
 
@@ -1544,7 +1554,8 @@ export function mountGitPane(
     const path = pathOf(button.dataset.key);
     fileMenuPath = fileMenuPath === path ? null : path;
     clearConfirm();
-    render();
+    if (uiRecord) saveUi();
+    else render();
     return true;
   };
 
@@ -1553,7 +1564,8 @@ export function mountGitPane(
     const key = String(selected);
     if (noiseExpanded.has(key)) noiseExpanded.delete(key);
     else noiseExpanded.add(key);
-    render();
+    if (uiRecord) saveUi();
+    else render();
     return true;
   };
 
@@ -1634,8 +1646,8 @@ export function mountGitPane(
     const select = event.target.closest?.(".diffsort-select");
     if (!select || reviewMounted) return;
     sortOrder = select.value;
-    saveDiffSort(sortOrder);
-    renderAndFetch();
+    if (uiRecord) saveUi();
+    else renderAndFetch();
   }
 
   /** Let the review plug go, where it is the one holding the detail host. */
@@ -1693,7 +1705,8 @@ export function mountGitPane(
       return;
     clearConfirm();
     fileMenuPath = null; // an abandoned file menu must not freeze the repaints
-    render();
+    if (uiRecord) saveUi();
+    else render();
   };
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
@@ -1864,8 +1877,21 @@ export function mountGitPane(
     if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
   };
 
-  if (draftRecord) void draftRecord.ready.then(standUp);
-  else void standUp();
+  if (uiAddress) uiRecord = watchUiState(uiAddress, (saved) => {
+    if (disposed || !saved) return;
+    fileMenuPath = saved.fileMenuPath || null;
+    noiseExpanded.clear();
+    for (const key of saved.noiseExpanded || []) noiseExpanded.add(key);
+    fileFolds.clear();
+    for (const [key, value] of Object.entries(saved.fileFolds || {})) {
+      const folds = createFileFolds(saveUi);
+      folds.restore(value);
+      fileFolds.set(key, folds);
+    }
+    sortOrder = saved.sortOrder || DIFF_SORT_LATEST;
+    renderAndFetch();
+  });
+  void Promise.all([draftRecord?.ready, uiRecord?.ready]).then(standUp);
   const unwatchRecords = watchRecords();
   const checkoutWatcher = readsForItself
     ? watchChanges({
@@ -1884,6 +1910,7 @@ export function mountGitPane(
     dispose() {
       disposed = true;
       draftRecord?.dispose();
+      uiRecord?.dispose();
       stopCommitMeasurement();
       stopToolbarMeasurement();
       unwatchRecords?.();

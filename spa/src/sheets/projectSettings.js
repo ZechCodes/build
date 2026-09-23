@@ -7,6 +7,7 @@ import { settingsSheetHtml } from "./settingsSheet.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
 import { deleteCached, readCached } from "../core/localCache.js";
+import { uiAddress, watchUiState } from "../core/localUiState.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
@@ -68,17 +69,28 @@ function captureDraft(sheet, paintedRemote) {
   };
 }
 
+const draftPart = (live, saved, displayed) =>
+  live !== null && JSON.stringify(live) !== JSON.stringify(displayed) ? live : saved ?? null;
+
+const combineDraft = (live, saved, displayed = {}) => ({
+  ...saved,
+  ...live,
+  remote: draftPart(live.remote, saved?.remote, displayed.remote),
+  source: draftPart(live.source, saved?.source, displayed.source),
+  focusId: live.focusId || saved?.focusId || "",
+});
+
 function restoreDraft(sheet, draft) {
   if (draft.remote !== null) sheet.querySelector("#psremote").value = draft.remote;
   if (draft.source) {
-    sheet.querySelector("#psaddremote").click();
+    if (!sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddremote").click();
     sheet.querySelector("#psremoteurl").value = draft.source.url;
     sheet.querySelector("#pssourcename").value = draft.source.name;
-  }
+  } else if (sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddsource").innerHTML = "";
   sheet.querySelector("#pserr").textContent = draft.remoteError;
   sheet.querySelector("#pssrcerr").textContent = draft.sourceError;
   const focused = draft.focusId && sheet.querySelector(`#${draft.focusId}`);
-  if (focused) {
+  if (focused && (sheet.ownerDocument.activeElement === sheet.ownerDocument.body || sheet.contains(sheet.ownerDocument.activeElement))) {
     focused.focus();
     if (draft.selection) focused.setSelectionRange(...draft.selection);
   }
@@ -93,9 +105,18 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let frame = sheet.firstElementChild;
   let view = "settings";
   let paintedRemote = "";
+  let cachedDraft = null;
+  let displayedDraft = {};
+  let draftRecord;
+  const saveDraft = (debounced = false) => {
+    const snapshot = captureDraft(sheet, paintedRemote);
+    if (debounced) draftRecord?.schedule(snapshot);
+    else void draftRecord?.write(snapshot);
+  };
   const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
   const close = () => {
     record.dispose();
+    draftRecord?.dispose();
     $("#scrim").classList.remove("show");
   };
 
@@ -112,7 +133,8 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
 
   const paint = (project) => {
     if (!current() || view !== "settings") return;
-    const draft = captureDraft(sheet, paintedRemote);
+    const live = captureDraft(sheet, paintedRemote);
+    const draft = combineDraft(live, cachedDraft, displayedDraft);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
@@ -138,10 +160,14 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {
       callRpc, record, deviceId,
+      saveDraft,
       onFrameChange: () => { frame = sheet.firstElementChild; view = "browser"; },
       onReturn: () => { view = "settings"; void record.read(); },
     });
     restoreDraft(sheet, draft);
+    if (draft.remote === cachedDraft?.remote) displayedDraft.remote = draft.remote;
+    if (draft.source === cachedDraft?.source) displayedDraft.source = draft.source;
+    $("#psremote").oninput = () => saveDraft(true);
     $("#pscancel").onclick = close;
     $("#psdelete").onclick = () => deleteProject(project, { callRpc, onDeleted, close, deviceId });
     $("#pssave").onclick = async () => {
@@ -152,6 +178,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       try {
         const changed = await callRpc("project.set_remote", { project_id: projectId, url: $("#psremote").value.trim() });
         if (changed?.project_id) await writeProjectSetting(deviceId, changed);
+        await draftRecord?.write({ remote: null, source: null, focusId: "" });
         close();
       } catch (e) {
         $("#pserr").textContent = e.message;
@@ -163,6 +190,14 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const record = watchSettingsRecord(projectSettingsAddress(deviceId, projectId), (project) => {
     if (project) paint(project);
   });
+  draftRecord = watchUiState(uiAddress({ deviceId, entityId: projectId, view: "project-settings", kind: "draft" }), (saved) => {
+    if (!saved || !current()) return;
+    cachedDraft = saved;
+    if (view !== "settings" || !sheet.querySelector("#psremote")) return;
+    const live = captureDraft(sheet, paintedRemote);
+    restoreDraft(sheet, combineDraft(live, saved, displayedDraft));
+    displayedDraft = { remote: saved.remote, source: saved.source };
+  }, { debounceMs: 180 });
   void record.pull(async () => {
     const listed = await callRpc("project.list");
     const project = (listed.projects || []).find((candidate) => candidate.project_id === projectId);
@@ -178,7 +213,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
  *
  *  Every write answers the project row itself, so the sheet repaints from what
  *  the bridge said rather than from what it hoped. */
-function mountSources(project, { callRpc, record, deviceId, onFrameChange, onReturn }) {
+function mountSources(project, { callRpc, record, deviceId, saveDraft, onFrameChange, onReturn }) {
   const write = async (method, params, button) => {
     const error = $("#pssrcerr");
     error.textContent = "";
@@ -201,15 +236,17 @@ function mountSources(project, { callRpc, record, deviceId, onFrameChange, onRet
         button,
       );
   });
-  $("#psaddremote").onclick = () => openAddRemote(project, write);
+  $("#psaddremote").onclick = () => openAddRemote(project, write, saveDraft);
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
 
 /** Say where to clone the remote from, and what to call it. */
-function openAddRemote(project, write) {
+function openAddRemote(project, write, saveDraft) {
   const host = $("#psaddsource");
   host.innerHTML = addSourceHtml();
-  $("#pssourcecancel").onclick = () => { host.innerHTML = ""; $("#psaddremote").focus(); };
+  $("#pssourcecancel").onclick = () => { host.innerHTML = ""; saveDraft(); $("#psaddremote").focus(); };
+  $("#psremoteurl").oninput = () => saveDraft(true);
+  $("#pssourcename").oninput = () => saveDraft(true);
   $("#pssourceadd").onclick = () => {
     const name = $("#pssourcename").value.trim();
     const remote = $("#psremoteurl").value.trim();

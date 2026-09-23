@@ -3,6 +3,7 @@ import { esc } from "../core/text.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
 import { readCached } from "../core/localCache.js";
+import { uiAddress, watchUiState } from "../core/localUiState.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -17,18 +18,27 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   let selectedDeviceId = defaultDeviceId && choices.some((device) => device.id === defaultDeviceId) ? defaultDeviceId : (selectable ? "" : choices[0].id);
   let active = true, busy = false, serial = 0, version = 0, projectsDir;
   let projectsDirRecord = null;
+  let draftRecord;
+  let firstPaint = true;
+  const draftSnapshot = () => ({ name: draft.name, sources: draft.sources, selectedDeviceId });
+  const saveDraft = (debounced = false) => {
+    if (debounced) draftRecord?.schedule(draftSnapshot());
+    else void draftRecord?.write(draftSnapshot());
+  };
   const selectedDevice = () => choices.find((device) => device.id === selectedDeviceId) || null;
   const selectedCall = () => selectable ? callRpcFor(selectedDeviceId) : callRpc;
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
-  const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); scrim.classList.remove("show"); };
+  const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
-  const finish = (project, target) => {
+  const finish = async (project, target) => {
+    await draftRecord?.write({ name: "", sources: [], selectedDeviceId });
     close();
     if (selectable) onDone?.(project, target);
     else onDone?.(project);
   };
   const remember = () => {
     if (sheet.querySelector("#nrname")) draft.name = $("#nrname").value;
+    saveDraft(true);
   };
   const uniqueName = (value, except) => {
     const base = inferredName(value), used = new Set(draft.sources.filter((source) => source !== except).map((source) => source.name.trim().toLowerCase()));
@@ -52,7 +62,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       await writeProjectSetting(target.id, project);
       const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
       if (!stored) throw new Error("The new project could not be read from the local cache.");
-      finish(stored, target);
+      await finish(stored, target);
     } catch (error) { if (visible(anchor)) $("#nrerr").textContent = error.message; }
     finally {
       busy = false;
@@ -122,6 +132,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     if (!source) return;
     source.path = path;
     if (source.automaticName) source.name = uniqueName(path, source);
+    saveDraft();
     paint();
   };
   const browseFor = async (sourceId) => {
@@ -142,6 +153,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const paintSources = () => {
     version += 1;
+    const focused = sheet.contains(sheet.ownerDocument.activeElement) ? sheet.ownerDocument.activeElement.id : "";
     const target = selectedDevice();
     const selector = selectable ? `<div class="field"><label for="nrdevice">Device</label><select id="nrdevice"><option value="">Choose a device</option>${choices.map((device) => `<option value="${esc(device.id)}"${device.id === selectedDeviceId ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select></div>` : "";
     const subtitle = target ? `Enter a name to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
@@ -159,23 +171,42 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       projectsDir = undefined;
       let cleared = false;
       draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; cleared = true; } });
+      saveDraft();
       paint();
       if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
     };
     $("#nraddfolder").onclick = () => {
       remember();
       if (!requireDevice()) return;
-      void browseFor(addSource("path").id);
+      const source = addSource("path");
+      saveDraft();
+      void browseFor(source.id);
     };
-    $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); paint(); $(`#nrsource-${source.id}`)?.focus(); };
-    sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } });
-    sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; });
-    sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; });
+    $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); saveDraft(); paint(); $(`#nrsource-${source.id}`)?.focus(); };
+    sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } saveDraft(true); });
+    sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; saveDraft(true); });
+    sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; saveDraft(true); });
     sheet.querySelectorAll("[data-choose-source]").forEach((button) => button.onclick = () => void browseFor(Number(button.dataset.chooseSource)));
-    sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); paint(); $("#nraddfolder").focus(); });
+    sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); saveDraft(); paint(); $("#nraddfolder").focus(); });
     $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: draft.name.trim(), ...(sources.length ? { sources } : {}) }; void submit(params); };
-    $("#nrname").focus();
+    $("#nrname").oninput = () => { draft.name = $("#nrname").value; saveDraft(true); };
+    if (firstPaint) $("#nrname").focus();
+    else if (focused) sheet.querySelector(`#${focused}`)?.focus();
+    firstPaint = false;
   };
   function paint() { if (active) paintSources(); }
   scrim.classList.add("show"); paint();
+  draftRecord = watchUiState(
+    uiAddress({ deviceId: selectable ? "" : deviceId || "", view: "new-project", kind: "draft" }),
+    (saved) => {
+      if (!active || !saved || typeof saved.name !== "string") return;
+      if (JSON.stringify(saved) === JSON.stringify(draftSnapshot())) return;
+      draft.name = saved.name;
+      draft.sources = Array.isArray(saved.sources) ? saved.sources : [];
+      serial = Math.max(0, ...draft.sources.map((source) => Number(source.id) || 0));
+      if (choices.some((device) => device.id === saved.selectedDeviceId)) selectedDeviceId = saved.selectedDeviceId;
+      paint();
+    },
+    { debounceMs: 180 },
+  );
 }

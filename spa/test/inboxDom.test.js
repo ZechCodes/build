@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -146,6 +147,8 @@ let laptopCall;
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   subscribers = [];
   hidden = [];
   navigate.mockReset();
@@ -332,6 +335,18 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
+  it("restores a project fold from cache and repaints an external fold write", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "", entityId: "", kind: "ui-fold", sub: "inbox:projects" };
+    unmountInboxList();
+    await writeCached(address, { entries: [["dev-1/project-1", true]] });
+    mountInboxList();
+    feed([workspace()]);
+    setInboxView("projects");
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
+    await writeCached(address, { entries: [["dev-1/project-1", false]] });
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
+  });
   it("opens settings on the owning device and leaves a deleted project's route", async () => {
     feed([], [project("project-1", "Website", "dev-2")]);
     setInboxView("projects");
@@ -365,12 +380,12 @@ describe("the projects face", () => {
     expect(document.getElementById("inbox-list").textContent).not.toMatch(/branch|issue/i);
   });
 
-  it("folds a project and preserves workspace row identity across refreshes", () => {
+  it("folds a project and preserves workspace row identity across refreshes", async () => {
     feed([workspace(), workspace({ id: "workspace-2", name: "Refunds" })]);
     setInboxView("projects");
     const first = rows()[0];
     document.querySelector('[data-project-fold="dev-1/project-1"]').click();
-    expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
     feed([workspace({ name: "Checkout updated" }), workspace({ id: "workspace-2", name: "Refunds" })]);
     expect(rows()[0]).toBe(first);
     expect(rows()[0].textContent).toContain("Checkout updated");

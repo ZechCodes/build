@@ -24,6 +24,7 @@ import { forgetWorkspaceDefaults, workspaceDefaultsStorage } from "../core/works
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { deviceModelsAddress, projectSettingsAddress, watchSettingsRecord, workspaceSettingsAddress } from "../core/settingsRecords.js";
 import { deleteCached } from "../core/localCache.js";
+import { uiAddress, watchUiState } from "../core/localUiState.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -99,6 +100,26 @@ const dangerZoneHtml = () => `
       <button class="btn danger" id="wsdelete">Delete workspace…</button>
     </section>`;
 
+const emptyDirectoryDraft = () => ({ kind: "", path: "", remote: "", name: "" });
+const directoryDraftOf = (host) => ({
+  kind: host.querySelector("#wsdiradd")?.value || "",
+  path: host.querySelector("#wsdirpath")?.value || "",
+  remote: host.querySelector("#wsdirremote")?.value || "",
+  name: host.querySelector("#wsdirname")?.value || "",
+});
+
+function restoreDirectoryDraft(host, draft) {
+  const choice = host.querySelector("#wsdiradd");
+  if (!choice || !draft) return;
+  choice.value = draft.kind || "";
+  host.querySelector("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
+  host.querySelector("#wsdiraddgo").disabled = !choice.value;
+  for (const field of ["path", "remote", "name"]) {
+    const control = host.querySelector(`#wsdir${field}`);
+    if (control) control.value = draft[field] || "";
+  }
+}
+
 /**
  * Open the workspace settings sheet.
  *
@@ -120,9 +141,17 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   $("#scrim").classList.add("show");
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
+  const draft = { name: null, directory: emptyDirectoryDraft() };
+  let draftRecord;
+  const saveDraft = (debounced = false) => {
+    const snapshot = { ...draft, directory: { ...draft.directory } };
+    if (debounced) { draftRecord.schedule(snapshot); return Promise.resolve(); }
+    return draftRecord.write(snapshot);
+  };
   const close = () => {
     disposeDirectories();
     disposeCatalog();
+    draftRecord.dispose();
     $("#scrim").classList.remove("show");
   };
   const opened = sheet.firstElementChild;
@@ -130,10 +159,21 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
    *  moved on must not write into whatever is on screen now. */
   const current = () => sheet.isConnected && sheet.firstElementChild === opened;
 
+  draftRecord = watchUiState(uiAddress({ deviceId, entityId: workspace.id, view: "workspace-settings", kind: "draft" }), (saved) => {
+    if (!current() || !saved) return;
+    if (JSON.stringify(saved) === JSON.stringify(draft)) return;
+    draft.name = typeof saved.name === "string" ? saved.name : null;
+    draft.directory = saved.directory || emptyDirectoryDraft();
+    if (draft.name !== null) $("#wsname").value = draft.name;
+    nameChanged();
+    restoreDirectoryDraft(sheet, draft.directory);
+  }, { debounceMs: 180 });
+  const clearDraft = async () => draftRecord.write({ name: null, directory: emptyDirectoryDraft() });
+
   $("#wscancel").onclick = close;
-  wireName(workspace, { callRpc, close, onRenamed });
+  const nameChanged = wireName(workspace, { callRpc, close, onRenamed, draft, saveDraft, clearDraft });
   $("#wsdelete").onclick = () => void deleteWorkspace(workspace, { callRpc, close, onDeleted, storage, deviceId });
-  disposeDirectories = mountDirectories(workspace, { callRpc, current, deviceId });
+  disposeDirectories = mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDraft });
   const defaultsStorage = workspaceDefaultsStorage(workspace.workspaceKey, storage);
   let cacheCatalogSeen = false;
   const catalogRecord = watchSettingsRecord(deviceModelsAddress(deviceId), (offered) => {
@@ -161,7 +201,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
 /** Read what this workspace holds and what its project could give it, then
  *  paint the panel. An answer that lands after the reader moved on writes
  *  nothing: the sheet on screen is somebody else's now. */
-function mountDirectories(workspace, { callRpc, current, deviceId }) {
+function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDraft }) {
   let detail;
   let project;
   let projectRecord;
@@ -173,9 +213,11 @@ function mountDirectories(workspace, { callRpc, current, deviceId }) {
     const held = new Set((detail.directories || []).map((directory) => directory.source_id));
     const offered = (project?.sources || []).filter((source) => !held.has(source.id));
     const errorText = host.querySelector("#wsdirerr")?.textContent || "";
+    if (host.querySelector("#wsdiradd")) draft.directory = directoryDraftOf(host);
     host.innerHTML = directoriesBodyHtml(detail, offered);
     host.querySelector("#wsdirerr").textContent = errorText;
-    wireDirectories(workspace, { callRpc, record, current });
+    wireDirectories(workspace, { callRpc, record, current, draft, saveDraft });
+    restoreDirectoryDraft(host, draft.directory);
   };
   const record = watchSettingsRecord(workspaceSettingsAddress(deviceId, workspace.id), (value) => {
     detail = value;
@@ -206,13 +248,16 @@ function mountDirectories(workspace, { callRpc, current, deviceId }) {
   };
 }
 
-function wireDirectories(workspace, { callRpc, record, current }) {
+function wireDirectories(workspace, { callRpc, record, current, draft, saveDraft }) {
   const write = async (method, params, button) => {
     const error = $("#wsdirerr");
     error.textContent = "";
     button.disabled = true;
     try {
-      await record.write(await callRpc(method, params));
+      const changed = await callRpc(method, params);
+      draft.directory = emptyDirectoryDraft();
+      await saveDraft();
+      await record.write(changed);
     } catch (thrown) {
       button.disabled = false;
       const visibleError = current() ? $("#wsdirerr") : null;
@@ -233,7 +278,16 @@ function wireDirectories(workspace, { callRpc, record, current }) {
   choice.onchange = () => {
     $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
     go.disabled = !choice.value;
+    draft.directory = directoryDraftOf($("#wsdirs"));
+    saveDraft();
+    $("#wsdirfields").querySelectorAll("input").forEach((input) => {
+      input.oninput = () => { draft.directory = directoryDraftOf($("#wsdirs")); saveDraft(true); };
+    });
   };
+  restoreDirectoryDraft($("#wsdirs"), draft.directory);
+  $("#wsdirfields").querySelectorAll("input").forEach((input) => {
+    input.oninput = () => { draft.directory = directoryDraftOf($("#wsdirs")); saveDraft(true); };
+  });
   go.onclick = () => {
     const params = addDirectoryParams(choice.value);
     if (!params) {
@@ -262,24 +316,26 @@ function addDirectoryParams(kind) {
 /** Save is off until the name actually changed: a Save that does nothing is a
  *  call to a machine and a repaint of every surface that names this workspace,
  *  for no news at all. A blank name is no name, so it never enables either. */
-function wireName(workspace, { callRpc, close, onRenamed }) {
+function wireName(workspace, { callRpc, close, onRenamed, draft, saveDraft, clearDraft }) {
   const input = $("#wsname");
   const save = $("#wssave");
   const changed = () => {
     const value = input.value.trim();
     save.disabled = !value || value === (workspace.name || "").trim();
   };
-  input.oninput = changed;
-  save.onclick = () => void rename(workspace, input.value.trim(), { callRpc, close, onRenamed, save });
+  input.oninput = () => { draft.name = input.value; saveDraft(true); changed(); };
+  save.onclick = () => void rename(workspace, input.value.trim(), { callRpc, close, onRenamed, save, clearDraft });
+  return changed;
 }
 
-async function rename(workspace, name, { callRpc, close, onRenamed, save }) {
+async function rename(workspace, name, { callRpc, close, onRenamed, save, clearDraft }) {
   const error = $("#wserr");
   error.textContent = "";
   save.disabled = true;
   save.textContent = "Saving…";
   try {
     const renamed = await callRpc("workspace.rename", { workspace_id: workspace.id, name });
+    await clearDraft();
     close();
     await onRenamed?.(renamed);
   } catch (thrown) {

@@ -8,6 +8,7 @@ const { openBrowser } = vi.hoisted(() => ({ openBrowser: vi.fn() }));
 vi.mock("../src/sheets/browser.js", () => ({ openBrowser }));
 let openNewRepo;
 let writeCached;
+let readCached;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const waitForBrowserCall = (index) => vi.waitFor(() => expect(openBrowser.mock.calls[index]).toBeDefined());
 let callRpc;
@@ -26,7 +27,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ openNewRepo } = await import("../src/sheets/newRepo.js"));
-  ({ writeCached } = await import("../src/core/localCache.js"));
+  ({ writeCached, readCached } = await import("../src/core/localCache.js"));
   vi.resetAllMocks(); document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
   callRpc = vi.fn(async (method) => method === "settings.get" ? { projects_dir: "/projects" } : { project_id: "p1" });
 });
@@ -40,6 +41,28 @@ it("opens the multi-source project form without creation tabs", () => {
 it("names the machine the folders come from", () => {
   openSheet();
   expect(document.querySelector("#sheet .sub").textContent).toContain("Laptop's configured projects folder");
+});
+
+it("restores an unsent project draft from cache without asking a device", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  await writeCached(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
+  const calls = openSelectableSheet(undefined, "desk");
+  await vi.waitFor(() => expect(document.querySelector("#nrname").value).toBe("cached project"));
+  expect(document.querySelector("#nrdevice").value).toBe("lap");
+  expect(calls.lap).not.toHaveBeenCalled();
+});
+
+it("writes the project draft after typing and clears it when creation succeeds", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  const done = vi.fn();
+  openSheet(done);
+  const name = document.querySelector("#nrname");
+  name.value = "new project";
+  name.dispatchEvent(new Event("input"));
+  await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("new project"));
+  document.querySelector("#nrdo").click();
+  await vi.waitFor(() => expect(done).toHaveBeenCalled());
+  expect((await readCached(address)).value.name).toBe("");
 });
 
 it("opens the folder picker from cached device settings while the settings pull is absent", async () => {

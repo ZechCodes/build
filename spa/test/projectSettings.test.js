@@ -5,7 +5,8 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { openProjectSettings } from "../src/sheets/projectSettings.js";
-import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { wipeCache, writeCached, readCached } from "../src/core/localCache.js";
+import { uiAddress } from "../src/core/localUiState.js";
 import { projectSettingsAddress } from "../src/core/settingsRecords.js";
 
 const confirmAction = vi.fn();
@@ -26,6 +27,22 @@ beforeEach(async () => {
 });
 
 describe("openProjectSettings", () => {
+  it("restores and updates an unsaved remote through the local cache", async () => {
+    const address = uiAddress({ deviceId: "dev-1", entityId: PROJECT.project_id, view: "project-settings", kind: "draft" });
+    await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
+    await writeCached(address, { remote: "cached remote", source: null, focusId: "" });
+    openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe("cached remote"));
+    await writeCached(address, { remote: "another tab remote", source: null, focusId: "" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote").value).toBe("another tab remote"));
+    const remote = document.querySelector("#psremote");
+    remote.value = "typed remote";
+    remote.dispatchEvent(new Event("input"));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.remote).toBe("typed remote"));
+    document.querySelector("#pscancel").click();
+    openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
+    await vi.waitFor(() => expect(document.querySelector("#psremote")?.value).toBe("typed remote"));
+  });
   it("keeps a focused remote draft when a delayed project.list repaints the sheet", async () => {
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
     let answerList;

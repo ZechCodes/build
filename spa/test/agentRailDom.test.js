@@ -3777,7 +3777,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await flush();
     expect(pillKinds()).toEqual(["checklist"]);
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist")?.textContent).toContain("wire the seed"));
   });
 
   it("drops a seed whose agent was left while the read was in flight", async () => {

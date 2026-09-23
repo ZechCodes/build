@@ -493,9 +493,7 @@ describe("device settings", () => {
     await vi.waitFor(() => expect(select.value).toBe("worktree"));
     select.value = "rift";
     select.dispatchEvent(new Event("change"));
-    await new Promise((done) => setTimeout(done, 0));
-
-    expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("settings.set", { isolation: "rift" }));
   });
 
   it("uses the named device's Rift capability rather than another machine's", async () => {
@@ -536,7 +534,6 @@ describe("device settings", () => {
 
     stale.value = "rift";
     stale.dispatchEvent(new Event("change"));
-    await new Promise((done) => setTimeout(done, 0));
 
     expect(session.call).not.toHaveBeenCalledWith("settings.set", expect.anything());
   });
@@ -655,8 +652,7 @@ it("disables folder selection after disconnect and ignores old connection callba
   expect(document.querySelector("#device-settings-retry").hidden).toBe(false);
   expect(session.close).toHaveBeenCalled();
   document.querySelector("#device-settings-retry").click();
-  await new Promise((done) => setTimeout(done, 0));
-  expect(document.querySelector("#device-projects-change").disabled).toBe(false);
+  await vi.waitFor(() => expect(document.querySelector("#device-projects-change").disabled).toBe(false));
   onLost();
   expect(document.querySelector("#device-projects-change").disabled).toBe(false);
 });

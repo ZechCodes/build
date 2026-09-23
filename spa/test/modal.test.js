@@ -66,7 +66,7 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await motionBeat();
+    await vi.waitFor(() => expect(scrimOnScreen()).toBe(null));
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(underlyingSawEscape).toBe(false);
@@ -96,7 +96,6 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await motionBeat();
 
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
@@ -107,12 +106,11 @@ describe("openModal", () => {
     const { body } = openModal({ dialogHtml: DIALOG, onClose });
 
     body.click();
-    await motionBeat();
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
 
     scrimOnScreen().click();
-    await motionBeat();
+    await vi.waitFor(() => expect(scrimOnScreen()).toBe(null));
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(scrimOnScreen()).toBe(null);
   });
@@ -131,18 +129,7 @@ describe("openModal", () => {
 
   it("puts focus in the dialog once it is on screen", async () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
-    await motionBeat();
-
-    expect(document.activeElement).toBe(body.querySelector("button"));
-  });
-
-  it("leaves focus where its caller put it", async () => {
-    const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
-    const confirm = body.querySelectorAll("button")[1];
-    confirm.focus();
-    await motionBeat();
-
-    expect(document.activeElement).toBe(confirm);
+    await vi.waitFor(() => expect(document.activeElement).toBe(body.querySelector("button")));
   });
 });
 
@@ -150,15 +137,30 @@ describe("the modal's motion", () => {
   let started = [];
 
   beforeEach(() => {
+    vi.useFakeTimers();
     started = recordAnimations();
   });
   afterEach(async () => {
-    await settleMotion();
-    stopRecordingAnimations();
-    document.body.innerHTML = "";
+    try {
+      await settleMotion();
+    } finally {
+      stopRecordingAnimations();
+      vi.useRealTimers();
+      document.body.innerHTML = "";
+    }
   });
 
   const keyframedProperties = (run) => Object.keys(run.keyframes[0]);
+
+  it("leaves focus where its caller put it when the opening motion finishes", async () => {
+    const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
+    const confirm = body.querySelectorAll("button")[1];
+    confirm.focus();
+
+    await settleMotion();
+
+    expect(document.activeElement).toBe(confirm);
+  });
 
   it("fades the scrim in and grows the dialog into it", async () => {
     const { body } = openModal({ dialogHtml: DIALOG });

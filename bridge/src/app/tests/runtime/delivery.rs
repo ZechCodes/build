@@ -609,17 +609,20 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
 
     let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
     wait_for(Duration::from_secs(5), || {
-        (!state
-            .lock()
-            .unwrap()
-            .session_registry
-            .test_tab(&key)
-            .unwrap()
-            .live)
-            .then_some(())
+        let s = state.lock().unwrap();
+        let thread = primary_thread(&s.runs["run-exits"].agents);
+        (!s.session_registry.test_tab(&key).unwrap().live
+            && thread.items.iter().any(|item| {
+                matches!(
+                    item,
+                    crate::thread::ThreadItem::Event(event)
+                        if event.event == crate::thread::ThreadEventKind::SessionEnded
+                )
+            }))
+        .then_some(())
     })
     .await
-    .expect("the pump observes the child exit");
+    .expect("the pump records the child exit in the conversation");
     let s = state.lock().unwrap();
     let thread = primary_thread(&s.runs["run-exits"].agents);
     assert_eq!(

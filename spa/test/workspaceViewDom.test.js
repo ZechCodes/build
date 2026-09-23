@@ -613,8 +613,7 @@ describe("workspace surface", () => {
     document.querySelector("[data-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await new Promise((resolve) => setTimeout(resolve, 220));
-    expect(document.querySelector(".modal-scrim")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector(".modal-scrim")).toBeNull());
     document.querySelector("[data-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     // Two reads of the options, one per press, and no read of the workspace.
@@ -668,8 +667,7 @@ describe("workspace surface", () => {
     await vi.waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await new Promise((resolve) => setTimeout(resolve, 220));
-    expect(document.querySelector("[data-init-git]")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector("[data-init-git]")).toBeNull());
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 

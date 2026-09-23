@@ -4878,7 +4878,7 @@ describe("a run of activity in the rail", () => {
     await mount();
 
     runHead().click();
-    await flush();
+    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]));
 
     expect(callsTo("thread.activity").map((call) => call.params)).toEqual([{
       entity_id: "run-3",
@@ -4887,11 +4887,13 @@ describe("a run of activity in the rail", () => {
       through_sequence: 51,
       limit: 200,
     }]);
-    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]);
-
     runHead().click();
+    await vi.waitFor(() => expect(runBox().open).toBe(false));
     runHead().click();
-    await flush();
+    await vi.waitFor(() => {
+      expect(runBox().open).toBe(true);
+      expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "50", "51"]);
+    });
 
     expect(callsTo("thread.activity")).toHaveLength(1);
   });
@@ -5066,10 +5068,9 @@ describe("a run of activity in the rail", () => {
 
     await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
-    await flush();
+    await vi.waitFor(() => expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null));
 
     expect(notifyError).not.toHaveBeenCalled();
-    expect(railHost().querySelector('[data-sequence="12"]')).not.toBe(null);
   });
 });
 

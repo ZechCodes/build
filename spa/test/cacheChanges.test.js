@@ -291,6 +291,55 @@ describe("a pane over a filled cache", () => {
 });
 
 describe("a commit's detail", () => {
+  it("reports hand-selected commits so the workspace can keep its URL current", async () => {
+    const onCommitSelection = vi.fn();
+    const { container, pane } = await mountPane(liveRpc(), { onCommitSelection });
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    expect(onCommitSelection).toHaveBeenLastCalledWith("a".repeat(40));
+    container.querySelector('[data-sel="uncommitted"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    expect(onCommitSelection).toHaveBeenLastCalledWith(null);
+    pane.dispose();
+  });
+
+  it("opens a routed workspace commit from cached history and cached diff", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    const onCommitSelection = vi.fn();
+    const { container, pane } = await mountPane(callRpc, {
+      scope: { workspace_id: "ws-1", source_id: "src", entity_id: "run-1" },
+      review: { getBase: () => "main", getRailSubtitle: () => "vs main" },
+      requestedCommit: "aaaaaaaa", onCommitSelection,
+    });
+    expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("a".repeat(40));
+    expect(container.textContent).toContain("committed line");
+    expect(callRpc).not.toHaveBeenCalled();
+    pane.dispose();
+  });
+
+  it("pages cached history for a routed commit, and names a missing one", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { ...log(), more: true });
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.log" && params.skip === 1) return {
+        ...log(), commits: [{ ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "older commit" }], more: false,
+      };
+      if (method === "git.show") return { ...show(), hash: "b".repeat(40), short: "bbbbbbb" };
+      return {};
+    });
+    const { container, pane } = await mountPane(callRpc, { requestedCommit: "bbbbbbbb" });
+    expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("b".repeat(40));
+    expect(container.textContent).toContain("committed line");
+    expect(callRpc.mock.calls.some(([method, params]) => method === "git.log" && params.skip === 1)).toBe(true);
+    pane.dispose();
+
+    const absent = await mountPane(callRpc, { requestedCommit: "cccccccc" });
+    expect(absent.container.textContent).toContain("This commit isn't in this workspace's history.");
+    expect(absent.container.querySelector(".crow.sel")).toBeNull();
+    absent.pane.dispose();
+  });
+
   it("addresses a selected commit by its full SHA", async () => {
     const viewingContext = { set: vi.fn(), setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
     const { container, pane } = await mountPane(liveRpc(), { viewingContext });

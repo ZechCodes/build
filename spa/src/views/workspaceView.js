@@ -31,12 +31,13 @@ import "../styles/surfaces.css";
 const ISSUES_TAB = "issues";
 const onIssuesTab = (route) => route.tab === ISSUES_TAB;
 
-function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection }) {
+function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection, requestedCommit, onCommitSelection }) {
   body.innerHTML = `<div class="workspace-gitpane"></div>`;
   const refbar = document.createElement("div");
   refbar.className = "workspace-refbar";
   const gitHost = body.querySelector(".workspace-gitpane");
-  let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection });
+  let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
+    requestedCommit, onCommitSelection });
   let disposed = false;
   const attachRefbar = () => {
     const rail = gitHost.querySelector(".crail-host");
@@ -51,7 +52,9 @@ function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, v
   const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, cacheScope, onCheckout: async () => {
       if (disposed) return;
       gitPane.dispose();
-      gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection });
+      onCommitSelection?.(null);
+      gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
+        requestedCommit: null, onCommitSelection });
     } });
   return { dispose: () => {
     disposed = true;
@@ -224,6 +227,12 @@ function mountIssuesTab(body, { canonical, callRpc, context, feed, agentSelectio
 
 function mountCheckoutPane(body, { directory, canonical, scope, callRpc, cacheScope, agentSelection }) {
   const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
+  const onCommitSelection = (commit) => {
+    const route = { ...App.route };
+    delete route.commit;
+    if (commit) route.commit = commit;
+    markRoute(route);
+  };
   if (canonical.tab !== "files") {
     return mountChanges(body, {
       scope,
@@ -233,6 +242,8 @@ function mountCheckoutPane(body, { directory, canonical, scope, callRpc, cacheSc
       projectId: canonical.projectId,
       navigate,
       viewingContext: App.viewingContext,
+      requestedCommit: canonical.commit || null,
+      onCommitSelection,
     });
   }
   const openAt = canonical.file ? { path: canonical.file, line: canonical.line || null } : null;

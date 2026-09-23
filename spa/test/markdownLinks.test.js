@@ -33,6 +33,12 @@ describe("a reference that resolves", () => {
     expect(html.startsWith("see ")).toBe(true);
   });
 
+  it("links a comment on an issue", () => {
+    expect(href(expandReferences("#42/c/ic-7", links))).toBe(hashFromRoute({
+      ...WHERE, name: "trackerIssue", issueId: "issue-42", commentId: "ic-7",
+    }));
+  });
+
   it("links a workspace, and an agent's conversation", () => {
     expect(href(expandReferences("@workspace:issues-board", links)))
       .toBe(hashFromRoute({ ...WHERE, name: "workspace", workspaceId: "ws-1", tab: "changes" }));
@@ -45,6 +51,14 @@ describe("a reference that resolves", () => {
     expect(href(html)).toBe(hashFromRoute({
       ...WHERE, name: "workspace", workspaceId: "ws-1", tab: "files", file: "src/a.js", line: 10,
     }));
+  });
+
+  it("links a short or full commit SHA into the workspace Changes view", () => {
+    for (const sha of ["b8ce4ee9", `b8ce4ee9${"1".repeat(32)}`]) {
+      expect(href(expandReferences(`[[issues-board:commit:${sha}]]`, links))).toBe(hashFromRoute({
+        ...WHERE, name: "workspace", workspaceId: "ws-1", tab: "changes", commit: sha,
+      }));
+    }
   });
 
   it("escapes what it puts in an attribute", () => {
@@ -68,11 +82,10 @@ describe("a reference that does not resolve", () => {
     expect(expandReferences(text, null)).toBe(text);
   });
 
-  // The shape is reserved and parsed, but core/router.js has no route for a
-  // commit yet, so it stays text rather than pointing somewhere invented.
-  it("leaves a commit as text until a commit has a URL", () => {
-    const text = "[[issues-board:commit:b8ce4ee9]]";
-    expect(expandReferences(text, links)).toBe(text);
+  it("leaves unresolved comments and commits as text", () => {
+    for (const text of ["#999/c/ic-1", "[[gone:commit:b8ce4ee9]]", "[[issues-board:commit:not-a-sha]]"]) {
+      expect(expandReferences(text, links)).toBe(text);
+    }
   });
 });
 

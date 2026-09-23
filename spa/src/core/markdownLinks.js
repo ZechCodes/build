@@ -47,15 +47,14 @@ const workspacePlace = (found, extra) => ({
 });
 
 /** What each kind of reference resolves to: the route it opens and the words
- *  the reader sees on hover. A kind that answers null is left as text — which
- *  is how `commit` behaves, its shape reserved by markdownRefs.js but with no
- *  route in core/router.js to send it to yet. */
+ *  the reader sees on hover. A kind that answers null is left as text. */
 const PLACES = {
   issue(reference, links) {
     const found = links.issue?.(reference.number);
     if (!found?.issueId) return null;
     return {
-      route: { name: "trackerIssue", deviceId: found.deviceId, projectId: found.projectId, issueId: found.issueId },
+      route: { name: "trackerIssue", deviceId: found.deviceId, projectId: found.projectId, issueId: found.issueId,
+        ...(reference.commentId ? { commentId: reference.commentId } : null) },
       title: found.title ? `Issue #${reference.number} — ${found.title}` : `Issue #${reference.number}`,
     };
   },
@@ -85,6 +84,11 @@ const PLACES = {
       route: workspacePlace(found, { tab: "files", file: path, ...(reference.line ? { line: reference.line } : null) }),
       title: reference.line ? `${path} line ${reference.line}` : path,
     };
+  },
+  commit(reference, links) {
+    const found = links.workspace?.(unesc(reference.workspace));
+    if (!found?.workspaceId) return null;
+    return { route: workspacePlace(found, { commit: reference.sha }), title: `Commit ${reference.sha}` };
   },
 };
 

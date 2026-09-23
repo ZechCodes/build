@@ -12,6 +12,16 @@ const workRoute = (hash) => {
 };
 
 describe("routeFromHash", () => {
+  it("round-trips a routed issue comment and a workspace commit", () => {
+    const comment = { name: "trackerIssue", deviceId: "d1", projectId: "p", issueId: "issue-42", commentId: "ic-7" };
+    expect(hashFromRoute(comment)).toBe("#/device/d1/project/p/issues/issue-42/c/ic-7");
+    expect(routeFromHash(hashFromRoute(comment))).toEqual(comment);
+    const commit = { name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", sourceId: "src",
+      tab: "changes", commit: "b8ce4ee9" };
+    expect(routeFromHash(hashFromRoute(commit))).toEqual(commit);
+    expect(hashFromRoute(commit)).toContain("?commit=b8ce4ee9");
+  });
+
   it("parses workspace directories and their selected tab", () => {
     const withDirectory = "#/device/d1/project/p/workspace/ws/directory/src/files?path=lib%2Fa.js&line=8";
     expect(routeFromHash(withDirectory)).toEqual({

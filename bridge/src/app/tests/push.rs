@@ -44,6 +44,25 @@ pub(in crate::app::tests) async fn settled_pushes(
     seen
 }
 
+/// Collect pushes until the assertion's actual condition arrives. A file
+/// watcher and a git scan can publish separate frames in either order.
+async fn pushes_until(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    session_key: &str,
+    mut ready: impl FnMut(&[Value]) -> bool,
+) -> Vec<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut pushes = Vec::new();
+    while !ready(&pushes) {
+        let message = tokio::time::timeout_at(deadline, rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for matching pushes: {pushes:?}"))
+            .expect("the push session remains open");
+        pushes.push(SessionSender::decrypt_push(session_key, &message));
+    }
+    pushes
+}
+
 /// Only the invalidation events out of a push history.
 pub(in crate::app::tests) fn change_events(pushes: &[Value]) -> Vec<Value> {
     pushes
@@ -494,26 +513,42 @@ async fn a_write_in_a_watched_worktree_is_pushed_with_its_path() {
     settled_pushes(&mut rx, &key).await;
 
     std::fs::write(repo.join("noted.txt"), "hello").unwrap();
-    let mut frames = Vec::new();
-    for _ in 0..40 {
-        frames.extend(
-            settled_pushes(&mut rx, &key)
-                .await
-                .into_iter()
-                .filter(|push| push["type"] == "changes"),
-        );
-        if !frames.is_empty() {
-            break;
-        }
-    }
-    let item = frames
+    let items = |frames: &[Value]| {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "changes")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .filter(|item| item["entity_id"] == project_id)
+            .collect::<Vec<_>>()
+    };
+    let frames = pushes_until(&mut rx, &key, |frames| {
+        let items = items(frames);
+        items
+            .iter()
+            .any(|item| item["files"]["paths"] == json!(["noted.txt"]))
+            && items
+                .iter()
+                .any(|item| item["git"]["status_key"].is_string())
+    })
+    .await;
+    let items = items(&frames);
+    let file_item = items
         .iter()
-        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == project_id)
-        .unwrap_or_else(|| panic!("no changes item for the project: {frames:?}"));
-    assert_eq!(item["files"]["paths"], json!(["noted.txt"]), "{item:?}");
-    assert!(item["git"]["status_key"].is_string(), "{item:?}");
-    assert_eq!(frames[0]["subscription_id"], "s-focus");
+        .find(|item| item["files"]["paths"] == json!(["noted.txt"]))
+        .expect("the changed path arrived");
+    assert_eq!(file_item["files"]["paths"], json!(["noted.txt"]));
+    let git_item = items
+        .iter()
+        .find(|item| item["git"]["status_key"].is_string())
+        .expect("the git scan arrived");
+    assert!(git_item["git"]["status_key"].is_string());
+    assert!(
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "changes")
+            .all(|frame| frame["subscription_id"] == "s-focus"),
+        "{frames:?}"
+    );
 }
 
 /// The `state` item IS the feed row: exactly what `board.list` carries for
@@ -665,7 +700,25 @@ async fn a_board_item_carries_the_project_list_when_a_project_arrives() {
     );
     assert_eq!(added["ok"], true, "{added:?}");
 
-    let item = board_item(&settled_pushes(&mut rx, &key).await);
+    let project_item = |pushes: &[Value]| {
+        pushes
+            .iter()
+            .filter(|push| push["type"] == "changes")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .find(|item| {
+                item["entity_id"] == crate::changes::BOARD_ITEM_ID
+                    && item["state"]["projects"]
+                        .as_array()
+                        .is_some_and(|projects| {
+                            projects.iter().any(|project| {
+                                project["project_id"] == added["result"]["project_id"]
+                            })
+                        })
+            })
+            .map(|item| item["state"].clone())
+    };
+    let pushes = pushes_until(&mut rx, &key, |pushes| project_item(pushes).is_some()).await;
+    let item = project_item(&pushes).expect("the board push carries the added project");
     let listed = item["projects"]
         .as_array()
         .unwrap_or_else(|| panic!("the board item carries the list: {item:?}"));

@@ -114,6 +114,13 @@ async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other()
         background_rows(&state, "run-background"),
         vec![format!("{} — started", fake::TASK_DESCRIPTION)],
     );
+    wait_for(Duration::from_secs(10), || {
+        let app = state.lock().unwrap();
+        let session = &app.session_registry.test_tab(&key)?.session;
+        (session.status() == AgentStatus::Working && !session.can_interrupt()).then_some(())
+    })
+    .await
+    .expect("the first turn closes while its background task remains live");
 
     age_past_the_idle_threshold(&state, &key);
     assert!(
@@ -142,6 +149,13 @@ async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other()
         background_rows(&state, "run-background")[1],
         format!("{} — finished", fake::TASK_DESCRIPTION),
     );
+    wait_for(Duration::from_secs(10), || {
+        let app = state.lock().unwrap();
+        (app.session_registry.test_tab(&key)?.session.status() == AgentStatus::Waiting)
+            .then_some(())
+    })
+    .await
+    .expect("the second turn closes before the idle sweep");
 
     age_past_the_idle_threshold(&state, &key);
     assert_eq!(

@@ -206,10 +206,20 @@ describe("the read mark", () => {
 
   it("does not send a timeline fallback key as a read mark", async () => {
     answer.timeline = [...TIMELINE, comment({ id: undefined, body: "A legacy comment without an id." })];
-    await mount();
-    expect(host.textContent).toContain("A legacy comment without an id.");
+    page = mountIssuePage(host, {
+      projectId: "proj-1", deviceId: "dev-1", projectKey: PROJECT_KEY, issueId: "issue-1",
+      callRpc: call,
+      catalog: () => ({ providers: [] }),
+      refreshCatalog: async () => ({ providers: [] }),
+      feed: () => ({ workspaces: [], items: [], projects: [] }),
+      navigate: vi.fn(),
+    });
+    await vi.waitFor(() => expect(host.textContent).toContain("A legacy comment without an id."));
     expect(listed("issues.read_through")).toHaveLength(0);
-    await scrollToEnd();
+    Object.defineProperty(host, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(host, "clientHeight", { value: 400, configurable: true });
+    host.scrollTop = 600;
+    host.dispatchEvent(new Event("scroll"));
     expect(listed("issues.read_through")).toHaveLength(0);
   });
 

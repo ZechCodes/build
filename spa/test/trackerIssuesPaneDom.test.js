@@ -315,7 +315,18 @@ describe("the Dashboard", () => {
       kind: "tracker_issue", projectKey: PROJECT_KEY, issue_id: one.id, unread: 1,
     }))] };
     call = vi.fn(() => new Promise(() => {}));
-    await mount({ feed: () => inboxFeed, defaultView: undefined });
+    pane = mountIssuesPane(host, {
+      projectId: "proj-1",
+      projectName: "Build",
+      deviceId: "dev-1",
+      projectKey: PROJECT_KEY,
+      callRpc: call,
+      catalog: () => ({ providers: [] }),
+      refreshCatalog: async () => ({ providers: [] }),
+      feed: () => inboxFeed,
+      defaultView: undefined,
+      navigate: vi.fn(),
+    });
 
     await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual(["unread"]));
 

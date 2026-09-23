@@ -890,11 +890,14 @@ function mountRailOnContext(host, context, swap) {
     entityId: () => context.entityId || entity.entityId || records.entityId(),
     agentId: () => selectedId,
     call: (method, params) => chatRepository.currentCall()(method, params),
-    onChange: (next) => {
+    onChange: (next, addressed) => {
+      if (addressed.agent_id !== selectedId) return;
       watchState = next;
       syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
     },
-    onFailure: (error) => notifyError("Could not change watching", error.message || String(error)),
+    onFailure: (error, addressed) => {
+      if (addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
+    },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge
   // answered, held until the digest says the same.
@@ -2085,7 +2088,7 @@ function mountRailOnContext(host, context, swap) {
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent(remove);
     const watch = panel.querySelector(WATCH_BUTTON_SELECTOR);
-    if (watch) watch.onclick = () => void watchSwitch.press();
+    if (watch) watch.onclick = () => watchSwitch.press();
     const chip = panel.querySelector(".rail-project-chip");
     if (chip) chip.onclick = (event) => {
       // The anchor's href is the reader's to open elsewhere; a plain press is

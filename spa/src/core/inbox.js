@@ -32,6 +32,7 @@ import { carriesWatching } from "./trackerWatch.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
+import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -160,11 +161,13 @@ export function watchedWorkspaceEntries(workspaces = [], projects = [], items = 
   for (const row of [...runs, ...items]) {
     const entityId = entityIdOf(row);
     if (entityId && Array.isArray(row.agents)) {
-      rosterByEntity.set(JSON.stringify([row.projectKey, entityId]), row.agents);
+      const key = JSON.stringify([row.projectKey, entityId]);
+      const current = rosterByEntity.get(key);
+      if (!current || isAtLeastAsFresh(row, current)) rosterByEntity.set(key, row);
     }
   }
   return workspaceEntries(workspaces, projects, items).filter((entry) => {
-    const agents = rosterByEntity.get(JSON.stringify([entry.projectKey, entry.entityId]));
+    const agents = rosterByEntity.get(JSON.stringify([entry.projectKey, entry.entityId]))?.agents;
     return agents?.length ? agents.some((agent) => agent.watched !== false) : !agentCreated.has(entry.workspaceKey);
   });
 }

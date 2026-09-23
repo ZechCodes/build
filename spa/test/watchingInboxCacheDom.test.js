@@ -7,8 +7,11 @@ import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+// Generated from a real bridge MCP tools/call and checked by the Rust test.
+const mcpCases = JSON.parse(readFileSync(resolve("../fixtures/watching/mcp_inbox.json"), "utf8"));
 let App, writeCached, startFeed, stopFeed, dropFeedDevice, subscribeFeed, mountInboxList, unmountInboxList, setInboxView;
 let openCreateWork, adoptDeviceSession, resetDeviceContexts;
+let liveFeedSnapshot, stampRow;
 const deviceId = "watching-device";
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -36,6 +39,7 @@ beforeEach(async () => {
   ({ mountInboxList, unmountInboxList, setInboxView } = await import("../src/core/inboxView.js"));
   ({ openCreateWork } = await import("../src/core/createWork.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  ({ liveFeedSnapshot, stampRow } = await import("../src/core/feedMerge.js"));
   resetDeviceContexts();
   App.route = { name: "inbox" };
   App.devices = [{ id: deviceId, name: "Laptop", status: "online" }];
@@ -52,6 +56,34 @@ afterEach(() => {
 });
 
 describe("cached watching on both inbox faces", () => {
+  for (const scenario of mcpCases) {
+    it(`renders the ${scenario.label} agent from the bridge MCP through cache and state push`, async () => {
+      const view = liveFeedSnapshot(scenario.board, { projects: scenario.projects },
+        { workspaces: scenario.workspaces }, deviceId);
+      expect(scenario.board.runs[0].agents[0].watched).toBe(scenario.mcp_watched);
+      await writeCached(address("feed"), view);
+      await writeCached(address("projects"), view.projects);
+      await writeCached(address("workspaces"), view.workspaces);
+      let snapshot;
+      const unsubscribe = subscribeFeed((next) => { snapshot = next; });
+      mountInboxList();
+      await startFeed();
+      await vi.waitFor(() => expect(snapshot?.runs?.[0]?.agents?.[0]?.watched).toBe(scenario.mcp_watched));
+      const count = scenario.mcp_watched ? 1 : 0;
+      expect(rows()).toHaveLength(count);
+
+      // The bridge's run.get record is the same roster the state-push cache
+      // writer stores; keep its watch result instead of replacing it in JS.
+      await writeCached(address("row", scenario.row.run_id), stampRow(scenario.row, deviceId));
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.run_id === scenario.row.run_id)).toBe(true));
+      expect(rows()).toHaveLength(count);
+      setInboxView("projects");
+      expect(rows()).toHaveLength(count);
+      if (count) expect(rows()[0].textContent).toContain(scenario.workspaces[0].name);
+      unsubscribe();
+    });
+  }
+
   it("hides an agent-created workspace without agents on cold replay and a workspace push", async () => {
     const { workspace } = await seed({ agents: [], createdByAgent: true, entityId: null });
     let snapshot;
@@ -107,6 +139,36 @@ describe("cached watching on both inbox faces", () => {
     await vi.waitFor(() => expect(rows()).toHaveLength(1));
     await writeCached(address("row", "run-1"), { ...run, kind: "branch", agents: [{ id: "agent-1", watched: false }] });
     await vi.waitFor(() => expect(rows()).toHaveLength(0));
+  });
+
+  it("uses the newer roster across board reads and state pushes on both faces", async () => {
+    const { project, workspace, run } = await seed({ watched: true, createdByAgent: true });
+    mountInboxList();
+    await startFeed();
+    const expectBothFaces = async (count) => {
+      await vi.waitFor(() => expect(rows()).toHaveLength(count));
+      setInboxView("projects");
+      await vi.waitFor(() => expect(rows()).toHaveLength(count));
+      setInboxView("inbox");
+    };
+    await expectBothFaces(1);
+
+    // A standalone row is older than this board read. The board omits the run
+    // from items, but its roster explicitly says the agent is unwatched.
+    await writeCached(address("row", "run-1"), { ...run, kind: "branch" });
+    await writeCached(address("feed"), { items: [], runs: [{ ...run, agents: [{ id: "agent-1", watched: false }] }],
+      projects: [project], workspaces: [workspace] });
+    await expectBothFaces(0);
+
+    // A later state push must win in either direction, even while the board's
+    // last roster remains unchanged.
+    await writeCached(address("row", "run-1"), { ...run, kind: "branch", agents: [{ id: "agent-1", watched: true }] });
+    await expectBothFaces(1);
+    await writeCached(address("row", "run-1"), { ...run, kind: "branch", agents: [{ id: "agent-1", watched: false }] });
+    await expectBothFaces(0);
+
+    await writeCached(address("feed"), { items: [], runs: [run], projects: [project], workspaces: [workspace] });
+    await expectBothFaces(1);
   });
 
   it("shows a UI-created, agentless workspace before the next board read", async () => {

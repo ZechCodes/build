@@ -28,6 +28,7 @@ import { entityIdOf } from "./entityId.js";
 import { mergeFeeds, withoutProject } from "./feedMerge.js";
 import { syncDevice } from "./cacheSync.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache } from "./localCache.js";
+import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
@@ -77,25 +78,34 @@ export function deliverFeed() {
  * long ago in a record nobody has rewritten, so a boot paint carries none; once
  * a pass has written the record, what it says is about now.
  */
-function feedSnapshot(held, view, live) {
-  if (!held && !view.items.length && !view.projects.length && !view.workspaces.length) return null;
+function stampedBoard(record) {
+  const held = record?.value || {};
+  const rows = (field) => (held[field] || []).map((row) => withCacheFreshness(row, record));
+  return { ...held, items: rows("items"), runs: rows("runs") };
+}
+
+function feedSnapshot(record, view, live) {
+  if (!record && !view.items.length && !view.projects.length && !view.workspaces.length) return null;
+  const board = stampedBoard(record);
   return {
-    ...(held || {}),
-    items: rowsOverBoard(held?.items, view.items),
+    ...board,
+    items: rowsOverBoard(board.items, view.items),
     projects: view.projects,
     workspaces: view.workspaces,
-    pending: live ? held?.pending || [] : [],
+    pending: live ? board.pending || [] : [],
     cached: !live,
   };
 }
 
-/** The board's list, with every row the cache holds a record of replaced by
- *  that record, and the records the list does not name after it. The records
- *  are the fresher of the two — a push rewrites one the moment an agent moves
- *  — and the list is the wider: a row naming no entity has no record. */
+/** The board's list and standalone rows, taking the newer copy of each entity.
+ * A board read can arrive after a state push, or a push after the board; the
+ * cache record time decides. Rows absent from the list are appended. */
 function rowsOverBoard(listed, rows) {
-  const byEntity = new Map(rows.map((row) => [entityIdOf(row), row]));
-  const items = (listed || []).map((item) => byEntity.get(entityIdOf(item)) || item);
+  const byEntity = new Map(rows.filter((row) => entityIdOf(row)).map((row) => [entityIdOf(row), row]));
+  const items = (listed || []).map((item) => {
+    const row = byEntity.get(entityIdOf(item));
+    return row && isAtLeastAsFresh(row, item) ? row : item;
+  });
   const named = new Set(items.map(entityIdOf).filter(Boolean));
   return [...items, ...rows.filter((row) => !named.has(entityIdOf(row)))];
 }
@@ -106,7 +116,7 @@ async function readDeviceOnce(deviceId, live) {
     cachedFeedView(deviceId),
   ]);
   if (!watchers.has(deviceId)) return;
-  const snapshot = feedSnapshot(record?.value, view, live);
+  const snapshot = feedSnapshot(record, view, live);
   if (!snapshot) return;
   byDevice.set(deviceId, snapshot);
   deliverFeed();

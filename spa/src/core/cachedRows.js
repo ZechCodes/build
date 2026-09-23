@@ -16,6 +16,7 @@
 import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached } from "./localCache.js";
 import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
+import { withCacheFreshness } from "./cacheFreshness.js";
 
 export const ROW_RECORD_KIND = "row";
 
@@ -29,7 +30,7 @@ export async function cachedFeedView(deviceId) {
     readCached({ deviceId, entityId: "", kind: "workspaces" }),
   ]);
   return {
-    items: rows.map((record) => record?.value).filter(Boolean),
+    items: rows.map((record) => withCacheFreshness(record?.value, record)).filter(Boolean),
     projects: projects?.value || [],
     workspaces: workspaces?.value || [],
   };

@@ -1,0 +1,110 @@
+[
+  {
+    "board": {
+      "items": [],
+      "runs": [
+        {
+          "agents": [
+            {
+              "id": "agent-quiet",
+              "watched": false
+            }
+          ],
+          "kind": null,
+          "project_id": "project-1",
+          "run_id": "run-quiet"
+        }
+      ]
+    },
+    "label": "quiet",
+    "mcp_watched": false,
+    "notify_user": null,
+    "projects": [
+      {
+        "name": "repo",
+        "project_id": "project-1"
+      }
+    ],
+    "row": {
+      "agents": [
+        {
+          "id": "agent-quiet",
+          "watched": false
+        }
+      ],
+      "kind": null,
+      "project_id": "project-1",
+      "run_id": "run-quiet"
+    },
+    "workspaces": [
+      {
+        "created_by_agent": false,
+        "entity_id": "run-quiet",
+        "name": "quiet",
+        "project_id": "project-1",
+        "status": "ready",
+        "workspace_id": "workspace-quiet"
+      }
+    ]
+  },
+  {
+    "board": {
+      "items": [
+        {
+          "agents": [
+            {
+              "id": "agent-followed",
+              "watched": true
+            }
+          ],
+          "kind": "branch",
+          "project_id": "project-1",
+          "run_id": "run-followed"
+        }
+      ],
+      "runs": [
+        {
+          "agents": [
+            {
+              "id": "agent-followed",
+              "watched": true
+            }
+          ],
+          "kind": null,
+          "project_id": "project-1",
+          "run_id": "run-followed"
+        }
+      ]
+    },
+    "label": "followed",
+    "mcp_watched": true,
+    "notify_user": true,
+    "projects": [
+      {
+        "name": "repo",
+        "project_id": "project-1"
+      }
+    ],
+    "row": {
+      "agents": [
+        {
+          "id": "agent-followed",
+          "watched": true
+        }
+      ],
+      "kind": null,
+      "project_id": "project-1",
+      "run_id": "run-followed"
+    },
+    "workspaces": [
+      {
+        "created_by_agent": false,
+        "entity_id": "run-followed",
+        "name": "followed",
+        "project_id": "project-1",
+        "status": "ready",
+        "workspace_id": "workspace-followed"
+      }
+    ]
+  }
+]

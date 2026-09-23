@@ -793,16 +793,53 @@ describe("the rail over a machine that is asked nothing", () => {
     await greetBridge(async () => ({ api_version: "1.9.0" }), { deviceId: "dev-1" });
     try {
       payload = branchRow({ agents: [agent({ watched: false })] });
-      await mount();
+      await writeRailWorkItem(payload);
+      rail = mountAgentRail(railHost(), railAddress());
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false"));
       expect(panel().querySelector(".rail-watch").title).toBe("Not watching");
 
-      await pushRow(branchRow({ agents: [agent({ watched: true })] }));
+      payload = branchRow({ agents: [agent({ watched: true })] });
+      await writeRailWorkItem(payload);
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("true"));
       expect(panel().querySelector(".rail-watch").title).toBe("Watching");
 
       panel().querySelector(".rail-watch").click();
       await vi.waitFor(() => expect(callsTo("conversation.unwatch")[0]?.params).toEqual({ entity_id: "run-3", agent_id: "ag-1" }));
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
+  it("keeps B's cached watch state when A's earlier watch is refused", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    const originalCall = bridge.call;
+    let refuseA;
+    bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-1"
+      ? new Promise((_, reject) => { refuseA = reject; })
+      : originalCall(method, params));
+    try {
+      payload = branchRow({ agents: [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
+      await writeRailWorkItem(payload);
+      rail = mountAgentRail(railHost(), railAddress());
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
+
+      const pressedA = panel().querySelector(".rail-watch").onclick();
+      await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-3", agent_id: "ag-1" }));
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+      await vi.waitFor(() => {
+        expect(headWho()).toBe(TOPICS["ag-2"]);
+        expect(panel()?.querySelector(".rail-watch")?.title).toBe("Watching");
+      });
+
+      refuseA(new Error("A's watch was refused"));
+      await pressedA;
+      expect(panel().querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("true");
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+      expect(panel().querySelector(".rail-watch").disabled).toBe(false);
+      expect(notifyError).not.toHaveBeenCalled();
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
     } finally {
       resetChangeEvents();
     }

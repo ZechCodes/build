@@ -73,10 +73,11 @@ export function createWatchToggle({
     agentId: typeof agentId === "function" ? agentId() : agentId,
   });
   let state = { watching: Boolean(watching), watchers: Number(watchers) || 0, pending: false };
+  let requestVersion = 0;
 
-  const moveTo = (next) => {
+  const moveTo = (next, params = asked().params) => {
     state = { ...state, ...next };
-    onChange({ ...state });
+    onChange({ ...state }, params);
   };
 
   return {
@@ -88,6 +89,8 @@ export function createWatchToggle({
      *  answered last. */
     async press() {
       if (state.pending) return;
+      const request = asked();
+      const version = ++requestVersion;
       const before = { watching: state.watching, watchers: state.watchers };
       const watchingNow = !before.watching;
       moveTo({
@@ -95,20 +98,21 @@ export function createWatchToggle({
         // The reader joins or leaves the count their own press changes.
         watchers: Math.max(0, before.watchers + (watchingNow ? 1 : -1)),
         pending: true,
-      });
+      }, request.params);
       try {
-        const request = asked();
         await call(watchingNow ? request.watch : request.unwatch, request.params);
-        moveTo({ pending: false });
+        if (version === requestVersion) moveTo({ pending: false }, request.params);
       } catch (error) {
-        moveTo({ ...before, pending: false });
-        onFailure(error);
+        if (version !== requestVersion) return;
+        moveTo({ ...before, pending: false }, request.params);
+        onFailure(error, request.params);
       }
     },
 
     /** What the bridge says, which outranks anything this guessed. The push
      *  carries the truth; a guess that disagrees with it was wrong. */
     settle({ watching: isWatching, watchers: count }) {
+      requestVersion += 1;
       moveTo({
         watching: Boolean(isWatching),
         watchers: Number(count) || 0,

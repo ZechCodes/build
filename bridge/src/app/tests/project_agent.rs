@@ -4,7 +4,7 @@
 //! can widen it, and nothing another surface has is reachable from it.
 
 use super::*;
-use crate::mcp::BridgeAction;
+use crate::mcp::{BridgeAction, DoneServer};
 
 pub(super) fn context(state_root: &Path) -> HarnessContext {
     HarnessContext::resolved(state_root.join("mcp.sock"), state_root.to_path_buf()).unwrap()
@@ -828,8 +828,10 @@ fn a_project_agent_puts_an_agent_on_a_workspace_and_takes_it_off() {
     assert_eq!(removed["agents"], json!([]), "{removed:?}");
 }
 
-/// MCP creation uses the same watch rule as agent.add, and the digest the
-/// browser caches carries the resulting value for board and detail reads.
+/// A real project-agent MCP tools/call produces the bridge records that the
+/// SPA cache-to-inbox test reads from the shared fixture. This pins the wire
+/// path and browser render to the same watch values, without a hand-built
+/// BridgeAction or a hand-built browser roster.
 #[test]
 fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
     let (_home, repo) = init_repo();
@@ -846,26 +848,32 @@ fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
         "agent.add from the UI watches the agent by default"
     );
 
-    for (workspace_id, notify_user, watched) in [
-        (&quiet_workspace, None, false),
-        (&followed_workspace, Some(true), true),
+    let mut cases = Vec::new();
+    for (label, workspace_id, notify_user, watched) in [
+        ("quiet", &quiet_workspace, None, false),
+        ("followed", &followed_workspace, Some(true), true),
     ] {
-        let added = state
-            .on_agent_mcp_action(
-                &owner,
-                &caller,
-                BridgeAction::AddWorkspaceAgent {
-                    workspace_id: workspace_id.clone(),
-                    notify_user,
-                    harness: None,
-                    model: None,
-                    effort: None,
-                    name: None,
-                    role: None,
-                    capability: None,
-                },
+        let mut arguments = json!({ "workspace_id": workspace_id });
+        if let Some(notify_user) = notify_user {
+            arguments["notify_user"] = json!(notify_user);
+        }
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "add_workspace_agent", "arguments": arguments }
+        });
+        let mut output = Vec::new();
+        DoneServer::for_owner(&caller)
+            .run_stdio(
+                std::io::Cursor::new(format!("{frame}\n")),
+                &mut output,
+                |_| {},
+                |action| state.on_agent_mcp_action(&owner, &caller, action),
             )
-            .expect("the MCP call creates an agent");
+            .expect("the MCP stdio tool call replies");
+        let reply: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(reply["result"]["isError"], false, "{reply:?}");
+        let added: serde_json::Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(added["agent"]["watched"], watched, "{added:?}");
         let entity_id = added["entity_id"].as_str().unwrap();
         let detail = state.handle(req("run.get", json!({ "run_id": entity_id })));
@@ -887,7 +895,68 @@ fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
             .iter()
             .any(|item| item["run_id"] == entity_id);
         assert_eq!(in_inbox, watched, "{board:?}");
+
+        let project_list = state.handle(req("project.list", json!({})));
+        let project = project_list["result"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|project| project["project_id"] == project_id)
+            .unwrap();
+        let workspace_list =
+            state.handle(req("workspace.list", json!({ "project_id": project_id })));
+        let workspace = workspace_list["result"]["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|workspace| workspace["workspace_id"] == workspace_id.as_str())
+            .unwrap();
+        let normalized_run_id = format!("run-{label}");
+        let normalized_workspace_id = format!("workspace-{label}");
+        let normalized_agent_id = format!("agent-{label}");
+        let normalize_run = |value: &serde_json::Value| {
+            json!({
+                "kind": value["kind"],
+                "run_id": normalized_run_id,
+                "project_id": "project-1",
+                "agents": value["agents"].as_array().unwrap().iter().map(|agent| json!({
+                    "id": normalized_agent_id,
+                    "watched": agent["watched"]
+                })).collect::<Vec<_>>()
+            })
+        };
+        let items = board["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["run_id"] == entity_id)
+            .map(&normalize_run)
+            .collect::<Vec<_>>();
+        cases.push(json!({
+            "label": label,
+            "notify_user": notify_user,
+            "mcp_watched": added["agent"]["watched"],
+            "projects": [{ "project_id": "project-1", "name": project["name"] }],
+            "workspaces": [{
+                "workspace_id": normalized_workspace_id,
+                "project_id": "project-1",
+                "entity_id": normalized_run_id,
+                "name": workspace["name"],
+                "status": workspace["status"],
+                "created_by_agent": workspace["created_by_agent"]
+            }],
+            "board": { "items": items, "runs": [normalize_run(run)] },
+            "row": normalize_run(&detail["result"])
+        }));
     }
+    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/watching/mcp_inbox.json");
+    if std::env::var_os("UPDATE_WATCH_FIXTURE").is_some() {
+        std::fs::write(&fixture_path, serde_json::to_string_pretty(&cases).unwrap()).unwrap();
+    }
+    let expected: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+    assert_eq!(json!(cases), expected);
 }
 
 /// The write tools are scoped the way the reads are: a workspace of another

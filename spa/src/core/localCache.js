@@ -24,6 +24,16 @@ const DB_NAME = "build-cache";
 // refills what the reader is looking at.
 const DB_VERSION = 3;
 const STORE = "records";
+// A board record and a row can be written in the same clock millisecond.
+// Keep their order beside the timestamp without changing the timestamp used
+// for cache lifetime and page-exit journal comparisons.
+let lastWriteOrder = 0;
+const nextWriteOrder = () => {
+  const clock = globalThis.performance;
+  const now = Number.isFinite(clock?.timeOrigin) ? clock.timeOrigin + clock.now() : Date.now();
+  lastWriteOrder = Math.max(now, lastWriteOrder + 0.001);
+  return lastWriteOrder;
+};
 
 /** The index on each record's write time. It exists so "how old is what this
  *  workspace holds" can be answered from index keys alone: a key cursor
@@ -252,7 +262,7 @@ export function readCachedMany(addresses) {
  * owner and edit sequence so a page-exit journal can distinguish its own
  * unfinished write from a newer write in another tab. */
 export function writeCached(address, value, { source, sequence } = {}) {
-  const record = { at: Date.now(), value, ...(source ? { source, sequence } : {}) };
+  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
   const key = recordKey(address);
   return wroteStore((store) => {
     store.put(record, key);
@@ -282,7 +292,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        store.put({ at: Date.now(), value, source, sequence }, key);
+        store.put({ at: Date.now(), order: nextWriteOrder(), value, source, sequence }, key);
         applied = true;
       } catch {
         store.transaction.abort();
@@ -337,7 +347,7 @@ export function mergeCachedAtomically(address, merge) {
       try {
         const next = merge(request.result?.value);
         if (next == null) return;
-        store.put({ at: Date.now(), value: next }, key);
+        store.put({ at: Date.now(), order: nextWriteOrder(), value: next }, key);
         changed = true;
       } catch {
         store.transaction.abort();

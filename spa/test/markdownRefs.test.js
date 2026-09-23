@@ -18,6 +18,11 @@ describe("what a reference is", () => {
     expect(found("see #42 for the rest")).toEqual([{ kind: "issue", number: 42, start: 4, end: 7 }]);
   });
 
+  it("reads a comment on an issue without taking a plain issue's suffix", () => {
+    expect(found("see #42/c/ic-7 and #43").map((r) => [r.kind, r.number, r.commentId || null]))
+      .toEqual([["issue", 42, "ic-7"], ["issue", 43, null]]);
+  });
+
   it("reads a workspace by name or id", () => {
     expect(found("@workspace:issues-board is cut").map((r) => [r.kind, r.name]))
       .toEqual([["workspace", "issues-board"]]);
@@ -32,6 +37,14 @@ describe("what a reference is", () => {
   it("reads a file in a workspace", () => {
     expect(found("[[issues-board:bridge/src/mcp.rs]]").map((r) => [r.kind, r.workspace, r.path]))
       .toEqual([["file", "issues-board", "bridge/src/mcp.rs"]]);
+  });
+
+  it("reads short and full commit SHAs", () => {
+    const full = `b8ce4ee9${"1".repeat(32)}`;
+    expect(found(`[[ws:commit:b8ce4ee9]] [[ws:commit:${full}]]`)
+      .map((r) => [r.kind, r.sha])).toEqual([
+        ["commit", "b8ce4ee9"], ["commit", full],
+      ]);
   });
 
   it("reads a line, and takes the first of a range", () => {
@@ -81,6 +94,9 @@ describe("what is not a reference", () => {
       "see commit 4c81c037 for it",
       "an array[0] and [one] bracket",
       "issue number 42 in words",
+      "file.js#42/c/ic-1",
+      "[[ws:commit:not-a-sha]]",
+      "[[ws:commit:b8c]]", // a commit-looking path that is too short
     ]) {
       expect([text, found(text)]).toEqual([text, []]);
     }

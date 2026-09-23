@@ -471,11 +471,14 @@ so telling them costs nothing extra.";
 /// wherever they are typed. The renderer that reads them is
 /// `spa/src/core/markdownRefs.js`; a test below holds this list to it.
 const LINK_MARKUP_NOTE: &str = "\
-Write a reference and the reader gets a link. `#42` is an issue of your project.
+Write a reference and the reader gets a link. `#42` is an issue of your project;
+`#42/c/<comment-id>` opens one comment on it.
 `@workspace:<name>` is a workspace and `@agent:<id>` is an agent's conversation.
 `[[workspace:path/to/file.rs]]` is a file in that workspace, and
 `[[workspace:path/to/file.rs#L10]]` opens it at a line — a range like `#L10-L20`
 opens at its first line.
+`[[workspace:commit:<sha>]]` opens a commit in that workspace's Changes view;
+the SHA may be short or full.
 
 Use them in anything a person will read: messages, issue bodies, comments. They
 cost nothing when they miss — a reference to something that is not there renders
@@ -1298,10 +1301,12 @@ mod tests {
         let text = collapse_whitespace(LINK_MARKUP_NOTE);
         for shape in [
             "#42",
+            "#42/c/<comment-id>",
             "@workspace:",
             "@agent:",
             "[[workspace:path/to/file.rs]]",
             "#L10",
+            "[[workspace:commit:<sha>]]",
         ] {
             assert!(text.contains(shape), "the note never shows {shape}: {text}");
         }

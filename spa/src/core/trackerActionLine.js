@@ -35,13 +35,13 @@ export const actionWord = (action) => actionPhrase(action);
  */
 export function actionHref(action, place) {
   if (!place?.projectId || !action?.issue_id) return "";
-  const base = hashFromRoute({
+  return hashFromRoute({
     name: "trackerIssue",
     projectId: place.projectId,
     deviceId: place.deviceId ?? null,
     issueId: action.issue_id,
+    ...(action.comment_id ? { commentId: action.comment_id } : null),
   });
-  return action.comment_id ? `${base}#comment-${encodeURIComponent(action.comment_id)}` : base;
 }
 
 /**

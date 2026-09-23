@@ -353,6 +353,14 @@ export function olderLogPage(held, page) {
   return { ...(held || {}), commits: [...(held?.commits || []), ...older], more: Boolean(page.more) };
 }
 
+/** A short or full SHA names a commit only when its prefix is unambiguous in
+ *  the history currently held. */
+export function commitInLog(log, sha) {
+  if (!/^[0-9a-f]{4,40}$/i.test(sha || "")) return null;
+  const matches = (log?.commits || []).filter((commit) => commit.hash.toLowerCase().startsWith(sha.toLowerCase()));
+  return matches.length === 1 ? matches[0].hash : null;
+}
+
 /** The commit record after a fresh first page — what a mount of a checkout
  *  nobody else reads, and every mutation that answers with a log, comes back
  *  with.
@@ -504,6 +512,8 @@ export function mountGitPane(
     agentSelection = createAgentSelection(),
     navigate = null,
     viewingContext = null,
+    requestedCommit = null,
+    onCommitSelection = null,
   } = {},
 ) {
   // The local cache's address for this checkout. Workspace sources and bare
@@ -552,6 +562,7 @@ export function mountGitPane(
   // where the surface opens depends on whether the tree is dirty (a clean branch
   // opens at the commit list with nothing selected and no commit box).
   let selected;
+  let missingCommit = false;
   let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   // hash → the git.show payload held for that commit. A commit is immutable,
@@ -787,6 +798,12 @@ export function mountGitPane(
   };
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus, review });
+
+  const recordSelection = () => {
+    if (selected === undefined) return requestedCommit ? commitInLog(lastLog, requestedCommit) : defaultSelection();
+    if (selected === null && requestedCommit) return null;
+    return selectionAfterPoll(selected, lastStatus, { review });
+  };
 
   const foldsOfOpenChangeset = () => {
     const key = String(selected);
@@ -1065,7 +1082,10 @@ export function mountGitPane(
           detailHost,
           () => {
             if (selected === null || selected === undefined) {
-              detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
+              const message = missingCommit
+                ? "This commit isn't in this workspace's history."
+                : requestedCommit ? "Finding commit in this workspace's history…" : "Pick a commit to see what changed.";
+              detailHost.innerHTML = changesetPlaceholderHtml(message);
               return;
             }
             renderChangeset(detailHost);
@@ -1180,7 +1200,7 @@ export function mountGitPane(
     if (status) lastStatus = status;
     if (log) lastLog = freshLogPage(lastLog, log);
     lastHighlightKey = lastLog?.highlight_key ?? null;
-    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, lastStatus, { review });
+    selected = recordSelection();
     renderedKey = gitPollKey(lastStatus, lastLog);
     renderAndFetch();
   };
@@ -1324,6 +1344,9 @@ export function mountGitPane(
   const selectRail = (sel) => {
     if (selected === sel) return;
     selected = sel;
+    requestedCommit = null;
+    missingCommit = false;
+    onCommitSelection?.(sel === "review" || sel === "uncommitted" ? null : sel);
     viewingContext?.clearSelection();
     clearConfirm();
     fileMenuPath = null; // a menu belongs to the changeset it was opened on
@@ -1390,6 +1413,40 @@ export function mountGitPane(
     }
     if (await recordStill(address, before)) await mergeCached(address, (current) => olderLogPage(current, page));
     await rereadRecords();
+  };
+
+  const openHeldCommit = () => {
+    const hash = commitInLog(lastLog, requestedCommit);
+    if (!hash) return false;
+    requestedCommit = null;
+    missingCommit = false;
+    if (selected !== hash) selectRail(hash);
+    else {
+      onCommitSelection?.(hash);
+      if (!patchHeld(hash)) void fetchShow(hash);
+    }
+    return true;
+  };
+
+  const loadNextPage = async () => {
+    const length = lastLog.commits?.length || 0;
+    await showMore();
+    return (lastLog?.commits?.length || 0) > length;
+  };
+
+  /** Follow a direct link through cached history, asking for at most twenty
+   *  older pages. A page only reaches the pane through its cache record. */
+  const requestEnded = () => !requestedCommit || disposed;
+  const openRequestedCommit = async () => {
+    if (!requestedCommit) return;
+    for (let page = 0; page < 20; page += 1) {
+      if (requestEnded() || openHeldCommit()) return;
+      if (!lastLog?.more || !await loadNextPage()) break;
+    }
+    if (requestEnded() || openHeldCommit()) return;
+    missingCommit = true;
+    selected = null;
+    render();
   };
 
   // ---- repo-management actions (v2 toolbar / banner / discard) ----
@@ -1758,7 +1815,11 @@ export function mountGitPane(
     lastStatus = held.status;
     lastLog = held.log;
     lastHighlightKey = held.log.highlight_key ?? null;
-    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, lastStatus, { review });
+    selected = recordSelection();
+    // A direct link stays pending after a miss. Any log or patch announcement
+    // can now answer it, including while this checkout's refresh is still on
+    // the wire; the diff is requested from this cached selection immediately.
+    openHeldCommit();
     // Asked whatever the freeze says: a body fetch that failed leaves the
     // shape where it was, so a retry gated on the shape moving would never
     // come. A quiet repo asks for nothing.
@@ -1830,6 +1891,7 @@ export function mountGitPane(
     if (disposed) return;
     if (!painted && !refresh) await forceRefresh();
     else if (refresh) await refresh;
+    await openRequestedCommit();
   };
 
   /**

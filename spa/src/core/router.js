@@ -4,8 +4,8 @@
 //   #/project/<projectId>[?view=list|board]     — the project: its issue tracker
 //   #/project/<projectId>/workspaces            — the project: its workspaces
 //   #/project/<projectId>/issues[?view=board]   — an alias for the tracker
-//   #/project/<projectId>/issues/<issueId>      — one issue of the tracker
-//   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>
+//   #/project/<projectId>/issues/<issueId>[/c/<commentId>]
+//   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>[?commit=<sha>]
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/issue/<issueId>[/stage/<stageId>]
 //   #/capture/<captureId>                       — what to do with a capture
@@ -145,8 +145,10 @@ function legacyStage(tabSegment, stageSegment) {
  * The same segment on a BRANCH or a legacy issue still goes to the inbox —
  * there is no tracker of a branch to open.
  */
-const trackerRoute = (projectId, issueId) =>
-  issueId ? { name: "trackerIssue", projectId, issueId } : projectPage(projectId);
+const trackerRoute = (projectId, issueId, tail) =>
+  issueId
+    ? { name: "trackerIssue", projectId, issueId, ...(tail[0] === "c" && tail[1] ? { commentId: tail[1] } : null) }
+    : projectPage(projectId);
 
 /** `#/project/<p>/issue/<id>[…]` — the project is in the URL, so this is the
  *  canonical issue route no matter which legacy tail follows the id. */
@@ -268,11 +270,19 @@ function issuesView(query, route) {
 /// and its route is left exactly as the path made it.
 function placeInSurface(route, query) {
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
+  const commit = commitPlace(route, query);
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
   // Both surfaces that HAVE an issues tab read it: the project's own, and a
   // workspace's (#29). They are the same tracker laid out the same two ways.
   const view = ISSUES_SURFACES.has(route.name) && route.tab === ISSUES_TAB ? issuesView(query, route) : null;
-  return place || agent || view ? { ...place, ...agent, ...view } : null;
+  const position = { ...place, ...agent, ...view, ...commit };
+  return Object.keys(position).length ? position : null;
+}
+
+function commitPlace(route, query) {
+  if (route.name !== "workspace" || route.tab !== "changes" || !query) return null;
+  const commit = new URLSearchParams(query).get("commit");
+  return commit ? { commit } : null;
 }
 
 /// The route a hash names, and where in it the reader is standing.
@@ -331,7 +341,7 @@ function insideProject(projectId, parts) {
   const [collection, id, ...tail] = parts;
   if (collection === "workspace") return workspaceRoute(projectId, [id, ...tail]);
   if (collection === "branch") return branchRoute(projectId, id ? [id, ...tail] : []);
-  if (collection === ISSUES_TAB) return trackerRoute(projectId, id);
+  if (collection === ISSUES_TAB) return trackerRoute(projectId, id, tail);
   if (collection === WORKSPACES_TAB) return projectPage(projectId, WORKSPACES_TAB);
   if (!id) return projectSurface(projectId, collection);
   if (collection === "issue" || collection === "plan") return issueRoute(projectId, id, tail);
@@ -448,7 +458,9 @@ const HASH_WRITERS = Object.freeze({
   // One issue of the tracker, under the project it belongs to and never moves
   // between.
   trackerIssue: (route) =>
-    route.projectId && route.issueId ? `${projectPrefix(route)}/${ISSUES_TAB}/${encode(route.issueId)}` : null,
+    route.projectId && route.issueId
+      ? `${projectPrefix(route)}/${ISSUES_TAB}/${encode(route.issueId)}${route.commentId ? `/c/${encode(route.commentId)}` : ""}`
+      : null,
   workspace: (route) => {
     if (!route.projectId || !route.workspaceId) return null;
     const tab = workspaceTab(route.tab);
@@ -457,7 +469,8 @@ const HASH_WRITERS = Object.freeze({
     // One issue open inside the tab, and the board when that is not the list
     // it opens on — the same two things the project's own Issues tab writes.
     const opened = issues && route.issueId ? `/${encode(route.issueId)}` : "";
-    const place = issues ? issuesViewPairs(route, ISSUES_TAB) : tabPlacePairs(route, tab);
+    const place = issues ? issuesViewPairs(route, ISSUES_TAB)
+      : tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, tab);
     const query = hashQuery([...place, ...railAgentPairs(route)]);
     return `${projectPrefix(route)}/workspace/${encode(route.workspaceId)}${source}/${tab}${opened}${query}`;
   },

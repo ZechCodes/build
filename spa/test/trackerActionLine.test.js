@@ -132,12 +132,12 @@ describe("where it goes", () => {
   // A comment is a place in the issue, not just the issue.
   it("lands on the comment when the action was one", () => {
     expect(paint([acted({ comment_id: "ic-01M2ZNVB" })]).getAttribute("href"))
-      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P#comment-ic-01M2ZNVB");
+      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P/c/ic-01M2ZNVB");
   });
 
   it("encodes a comment id that carries a separator", () => {
     expect(actionHref(action({ comment_id: "a/b" }), HERE))
-      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P#comment-a%2Fb");
+      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P/c/a%2Fb");
   });
 
   // A conversation rendered with nowhere to stand points nowhere rather than

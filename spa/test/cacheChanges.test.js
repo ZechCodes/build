@@ -55,12 +55,17 @@ beforeEach(async () => {
   ({ mountGitPane } = await import("../src/core/gitPane.js"));
 });
 
-const mountPane = async (callRpc, options = {}) => {
+const mountPaneNow = (callRpc, options = {}) => {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeOf("dev-1"), ...options });
-  await settle();
   return { container, pane };
+};
+
+const mountPane = async (callRpc, options = {}) => {
+  const mounted = mountPaneNow(callRpc, options);
+  await settle();
+  return mounted;
 };
 
 const liveRpc = () =>
@@ -291,6 +296,100 @@ describe("a pane over a filled cache", () => {
 });
 
 describe("a commit's detail", () => {
+  it("reports hand-selected commits so the workspace can keep its URL current", async () => {
+    const onCommitSelection = vi.fn();
+    const { container, pane } = mountPaneNow(liveRpc(), { onCommitSelection });
+    await vi.waitFor(() => expect(container.querySelector(".crow")).not.toBeNull());
+    container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    expect(onCommitSelection).toHaveBeenLastCalledWith("a".repeat(40));
+    container.querySelector('[data-sel="uncommitted"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    expect(onCommitSelection).toHaveBeenLastCalledWith(null);
+    pane.dispose();
+  });
+
+  it("opens a routed workspace commit from cached history and cached diff", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) }, show());
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    const onCommitSelection = vi.fn();
+    const { container, pane } = mountPaneNow(callRpc, {
+      scope: { workspace_id: "ws-1", source_id: "src", entity_id: "run-1" },
+      review: { getBase: () => "main", getRailSubtitle: () => "vs main" },
+      requestedCommit: "aaaaaaaa", onCommitSelection,
+    });
+    await vi.waitFor(() => expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("a".repeat(40)));
+    await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
+    expect(callRpc).not.toHaveBeenCalled();
+    pane.dispose();
+  });
+
+  it("pages cached history for a routed commit, and names a missing one", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, { ...log(), more: true });
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.log" && params.skip === 1) return {
+        ...log(), commits: [{ ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "older commit" }], more: false,
+      };
+      if (method === "git.show") return { ...show(), hash: "b".repeat(40), short: "bbbbbbb" };
+      return {};
+    });
+    const { container, pane } = mountPaneNow(callRpc, { requestedCommit: "bbbbbbbb" });
+    await vi.waitFor(() => expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("b".repeat(40)));
+    await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
+    expect(callRpc.mock.calls.some(([method, params]) => method === "git.log" && params.skip === 1)).toBe(true);
+    pane.dispose();
+
+    const absent = mountPaneNow(callRpc, { requestedCommit: "cccccccc" });
+    await vi.waitFor(() => expect(absent.container.textContent).toContain("This commit isn't in this workspace's history."));
+    expect(absent.container.querySelector(".crow.sel")).toBeNull();
+    absent.pane.dispose();
+  });
+
+  it("recovers a missing routed commit when later cache records supply its log and diff", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
+    const callRpc = vi.fn(() => new Promise(() => {}));
+    const { container, pane } = mountPaneNow(callRpc, { requestedCommit: "bbbbbbbb" });
+    await vi.waitFor(() => expect(container.textContent).toContain("This commit isn't in this workspace's history."));
+
+    const older = { ...log().commits[0], hash: "b".repeat(40), short: "bbbbbbb", subject: "arrived later" };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, {
+      ...log(), commits: [...log().commits, older],
+    });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: older.hash }, {
+      ...show(), hash: older.hash, short: older.short,
+    });
+    await vi.waitFor(() => expect(container.querySelector(".crow.sel")?.dataset.hash).toBe(older.hash));
+    await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
+    expect(container.textContent).not.toContain("This commit isn't in this workspace's history.");
+    // The diff still paints from its cache record while any git.show call is
+    // unanswered; the log announcement may race ahead of the patch write.
+    expect(callRpc.mock.calls.every(([method]) => method === "git.show")).toBe(true);
+    pane.dispose();
+  });
+
+  it("loads the routed commit diff while the workspace's refresh is still pending", async () => {
+    const entityId = 'workspace:["ws-1","src"]';
+    await cache.writeCached({ deviceId: "dev-1", entityId, kind: "status" }, status());
+    await cache.writeCached({ deviceId: "dev-1", entityId, kind: "log" }, log());
+    const callRpc = vi.fn((method) => {
+      if (method === "git.show") return Promise.resolve(show());
+      return new Promise(() => {});
+    });
+    const { container, pane } = mountPaneNow(callRpc, {
+      scope: { workspace_id: "ws-1", source_id: "src" },
+      review: { getBase: () => "main", getRailSubtitle: () => "vs main" },
+      requestedCommit: "aaaaaaaa",
+    });
+    await vi.waitFor(() => expect(container.querySelector(".crow.sel")?.dataset.hash).toBe("a".repeat(40)));
+    await vi.waitFor(() => expect(callRpc.mock.calls.some(([method]) => method === "git.show")).toBe(true));
+    await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
+    expect(callRpc.mock.calls.some(([method]) => method === "git.status")).toBe(true);
+    expect(callRpc.mock.calls.some(([method]) => method === "git.log")).toBe(true);
+    pane.dispose();
+  });
+
   it("addresses a selected commit by its full SHA", async () => {
     const viewingContext = { set: vi.fn(), setVisibleDiffs: vi.fn(), captureDomSelection: vi.fn(), clearSelection: vi.fn(), clear: vi.fn() };
     const { container, pane } = await mountPane(liveRpc(), { viewingContext });

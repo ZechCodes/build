@@ -44,6 +44,18 @@ import { createThreadState, wireThreadAttachments } from "./thread.js";
 const namesIssue = (items, issueId) =>
   (items || []).some((item) => item.issues && (item.issues.truncated || (item.issues.issue_ids || []).includes(issueId)));
 
+/** Mark a routed comment after a cache paint. The row already has a stable ID
+ *  for conversation action links; this also moves the issue's own scroller. */
+export function focusIssueComment(host, commentId, { scroll = true } = {}) {
+  if (!commentId) return false;
+  const row = [...host.querySelectorAll(".issue-comment[id]")]
+    .find((entry) => entry.id === `comment-${commentId}`);
+  if (!row) return false;
+  row.classList.add("issue-comment-target");
+  if (scroll) row.scrollIntoView?.({ block: "center" });
+  return true;
+}
+
 export function mountIssuePage(host, options) {
   const state = {
     ...options,
@@ -143,6 +155,7 @@ export function mountIssuePage(host, options) {
    *  and a redraw that changes nothing on screen would still take the reader's
    *  caret and scroll with it. */
   let painted = null;
+  let commentFocused = false;
 
   /** Where the reader is typing when the page is about to be redrawn: which
    *  field, and where the caret is in it. A push, a feed move or a write's
@@ -199,6 +212,11 @@ export function mountIssuePage(host, options) {
     if (state.issue) wire();
     reads.mark(); // the host was just rewritten; the mark lives among its children
     restoreField(typing);
+    if (state.commentId) {
+      const found = focusIssueComment(host, state.commentId, { scroll: !commentFocused });
+      if (found) commentFocused = true;
+      else if (!commentFocused) host.scrollTop = 0;
+    }
   };
 
   /** Take one cached `issues.get` record: the issue, its timeline, and the labels the

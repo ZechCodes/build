@@ -32,12 +32,12 @@
 // which is why the workspace is named inside the brackets rather than inferred
 // from where the message happens to be.
 
-/// An issue by its number: `#42`.
+/// An issue by its number: `#42`, or one comment on it: `#42/c/ic-7`.
 ///
 /// Digits only, so a hex colour is not an issue, and a boundary in front so
 /// `file.js#42` and `abc#42` stay prose. The renderer never sees a heading
 /// here — that is a line-level rule and this runs inline.
-const ISSUE = /(^|[^\w#&])#(\d+)\b/g;
+const ISSUE = /(^|[^\w#&])#(\d+)(?:\/c\/([A-Za-z0-9_-]+))?\b/g;
 
 /// A workspace or an agent: `@workspace:<name or id>`, `@agent:<id>`.
 ///
@@ -74,15 +74,11 @@ function filePlace(rest) {
   return path ? { path, ...(line ? { line: Number(line[1]) } : null) } : null;
 }
 
-/** What one bracketed reference names: a commit when it says so, else a file.
- *
- *  `commit:` is reserved here and parsed, so the shape is settled — but nothing
- *  links one yet: core/router.js has no route for a commit, and a commit
- *  selection in the Changes view is internal DOM state rather than a URL. The
- *  link layer leaves it as text until that route exists. */
+/** What one bracketed reference names: a commit when it says so, else a file. */
 function bracketed(workspace, rest) {
   const commit = /^commit:([0-9a-fA-F]{4,40})$/.exec(rest);
   if (commit) return { kind: "commit", workspace, sha: commit[1] };
+  if (rest.startsWith("commit:")) return null;
   const place = filePlace(rest);
   return place ? { kind: "file", workspace, ...place } : null;
 }
@@ -117,7 +113,7 @@ function matchesOf(text, pattern, read, { boundary = true } = {}) {
 export function referencesIn(text) {
   const source = text || "";
   const found = [
-    ...matchesOf(source, ISSUE, (match) => ({ kind: "issue", number: Number(match[2]) })),
+    ...matchesOf(source, ISSUE, (match) => ({ kind: "issue", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })),
     ...matchesOf(source, NAMED, (match) =>
       match[2] === "workspace" ? { kind: "workspace", name: match[3] } : { kind: "agent", id: match[3] }),
     ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim()), { boundary: false }),

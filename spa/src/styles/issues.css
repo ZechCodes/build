@@ -671,13 +671,15 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
 
 /* The comment an action line lands on: a moment's mark so the reader sees
    where they arrived rather than having to count rows. */
-.issue-entry:target .issue-comment-card {
+.issue-entry:target .issue-comment-card,
+.issue-comment-target .issue-comment-card {
   outline:2px solid var(--accent); outline-offset:2px;
   animation:issue-comment-arrival var(--motion-slow) var(--ease-out);
 }
 @keyframes issue-comment-arrival { from { background:var(--accent-soft); } to { background:var(--panel); } }
 @media (prefers-reduced-motion: reduce) {
-  .issue-entry:target .issue-comment-card { animation:none; }
+  .issue-entry:target .issue-comment-card,
+  .issue-comment-target .issue-comment-card { animation:none; }
 }
 
 /* ---- what a column means -------------------------------------------------

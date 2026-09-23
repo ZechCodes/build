@@ -64,6 +64,7 @@ export async function renderTrackerIssue() {
     deviceId: context.deviceId,
     projectKey: routeProjectKey(route),
     issueId: route.issueId,
+    commentId: route.commentId || null,
     callRpc: context.rpc,
     catalog: () => context.modelCatalog(),
     refreshCatalog: () => context.refreshModelCatalog(),
@@ -81,4 +82,3 @@ export async function renderTrackerIssue() {
     page.dispose();
   };
 }
-

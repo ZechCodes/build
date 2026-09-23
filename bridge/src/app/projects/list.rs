@@ -26,17 +26,24 @@ impl AppState {
     pub(in crate::app) fn project_list_rows(&self) -> Vec<ProjectListRow> {
         self.projects
             .iter()
-            .map(|project| ProjectListRow {
-                project_id: project.id.clone(),
-                name: project.name.clone(),
-                repo_path: project.repo_path.clone(),
-                worktrees_root: self.project_worktrees_root(&project.id),
-                base_branch: project.base_branch.clone(),
-                is_git: project.is_git,
-                sources: project.sources.clone(),
-                isolation: project.isolation,
-                isolation_default: self.isolation,
-                conversation: self.project_conversation_run(&project.id),
+            .map(|project| {
+                let conversation = self.project_conversation_run(&project.id);
+                ProjectListRow {
+                    project_id: project.id.clone(),
+                    name: project.name.clone(),
+                    repo_path: project.repo_path.clone(),
+                    worktrees_root: self.project_worktrees_root(&project.id),
+                    base_branch: project.base_branch.clone(),
+                    is_git: project.is_git,
+                    sources: project.sources.clone(),
+                    isolation: project.isolation,
+                    isolation_default: self.isolation,
+                    conversations: conversation
+                        .as_deref()
+                        .map(|id| self.conversation_activity_rows(id))
+                        .unwrap_or_default(),
+                    conversation,
+                }
             })
             .collect()
     }

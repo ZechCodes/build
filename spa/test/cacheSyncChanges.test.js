@@ -492,6 +492,35 @@ describe("applying one item", () => {
     expect(calls("thread.page")).toEqual([]);
   });
 
+  it("updates cached workspace and project sessions from a conversation tip", async () => {
+    const old = [[100, 200]];
+    script["workspace.list"] = () => ({ workspaces: [{
+      id: "workspace-1", project_id: "p1", entity_id: "run-1",
+      conversations: [{ conversation_id: "conv-1", activity_spans: old }],
+    }] });
+    script["project.list"] = () => ({ projects: [{
+      project_id: "p1", name: "build",
+      conversations: [{ conversation_id: "conv-1", activity_spans: old }],
+    }] });
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "conv-1" }, {
+      items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1,
+    });
+    await boot([branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-1" }] })]);
+    await deliver([{ entity_id: "run-1", thread: [{
+      agent_id: "ag-1", conversation_id: "conv-1", last_sequence: 2, since_sequence: 1,
+      activity_spans: [[50_000_000, 50_000_000], ...old],
+      items: [{ id: "m-2", data: { sequence: 2 } }],
+    }] }], ["thread"]);
+    await vi.waitFor(async () => {
+      const workspaces = (await read("", "workspaces")).value;
+      const projects = (await read("", "projects")).value;
+      const thread = (await read("run-1", "thread", "conv-1")).value;
+      expect(workspaces[0].conversations[0].activity_spans[0]).toEqual([50_000_000, 50_000_000]);
+      expect(projects[0].conversations[0].activity_spans[0]).toEqual([50_000_000, 50_000_000]);
+      expect(thread.activity_spans[0]).toEqual([50_000_000, 50_000_000]);
+    });
+  });
+
   // A message sent from this tab stands in the record until the conversation
   // carries it. The push that carries it is what takes the stand-in away —
   // nobody should see their own message twice, once queued and once sent.

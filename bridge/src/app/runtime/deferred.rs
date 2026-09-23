@@ -450,6 +450,7 @@ pub(in crate::app) struct ProjectListRow {
     /// talked to yet. Read under the lock with the rest of the row: a list is a
     /// read, and a read never mints an owner.
     pub(in crate::app) conversation: Option<String>,
+    pub(in crate::app) conversations: Vec<Value>,
 }
 
 impl ProjectListRow {
@@ -483,6 +484,7 @@ impl ProjectListRow {
             "isolation_available": available,
             "entity_id": self.conversation,
             "run_id": self.conversation,
+            "conversations": self.conversations,
         })
     }
 }

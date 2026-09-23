@@ -47,14 +47,16 @@ function projectBlock(feed, projectKey) {
   const workspaces = feed?.workspaces || [];
   const projects = feed?.projects || [];
   const entries = workspaceEntries(workspaces, projects, feed?.items || []);
-  const { blocks } = workspaceProjectBlocks(entries, projects);
-  return blocks.find((candidate) => candidate.projectKey === projectKey) || null;
+  const { blocks, recentBlocks } = workspaceProjectBlocks(entries, projects);
+  return [...blocks, ...recentBlocks].find((candidate) => candidate.projectKey === projectKey) || null;
 }
 
 /** The block's rows, each read beside the workspace record it came from. */
 function pageRows(feed, block) {
   const byKey = new Map((feed?.workspaces || []).map((workspace) => [workspace.workspaceKey, workspace]));
-  return (block?.entries || []).map((entry) => pageRow(entry, byKey.get(entry.workspaceKey)));
+  return [...(block?.entries || []), ...(block?.recent || [])]
+    .sort((left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity))
+    .map((entry) => pageRow(entry, byKey.get(entry.workspaceKey)));
 }
 
 /**

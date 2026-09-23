@@ -66,7 +66,7 @@ mod tracker;
 #[cfg(test)]
 pub use conversations::items_decoded;
 pub use conversations::RESIDENT_CONVERSATION_TAIL;
-use conversations::{read_thread_page, stored_conversation_summary};
+use conversations::{read_thread_page, restore_activity_spans, stored_conversation_summary};
 use entities::{migrate_agents_to_v6, write_issue, write_run};
 pub use entities::{
     PersistedArchivedWorktree, PersistedIssue, PersistedPlan, PersistedRun, WorktreeFinishAction,

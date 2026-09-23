@@ -494,7 +494,14 @@ pub struct FactsRequest {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ThreadTip {
     pub agent_id: String,
+    /// Canonical conversation identity, which can differ from `agent_id`
+    /// when an implementation agent continues an issue agent's conversation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
     pub last_sequence: u64,
+    /// Newest eight message sessions, [first_ms, last_ms] in each.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_spans: Option<Vec<[i64; 2]>>,
     /// The conversation items after [`since_sequence`](Self::since_sequence),
     /// in the order they happened.
     #[serde(default)]
@@ -3174,6 +3181,7 @@ mod subscriptions {
                         last_sequence: 812,
                         items,
                         since_sequence: since,
+                        ..ThreadTip::default()
                     }],
                     ..EntityFacts::default()
                 }]
@@ -3248,6 +3256,7 @@ mod subscriptions {
                             last_sequence: 5,
                             items: Vec::new(),
                             since_sequence: since,
+                            ..ThreadTip::default()
                         }],
                         ..EntityFacts::default()
                     }
@@ -3433,6 +3442,7 @@ mod subscriptions {
                             .iter()
                             .find(|(agent, _)| agent == "a1")
                             .map(|(_, sequence)| *sequence),
+                        ..ThreadTip::default()
                     }],
                     ..EntityFacts::default()
                 }]

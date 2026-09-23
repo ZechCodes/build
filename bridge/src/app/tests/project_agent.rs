@@ -54,6 +54,82 @@ pub(super) fn workspace(state: &mut AppState, project_id: &str, name: &str) -> S
         .to_string()
 }
 
+#[test]
+fn project_and_workspace_lists_publish_each_conversation_session() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let workspace_id = workspace(&mut state, &project_id, "session-list");
+    let (project_owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let workspace_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace_id }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_agent_id = state.handle(req("agent.add", json!({"entity_id": workspace_owner})))
+        ["result"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for (owner, agent_id) in [
+        (&project_owner, &project_agent_id),
+        (&workspace_owner, &workspace_agent_id),
+    ] {
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": owner,
+                "agent_id": agent_id,
+                "body": "hello",
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+    }
+
+    let projects = state.project_list();
+    let project = &projects["projects"][0];
+    assert_eq!(
+        project["conversations"][0]["conversation_id"],
+        project_agent_id
+    );
+    assert_eq!(
+        project["conversations"][0]["activity_spans"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let workspaces = state.handle(req("workspace.list", json!({"project_id": project_id})));
+    let workspace = workspaces["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["workspace_id"] == workspace_id)
+        .unwrap();
+    assert_eq!(
+        workspace["conversations"][0]["conversation_id"],
+        workspace_agent_id
+    );
+    assert_eq!(
+        workspace["conversations"][0]["activity_spans"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let tip = &state.thread_tips(&project_owner, &[])[0];
+    assert_eq!(
+        tip.conversation_id.as_deref(),
+        Some(project_agent_id.as_str())
+    );
+    assert_eq!(tip.activity_spans.as_ref().unwrap().len(), 1);
+}
+
 /// The two reads answer what the client verbs answer, for the project the
 /// agent's owner is bound to — no project id is passed, because there is
 /// nowhere for one to come from.

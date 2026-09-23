@@ -543,6 +543,9 @@ pub struct ListedProjectRow {
     pub entity_id: Option<String>,
     /// The same id, under the name the run verbs take.
     pub run_id: Option<String>,
+    /// Every conversation belonging to the project's own agent rail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversations: Option<Vec<super::thread::ConversationActivity>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

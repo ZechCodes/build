@@ -29,6 +29,47 @@ fn a_runs_conversation_survives_a_store_reopen() {
     );
 }
 
+#[test]
+fn old_agent_records_rebuild_message_sessions_beyond_the_resident_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    let agent_id = record.agents[0].id.clone();
+    for day in 1..=10 {
+        record.agents[0].thread.post_user(
+            format!("day {day}"),
+            None,
+            format!("2026-09-{day:02}T00:00:00Z"),
+        );
+    }
+    for _ in 0..=RESIDENT_CONVERSATION_TAIL {
+        record.agents[0].thread.push_event(
+            crate::thread::ThreadEventKind::ToolUse,
+            None,
+            None,
+            None,
+            "2026-09-11T00:00:00Z",
+        );
+    }
+    store.save_run(&record).unwrap();
+    store.connection().execute(
+        "UPDATE agents SET record = json_remove(record, '$.thread.activity_spans') WHERE id = ?1",
+        [&agent_id],
+    ).unwrap();
+
+    let loaded = reload_run(&Store::new(dir.path().join("tasks")).unwrap(), "run-1");
+    let thread = &loaded.agents[0].thread;
+    assert!(thread
+        .items
+        .iter()
+        .all(|item| !matches!(item, ThreadItem::Message(_))));
+    assert_eq!(
+        thread.activity_spans(),
+        record.agents[0].thread.activity_spans()
+    );
+    assert_eq!(thread.activity_spans().len(), 8);
+}
+
 /// Appending one message writes ONE row. This is the whole reason the store
 /// changed: the JSON records it replaced rewrote every conversation on the
 /// Issue for every append, and a store that upserted all N items per save

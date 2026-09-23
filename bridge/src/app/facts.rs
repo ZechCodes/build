@@ -503,7 +503,9 @@ impl AppState {
                 };
                 ThreadTip {
                     agent_id: agent.id.clone(),
+                    conversation_id: Some(agent.conversation_id().to_string()),
                     last_sequence: thread.last_sequence(),
+                    activity_spans: Some(thread.activity_spans().to_vec()),
                     items,
                     since_sequence,
                 }

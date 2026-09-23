@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { workspaceKey } from "../src/core/deviceKey.js";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
-import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries } from "../src/core/inbox.js";
+import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries, workspaceIsRecent } from "../src/core/inbox.js";
 
 const DEVICE = "dev-1";
 
@@ -20,6 +20,43 @@ const entriesOf = (workspaces, items = []) => {
 };
 
 describe("workspace inbox rows", () => {
+  it("orders cached conversation sessions across all workspace agents without fetching a thread", () => {
+    const hour = 60 * 60 * 1000;
+    const workspace = (id, spans) => ({
+      id, project_id: "project-1", created_at: "2026-08-01T00:00:00Z",
+      conversations: spans.map((activity_spans, index) => ({ conversation_id: `${id}-${index}`, activity_spans })),
+    });
+    const earlier = workspace("earlier", [[[10 * hour, 10 * hour]]]);
+    const later = workspace("later", [[[20 * hour, 20 * hour]]]);
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["earlier", "later"]);
+
+    // An agent keeps talking inside the session: its first message still
+    // determines the row's position, even when another agent joins it.
+    earlier.conversations.push({ conversation_id: "earlier-1", activity_spans: [[21 * hour, 21 * hour]] });
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["earlier", "later"]);
+
+    // A full twelve hours of silence starts a new session and moves the row.
+    earlier.conversations[0].activity_spans.unshift([34 * hour, 34 * hour]);
+    expect(entriesOf([later, earlier]).map((row) => row.workspaceId)).toEqual(["later", "earlier"]);
+  });
+
+  it("ages a workspace into Recent at 24 hours using the newest message", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const [entry] = entriesOf([{ id: "quiet", project_id: "project-1", conversations: [
+      { conversation_id: "agent-1", activity_spans: [[100, 200]] },
+    ] }]);
+    expect(workspaceIsRecent(entry, 200 + day - 1)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + day)).toBe(true);
+  });
+
+  it("anchors a new bridge's empty conversation at workspace creation", () => {
+    const [entry] = entriesOf([{ id: "empty", project_id: "project-1",
+      created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-03T00:00:00Z", conversations: [],
+    }]);
+    expect(entry.anchorMs).toBe(Date.parse("2026-08-01T00:00:00Z"));
+    expect(entry.lastActivityMs).toBe(entry.anchorMs);
+  });
+
   it("sorts every device's workspaces together by the existing anchor order", () => {
     const workspaces = [
       { id: "new", project_id: "project-1", created_at: "2026-08-03T00:00:00Z" },

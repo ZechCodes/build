@@ -1,5 +1,5 @@
 use super::{
-    load_legacy_owner_context, read_thread_page, remove_dir_if_present,
+    load_legacy_owner_context, read_thread_page, remove_dir_if_present, restore_activity_spans,
     stored_conversation_summary, Store, StoreError, RESIDENT_CONVERSATION_TAIL,
     THREAD_ACTIVITY_COUNT_SQL, THREAD_FIRST_ATTENTION_AFTER_SQL, THREAD_ITEM_COUNT_SQL,
     THREAD_LAST_ATTENTION_SQL, THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL,
@@ -547,6 +547,9 @@ impl Store {
                 summary.activity_at,
                 summary.working,
             );
+            if summary.last_message_sequence > 0 && agent.thread.activity_spans().is_empty() {
+                restore_activity_spans(conn, &id, &mut agent.thread)?;
+            }
             agents.push(agent);
         }
         Ok(agents)

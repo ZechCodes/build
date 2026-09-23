@@ -1083,9 +1083,37 @@ const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Numbe
 const tipRunsOnFromRecord = (tip, held) =>
   Number(tip.since_sequence || 0) <= Number(held.deliveredSequence || 0);
 
+/** A thread tip also carries its compact session history. Update the cached
+ * list rows the inbox paints from, so a message after twelve hours of silence
+ * moves its workspace and project without reading whole threads or lists. */
+async function applyConversationSpans(context, tip) {
+  if (!Array.isArray(tip.activity_spans)) return;
+  const conversationId = tip.conversation_id || tip.agent_id;
+  for (const kind of ["workspaces", "projects"]) {
+    await mergeCached(addressOf(context, "", kind), (rows) => {
+      if (!Array.isArray(rows)) return null;
+      let changed = false;
+      const updated = rows.map((row) => {
+        if (!Array.isArray(row.conversations)) return row;
+        let rowChanged = false;
+        const conversations = row.conversations.map((conversation) => {
+          if (conversation.conversation_id !== conversationId) return conversation;
+          if (JSON.stringify(conversation.activity_spans) === JSON.stringify(tip.activity_spans)) return conversation;
+          changed = true;
+          rowChanged = true;
+          return { ...conversation, activity_spans: tip.activity_spans };
+        });
+        return rowChanged ? { ...row, conversations } : row;
+      });
+      return changed ? updated : null;
+    });
+  }
+}
+
 async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
+  await applyConversationSpans(context, tip);
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!tipIsNews(tip, held)) return;
@@ -1098,7 +1126,9 @@ async function applyThreadTip(context, entityId, tip) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;
   }
-  await mergeCached(address, (current) => threadWindow(current, { items, thread_total: tip.thread_total }));
+  await mergeCached(address, (current) => threadWindow(current, {
+    items, thread_total: tip.thread_total, activity_spans: tip.activity_spans,
+  }));
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things

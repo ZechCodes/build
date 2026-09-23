@@ -10,6 +10,7 @@ use crate::thread::page_activity_budget;
 use crate::thread::run_items_shipped;
 use crate::thread::MessageRole;
 use crate::thread::PageCut;
+use crate::thread::Thread;
 use crate::thread::ThreadItem;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -462,6 +463,31 @@ pub(super) fn stored_conversation_summary(
         }
     }
     Ok(summary)
+}
+
+/// Reconstruct the bounded session summary for an agent last saved by an
+/// older bridge. The partial message index skips tools and events; stop at
+/// the ninth silence instead of reading older history that cannot be sent.
+pub(super) fn restore_activity_spans(
+    connection: &Connection,
+    agent_id: &str,
+    thread: &mut Thread,
+) -> Result<(), StoreError> {
+    let mut statement = connection.prepare(
+        "SELECT json_extract(item, '$.data.created_at') FROM thread_items \
+         WHERE agent_id = ?1 AND message = 1 ORDER BY sequence DESC",
+    )?;
+    let mut rows = statement.query([agent_id])?;
+    while let Some(row) = rows.next()? {
+        let at: Option<String> = row.get(0)?;
+        if at
+            .as_deref()
+            .is_some_and(|at| !thread.note_older_message_activity(at))
+        {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Turn stored item TEXT into conversation items, naming the conversation in

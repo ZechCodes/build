@@ -271,6 +271,9 @@ impl AppState {
                     // under it without asking for the row.
                     let owner = self.workspace_conversation_owner(workspace);
                     let mut value = workspace_json(workspace);
+                    value["conversations"] = json!(owner.as_deref()
+                        .map(|id| self.conversation_activity_rows(id))
+                        .unwrap_or_default());
                     value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
                     value
                 })
@@ -305,6 +308,10 @@ impl AppState {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
         let mut value = workspace_json(&workspace);
+        value["conversations"] = json!(owner
+            .as_deref()
+            .map(|id| self.conversation_activity_rows(id))
+            .unwrap_or_default());
         let Some(run_id) = owner else {
             if let Some(agent_id) = params.get("agent_id").and_then(Value::as_str) {
                 return Err(format!("unknown agent_id: {agent_id}"));

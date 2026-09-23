@@ -4,6 +4,25 @@
 
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 
+// IndexedDB cannot finish a new transaction once the document is torn down.
+// A page exit puts only its unfinished draft in this tab's synchronous journal;
+// the next mount commits that entry to IndexedDB before its first paint.
+const pendingKey = (address) => `build.ui.pending:${JSON.stringify([
+  address.deviceId || "", address.entityId || "", address.kind || "", address.sub || "",
+])}`;
+const readPending = (address) => {
+  try {
+    const raw = globalThis.sessionStorage?.getItem(pendingKey(address));
+    return raw === null || raw === undefined ? undefined : JSON.parse(raw);
+  } catch { return undefined; }
+};
+const holdPending = (address, value) => {
+  try { globalThis.sessionStorage?.setItem(pendingKey(address), JSON.stringify(value)); } catch { /* Storage may be refused. */ }
+};
+const releasePending = (address) => {
+  try { globalThis.sessionStorage?.removeItem(pendingKey(address)); } catch { /* Storage may be refused. */ }
+};
+
 export const uiAddress = ({ deviceId = "", entityId = "", view, kind, sub = "" }) => ({
   deviceId,
   entityId,
@@ -22,6 +41,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   let reads = Promise.resolve();
   let revision = 0;
   let dirty = false;
+  let unresolved;
 
   const read = (mountedRevision = revision) => {
     const next = reads.then(async () => {
@@ -33,11 +53,12 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     return next;
   };
   const unwatch = subscribeCache(address, () => { void read(); });
-  const ready = read();
+  const journaled = debounceMs > 0 ? readPending(address) : undefined;
 
   const commit = (value) => {
     revision += 1;
     dirty = true;
+    unresolved = value;
     const committedRevision = revision;
     const next = writes.then(async () => {
       await writeCached(address, value);
@@ -47,6 +68,10 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
       if (committedRevision !== revision || pending !== undefined) return;
       dirty = false;
       const cached = await read();
+      if (cached !== undefined && JSON.stringify(cached) === JSON.stringify(value)) {
+        unresolved = undefined;
+        releasePending(address);
+      }
       // IndexedDB may be unavailable (private mode). Keep the active control
       // usable for this mount even though nothing can survive a reload there.
       if (!disposed && cached === undefined) paint(value);
@@ -69,7 +94,11 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { void flush(); }, debounceMs);
   };
-  const flushOnPageExit = () => { if (pending !== undefined) void flush(); };
+  const flushOnPageExit = () => {
+    const unfinished = pending === undefined ? unresolved : pending;
+    if (unfinished !== undefined) holdPending(address, unfinished);
+    if (pending !== undefined) void flush();
+  };
   const flushWhenHidden = () => {
     if (globalThis.document?.visibilityState === "hidden") flushOnPageExit();
   };
@@ -77,6 +106,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     globalThis.addEventListener?.("pagehide", flushOnPageExit);
     globalThis.document?.addEventListener?.("visibilitychange", flushWhenHidden);
   }
+  const ready = journaled === undefined ? read() : commit(journaled);
 
   return {
     ready,

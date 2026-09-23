@@ -217,6 +217,10 @@ describe("the issue", () => {
     field.dispatchEvent(new Event("input", { bubbles: true }));
     await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe("Keep this thought"));
     page.dispose();
+    await mount({ issueId: "issue-2" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    expect(host.querySelector("#issue-comment").value).toBe("");
+    page.dispose();
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector("#issue-comment")?.value).toBe("Keep this thought"));
     host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));

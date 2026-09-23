@@ -622,7 +622,10 @@ describe("moving a card", () => {
     });
     await mount({ view: "board" });
     await drop("issue-12", "done");
-    await waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed"));
+    await waitFor(() => {
+      expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed");
+      expect(cardsIn("backlog")).toEqual(["issue-12"]);
+    });
     expect(cardsIn("backlog")).toEqual(["issue-12"]);
     expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed");
   });

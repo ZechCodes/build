@@ -30,6 +30,7 @@ import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
+import { preserveFeedFreshness } from "./cacheFreshness.js";
 import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
@@ -1022,8 +1023,9 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
  */
 async function dropRemovedRows(context, removed) {
   const gone = new Set(removed);
-  const held = await heldValue(context, "", "feed");
-  if (held) await writeCached(addressOf(context, "", "feed"), withoutEntities(held, gone));
+  const record = await readCached(addressOf(context, "", "feed"));
+  if (record) await writeCached(addressOf(context, "", "feed"),
+    preserveFeedFreshness(withoutEntities(record.value, gone), record));
   for (const entityId of removed) {
     if (!context.active()) return;
     await evictEntity(context.deviceId, entityId);

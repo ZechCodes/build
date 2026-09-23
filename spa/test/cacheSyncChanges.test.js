@@ -770,6 +770,20 @@ describe("a push and a pass landing on the same record", () => {
 });
 
 describe("the board item", () => {
+  it("keeps surviving rows' observation times when a removal prunes the feed", async () => {
+    await boot([
+      branchItem({ agents: [{ id: "ag-1", watched: true }] }),
+      branchItem({ run_id: "run-2", branch: "build/other", agents: [{ id: "ag-2", watched: false }] }),
+    ]);
+    const before = await read("", "feed");
+    await deliver([{ entity_id: "board", state: { revision: 4, removed: ["run-2"] } }]);
+    const after = await read("", "feed");
+
+    expect(after.value.items.map((item) => item.run_id)).toEqual(["run-1"]);
+    expect(after.order).toBeGreaterThan(before.order);
+    expect(after.value.items[0].__cacheObserved).toEqual({ at: before.at, order: before.order });
+  });
+
   it("lets go of the data of every entity that left the board", async () => {
     await boot([branchItem()]);
     expect(await read("run-1", "status")).toBeTruthy();

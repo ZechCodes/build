@@ -845,6 +845,47 @@ describe("the rail over a machine that is asked nothing", () => {
     }
   });
 
+  it("ignores a workspace watch refusal after the rail swaps to a watched project agent", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    const originalCall = bridge.call;
+    let refuseWorkspace;
+    bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-one"
+      ? new Promise((_, reject) => { refuseWorkspace = reject; })
+      : originalCall(method, params));
+    try {
+      payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+        agents: [agent({ id: "ag-one", watched: false })] };
+      await writeRailBoard({
+        projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+        workspaces: [{ id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" }],
+        items: [payload, { kind: "project", project_id: "p1", entity_id: "run-project",
+          agents: [agent({ id: "ag-project", name: "Project agent", watched: true })] }],
+      });
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
+        projectAgent: { projectId: "p1", entityId: "run-project" } }));
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
+
+      const pressedWorkspace = panel().querySelector(".rail-watch").onclick();
+      await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("conversation.watch",
+        { entity_id: "run-one", agent_id: "ag-one" }));
+      railHost().querySelector('[data-bubble="project"]').click();
+      await vi.waitFor(() => {
+        expect(headWho(panel())).toBe("Project agent");
+        expect(panel()?.querySelector(".rail-watch")?.title).toBe("Watching");
+      });
+
+      refuseWorkspace(new Error("Workspace watch was refused"));
+      await pressedWorkspace;
+      expect(panel().querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("true");
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+      expect(panel().querySelector(".rail-watch").disabled).toBe(false);
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
   it("redraws the remembered workspace head and composer when its hidden run reaches the cache", async () => {
     await wipeCache();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");

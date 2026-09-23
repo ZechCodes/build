@@ -16,7 +16,7 @@
 import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached } from "./localCache.js";
 import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
-import { withCacheFreshness } from "./cacheFreshness.js";
+import { preserveFeedFreshness, withCacheFreshness } from "./cacheFreshness.js";
 
 export const ROW_RECORD_KIND = "row";
 
@@ -98,17 +98,20 @@ function boardListWith(held, target, rewrite) {
 async function writeRowEverywhere(deviceId, target, rewrite) {
   const address = target.entityId ? rowAddress(deviceId, target.entityId) : null;
   const heldRow = address ? (await readCached(address))?.value : null;
-  const heldFeed = (await readCached(FEED_RECORD_ADDRESS(deviceId)))?.value;
+  const heldFeedRecord = await readCached(FEED_RECORD_ADDRESS(deviceId));
+  const heldFeed = heldFeedRecord?.value;
   const board = boardListWith(heldFeed, target, rewrite);
   if (address && heldRow) {
     const rewritten = rewrite(heldRow);
     if (rewritten) await writeCached(address, rewritten);
     else await deleteCached([address]);
   }
-  if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), board);
+  if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
+    preserveFeedFreshness(board, heldFeedRecord, (field, item) => field === "items" && namesRow(item, target)));
   return async () => {
     if (address && heldRow) await writeCached(address, heldRow);
-    if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), heldFeed);
+    if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
+      preserveFeedFreshness(heldFeed, heldFeedRecord, (field, item) => field === "items" && namesRow(item, target)));
   };
 }
 

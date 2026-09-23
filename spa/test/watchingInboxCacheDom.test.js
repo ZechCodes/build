@@ -12,6 +12,7 @@ const mcpCases = JSON.parse(readFileSync(resolve("../fixtures/watching/mcp_inbox
 let App, writeCached, startFeed, stopFeed, dropFeedDevice, subscribeFeed, mountInboxList, unmountInboxList, setInboxView;
 let openCreateWork, adoptDeviceSession, resetDeviceContexts;
 let liveFeedSnapshot, stampRow;
+let removeFeedRow, feedRowTarget;
 const deviceId = "watching-device";
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -40,6 +41,7 @@ beforeEach(async () => {
   ({ openCreateWork } = await import("../src/core/createWork.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   ({ liveFeedSnapshot, stampRow } = await import("../src/core/feedMerge.js"));
+  ({ removeFeedRow, feedRowTarget } = await import("../src/core/cachedRows.js"));
   resetDeviceContexts();
   App.route = { name: "inbox" };
   App.devices = [{ id: deviceId, name: "Laptop", status: "online" }];
@@ -170,6 +172,32 @@ describe("cached watching on both inbox faces", () => {
     await writeCached(address("feed"), { items: [], runs: [run], projects: [project], workspaces: [workspace] });
     await expectBothFaces(1);
   });
+
+  for (const boardWatched of [true, false]) {
+    it(`keeps a newer ${boardWatched ? "muted" : "watched"} push when removing another board row`, async () => {
+      const { project, workspace, run } = await seed({ watched: boardWatched, createdByAgent: true });
+      const other = { kind: "branch", entity_id: "run-other", project_id: "project-1",
+        branch: "build/other", deviceId, projectKey: project.projectKey };
+      await writeCached(address("feed"), { items: [other], runs: [run], projects: [project], workspaces: [workspace] });
+      mountInboxList();
+      await startFeed();
+      const countA = boardWatched ? 0 : 1;
+      const assertBothFaces = async () => {
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work"))).toHaveLength(countA));
+        setInboxView("projects");
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work"))).toHaveLength(countA));
+        setInboxView("inbox");
+      };
+
+      // A's pushed watch state is newer than its board roster. Removing B
+      // rewrites the feed but does not observe A again.
+      await writeCached(address("row", "run-1"), { ...run, kind: "branch",
+        agents: [{ id: "agent-1", watched: !boardWatched }] });
+      await assertBothFaces();
+      await removeFeedRow(deviceId, feedRowTarget(other));
+      await assertBothFaces();
+    });
+  }
 
   it("shows a UI-created, agentless workspace before the next board read", async () => {
     await seed({ agents: [] });

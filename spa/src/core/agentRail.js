@@ -891,12 +891,12 @@ function mountRailOnContext(host, context, swap) {
     agentId: () => selectedId,
     call: (method, params) => chatRepository.currentCall()(method, params),
     onChange: (next, addressed) => {
-      if (addressed.agent_id !== selectedId) return;
+      if (disposed || addressed.agent_id !== selectedId) return;
       watchState = next;
       syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
     },
     onFailure: (error, addressed) => {
-      if (addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
+      if (!disposed && addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
     },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge

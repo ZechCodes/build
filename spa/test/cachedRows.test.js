@@ -77,6 +77,17 @@ describe("patching a row a press has moved", () => {
 
     expect((await heldFeed()).items.map((item) => item.dismissed)).toEqual([true, undefined]);
   });
+
+  it("keeps the roster's observation time when only the matching board item is patched", async () => {
+    await writeCached(feedAddress, { items: [branch()], runs: [branch({ agents: [{ id: "ag-1", watched: false }] })] });
+    const observed = await readCached(feedAddress);
+
+    await patchFeedRow("dev-1", feedRowTarget(branch()), { dismissed: true });
+
+    const rewritten = await readCached(feedAddress);
+    expect(rewritten.value.items[0].dismissed).toBe(true);
+    expect(rewritten.value.runs[0].__cacheObserved).toEqual({ at: observed.at, order: observed.order });
+  });
 });
 
 describe("taking a finished row out", () => {

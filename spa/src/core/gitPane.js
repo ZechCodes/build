@@ -852,6 +852,7 @@ export function mountGitPane(
           reviewStamps = stampChangeset(reviewStamps, reviewedChangeset, reviewedViews);
         },
         revisionId,
+        cacheAddressOf: () => cacheAddress("ui-draft", "changes:comments"),
         onChange: () => {
           render();
           renderComposer();

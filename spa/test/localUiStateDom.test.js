@@ -9,6 +9,7 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
+  sessionStorage.clear();
   document.body.innerHTML = "";
   cache = await import("../src/core/localCache.js");
   ui = await import("../src/core/localUiState.js");
@@ -65,6 +66,108 @@ describe("local UI cache wiring", () => {
     await remounted.ready;
     expect(painted).toEqual(["last keystroke"]);
     remounted.dispose();
+  });
+
+  it("discards a journal older than another tab's draft, and an old entry after send", async () => {
+    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "conversation-stale", view: "chat", kind: "draft" });
+    const key = `build.ui.pending:${JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub])}`;
+    await cache.writeCached(address, { text: "first" });
+    const first = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+    await first.ready;
+    first.schedule({ text: "unfinished" });
+    window.dispatchEvent(new Event("pagehide"));
+    const journal = sessionStorage.getItem(key);
+    expect(journal).toContain("unfinished");
+    await first.flush();
+    first.dispose({ flushPending: false });
+
+    sessionStorage.setItem(key, journal);
+    await cache.writeCached(address, { text: "newer tab" });
+    const painted = [];
+    const second = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
+    await second.ready;
+    expect(painted.at(-1)).toBe("newer tab");
+    expect((await cache.readCached(address)).value.text).toBe("newer tab");
+    expect(sessionStorage.getItem(key)).toBeNull();
+
+    second.schedule({ text: "before send" });
+    window.dispatchEvent(new Event("pagehide"));
+    const beforeSend = sessionStorage.getItem(key);
+    await second.write({ text: "" });
+    second.dispose({ flushPending: false });
+    sessionStorage.setItem(key, beforeSend);
+    const afterSend = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
+    await afterSend.ready;
+    expect((await cache.readCached(address)).value.text).toBe("");
+    expect(painted.at(-1)).toBe("");
+    expect(sessionStorage.getItem(key)).toBeNull();
+    afterSend.dispose();
+  });
+
+  it("bounds journal entries and total storage, and refuses body records on write and replay", async () => {
+    const records = [];
+    for (let index = 0; index < 5; index += 1) {
+      const address = ui.uiAddress({ entityId: `journal-${index}`, view: "chat", kind: "draft" });
+      const record = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+      await record.ready;
+      record.schedule({ text: "a".repeat(55_000) });
+      records.push(record);
+    }
+    window.dispatchEvent(new Event("pagehide"));
+    const keys = Object.keys(sessionStorage).filter((key) => key.startsWith("build.ui.pending:"));
+    const total = keys.reduce((sum, key) => sum + new TextEncoder().encode(sessionStorage.getItem(key)).length, 0);
+    expect(keys.length).toBeLessThan(5);
+    expect(total).toBeLessThanOrEqual(ui.UI_JOURNAL_TOTAL_MAX_BYTES);
+    records.forEach((record) => record.dispose({ flushPending: false }));
+
+    sessionStorage.clear();
+    const address = ui.uiAddress({ entityId: "large", view: "chat", kind: "draft" });
+    const key = `build.ui.pending:${JSON.stringify(["", address.entityId, address.kind, address.sub])}`;
+    await cache.writeCached(address, { text: "kept" });
+    const oversized = JSON.stringify({ at: Date.now(), source: "old", sequence: 1, value: { text: "x".repeat(ui.UI_JOURNAL_ENTRY_MAX_BYTES) } });
+    sessionStorage.setItem(key, oversized);
+    const restored = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+    await restored.ready;
+    expect(sessionStorage.getItem(key)).toBeNull();
+    expect((await cache.readCached(address)).value.text).toBe("kept");
+    restored.schedule({ text: "x".repeat(ui.UI_JOURNAL_ENTRY_MAX_BYTES) });
+    window.dispatchEvent(new Event("pagehide"));
+    expect(sessionStorage.getItem(key)).toBeNull();
+    await restored.flush();
+    restored.schedule({ patch: "diff --git a/a b/a" });
+    window.dispatchEvent(new Event("pagehide"));
+    expect(sessionStorage.getItem(key)).toBeNull();
+    await restored.flush();
+    restored.dispose({ flushPending: false });
+    await cache.writeCached(address, { text: "kept" });
+    sessionStorage.setItem(key, JSON.stringify({ at: Date.now() + 1, source: "old", sequence: 2, value: { content_b64: "file bytes" } }));
+    const refused = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+    await refused.ready;
+    expect(sessionStorage.getItem(key)).toBeNull();
+    expect((await cache.readCached(address)).value.text).toBe("kept");
+    refused.dispose();
+
+    for (let index = 0; index < 5; index += 1) {
+      sessionStorage.setItem(`build.ui.pending:${JSON.stringify(["", `over-total-${index}`, "ui-draft", "chat:"])}`,
+        JSON.stringify({ at: Date.now(), source: "other", sequence: 1, value: { text: "z".repeat(55_000) } }));
+    }
+    const totalAddress = ui.uiAddress({ entityId: "over-total-0", view: "chat", kind: "draft" });
+    const overTotal = ui.watchUiState(totalAddress, () => {}, { debounceMs: 60_000 });
+    await overTotal.ready;
+    expect(Object.keys(sessionStorage).filter((entry) => entry.startsWith("build.ui.pending:"))).toHaveLength(0);
+    overTotal.dispose();
+  });
+
+  it("keeps running when session storage refuses the page-exit journal", async () => {
+    const address = ui.uiAddress({ entityId: "quota", view: "chat", kind: "draft" });
+    const record = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+    await record.ready;
+    record.schedule({ text: "still usable" });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    expect(() => window.dispatchEvent(new Event("pagehide"))).not.toThrow();
+    setItem.mockRestore();
+    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.text).toBe("still usable"));
+    record.dispose();
   });
 
   it("opens a filter menu from cache and repaints an external close", async () => {

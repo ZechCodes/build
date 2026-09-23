@@ -229,13 +229,22 @@ class ChatController {
     if (!this.#repository.cacheDrafts) return;
     this.#cacheDraft = watchUiState(this.#repository.draftAddress(this.#identity), (saved) => {
       if (!saved || typeof saved.body !== "string") return;
-      const attachments = cloneAttachments(Array.isArray(saved.attachments) ? saved.attachments : []);
-      if (saved.body !== this.#draft.body || JSON.stringify(attachments) !== JSON.stringify(this.#draft.attachments)) {
+      const savedAttachments = Array.isArray(saved.attachments) ? saved.attachments : [];
+      // This controller's cache write contains only restart-safe descriptors.
+      // Its live upload still owns a Promise, preview and completion callback;
+      // replacing it with that descriptor would turn an in-flight upload into
+      // a failed chip and invalidate the binding's attachment revision.
+      const ownsLiveAttachments = saved.owner === this.#draftOwner
+        && JSON.stringify(storedAttachments(this.#draft.attachments)) === JSON.stringify(savedAttachments);
+      const attachments = ownsLiveAttachments ? this.#draft.attachments : cloneAttachments(savedAttachments);
+      const attachmentsChanged = !ownsLiveAttachments
+        && JSON.stringify(attachments) !== JSON.stringify(this.#draft.attachments);
+      if (saved.body !== this.#draft.body || attachmentsChanged) {
         this.#draft = {
           body: saved.body,
           attachments,
           revision: this.#draft.revision + 1,
-          attachmentRevision: this.#draft.attachmentRevision + 1,
+          attachmentRevision: this.#draft.attachmentRevision + (attachmentsChanged ? 1 : 0),
         };
       }
       this.announce();

@@ -211,7 +211,8 @@ describe("the issue", () => {
     const { readCached } = await import("../src/core/localCache.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const address = uiAddress({ deviceId: "dev-1", entityId: "issue-1", view: "tracker-issue", kind: "draft", sub: "proj-1" });
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
     const field = host.querySelector("#issue-comment");
     field.value = "Keep this thought";
     field.dispatchEvent(new Event("input", { bubbles: true }));

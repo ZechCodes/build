@@ -9,6 +9,8 @@ import {
   pasteIntent,
 } from "../src/core/composer.js";
 import { createChatRepository } from "../src/core/chatRepository.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { readCached } from "../src/core/localCache.js";
 
 const IDS = { input: "ti", send: "ts", hint: "th" };
 const MARKUP_IDS = { inputId: "ti", sendId: "ts", hintId: "th", placeholder: "Say something…" };
@@ -244,6 +246,33 @@ describe("attaching", () => {
 
     expect(chat.readAttachments()[0].status).toBe("ready");
     expect(chat.readAttachments()[0].descriptor.path).toBe("stored/slow.txt");
+  });
+
+  it("keeps an active upload through its own cache readback and accepts completion", async () => {
+    globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
+    let release;
+    const repository = createChatRepository({ scope: { deviceId: "device-held-upload" }, call: vi.fn() });
+    const chat = repository.controller({ entityId: "run-1", agentId: "agent-1", conversationId: "thread-1" });
+    const announced = vi.fn();
+    chat.subscribe(announced);
+    const { host } = mount({
+      ...chat.bindDraft(),
+      upload: (file) => new Promise((resolve) => {
+        release = () => resolve({ name: file.name, path: "stored/held.txt", mime: "text/plain", size: 1 });
+      }),
+    });
+    host.dispatchEvent(dropOf([new File(["a"], "held.txt", { type: "text/plain" })]));
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    const address = { deviceId: "device-held-upload", entityId: "thread-1", kind: "ui-draft", sub: "chat:agent:run-1:agent-1" };
+    await vi.waitFor(async () => expect((await readCached(address))?.value.attachments[0].status).toBe("failed"));
+    await vi.waitFor(() => expect(announced).toHaveBeenCalled());
+    expect(chat.readAttachments()[0]).toMatchObject({ name: "held.txt", status: "uploading" });
+    expect(chat.readAttachments()[0].pending).toBeInstanceOf(Promise);
+    release();
+    await vi.waitFor(() => expect(chat.readAttachments()[0].status).toBe("ready"));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.attachments[0].status).toBe("ready"));
+    repository.dispose();
   });
 
   it("does not let an old upload completion replace a newer attachment draft", async () => {

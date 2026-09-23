@@ -78,6 +78,32 @@ const liveRpc = () =>
   });
 
 describe("the cached first paint", () => {
+  it("keeps inline comments from the mounted Git pane across uncommitted and commit views", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-draft", sub: "changes:comments" };
+    const first = mountPaneNow(liveRpc());
+    await vi.waitFor(() => expect(first.container.querySelector(".fcmt")).not.toBeNull());
+    first.container.querySelector(".fcmt").click();
+    await vi.waitFor(() => expect(document.querySelector(".cp-input")).not.toBeNull());
+    document.querySelector(".cp-input").value = "Keep this inline note";
+    document.querySelector(".cp-save").click();
+    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.comments).toHaveLength(1));
+    first.pane.dispose();
+
+    const sendRpc = liveRpc();
+    const second = mountPaneNow(sendRpc);
+    await vi.waitFor(() => expect(second.container.querySelector(".pcomment")?.textContent).toContain("Keep this inline note"));
+    const other = mountPaneNow(liveRpc(), { scope: { run_id: "run-2" } });
+    await vi.waitFor(() => expect(other.container.querySelector(".fcmt")).not.toBeNull());
+    expect(other.container.querySelector(".pcomment")).toBeNull();
+    other.pane.dispose();
+    second.container.querySelector(".crow").click();
+    await vi.waitFor(() => expect(second.container.querySelector(".pcomment")?.textContent).toContain("Keep this inline note"));
+    second.container.querySelector(".csbox-actions .btn:not(.caret)").click();
+    await vi.waitFor(async () => expect((await cache.readCached(address))?.value.comments).toEqual([]));
+    expect(sendRpc.mock.calls.some(([method]) => method === "run.request_changes")).toBe(true);
+    second.pane.dispose();
+  });
+
   it("restores diff sort and noise folds from the UI record, then repaints a cache write", async () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());

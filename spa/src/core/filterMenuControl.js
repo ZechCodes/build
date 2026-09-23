@@ -90,6 +90,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   let active = -1;
   let open = false;
   let record = null;
+  let committedQuery = "";
   let focusSearch = false;
   let restorePress = false;
 
@@ -109,7 +110,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   };
 
   const paintRows = () => {
-    rows = menuRows(options, search.value, chosen, { multi, invent });
+    rows = menuRows(options, record ? committedQuery : search.value, chosen, { multi, invent });
     rows.forEach((row, index) => { row.at = index; });
     patchList(list, rows, {
       keyOf: (row) => row.key,
@@ -131,7 +132,10 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     chosen = toggleChoice(chosen, value, { multi });
     // An invented name is on offer from now on, so the row that made it becomes
     // an ordinary row and the query that summoned it has done its job.
-    if (invent && !options.some((option) => option.value === value)) search.value = "";
+    if (invent && !options.some((option) => option.value === value)) {
+      if (record) void record.write({ open: true, query: "" });
+      else search.value = "";
+    }
     paintPress();
     clear.disabled = !chosen.length;
     paintRows();
@@ -232,7 +236,8 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     open = nextOpen;
     pop.hidden = !nextOpen;
     press.setAttribute("aria-expanded", String(nextOpen));
-    search.value = typeof saved?.query === "string" ? saved.query : "";
+    committedQuery = typeof saved?.query === "string" ? saved.query : "";
+    search.value = committedQuery;
     active = -1;
     if (nextOpen) {
       paintRows();

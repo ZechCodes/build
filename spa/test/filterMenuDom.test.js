@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountFilterMenu } from "../src/core/filterMenuControl.js";
 import { uiAddress } from "../src/core/localUiState.js";
+import { readCached } from "../src/core/localCache.js";
 
 const LABELS = [
   { value: "", label: "Any label" },
@@ -94,6 +95,21 @@ describe("searching", () => {
     const before = rowValues();
     type("tr");
     expect(rowValues()).toEqual(before);
+    await vi.waitFor(() => expect(rowValues()).toEqual(["tracker", "transport"]));
+  });
+  it("uses the committed query when a parent redraw overlaps a pending search", async () => {
+    globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
+    const address = uiAddress({ view: "filter", kind: "menu", sub: "overlap" });
+    mount({ cacheAddress: address }).update(LABELS, []);
+    press().click();
+    await vi.waitFor(() => expect(pop().hidden).toBe(false));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.query).toBe(""));
+    type("tr");
+    menu.update(LABELS, []);
+    expect(search().value).toBe("tr");
+    expect(rowValues()).toEqual(["bug", "tracker", "transport"]);
+    expect((await readCached(address)).value.query).toBe("");
     await vi.waitFor(() => expect(rowValues()).toEqual(["tracker", "transport"]));
   });
   it("leaves what the query ranks, best first", () => {

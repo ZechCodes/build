@@ -515,10 +515,6 @@ pub type AgentSurfaces = BTreeMap<String, serde_json::Value>;
 pub struct AgentDigest {
     pub id: String,
     pub conversation_id: String,
-    /// Newest message sessions in Unix milliseconds, oldest and newest
-    /// message time in each. Present on bridges from API 1.13 onward.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activity_spans: Option<Vec<[i64; 2]>>,
     /// 1-based, stable for the agent's life.
     pub ordinal: u64,
     pub provider: String,
@@ -586,7 +582,6 @@ pub struct AgentDigest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationActivity {
     pub conversation_id: String,
-    pub activity_spans: Vec<[i64; 2]>,
 }
 
 /// Whether one conversation is in the user's inbox.

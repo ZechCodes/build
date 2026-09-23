@@ -451,6 +451,7 @@ pub(in crate::app) struct ProjectListRow {
     /// read, and a read never mints an owner.
     pub(in crate::app) conversation: Option<String>,
     pub(in crate::app) conversations: Vec<Value>,
+    pub(in crate::app) session: crate::session_summary::SessionSummary,
 }
 
 impl ProjectListRow {
@@ -485,6 +486,8 @@ impl ProjectListRow {
             "entity_id": self.conversation,
             "run_id": self.conversation,
             "conversations": self.conversations,
+            "session_started_ms": self.session.session_started_ms,
+            "last_activity_ms": self.session.last_activity_ms,
         })
     }
 }

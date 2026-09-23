@@ -20,7 +20,9 @@
         },
         "entity_id": "run-5d90b1e7",
         "run_id": "run-5d90b1e7",
-        "conversations": [{"conversation_id": "agent-1", "activity_spans": [[1789826400000, 1789826700000]]}]
+        "conversations": [{"conversation_id": "agent-1"}],
+        "session_started_ms": 1789826400000,
+        "last_activity_ms": 1789826700000
       }
     ]
   },

@@ -55,7 +55,7 @@ pub(super) fn workspace(state: &mut AppState, project_id: &str, name: &str) -> S
 }
 
 #[test]
-fn project_and_workspace_lists_publish_each_conversation_session() {
+fn project_and_workspace_lists_publish_pooled_session_summaries() {
     let (_home, repo) = init_repo();
     let tmp = tempfile::tempdir().unwrap();
     let mut state = rooted(tmp.path());
@@ -96,13 +96,8 @@ fn project_and_workspace_lists_publish_each_conversation_session() {
         project["conversations"][0]["conversation_id"],
         project_agent_id
     );
-    assert_eq!(
-        project["conversations"][0]["activity_spans"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(project["session_started_ms"].as_i64().is_some());
+    assert!(project["last_activity_ms"].as_i64().is_some());
     let workspaces = state.handle(req("workspace.list", json!({"project_id": project_id})));
     let workspace = workspaces["result"]["workspaces"]
         .as_array()
@@ -114,20 +109,80 @@ fn project_and_workspace_lists_publish_each_conversation_session() {
         workspace["conversations"][0]["conversation_id"],
         workspace_agent_id
     );
-    assert_eq!(
-        workspace["conversations"][0]["activity_spans"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert!(workspace["session_started_ms"].as_i64().is_some());
+    assert!(workspace["last_activity_ms"].as_i64().is_some());
 
     let tip = &state.thread_tips(&project_owner, &[])[0];
     assert_eq!(
         tip.conversation_id.as_deref(),
         Some(project_agent_id.as_str())
     );
-    assert_eq!(tip.activity_spans.as_ref().unwrap().len(), 1);
+    assert_eq!(tip.project_id.as_deref(), Some(project_id.as_str()));
+    assert!(tip.project_session.unwrap().last_activity_ms.is_some());
+}
+
+#[test]
+fn project_agent_words_anchor_a_project_without_workspaces() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+    let posted = state.handle(req(
+        "thread.post",
+        json!({"entity_id": owner, "agent_id": agent_id, "body": "hello project"}),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let project = state.project_list()["projects"][0].clone();
+    assert!(project["session_started_ms"].as_i64().is_some());
+    assert_eq!(project["session_started_ms"], project["last_activity_ms"]);
+}
+
+#[test]
+fn a_workspaces_message_anchors_the_project_session_after_a_long_gap() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let (project_owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let workspace_id = workspace(&mut state, &project_id, "finished-session");
+    let workspace_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_agent_id = state.handle(req("agent.add", json!({"entity_id": workspace_owner})))
+        ["result"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut project_run = state.runs.remove(&project_owner).unwrap();
+    project_run
+        .agents
+        .by_id_mut(&project_agent_id)
+        .unwrap()
+        .thread
+        .post_user("project start", None, "2026-09-01T00:00:00Z");
+    state
+        .finish_run_mutation(project_owner, project_run)
+        .unwrap();
+    let mut workspace_run = state.runs.remove(&workspace_owner).unwrap();
+    workspace_run
+        .agents
+        .by_id_mut(&workspace_agent_id)
+        .unwrap()
+        .thread
+        .post_user("workspace update", None, "2026-09-05T04:00:00Z");
+    state
+        .finish_run_mutation(workspace_owner, workspace_run)
+        .unwrap();
+    let before = state.project_list()["projects"][0].clone();
+    let last = crate::session_summary::message_millis("2026-09-05T04:00:00Z").unwrap();
+    assert_eq!(before["session_started_ms"], last);
+    assert_eq!(before["last_activity_ms"], last);
 }
 
 /// The two reads answer what the client verbs answer, for the project the

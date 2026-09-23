@@ -492,32 +492,56 @@ describe("applying one item", () => {
     expect(calls("thread.page")).toEqual([]);
   });
 
-  it("updates cached workspace and project sessions from a conversation tip", async () => {
-    const old = [[100, 200]];
+  it("keeps cached workspace and project summaries monotonic across tips and lists", async () => {
+    const old = { session_started_ms: 100, last_activity_ms: 200 };
+    const fresh = { session_started_ms: 50_000_000, last_activity_ms: 50_000_000 };
     script["workspace.list"] = () => ({ workspaces: [{
       id: "workspace-1", project_id: "p1", entity_id: "run-1",
-      conversations: [{ conversation_id: "conv-1", activity_spans: old }],
+      ...old,
     }] });
     script["project.list"] = () => ({ projects: [{
       project_id: "p1", name: "build",
-      conversations: [{ conversation_id: "conv-1", activity_spans: old }],
+      ...old,
     }] });
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "conv-1" }, {
       items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1,
     });
-    await boot([branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-1" }] })]);
-    await deliver([{ entity_id: "run-1", thread: [{
+    board = [branchItem({ agents: [{ id: "ag-1", conversation_id: "conv-1" }] })];
+    sync.startCacheSync();
+    await vi.waitFor(async () => {
+      expect((await read("", "workspaces"))?.value?.[0]?.last_activity_ms).toBe(200);
+      expect(subscription("s-inbox")).not.toBeNull();
+    });
+    subscription("s-inbox").onChanges([{ entity_id: "run-1", thread: [{
       agent_id: "ag-1", conversation_id: "conv-1", last_sequence: 2, since_sequence: 1,
-      activity_spans: [[50_000_000, 50_000_000], ...old],
+      workspace_id: "workspace-1", project_id: "p1",
+      workspace_session: fresh, project_session: fresh,
       items: [{ id: "m-2", data: { sequence: 2 } }],
-    }] }], ["thread"]);
+    }] }]);
     await vi.waitFor(async () => {
       const workspaces = (await read("", "workspaces")).value;
       const projects = (await read("", "projects")).value;
       const thread = (await read("run-1", "thread", "conv-1")).value;
-      expect(workspaces[0].conversations[0].activity_spans[0]).toEqual([50_000_000, 50_000_000]);
-      expect(projects[0].conversations[0].activity_spans[0]).toEqual([50_000_000, 50_000_000]);
-      expect(thread.activity_spans[0]).toEqual([50_000_000, 50_000_000]);
+      expect(workspaces[0]).toMatchObject(fresh);
+      expect(projects[0]).toMatchObject(fresh);
+      expect(thread.deliveredSequence).toBe(2);
+    });
+
+    // An old tip can arrive after a newer one. Its summary must not regress
+    // even if its thread cursor makes it a duplicate.
+    subscription("s-inbox").onChanges([{ entity_id: "run-1", thread: [{
+      agent_id: "ag-1", conversation_id: "conv-1", last_sequence: 1, since_sequence: 0,
+      workspace_id: "workspace-1", project_id: "p1",
+      workspace_session: old, project_session: old,
+      items: [{ id: "m-1", data: { sequence: 1 } }],
+    }] }]);
+    subscription("s-inbox").onChanges([{ entity_id: "board", state: {
+      projects: [{ project_id: "p1", name: "old again", ...old }],
+      workspaces: [{ id: "workspace-1", project_id: "p1", entity_id: "run-1", ...old }],
+    } }]);
+    await vi.waitFor(async () => {
+      expect((await read("", "workspaces"))?.value?.[0]).toMatchObject(fresh);
+      expect((await read("", "projects"))?.value?.[0]).toMatchObject({ name: "old again", ...fresh });
     });
   });
 

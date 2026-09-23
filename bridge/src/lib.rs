@@ -85,6 +85,7 @@ pub mod run;
 pub(crate) mod scoped_file;
 pub mod screen;
 pub mod service;
+pub mod session_summary;
 pub mod store;
 pub mod templates;
 pub(crate) mod terminal_environment;

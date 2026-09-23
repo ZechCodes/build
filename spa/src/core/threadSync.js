@@ -92,7 +92,6 @@ const appendedThreadWindow = (held, arrived, page) => ({
   deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
   knownTotalItems: arrived.knownTotalItems ?? held.knownTotalItems ?? null,
   activityDigests: mergeActivityDigests(held.activityDigests || [], page),
-  ...(Array.isArray(page.activity_spans) ? { activity_spans: page.activity_spans } : {}),
 });
 
 /** Replace a stale window with a newest-forward page that skipped a gap.
@@ -111,7 +110,6 @@ const newestThreadWindow = (held, arrived, page) => {
     items,
     deliveredSequence: Math.max(Number(held.deliveredSequence || 0), arrived.deliveredSequence),
     knownTotalItems: Math.max(Number(held.knownTotalItems || 0), Number(arrived.knownTotalItems || 0)) || null,
-    ...(Array.isArray(page.activity_spans) ? { activity_spans: page.activity_spans } : {}),
   };
 };
 

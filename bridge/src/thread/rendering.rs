@@ -14,7 +14,6 @@ impl Thread {
             "items": self.items,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
-            "activity_spans": self.activity_spans(),
         })
     }
     /// Snapshot-free revision listing shared by the full and cursored wire
@@ -50,7 +49,6 @@ impl Thread {
                 "event": event.event,
                 "created_at": event.created_at,
             })),
-            "activity_spans": self.activity_spans(),
         })
     }
     /// Cursor view for the detail polls: only items created — or mutated in
@@ -98,7 +96,6 @@ impl Thread {
             "last_completion": self.last_completion,
             "thread_total": self.total_item_count(),
             "thread_last_sequence": self.last_sequence(),
-            "activity_spans": self.activity_spans(),
         })
     }
     /// What a resumed agent is handed to rebuild the conversation: the last

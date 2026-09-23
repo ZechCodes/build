@@ -271,6 +271,12 @@ impl AppState {
                     // under it without asking for the row.
                     let owner = self.workspace_conversation_owner(workspace);
                     let mut value = workspace_json(workspace);
+                    let summary = owner
+                        .as_deref()
+                        .map(|id| self.session_summary(id))
+                        .unwrap_or_default();
+                    value["session_started_ms"] = json!(summary.session_started_ms);
+                    value["last_activity_ms"] = json!(summary.last_activity_ms);
                     value["conversations"] = json!(owner.as_deref()
                         .map(|id| self.conversation_activity_rows(id))
                         .unwrap_or_default());
@@ -308,6 +314,12 @@ impl AppState {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
         let mut value = workspace_json(&workspace);
+        let summary = owner
+            .as_deref()
+            .map(|id| self.session_summary(id))
+            .unwrap_or_default();
+        value["session_started_ms"] = json!(summary.session_started_ms);
+        value["last_activity_ms"] = json!(summary.last_activity_ms);
         value["conversations"] = json!(owner
             .as_deref()
             .map(|id| self.conversation_activity_rows(id))

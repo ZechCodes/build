@@ -42,6 +42,7 @@ impl AppState {
                         .as_deref()
                         .map(|id| self.conversation_activity_rows(id))
                         .unwrap_or_default(),
+                    session: self.session_summary(&project.id),
                     conversation,
                 }
             })
@@ -97,6 +98,8 @@ impl AppState {
             "isolation_default": self.isolation,
             "isolation_effective": effective,
             "isolation_available": available,
+            "session_started_ms": self.session_summary(&p.id).session_started_ms,
+            "last_activity_ms": self.session_summary(&p.id).last_activity_ms,
         })
     }
 }

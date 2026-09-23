@@ -641,6 +641,62 @@ fn workspace_conversation_survives_restart_without_adding_a_legacy_workspace() {
 }
 
 #[test]
+fn finished_workspace_message_keeps_project_session_after_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "session-repo");
+    let config = tmp.path().join("config.json");
+    let worktrees = tmp.path().join("worktrees");
+    let store = tmp.path().join("store");
+    let context =
+        || HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
+    let (project_id, last_activity) = {
+        let mut state = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+            .with_config(&config)
+            .unwrap()
+            .with_task_store(&store)
+            .unwrap();
+        let project = state.handle(req("project.add", json!({"path": repo})));
+        assert_eq!(project["ok"], true, "{project:?}");
+        let project_id = project["result"]["project_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let workspace = create_workspace(&mut state, &project_id, "session-done");
+        let workspace_id = workspace["workspace_id"].as_str().unwrap();
+        let ensured = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ));
+        let run_id = ensured["result"]["run_id"].as_str().unwrap();
+        let agent = state.handle(req("agent.add", json!({"entity_id": run_id})));
+        let agent_id = agent["result"]["agent"]["id"].as_str().unwrap();
+        let posted = state.handle(req(
+            "thread.post",
+            json!({"entity_id": run_id, "agent_id": agent_id, "body": "done soon"}),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let last_activity = state.project_list()["projects"][0]["last_activity_ms"]
+            .as_i64()
+            .unwrap();
+        let finished = state.handle(req(
+            "workspace.finish",
+            json!({"workspace_id": workspace_id}),
+        ));
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        (project_id, last_activity)
+    };
+    let restarted = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(&store)
+        .unwrap();
+    let project = &restarted.project_list()["projects"][0];
+    assert_eq!(project["project_id"], project_id);
+    assert_eq!(project["last_activity_ms"], last_activity);
+    assert_eq!(project["session_started_ms"], last_activity);
+}
+
+#[test]
 fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");

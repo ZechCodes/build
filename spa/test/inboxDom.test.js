@@ -186,7 +186,7 @@ afterEach(() => unmountInboxList?.());
 describe("the workspace inbox", () => {
   it("moves a workspace into the flat face's Recent after a day without a message", async () => {
     const old = Date.now() - 25 * 60 * 60 * 1000;
-    feed([workspace({ conversations: [{ conversation_id: "agent-1", activity_spans: [[old, old]] }] })]);
+    feed([workspace({ session_started_ms: old, last_activity_ms: old })]);
     expect(document.querySelectorAll('#inbox-list > [data-key^="workspace:"]')).toHaveLength(0);
     expect(document.querySelector('[data-recent-toggle="inbox"]')).not.toBeNull();
     document.querySelector('[data-recent-toggle="inbox"]').click();
@@ -360,16 +360,16 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
-  it("orders live projects by their pooled sessions and folds aged projects into Recent", async () => {
+  it("orders live projects by their bridge summaries and folds aged projects into Recent", async () => {
     const hour = 60 * 60 * 1000;
     const now = Date.now();
-    const conversations = (time) => [{ conversation_id: `agent-${time}`, activity_spans: [[time, time]] }];
+    const session = (time) => ({ session_started_ms: time, last_activity_ms: time });
     feed([
-      workspace({ conversations: conversations(now - 2 * hour) }),
-      workspace({ id: "workspace-2", project_id: "project-2", conversations: conversations(now - 26 * hour) }),
+      workspace(session(now - 2 * hour)),
+      workspace({ id: "workspace-2", project_id: "project-2", ...session(now - 26 * hour) }),
     ], [
-      project("project-1", "Zulu", "dev-1", { conversations: [] }),
-      project("project-2", "Alpha", "dev-1", { conversations: [] }),
+      project("project-1", "Zulu", "dev-1", session(now - 2 * hour)),
+      project("project-2", "Alpha", "dev-1", session(now - 26 * hour)),
     ]);
     setInboxView("projects");
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);

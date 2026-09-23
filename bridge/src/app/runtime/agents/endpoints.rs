@@ -1410,9 +1410,8 @@ impl AppState {
             .collect()
     }
 
-    /// Small per-conversation session summaries for the workspace and project
-    /// lists. Aliases can point at the same conversation, which the list must
-    /// name once before the client pools spans across conversations.
+    /// Conversation identities for rail navigation; inbox sessions live on
+    /// workspace and project rows, pooling messages from all their agents.
     pub(in crate::app) fn conversation_activity_rows(&self, entity_id: &str) -> Vec<Value> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
@@ -1425,12 +1424,8 @@ impl AppState {
                 if !seen.insert(conversation_id.to_string()) {
                     return None;
                 }
-                let thread = self
-                    .agent_conversation(entity_id, Some(&agent.id))
-                    .unwrap_or(&agent.thread);
                 Some(json!({
                     "conversation_id": conversation_id,
-                    "activity_spans": thread.activity_spans(),
                 }))
             })
             .collect()
@@ -1462,7 +1457,6 @@ impl AppState {
             "id": agent.id,
             "watched": agent.watched,
             "conversation_id": agent.conversation_id(),
-            "activity_spans": thread.activity_spans(),
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
             "model": next_start.model.clone().unwrap_or_default(),

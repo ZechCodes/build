@@ -306,8 +306,8 @@ async function readLists(context) {
 
 async function writeLists(context, view) {
   await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
-  await writeCached(addressOf(context, "", "projects"), view.projects);
-  await writeCached(addressOf(context, "", "workspaces"), view.workspaces);
+  await writeSessionList(context, "projects", view.projects);
+  await writeSessionList(context, "workspaces", view.workspaces);
   for (const row of view.items || []) {
     const entityId = entityIdOf(row);
     if (!entityId) continue;
@@ -949,6 +949,28 @@ async function refollowRoute(deviceId) {
 
 const BOARD_ENTITY = "board";
 
+const validSession = (record) => Number.isSafeInteger(record?.session_started_ms)
+  && Number.isSafeInteger(record?.last_activity_ms)
+  && record.session_started_ms <= record.last_activity_ms;
+
+/** A list read or push may cross a newer tip. Keep the summary with the
+ * greatest last message time; equal times take the incoming bridge reading. */
+function monotonicSession(incoming, held) {
+  if (!validSession(held)) return incoming;
+  if (validSession(incoming) && incoming.last_activity_ms >= held.last_activity_ms) return incoming;
+  return { ...incoming, session_started_ms: held.session_started_ms, last_activity_ms: held.last_activity_ms };
+}
+
+async function writeSessionList(context, kind, incoming) {
+  const idOf = kind === "projects"
+    ? (row) => row.project_id || row.id
+    : (row) => row.workspace_id || row.id;
+  await mergeCached(addressOf(context, "", kind), (held) => {
+    const old = new Map((held || []).map((row) => [idOf(row), row]));
+    return incoming.map((row) => monotonicSession(row, old.get(idOf(row))));
+  });
+}
+
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context || !holdingLock) return;
@@ -981,10 +1003,7 @@ async function applyBoard(context, state) {
   const removed = (state.removed || []).map((entityId) => String(entityId)).filter(Boolean);
   if (removed.length) await dropRemovedRows(context, removed);
   if (state.projects) {
-    await writeCached(
-      addressOf(context, "", "projects"),
-      state.projects.map((project) => stampProject(project, context.deviceId)),
-    );
+    await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
   if (state.workspaces) {
     // A row that names its own verdict — a list a git flush re-sent, with the
@@ -992,11 +1011,8 @@ async function applyBoard(context, state) {
     // (a list that moved because a workspace came or went) keeps the verdict
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
-    await writeCached(
-      addressOf(context, "", "workspaces"),
-      state.workspaces.map((workspace) =>
-        stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])),
-    );
+    await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
+      stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
   }
 }
 
@@ -1083,27 +1099,26 @@ const tipIsNews = (tip, held) => !held || Number(tip.last_sequence || 0) > Numbe
 const tipRunsOnFromRecord = (tip, held) =>
   Number(tip.since_sequence || 0) <= Number(held.deliveredSequence || 0);
 
-/** A thread tip also carries its compact session history. Update the cached
- * list rows the inbox paints from, so a message after twelve hours of silence
- * moves its workspace and project without reading whole threads or lists. */
-async function applyConversationSpans(context, tip) {
-  if (!Array.isArray(tip.activity_spans)) return;
-  const conversationId = tip.conversation_id || tip.agent_id;
-  for (const kind of ["workspaces", "projects"]) {
+/** A thread tip carries the summaries changed by its message. Project agent
+ * tips update only the project; workspace tips update both owning records. */
+async function applySessionTip(context, tip) {
+  for (const [kind, id, session] of [
+    ["workspaces", tip.workspace_id, tip.workspace_session],
+    ["projects", tip.project_id, tip.project_session],
+  ]) {
+    if (!id || !validSession(session)) continue;
     await mergeCached(addressOf(context, "", kind), (rows) => {
       if (!Array.isArray(rows)) return null;
+      const idOf = kind === "projects"
+        ? (row) => row.project_id || row.id
+        : (row) => row.workspace_id || row.id;
       let changed = false;
       const updated = rows.map((row) => {
-        if (!Array.isArray(row.conversations)) return row;
-        let rowChanged = false;
-        const conversations = row.conversations.map((conversation) => {
-          if (conversation.conversation_id !== conversationId) return conversation;
-          if (JSON.stringify(conversation.activity_spans) === JSON.stringify(tip.activity_spans)) return conversation;
-          changed = true;
-          rowChanged = true;
-          return { ...conversation, activity_spans: tip.activity_spans };
-        });
-        return rowChanged ? { ...row, conversations } : row;
+        if (idOf(row) !== id) return row;
+        const merged = monotonicSession({ ...row, ...session }, row);
+        if (merged.last_activity_ms === row.last_activity_ms && merged.session_started_ms === row.session_started_ms) return row;
+        changed = true;
+        return merged;
       });
       return changed ? updated : null;
     });
@@ -1113,7 +1128,7 @@ async function applyConversationSpans(context, tip) {
 async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
-  await applyConversationSpans(context, tip);
+  await applySessionTip(context, tip);
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
   if (!tipIsNews(tip, held)) return;
@@ -1127,7 +1142,7 @@ async function applyThreadTip(context, entityId, tip) {
     return;
   }
   await mergeCached(address, (current) => threadWindow(current, {
-    items, thread_total: tip.thread_total, activity_spans: tip.activity_spans,
+    items, thread_total: tip.thread_total,
   }));
 }
 

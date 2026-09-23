@@ -499,9 +499,15 @@ pub struct ThreadTip {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversation_id: Option<String>,
     pub last_sequence: u64,
-    /// Newest eight message sessions, [first_ms, last_ms] in each.
+    /// The inbox row this conversation belongs to, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub activity_spans: Option<Vec<[i64; 2]>>,
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_session: Option<crate::session_summary::SessionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_session: Option<crate::session_summary::SessionSummary>,
     /// The conversation items after [`since_sequence`](Self::since_sequence),
     /// in the order they happened.
     #[serde(default)]

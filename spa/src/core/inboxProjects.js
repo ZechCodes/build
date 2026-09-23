@@ -8,8 +8,9 @@
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
-// Blocks use the newest session of the pooled workspace and project-agent
-// conversations, oldest anchor first. A day without a message moves a block
+// Blocks use the bridge's project session summary, oldest anchor first. The
+// summary includes finished workspaces and the project's own conversation.
+// More than a day without a message moves a block
 // into the projects face's Recent section; workspaces inside keep their own
 // session order and Recent partition.
 //
@@ -18,7 +19,7 @@
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { RECENT_AFTER_MS, clashingNames, dimDeviceHtml, workspaceIsRecent } from "./inbox.js";
-import { newestSession } from "./sessionSpans.js";
+import { sessionTimes } from "./sessionSpans.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
  *  asked anything: the reader's question about such a block is never "which
@@ -56,27 +57,10 @@ function projectsNamed(projects, rows) {
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
  *  always routable, however empty it is. */
-function projectSessionTimes(project, grouped) {
-  const conversations = [
-    ...(project.conversations || []),
-    ...grouped.flatMap((entry) => entry.conversations || []),
-  ];
-  const complete = project.conversations !== undefined && grouped.every((entry) => entry.conversations !== undefined);
-  const session = complete ? newestSession(conversations) : null;
-  const anchorMs = session?.anchorMs ?? grouped.reduce((oldest, entry) =>
-    entry.anchorMs === null || entry.anchorMs === undefined ? oldest : Math.min(oldest, entry.anchorMs), Infinity);
-  const lastActivityMs = session?.lastActivityMs ?? grouped.reduce((latest, entry) =>
-    entry.lastActivityMs === null || entry.lastActivityMs === undefined ? latest : Math.max(latest, entry.lastActivityMs), -Infinity);
-  return {
-    anchorMs: Number.isFinite(anchorMs) ? anchorMs : null,
-    lastActivityMs: Number.isFinite(lastActivityMs) ? lastActivityMs : null,
-  };
-}
-
 function workspaceBlockFor(project, grouped, tag, nowMs) {
   grouped = [...grouped].sort((left, right) =>
     (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity));
-  const { anchorMs, lastActivityMs } = projectSessionTimes(project, grouped);
+  const { anchorMs, lastActivityMs } = sessionTimes(project, nowMs);
   const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
   const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
   return {
@@ -91,7 +75,7 @@ function workspaceBlockFor(project, grouped, tag, nowMs) {
     recent,
     anchorMs,
     lastActivityMs,
-    isRecent: lastActivityMs !== null && nowMs - lastActivityMs >= RECENT_AFTER_MS,
+    isRecent: lastActivityMs !== null && nowMs - lastActivityMs > RECENT_AFTER_MS,
     flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),

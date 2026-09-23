@@ -11,15 +11,6 @@ use sha2::Digest;
 use sha2::Sha256;
 use std::path::PathBuf;
 
-const ACTIVITY_SPAN_LIMIT: usize = 8;
-const ACTIVITY_GAP_MS: i64 = 12 * 60 * 60 * 1000;
-
-fn message_millis(at: &str) -> Option<i64> {
-    let instant =
-        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()?;
-    i64::try_from(instant.unix_timestamp_nanos() / 1_000_000).ok()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLineage {
     pub id: String,
@@ -141,11 +132,6 @@ pub struct Thread {
     pub(super) last_attention_sequence_summary: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) conversation_activity_at_summary: Option<String>,
-    /// Newest eight message sessions, each [first, last] in Unix milliseconds.
-    /// Stored with the small thread skeleton because the resident tail can
-    /// begin well after the last twelve-hour silence.
-    #[serde(default)]
-    pub(super) activity_spans: Vec<[i64; 2]>,
     /// Whether the newest message left a turn in flight. This is persisted so
     /// a stopping attention event can close work even when that message is
     /// below the resident tail after restart.
@@ -253,44 +239,6 @@ impl Thread {
         self.conversation_activity_at_summary = activity_at;
         self.conversation_working = working;
         self.refresh_conversation_summary_from_resident();
-    }
-    /// Message timestamps for list surfaces; tools and events never enter it.
-    pub fn activity_spans(&self) -> &[[i64; 2]] {
-        &self.activity_spans
-    }
-
-    /// Add a message at the live tip. A gap of exactly twelve hours starts a
-    /// new session. Invalid timestamps cannot order a session and are skipped.
-    fn note_message_activity(&mut self, at: &str) {
-        let Some(ms) = message_millis(at) else { return };
-        match self.activity_spans.first_mut() {
-            Some(span) if ms - span[1] < ACTIVITY_GAP_MS => {
-                span[1] = span[1].max(ms);
-                span[0] = span[0].min(ms);
-            }
-            _ => self.activity_spans.insert(0, [ms, ms]),
-        }
-        self.activity_spans.truncate(ACTIVITY_SPAN_LIMIT);
-    }
-
-    /// Rebuild an older bridge's summary from indexed message rows, newest
-    /// first. Stop once an older ninth session cannot affect the wire summary.
-    pub(crate) fn note_older_message_activity(&mut self, at: &str) -> bool {
-        let Some(ms) = message_millis(at) else {
-            return true;
-        };
-        if let Some(span) = self.activity_spans.last_mut() {
-            if span[0] - ms < ACTIVITY_GAP_MS {
-                span[0] = span[0].min(ms);
-                span[1] = span[1].max(ms);
-                return true;
-            }
-        }
-        if self.activity_spans.len() == ACTIVITY_SPAN_LIMIT {
-            return false;
-        }
-        self.activity_spans.push([ms, ms]);
-        true
     }
     pub(super) fn next(&mut self) -> u64 {
         self.next_sequence += 1;
@@ -808,7 +756,6 @@ impl Thread {
         let metadata = ItemMetadata::derive(&body, &links, anchor.as_ref(), &self.scope);
         let sequence = self.next();
         let id = format!("message-{sequence}");
-        self.note_message_activity(&now);
         self.items.push(ThreadItem::Message(ThreadMessage {
             still_working,
             metadata,

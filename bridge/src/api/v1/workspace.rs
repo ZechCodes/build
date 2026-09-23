@@ -286,6 +286,10 @@ pub struct WorkspaceListRow {
     #[serde(flatten)]
     pub workspace: WorkspaceRow,
     pub entity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     /// Every conversation belonging to this workspace's agent rail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversations: Option<Vec<super::thread::ConversationActivity>>,
@@ -309,6 +313,10 @@ pub struct WorkspaceDetail {
     /// The run that owns this workspace's root, under the name the rail reads
     /// entities by.
     pub entity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversations: Option<Vec<super::thread::ConversationActivity>>,
     /// The same id, under the name the run verbs take.

@@ -11,16 +11,15 @@
 // with an event on its conversation naming the branch it lost (the bridge writes
 // that; this list just stops hiding it). Nothing that is over is ever a row.
 //
-// Workspaces use the first message after their latest silence of at least 12
-// hours as the anchor. Cached spans from every conversation are merged before
-// sorting, so messages inside a session leave the row in place. Other row
+// Workspaces use the bridge's first message after their latest silence of at
+// least 12 hours as the anchor. Other row
 // kinds retain their bridge anchor. All rows sort by anchor, oldest first.
 //
 // A row is two lines: what it is, with the unread count pulled to the right
 // edge, and what it weighs — files touched, ahead/behind, +/−. A row with
 // nothing to weigh yet says so.
 //
-// A workspace whose last message is at least a day old goes into Recent at
+// A workspace whose last message is more than a day old goes into Recent at
 // the end of the list. Its rows keep the same anchor order there.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
@@ -32,7 +31,7 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
-import { newestSession } from "./sessionSpans.js";
+import { sessionTimes } from "./sessionSpans.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -72,19 +71,6 @@ const firstText = (...values) => values.find(Boolean) || "";
 export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspaceKey}`;
 
 const workspaceEntityId = (workspace) => workspace.entity_id || workspace.run_id || null;
-
-function workspaceSessionTimes(workspace, activity) {
-  const session = newestSession(workspace.conversations);
-  if (!session) return {
-    anchorMs: ms(firstText(activity.anchor, workspace.created_at, workspace.updated_at)),
-    lastActivityMs: ms(workspace.updated_at),
-  };
-  const createdMs = ms(workspace.created_at);
-  return {
-    anchorMs: session.anchorMs ?? createdMs,
-    lastActivityMs: session.lastActivityMs ?? createdMs,
-  };
-}
 
 function toWorkspaceEntry(workspace, projectNames, conversation) {
   const activity = conversation || { working: workspace.status === "active" };
@@ -133,10 +119,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     adopted,
     facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
     route: workspaceRoute(workspace),
-    // Keep the compact conversation metadata for the projects face, which
-    // pools it with every sibling workspace and the project agent.
-    conversations: workspace.conversations,
-    ...workspaceSessionTimes(workspace, activity),
+    ...sessionTimes(workspace),
   };
 }
 
@@ -187,11 +170,11 @@ export function watchedWorkspaceEntries(workspaces = [], projects = [], items = 
  *  the list proper. */
 export const RECENT_AFTER_MS = DAY_MS;
 
-/** A workspace belongs in Recent once its newest message is a day old. The
- * older bridge fallback supplies its previous last-activity time instead. */
+/** A workspace belongs in Recent once its newest message is over a day old.
+ * An older bridge is anchored today; an empty new workspace uses creation. */
 export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
   entry.kind === "workspace" && entry.lastActivityMs !== null
-  && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS;
+  && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";

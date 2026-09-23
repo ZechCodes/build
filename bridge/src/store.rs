@@ -66,7 +66,7 @@ mod tracker;
 #[cfg(test)]
 pub use conversations::items_decoded;
 pub use conversations::RESIDENT_CONVERSATION_TAIL;
-use conversations::{read_thread_page, restore_activity_spans, stored_conversation_summary};
+use conversations::{read_thread_page, stored_conversation_summary};
 use entities::{migrate_agents_to_v6, write_issue, write_run};
 pub use entities::{
     PersistedArchivedWorktree, PersistedIssue, PersistedPlan, PersistedRun, WorktreeFinishAction,
@@ -158,10 +158,9 @@ pub enum StoreError {
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
 ///
-/// 8 added the tracker's three tables. They are `CREATE TABLE IF NOT EXISTS`
-/// with nothing to backfill, so a v7 store gains them on its next open and
-/// reads exactly as it did.
-pub const SCHEMA_VERSION: i64 = 8;
+/// 9 added retained inbox timestamps for finished workspaces. The table is
+/// empty on upgrade; older finished conversations were already deleted.
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.

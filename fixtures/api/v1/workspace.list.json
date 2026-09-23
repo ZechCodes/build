@@ -39,7 +39,9 @@
           }
         ],
         "entity_id": "run-8c41d2f0",
-        "conversations": [{"conversation_id": "agent-2", "activity_spans": [[1789826400000, 1789826700000]]}]
+        "conversations": [{"conversation_id": "agent-2"}],
+        "session_started_ms": 1789826400000,
+        "last_activity_ms": 1789826700000
       },
       {
         "id": "legacy-proj-1",

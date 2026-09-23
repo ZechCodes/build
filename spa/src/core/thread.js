@@ -339,7 +339,6 @@ export function windowFromThreadPayload(threadPayload) {
     deliveredSequence,
     knownTotalItems: threadPayload.thread_total ?? null,
     activityDigests: mergeActivityDigests([], threadPayload),
-    ...(Array.isArray(threadPayload.activity_spans) ? { activity_spans: threadPayload.activity_spans } : {}),
   };
 }
 

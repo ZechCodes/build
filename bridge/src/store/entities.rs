@@ -1,5 +1,5 @@
 use super::{
-    load_legacy_owner_context, read_thread_page, remove_dir_if_present, restore_activity_spans,
+    load_legacy_owner_context, read_thread_page, remove_dir_if_present,
     stored_conversation_summary, Store, StoreError, RESIDENT_CONVERSATION_TAIL,
     THREAD_ACTIVITY_COUNT_SQL, THREAD_FIRST_ATTENTION_AFTER_SQL, THREAD_ITEM_COUNT_SQL,
     THREAD_LAST_ATTENTION_SQL, THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL,
@@ -547,9 +547,6 @@ impl Store {
                 summary.activity_at,
                 summary.working,
             );
-            if summary.last_message_sequence > 0 && agent.thread.activity_spans().is_empty() {
-                restore_activity_spans(conn, &id, &mut agent.thread)?;
-            }
             agents.push(agent);
         }
         Ok(agents)
@@ -754,6 +751,43 @@ impl Store {
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
+            tx.execute(
+                "DELETE FROM thread_items WHERE agent_id IN
+                 (SELECT id FROM agents WHERE owner_id = ?1)",
+                [run_id],
+            )?;
+            tx.execute("DELETE FROM agents WHERE owner_id = ?1", [run_id])?;
+            tx.execute("DELETE FROM implementations WHERE id = ?1", [run_id])?;
+            Ok(())
+        })
+    }
+    /// Done deletes the workspace conversation but keeps its message times in
+    /// the project's session history. Copy and delete are one transaction so
+    /// a failed deletion cannot lose the only remaining timestamps.
+    pub fn delete_run_retaining_inbox_messages(
+        &self,
+        run_id: &str,
+        project_id: &str,
+    ) -> Result<(), StoreError> {
+        self.in_transaction(|tx| {
+            let mut query = tx.prepare(
+                "SELECT json_extract(t.item, '$.data.created_at') \
+                 FROM thread_items t JOIN agents a ON a.id = t.agent_id \
+                 WHERE a.owner_id = ?1 AND t.message = 1 \
+                 AND COALESCE(json_extract(t.item, '$.data.from_build'), 0) = 0",
+            )?;
+            let times = query
+                .query_map([run_id], |row| row.get::<_, Option<String>>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(query);
+            for at in times.into_iter().flatten() {
+                if let Some(ts) = crate::session_summary::message_millis(&at) {
+                    tx.execute(
+                        "INSERT INTO inbox_retained_messages (project_id, ts_ms) VALUES (?1, ?2)",
+                        rusqlite::params![project_id, ts],
+                    )?;
+                }
+            }
             tx.execute(
                 "DELETE FROM thread_items WHERE agent_id IN
                  (SELECT id FROM agents WHERE owner_id = ?1)",

@@ -30,7 +30,7 @@ fn a_runs_conversation_survives_a_store_reopen() {
 }
 
 #[test]
-fn old_agent_records_rebuild_message_sessions_beyond_the_resident_tail() {
+fn message_index_rebuilds_sessions_beyond_the_resident_tail_in_timestamp_order() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path().join("tasks")).unwrap();
     let mut record = run_record("run-1", None, NOW);
@@ -52,22 +52,44 @@ fn old_agent_records_rebuild_message_sessions_beyond_the_resident_tail() {
         );
     }
     store.save_run(&record).unwrap();
-    store.connection().execute(
-        "UPDATE agents SET record = json_remove(record, '$.thread.activity_spans') WHERE id = ?1",
-        [&agent_id],
-    ).unwrap();
-
     let loaded = reload_run(&Store::new(dir.path().join("tasks")).unwrap(), "run-1");
     let thread = &loaded.agents[0].thread;
     assert!(thread
         .items
         .iter()
         .all(|item| !matches!(item, ThreadItem::Message(_))));
-    assert_eq!(
-        thread.activity_spans(),
-        record.agents[0].thread.activity_spans()
-    );
-    assert_eq!(thread.activity_spans().len(), 8);
+    let times = store.session_message_times().unwrap();
+    assert_eq!(times.len(), 10);
+    assert!(times
+        .iter()
+        .all(|row| row.0.as_deref() == Some("run-1") && row.2 == agent_id));
+    assert!(times.windows(2).all(|pair| pair[0].4 <= pair[1].4));
+}
+
+#[test]
+fn deleted_workspace_message_times_survive_reopen_for_project_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    let mut record = run_record("run-finished", None, NOW);
+    record.agents[0]
+        .thread
+        .post_user("first", None, "2026-09-01T00:00:00Z");
+    record.agents[0]
+        .thread
+        .post_agent("later", None, "2026-09-02T00:00:00Z");
+    store.save_run(&record).unwrap();
+    store
+        .delete_run_retaining_inbox_messages("run-finished", "proj-1")
+        .unwrap();
+    let reopened = Store::new(&root).unwrap();
+    assert!(reopened.load_all_runs().unwrap().is_empty());
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times
+        .iter()
+        .all(|row| row.0.is_none() && row.1.as_deref() == Some("proj-1")));
+    assert!(times[0].4 < times[1].4);
 }
 
 /// Appending one message writes ONE row. This is the whole reason the store

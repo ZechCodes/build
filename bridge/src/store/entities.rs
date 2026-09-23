@@ -845,6 +845,18 @@ impl Store {
             Ok(())
         })
     }
+    /// A deleted project no longer has an inbox session. Clear all message
+    /// times retained for it only after its configuration has been removed;
+    /// until then a failed multi-step deletion can leave the project alive.
+    pub fn clear_retained_project_messages(&self, project_id: &str) -> Result<(), StoreError> {
+        self.in_transaction(|tx| {
+            tx.execute(
+                "DELETE FROM inbox_retained_messages WHERE project_id = ?1",
+                [project_id],
+            )?;
+            Ok(())
+        })
+    }
     pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
             tx.execute(

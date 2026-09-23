@@ -389,6 +389,23 @@ impl AppState {
             .map(|workspace| workspace.id.clone())
     }
 
+    /// A run about to lose its durable record must not leave an existing
+    /// workspace with a conversation id that can no longer be replayed. The
+    /// ordinary owner lookup deliberately ignores terminal runs in its path
+    /// fallback; deletion still needs to recognize one on that root.
+    pub(in crate::app) fn surviving_workspace_of_run(&self, run_id: &str) -> Option<String> {
+        let active = self.runs.get(run_id)?;
+        let project_id = self.projects.project_id_of(run_id)?;
+        self.workspaces
+            .list(None)
+            .into_iter()
+            .find(|workspace| {
+                workspace.project_id == project_id
+                    && (workspace.id == run_id || same_path(&workspace.root, &active.worktree.path))
+            })
+            .map(|workspace| workspace.id.clone())
+    }
+
     /// Where a run's git is read: its checkout, unless the run is a workspace
     /// conversation. That run stands on the workspace root, which is a folder of
     /// sources and no repository, so its git is the workspace's git directory —

@@ -2,6 +2,71 @@ use super::*;
 
 // ---- adopt / release / delete --------------------------------------------
 
+#[test]
+fn releasing_a_nonworkspace_run_keeps_its_project_message_after_restart() {
+    let (dir, repo) = init_repo();
+    let project_id;
+    let anchor = crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap();
+    {
+        let mut state = qa_state(&repo, dir.path());
+        project_id = state.project_at(0).id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "release-history");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let mut active = state.runs.remove(&run_id).unwrap();
+        active
+            .agents
+            .by_id_mut(&agent_id)
+            .unwrap()
+            .thread
+            .post_user("project history", None, "2026-09-01T00:00:00Z");
+        state.finish_run_mutation(run_id.clone(), active).unwrap();
+        let released = state.handle(req("run.release", json!({"run_id":run_id})));
+        assert_eq!(released["ok"], true, "{released:?}");
+    }
+    let restarted = qa_state(&repo, dir.path());
+    let projects = restarted.project_list();
+    let project = projects["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|project| project["project_id"] == project_id)
+        .unwrap();
+    assert_eq!(project["session_started_ms"], anchor);
+    assert_eq!(project["last_activity_ms"], anchor);
+}
+
+#[test]
+fn merge_release_cleanup_keeps_a_nonworkspace_message_after_restart() {
+    let (dir, repo) = init_repo();
+    let anchor = crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap();
+    {
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.project_at(0).id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "merge-release-history");
+        let agent_id = primary_agent_id(&state, &run_id);
+        let mut active = state.runs.remove(&run_id).unwrap();
+        active
+            .agents
+            .by_id_mut(&agent_id)
+            .unwrap()
+            .thread
+            .post_user("project history", None, "2026-09-01T00:00:00Z");
+        let worktree = active.worktree.clone();
+        state.finish_run_mutation(run_id.clone(), active).unwrap();
+        state.apply_merge_cleanup(
+            &run_id,
+            &project_id,
+            &worktree,
+            crate::app::MergeCleanup::Release,
+        );
+        assert!(!state.runs.contains_key(&run_id));
+    }
+    let restarted = qa_state(&repo, dir.path());
+    let project = &restarted.project_list()["projects"][0];
+    assert_eq!(project["session_started_ms"], anchor);
+    assert_eq!(project["last_activity_ms"], anchor);
+}
+
 /// Adoption is git and records: it takes ownership of a checkout, and it
 /// speaks to nobody. The branch arrives on the board with no agents at all
 /// — its chat tab is the new-agent view — and every surface answers for it

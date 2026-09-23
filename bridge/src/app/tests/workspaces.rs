@@ -774,6 +774,49 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
 }
 
 #[test]
+fn run_delete_and_merge_release_refuse_a_surviving_workspace_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "workspace-release-guard-repo");
+    let context =
+        HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
+    let mut state =
+        AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context)
+            .with_task_store(tmp.path().join("store"))
+            .unwrap();
+    let project = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = project["result"]["project_id"].as_str().unwrap();
+    let workspace = create_workspace(&mut state, project_id, "surviving");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ));
+    let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+
+    let merge = state.handle(req(
+        "run.git_action",
+        json!({
+            "run_id":run_id, "action":"merge", "cleanup":"release"
+        }),
+    ));
+    assert_eq!(merge["ok"], false, "{merge:?}");
+    assert!(merge["error"]
+        .as_str()
+        .unwrap()
+        .contains("delete the workspace"));
+    assert!(state.runs.contains_key(&run_id));
+
+    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Failed;
+    let deleted = state.handle(req("run.delete", json!({"run_id":run_id})));
+    assert_eq!(deleted["ok"], false, "{deleted:?}");
+    assert!(deleted["error"]
+        .as_str()
+        .unwrap()
+        .contains("delete the workspace"));
+    assert!(state.runs.contains_key(&run_id));
+}
+
+#[test]
 fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");
@@ -1591,6 +1634,27 @@ fn project_delete_requires_confirmation_and_removes_workspaces_but_preserves_sou
         .as_str()
         .unwrap()
         .to_string();
+    let agent = state.handle(req("agent.add", json!({"entity_id": conversation_id})));
+    let agent_id = agent["result"]["agent"]["id"].as_str().unwrap();
+    let mut active = state.runs.remove(&conversation_id).unwrap();
+    active.agents.by_id_mut(agent_id).unwrap().thread.post_user(
+        "project deletion history",
+        None,
+        "2026-09-01T00:00:00Z",
+    );
+    state
+        .finish_run_mutation(conversation_id.clone(), active)
+        .unwrap();
+    assert_eq!(
+        state
+            .store
+            .as_ref()
+            .unwrap()
+            .session_message_times()
+            .unwrap()
+            .len(),
+        1
+    );
     let other_workspace = create_workspace(&mut state, &other_id, "keep-me");
     let root = PathBuf::from(workspace["root"].as_str().unwrap());
     let kept_root = PathBuf::from(other_workspace["root"].as_str().unwrap());
@@ -1614,6 +1678,13 @@ fn project_delete_requires_confirmation_and_removes_workspaces_but_preserves_sou
         &kept_root,
     );
     assert_project_deletion_persisted(dir.path(), &config, &project_id, &other_id);
+    assert!(state
+        .store
+        .as_ref()
+        .unwrap()
+        .session_message_times()
+        .unwrap()
+        .is_empty());
 }
 
 fn assert_project_deletion_state(

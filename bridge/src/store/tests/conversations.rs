@@ -135,6 +135,40 @@ fn removed_agent_times_survive_reopen_and_transfer_to_finished_project() {
     assert_eq!(times[0].1.as_deref(), Some("proj-1"));
 }
 
+#[test]
+fn project_history_survives_each_run_delete_until_explicit_project_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    for (run_id, at) in [
+        ("run-a", "2026-09-01T00:00:00Z"),
+        ("run-b", "2026-09-01T08:00:00Z"),
+    ] {
+        let mut run = run_record(run_id, None, NOW);
+        run.agents[0].thread.post_user("activity", None, at);
+        store.save_run(&run).unwrap();
+    }
+    store
+        .delete_run_retaining_inbox_messages("run-a", "proj-1")
+        .unwrap();
+    let reopened = Store::new(&root).unwrap();
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times.iter().any(|row| row.1.as_deref() == Some("proj-1")));
+    reopened
+        .delete_run_retaining_inbox_messages("run-b", "proj-1")
+        .unwrap();
+    let times = Store::new(&root).unwrap().session_message_times().unwrap();
+    assert_eq!(times.len(), 2);
+    assert!(times.iter().all(|row| row.1.as_deref() == Some("proj-1")));
+    reopened.clear_retained_project_messages("proj-1").unwrap();
+    assert!(Store::new(&root)
+        .unwrap()
+        .session_message_times()
+        .unwrap()
+        .is_empty());
+}
+
 /// Appending one message writes ONE row. This is the whole reason the store
 /// changed: the JSON records it replaced rewrote every conversation on the
 /// Issue for every append, and a store that upserted all N items per save

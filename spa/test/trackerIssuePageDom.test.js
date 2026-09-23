@@ -213,6 +213,54 @@ describe("issue unread navigation", () => {
     hostRect.mockRestore();
     lineRect.mockRestore();
   });
+
+  it("uses an accepted cached read floor on revisit, even after a stale detail repaint", async () => {
+    carriesWatching = true;
+    const timeline = [
+      event({ id: "ie-01M37FGQD48628P29BG1A4BB01", actor: { kind: "user" } }),
+      comment({ id: "ic-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
+      comment({ id: "ic-01M37FGQD48628P29BG1A4BB03", author: { kind: "agent", agent_id: "agent-1" } }),
+    ];
+    const stale = answerFor({ read_through: timeline[0].id }, timeline);
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", stale);
+    // Leave issues.get outstanding across both visits: only the cache can
+    // paint, and the accepted mark must outlive the first page instance.
+    call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({ issue: {
+      read_through: timeline[2].id,
+    } }));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    await vi.waitFor(async () => expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1"))?.issue.read_through)
+      .toBe(timeline[2].id));
+
+    page.dispose();
+    const seen = [];
+    await mount({ onIssueRead: (one) => seen.push(one.read_through) }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
+    expect(host.querySelector(".issue-unread-line")).toBeNull();
+    expect(host.querySelector(".new-messages-pill")).toBeNull();
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", stale);
+    expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1")).issue.read_through).toBe(timeline[2].id);
+    await vi.waitFor(() => expect(seen.length).toBeGreaterThan(1));
+    expect(host.querySelector(".issue-unread-line")).toBeNull();
+  });
+
+  it("keeps read floors monotonic and scoped to one device, project and issue", async () => {
+    const first = "ie-01M37FGQD48628P29BG1A4BB01";
+    const later = "ic-01M37FGQD48628P29BG1A4BB03";
+    for (const [device, project, id] of [
+      ["dev-1", "proj-1", "issue-1"], ["dev-2", "proj-1", "issue-1"],
+      ["dev-1", "proj-2", "issue-1"], ["dev-1", "proj-1", "issue-2"],
+    ]) await trackerCache.writeIssueRecord(device, project, id, answerFor({ id, read_through: first }));
+    await trackerCache.advanceIssueReadThrough("dev-1", "proj-1", "issue-1", later);
+    await trackerCache.advanceIssueReadThrough("dev-1", "proj-1", "issue-1", first);
+    await trackerCache.advanceIssueReadThrough("dev-1", "proj-1", "issue-1", "comment-3");
+    expect((await trackerCache.readIssueRecord("dev-1", "proj-1", "issue-1")).issue.read_through).toBe(later);
+    for (const [device, project, id] of [
+      ["dev-2", "proj-1", "issue-1"], ["dev-1", "proj-2", "issue-1"], ["dev-1", "proj-1", "issue-2"],
+    ]) expect((await trackerCache.readIssueRecord(device, project, id)).issue.read_through).toBe(first);
+  });
 });
 
 describe("the issue", () => {

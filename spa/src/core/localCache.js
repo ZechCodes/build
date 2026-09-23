@@ -324,6 +324,32 @@ export function mergeCached(address, merge) {
   return ran;
 }
 
+/** Merge inside one IndexedDB readwrite transaction. The ordinary merge above
+ * serializes this tab's writers; this one also keeps a monotonic value safe
+ * when another tab writes the same address at the same time. `merge` is sync
+ * and returns null to leave the record alone. */
+export function mergeCachedAtomically(address, merge) {
+  const key = recordKey(address);
+  let changed = false;
+  return wroteStore((store) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      try {
+        const next = merge(request.result?.value);
+        if (next == null) return;
+        store.put({ at: Date.now(), value: next }, key);
+        changed = true;
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && changed) announce(partsOfKey(key));
+    return Boolean(committed && changed);
+  });
+}
+
 /** Drop every record one entity holds on one device — a single range delete,
  *  which is why the entity sits second in the key. */
 export function evictEntity(deviceId, entityId) {

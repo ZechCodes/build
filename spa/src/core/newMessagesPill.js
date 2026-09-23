@@ -12,6 +12,15 @@ export function mountNewMessagesPill(scroller, { targetSelector }) {
     dock.hidden = jumping || !below;
     if (!below) jumping = false;
   };
+  const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(update) : null;
+  const observeLayout = () => {
+    resizeObserver?.disconnect();
+    resizeObserver?.observe(scroller);
+    // A panel can change its content's height without the browser window or
+    // scroller changing size (for example when comments wrap in a narrow rail).
+    const content = [...scroller.children].find((child) => child !== dock);
+    if (content) resizeObserver?.observe(content);
+  };
   const jump = () => {
     const line = target();
     if (!line) return;
@@ -20,12 +29,13 @@ export function mountNewMessagesPill(scroller, { targetSelector }) {
     line.scrollIntoView({ behavior: "smooth", block: "start" });
   };
   const sync = () => {
-    if (!target()) { dock = null; return; }
+    if (!target()) { dock = null; resizeObserver?.disconnect(); return; }
     dock = document.createElement("div");
     dock.className = "new-messages-dock";
     dock.innerHTML = '<button class="new-messages-pill" type="button" aria-label="Jump to first unread activity">New messages</button>';
     dock.querySelector("button").addEventListener("click", jump);
     scroller.append(dock);
+    observeLayout();
     update();
   };
   scroller.addEventListener("scroll", update, { passive: true });
@@ -36,6 +46,7 @@ export function mountNewMessagesPill(scroller, { targetSelector }) {
     dispose() {
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
+      resizeObserver?.disconnect();
       dock?.remove();
     },
   };

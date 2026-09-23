@@ -16,6 +16,7 @@ import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
+  advanceIssueReadThrough,
   issueAddress,
   issueRecord,
   issueRecordAt,
@@ -41,7 +42,7 @@ import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
-import { issueUnreadReading, issueUnreadRules } from "./trackerUnread.js";
+import { issueUnreadReading, issueUnreadRules, latestIssueMark } from "./trackerUnread.js";
 import { mountNewMessagesPill } from "./newMessagesPill.js";
 
 /** Whether one flush of `issues` items says anything about this issue. */
@@ -150,8 +151,13 @@ export function mountIssuePage(host, options) {
     if (!through || through === markedThrough) return;
     markedThrough = through;
     updateUnread();
-    void Promise.resolve(state.callRpc("issues.read_through", { issue_id: state.issueId, event_id: through }))
-      .catch(() => { markedThrough = ""; });
+    void Promise.resolve()
+      .then(() => state.callRpc("issues.read_through", { issue_id: state.issueId, event_id: through }))
+      .then((answer) => advanceIssueReadThrough(
+        state.deviceId, state.projectId, state.issueId,
+        latestIssueMark(through, answer?.issue?.read_through),
+      ))
+      .catch(() => { if (markedThrough === through) markedThrough = ""; });
   }
 
   /** The reader reached the end of the timeline, which is the only thing that

@@ -131,6 +131,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const source = draft.sources.find((item) => item.id === sourceId);
     if (!source) return;
     source.path = path;
+    source.pathDeviceId = selectedDeviceId;
     if (source.automaticName) source.name = uniqueName(path, source);
     saveDraft();
     paint();
@@ -170,7 +171,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       selectedDeviceId = event.target.value;
       projectsDir = undefined;
       let cleared = false;
-      draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; cleared = true; } });
+      draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; source.pathDeviceId = ""; cleared = true; } });
       saveDraft();
       paint();
       if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
@@ -201,11 +202,18 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     (saved) => {
       if (!active || !saved || typeof saved.name !== "string") return;
       if (JSON.stringify(saved) === JSON.stringify(draftSnapshot())) return;
+      const ownerAvailable = choices.some((device) => device.id === saved.selectedDeviceId);
+      const sameContext = !defaultDeviceId || saved.selectedDeviceId === defaultDeviceId;
+      const restoredDeviceId = ownerAvailable && sameContext ? saved.selectedDeviceId : selectedDeviceId;
       draft.name = saved.name;
-      draft.sources = Array.isArray(saved.sources) ? saved.sources : [];
+      draft.sources = Array.isArray(saved.sources)
+        ? saved.sources.map((source) => source.kind === "path" && source.pathDeviceId !== restoredDeviceId
+          ? { ...source, path: "", pathDeviceId: "" } : source)
+        : [];
       serial = Math.max(0, ...draft.sources.map((source) => Number(source.id) || 0));
-      if (choices.some((device) => device.id === saved.selectedDeviceId)) selectedDeviceId = saved.selectedDeviceId;
+      selectedDeviceId = restoredDeviceId;
       paint();
+      if (JSON.stringify(saved) !== JSON.stringify(draftSnapshot())) void draftRecord.write(draftSnapshot());
     },
     { debounceMs: 180 },
   );

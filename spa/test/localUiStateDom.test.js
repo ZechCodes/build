@@ -45,8 +45,26 @@ describe("local UI cache wiring", () => {
     root.querySelector("#second").focus();
     await vi.waitFor(async () => expect((await cache.readCached(address)).value.selector).toBe("button:nth-child(2)"));
     await cache.writeCached(address, { selector: "button:nth-child(1)" });
+    await dispose.settled();
     expect(document.activeElement).toBe(root.querySelector("#second"));
     dispose();
+  });
+
+  it("flushes a debounced draft on pagehide before a remount", async () => {
+    const address = ui.uiAddress({ entityId: "conversation-reload", view: "chat", kind: "draft" });
+    await cache.writeCached(address, { text: "older text" });
+    const first = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+    await first.ready;
+    first.schedule({ text: "last keystroke" });
+    window.dispatchEvent(new Event("pagehide"));
+    await vi.waitFor(async () => expect((await cache.readCached(address))?.value?.text).toBe("last keystroke"));
+    first.dispose();
+
+    const painted = [];
+    const remounted = ui.watchUiState(address, (saved) => painted.push(saved.text));
+    await remounted.ready;
+    expect(painted).toEqual(["last keystroke"]);
+    remounted.dispose();
   });
 
   it("opens a filter menu from cache and repaints an external close", async () => {

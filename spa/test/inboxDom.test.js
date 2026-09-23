@@ -183,6 +183,21 @@ beforeEach(async () => {
 afterEach(() => unmountInboxList?.());
 
 describe("the workspace inbox", () => {
+  it("closes a restored menu state when the reader presses outside it", async () => {
+    const { writeCached, readCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
+    feed([workspace()]);
+    unmountInboxList();
+    await writeCached(address, { key: "workspace:dev-1/workspace-1" });
+    mountInboxList();
+    await vi.waitFor(() => expect(rows()[0]?.dataset.key).toBe("workspace:dev-1/workspace-1"));
+    expect((await readCached(address)).value.key).toBe("workspace:dev-1/workspace-1");
+    await vi.waitFor(async () => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      expect((await readCached(address))?.value.key).toBeNull();
+    });
+  });
   it("paints workspace rows with project and directory context", () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1", "workspace:dev-1/workspace-2"]);

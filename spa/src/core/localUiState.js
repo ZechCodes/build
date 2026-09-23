@@ -69,6 +69,14 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { void flush(); }, debounceMs);
   };
+  const flushOnPageExit = () => { if (pending !== undefined) void flush(); };
+  const flushWhenHidden = () => {
+    if (globalThis.document?.visibilityState === "hidden") flushOnPageExit();
+  };
+  if (debounceMs > 0) {
+    globalThis.addEventListener?.("pagehide", flushOnPageExit);
+    globalThis.document?.addEventListener?.("visibilitychange", flushWhenHidden);
+  }
 
   return {
     ready,
@@ -80,7 +88,12 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     },
     schedule,
     flush,
+    settled: () => reads,
     dispose({ flushPending = true } = {}) {
+      if (debounceMs > 0) {
+        globalThis.removeEventListener?.("pagehide", flushOnPageExit);
+        globalThis.document?.removeEventListener?.("visibilitychange", flushWhenHidden);
+      }
       if (flushPending) void flush();
       else if (timer) clearTimeout(timer);
       disposed = true;

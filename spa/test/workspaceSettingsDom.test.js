@@ -97,6 +97,20 @@ describe("the workspace settings sheet", () => {
     type("my unsent rename");
     await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("my unsent rename"));
   });
+  it("keeps restored directory inputs wired after the cache replaces their fields", async () => {
+    const address = uiAddress({ deviceId: "dev-1", entityId: WORKSPACE.id, view: "workspace-settings", kind: "draft" });
+    await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), { id: WORKSPACE.id, project_id: "proj-1", directories: [] });
+    await writeCached(address, { name: null, directory: { kind: "remote", remote: "git@example.com:old.git", name: "old", path: "" } });
+    open({ callRpc: vi.fn(() => new Promise(() => {})) });
+    await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:old.git"));
+    const remote = $("#wsdirremote");
+    remote.value = "git@example.com:new.git";
+    remote.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.directory.remote).toBe("git@example.com:new.git"));
+    $("#wscancel").click();
+    open({ callRpc: vi.fn(() => new Promise(() => {})) });
+    await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:new.git"));
+  });
   it("updates its open picker on a catalog cache write without losing the workspace name draft", async () => {
     await writeCached(deviceModelsAddress("dev-1"), CATALOG);
     open({ callRpc: vi.fn(() => new Promise(() => {})) });

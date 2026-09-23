@@ -40,9 +40,11 @@ export function mountFocusMemory(root, routeKey, { deviceId = "", entityId = "" 
   const observer = new MutationObserver(restore);
   observer.observe(root, { childList: true, subtree: true });
   void record.ready.then(restore);
-  return () => {
+  const dispose = () => {
     observer.disconnect();
     doc.removeEventListener("focusin", onFocus, true);
     record.dispose();
   };
+  dispose.settled = record.settled;
+  return dispose;
 }

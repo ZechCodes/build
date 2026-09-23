@@ -270,8 +270,9 @@ describe("the sizes", () => {
 
   it("repaints an open console when its cached fold record changes", async () => {
     await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
-    await mountOver(["term-1"]);
-    expect(size()).toBe("half");
+    await seedConsoleWorld({ terminals: ["term-1"] });
+    panel = mountConsole(region(), branchAddress());
+    await vi.waitFor(() => expect(size()).toBe("half"));
 
     await writeCached(sizeAddress(), { size: "full", reopenSize: "full" });
     await vi.waitFor(() => expect(size()).toBe("full"));

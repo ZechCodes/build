@@ -87,6 +87,13 @@ let folds = new Map();
 let foldRecord = null;
 let recentRecord = null;
 let menuRecord = null;
+const onOutsideMenu = (event) => {
+  if (!event.target.closest(".inbox-actions")) closeMenu();
+};
+const syncMenuDismissal = () => {
+  document.removeEventListener("pointerdown", onOutsideMenu);
+  if (openMenuKey !== null) document.addEventListener("pointerdown", onOutsideMenu);
+};
 const foldAddress = uiAddress({ view: "inbox", kind: "fold", sub: "projects" });
 const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
 const menuAddress = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
@@ -357,9 +364,12 @@ const blockOf = (projectKey) => blocksPainted.get(projectKey) || null;
 
 function closeMenu() {
   if (openMenuKey === null) return;
-  openMenuKey = null;
   if (menuRecord) void menuRecord.write({ key: null });
-  else draw();
+  else {
+    openMenuKey = null;
+    syncMenuDismissal();
+    draw();
+  }
 }
 
 /** One control per attribute a row paints, in the order a press is read in:
@@ -435,16 +445,13 @@ function onListClick(event) {
 /** The row's menu, one step behind the row: it opens, and the next press
  *  anywhere outside it shuts it again. */
 function openMenu(key) {
-  openMenuKey = openMenuKey === key ? null : key;
-  if (menuRecord) void menuRecord.write({ key: openMenuKey });
-  else draw();
-  if (openMenuKey === null) return;
-  const close = (outside) => {
-    if (outside.target.closest(".inbox-actions")) return;
-    document.removeEventListener("pointerdown", close);
-    closeMenu();
-  };
-  setTimeout(() => document.addEventListener("pointerdown", close), 0);
+  const next = openMenuKey === key ? null : key;
+  if (menuRecord) void menuRecord.write({ key: next });
+  else {
+    openMenuKey = next;
+    syncMenuDismissal();
+    draw();
+  }
 }
 
 // ---- project blocks -----------------------------------------------------------
@@ -700,6 +707,7 @@ export function unmountInboxList() {
   foldRecord?.dispose();
   recentRecord?.dispose();
   menuRecord?.dispose();
+  document.removeEventListener("pointerdown", onOutsideMenu);
   foldRecord = null;
   recentRecord = null;
   menuRecord = null;
@@ -727,6 +735,7 @@ export function mountInboxList() {
   });
   menuRecord = watchUiState(menuAddress, (saved) => {
     openMenuKey = saved?.key || null;
+    syncMenuDismissal();
     draw();
   });
   initCaptureRows({ onChange: draw, entryOf });

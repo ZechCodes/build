@@ -381,7 +381,7 @@ describe("the account page's creation defaults", () => {
 
     await renderSettings();
     await vi.waitFor(() => expect([...document.querySelector("#defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));
-    expect(bridge.call).toHaveBeenCalledWith("models.list");
+    await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("models.list"));
   }, 30000);
 
   it("offers the agent defaults two agents, not every default harness", async () => {

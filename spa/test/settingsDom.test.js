@@ -136,6 +136,18 @@ it("paints the cached notification state before the browser answers, then writes
   expect((await readCached(address)).value).toMatchObject({ state: "denied", subscribed: false });
 });
 
+it("wires a cached enabled notification toggle while the fresh state is pending", async () => {
+  const { writeCached } = await import("../src/core/localCache.js");
+  const { uiAddress } = await import("../src/core/localUiState.js");
+  await writeCached(uiAddress({ view: "settings", kind: "push" }), { state: "enabled", permission: "granted", subscribed: true });
+  const read = vi.fn(() => new Promise(() => {}));
+  pushReading = read;
+  await renderSettings();
+  await vi.waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
+  $("#pushtoggle").click();
+  await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+});
+
 describe("Settings → Creation device", () => {
   it("offers the account's devices by name, with the one creation goes to shown", async () => {
     App.selectedDeviceId = "dev-2";

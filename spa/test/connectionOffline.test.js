@@ -318,9 +318,10 @@ async function paintFeed() {
 /** Open the composer's manual panel, read the projects it offers, and close it
  *  again — the box takes its destinations from the home device's slice of the
  *  feed as that slice is delivered, which is what a home move has to move. */
-function projectsOffered() {
+async function projectsOffered(expected) {
   openCompose();
   document.querySelector("#compose-advanced").click();
+  await vi.waitFor(() => expect([...document.querySelectorAll("#compose-project option")].map((option) => option.textContent)).toEqual(expected));
   const names = [...document.querySelectorAll("#compose-project option")].map((option) => option.textContent);
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   return names;
@@ -1272,12 +1273,12 @@ describe("per-device connections", () => {
     await connectEveryDevice();
     initCompose();
     await paintFeed();
-    expect(projectsOffered()).toEqual(["dev-a repo"]);
+    await projectsOffered(["dev-a repo"]);
 
     rememberSelectedDevice("dev-b");
     syncHome();
 
-    expect(projectsOffered()).toEqual(["dev-b repo"]);
+    await projectsOffered(["dev-b repo"]);
   });
 
   // The picked device coming back opens a session, and the landing already

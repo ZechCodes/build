@@ -275,19 +275,19 @@ function wireDirectories(workspace, { callRpc, record, current, draft, saveDraft
   });
   const choice = $("#wsdiradd");
   const go = $("#wsdiraddgo");
+  // The cache readback can replace the inputs inside this persistent holder.
+  // Delegation keeps their draft writer live through every restore.
+  $("#wsdirfields").oninput = () => {
+    draft.directory = directoryDraftOf($("#wsdirs"));
+    saveDraft(true);
+  };
   choice.onchange = () => {
     $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
     go.disabled = !choice.value;
     draft.directory = directoryDraftOf($("#wsdirs"));
     saveDraft();
-    $("#wsdirfields").querySelectorAll("input").forEach((input) => {
-      input.oninput = () => { draft.directory = directoryDraftOf($("#wsdirs")); saveDraft(true); };
-    });
   };
   restoreDirectoryDraft($("#wsdirs"), draft.directory);
-  $("#wsdirfields").querySelectorAll("input").forEach((input) => {
-    input.oninput = () => { draft.directory = directoryDraftOf($("#wsdirs")); saveDraft(true); };
-  });
   go.onclick = () => {
     const params = addDirectoryParams(choice.value);
     if (!params) {

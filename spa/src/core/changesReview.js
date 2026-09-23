@@ -162,6 +162,7 @@ export function createReviewPlug({
 
   // The hunks behind the files in that list. A surface that reads whole
   // patches has no use for it and makes none.
+  const cacheEntityId = () => (typeof cacheEntity === "function" ? cacheEntity() : cacheEntity);
   const bodies = fetchFiles
     ? createChangesetBodies({
         addressOf: (path) => {
@@ -197,6 +198,12 @@ export function createReviewPlug({
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
+        cacheAddressOf: () => {
+          const entityId = cacheEntityId();
+          return entityId && cacheScope?.deviceId
+            ? uiAddress({ deviceId: cacheScope.deviceId, entityId, view: "changes", kind: "draft", sub: "comments" })
+            : null;
+        },
         onChange: () => {
           render();
           onCommentsChanged();
@@ -425,7 +432,6 @@ export function createReviewPlug({
   // entity the diff belongs to. A worktree names its entity with a function —
   // the id moves when the worktree is adopted — so it is asked, never read as
   // an id. A surface that names none caches nothing.
-  const cacheEntityId = () => (typeof cacheEntity === "function" ? cacheEntity() : cacheEntity);
   const diffAddress = () => {
     const entityId = cacheEntityId();
     return entityId ? cacheScope?.address({ entityId, kind: "diff" }) || null : null;

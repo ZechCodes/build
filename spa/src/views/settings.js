@@ -287,7 +287,6 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       subscribed: state === "enabled",
     });
   };
-  await refreshPushToggle();
   if (!isCurrent()) return;
   $("#pushtoggle").onclick = async () => {
     const toggle = $("#pushtoggle");
@@ -303,6 +302,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     }
     await refreshPushToggle();
   };
+  void refreshPushToggle().catch(() => {});
 
   // The connection dump. It reads the history through the module rather than
   // the `buildConnectionDiagnostics` global, and the machines through the

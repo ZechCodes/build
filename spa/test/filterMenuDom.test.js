@@ -4,7 +4,9 @@
 // paint never touches what the reader put in it.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountFilterMenu } from "../src/core/filterMenuControl.js";
+import { uiAddress } from "../src/core/localUiState.js";
 
 const LABELS = [
   { value: "", label: "Any label" },
@@ -83,6 +85,17 @@ describe("the press", () => {
 });
 
 describe("searching", () => {
+  it("changes cached result rows only after the query readback", async () => {
+    globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
+    mount({ cacheAddress: uiAddress({ view: "filter", kind: "menu", sub: "label" }) }).update(LABELS, []);
+    press().click();
+    await vi.waitFor(() => expect(pop().hidden).toBe(false));
+    const before = rowValues();
+    type("tr");
+    expect(rowValues()).toEqual(before);
+    await vi.waitFor(() => expect(rowValues()).toEqual(["tracker", "transport"]));
+  });
   it("leaves what the query ranks, best first", () => {
     mount().update(LABELS, []);
     press().click();

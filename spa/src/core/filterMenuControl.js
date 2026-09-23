@@ -204,9 +204,12 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     act();
   };
   search.oninput = () => {
+    if (record) {
+      record.schedule({ open: true, query: search.value });
+      return;
+    }
     active = -1;
     paintRows();
-    record?.schedule({ open: true, query: search.value });
   };
 
   press.onclick = () => (open ? shut({ focusPress: true }) : show());

@@ -129,6 +129,12 @@ afterEach(() => {
 
 
 describe("where compose lives", () => {
+  it("opens its advanced panel only after the draft cache readback", async () => {
+    press("c");
+    $("#compose-advanced").click();
+    expect($("#compose-project")).toBeNull();
+    await vi.waitFor(() => expect($("#compose-project")).not.toBeNull());
+  });
   it("is pinned at the inbox rail's top, above the entries", () => {
     const rail = $("#inbox-rail");
     const host = $("#compose");
@@ -507,7 +513,10 @@ describe("the advanced panel", () => {
     $("[data-agent-choice-toggle]").click();
     $("#compose-choice-provider").value = "codex";
     $("#compose-choice-provider").dispatchEvent(new Event("change", { bubbles: true }));
-    expect($("#compose-choice-model").value).toBe("gpt");
+    const { readCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    await vi.waitFor(async () => expect((await readCached(uiAddress({ deviceId: "dev-1", view: "compose", kind: "draft" })))?.value.choice.model).toBe("gpt"));
+    await vi.waitFor(() => expect($("#compose-choice-model").value).toBe("gpt"));
   });
 
   it("dispatches the default branch destination without troubling the router", async () => {
@@ -633,7 +642,7 @@ describe("an account with more than one device", () => {
     await twoDevices();
     press("c");
     $("#compose-advanced").click();
-    expect([...document.querySelectorAll("#compose-project option")].map((option) => option.textContent)).toEqual(["relaydb"]);
+    await vi.waitFor(() => expect([...document.querySelectorAll("#compose-project option")].map((option) => option.textContent)).toEqual(["relaydb"]));
     $('[data-compose-kind="branch"]').click();
     expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
   });

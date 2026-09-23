@@ -229,15 +229,15 @@ class ChatController {
     if (!this.#repository.cacheDrafts) return;
     this.#cacheDraft = watchUiState(this.#repository.draftAddress(this.#identity), (saved) => {
       if (!saved || typeof saved.body !== "string") return;
-      if (saved.owner === this.#draftOwner) return;
       const attachments = cloneAttachments(Array.isArray(saved.attachments) ? saved.attachments : []);
-      if (saved.body === this.#draft.body && JSON.stringify(attachments) === JSON.stringify(this.#draft.attachments)) return;
-      this.#draft = {
-        body: saved.body,
-        attachments,
-        revision: this.#draft.revision + 1,
-        attachmentRevision: this.#draft.attachmentRevision + 1,
-      };
+      if (saved.body !== this.#draft.body || JSON.stringify(attachments) !== JSON.stringify(this.#draft.attachments)) {
+        this.#draft = {
+          body: saved.body,
+          attachments,
+          revision: this.#draft.revision + 1,
+          attachmentRevision: this.#draft.attachmentRevision + 1,
+        };
+      }
       this.announce();
     }, { debounceMs: 180 });
   }
@@ -273,7 +273,7 @@ class ChatController {
     };
     this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
     this.#cacheDraft?.schedule({ body: this.#draft.body, attachments: storedAttachments(this.#draft.attachments), owner: this.#draftOwner });
-    this.announce();
+    if (!this.#repository.cacheDrafts) this.announce();
     return this.readDraft();
   }
 

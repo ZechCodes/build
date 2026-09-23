@@ -39,6 +39,7 @@ import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 /** Whether one flush of `issues` items says anything about this issue. */
 const namesIssue = (items, issueId) =>
@@ -76,6 +77,19 @@ export function mountIssuePage(host, options) {
     // has to settle into the tray after it.
     files: [],
   };
+  let pendingCommentText = null;
+  const commentDraft = watchUiState(uiAddress({
+    deviceId: state.deviceId,
+    entityId: state.issueId,
+    view: "tracker-issue",
+    kind: "draft",
+    sub: state.projectId,
+  }), (saved) => {
+    if (typeof saved?.body !== "string" || state.disposed) return;
+    pendingCommentText = null;
+    state.draft = saved.body;
+    paint();
+  }, { debounceMs: 180 });
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
 
@@ -164,11 +178,12 @@ export function mountIssuePage(host, options) {
   const fieldSnapshot = () => {
     const active = document.activeElement;
     if (!active?.id || !host.contains(active)) return null;
-    return { id: active.id, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
+    return { id: active.id, value: active.value, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
   };
   const restoreField = (snapshot) => {
     const field = snapshot && host.querySelector(`#${snapshot.id}`);
     if (!field) return;
+    if (snapshot.id === COMMENT_INPUT_ID && pendingCommentText !== null) field.value = snapshot.value;
     field.focus({ preventScroll: true });
     if (typeof snapshot.start === "number" && field.setSelectionRange) field.setSelectionRange(snapshot.start, snapshot.end);
     field.scrollTop = snapshot.scrollTop;
@@ -351,13 +366,14 @@ export function mountIssuePage(host, options) {
   }
 
   async function sendComment() {
+    await commentDraft.flush();
     const params = commentToSend();
     if (!params) return;
     state.sending = true;
     paint();
     try {
       await state.callRpc("issues.comment", params);
-      state.draft = "";
+      await commentDraft.write({ body: "" });
       comments?.clear();
       await refresh({ keepDrafts: true });
     } catch (error) {
@@ -435,11 +451,8 @@ export function mountIssuePage(host, options) {
     const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
     wireCommentAttachments(form);
     field.oninput = () => {
-      const wasEmpty = !state.draft.trim();
-      state.draft = field.value;
-      // Repaint only when the send button's own state moves: a repaint per
-      // keystroke would take the caret with it.
-      if (wasEmpty !== !state.draft.trim()) paint();
+      pendingCommentText = field.value;
+      commentDraft.schedule({ body: field.value });
     };
     form.onsubmit = (event) => {
       event.preventDefault();
@@ -501,6 +514,7 @@ export function mountIssuePage(host, options) {
     feedMoved: paint,
     dispose() {
       state.disposed = true;
+      commentDraft.dispose();
       host.removeEventListener("scroll", onScroll);
       watcher.dispose();
       issueWatcher?.();

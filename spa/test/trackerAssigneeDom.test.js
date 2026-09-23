@@ -302,6 +302,7 @@ describe("the inline issue composer", () => {
     const search = menu("labels").querySelector(".fmenu-search");
     search.value = "kanban";
     search.dispatchEvent(new Event("input"));
+    await vi.waitFor(() => expect([...menu("labels").querySelectorAll(".fmenu-row")].at(-1)?.textContent).toContain("Create"));
     const coined = [...menu("labels").querySelectorAll(".fmenu-row")].at(-1);
     expect(coined.textContent).toContain("Create");
     coined.click();

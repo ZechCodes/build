@@ -306,6 +306,8 @@ function paintBox({ focus = true } = {}) {
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
   });
+  box.renderedAdvancedOpen = box.advancedOpen;
+  box.renderedSnapshot = structuredClone(boxSnapshot());
   wireBox(host);
   const text = host.querySelector("#compose-text");
   if (focus) {
@@ -325,6 +327,7 @@ function wireBox(host) {
   const text = host.querySelector("#compose-text");
   text.oninput = () => {
     box.value = text.value;
+    if (box.renderedSnapshot) box.renderedSnapshot.value = text.value;
     saveBox(true);
   };
   text.onkeydown = (event) => {
@@ -339,12 +342,6 @@ function wireBox(host) {
     box.value = text.value;
     box.advancedOpen = !box.advancedOpen;
     saveBox();
-    if (!box.advancedOpen) {
-      box.stopCatalog?.();
-      box.stopCatalog = null;
-    }
-    paintBox({ focus: false });
-    if (box.advancedOpen) loadCatalogForPanel();
   };
   if (box.advancedOpen) wireAdvanced(host);
 }
@@ -356,7 +353,6 @@ function wireAdvanced(host) {
       box.projectId = project.value;
       box.branch = "";
       saveBox();
-      paintBox({ focus: false });
     };
   }
   const branchKind = host.querySelector('[data-compose-kind="branch"]');
@@ -365,6 +361,7 @@ function wireAdvanced(host) {
   if (branch) {
     branch.oninput = () => {
       box.branch = branch.value;
+      if (box.renderedSnapshot) box.renderedSnapshot.branch = branch.value;
       saveBox(true);
     };
   }
@@ -381,7 +378,6 @@ function wireChoice(host) {
   holder.querySelector("[data-agent-choice-toggle]").onclick = () => {
     box.choiceOpen = !box.choiceOpen;
     saveBox();
-    repaintChoice(host);
   };
   // A model belongs to its provider, so a new provider starts from that
   // harness's own saved model and effort rather than the old one's.
@@ -389,7 +385,6 @@ function wireChoice(host) {
     const read = readAgentChoice(host, CHOICE_PREFIX);
     box.choice = changed.providerChanged ? agentDefaultsFor(read.provider) : reconcileAgentChoice(read, changed);
     saveBox();
-    repaintChoice(host);
   };
   const provider = holder.querySelector(`#${CHOICE_PREFIX}-provider`);
   if (provider) provider.onchange = onChange({ providerChanged: true });
@@ -403,6 +398,7 @@ function repaintChoice(host) {
   const holder = host.querySelector(".agent-choice");
   if (!holder) return;
   holder.outerHTML = agentChoicePanelHtml(box.catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
+  box.renderedSnapshot = structuredClone(boxSnapshot());
   wireChoice(host);
 }
 
@@ -453,16 +449,25 @@ const savedBoxFields = (saved, current) => ({
   choice: saved.choice || current.choice,
 });
 
+function syncAdvancedCatalog(wasAdvanced) {
+  if (wasAdvanced && !box.advancedOpen) {
+    box.stopCatalog?.();
+    box.stopCatalog = null;
+  } else if (!wasAdvanced && box.advancedOpen) loadCatalogForPanel();
+}
+
 function restoreComposeBox(saved, opened) {
   if (box !== opened || !saved || typeof saved.value !== "string") return;
   const restored = savedBoxFields(saved, box);
   // The cache announces our own writes too. Replacing the box for an identical
   // readback drops the live control between a keystroke and the next click.
-  if (JSON.stringify(restored) === JSON.stringify(boxSnapshot())) return;
+  if (JSON.stringify(restored) === JSON.stringify(box.renderedSnapshot)) return;
+  const wasAdvanced = box.renderedAdvancedOpen;
   const focusedId = document.activeElement?.id;
   Object.assign(box, restored);
   paintBox({ focus: false });
   if (focusedId) $("#compose")?.querySelector(`#${focusedId}`)?.focus();
+  syncAdvancedCatalog(wasAdvanced);
 }
 
 async function clearBoxDraft() {
@@ -483,6 +488,8 @@ export function openCompose() {
     // knows: nothing until that machine has answered the panel's question.
     catalog: UNASKED_CATALOG,
     advancedOpen: false,
+    renderedAdvancedOpen: false,
+    renderedSnapshot: null,
     choiceOpen: false,
     choice: loadAgentDefaults(),
     kind: "branch",

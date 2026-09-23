@@ -83,7 +83,7 @@ describe("the cached first paint", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "log" }, log());
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "ui-presentation", sub: "changes" };
     await cache.writeCached(address, { sortOrder: "alphabetical", noiseExpanded: ["uncommitted"], fileFolds: {}, fileMenuPath: null });
-    const { container, pane } = await mountPane(vi.fn(() => new Promise(() => {})));
+    const { container, pane } = mountPaneNow(vi.fn(() => new Promise(() => {})));
     await vi.waitFor(() => expect(container.querySelector(".diffsort-select")?.value).toBe("alphabetical"));
     await cache.writeCached(address, { sortOrder: "latest", noiseExpanded: [], fileFolds: {}, fileMenuPath: null });
     await vi.waitFor(() => expect(container.querySelector(".diffsort-select")?.value).toBe("latest"));

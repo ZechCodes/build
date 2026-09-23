@@ -26,6 +26,7 @@ import { diffThreadMessages } from "./notes.js";
 import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer } from "../commentPop.js";
 import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
+import { watchUiState } from "./localUiState.js";
 
 /** The <tr> (with a line number) containing a selection/click node. */
 function rowOf(node, root) {
@@ -47,12 +48,15 @@ export function createCommentLayer({
   revisionId = () => null,
   onChange = () => {},
   readNote = () => "",
+  cacheAddressOf = null,
 }) {
   const comments = [];
   let nextId = 0;
   let host = null;
   let selectionWatcher = null;
   let sending = false;
+  let draftRecord = null;
+  let draftWrites = Promise.resolve();
 
   const q = (sel) => (host ? host.querySelector(sel) : null);
 
@@ -70,18 +74,28 @@ export function createCommentLayer({
   };
 
   const addComment = (file, lnA, lnB, snippet, comment, side = "new") => {
-    comments.push({
-      id: ++nextId,
-      file,
-      lnA: lnA || 0,
-      lnB: lnB || lnA || 0,
-      snippet: String(snippet || "").trim().slice(0, 400),
-      comment,
-      side,
-    });
     const selection = window.getSelection();
     if (selection) selection.removeAllRanges();
-    onChange();
+    changeComments((next) => next.push({
+      id: ++nextId, file, lnA: lnA || 0, lnB: lnB || lnA || 0,
+      snippet: String(snippet || "").trim().slice(0, 400), comment, side,
+    }));
+  };
+
+  const changeComments = (change) => {
+    if (!draftRecord) {
+      change(comments);
+      onChange();
+      return Promise.resolve();
+    }
+    const next = draftWrites.then(async () => {
+      await draftRecord.ready;
+      const proposed = comments.map((entry) => ({ ...entry }));
+      change(proposed);
+      await draftRecord.write({ comments: proposed });
+    });
+    draftWrites = next.catch(() => {});
+    return next;
   };
 
   /// The comment button the gutter shows while the pointer is on a line.
@@ -121,26 +135,28 @@ export function createCommentLayer({
   };
 
   const removeComment = (id) => {
-    const index = comments.findIndex((c) => c.id === id);
-    if (index >= 0) comments.splice(index, 1);
-    onChange();
+    void changeComments((next) => {
+      const index = next.findIndex((entry) => entry.id === id);
+      if (index >= 0) next.splice(index, 1);
+    });
   };
 
   const clear = () => {
-    comments.length = 0;
     hideCommentPop();
+    return changeComments((next) => { next.length = 0; });
   };
 
   const send = async () => {
     if (sending) return;
+    await draftRecord?.ready;
+    await draftWrites;
     const messages = diffThreadMessages(comments, readNote(), revisionId());
     if (!messages.length) return;
     sending = true;
     renderActions();
     try {
       await submit(messages);
-      clear();
-      onChange();
+      await clear();
     } catch (e) {
       notifyError("Sending comments failed", (e && e.message) || "error");
       throw e;
@@ -162,8 +178,7 @@ export function createCommentLayer({
     const cancel = q(".cscancel");
     if (cancel)
       cancel.onclick = () => {
-        clear();
-        onChange();
+        void clear();
       };
   }
 
@@ -213,6 +228,14 @@ export function createCommentLayer({
      *  watch for text selections. */
     attach(element) {
       host = element;
+      if (!draftRecord && cacheAddressOf) {
+        const address = cacheAddressOf();
+        if (address) draftRecord = watchUiState(address, (saved) => {
+          comments.splice(0, comments.length, ...(Array.isArray(saved?.comments) ? saved.comments : []));
+          nextId = Math.max(0, ...comments.map((entry) => Number(entry.id) || 0));
+          onChange();
+        });
+      }
       host.onmouseover = (event) => offerGutterComment(event.target);
       if (selectionWatcher) selectionWatcher();
       // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
@@ -287,6 +310,8 @@ export function createCommentLayer({
     clear,
 
     dispose() {
+      draftRecord?.dispose({ flushPending: false });
+      draftRecord = null;
       if (selectionWatcher) selectionWatcher();
       selectionWatcher = null;
       hideCommentPop();

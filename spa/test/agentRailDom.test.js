@@ -4335,9 +4335,10 @@ describe("sending to an agent that is already there", () => {
       type: "message",
       data: { sequence: 7, role: "user", body: "look at the login flow", operation_id: operationId },
     }]);
-    await flush();
-
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => {
+      expect(timeline().querySelector('.thread-message.user[data-sequence="7"]')).not.toBeNull();
+      expect(copiesOf("look at the login flow")).toBe(1);
+    });
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {

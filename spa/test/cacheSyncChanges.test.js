@@ -770,19 +770,61 @@ describe("a push and a pass landing on the same record", () => {
 });
 
 describe("the board item", () => {
-  it("keeps surviving rows' observation times when a removal prunes the feed", async () => {
-    await boot([
-      branchItem({ agents: [{ id: "ag-1", watched: true }] }),
-      branchItem({ run_id: "run-2", branch: "build/other", agents: [{ id: "ag-2", watched: false }] }),
-    ]);
-    const before = await read("", "feed");
-    await deliver([{ entity_id: "board", state: { revision: 4, removed: ["run-2"] } }]);
-    const after = await read("", "feed");
+  const feedWriters = [
+    { name: "a local patch to A", act: async ({ rows, boardWatched }) => {
+      await rows.patchFeedRow("dev-1", rows.feedRowTarget(branchItem()), { muted: boardWatched });
+      await rows.removeFeedRow("dev-1", rows.feedRowTarget(branchItem({ run_id: "run-2" })));
+    } },
+    { name: "a local removal of B", act: ({ rows }) =>
+      rows.removeFeedRow("dev-1", rows.feedRowTarget(branchItem({ run_id: "run-2" }))) },
+    { name: "a board push pruning B", act: ({ watcher }) => {
+      watcher.onChanges([{ entity_id: "board", state: { revision: 4, removed: ["run-2"] } }]);
+    } },
+    { name: "hiding B's project", act: ({ hideProject }) =>
+      hideProject({ deviceId: "dev-1", projectKey: "dev-1/p2" }) },
+  ];
+  for (const boardWatched of [true, false]) for (const writer of feedWriters) {
+    it(`keeps a newer ${boardWatched ? "muted" : "watched"} push after ${writer.name}`, async () => {
+      board = [
+        branchItem({ agents: [{ id: "ag-1", watched: boardWatched }] }),
+        branchItem({ run_id: "run-2", project_id: "p2", branch: "build/other", agents: [{ id: "ag-2", watched: false }] }),
+      ];
+      sync.startCacheSync();
+      await vi.waitFor(async () => expect((await read("", "feed"))?.value?.items?.map((item) => item.run_id))
+        .toEqual(["run-1", "run-2"]));
+      const before = await read("", "feed");
+      const feed = await import("../src/core/taskFeed.js");
+      const rows = await import("../src/core/cachedRows.js");
+      const { hideProject } = await import("../src/core/projectHide.js");
+      let snapshot;
+      const unsubscribe = feed.subscribeFeed((next) => { snapshot = next; });
+      await feed.startFeed();
+      await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "row" },
+        branchItem({ agents: [{ id: "ag-1", watched: !boardWatched }] }));
+      await vi.waitFor(() => expect(snapshot?.items?.find((item) => item.run_id === "run-1")?.agents?.[0]?.watched)
+        .toBe(!boardWatched));
+      const watcher = await vi.waitFor(() => {
+        const found = live().find((one) => one.kinds.includes("state"));
+        expect(found).toBeTruthy();
+        return found;
+      });
+      await writer.act({ rows, watcher, hideProject, boardWatched });
+      await vi.waitFor(async () => expect((await read("", "feed"))?.value?.items?.map((item) => item.run_id))
+        .toEqual(["run-1"]));
+      const after = await read("", "feed");
 
-    expect(after.value.items.map((item) => item.run_id)).toEqual(["run-1"]);
-    expect(after.order).toBeGreaterThan(before.order);
-    expect(after.value.items[0].__cacheObserved).toEqual({ at: before.at, order: before.order });
-  });
+      expect(after.value.items.map((item) => item.run_id)).toEqual(["run-1"]);
+      expect(after.order).toBeGreaterThan(before.order);
+      expect(after.value.items[0].__cacheObserved).toEqual({ at: before.at, order: before.order });
+      feed.stopFeed();
+      feed.dropFeedDevice("dev-1");
+      await feed.startFeed();
+      await vi.waitFor(() => expect(snapshot?.items?.map((item) => item.run_id)).toEqual(["run-1"]));
+      expect(snapshot.items[0].agents[0].watched).toBe(!boardWatched);
+      unsubscribe();
+      feed.stopFeed();
+    });
+  }
 
   it("lets go of the data of every entity that left the board", async () => {
     await boot([branchItem()]);

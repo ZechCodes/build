@@ -16,7 +16,7 @@
 import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached } from "./localCache.js";
 import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
-import { preserveFeedFreshness, withCacheFreshness } from "./cacheFreshness.js";
+import { withCacheFreshness } from "./cacheFreshness.js";
 
 export const ROW_RECORD_KIND = "row";
 
@@ -106,12 +106,10 @@ async function writeRowEverywhere(deviceId, target, rewrite) {
     if (rewritten) await writeCached(address, rewritten);
     else await deleteCached([address]);
   }
-  if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
-    preserveFeedFreshness(board, heldFeedRecord));
+  if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), board);
   return async () => {
     if (address && heldRow) await writeCached(address, heldRow);
-    if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId),
-      preserveFeedFreshness(heldFeed, heldFeedRecord));
+    if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), heldFeed);
   };
 }
 

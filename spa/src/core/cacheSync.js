@@ -30,7 +30,6 @@ import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
-import { preserveFeedFreshness } from "./cacheFreshness.js";
 import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
@@ -306,7 +305,7 @@ async function readLists(context) {
 }
 
 async function writeLists(context, view) {
-  await writeCached(addressOf(context, "", "feed"), view);
+  await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
   await writeCached(addressOf(context, "", "projects"), view.projects);
   await writeCached(addressOf(context, "", "workspaces"), view.workspaces);
   for (const row of view.items || []) {
@@ -1024,8 +1023,7 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
 async function dropRemovedRows(context, removed) {
   const gone = new Set(removed);
   const record = await readCached(addressOf(context, "", "feed"));
-  if (record) await writeCached(addressOf(context, "", "feed"),
-    preserveFeedFreshness(withoutEntities(record.value, gone), record));
+  if (record) await writeCached(addressOf(context, "", "feed"), withoutEntities(record.value, gone));
   for (const entityId of removed) {
     if (!context.active()) return;
     await evictEntity(context.deviceId, entityId);

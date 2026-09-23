@@ -106,11 +106,13 @@ describe("taking a finished row out", () => {
   it("puts the row back when the work could not be finished", async () => {
     await writeCached(feedAddress, { items: [branch()] });
     await writeCached(rowAddress("run-1"), branch());
+    const observed = await readCached(feedAddress);
 
     const undo = await removeFeedRow("dev-1", feedRowTarget(branch()));
     await undo();
 
     expect((await heldRow("run-1")).entity_id).toBe("run-1");
     expect((await heldFeed()).items.map((item) => item.entity_id)).toEqual(["run-1"]);
+    expect((await heldFeed()).items[0].__cacheObserved).toEqual({ at: observed.at, order: observed.order });
   });
 });

@@ -17,6 +17,8 @@
 // wrote, and what eviction took away — for one frame of latency on a revisit.
 // The store is read directly, and every writer announces what it changed.
 
+import { feedWithObservations } from "./cacheFreshness.js";
+
 const DB_NAME = "build-cache";
 // v3: the cache-first client's shapes, and the write-time index the lifetime
 // rules sweep. A format change is a cold start by design — the records a
@@ -258,15 +260,33 @@ export function readCachedMany(addresses) {
   }).then(() => records);
 }
 
-/** Write one record, stamped with when. A local UI writer may also stamp its
- * owner and edit sequence so a page-exit journal can distinguish its own
- * unfinished write from a newer write in another tab. */
-export function writeCached(address, value, { source, sequence } = {}) {
-  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
+/** Write one record, stamped with when. A feed write carries surviving rows'
+ * observation times unless a bridge board read sets `observedFeedRows`; the
+ * read and write share a transaction so every feed writer obeys that rule.
+ * A local UI writer may also stamp its owner and edit sequence so a page-exit
+ * journal can distinguish its unfinished write from another tab's write. */
+export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
   const key = recordKey(address);
   return wroteStore((store) => {
-    store.put(record, key);
-    return null;
+    const record = (previous) => {
+      const at = Date.now();
+      const order = nextWriteOrder();
+      return {
+        at, order,
+        value: address.kind === "feed"
+          ? feedWithObservations(value, previous, { at, order }, observedFeedRows) : value,
+        ...(source ? { source, sequence } : {}),
+      };
+    };
+    if (address.kind !== "feed") {
+      store.put(record(null), key);
+      return null;
+    }
+    // Read and put in the same transaction: another tab can write between a
+    // separate read and write, and its newer row observation must survive.
+    const request = store.get(key);
+    request.onsuccess = () => store.put(record(request.result), key);
+    return request;
   }).then((wrote) => {
     // The key that was stored is the address announced, so a listener is
     // never sent to re-read an address the record is not under.

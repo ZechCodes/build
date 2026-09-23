@@ -99,7 +99,8 @@ function feedSnapshot(record, view, live) {
 
 /** The board's list and standalone rows, taking the newer copy of each entity.
  * A board read can arrive after a state push, or a push after the board; the
- * cache record time decides. Rows absent from the list are appended. */
+ * row's observation time decides. Local feed rewrites preserve that time.
+ * Rows absent from the list are appended. */
 function rowsOverBoard(listed, rows) {
   const byEntity = new Map(rows.filter((row) => entityIdOf(row)).map((row) => [entityIdOf(row), row]));
   const items = (listed || []).map((item) => {

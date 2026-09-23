@@ -12,7 +12,7 @@ const mcpCases = JSON.parse(readFileSync(resolve("../fixtures/watching/mcp_inbox
 let App, writeCached, startFeed, stopFeed, dropFeedDevice, subscribeFeed, mountInboxList, unmountInboxList, setInboxView;
 let openCreateWork, adoptDeviceSession, resetDeviceContexts;
 let liveFeedSnapshot, stampRow;
-let removeFeedRow, feedRowTarget;
+let removeFeedRow, patchFeedRow, feedRowTarget, hideProject;
 const deviceId = "watching-device";
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -41,7 +41,8 @@ beforeEach(async () => {
   ({ openCreateWork } = await import("../src/core/createWork.js"));
   ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   ({ liveFeedSnapshot, stampRow } = await import("../src/core/feedMerge.js"));
-  ({ removeFeedRow, feedRowTarget } = await import("../src/core/cachedRows.js"));
+  ({ removeFeedRow, patchFeedRow, feedRowTarget } = await import("../src/core/cachedRows.js"));
+  ({ hideProject } = await import("../src/core/projectHide.js"));
   resetDeviceContexts();
   App.route = { name: "inbox" };
   App.devices = [{ id: deviceId, name: "Laptop", status: "online" }];
@@ -159,7 +160,7 @@ describe("cached watching on both inbox faces", () => {
     // from items, but its roster explicitly says the agent is unwatched.
     await writeCached(address("row", "run-1"), { ...run, kind: "branch" });
     await writeCached(address("feed"), { items: [], runs: [{ ...run, agents: [{ id: "agent-1", watched: false }] }],
-      projects: [project], workspaces: [workspace] });
+      projects: [project], workspaces: [workspace] }, { observedFeedRows: true });
     await expectBothFaces(0);
 
     // A later state push must win in either direction, even while the board's
@@ -169,23 +170,39 @@ describe("cached watching on both inbox faces", () => {
     await writeCached(address("row", "run-1"), { ...run, kind: "branch", agents: [{ id: "agent-1", watched: false }] });
     await expectBothFaces(0);
 
-    await writeCached(address("feed"), { items: [], runs: [run], projects: [project], workspaces: [workspace] });
+    await writeCached(address("feed"), { items: [], runs: [run], projects: [project], workspaces: [workspace] },
+      { observedFeedRows: true });
     await expectBothFaces(1);
   });
 
-  for (const boardWatched of [true, false]) {
-    it(`keeps a newer ${boardWatched ? "muted" : "watched"} push when removing another board row`, async () => {
+  const localWriters = [
+    { name: "patching A", act: ({ other, run }) => patchFeedRow(deviceId, feedRowTarget(run), { working: true })
+      .then(() => removeFeedRow(deviceId, feedRowTarget(other))) },
+    { name: "removing B", act: ({ other }) => removeFeedRow(deviceId, feedRowTarget(other)) },
+    { name: "hiding B's project", act: () => hideProject({ deviceId, projectKey: `${deviceId}/project-2` }) },
+  ];
+  for (const boardWatched of [true, false]) for (const writer of localWriters) {
+    it(`keeps a newer ${boardWatched ? "muted" : "watched"} push after ${writer.name}`, async () => {
       const { project, workspace, run } = await seed({ watched: boardWatched, createdByAgent: true });
-      const other = { kind: "branch", entity_id: "run-other", project_id: "project-1",
-        branch: "build/other", deviceId, projectKey: project.projectKey };
-      await writeCached(address("feed"), { items: [other], runs: [run], projects: [project], workspaces: [workspace] });
+      const projectB = { id: "project-2", project_id: "project-2", name: "Other project",
+        deviceId, projectKey: `${deviceId}/project-2` };
+      const other = { kind: "branch", entity_id: "run-other", project_id: "project-2",
+        branch: "build/other", deviceId, projectKey: projectB.projectKey };
+      await writeCached(address("feed"), { items: [{ ...run, kind: "branch", entity_id: "run-1" }, other],
+        runs: [run], projects: [project, projectB], workspaces: [workspace] });
+      await writeCached(address("projects"), [project, projectB]);
+      let snapshot;
+      const unsubscribe = subscribeFeed((next) => { snapshot = next; });
       mountInboxList();
       await startFeed();
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.entity_id === "run-other")).toBe(true));
       const countA = boardWatched ? 0 : 1;
-      const assertBothFaces = async () => {
-        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work"))).toHaveLength(countA));
+      const assertBothFaces = async (stage) => {
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work")),
+          `workspace face ${stage}`).toHaveLength(countA));
         setInboxView("projects");
-        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work"))).toHaveLength(countA));
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work")),
+          `projects face ${stage}`).toHaveLength(countA));
         setInboxView("inbox");
       };
 
@@ -193,9 +210,13 @@ describe("cached watching on both inbox faces", () => {
       // rewrites the feed but does not observe A again.
       await writeCached(address("row", "run-1"), { ...run, kind: "branch",
         agents: [{ id: "agent-1", watched: !boardWatched }] });
-      await assertBothFaces();
-      await removeFeedRow(deviceId, feedRowTarget(other));
-      await assertBothFaces();
+      await vi.waitFor(() => expect(snapshot?.items?.find((item) => item.run_id === "run-1")?.agents?.[0]?.watched)
+        .toBe(!boardWatched));
+      await assertBothFaces("before mutation");
+      await writer.act({ other, run });
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.entity_id === "run-other")).toBe(false));
+      await assertBothFaces("after mutation");
+      unsubscribe();
     });
   }
 

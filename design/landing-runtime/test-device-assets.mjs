@@ -22,6 +22,40 @@ async function loadDevice(file) {
   return gltf.scene;
 }
 
+test("all exported devices carry the silver finish without a runtime override", async () => {
+  // Linear glTF values agreed for the #77 Blender fixture, independent of the
+  // temporary runtime override so that override can be removed safely.
+  const finish = {
+    SpaceBlackAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    MachinedSpaceBlackEdge: [[0.72, 0.73, 0.75], 1, 0.20],
+    TrackpadSpaceBlack: [[0.52, 0.53, 0.55], 0.9, 0.26],
+    DeepBlueAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    DeepBlueMachinedEdge: [[0.72, 0.73, 0.75], 1, 0.20],
+    DeepBlueCeramicShield: [[0.70, 0.71, 0.72], 0.15, 0.38],
+    CameraRing: [[0.70, 0.71, 0.73], 1, 0.16],
+  };
+  const seen = new Set();
+  for (const file of ["laptop.glb", "laptop-low.glb", "tablet.glb", "phone.glb"]) {
+    const scene = await loadDevice(file);
+    let matched = 0;
+    scene.traverse((node) => {
+      if (!node.isMesh) return;
+      for (const material of [].concat(node.material)) {
+        const expected = finish[material.name];
+        if (!expected) continue;
+        const actual = [...material.color.toArray(), material.metalness, material.roughness];
+        const values = [...expected[0], expected[1], expected[2]];
+        actual.forEach((value, index) => assert(Math.abs(value - values[index]) < 1e-6,
+          `${file}: ${material.name} silver component ${index}`));
+        seen.add(material.name);
+        matched += 1;
+      }
+    });
+    assert(matched > 0, `${file}: silver materials were exported`);
+  }
+  assert.deepEqual([...seen].sort(), Object.keys(finish).sort());
+});
+
 function meshNamed(scene, name) {
   const mesh = scene.getObjectByName(name);
   assert(mesh?.isMesh, `missing exported mesh ${name}`);

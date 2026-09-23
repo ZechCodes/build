@@ -72,12 +72,12 @@
         0.0004
       ],
       "file": "laptop.glb",
-      "bytes": 1717764,
+      "bytes": 1717752,
       "triangles": 45580,
       "screen_node": "screen",
       "screen_material": "ScreenDesktop",
       "low_detail_file": "laptop-low.glb",
-      "low_detail_bytes": 1717764,
+      "low_detail_bytes": 1717752,
       "low_detail_triangles": 45580
     },
     "tablet": {
@@ -127,7 +127,7 @@
         ]
       ],
       "file": "tablet.glb",
-      "bytes": 199504,
+      "bytes": 199484,
       "triangles": 4658,
       "screen_node": "screen",
       "screen_material": "ScreenTablet"
@@ -179,7 +179,7 @@
         ]
       ],
       "file": "phone.glb",
-      "bytes": 715136,
+      "bytes": 715084,
       "triangles": 15790,
       "screen_node": "screen",
       "screen_material": "ScreenPhone"
@@ -190,20 +190,32 @@
       "file": "hero-laptop.webp",
       "width": 1600,
       "height": 1180,
-      "bytes": 53192,
+      "bytes": 47742,
+      "sha256": "777eecccc68ad17603f60b621c96ad706c3024ab9272ef7b65609911c0f50600",
       "content_bounds_px_bottom_left": [
         93,
         115,
         1414,
         740
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "laptop": {
+            "file": "screens/ui10-editor-macbook.webp",
+            "sha256": "885fa477e4585a310819c1eca5350ab63cb3691f448e67b89878451980138a42"
+          }
+        }
+      }
     },
     "laptop": {
       "file": "laptop.webp",
       "width": 1200,
       "height": 900,
-      "bytes": 30006,
-      "sha256": "a812a217588bafc6f05f2924dd68e37009df1efbb47e67817e2765ba9ff6c1fa",
+      "bytes": 32228,
+      "sha256": "fe157adfa226f69a5b6a18b96b3b527a637b8dfc5779b5be12384b6198c8f6dc",
       "content_bounds_px_bottom_left": [
         69,
         93,
@@ -226,8 +238,8 @@
       "file": "tablet.webp",
       "width": 1000,
       "height": 760,
-      "bytes": 46122,
-      "sha256": "11709175e8ec2742b62275d2fc35d358c1c11973641948f20e08f54eb11e0d94",
+      "bytes": 49606,
+      "sha256": "a15f92cb7f72ceea9e6e8dd42d666dc6fd4e43d54e96b120377695c1c68eab49",
       "content_bounds_px_bottom_left": [
         157,
         50,
@@ -250,8 +262,8 @@
       "file": "phone.webp",
       "width": 640,
       "height": 1040,
-      "bytes": 23750,
-      "sha256": "1b119841a242799452a7afa1cf930130db902a93a4989d273f2f9b553b97c045",
+      "bytes": 24852,
+      "sha256": "cbfc9cd3af3297c4d1e7bef7ac8f6bdcfe316d85d318d46f12ca9c76aeae6fd9",
       "content_bounds_px_bottom_left": [
         135,
         133,
@@ -274,25 +286,41 @@
       "file": "mobile-hero.webp",
       "width": 1200,
       "height": 1350,
-      "bytes": 54824,
+      "bytes": 66840,
+      "sha256": "1ef46dd8e29aa783ee02636880efb1efa2b0488fe162a1c55624407a714fb736",
       "content_bounds_px_bottom_left": [
         145,
         179,
         941,
         881
-      ]
+      ],
+      "provenance": {
+        "blend": "build-devices.blend",
+        "generator": "build_device_assets.py",
+        "blender": "4.5.14 LTS",
+        "screen_fixtures": {
+          "tablet": {
+            "file": "screens/ui05-merged-ipad.webp",
+            "sha256": "70ae079f24e548afb1fce263665b5794c9c56b0814281a81356a8b00cd71e0ba"
+          },
+          "phone": {
+            "file": "screens/ui03-answer-iphone.webp",
+            "sha256": "9324edceb4f54c6dedd81ee9edc906bc5f5b89f6c27bc112a40b544a9d6b3f0b"
+          }
+        }
+      }
     },
     "scene-01-desktop": {
       "file": "scene-01-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 30042,
-      "sha256": "03f7fdf37e8f57b1a932b947cfb880a622f42aa463ca6d6177dd510defd4c2e5",
+      "bytes": 32350,
+      "sha256": "bd593e484c5ecfffb164b8d124bd7ee6c818f52fec62aea0db1e6dc1c108d444",
       "content_bounds_px_bottom_left": [
-        119,
-        48,
-        1203,
-        628
+        118,
+        46,
+        1206,
+        630
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -310,13 +338,13 @@
       "file": "scene-01-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 12890,
-      "sha256": "223f06e07d7a92f0a179301a0f8b971c1cc036e030232a3ec86acd4be6f645ed",
+      "bytes": 13854,
+      "sha256": "f422f348795d34861519b828ff6e227ff6e729523d9ea86319e7ea30ae7dce58",
       "content_bounds_px_bottom_left": [
-        42,
-        267,
-        637,
-        333
+        40,
+        266,
+        640,
+        334
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -334,13 +362,13 @@
       "file": "scene-02-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 29970,
-      "sha256": "068610a7d5c3db7b9dccbc7a233eec1de309b2ea25976e5202f8697d35bb374e",
+      "bytes": 32230,
+      "sha256": "66fefe82d5b30bfc53e5a78dbfbe874de2a44373e250a6f380be338f44f4b127",
       "content_bounds_px_bottom_left": [
         195,
-        112,
-        901,
-        620
+        109,
+        903,
+        623
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -358,13 +386,13 @@
       "file": "scene-02-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 14808,
-      "sha256": "52618dc8a74dab46a4392f75abe7bc6003042513a8e8f99b2f7205d18e2fa858",
+      "bytes": 15994,
+      "sha256": "7627849fe530408d196c22261cd4c7fc44a0bf964f5c207e8774f35c5765be0e",
       "content_bounds_px_bottom_left": [
         36,
-        272,
-        556,
-        384
+        270,
+        557,
+        386
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -382,13 +410,13 @@
       "file": "scene-03-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 36720,
-      "sha256": "c1e1c8b46711d63d307f0118bca83ac2b322bbab6b5a30ca57eba772310b475c",
+      "bytes": 42224,
+      "sha256": "1e96dbdb2ef1bad81764b02d6d7a987ba3714685482516b54c8299f091e5c273",
       "content_bounds_px_bottom_left": [
-        264,
-        54,
-        992,
-        726
+        265,
+        52,
+        991,
+        728
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -406,13 +434,13 @@
       "file": "scene-03-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 17428,
-      "sha256": "be65dcebdf34496a790687cd681c92e11ae6110123aac0ec4eb1f99d13419a4c",
+      "bytes": 20264,
+      "sha256": "3d658e366198b93c13615cc3d86f1f4c0c690e3f86c0c14d4bc63d3a432cca0b",
       "content_bounds_px_bottom_left": [
         88,
-        245,
+        244,
         592,
-        431
+        433
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -430,13 +458,13 @@
       "file": "scene-04-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 25626,
-      "sha256": "55cee8e9d5cdaadaa85b8945aeddda71c986c52422add976bd39a03c252c95c8",
+      "bytes": 27836,
+      "sha256": "b333f32c5460ae0dcda4d80450a128495ccdc4d75a395e40d4963c158435cf08",
       "content_bounds_px_bottom_left": [
-        208,
+        207,
         44,
-        908,
-        699
+        909,
+        700
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -458,13 +486,13 @@
       "file": "scene-04-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 12826,
-      "sha256": "52e62368ab9564b67f32396af04fbd417ff2215dc07404050069644385b0c758",
+      "bytes": 14134,
+      "sha256": "0c5d4fe5069c5284f278052a11e4ead10934fd89eb562c287c21ddb79f9bc2d5",
       "content_bounds_px_bottom_left": [
-        37,
+        36,
         225,
-        572,
-        439
+        573,
+        440
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -486,13 +514,13 @@
       "file": "scene-05-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 34174,
-      "sha256": "47a11db5e092717fade09a5094507d3892a1feaa3491468d6eeb835f518fd39d",
+      "bytes": 36682,
+      "sha256": "ad62c4ebe730023473e1b8b6b0a065d6e434782366ee8d6e5187a6c08de37317",
       "content_bounds_px_bottom_left": [
-        119,
-        48,
-        1203,
-        628
+        118,
+        46,
+        1205,
+        630
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -510,13 +538,13 @@
       "file": "scene-05-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 13014,
-      "sha256": "8c68dc2bbe64fda999658c3e7af2a23816e3826afb5d3bf10556a770bedf19f8",
+      "bytes": 13986,
+      "sha256": "1a09ef843037cada519de80b4b0f23687ff59b122dc11cdbabcc99a851da98fd",
       "content_bounds_px_bottom_left": [
-        42,
-        268,
-        637,
-        332
+        40,
+        265,
+        640,
+        335
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -534,13 +562,13 @@
       "file": "scene-06-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 30974,
-      "sha256": "16f64a1c06950bed85f9fca4b8945ded67b3be29ec0519abda406a6e896253c9",
+      "bytes": 34482,
+      "sha256": "9ab0a964f0d6b29f4c831080976c132a04bfd958da79dbdb3a6420bb07b93752",
       "content_bounds_px_bottom_left": [
         165,
-        50,
-        1076,
-        646
+        47,
+        1077,
+        648
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -558,13 +586,13 @@
       "file": "scene-06-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 14344,
-      "sha256": "5a7a6ec0fd92bee323acf6d3a42ea96c67d54adb84cb984de5817308a2012b71",
+      "bytes": 15982,
+      "sha256": "030c7ac7eec694ac7b7bd94b0803bf8307eed9c76589a232c06b26631fc6ce6a",
       "content_bounds_px_bottom_left": [
         42,
-        251,
-        617,
-        369
+        249,
+        618,
+        371
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -582,13 +610,13 @@
       "file": "desktop-poster.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 35064,
-      "sha256": "0d04657096a00ccc1876de4c95454da76d01a4a1bc6c68fbe17fdbb3f84375e3",
+      "bytes": 37214,
+      "sha256": "c814e9c4fff0a2a24346eac72b4ba4f942a253fe5de5368452ca1978b4f6c670",
       "content_bounds_px_bottom_left": [
-        74,
-        55,
-        1122,
-        665
+        73,
+        54,
+        1123,
+        666
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -614,12 +642,12 @@
       "file": "mobile-poster.webp",
       "width": 720,
       "height": 960,
-      "bytes": 19078,
-      "sha256": "e8a30343e0419ab45e2bb582ef27aee4ee3e3ee71682d0b90af5321586ffdea1",
+      "bytes": 20896,
+      "sha256": "364d480ae9dd5cf5b3e7d3703cd2105c0c9ce4b103938ca857fb49a1614fe57e",
       "content_bounds_px_bottom_left": [
-        38,
-        200,
-        538,
+        37,
+        201,
+        539,
         539
       ],
       "provenance": {
@@ -646,8 +674,8 @@
       "file": "social-preview.webp",
       "width": 1200,
       "height": 630,
-      "bytes": 22230,
-      "sha256": "f05f7d59dc38d9a945fa32fe0c9296c7e0d2641686e888d0343d75f972e018d7",
+      "bytes": 23322,
+      "sha256": "82e60975df75debf3703f7de0d66a08009e38b912d914fb6abd4aafea9439aec",
       "content_bounds_px_bottom_left": [
         116,
         182,
@@ -670,13 +698,13 @@
       "file": "scene-07-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 35012,
-      "sha256": "42ea6166c6d02ef87daf161afe710965bf70ea8c366b4f11d36442b6db424d78",
+      "bytes": 37228,
+      "sha256": "2d8c49e2caecd03b80becadc33beeff73fe6dc53a6e3ea8cbb31516a375358dd",
       "content_bounds_px_bottom_left": [
-        73,
-        180,
-        1099,
-        574
+        72,
+        177,
+        1101,
+        576
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -698,12 +726,12 @@
       "file": "scene-07-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 13308,
-      "sha256": "f7d3e3bae802e897d67d88e248c39679aa72f4117893350095a17f095a936b45",
+      "bytes": 14428,
+      "sha256": "c20ee348f38f49c31ff59b80f9721a91750fe5918a744f355152072f6ab33d80",
       "content_bounds_px_bottom_left": [
-        37,
+        36,
         344,
-        551,
+        552,
         288
       ],
       "provenance": {
@@ -726,13 +754,13 @@
       "file": "scene-08-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 35064,
-      "sha256": "0d04657096a00ccc1876de4c95454da76d01a4a1bc6c68fbe17fdbb3f84375e3",
+      "bytes": 37214,
+      "sha256": "c814e9c4fff0a2a24346eac72b4ba4f942a253fe5de5368452ca1978b4f6c670",
       "content_bounds_px_bottom_left": [
-        74,
-        55,
-        1122,
-        665
+        73,
+        54,
+        1123,
+        666
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -758,12 +786,12 @@
       "file": "scene-08-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 19078,
-      "sha256": "e8a30343e0419ab45e2bb582ef27aee4ee3e3ee71682d0b90af5321586ffdea1",
+      "bytes": 20896,
+      "sha256": "364d480ae9dd5cf5b3e7d3703cd2105c0c9ce4b103938ca857fb49a1614fe57e",
       "content_bounds_px_bottom_left": [
-        38,
-        200,
-        538,
+        37,
+        201,
+        539,
         539
       ],
       "provenance": {
@@ -790,12 +818,12 @@
       "file": "../social-preview.png",
       "width": 1200,
       "height": 630,
-      "bytes": 667260,
-      "sha256": "52da2fde9293bb2d27bb969d3594420ebb94065173ef2a825035f761c271d584",
+      "bytes": 671168,
+      "sha256": "a180a41bae327f57b765e1120f4450147180cbff61ff1879d10dffc19d530e35",
       "content_bounds_px_bottom_left": [
         117,
         183,
-        1023,
+        1024,
         358
       ],
       "provenance": {

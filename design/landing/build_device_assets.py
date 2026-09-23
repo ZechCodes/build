@@ -36,8 +36,8 @@ BLEND_PATH = SOURCE_DIR / "build-devices.blend"
 SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export are meters
 
 
-GRAPHITE = (0.045, 0.050, 0.059, 1.0)
-GRAPHITE_EDGE = (0.090, 0.098, 0.112, 1.0)
+SILVER = (0.60, 0.61, 0.63, 1.0)
+SILVER_EDGE = (0.72, 0.73, 0.75, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
 KEY_COLOR = (0.0035, 0.0038, 0.0045, 1.0)
 GLASS = (0.012, 0.018, 0.026, 1.0)
@@ -1090,6 +1090,7 @@ def render_social(collections, mats):
 
 def render_cutouts(collections, mats):
     jobs = (
+        ("laptop", "desktop_screen", "ui10-editor-macbook.webp", "hero-laptop.webp", 1600, 1180, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS),
         ("laptop", "desktop_screen", "ui10-editor-macbook.webp", "laptop.webp", 1200, 900, LAPTOP_RENDER_CAMERA, LAPTOP_RENDER_TARGET, LAPTOP_RENDER_LENS),
         ("tablet", "tablet_screen", "ui05-merged-ipad.webp", "tablet.webp", 1000, 760, (2.45, -5.0, 1.92), (0, 0, 0), 67),
         ("phone", "phone_screen", "ui03-answer-iphone.webp", "phone.webp", 640, 1040, (1.45, -3.95, 1.10), (0, 0, 0), 72),
@@ -1101,6 +1102,14 @@ def render_cutouts(collections, mats):
         path = OUTPUT_DIR / filename
         render(path, width, height, camera, target, lens, True)
         paths.append(path)
+    tablet, phone = collections["tablet"], collections["phone"]
+    tablet_state, phone_state = add_mobile_composition(tablet, phone)
+    set_visible_collections(tablet, phone)
+    path = OUTPUT_DIR / "mobile-hero.webp"
+    render(path, 1200, 1350, (2.85, -6.6, 2.20), (-0.15, 0, 0.02), 70, True)
+    restore_matrices(tablet, tablet_state)
+    restore_matrices(phone, phone_state)
+    paths.append(path)
     return paths
 
 
@@ -1168,6 +1177,8 @@ def render_only(group):
         paths.extend(cutouts)
         for name, fixture in defaults.items():
             fixture_map[name] = {name: fixture}
+        fixture_map["hero-laptop"] = {"laptop": defaults["laptop"]}
+        fixture_map["mobile-hero"] = {name: defaults[name] for name in ("tablet", "phone")}
     if "social" in groups:
         social = render_social(collections, mats)
         paths.extend(social)
@@ -1558,8 +1569,8 @@ def main():
     }
     reset_scene()
     mats = {
-        "graphite": material("SpaceBlackAluminum", GRAPHITE, metallic=1.0, roughness=0.30, coat=0.0, anisotropic=0.34),
-        "edge": material("MachinedSpaceBlackEdge", GRAPHITE_EDGE, metallic=1.0, roughness=0.22, coat=0.0, anisotropic=0.42),
+        "graphite": material("SpaceBlackAluminum", SILVER, metallic=1.0, roughness=0.34, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "edge": material("MachinedSpaceBlackEdge", SILVER_EDGE, metallic=1.0, roughness=0.20, coat=0.0, coat_roughness=0.121, anisotropic=0.42),
         "black": material("BlackInset", (0.001, 0.001, 0.0015, 1.0), metallic=0.0, roughness=0.92, specular=0.0),
         "glass": material(
             "FrontGlass", (0.0045, 0.0050, 0.0060, 1.0), metallic=0.0,
@@ -1567,16 +1578,16 @@ def main():
         ),
         "key": material("KeyGraphite", KEY_COLOR, metallic=0.0, roughness=0.38, coat=0.0, specular=0.18),
         "legend": material("KeyLegend", (0.42, 0.45, 0.49, 1.0), metallic=0.0, roughness=0.42),
-        "trackpad": material("TrackpadSpaceBlack", (0.030, 0.033, 0.039, 1.0), metallic=0.10, roughness=0.20, coat=0.62),
+        "trackpad": material("TrackpadSpaceBlack", (0.52, 0.53, 0.55, 1.0), metallic=0.9, roughness=0.26, coat=0.62, coat_roughness=0.11),
         "port": material("PortInterior", (0.002, 0.003, 0.004, 1.0), metallic=0.12, roughness=0.37),
         "connector": material("ConnectorMetal", (0.28, 0.22, 0.10, 1.0), metallic=0.84, roughness=0.20),
         "lens": material("OpticalGlass", (0.002, 0.007, 0.014, 1.0), metallic=0.02, roughness=0.055, coat=1.0),
         "sensor": material("SensorBlack", (0.0007, 0.0010, 0.0014, 1.0), metallic=0.0, roughness=0.55, specular=0.05),
-        "camera_ring": material("CameraRing", (0.025, 0.038, 0.045, 1.0), metallic=0.92, roughness=0.16, coat=0.16),
+        "camera_ring": material("CameraRing", (0.70, 0.71, 0.73, 1.0), metallic=1.0, roughness=0.16, coat=0.16),
         "flash": material("FlashGlass", (0.78, 0.74, 0.58, 1.0), metallic=0.0, roughness=0.17, coat=0.75),
-        "phone_aluminum": material("DeepBlueAluminum", (0.018, 0.031, 0.058, 1.0), metallic=1.0, roughness=0.30, coat=0.0, anisotropic=0.38),
-        "phone_edge": material("DeepBlueMachinedEdge", (0.040, 0.060, 0.095, 1.0), metallic=1.0, roughness=0.22, coat=0.0, anisotropic=0.42),
-        "phone_back": material("DeepBlueCeramicShield", (0.014, 0.023, 0.041, 1.0), metallic=0.12, roughness=0.25, coat=0.62),
+        "phone_aluminum": material("DeepBlueAluminum", SILVER, metallic=1.0, roughness=0.34, coat=0.0, coat_roughness=0.165, anisotropic=0.38),
+        "phone_edge": material("DeepBlueMachinedEdge", SILVER_EDGE, metallic=1.0, roughness=0.20, coat=0.0, coat_roughness=0.121, anisotropic=0.42),
+        "phone_back": material("DeepBlueCeramicShield", (0.70, 0.71, 0.72, 1.0), metallic=0.15, roughness=0.38, coat=0.62, coat_roughness=0.1375),
         "desktop_screen": screen_material("ScreenDesktop", default_screens["laptop"]),
         "tablet_screen": screen_material("ScreenTablet", default_screens["tablet"]),
         "phone_screen": screen_material("ScreenPhone", default_screens["phone"]),

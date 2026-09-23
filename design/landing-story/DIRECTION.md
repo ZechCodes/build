@@ -91,6 +91,28 @@ faceCamera). Copy is real draft copy in the brand voice: second person, short se
 one benefit per sentence, no buzzwords, no exclamation points. Screen textures named
 `ui1x-*` are new; `ui0x-*` already exist in `skriftapp/buildapp/landing/assets/screens/`.
 
+Round 2 amendment (Zech, 2026-09-22). Scroll drives only low-information motion: the
+device moves between acts and a close-up showing or going with its act. Nothing a person
+reads is scrubbed. When the playhead crosses an act's arrival (the device settled), the
+act's copy comes in on the clock and the act's scene (typing, the card's move, the team,
+the builder, the commit, the review) plays through in seconds on its own. Each act keeps
+a hold after arrival where the wheel changes nothing, so an overscroll does not pull the
+next act in; the pinned travel is about 930vh (110, 90, 120, 120, 130, 120, 150, 90).
+Scrolling back rewinds a scene at its act's arrival and shows an act as it finished
+between. The hero laptop turns a little toward the copy, not the visitor. In the builder
+the handoff is a highlight running each step's outline and the arrow after it, not a dot.
+
+Round 3 amendment (Zech, 2026-09-23). The first desktop paint is the film's layout: a
+head script picks film or document before paint, the hero copy and call to action are
+there at once, and a capture of the live stage at the hero pose (lid where the welcome
+starts) holds the laptop's place until the first WebGL frame, then crossfades. The
+hardware is classic silver aluminium, not space black. A slim bar (Build, Docs, GitHub,
+Join the waitlist) stays on screen and reserves its height (Zech, 2026-09-23: "The slim
+is good"). A lifted close-up stays readable while the visitor stays in its act and
+goes back as the act's copy leaves; act 7 holds the open finding at least four seconds
+before approval, and its panel gives way to the merge on the clock. Act 4 is a close
+pair, the phone toward the middle, in place before its question.
+
 Desktop and tablet viewports run the pinned film. Phones and reduced-motion readers get the
 document version: the same acts in order, each as a still plus copy plus one legible HTML
 close-up. Nothing depends on the 3D to be understood (see section 5).

@@ -15,6 +15,8 @@
   overflow: hidden;
 }
 
+/* The canvas stays out of sight until its first frame matches the cutout
+   under it; the film crossfades the two. */
 [data-mode="film"] .stage {
   display: block;
   position: absolute;
@@ -22,20 +24,27 @@
   width: 100%;
   height: 100%;
   z-index: 1;
+  opacity: 0;
+  visibility: hidden;
 }
 
+/* The hero cutout, placed as the stage places the laptop: its centre at the
+   pose's x% of the width and y% of the height, its size a share of the
+   width. The numbers come from web/capture-hero-entrance.mjs with the
+   image, and change with it. */
 [data-mode="film"] .hero-poster {
+  --cut-left: 34.83vw;
+  --cut-top: calc(53vh - 18.30vw);
+  --cut-width: 57.57vw;
   display: block;
   position: absolute;
-  inset: 0;
+  left: var(--cut-left);
+  top: var(--cut-top);
+  width: var(--cut-width);
+  max-width: none;
+  height: auto;
   z-index: 2;
-}
-
-[data-mode="film"] .hero-poster img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border: 0;
+  pointer-events: none;
 }
 
 [data-mode="film"] .overlays {
@@ -73,7 +82,7 @@
 [data-mode="film"] .act__copy {
   position: absolute;
   left: 6vw;
-  top: 50%;
+  top: calc(50% + var(--nav-height) / 2);
   transform: translateY(-50%);
   width: min(34rem, 33vw);
   pointer-events: none;
@@ -90,6 +99,13 @@
   visibility: hidden;
 }
 
+/* The hero's copy is there on the first paint, before any script of the
+   film's has run; the film takes it over from there. */
+[data-mode="film"] #act-1 .act__copy > * {
+  opacity: 1;
+  visibility: visible;
+}
+
 [data-mode="film"] .act h1,
 [data-mode="film"] .act h2 {
   font-size: clamp(2rem, 1rem + 2.4vw, 3.4rem);
@@ -101,7 +117,7 @@
 }
 
 [data-mode="film"] .act[data-layout="top"] .act__copy {
-  top: 6vh;
+  top: calc(var(--nav-height) + 4vh);
   right: 6vw;
   width: auto;
   transform: none;
@@ -141,6 +157,13 @@
 }
 
 /* --- the close-ups ------------------------------------------------------ */
+
+/* Out of sight until the film places them: before its module runs, a panel
+   has no transform and would sit over the hero. update() sets each one's
+   visibility inline once it has a place. */
+[data-mode="film"] .panel {
+  visibility: hidden;
+}
 
 .panel {
   --lift: 0;
@@ -523,7 +546,11 @@
   top: 22px;
 }
 
+/* The handoff runs the path as a highlight: each step's outline and the
+   arrow after it come up and fade as it moves on (--pulse, 0 to 1). Lifted,
+   the arrows rest dimmer so the one the handoff is on reads. */
 .arrow {
+  --pulse: 0;
   position: absolute;
   left: 0;
   top: 0;
@@ -533,17 +560,7 @@
   line-height: 1;
   color: var(--accent);
   text-align: center;
-}
-
-.pulse {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 12px;
-  height: 12px;
-  margin: -6px 0 0 -6px;
-  border-radius: 50%;
-  background: var(--accent);
+  opacity: calc(1 - 0.5 * var(--lift) * (1 - var(--pulse)));
 }
 
 .canvas-label {
@@ -556,6 +573,7 @@
 }
 
 .node {
+  --pulse: 0;
   position: absolute;
   left: 0;
   top: 0;
@@ -566,6 +584,7 @@
   border: 1px solid var(--app-line);
   border-radius: 8px;
   background: var(--app-card);
+  box-shadow: inset 0 0 0 1px rgba(81, 255, 180, var(--pulse));
 }
 
 .node small {

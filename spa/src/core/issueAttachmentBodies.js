@@ -71,6 +71,11 @@ export async function readAttachmentWhole(read) {
  * otherwise — and is the loader `wireThreadAttachments` is handed.
  */
 export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
+  // What the bridge answered, held for this mount only until the stored
+  // record is read back. A browser with no IndexedDB — a private window, a
+  // locked-down profile — stores nothing, and a picture the bridge handed over
+  // must still be drawn; this is the answer it is drawn from.
+  const answered = new Map();
   const bodies = createCachedBodies({
     addressOf: (path) =>
       deviceId && issueId ? { deviceId, entityId: issueId, kind: ATTACHMENT_RECORD_KIND, sub: path } : null,
@@ -80,20 +85,26 @@ export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
         body: await readAttachmentWhole((offset) =>
           call("issues.attachment", { issue_id: issueId, path, ...(offset ? { offset } : {}) })),
       }))),
-    valueOf: ({ path, body }) => ({
-      key: path,
-      value: { mime: body.mime, size: Number(body.size) || 0, content_b64: body.content_b64 || "" },
-    }),
+    valueOf: ({ path, body }) => {
+      const value = { mime: body.mime, size: Number(body.size) || 0, content_b64: body.content_b64 || "" };
+      answered.set(path, value);
+      return { key: path, value };
+    },
     cacheable: (body) => body.size <= ATTACHMENT_BODY_MAX_BYTES,
   });
 
   return {
     async load(path) {
       if (!bodies.has(path)) await bodies.ensure([path]);
-      const body = bodies.read(path);
+      // The cache first, always; the answer only when persistence kept nothing.
+      const body = bodies.read(path) ?? answered.get(path);
+      answered.delete(path);
       if (!body) throw new Error("This attachment could not be loaded.");
       return body;
     },
-    dispose: bodies.dispose,
+    dispose: () => {
+      answered.clear();
+      bodies.dispose();
+    },
   };
 }

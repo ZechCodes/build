@@ -6,7 +6,7 @@
 // from the cache.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { columns, comment, event, issue } from "./trackerWireFixture.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -246,5 +246,24 @@ describe("attachment bytes and the cache", () => {
     await vi.waitFor(() =>
       expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
     expect(call.mock.calls.filter(([method]) => method === "issues.attachment")).toHaveLength(0);
+  });
+
+  it("still draws the thumbnails and the lightbox when the cache refuses to keep them", async () => {
+    // The page paints; persisting an attachment body is what fails, and the
+    // cache stands down for the session the way a full or locked-down
+    // IndexedDB makes it.
+    const put = IDBObjectStore.prototype.put;
+    const refusing = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (value, key) {
+      if (String(key).includes("|attachment|")) throw new DOMException("quota", "QuotaExceededError");
+      return put.call(this, value, key);
+    });
+    mount();
+    await vi.waitFor(() =>
+      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+    expect(bodyList().querySelector(".thread-attachment-figure.unavailable")).toBeNull();
+    await openedOn(commentList().querySelectorAll("button.thread-attachment-preview")[1]);
+    expect(lightbox().querySelector(".thread-lightbox-stage video").getAttribute("src")).toBe("data:video/webm;base64,EEEE");
+    expect(refusing).toHaveBeenCalled();
+    refusing.mockRestore();
   });
 });

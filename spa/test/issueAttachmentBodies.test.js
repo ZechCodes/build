@@ -78,6 +78,18 @@ describe("an issue page's attachment bodies", () => {
     held.dispose();
   });
 
+  it("still answers a fetched body when this browser has no IndexedDB to keep it in", async () => {
+    vi.resetModules();
+    delete globalThis.indexedDB;
+    bodies = await import("../src/core/issueAttachmentBodies.js");
+    const call = vi.fn(async (_method, params) => ({ path: params.path, mime: "image/png", size: 3, offset: 0, content_b64: b64("png") }));
+    const held = bodies.createIssueAttachmentBodies({ deviceId: "dev-1", issueId: "issue-1", call });
+    const body = await held.load("/store/a.png");
+    expect(body.content_b64).toBe(b64("png"));
+    expect(body.mime).toBe("image/png");
+    held.dispose();
+  });
+
   it("refuses with the bridge's own error, so the tile can tell a refusal from a dead wire", async () => {
     const call = vi.fn(async () => {
       throw new Error("not an attachment on this issue: /etc/passwd");

@@ -13,6 +13,7 @@ use crate::mcp::{BridgeAction, DoneServer};
 
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\nscreenshot";
 const MP4: &[u8] = b"\x00\x00\x00\x18ftypmp42recording";
+const WEBM: &[u8] = b"\x1a\x45\xdf\xa3webm-recording";
 
 /// A workspace agent of a tracked project, an issue it can comment on, and a
 /// scratch folder outside every store to make files in.
@@ -293,8 +294,10 @@ fn a_real_comment_issue_frame_files_a_local_file_the_client_reads() {
 #[test]
 fn an_attachment_reads_back_in_ranges() {
     let mut scene = scene();
-    let body: Vec<u8> = (0..(crate::app::ATTACHMENT_READ_CHUNK_BYTES + 10))
-        .map(|at| (at % 251) as u8)
+    let body: Vec<u8> = WEBM
+        .iter()
+        .copied()
+        .chain((0..crate::app::ATTACHMENT_READ_CHUNK_BYTES).map(|at| (at % 251) as u8))
         .collect();
     let recording = scene.made("drag.webm", &body);
     let said = scene.comment(vec![json!({ "path": recording })]).unwrap();
@@ -330,4 +333,178 @@ fn an_attachment_reads_back_in_ranges() {
     let piece =
         crate::encoding::b64decode(slice["result"]["content_b64"].as_str().unwrap()).unwrap();
     assert_eq!(piece, body[3..7].to_vec());
+}
+
+/// What is in the store right now, by leaf: a refused call must leave it as
+/// it found it.
+fn store_leaves(state: &AppState) -> Vec<String> {
+    let mut leaves: Vec<String> = std::fs::read_dir(state.local_attachments_dir())
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    leaves.sort();
+    leaves
+}
+
+/// A FIFO named like a log is not a file: it is refused from the opened
+/// handle, without waiting on a writer. A writer is started so a blocking
+/// open cannot hang the suite — it only turns the pipe's words into a log.
+#[test]
+fn a_fifo_named_like_a_log_is_refused_without_blocking() {
+    let mut scene = scene();
+    let pipe = scene.scratch.path().join("pipe.log");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&pipe)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let writer_end = pipe.clone();
+    std::thread::spawn(move || {
+        use std::io::Write;
+        if let Ok(mut writer) = std::fs::OpenOptions::new().write(true).open(writer_end) {
+            let _ = writer.write_all(b"words through a pipe\n");
+        }
+    });
+
+    let path = pipe.display().to_string();
+    let refusal = scene.comment(vec![json!({ "path": path })]).unwrap_err();
+    assert_eq!(
+        refusal,
+        format!("Build cannot attach {path}: it is not a regular file.")
+    );
+}
+
+/// A link is not followed: the file an agent names is the file it gets, and a
+/// path swapped for a link to somewhere else is refused rather than read.
+#[test]
+fn a_symlink_is_refused_rather_than_followed() {
+    let mut scene = scene();
+    let real = scene.made("real.png", PNG);
+    let link = scene.scratch.path().join("link.png");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let path = link.display().to_string();
+    let refusal = scene.comment(vec![json!({ "path": path })]).unwrap_err();
+    assert_eq!(
+        refusal,
+        format!("Build cannot attach {path}: it is a link, not a file.")
+    );
+}
+
+/// An absolute path outside the store is copied from that exact path, even
+/// when its name is the leaf of a different file already in the store.
+#[test]
+fn an_outside_file_named_like_a_stored_one_is_copied_not_substituted() {
+    let mut scene = scene();
+    let project_id = scene.project_id.clone();
+    let sent = attached(&mut scene.state, &project_id, "board.png", PNG);
+    let leaf = std::path::Path::new(sent["path"].as_str().unwrap())
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let other: &[u8] = b"\x89PNG\r\n\x1a\na different picture";
+    let source = scene.made(&leaf, other);
+
+    let said = scene.comment(vec![json!({ "path": source })]).unwrap();
+    let filed = said["comment"]["attachments"][0]["path"].clone();
+    assert_ne!(filed, sent["path"], "the store's file was substituted");
+    assert_eq!(scene.bytes_of(&filed), other.to_vec());
+}
+
+/// A file named as media has to BE that media: an executable called
+/// fake.png or fake.mp4 is refused, and each kind is sniffed by its bytes.
+#[test]
+fn a_binary_named_as_media_is_refused_by_its_bytes() {
+    let mut scene = scene();
+    for (name, label) in [
+        ("fake.png", "PNG image"),
+        ("fake.jpg", "JPEG image"),
+        ("fake.gif", "GIF image"),
+        ("fake.webp", "WebP image"),
+        ("fake.mp4", "MP4 video"),
+        ("fake.webm", "WebM video"),
+    ] {
+        let path = scene.made(
+            name,
+            b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        );
+        let refusal = scene.comment(vec![json!({ "path": path })]).unwrap_err();
+        assert_eq!(
+            refusal,
+            format!("Build cannot attach {path}: it is not a {label}.")
+        );
+    }
+
+    let jpeg = scene.made("real.jpg", b"\xff\xd8\xff\xe0jfif");
+    let gif = scene.made("real.gif", b"GIF89a....");
+    let webp = scene.made("real.webp", b"RIFF\x10\x00\x00\x00WEBPVP8 ");
+    let webm = scene.made("real.webm", WEBM);
+    let said = scene
+        .comment(vec![
+            json!({ "path": jpeg }),
+            json!({ "path": gif }),
+            json!({ "path": webp }),
+            json!({ "path": webm }),
+        ])
+        .unwrap();
+    let mimes: Vec<Value> = said["comment"]["attachments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|file| file["mime"].clone())
+        .collect();
+    assert_eq!(
+        mimes,
+        vec![
+            json!("image/jpeg"),
+            json!("image/gif"),
+            json!("image/webp"),
+            json!("video/webm")
+        ]
+    );
+}
+
+/// A log has to be text: bytes that are not UTF-8 are refused.
+#[test]
+fn a_log_that_is_not_utf8_is_refused() {
+    let mut scene = scene();
+    let path = scene.made("run.log", b"line one\n\xff\xfe not text\n");
+    let refusal = scene.comment(vec![json!({ "path": path })]).unwrap_err();
+    assert_eq!(
+        refusal,
+        format!("Build cannot attach {path}: only images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs can be attached.")
+    );
+}
+
+/// Eleven files are refused before a byte of any of them is copied.
+#[test]
+fn more_than_ten_files_are_refused_before_anything_is_copied() {
+    let mut scene = scene();
+    let files: Vec<Value> = (0..11)
+        .map(|n| json!({ "path": scene.made(&format!("shot-{n}.png"), &[PNG, &[n as u8]].concat()) }))
+        .collect();
+    let before = store_leaves(&scene.state);
+
+    let refusal = scene.comment(files).unwrap_err();
+    assert_eq!(refusal, "Build cannot attach more than 10 files at once.");
+    assert_eq!(store_leaves(&scene.state), before, "nothing was copied");
+}
+
+/// One bad file refuses the call before any good file beside it is copied.
+#[test]
+fn one_bad_file_refuses_the_call_before_any_is_copied() {
+    let mut scene = scene();
+    let good = scene.made("good.png", PNG);
+    let bad = scene.made("bad.png", b"not a picture");
+    let before = store_leaves(&scene.state);
+
+    scene
+        .comment(vec![json!({ "path": good }), json!({ "path": bad })])
+        .unwrap_err();
+    assert_eq!(store_leaves(&scene.state), before, "nothing was copied");
 }

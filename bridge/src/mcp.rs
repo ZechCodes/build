@@ -340,6 +340,13 @@ pub enum BridgeAction {
         status: String,
         track: Option<bool>,
     },
+    /// Add and remove labels on an existing issue.
+    TrackerLabelIssue {
+        issue_id: String,
+        add: Vec<String>,
+        remove: Vec<String>,
+        track: Option<bool>,
+    },
     /// Close one.
     TrackerCloseIssue {
         issue_id: String,
@@ -419,7 +426,7 @@ impl BridgeAction {
             BridgeAction::RemoveProjectSource { .. } => "remove_project_source",
             BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
             BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
-            // The issue tracker's eight, on both working surfaces.
+            // The issue tracker's twelve, on both working surfaces.
             BridgeAction::TrackerListIssues { .. } => "list_issues",
             BridgeAction::TrackerGetIssue { .. } => "get_issue",
             BridgeAction::TrackerReadComment { .. } => "read_comment",
@@ -427,6 +434,7 @@ impl BridgeAction {
             BridgeAction::TrackerCommentIssue { .. } => "comment_issue",
             BridgeAction::TrackerAssignIssue { .. } => "assign_issue",
             BridgeAction::TrackerMoveIssue { .. } => "move_issue",
+            BridgeAction::TrackerLabelIssue { .. } => "label_issue",
             BridgeAction::TrackerCloseIssue { .. } => "close_issue",
             BridgeAction::TrackerLinkIssue { .. } => "link_issue",
             BridgeAction::TrackerTrackIssue { .. } => "track_issue",
@@ -491,6 +499,7 @@ impl BridgeAction {
             | BridgeAction::TrackerCommentIssue { .. }
             | BridgeAction::TrackerAssignIssue { .. }
             | BridgeAction::TrackerMoveIssue { .. }
+            | BridgeAction::TrackerLabelIssue { .. }
             | BridgeAction::TrackerCloseIssue { .. }
             | BridgeAction::TrackerLinkIssue { .. }
             | BridgeAction::TrackerTrackIssue { .. }
@@ -850,9 +859,9 @@ impl DoneServer {
     // -------------------------------------------------- issue tracker ---
     // The per-project issue tracker (spec: Issues). One block, shown by both
     // working surfaces, so a coding agent and a project agent are offered the
-    // same eleven tools with the same words.
+    // same twelve tools with the same words.
 
-    /// The tracker's eleven, appended to whichever surface is being built.
+    /// The tracker's twelve, appended to whichever surface is being built.
     ///
     /// None takes a project: the scope is the calling agent's own, read off
     /// the session, so there is nothing to pass and no other project reachable.
@@ -1025,6 +1034,20 @@ impl DoneServer {
                 }
             }),
             json!({
+                "name": "label_issue",
+                "description": "Add or remove labels on an existing issue. Labels are free text, including spaces. Returns the issue and its labels after the change. Adding a label already present or removing one absent does nothing.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "issue_id": issue_id,
+                        "add": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+                        "remove": { "type": "array", "items": { "type": "string" }, "maxItems": 20 },
+                        "track": track
+                    },
+                    "required": ["issue_id"]
+                }
+            }),
+            json!({
                 "name": "close_issue",
                 "description": "Close an issue. Closing is not the Done column: one says whether anyone is still expected to act, the other says where the card is. Closing an issue that is already closed is refused.",
                 "inputSchema": {
@@ -1162,6 +1185,24 @@ impl DoneServer {
                     Err(message) => refused(id.clone(), message),
                 }
             }
+            "label_issue" => match issue().and_then(|issue_id| {
+                Ok((
+                    issue_id,
+                    label_list_argument(params, "add")?,
+                    label_list_argument(params, "remove")?,
+                ))
+            }) {
+                Ok((issue_id, add, remove)) => acted(
+                    id.clone(),
+                    BridgeAction::TrackerLabelIssue {
+                        issue_id,
+                        add,
+                        remove,
+                        track: optional_flag(params, "track"),
+                    },
+                ),
+                Err(message) => refused(id.clone(), message),
+            },
             "close_issue" => match issue() {
                 Ok(issue_id) => acted(
                     id.clone(),
@@ -2041,6 +2082,24 @@ fn string_list_argument(params: Option<&Value>, field: &str) -> Vec<String> {
         .collect()
 }
 
+/// Unlike older list arguments, a malformed label list must be refused rather
+/// than silently dropping a requested change.
+fn label_list_argument(params: Option<&Value>, field: &str) -> Result<Vec<String>, String> {
+    match argument(params, field) {
+        None => Ok(Vec::new()),
+        Some(Value::Array(values)) => values
+            .into_iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| format!("{field} labels must be strings"))
+            })
+            .collect(),
+        Some(_) => Err(format!("{field} labels must be an array")),
+    }
+}
+
 /// A comment's typed references, parsed here so a malformed one refuses the
 /// call rather than reaching the daemon as an empty list.
 fn issue_refs(params: Option<&Value>) -> Result<Vec<crate::thread::ThreadLink>, String> {
@@ -2684,10 +2743,10 @@ mod tests {
         "remove_workspace_directory",
     ];
 
-    /// The issue tracker's eleven, the OTHER inventory shared between the two
+    /// The issue tracker's twelve, the OTHER inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const ISSUE_TOOLS: [&str; 11] = [
+    const ISSUE_TOOLS: [&str; 12] = [
         "list_issues",
         "get_issue",
         "read_comment",
@@ -2695,6 +2754,7 @@ mod tests {
         "comment_issue",
         "assign_issue",
         "move_issue",
+        "label_issue",
         "close_issue",
         "link_issue",
         "track_issue",
@@ -2720,6 +2780,7 @@ mod tests {
             "comment_issue",
             "assign_issue",
             "move_issue",
+            "label_issue",
             "close_issue",
             "link_issue",
         ] {

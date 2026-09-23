@@ -1,7 +1,7 @@
 //! What an agent may do to its project's issues (spec: Issues → The MCP
 //! tools).
 //!
-//! Eight tools, on the coding and project surfaces alike, each a thin wrapper
+//! Twelve tools, on the coding and project surfaces alike, each a thin wrapper
 //! over the verb of the same shape: the same code path, the same refusals, the
 //! same record afterwards. What the wrapper adds is who is calling.
 //!
@@ -93,6 +93,12 @@ impl AppState {
             BridgeAction::TrackerMoveIssue {
                 issue_id, status, ..
             } => self.move_issue_as_agent(&scope, issue_id, status),
+            BridgeAction::TrackerLabelIssue {
+                issue_id,
+                add,
+                remove,
+                ..
+            } => self.label_issue_as_agent(&scope, issue_id, add, remove),
             BridgeAction::TrackerCloseIssue {
                 issue_id, reason, ..
             } => self.close_issue_as_agent(&scope, issue_id, reason.clone()),
@@ -438,6 +444,46 @@ impl AppState {
         self.commit_issue_write(&scope.project_id, write, &now)
     }
 
+    fn label_issue_as_agent(
+        &mut self,
+        scope: &IssueScope,
+        issue_id: &str,
+        add: &[String],
+        remove: &[String],
+    ) -> Result<Value, String> {
+        use crate::tracker::normalize_labels;
+
+        let issue = self.issue_of_this_agents_project(scope, issue_id)?;
+        // Validate both requested lists even when the requested change would
+        // leave the stored set alone. This is the create_issue validator.
+        let add = normalize_labels(add)?;
+        let remove = normalize_labels(remove)?;
+        let mut labels: Vec<String> = issue
+            .labels
+            .iter()
+            .filter(|label| !remove.iter().any(|word| word.eq_ignore_ascii_case(label)))
+            .cloned()
+            .collect();
+        for label in add {
+            if !labels.iter().any(|word| word.eq_ignore_ascii_case(&label)) {
+                labels.push(label);
+            }
+        }
+        let labels = normalize_labels(&labels)?;
+        if labels == issue.labels {
+            return Ok(json!({
+                "labels": issue.labels,
+                "issue": super::issue_json(&scope.project_id, &issue),
+            }));
+        }
+        let now = crate::store::now_rfc3339();
+        let mut write = IssueWrite::by(scope.actor.clone(), issue);
+        edits::apply_update(&mut write, &json!({ "labels": labels }), &scope.actor, &now)?;
+        let mut answer = self.commit_issue_write(&scope.project_id, write, &now)?;
+        answer["labels"] = answer["issue"]["labels"].clone();
+        Ok(answer)
+    }
+
     fn close_issue_as_agent(
         &mut self,
         scope: &IssueScope,
@@ -520,7 +566,7 @@ fn asked(fields: &[(&str, &Option<String>)]) -> Value {
     params
 }
 
-/// Whether this action is one of the tracker's eight.
+/// Whether this action is one of the tracker's twelve.
 ///
 /// Asked only where the scope could not be resolved at all: an agent whose
 /// owner is bound to no project has no issues to reach, and must still be able
@@ -555,6 +601,7 @@ fn wants_tracking(action: &BridgeAction) -> bool {
         BridgeAction::TrackerCommentIssue { track, .. }
         | BridgeAction::TrackerAssignIssue { track, .. }
         | BridgeAction::TrackerMoveIssue { track, .. }
+        | BridgeAction::TrackerLabelIssue { track, .. }
         | BridgeAction::TrackerCloseIssue { track, .. }
         | BridgeAction::TrackerLinkIssue { track, .. } => track.unwrap_or(false),
         _ => false,
@@ -571,6 +618,7 @@ fn is_an_issue_tool(action: &BridgeAction) -> bool {
             | BridgeAction::TrackerCommentIssue { .. }
             | BridgeAction::TrackerAssignIssue { .. }
             | BridgeAction::TrackerMoveIssue { .. }
+            | BridgeAction::TrackerLabelIssue { .. }
             | BridgeAction::TrackerCloseIssue { .. }
             | BridgeAction::TrackerLinkIssue { .. }
             | BridgeAction::TrackerTrackIssue { .. }

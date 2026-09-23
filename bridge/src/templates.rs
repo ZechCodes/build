@@ -174,6 +174,8 @@ The decision rule, in order:
 2. Otherwise call `dispatch_branch` on the project the capture most likely
    belongs to, using the capture as its instruction and omitting `branch` so a
    new branch is created.
+   Every `dispatch_branch` creates an agent. Give that agent a short, distinct
+   `name` that describes its work.
 3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
    time is the friction this surface exists to remove; a best-guess project is
    almost always the better answer. When you do ask, offer up to 3 options: the

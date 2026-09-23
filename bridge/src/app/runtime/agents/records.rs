@@ -545,6 +545,35 @@ impl AppState {
         Ok(serde_json::json!({ "name": name }))
     }
 
+    /// Reserve the one request to name an unnamed coding agent as its turn is
+    /// being sent. The project's agent has no set_name tool and is exempt.
+    pub(in crate::app) fn claim_agent_name_request(&mut self, owner: &str, agent_id: &str) -> bool {
+        if crate::agent::is_project_agent(agent_id) {
+            return false;
+        }
+        let needs_name = self
+            .entity_agents(owner)
+            .ok()
+            .and_then(|agents| agents.by_id(agent_id))
+            .is_some_and(|agent| agent.name.is_none() && !agent.name_asked);
+        if needs_name {
+            self.edit_agent_record("ask_agent_to_name_itself", owner, agent_id, |agent| {
+                agent.name_asked = true;
+            });
+        }
+        needs_name
+    }
+
+    /// A rejected provider write was never an ask. Keep the next turn able to
+    /// carry it, unless the agent named itself while that write was in flight.
+    pub(in crate::app) fn release_agent_name_request(&mut self, owner: &str, agent_id: &str) {
+        self.edit_agent_record("retry_agent_name_request", owner, agent_id, |agent| {
+            if agent.name.is_none() {
+                agent.name_asked = false;
+            }
+        });
+    }
+
     /// `conversation.watch` / `conversation.unwatch` — whether this
     /// conversation is in the user's inbox.
     ///

@@ -14,6 +14,8 @@ use serde_json::{json, Value};
 pub struct RoutedCapture {
     pub capture_id: String,
     pub rationale: Option<String>,
+    /// A router names the agent it creates; a user's reroute lets the agent name itself.
+    pub agent_name: Option<String>,
     /// What the caller answers with, given the capture as its route was
     /// written — the capture's own record for the user's reroute, which
     /// redraws the row; where the work went for the router's tool, which is
@@ -222,12 +224,14 @@ impl AppState {
             BridgeAction::DispatchBranch {
                 project_id,
                 branch,
+                name,
                 instruction,
                 rationale,
             } => self.route_to_branch(
                 RoutedCapture {
                     capture_id: capture_id.to_string(),
                     rationale,
+                    agent_name: Some(name),
                     answer: the_dispatch_itself,
                     from_agent: self.router_sender(capture_id),
                 },

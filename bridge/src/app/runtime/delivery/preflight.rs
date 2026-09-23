@@ -222,14 +222,11 @@ pub(in crate::app) fn deliver(
     else {
         return Ok(DeliveryOutcome::Delivered(None));
     };
-    let Some(say) = say else {
-        return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
-    };
-    let prompt = match spawned {
-        Spawned::Fresh => &say.cold,
-        Spawned::Warm => &say.warm,
-    };
-    if compact_before_turn(state, turn, spawned, prompt, timer) {
+    let prompt = say.as_ref().map(|say| match spawned {
+        Spawned::Fresh => say.cold.as_str(),
+        Spawned::Warm => say.warm.as_str(),
+    });
+    if prompt.is_some_and(|prompt| compact_before_turn(state, turn, spawned, prompt, timer)) {
         return Ok(DeliveryOutcome::Deferred);
     }
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
@@ -238,7 +235,7 @@ pub(in crate::app) fn deliver(
     // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
-    let (session, instance, legacy_payload) = {
+    let (session, instance, legacy_payload, asks_name) = {
         let mut s = timer.lock(state);
         if !s.queued_agent_target_exists(turn) {
             return Ok(DeliveryOutcome::Delivered(None));
@@ -278,6 +275,16 @@ pub(in crate::app) fn deliver(
         } else {
             None
         };
+        // Every entry path reaches this point: native and legacy posts,
+        // notices, reminders, catch-up, and starts with no existing text.
+        // Slash commands must remain unadorned for the provider to parse.
+        let asks_name = !legacy_payload
+            .as_ref()
+            .is_some_and(|payload| payload.requires_unadorned_delivery(model_choice.provider))
+            && s.claim_agent_name_request(owner, agent_id);
+        if say.is_none() && !asks_name {
+            return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
+        }
         if let Some(payload) = legacy_payload.as_ref() {
             s.record_legacy_delivery_status(
                 owner,
@@ -292,6 +299,7 @@ pub(in crate::app) fn deliver(
                 .clone()
                 .expect("an exact delivery tab has its session instance"),
             legacy_payload,
+            asks_name,
         )
     };
     if *interrupt && spawned == Spawned::Warm {
@@ -300,7 +308,16 @@ pub(in crate::app) fn deliver(
         }
     }
     let reports_turn_boundaries = session.status_changed().is_some();
-    let prompt = delivered_prompt(prompt, legacy_payload.as_ref(), model_choice.provider);
+    let prompt = delivered_prompt(
+        prompt.unwrap_or_default(),
+        legacy_payload.as_ref(),
+        model_choice.provider,
+    );
+    let prompt = if asks_name {
+        format!("{}{prompt}", crate::operation::AGENT_NAME_NOTE)
+    } else {
+        prompt
+    };
     let mut native_turn = Turn::with_choice(prompt, model_choice.clone(), *choice_revision);
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {
@@ -314,6 +331,11 @@ pub(in crate::app) fn deliver(
         })
     });
     if let Err(error) = session.send_turn(&native_turn) {
+        if asks_name {
+            timer
+                .lock(state)
+                .release_agent_name_request(owner, agent_id);
+        }
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the

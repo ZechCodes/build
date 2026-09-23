@@ -151,6 +151,7 @@ impl ScriptedRouter {
                     json!({
                         "project_id": project_id,
                         "branch": branch,
+                        "name": "Route work",
                         "instruction": said,
                         "rationale": format!("continues the work in flight on {branch}"),
                     }),

@@ -222,7 +222,7 @@ pub struct Agent {
     pub name: Option<String>,
     /// Whether this agent has already been asked to name itself.
     ///
-    /// The ask rides the first turn the user sends to an unnamed agent, and
+    /// The ask rides the first turn of an unnamed agent, and
     /// once only: an agent that was asked and did not do it is one that
     /// decided, and asking again every time the user speaks would be nagging
     /// with the user's own words. Never set for an agent that has a name.

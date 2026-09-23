@@ -71,6 +71,7 @@ fn router_working_message_is_visible_without_asking_or_blocking_dispatch() {
         BridgeAction::DispatchBranch {
             project_id,
             branch: None,
+            name: "Branch Worker".to_string(),
             instruction: "route this while I watch".into(),
             rationale: None,
         },
@@ -172,6 +173,7 @@ fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
             BridgeAction::DispatchBranch {
                 project_id: project_id.clone(),
                 branch: None,
+                name: "Branch Worker".to_string(),
                 instruction: "finish the toast".to_string(),
                 rationale: Some("continues the login work".to_string()),
             },
@@ -200,6 +202,36 @@ fn dispatch_branch_puts_an_agent_on_a_branch_and_writes_the_route_through() {
     assert_eq!(record["routing"]["kind"], "branch");
     assert_eq!(record["routing"]["target_id"], branch.as_str());
     assert_eq!(record["routing"]["rationale"], "continues the login work");
+}
+
+#[test]
+fn router_dispatch_tool_names_the_agent_it_creates_through_the_real_wire() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    let (capture_id, router_id) = captured(&mut state, "finish the toast");
+    let server = crate::mcp::DoneServer::for_owner(router_id);
+    let call = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "dispatch_branch",
+            "arguments": {
+                "project_id": project_id,
+                "name": "  Toast   Fixer  ",
+                "instruction": "finish the toast"
+            }
+        }
+    });
+    let handled = server.handle_message(&call.to_string());
+    assert!(handled.reply.is_none(), "the real router tool is forwarded");
+    let dispatched = state
+        .router_action(&capture_id, handled.action.unwrap())
+        .unwrap();
+    let run_id = dispatched["run_id"].as_str().unwrap();
+    let agent_id = dispatched["agent_id"].as_str().unwrap();
+    let agent = state.runs[run_id].agents.by_id(agent_id).unwrap();
+    assert_eq!(agent.name.as_deref(), Some("Toast Fixer"));
+    assert!(agent.name_asked);
 }
 
 /// A question is not a route: the capture goes back to where the router
@@ -1036,6 +1068,7 @@ fn a_router_dispatch_says_which_agent_sent_the_instruction() {
             BridgeAction::DispatchBranch {
                 project_id,
                 branch: None,
+                name: "Branch Worker".to_string(),
                 instruction: "finish the toast".to_string(),
                 rationale: None,
             },

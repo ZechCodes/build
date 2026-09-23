@@ -853,7 +853,7 @@ fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
         ("quiet", &quiet_workspace, None, false),
         ("followed", &followed_workspace, Some(true), true),
     ] {
-        let mut arguments = json!({ "workspace_id": workspace_id });
+        let mut arguments = json!({ "workspace_id": workspace_id, "name": "Workspace helper" });
         if let Some(notify_user) = notify_user {
             arguments["notify_user"] = json!(notify_user);
         }

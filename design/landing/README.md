@@ -46,6 +46,11 @@ blender --background design/landing/build-devices.blend \
 bounds, hashes, and screen provenance in `assets/devices/metadata.json`; it does not write the
 GLBs, `device-contract.js`, or `build-devices.blend`.
 
+The cutout group includes `hero-laptop` and the tablet/phone `mobile-hero` composition as well
+as the three individual devices. The complete document set has 25 render records, including
+the two closing aliases and the PNG social preview. `hero-entrance.webp` is separate: it is
+captured from the live stage by `web/capture-hero-entrance.mjs` and is never overwritten here.
+
 The build overwrites generated output in `skriftapp/buildapp/landing/assets/devices/`, packs the Launch fixtures into `build-devices.blend`, and removes Blender's incremental `.blend1` backup.
 
 For geometry/material iteration without rebuilding the responsive poster set:
@@ -64,4 +69,25 @@ Transparent object cutouts are `hero-laptop.webp`, `mobile-hero.webp`, `laptop.w
 
 Scene 1 uses a low front camera to show the keyboard depth and fully open display; the live hero adds only 4° of pitch. Its independent runtime entrance starts at least three-quarters open and settles to 105° while the base remains planted. The rendered fallback remains fully open. Phone and tablet entrances use a brief pivot and then settle without idle rotation. Poster cameras expand their framing when needed to leave a 5% margin around the complete hardware. Scene 8 uses one world scale for all three devices on desktop and mobile so the 312.6 mm laptop, 249.7 mm tablet, and 78 mm phone remain physically proportional.
 
-The generated set depicts a 2025 14-inch MacBook Pro M5, 11-inch iPad Pro M5, and iPhone 17 Pro Max. Enclosure shells use outward-facing geometry. The iPad body and screen use concentric 15.05 mm and 6.6 mm corner contours across the roughly 8.5 mm bezel. Aluminum materials use metallic 1.0 with no clearcoat, leaving the dark-strip studio environment to describe their shape. The proportions, black glass, camera details, space-black and deep-blue finishes, controls, and ports follow the reference study in `device-references.md`. The geometry is original, with no third-party models or Apple marks.
+The generated set depicts a 2025 14-inch MacBook Pro M5, 11-inch iPad Pro M5, and iPhone 17 Pro Max. Enclosure shells use outward-facing geometry. The iPad body and screen use concentric 15.05 mm and 6.6 mm corner contours across the roughly 8.5 mm bezel. Aluminum body materials use metallic 1.0 with no clearcoat, leaving the dark-strip studio environment to describe their shape. The proportions, black glass, camera details, controls, and ports follow the reference study in `device-references.md`. The geometry is original, with no third-party models or Apple marks.
+
+## Silver finish
+
+The September 23 #77 fixture update replaces the original space-black/deep-blue finish with
+the film's silver aluminum. Material names remain stable for existing consumers. These are
+**linear RGB** values in both the saved Blender Principled materials and exported glTF PBR
+materials; do not apply an sRGB conversion.
+
+| Material | Base color | Metallic | Roughness |
+|---|---|---|---|
+| SpaceBlackAluminum | 0.60, 0.61, 0.63 | 1.0 | 0.34 |
+| MachinedSpaceBlackEdge | 0.72, 0.73, 0.75 | 1.0 | 0.20 |
+| TrackpadSpaceBlack | 0.52, 0.53, 0.55 | 0.9 | 0.26 |
+| DeepBlueAluminum | 0.60, 0.61, 0.63 | 1.0 | 0.34 |
+| DeepBlueMachinedEdge | 0.72, 0.73, 0.75 | 1.0 | 0.20 |
+| DeepBlueCeramicShield | 0.70, 0.71, 0.72 | 0.15 | 0.38 |
+| CameraRing | 0.70, 0.71, 0.73 | 1.0 | 0.16 |
+
+Coat, anisotropy, glass, keys, sensors, ports, and screens retain their existing values.
+The Blender studio lighting and compositions are unchanged. The runtime finish override
+is redundant once these GLBs are integrated; removing it belongs to the film implementation.

@@ -13,10 +13,11 @@
 // nowhere else. That workspace is the likeliest of all to be the one being
 // stood on: the reader just made it and walked in.
 
-import { cachedAddresses, deleteCached, readCached, readCachedMany, writeCached } from "./localCache.js";
+import { cachedAddresses, deleteCached, mergeCachedAtomically, readCached, readCachedMany,
+  updateCachedFeed, writeCached } from "./localCache.js";
 import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
-import { withCacheFreshness } from "./cacheFreshness.js";
+import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 
 export const ROW_RECORD_KIND = "row";
 
@@ -58,9 +59,9 @@ export async function cachedRouteEntityId(deviceId, route) {
 // record is what a push rewrites, and the board list is the only place a row
 // naming no entity is at all.
 //
-// Each write answers the way to undo it — the values as they stood — for the
-// bridge refusing. Restoring rather than re-patching, because the answer to
-// "what was it before" is not derivable from the fields that went on.
+// Each write answers the way to undo it if the bridge refuses. The undo uses
+// the saved value only for the target row and fields this press changed: a
+// newer board read or state push may already have moved everything else.
 
 const FEED_RECORD_ADDRESS = (deviceId) => ({ deviceId, entityId: "", kind: "feed" });
 
@@ -92,10 +93,50 @@ function boardListWith(held, target, rewrite) {
   return moved ? { ...held, items: next } : null;
 }
 
+/** Revert only fields this press changed, and only while they still carry the
+ * optimistic value. A state push may have replaced the other fields meanwhile. */
+function revertedFields(current, before, fields) {
+  if (!current || !before || !fields) return null;
+  const next = { ...current };
+  let changed = false;
+  for (const [field, optimistic] of Object.entries(fields)) {
+    if (!Object.is(current[field], optimistic)) continue;
+    if (Object.hasOwn(before, field)) next[field] = before[field];
+    else delete next[field];
+    changed = true;
+  }
+  return changed ? next : null;
+}
+
+function undoBoard(current, currentRecord, before, beforeRecord, target, fields) {
+  if (!Array.isArray(current?.items) || !Array.isArray(before?.items)) return null;
+  const saved = before.items.find((item) => namesRow(item, target));
+  if (!saved) return null;
+  if (!fields) {
+    if (current.items.some((item) => namesRow(item, target))) return null;
+    const items = [...current.items];
+    items.splice(Math.min(before.items.indexOf(saved), items.length), 0, saved);
+    return { ...current, items };
+  }
+  let changed = false;
+  const items = current.items.map((item) => {
+    if (!namesRow(item, target)) return item;
+    // A board read after the press owns even the target's fields. Do not
+    // apply an older local undo over that newer observation.
+    const now = withCacheFreshness(item, currentRecord);
+    const then = withCacheFreshness(saved, beforeRecord);
+    if (!isAtLeastAsFresh(then, now)) return item;
+    const reverted = revertedFields(item, saved, fields);
+    if (reverted) changed = true;
+    return reverted || item;
+  });
+  return changed ? { ...current, items } : null;
+}
+
 /** Rewrite one row wherever this device holds it, and answer the undo. The
  *  row is named the way the rail names it — the key it is listed under and the
  *  entity it is addressed by, both of which an inbox entry carries. */
-async function writeRowEverywhere(deviceId, target, rewrite) {
+async function writeRowEverywhere(deviceId, target, rewrite, undoFields = null) {
   const address = target.entityId ? rowAddress(deviceId, target.entityId) : null;
   const heldRow = address ? (await readCached(address))?.value : null;
   const heldFeedRecord = await readCached(FEED_RECORD_ADDRESS(deviceId));
@@ -108,14 +149,17 @@ async function writeRowEverywhere(deviceId, target, rewrite) {
   }
   if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), board);
   return async () => {
-    if (address && heldRow) await writeCached(address, heldRow);
-    if (board) await writeCached(FEED_RECORD_ADDRESS(deviceId), heldFeed);
+    if (address && heldRow) await mergeCachedAtomically(address, (current) => undoFields
+      ? revertedFields(current, heldRow, undoFields)
+      : current == null ? heldRow : null);
+    if (board) await updateCachedFeed(FEED_RECORD_ADDRESS(deviceId), (current, record) =>
+      undoBoard(current, record, heldFeed, heldFeedRecord, target, undoFields));
   };
 }
 
 /** Lay `fields` over one row, in the cache, now. Answers the undo. */
 export const patchFeedRow = (deviceId, target, fields) =>
-  writeRowEverywhere(deviceId, target, (held) => ({ ...held, ...fields }));
+  writeRowEverywhere(deviceId, target, (held) => ({ ...held, ...fields }), fields);
 
 /** Take one row out of the cache, now — the work is over. Answers the undo. */
 export const removeFeedRow = (deviceId, target) => writeRowEverywhere(deviceId, target, () => null);

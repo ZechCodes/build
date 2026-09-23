@@ -220,6 +220,50 @@ describe("cached watching on both inbox faces", () => {
     });
   }
 
+  for (const boardWatched of [true, false]) {
+    it(`keeps A ${boardWatched ? "muted" : "watched"} when B's removal is refused after a new board`, async () => {
+      const { project, workspace, run } = await seed({ watched: boardWatched, createdByAgent: true });
+      const itemA = { ...run, kind: "branch", entity_id: "run-1" };
+      const itemB = { kind: "branch", entity_id: "run-other", project_id: "project-1",
+        branch: "build/other", deviceId, projectKey: project.projectKey };
+      await writeCached(address("feed"), { items: [itemA, itemB], runs: [run],
+        projects: [project], workspaces: [workspace] }, { observedFeedRows: true });
+      let snapshot;
+      const unsubscribe = subscribeFeed((next) => { snapshot = next; });
+      mountInboxList();
+      await startFeed();
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.entity_id === "run-other")).toBe(true));
+
+      const undo = await removeFeedRow(deviceId, feedRowTarget(itemB));
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.entity_id === "run-other")).toBe(false));
+      const newlyWatched = !boardWatched;
+      await writeCached(address("feed"), { items: [],
+        runs: [{ ...run, agents: [{ id: "agent-1", watched: newlyWatched }] }],
+        projects: [project], workspaces: [workspace] }, { observedFeedRows: true });
+      await vi.waitFor(() => {
+        expect(snapshot?.items?.some((item) => item.entity_id === "run-1")).toBe(false);
+        expect(snapshot?.runs?.[0]?.agents?.[0]?.watched).toBe(newlyWatched);
+      });
+      const countA = newlyWatched ? 1 : 0;
+      const assertBothFaces = async (stage) => {
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work")),
+          `workspace face ${stage}`).toHaveLength(countA));
+        setInboxView("projects");
+        await vi.waitFor(() => expect(rows().filter((row) => row.textContent.includes("Agent work")),
+          `projects face ${stage}`).toHaveLength(countA));
+        setInboxView("inbox");
+      };
+      await assertBothFaces("before refusal");
+
+      await undo();
+      await vi.waitFor(() => expect(snapshot?.items?.some((item) => item.entity_id === "run-other")).toBe(true));
+      expect(snapshot.items.some((item) => item.entity_id === "run-1")).toBe(false);
+      expect(snapshot.runs[0].agents[0].watched).toBe(newlyWatched);
+      await assertBothFaces("after refusal");
+      unsubscribe();
+    });
+  }
+
   it("shows a UI-created, agentless workspace before the next board read", async () => {
     await seed({ agents: [] });
     mountInboxList();

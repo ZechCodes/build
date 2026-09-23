@@ -260,39 +260,53 @@ export function readCachedMany(addresses) {
   }).then(() => records);
 }
 
-/** Write one record, stamped with when. A feed write carries surviving rows'
- * observation times unless a bridge board read sets `observedFeedRows`; the
- * read and write share a transaction so every feed writer obeys that rule.
- * A local UI writer may also stamp its owner and edit sequence so a page-exit
- * journal can distinguish its unfinished write from another tab's write. */
-export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
+/** Every feed write goes through this transaction. A local rewrite carries
+ * surviving rows' observation times; a bridge board read explicitly replaces
+ * them. An undo can merge into the current value inside the same transaction. */
+function writeFeed(address, update, observedFeedRows = false) {
   const key = recordKey(address);
+  let changed = false;
   return wroteStore((store) => {
-    const record = (previous) => {
-      const at = Date.now();
-      const order = nextWriteOrder();
-      return {
-        at, order,
-        value: address.kind === "feed"
-          ? feedWithObservations(value, previous, { at, order }, observedFeedRows) : value,
-        ...(source ? { source, sequence } : {}),
-      };
-    };
-    if (address.kind !== "feed") {
-      store.put(record(null), key);
-      return null;
-    }
     // Read and put in the same transaction: another tab can write between a
     // separate read and write, and its newer row observation must survive.
     const request = store.get(key);
-    request.onsuccess = () => store.put(record(request.result), key);
-    return request;
+    request.onsuccess = () => {
+      try {
+        const previous = request.result;
+        const next = update(previous?.value, previous);
+        if (next == null) return;
+        const at = Date.now();
+        const order = nextWriteOrder();
+        store.put({ at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) }, key);
+        changed = true;
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && changed) announce(partsOfKey(key));
+    return Boolean(committed && changed);
+  });
+}
+
+/** Write one record, stamped with when. A local UI writer may also stamp its
+ * owner and edit sequence for page-exit journal ordering. */
+export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
+  if (address.kind === "feed") return writeFeed(address, () => value, observedFeedRows);
+  const key = recordKey(address);
+  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
+  return wroteStore((store) => {
+    store.put(record, key);
+    return null;
   }).then((wrote) => {
-    // The key that was stored is the address announced, so a listener is
-    // never sent to re-read an address the record is not under.
     if (wrote) announce(partsOfKey(key));
   });
 }
+
+/** Merge a local undo into the current feed inside the same transaction that
+ * preserves its row observation times. Null leaves the feed untouched. */
+export const updateCachedFeed = (address, update) => writeFeed(address, update);
 
 /** Replay one page-exit UI edit only if it is still the newest edit. The get
  * and conditional put share a readwrite transaction, so another tab cannot

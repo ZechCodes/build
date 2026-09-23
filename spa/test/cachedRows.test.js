@@ -59,6 +59,23 @@ describe("patching a row a press has moved", () => {
     expect((await heldFeed()).items[0].muted).toBe(false);
   });
 
+  it("reverts only the pressed field after a newer row push and board read", async () => {
+    const watched = branch({ muted: false, agents: [{ id: "ag-1", watched: true }] });
+    await writeCached(feedAddress, { items: [watched] });
+    await writeCached(rowAddress("run-1"), watched);
+
+    const undo = await patchFeedRow("dev-1", feedRowTarget(watched), { muted: true });
+    await writeCached(feedAddress, { items: [branch({ muted: false, agents: [{ id: "ag-1", watched: false }] })] },
+      { observedFeedRows: true });
+    await writeCached(rowAddress("run-1"), branch({ muted: true, agents: [{ id: "ag-1", watched: false }] }));
+    await undo();
+
+    expect((await heldFeed()).items[0].agents[0].watched).toBe(false);
+    expect((await heldFeed()).items[0].muted).toBe(false);
+    expect((await heldRow("run-1")).agents[0].watched).toBe(false);
+    expect((await heldRow("run-1")).muted).toBe(false);
+  });
+
   // A bare checkout nobody has claimed holds no conversation, so it has no
   // entity and no record of its own. The board list is the only place it is.
   it("patches a row that names no entity in the board list alone", async () => {

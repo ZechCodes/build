@@ -1,6 +1,82 @@
 use super::*;
 use crate::update::{Release, UpdateBackend, UpdateConfig, UpdateService};
 use async_trait::async_trait;
+use tokio::sync::Notify;
+
+struct PausedLaunchBackend {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl UpdateBackend for PausedLaunchBackend {
+    async fn latest(&self) -> Result<Release, String> {
+        Ok(Release {
+            version: "0.3.0".into(),
+            tag: "bridge-v0.3.0".into(),
+            published_at: None,
+        })
+    }
+
+    async fn install(&self, release: &Release, attempt_id: &str) -> Result<(), String> {
+        self.launch(release, attempt_id).await
+    }
+
+    async fn launch(&self, _release: &Release, _attempt_id: &str) -> Result<(), String> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        Err("helper launch failed before ownership".into())
+    }
+}
+
+#[tokio::test]
+async fn idle_handoff_blocks_real_rpc_until_failed_launch_reopens_admission() {
+    let (dir, repo) = init_repo();
+    let backend = Arc::new(PausedLaunchBackend {
+        entered: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    });
+    let service = Arc::new(
+        UpdateService::new(
+            UpdateConfig {
+                status_path: dir.path().join("store/bridge-update-status.json"),
+                result_path: dir.path().join("updates/result.json"),
+                running_version: "0.2.0".into(),
+                platform: "linux-x86_64".into(),
+                development_build: false,
+                check_interval: Duration::from_secs(24 * 60 * 60),
+            },
+            backend.clone(),
+        )
+        .unwrap(),
+    );
+    let state = qa_state(&repo, dir.path())
+        .with_update_service(service.clone())
+        .shared();
+    let handler = AppState::handler(state);
+    service.check().await.unwrap();
+    service
+        .install(crate::update::InstallWhen::Idle, true)
+        .await
+        .unwrap();
+    let ticking = tokio::spawn({
+        let service = service.clone();
+        async move { service.tick(false).await }
+    });
+    backend.entered.notified().await;
+
+    let parent = dir.path().join("new-projects");
+    let request = json!({ "name": "during-handoff", "parent": parent });
+    let (sender, _, _) = SessionSender::observable("update-handoff");
+    let blocked = handler.call(sender.clone(), req("project.create", request.clone()));
+    assert_eq!(blocked["error_code"], "busy", "{blocked}");
+    assert!(!parent.join("during-handoff").exists());
+
+    backend.release.notify_one();
+    assert!(ticking.await.unwrap().is_err());
+    let admitted = handler.call(sender, req("project.create", request));
+    assert_eq!(admitted["ok"], true, "{admitted}");
+}
 
 struct ReleaseBackend;
 

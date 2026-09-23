@@ -1,6 +1,6 @@
 # Bridge updates
 
-The device settings page reads a cached bridge status. Wire 1.17.0 adds
+The device settings page reads a cached bridge status. Wire 1.18.0 adds
 `bridge.update_status`, `bridge.check_update`, and
 `bridge.install_update {"when":"now"|"idle"}`. Each returns the status; subsequent
 changes arrive as an event with `type: "bridge.update_status"` and the status
@@ -18,8 +18,12 @@ have an available release. A successful metadata check does not clear the
 previous installation error.
 
 An idle installation waits for work already running or queued on this bridge.
-It does not reserve the device or prevent new work. Scheduling survives daemon
-restart. Checks run daily, with an explicit check available in settings.
+Scheduling and downloading leave the device open to new work. At the final
+idle handoff, the bridge atomically closes admission to new RPC, MCP, and queued
+agent work until the helper stops it. A conclusive launch failure reopens
+admission; an uncertain launch keeps the attempt reserved for recovery. Status
+requests remain available. Scheduling survives daemon restart. Checks run
+daily, with an explicit check available in settings.
 
 ## Installation boundary
 
@@ -39,7 +43,13 @@ identity, then the archive digest and contents. There is no unsigned fallback.
 
 The copied helper runs in its own systemd user job or launchd job. It survives
 the bridge service stopping and owns binary/store backup, replacement, health
-checking, and rollback. Its outcome lives outside the restored store so a
+checking, and rollback. A launcher error does not prove the helper failed to
+start: the active attempt remains reserved, and the running bridge retries
+recovery until the helper records a terminal outcome. Helper and backup files,
+their directory entries, and install-marker replacement are synced before the
+next durable phase. The helper checks the staged digest again before executing
+the version probe and checks the exact replacement bytes before installing.
+Its outcome lives outside the restored store so a
 rollback does not erase its error. The new daemon must prove startup readiness
 with the expected version and attempt identity, then remain healthy for the
 stabilization window. Its local heartbeat also requires responsive application

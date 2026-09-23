@@ -127,6 +127,19 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     frame: &Value,
     timer: &FrameTimer,
 ) -> Option<Value> {
+    let admission = state.lock().unwrap().update_admission();
+    let _lease = match admission {
+        Some(gate) => match gate.try_enter() {
+            Some(lease) => Some(lease),
+            None => {
+                return Some(json!({
+                    "ok": false,
+                    "error": "bridge update handoff in progress"
+                }))
+            }
+        },
+        None => None,
+    };
     let addressed = {
         let app = timer.lock(state);
         authenticated_mcp_owner(frame, &app.session_registry)

@@ -97,6 +97,136 @@ fn release(version: &str) -> Release {
     }
 }
 
+fn failed_result(root: &Path, id: String) {
+    let result_path = root.join("update/result.json");
+    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        result_path,
+        serde_json::to_vec(&HelperResult {
+            attempt_id: id,
+            success: false,
+            version: "1.1.0".into(),
+            error: Some("helper reported failure".into()),
+            rollback_pending: false,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn successful_idle_launcher_keeps_admission_closed_until_terminal_result() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    service.check_at(at(1)).await.unwrap();
+    service.install(InstallWhen::Idle, true).await.unwrap();
+    service.tick_at(at(1), false).await.unwrap();
+    assert!(service.admission().try_enter().is_none());
+
+    drop(service);
+    let service = fixture(dir.path(), backend, false);
+    assert!(service.admission().try_enter().is_none());
+    let gate = service.admission();
+    let waiting = gate.enter_when_open();
+    tokio::pin!(waiting);
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+
+    failed_result(dir.path(), attempt_id(dir.path()));
+    service.tick_at(at(1), false).await.unwrap();
+    let _lease = tokio::time::timeout(Duration::from_secs(1), waiting)
+        .await
+        .unwrap();
+    assert!(service.admission().try_enter().is_some());
+}
+
+#[tokio::test]
+async fn admitted_work_delays_final_idle_handoff_until_its_lease_finishes() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(FakeBackend {
+        latest: Mutex::new(Ok(release("1.1.0"))),
+        ..Default::default()
+    });
+    let service = fixture(dir.path(), backend.clone(), false);
+    service.check_at(at(1)).await.unwrap();
+    service.install(InstallWhen::Idle, true).await.unwrap();
+
+    let lease = service.admission().try_enter().unwrap();
+    assert_eq!(
+        service.tick_at(at(1), false).await.unwrap().state,
+        UpdateState::ScheduledWhenIdle
+    );
+    assert!(backend.installs.lock().unwrap().is_empty());
+
+    drop(lease);
+    assert_eq!(
+        service.tick_at(at(1), false).await.unwrap().state,
+        UpdateState::Installing
+    );
+}
+
+struct UncertainLaunchBackend {
+    active: Mutex<Option<String>>,
+}
+
+#[async_trait::async_trait]
+impl UpdateBackend for UncertainLaunchBackend {
+    async fn latest(&self) -> Result<Release, String> {
+        Ok(release("1.1.0"))
+    }
+
+    async fn install(&self, release: &Release, attempt_id: &str) -> Result<(), String> {
+        self.launch(release, attempt_id).await
+    }
+
+    async fn launch(&self, _release: &Release, attempt_id: &str) -> Result<(), String> {
+        *self.active.lock().unwrap() = Some(attempt_id.to_string());
+        Err("launcher exited after starting helper".into())
+    }
+
+    fn active_attempt(&self) -> Result<Option<String>, String> {
+        Ok(self.active.lock().unwrap().clone())
+    }
+}
+
+#[tokio::test]
+async fn uncertain_idle_launcher_keeps_attempt_and_admission_until_recovery() {
+    let dir = TempDir::new().unwrap();
+    let backend = Arc::new(UncertainLaunchBackend {
+        active: Mutex::new(None),
+    });
+    let service = UpdateService::new(
+        UpdateConfig {
+            status_path: dir.path().join("tasks/bridge-update.json"),
+            result_path: dir.path().join("update/result.json"),
+            running_version: "1.0.0".into(),
+            platform: "linux-x86_64".into(),
+            development_build: false,
+            check_interval: Duration::from_secs(24 * 60 * 60),
+        },
+        backend.clone(),
+    )
+    .unwrap();
+    service.check_at(at(1)).await.unwrap();
+    service.install(InstallWhen::Idle, true).await.unwrap();
+    assert!(service.tick_at(at(1), false).await.is_err());
+    assert_eq!(service.status().state, UpdateState::Installing);
+    assert_eq!(
+        backend.active_attempt().unwrap(),
+        Some(attempt_id(dir.path()))
+    );
+    assert!(service.admission().try_enter().is_none());
+
+    failed_result(dir.path(), attempt_id(dir.path()));
+    *backend.active.lock().unwrap() = None;
+    service.tick_at(at(1), false).await.unwrap();
+    assert_eq!(service.status().state, UpdateState::Failed);
+    assert!(service.admission().try_enter().is_some());
+}
+
 #[tokio::test]
 async fn check_persists_available_version_and_broadcasts() {
     let dir = TempDir::new().unwrap();

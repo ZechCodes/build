@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::app::AppState;
 use crate::carrier::SessionSender;
-use crate::update::{UpdateService, UpdateStatus};
+use crate::update::{AdmissionGate, UpdateService, UpdateStatus};
 
 impl AppState {
     pub fn with_update_service(mut self, updates: Arc<UpdateService>) -> Self {
@@ -17,6 +17,10 @@ impl AppState {
 
     pub fn update_service(&self) -> Option<Arc<UpdateService>> {
         self.updates.clone()
+    }
+
+    pub(in crate::app) fn update_admission(&self) -> Option<Arc<AdmissionGate>> {
+        self.updates.as_ref().map(|service| service.admission())
     }
 
     /// A scheduled install waits for every kind of active agent turn, including

@@ -412,6 +412,10 @@ impl UpdateBackend for ProductionBackend {
     fn active_attempt(&self) -> Result<Option<String>, String> {
         super::installer::active_attempt(&self.home)
     }
+
+    fn maintain(&self) -> Result<(), String> {
+        super::installer::ensure_recovery(&self.home)
+    }
 }
 
 #[cfg(test)]

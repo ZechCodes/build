@@ -122,9 +122,14 @@ pub fn create_job(
     }
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    sync_parent(&root)?;
+    let jobs = root.join("jobs");
+    fs::create_dir_all(&jobs).map_err(|e| e.to_string())?;
+    sync_parent(&jobs)?;
     let dir = root.join("jobs").join(&nonce);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    sync_parent(&dir)?;
     let uid = Command::new("id")
         .arg("-u")
         .output()
@@ -149,6 +154,8 @@ pub fn create_job(
 
 pub fn record_staged(dir: &Path) -> Result<(), String> {
     let mut job = load_job(dir)?;
+    sync_file(&job.staged_binary)?;
+    sync_parent(&job.staged_binary)?;
     job.staged_digest = super::provenance::binary_digest(&job.staged_binary)?;
     write_json(&job_file(dir), &job)
 }
@@ -158,22 +165,14 @@ pub fn active_attempt(home: &Path) -> Result<Option<String>, String> {
     match fs::read(&path) {
         Ok(bytes) => {
             let job: Job = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            let age = fs::metadata(&path)
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|modified| SystemTime::now().duration_since(modified).ok());
             let dir = job
                 .staged_binary
                 .parent()
                 .ok_or("update job has no directory")?;
-            if helper_running(dir)? {
-                return Ok(Some(job.nonce));
-            }
-            if age.is_some_and(|age| age > Duration::from_secs(2 * 60)) {
-                Ok(None)
-            } else {
-                Ok(Some(job.nonce))
-            }
+            // The manager can report failure after launching the independent
+            // helper. An unheld flock or old marker cannot prove completion.
+            let _ = helper_running(dir)?;
+            Ok(Some(job.nonce))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
@@ -248,11 +247,7 @@ pub fn heartbeat(home: &Path, running_version: &str) -> Result<(), String> {
 /// part of the bridge unit, so stopping that unit cannot stop the helper.
 pub fn launch(dir: &Path) -> Result<(), String> {
     let mut job = load_job(dir)?;
-    if job.staged_digest.len() != 64
-        || super::provenance::binary_digest(&job.staged_binary)? != job.staged_digest
-    {
-        return Err("staged bridge digest changed after verification".into());
-    }
+    verify_staged_digest(&job)?;
     super::provenance::managed_binary(&job.home, &job.installed_binary)?;
     job.running_pid = std::process::id();
     write_json(&job_file(dir), &job)?;
@@ -260,15 +255,20 @@ pub fn launch(dir: &Path) -> Result<(), String> {
     fs::copy(std::env::current_exe().map_err(|e| e.to_string())?, &helper)
         .map_err(|e| e.to_string())?;
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    sync_file(&helper)?;
+    sync_parent(&helper)?;
+    // The helper and every directory entry leading to it must survive a
+    // restart before active.json promises that recovery can launch it.
+    sync_ancestors_through(dir, &job.home)?;
     write_json(&active_path(&job.home), &job)?;
     let started = match std::env::consts::OS {
         "linux" => launch_systemd(&helper, dir, &job),
         "macos" => launch_launchd(&helper, dir, &job),
         _ => Err("unsupported bridge service manager".into()),
     };
-    if started.is_err() {
-        let _ = fs::remove_file(active_path(&job.home));
-    }
+    // Even a failed or timed-out launcher may have started the detached
+    // helper. Keep ownership and probation until its terminal result clears
+    // the active marker.
     started
 }
 
@@ -304,6 +304,8 @@ fn launch_launchd(helper: &Path, dir: &Path, job: &Job) -> Result<(), String> {
     let path = dir.join(format!("update-helper-{launch_id}.plist"));
     let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>ing.getbuild.bridge.update.{launch_id}</string><key>ProgramArguments</key><array><string>{}</string><string>update-helper</string><string>{}</string></array><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>", xml_escape(helper), xml_escape(dir));
     fs::write(&path, xml).map_err(|e| e.to_string())?;
+    sync_file(&path)?;
+    sync_parent(&path)?;
     let status = run_command(
         Command::new("launchctl")
             .arg("bootstrap")
@@ -508,6 +510,8 @@ fn install_with(
     service: &mut dyn FnMut(&str) -> Result<(), String>,
     health: &mut dyn FnMut(&Job, &Path) -> Result<(), String>,
 ) -> Result<(), TransactionFailure> {
+    let verified_binary =
+        verified_staged_snapshot(job, dir).map_err(TransactionFailure::Recovered)?;
     let old_binary = dir.join("previous-build-bridge");
     let running_binary = dir.join("running-build-bridge");
     let old_store = job
@@ -531,8 +535,9 @@ fn install_with(
     fs::copy(super::provenance::marker_path(&job.home), &old_marker)
         .map_err(|e| TransactionFailure::Recovered(e.to_string()))?;
     sync_file(&old_marker).map_err(TransactionFailure::Recovered)?;
-    verify_staged_version(&job.staged_binary, &job.version)
-        .map_err(TransactionFailure::Recovered)?;
+    // Every rollback entry must be durable before the bridge is stopped.
+    sync_parent(&old_marker).map_err(TransactionFailure::Recovered)?;
+    verify_staged_digest(job).map_err(TransactionFailure::Recovered)?;
     if let Err(error) = service("stop") {
         return match service("start") {
             Ok(()) => Err(TransactionFailure::Recovered(format!(
@@ -547,10 +552,12 @@ fn install_with(
         if job.tasks_dir.exists() {
             fs::rename(&job.tasks_dir, &old_store).map_err(|e| e.to_string())?;
             sync_parent(&old_store)?;
+            sync_tree(&old_store)?;
             copy_tree(&old_store, &job.tasks_dir)?;
             sync_parent(&job.tasks_dir)?;
         }
-        atomic_replace(&job.staged_binary, &job.installed_binary)?;
+        verify_staged_digest(job)?;
+        atomic_replace_verified(&verified_binary, &job.installed_binary, &job.staged_digest)?;
         super::provenance::write_marker(&job.home, &job.installed_binary)?;
         service("start")?;
         health(job, dir)
@@ -581,7 +588,7 @@ fn rollback_with(
 ) -> Result<(), String> {
     service("stop")?;
     atomic_replace(binary, &job.installed_binary)?;
-    fs::copy(marker, super::provenance::marker_path(&job.home)).map_err(|e| e.to_string())?;
+    super::provenance::restore_marker(&job.home, marker)?;
     if store.exists() {
         let rejected = job
             .tasks_dir
@@ -596,14 +603,87 @@ fn rollback_with(
 }
 
 fn verify_staged_version(binary: &Path, version: &str) -> Result<(), String> {
-    let output = bounded_output(
-        Command::new(binary).arg("--version"),
-        Duration::from_secs(10),
-    )?;
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    let output = bounded_version_output(&mut command, Duration::from_secs(10))
+        .map_err(|error| format!("staged bridge version probe failed: {error}"))?;
     if !output.status.success() || output.stdout != format!("build-bridge {version}\n").as_bytes() {
         return Err("staged bridge reports the wrong version".into());
     }
     Ok(())
+}
+
+fn bounded_version_output(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    // Linux can briefly reject execution while another thread's fork still
+    // holds the snapshot's writable descriptor. Only this transient errno is
+    // retried, and the probe still runs before the service is stopped.
+    let mut retries = 0;
+    let mut child = loop {
+        match command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => break child,
+            Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && retries < 4 => {
+                retries += 1;
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    wait_child(&mut child, timeout)?;
+    child.wait_with_output().map_err(|e| e.to_string())
+}
+
+fn verify_staged_digest(job: &Job) -> Result<(), String> {
+    if job.staged_digest.len() != 64
+        || super::provenance::binary_digest(&job.staged_binary)? != job.staged_digest
+    {
+        return Err("staged bridge digest changed after verification".into());
+    }
+    Ok(())
+}
+
+fn verified_staged_snapshot(job: &Job, dir: &Path) -> Result<PathBuf, String> {
+    // Check before executing any candidate code. Run the version probe from
+    // a private copy so a changing staged file cannot be installed later.
+    verify_staged_digest(job)?;
+    let snapshot = dir.join("verified-build-bridge");
+    fs::copy(&job.staged_binary, &snapshot).map_err(|e| e.to_string())?;
+    fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    sync_file(&snapshot)?;
+    sync_parent(&snapshot)?;
+    verify_binary_digest(&snapshot, &job.staged_digest)?;
+    verify_staged_digest(job)?;
+    verify_staged_version(&snapshot, &job.version)?;
+    // A script or native executable can modify its own inode while probing.
+    verify_binary_digest(&snapshot, &job.staged_digest)?;
+    verify_staged_digest(job)?;
+    Ok(snapshot)
+}
+
+fn verify_binary_digest(binary: &Path, expected: &str) -> Result<(), String> {
+    if super::provenance::binary_digest(binary)? != expected {
+        return Err("staged bridge digest changed after verification".into());
+    }
+    Ok(())
+}
+
+fn atomic_replace_verified(source: &Path, destination: &Path, digest: &str) -> Result<(), String> {
+    verify_binary_digest(source, digest)?;
+    let temporary = destination.with_extension(format!("update-{}", uuid::Uuid::new_v4()));
+    fs::copy(source, &temporary).map_err(|e| e.to_string())?;
+    fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
+    verify_binary_digest(&temporary, digest)?;
+    sync_file(&temporary)?;
+    sync_parent(&temporary)?;
+    fs::rename(&temporary, destination).map_err(|e| e.to_string())?;
+    sync_parent(destination)
 }
 
 fn atomic_replace(source: &Path, destination: &Path) -> Result<(), String> {
@@ -623,6 +703,21 @@ fn sync_parent(path: &Path) -> Result<(), String> {
     fs::File::open(parent)
         .and_then(|dir| dir.sync_all())
         .map_err(|e| e.to_string())
+}
+
+fn sync_ancestors_through(dir: &Path, home: &Path) -> Result<(), String> {
+    if dir == home {
+        return Ok(());
+    }
+    let mut ancestor = dir.parent();
+    while let Some(path) = ancestor {
+        sync_file(path)?;
+        if path == home {
+            return Ok(());
+        }
+        ancestor = path.parent();
+    }
+    Err("update job is outside home".into())
 }
 
 fn sync_file(path: &Path) -> Result<(), String> {
@@ -871,220 +966,20 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fixture(dir: &Path) -> Job {
-        let home = dir.to_path_buf();
-        fs::create_dir_all(home.join(".build")).unwrap();
-        let installed_binary = home.join("build-bridge");
-        fs::write(
-            &installed_binary,
-            b"#!/bin/sh\nprintf 'build-bridge 0.2.0\\n'\n",
-        )
-        .unwrap();
-        fs::set_permissions(&installed_binary, fs::Permissions::from_mode(0o700)).unwrap();
-        super::super::provenance::write_marker(&home, &installed_binary).unwrap();
-        let tasks_dir = home.join("tasks");
-        fs::create_dir(&tasks_dir).unwrap();
-        fs::write(tasks_dir.join("build.db"), b"old store").unwrap();
-        let staged_binary = home.join("staged-build-bridge");
-        fs::write(
-            &staged_binary,
-            b"#!/bin/sh\nprintf 'build-bridge 9.9.9\\n'\n",
-        )
-        .unwrap();
-        fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o700)).unwrap();
-        Job {
-            nonce: "attempt".into(),
-            running_pid: std::process::id(),
-            staged_digest: String::new(),
-            version: "9.9.9".into(),
-            installed_binary,
-            staged_binary,
-            tasks_dir,
-            home,
-            uid: "1".into(),
+fn sync_tree(dir: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let ty = entry.file_type().map_err(|e| e.to_string())?;
+        if ty.is_dir() {
+            sync_tree(&entry.path())?;
+        } else if ty.is_file() {
+            sync_file(&entry.path())?;
+        } else {
+            return Err("task store contains unsupported file type".into());
         }
     }
-
-    #[test]
-    fn swap_success_keeps_recoverable_original_and_updates_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let job = fixture(dir.path());
-        let mut actions = Vec::new();
-        install_with(
-            &job,
-            dir.path(),
-            &job.installed_binary,
-            &mut |action| {
-                actions.push(action.to_string());
-                Ok(())
-            },
-            &mut |job, _| {
-                assert!(fs::read_to_string(&job.installed_binary)
-                    .unwrap()
-                    .contains("9.9.9"));
-                fs::write(job.tasks_dir.join("build.db"), b"candidate store").unwrap();
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(actions, ["stop", "start"]);
-        assert_eq!(
-            fs::read(job.tasks_dir.join("build.db")).unwrap(),
-            b"candidate store"
-        );
-        assert_eq!(
-            fs::read(
-                job.tasks_dir
-                    .with_extension("bridge-update-attempt")
-                    .join("build.db")
-            )
-            .unwrap(),
-            b"old store"
-        );
-        assert!(
-            fs::read_to_string(super::super::provenance::marker_path(&job.home))
-                .unwrap()
-                .contains(&super::super::provenance::binary_digest(&job.installed_binary).unwrap())
-        );
-    }
-
-    #[test]
-    fn failed_health_restores_binary_store_and_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let job = fixture(dir.path());
-        let original_digest =
-            super::super::provenance::binary_digest(&job.installed_binary).unwrap();
-        let mut actions = Vec::new();
-        let error = install_with(
-            &job,
-            dir.path(),
-            &job.installed_binary,
-            &mut |action| {
-                actions.push(action.to_string());
-                Ok(())
-            },
-            &mut |job, _| {
-                fs::write(job.tasks_dir.join("build.db"), b"candidate store").unwrap();
-                Err("unhealthy".into())
-            },
-        )
-        .unwrap_err();
-        assert_eq!(error.message(), "unhealthy");
-        assert_eq!(actions, ["stop", "start", "stop", "start"]);
-        assert_eq!(
-            super::super::provenance::binary_digest(&job.installed_binary).unwrap(),
-            original_digest
-        );
-        assert_eq!(
-            fs::read(job.tasks_dir.join("build.db")).unwrap(),
-            b"old store"
-        );
-        assert_eq!(
-            fs::read(
-                job.tasks_dir
-                    .with_extension("rejected-update-attempt")
-                    .join("build.db")
-            )
-            .unwrap(),
-            b"candidate store"
-        );
-        assert!(
-            fs::read_to_string(super::super::provenance::marker_path(&job.home))
-                .unwrap()
-                .contains(&original_digest)
-        );
-    }
-
-    #[test]
-    fn stale_or_wrong_version_heartbeat_cannot_pass() {
-        let dir = tempfile::tempdir().unwrap();
-        let binary = dir.path().join("bridge");
-        fs::write(&binary, b"binary").unwrap();
-        let job = Job {
-            nonce: "expected".into(),
-            running_pid: std::process::id(),
-            staged_digest: String::new(),
-            version: "1.2.3".into(),
-            installed_binary: binary.clone(),
-            staged_binary: dir.path().join("staged"),
-            tasks_dir: dir.path().join("tasks"),
-            home: dir.path().into(),
-            uid: "1".into(),
-        };
-        let mut beat = Health {
-            nonce: "wrong".into(),
-            version: "1.2.3".into(),
-            pid: std::process::id(),
-            binary,
-            timestamp: now(),
-        };
-        assert!(!valid_health(&job, &beat));
-        beat.nonce = job.nonce.clone();
-        assert!(valid_health(&job, &beat));
-        beat.timestamp = 1;
-        assert!(!valid_health(&job, &beat));
-    }
-
-    #[test]
-    fn stopped_store_snapshot_is_independent() {
-        let dir = tempfile::tempdir().unwrap();
-        let source = dir.path().join("source");
-        let target = dir.path().join("target");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("build.db"), b"before").unwrap();
-        copy_tree(&source, &target).unwrap();
-        fs::write(target.join("build.db"), b"after").unwrap();
-        assert_eq!(fs::read(source.join("build.db")).unwrap(), b"before");
-    }
-
-    #[test]
-    fn manager_pid_must_match_before_any_swap() {
-        assert_eq!(parse_manager_pid("1234\n", "linux"), Some(1234));
-        assert_eq!(
-            parse_manager_pid("state = running\n    pid = 5678\n", "macos"),
-            Some(5678)
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let mut job = fixture(dir.path());
-        job.running_pid = u32::MAX;
-        assert!(install(&job, dir.path()).is_err());
-        assert!(!dir.path().join("previous-build-bridge").exists());
-        assert_eq!(
-            fs::read(job.tasks_dir.join("build.db")).unwrap(),
-            b"old store"
-        );
-    }
-
-    #[test]
-    fn launchd_stop_failure_is_only_tolerated_without_a_loaded_process() {
-        assert!(stop_failure_is_absent("stop", "macos", Some(None)));
-        assert!(!stop_failure_is_absent("stop", "macos", Some(Some(42))));
-        assert!(!stop_failure_is_absent("start", "macos", Some(None)));
-    }
-
-    #[test]
-    fn completed_job_restart_clears_own_marker_after_shared_result_was_consumed() {
-        let dir = tempfile::tempdir().unwrap();
-        let job = fixture(dir.path());
-        fs::create_dir_all(updates_dir(&job.home)).unwrap();
-        write_json(&job_file(dir.path()), &job).unwrap();
-        write_json(&active_path(&job.home), &job).unwrap();
-        fs::write(dir.path().join("completed"), b"done").unwrap();
-        assert!(!result_path(&job.home).exists());
-        let old_digest = super::super::provenance::binary_digest(&job.installed_binary).unwrap();
-        run_helper(dir.path()).unwrap();
-        assert!(!active_path(&job.home).exists());
-        assert_eq!(
-            super::super::provenance::binary_digest(&job.installed_binary).unwrap(),
-            old_digest
-        );
-        assert_eq!(
-            fs::read(job.tasks_dir.join("build.db")).unwrap(),
-            b"old store"
-        );
-    }
+    sync_file(dir)
 }
+
+#[cfg(test)]
+mod tests;

@@ -672,7 +672,27 @@ fn spawn_resume_after_restart(
                 WAIT_FOR_RELAY.as_secs()
             );
         }
-        AppState::resume_after_restart(&app, &tasks_dir, env!("CARGO_PKG_VERSION"));
+        let admission = {
+            app.lock()
+                .unwrap()
+                .update_service()
+                .map(|service| service.admission())
+        };
+        // An unfinished helper may keep the gate closed beyond the relay
+        // wait. Hold admission across the roster read so an idle handoff
+        // cannot begin between the wake and the resumed turns.
+        let lease = match admission {
+            Some(gate) => Some(gate.enter_when_open().await),
+            None => None,
+        };
+        if let Err(joined) = tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            AppState::resume_after_restart(&app, &tasks_dir, env!("CARGO_PKG_VERSION"));
+        })
+        .await
+        {
+            eprintln!("resume: startup task failed: {joined}");
+        }
     });
 }
 

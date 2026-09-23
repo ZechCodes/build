@@ -34,6 +34,10 @@ export function onBridgeUpdatesChanged(listener) {
   return () => listeners.delete(listener);
 }
 
+function advanceRevision(deviceId) {
+  revisions.set(deviceId, bridgeUpdateRevision(deviceId) + 1);
+}
+
 function announce(deviceId, status) {
   statuses.set(deviceId, status || null);
   for (const listener of [...listeners]) listener(deviceId, status || null);
@@ -47,7 +51,10 @@ function watchDevice(deviceId) {
     const record = await readCached(bridgeUpdateAddress(deviceId));
     if (watched.has(deviceId) && current === generation) announce(deviceId, record?.value);
   };
-  watched.set(deviceId, subscribeCache(bridgeUpdateAddress(deviceId), () => { void reread(); }));
+  watched.set(deviceId, subscribeCache(bridgeUpdateAddress(deviceId), () => {
+    advanceRevision(deviceId);
+    void reread();
+  }));
   void reread();
 }
 
@@ -68,7 +75,7 @@ export function trackBridgeUpdateDevices(devices) {
 
 export async function rememberBridgeUpdateStatus(deviceId, status) {
   if (!status || typeof status.running_version !== "string") return false;
-  revisions.set(deviceId, bridgeUpdateRevision(deviceId) + 1);
+  advanceRevision(deviceId);
   watchDevice(deviceId);
   await writeCached(bridgeUpdateAddress(deviceId), status);
   return true;
@@ -76,15 +83,17 @@ export async function rememberBridgeUpdateStatus(deviceId, status) {
 
 /** Unknown-method errors are the expected answer from an older bridge. */
 export async function refreshBridgeUpdateStatus(deviceId, call, isCurrent = () => true) {
+  watchDevice(deviceId);
   const revision = bridgeUpdateRevision(deviceId);
   try {
     const status = await call("bridge.update_status", {});
     if (isCurrent() && bridgeUpdateRevision(deviceId) === revision) await rememberBridgeUpdateStatus(deviceId, status);
     return status;
   } catch (error) {
-    if (isCurrent() && /unknown method|method not found/i.test(String(error?.message || ""))) {
-      watchDevice(deviceId);
-      await writeCached(bridgeUpdateAddress(deviceId), null);
+    if (/unknown method|method not found/i.test(String(error?.message || ""))) {
+      if (isCurrent() && bridgeUpdateRevision(deviceId) === revision) {
+        await writeCached(bridgeUpdateAddress(deviceId), null);
+      }
       return null;
     }
     throw error;

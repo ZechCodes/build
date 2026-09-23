@@ -1,4 +1,4 @@
-use super::{HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
+use super::{AdmissionGate, HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -29,9 +29,14 @@ pub trait UpdateBackend: Send + Sync {
         self.install(release, attempt_id).await
     }
 
-    /// Report a live helper attempt, not just a stale marker left on disk.
+    /// Report an unfinished helper attempt, including one awaiting recovery.
     fn active_attempt(&self) -> Result<Option<String>, String> {
         Ok(None)
+    }
+
+    /// Repair an update whose helper launch or execution did not finish.
+    fn maintain(&self) -> Result<(), String> {
+        Ok(())
     }
 }
 
@@ -110,6 +115,7 @@ pub struct UpdateService {
     check_in_flight: AtomicBool,
     staging: AtomicBool,
     working_agents_probe: OnceLock<BusyProbe>,
+    admission: Arc<AdmissionGate>,
     status_tx: watch::Sender<UpdateStatus>,
 }
 
@@ -142,12 +148,13 @@ impl UpdateService {
         status.platform = config.platform.clone();
         status.development_build = config.development_build;
         status.refresh_computed();
-        status.can_install &= !attempt.rollback_pending
-            && backend
-                .active_attempt()
-                .map(|active| active.is_none())
-                .unwrap_or(false);
+        let no_active_attempt = matches!(backend.active_attempt(), Ok(None));
+        let helper_may_own_bridge = status.state == UpdateState::Installing
+            || attempt.rollback_pending
+            || !no_active_attempt;
+        status.can_install &= !attempt.rollback_pending && no_active_attempt;
         let (status_tx, _) = watch::channel(status);
+        let admission = AdmissionGate::new(helper_may_own_bridge);
         Ok(Self {
             config,
             backend,
@@ -155,6 +162,7 @@ impl UpdateService {
             check_in_flight: AtomicBool::new(false),
             staging: AtomicBool::new(false),
             working_agents_probe: OnceLock::new(),
+            admission,
             status_tx,
         })
     }
@@ -165,6 +173,10 @@ impl UpdateService {
 
     pub fn subscribe(&self) -> watch::Receiver<UpdateStatus> {
         self.status_tx.subscribe()
+    }
+
+    pub fn admission(&self) -> Arc<AdmissionGate> {
+        Arc::clone(&self.admission)
     }
 
     /// Install a live activity probe once the app state is available. A probe
@@ -393,11 +405,8 @@ impl UpdateService {
             if let Err(error) = outcome {
                 let mut guard = service.transition.lock().await;
                 if guard.attempt_id.as_deref() == Some(attempt_id.as_str()) {
-                    let mut status = service.status();
-                    status.state = UpdateState::Failed;
-                    status.last_error = Some(error);
-                    *guard = AttemptMetadata::default();
-                    let _ = service.publish(status, &guard);
+                    let status = service.status();
+                    let _ = service.record_launch_error(status, &mut guard, error);
                 }
             }
             service.staging.store(false, Ordering::Release);
@@ -410,15 +419,48 @@ impl UpdateService {
         status: UpdateStatus,
         attempt: &mut AttemptMetadata,
     ) -> Result<UpdateStatus, UpdateError> {
-        let (mut status, release, attempt_id) = self.prepare_launch_locked(status, attempt)?;
+        let (status, release, attempt_id) = self.prepare_launch_locked(status, attempt)?;
         if let Err(error) = self.backend.install(&release, &attempt_id).await {
-            status.state = UpdateState::Failed;
-            status.last_error = Some(error.clone());
-            *attempt = AttemptMetadata::default();
-            self.publish(status, attempt)?;
+            self.record_launch_error(status, attempt, error.clone())?;
             return Err(UpdateError::Backend(error));
         }
         Ok(status)
+    }
+
+    fn record_launch_error(
+        &self,
+        mut status: UpdateStatus,
+        attempt: &mut AttemptMetadata,
+        error: String,
+    ) -> Result<(), UpdateError> {
+        // A launcher can report failure after it has started the helper. Its
+        // active marker owns the attempt until a terminal result or recovery.
+        let active = self.backend.active_attempt();
+        if matches!(active, Ok(None)) {
+            status.state = UpdateState::Failed;
+            *attempt = AttemptMetadata::default();
+        }
+        status.last_error = Some(error);
+        self.publish(status, attempt)?;
+        Ok(())
+    }
+
+    fn reopen_admission_if_settled(
+        &self,
+        status: &UpdateStatus,
+        attempt: &AttemptMetadata,
+    ) -> Result<(), UpdateError> {
+        if status.state != UpdateState::Installing
+            && !attempt.rollback_pending
+            && self
+                .backend
+                .active_attempt()
+                .map_err(UpdateError::Backend)?
+                .is_none()
+        {
+            self.admission.reopen();
+        }
+        Ok(())
     }
 
     fn prepare_launch_locked(
@@ -500,14 +542,18 @@ impl UpdateService {
         }
         // Agent work can start during the download. Check a fresh snapshot at
         // the final handoff rather than trusting the earlier tick argument.
-        let busy = self
-            .working_agents_probe
-            .get()
-            .map_or(working_agents, |probe| probe());
-        if busy {
+        if !self.admission.claim_idle(|| {
+            self.working_agents_probe
+                .get()
+                .map_or(working_agents, |probe| probe())
+        }) {
             return Ok(status);
         }
-        self.launch_staged_locked(status, release, attempt).await
+        let result = self.launch_staged_locked(status, release, attempt).await;
+        if self.status().state != UpdateState::Installing {
+            self.admission.reopen();
+        }
+        result
     }
 
     async fn launch_staged_locked(
@@ -538,10 +584,7 @@ impl UpdateService {
         status.state = UpdateState::Installing;
         self.publish(status.clone(), attempt)?;
         if let Err(error) = self.backend.launch(&release, &attempt_id).await {
-            status.state = UpdateState::Failed;
-            status.last_error = Some(error.clone());
-            *attempt = AttemptMetadata::default();
-            self.publish(status, attempt)?;
+            self.record_launch_error(status, attempt, error.clone())?;
             return Err(UpdateError::Backend(error));
         }
         Ok(status)
@@ -560,11 +603,13 @@ impl UpdateService {
         now: OffsetDateTime,
         working_agents: bool,
     ) -> Result<UpdateStatus, UpdateError> {
+        self.backend.maintain().map_err(UpdateError::Backend)?;
         let mut guard = self.transition.lock().await;
         let prior = self.status();
         let was_pending = guard.rollback_pending;
         self.reconcile_helper_locked(now, &mut guard)?;
         let mut status = self.status();
+        self.reopen_admission_if_settled(&status, &guard)?;
         let mut computed = status.clone();
         computed.refresh_computed();
         computed.can_install &= !guard.rollback_pending

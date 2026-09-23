@@ -3,6 +3,8 @@
 
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 pub const MARKER_NAME: &str = "installed-bridge";
@@ -58,10 +60,32 @@ pub fn binary_digest(path: &Path) -> Result<String, String> {
 pub fn write_marker(home: &Path, binary: &Path) -> Result<(), String> {
     let canonical = fs::canonicalize(binary).map_err(|e| e.to_string())?;
     let content = format!("{}\n{}\n", canonical.display(), binary_digest(&canonical)?);
+    write_marker_content(home, content.as_bytes())
+}
+
+/// Restore exactly the marker saved before the swap. The rename is durable
+/// before the old service can be restarted after rollback.
+pub fn restore_marker(home: &Path, saved: &Path) -> Result<(), String> {
+    let content = fs::read(saved).map_err(|e| e.to_string())?;
+    write_marker_content(home, &content)
+}
+
+fn write_marker_content(home: &Path, content: &[u8]) -> Result<(), String> {
     let path = marker_path(home);
     let temporary = path.with_extension("tmp");
-    fs::write(&temporary, content).map_err(|e| e.to_string())?;
-    fs::rename(temporary, path).map_err(|e| e.to_string())
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
+    file.write_all(content).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    fs::rename(&temporary, &path).map_err(|e| e.to_string())?;
+    fs::File::open(path.parent().ok_or("bridge marker has no parent")?)
+        .and_then(|parent| parent.sync_all())
+        .map_err(|e| e.to_string())
 }
 
 fn unit_runs_binary(text: &str, binary: &Path) -> bool {

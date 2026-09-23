@@ -83,6 +83,26 @@ pub(in crate::app) fn dispatch_frame(
         .cloned()
         .unwrap_or_else(|| json!({}));
 
+    // Keep a request admitted through its off-lock git work and queue drain.
+    // The idle updater can claim the bridge only between complete requests.
+    let admission = if matches!(
+        method.as_str(),
+        "ping" | "bridge.stats" | "bridge.update_status"
+    ) {
+        None
+    } else {
+        state.lock().unwrap().update_admission()
+    };
+    let _lease = match admission {
+        Some(gate) => match gate.try_enter() {
+            Some(lease) => Some(lease),
+            None => {
+                return api::reply(id, Err(ApiError::busy("bridge update handoff in progress")))
+            }
+        },
+        None => None,
+    };
+
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
         Some(outcome) => outcome.map_err(|error| {
             if error == PROJECT_DELETION_IN_PROGRESS {

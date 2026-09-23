@@ -718,6 +718,25 @@ impl AppState {
                 updates.set_working_agents_probe(probe).is_ok(),
                 "an update service belongs to one shared app state"
             );
+            let weak = Arc::downgrade(&state);
+            let resume = Arc::new(move || {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                let drain = move || {
+                    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+                    DeliveryRunner::drain(&state, &clock.frame("update.admission_reopened"));
+                };
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn_blocking(drain);
+                } else {
+                    drain();
+                }
+            });
+            assert!(
+                updates.admission().set_resume_work(resume).is_ok(),
+                "an update admission gate belongs to one shared app state"
+            );
         }
         // The flusher runs on a task of its own and never takes this mutex —
         // that is the whole reason the bus is not a field it would have to

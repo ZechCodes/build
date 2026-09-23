@@ -89,6 +89,7 @@ async function inspectDocument(width, height, options, label) {
   assert.ok(await page.locator("#waitlist form").isVisible(), `${label}: the waitlist form is reachable`);
   assert.equal(await page.locator("#waitlist button").textContent().then((text) => text.trim()), "Join the waitlist");
   assert.ok(await page.locator('footer a[href="/docs"]').count(), `${label}: the footer reaches the docs`);
+  assert.ok(await page.locator(".site-nav .cta").isVisible(), `${label}: the bar's call to action is on screen`);
   await page.screenshot({ path: path.join(output, `${label}.png`), fullPage: true });
   assert.deepEqual(errors, [], `${label}: browser errors`);
   findings.push({ label, viewport: [width, height], mode: state.mode });
@@ -141,11 +142,11 @@ async function checkAct(page, label, act, local, height) {
   await page.screenshot({ path: path.join(output, `${label}-act-${act}-${local}.png`) });
 }
 
-async function openFilm(width, height, label) {
+async function openFilm(width, height, label, query = "") {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
-  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "networkidle" });
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}${query}`, { waitUntil: "networkidle" });
   await page.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
   await page.waitForTimeout(1200);
   const state = await layout(page);
@@ -213,7 +214,7 @@ async function inspectFilm(width, height) {
 // held for a check. The label sequences Astra reproduced in round 1 run on
 // the scene's clock now.
 const SCRUBS = [
-  { name: "act 4 implement status", act: 4, selector: '[data-row-status="implement"]', steps: [[0.6, "Waiting", true], [0.8, "Working", false], [0.6, "Waiting", true]] },
+  { name: "act 4 implement status", act: 4, selector: '[data-row-status="implement"]', steps: [[0.6, "Waiting", true], [0.82, "Working", false], [0.6, "Waiting", true]] },
   { name: "act 5 implement caption", act: 5, selector: '[data-node-status="implement"]', steps: [[0.5, "Done · handoff pending"], [0.82, "Done"], [0.5, "Done · handoff pending"]] },
   { name: "act 6 hunk count", act: 6, selector: "[data-diff-add]", steps: [[0.3, "+3"], [0.8, "+4"], [0.3, "+3"]] },
   { name: "act 6 tree label", act: 6, selector: "[data-tree-label]", steps: [[0.7, "Staged"], [0.9, "Working tree"], [0.7, "Staged"], [0.5, "Working tree"]] },
@@ -251,6 +252,10 @@ async function inspectScenes(width, height) {
   await page.waitForFunction(() => window.BuildFilm.scenes[4].progress() === 1, null, { timeout: sceneTimeout() });
   const status = await readLabel(page, '[data-row-status="implement"]');
   assert.deepEqual(status, { text: "Working", waiting: false }, `${label}: act 4 finished on the clock`);
+  await checkReadingHolds(page, label);
+  await checkPhoneBeforeQuestion(page, label);
+  await checkMergeUncovered(page, label);
+  await checkClosingBeats(page, label);
   for (const { name, act, selector, steps } of SCRUBS) {
     await seek(page, act, 0.5);
     for (const [local, expected, waiting] of steps) {
@@ -263,6 +268,157 @@ async function inspectScenes(width, height) {
   assert.deepEqual(errors, [], `${label}: browser errors`);
   findings.push({ label, viewport: [width, height], mode: state.mode });
   await context.close();
+}
+
+// Round 2's review, item by item, with the wheel stopped where a visitor
+// would stop it and no sceneSeek: the scene has to get there on its own.
+async function scenePlayed(page, act) {
+  await page.waitForFunction((n) => window.BuildFilm.scenes[n].progress() === 1, act, { timeout: sceneTimeout() });
+}
+
+function panelOpacity(page, name) {
+  return page.evaluate((panel) => {
+    const element = document.querySelector(`[data-panel="${panel}"]`);
+    return element.style.visibility === "visible" ? Number(element.style.opacity) : 0;
+  }, name);
+}
+
+// Act 3's card keeps its branch and stays lifted while the visitor stays;
+// leaving plays the return. A modest overshoot during playback, still inside
+// the act, neither restarts nor cuts the scene.
+async function checkReadingHolds(page, label) {
+  await seek(page, 2, 0.5);
+  await seek(page, 3, 0.3);
+  await page.waitForFunction(() => window.BuildFilm.scenes[3].isActive(), null, { timeout: 5000 });
+  await seek(page, 3, 0.55);
+  assert.ok(await page.evaluate(() => window.BuildFilm.scenes[3].progress() > 0), `${label}: an overshoot inside act 3 keeps its scene going`);
+  await scenePlayed(page, 3);
+  await page.waitForTimeout(1500);
+  assert.equal(await opacityOf(page, "[data-branch-line]"), "1", `${label}: act 3's branch stays open while the visitor stays`);
+  await seek(page, 3, 0.95);
+  await waitForOpacity(page, "[data-branch-line]", "0");
+  await page.screenshot({ path: path.join(output, `${label}-act-3-departed.png`) });
+}
+
+// Act 4's phone is on screen before its question is asked.
+async function checkPhoneBeforeQuestion(page, label) {
+  await seek(page, 3, 0.5);
+  await seek(page, 4, 0.23);
+  await page.waitForFunction(() => window.BuildFilm.scenes[4].isActive(), null, { timeout: 5000 });
+  const phone = await page.evaluate(() => window.BuildFilm.pose.phone.opacity);
+  assert.ok(phone > 0.99, `${label}: the phone is in place as act 4's scene starts (${phone})`);
+  await page.screenshot({ path: path.join(output, `${label}-act-4-question.png`) });
+  await scenePlayed(page, 4);
+  await page.screenshot({ path: path.join(output, `${label}-act-4-finished.png`) });
+}
+
+// Act 7's approved panel gives way to the merge on the clock, and comes back
+// on a replay.
+async function checkMergeUncovered(page, label) {
+  await seek(page, 6, 0.5);
+  await seek(page, 7, 0.6);
+  await page.waitForFunction(() => window.BuildFilm.scenes[7].isActive(), null, { timeout: 5000 });
+  await scenePlayed(page, 7);
+  await page.waitForTimeout(300);
+  assert.equal(await panelOpacity(page, "review"), 0, `${label}: the approved panel is off the merge`);
+  const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
+  assert.match(String(screens.tablet), /merged/, `${label}: the tablet shows the merge`);
+  await page.screenshot({ path: path.join(output, `${label}-act-7-merged.png`) });
+  await seek(page, 6, 0.5);
+  await seek(page, 7, 0.6);
+  await page.waitForFunction(() => window.BuildFilm.scenes[7].isActive(), null, { timeout: 5000 });
+  assert.ok(await panelOpacity(page, "review") > 0.5, `${label}: a replay brings the review panel back`);
+}
+
+// Act 8's two beats: a jump from an early act, or a quick crossing, ends on
+// one beat, never both.
+async function checkClosingBeats(page, label) {
+  const beats = () => page.evaluate(() => ["a", "b"].map((beat) => Number(getComputedStyle(document.querySelector(`[data-beat="${beat}"]`)).opacity)));
+  await seek(page, 2, 0.5);
+  await seek(page, 8, 0.9);
+  await page.waitForTimeout(1500);
+  assert.deepEqual(await beats(), [0, 1], `${label}: a jump to 8/.9 shows only the second beat`);
+  await seek(page, 8, 0.3);
+  await page.waitForTimeout(1500);
+  assert.deepEqual(await beats(), [1, 0], `${label}: back to 8/.3 shows only the first beat`);
+  await seek(page, 8, 0.7);
+  await seek(page, 8, 0.4);
+  await seek(page, 8, 0.8);
+  await page.waitForTimeout(1500);
+  assert.deepEqual(await beats(), [0, 1], `${label}: quick crossings end on one beat`);
+  await page.screenshot({ path: path.join(output, `${label}-act-8.png`) });
+}
+
+// The first paint is already the film's layout: the hero's copy and call to
+// action readable and on top, the cutout where the laptop will be, and no
+// document grid first. A film that never starts gives the page back.
+async function inspectStartup(width, height) {
+  const label = `${width}x${height}-startup`;
+  const context = await browser.newContext({ viewport: { width, height } });
+  const page = await context.newPage();
+  const errors = watchErrors(page);
+  const started = Date.now();
+  await page.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await page.waitForSelector("#act-1-title", { state: "attached" });
+  for (const at of [100, 400, 1000, 2000]) {
+    await page.waitForTimeout(Math.max(0, at - (Date.now() - started)));
+    const frame = await page.evaluate(() => {
+      const title = document.querySelector("#act-1-title").getBoundingClientRect();
+      const cta = document.querySelector("#act-1 .actions .cta").getBoundingClientRect();
+      const hit = document.elementFromPoint(cta.x + cta.width / 2, cta.y + cta.height / 2);
+      return {
+        mode: document.documentElement.dataset.mode,
+        titleOpacity: getComputedStyle(document.querySelector("#act-1-title")).opacity,
+        titleLeft: title.left,
+        ctaOnTop: !!hit?.closest("#act-1 .actions .cta"),
+        grid: getComputedStyle(document.querySelector("#act-1 .act__inner")).display,
+      };
+    });
+    assert.equal(frame.mode, "film", `${label} ${at}ms: the film's layout from the first paint`);
+    assert.equal(frame.titleOpacity, "1", `${label} ${at}ms: the hero headline is readable`);
+    assert.ok(frame.ctaOnTop, `${label} ${at}ms: the call to action takes the pointer`);
+    assert.equal(frame.grid, "block", `${label} ${at}ms: no document grid`);
+    await page.screenshot({ path: path.join(output, `${label}-${at}ms.png`) });
+  }
+  assert.deepEqual(errors, [], `${label}: browser errors`);
+  await context.close();
+
+  // The film's module blocked: the boot's deadline hands the page back.
+  const blocked = await browser.newContext({ viewport: { width, height } });
+  const blockedPage = await blocked.newPage();
+  await blockedPage.route(/\/_astro\/.*\.js$/, (route) => route.abort());
+  await blockedPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await blockedPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
+  assert.ok(await blockedPage.locator("#act-8 form").isVisible() || await blockedPage.locator("#act-8").count(), `${label}: the document is back`);
+  await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
+  assert.ok(await blockedPage.locator("#act-4-title").isVisible(), `${label}: a later act is readable after a blocked film`);
+  await blocked.close();
+  findings.push({ label, viewport: [width, height], mode: "film" });
+}
+
+// The bar: on screen with its call to action in both variants; the hero-only
+// variant leaves after the hero without moving the story.
+async function inspectNav(width, height) {
+  for (const variant of ["persistent", "hero"]) {
+    const label = `${width}x${height}-nav-${variant}`;
+    const { context, page, errors, state } = await openFilm(width, height, label, variant === "hero" ? "&nav=hero" : "");
+    const nav = page.locator(".site-nav");
+    assert.ok(await nav.isVisible(), `${label}: the bar is there on the hero`);
+    const before = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
+    await seek(page, 4, 0.5);
+    await page.waitForTimeout(500);
+    const after = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
+    assert.equal(before, after, `${label}: the story sits in the same place`);
+    assert.equal(await nav.isVisible(), variant === "persistent", `${label}: the bar in act 4`);
+    await page.screenshot({ path: path.join(output, `${label}-act-4.png`) });
+    if (variant === "persistent") {
+      await page.locator(".site-nav .cta").click();
+      await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: 10_000 });
+    }
+    assert.deepEqual(errors, [], `${label}: browser errors`);
+    findings.push({ label, viewport: [width, height], mode: state.mode });
+    await context.close();
+  }
 }
 
 async function readLabel(page, selector) {
@@ -297,6 +453,8 @@ try {
   for (const [width, height] of FILM_VIEWPORTS) await inspectFilm(width, height);
   await inspectResize([1440, 900], [1024, 768]);
   await inspectScenes(1440, 900);
+  await inspectStartup(1440, 900);
+  await inspectNav(1440, 900);
   await fs.writeFile(path.join(output, "browser-results.json"), JSON.stringify(findings, null, 2));
   console.log(`Passed ${findings.length} browser profiles. Artifacts: ${output}`);
 } finally {

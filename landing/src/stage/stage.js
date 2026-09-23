@@ -21,6 +21,7 @@ import {
 } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DEVICE_CONTRACT } from "./device-contract.js";
+import { applyDeviceFinish } from "./finish.js";
 import {
   STAGE_CAMERA,
   deviceAnchor,
@@ -81,6 +82,7 @@ export function createDeviceScreenMaterial() {
 export function cloneDeviceSurfaceMaterial(material, maximumAnisotropy) {
   const clone = material.clone();
   if (clone.map) clone.map.anisotropy = Math.min(MAX_ANISOTROPY, maximumAnisotropy);
+  applyDeviceFinish(clone);
   if (clone.name === "FrontGlass") {
     clone.metalness = 0;
     clone.roughness = 0.3;

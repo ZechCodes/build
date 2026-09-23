@@ -89,21 +89,36 @@ const testStepLabel = "Test · runs archive.test.ts";
     <meta name="twitter:title" content={socialTitle} />
     <meta name="twitter:description" content={socialDescription} />
     <meta name="twitter:image" content={socialImage} />
+    <script src="/landing/generated/film-boot.js" is:inline></script>
     <script src="../scripts/main.js"></script>
     <script type="module" src="/landing/generated/waitlist-boot.js" is:inline></script>
   </head>
   <body>
     <a class="skip-link" href="#act-1">Skip to the story</a>
 
+    <!-- The bar reserves its height in both variants: "persistent" stays,
+         "hero" leaves once the hero's copy does (?nav=hero to compare), and
+         the story is laid out the same either way. -->
+    <header class="site-nav" data-nav="persistent">
+      <div class="site-nav__inner">
+        <a class="site-nav__brand" href="/"><img src="/landing/brand-mark.svg" alt="" width="20" height="20" />Build</a>
+        <nav aria-label="Primary">
+          <a href="/docs">Docs</a>
+          <a href={repositoryUrlSlot} title={repositoryTitle}>GitHub</a>
+          <a class="cta cta--small" href="#act-8">Join the waitlist</a>
+        </nav>
+      </div>
+    </header>
+
     <main class="story" data-story>
       <div class="film" data-film>
-      <!-- The device stage and the hero poster it takes over from. Both are
-           display: none until the entry script decides the visitor gets the
-           film; the document reads without them. -->
+      <!-- The device stage and the hero cutout it takes over from. Both are
+           display: none until film-boot.js decides the visitor gets the film;
+           the document reads without them. The cutout is a capture of the
+           live stage at the hero pose with the lid where the welcome starts
+           (web/capture-hero-entrance.mjs), placed by the same numbers. -->
       <canvas class="stage" data-stage aria-hidden="true"></canvas>
-      <picture class="hero-poster" data-hero-poster aria-hidden="true">
-        <img src={poster(1).desktop} width="1440" height="900" alt="" decoding="async" />
-      </picture>
+      <img class="hero-poster" data-hero-poster src="/landing/assets/devices/hero-entrance.webp" alt="" aria-hidden="true" decoding="sync" fetchpriority="high" />
       <Film />
       <!-- Act 1 -->
       <section class="act" id="act-1" data-act="1" aria-labelledby="act-1-title">

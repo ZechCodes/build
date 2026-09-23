@@ -34,6 +34,7 @@ const SCRUB_SECONDS = 0.7;
 const PRELOAD_LOOKAHEAD = 130;
 const LID_ENTRANCE_START = 0.7;
 const LID_ENTRANCE_SECONDS = 0.9;
+const HANDOVER_SECONDS = 0.25;
 
 function departPose(deviceName, settled) {
   return { ...entrancePose(deviceName, settled), x: settled.x + 14, y: settled.y + 6 };
@@ -69,27 +70,48 @@ function hideCopy(copy, instant, toY) {
 function copyGates(gates, acts) {
   for (const act of ACTS) {
     const copy = { items: copyItems(acts[act.id - 1]), tween: null };
-    gates.add(at(act.id, act.id === 1 ? 0 : COPY_IN), (instant) => showCopy(copy, instant), () => hideCopy(copy, false, 28));
+    // The hero's copy is on the page from the first paint; the gate at 0
+    // only has to take it back when the visitor returns.
+    gates.add(at(act.id, act.id === 1 ? 0 : COPY_IN), (instant) => showCopy(copy, instant || act.id === 1), () => hideCopy(copy, false, 28));
     if (act.id !== 8) gates.add(at(act.id, COPY_OUT), (instant) => hideCopy(copy, instant, -18), () => showCopy(copy, false, -18));
   }
-  // Act 8's two beats over one pose: the first comes with the act, the
-  // second replaces it further in.
-  const beatA = query(acts[7], '[data-beat="a"]');
-  const beatB = query(acts[7], '[data-beat="b"]');
-  const enter = gsap.timeline({ paused: true })
-    .fromTo(beatA, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: "power2.out" });
-  const swap = gsap.timeline({ paused: true })
-    .to(beatA, { autoAlpha: 0, y: -18, duration: 0.35, ease: "power2.in" })
-    .fromTo(beatB, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.7, ease: "power2.out" });
-  gates.add(at(8, COPY_IN), (instant) => (instant ? enter.progress(1) : enter.play()), () => enter.reverse());
-  gates.add(at(8, 0.6), (instant) => (instant ? swap.progress(1) : swap.play()), () => swap.reverse());
+  beatGates(gates, acts[7]);
+}
+
+// Act 8's two beats over one pose: the first comes with the act, the second
+// replaces it further in. One owner: each gate names which beat should be on
+// screen and both beats go there from wherever they are, so a quick crossing
+// or a jump cannot leave an earlier tween to finish on top of a later one.
+function beatGates(gates, act) {
+  const beats = { a: query(act, '[data-beat="a"]'), b: query(act, '[data-beat="b"]') };
+  const tweens = new Map();
+  const showBeat = (wanted, instant) => {
+    for (const [name, element] of Object.entries(beats)) {
+      tweens.get(name)?.kill();
+      const on = name === wanted;
+      const visible = gsap.getProperty(element, "autoAlpha") > 0.001;
+      if (instant) {
+        tweens.set(name, gsap.set(element, { autoAlpha: on ? 1 : 0, y: 0 }));
+      } else if (on) {
+        tweens.set(name, gsap.fromTo(element, { autoAlpha: visible ? gsap.getProperty(element, "autoAlpha") : 0, y: visible ? gsap.getProperty(element, "y") : 28 }, { autoAlpha: 1, y: 0, duration: 0.7, delay: wanted === "b" ? 0.3 : 0, ease: "power2.out" }));
+      } else {
+        tweens.set(name, gsap.to(element, { autoAlpha: 0, y: -18, duration: 0.35, ease: "power2.in" }));
+      }
+    }
+  };
+  gates.add(at(8, COPY_IN), (instant) => showBeat("a", instant), () => showBeat(null, false));
+  gates.add(at(8, 0.6), (instant) => showBeat("b", instant), () => showBeat("a", false));
 }
 
 // A scene plays from its start each time its act arrives, and rewinds when
 // the playhead leaves the act backwards, so scrolling back shows an act as
-// it finished and scrolling on again shows it happen.
-function sceneGates(gates, scenes) {
+// it finished and scrolling on again shows it happen. A close-up that lifted
+// stays up until the act's copy leaves; then the scene is brought to its end,
+// if the visitor left early, and the departure plays. Crossing back plays the
+// departure in reverse.
+function sceneGates(gates, scenes, departures) {
   for (const [actId, scene] of Object.entries(scenes)) {
+    const departure = departures[actId];
     gates.add(at(Number(actId), SCENES[actId].arrive), (instant) => {
       scene.pause();
       if (instant) {
@@ -99,9 +121,17 @@ function sceneGates(gates, scenes) {
         scene.play();
       }
     }, () => {
+      departure?.pause().progress(0);
       scene.pause();
       scene.time(0);
     });
+    if (!departure) continue;
+    gates.add(at(Number(actId), COPY_OUT), (instant) => {
+      scene.pause();
+      scene.progress(1);
+      if (instant) departure.pause().progress(1);
+      else departure.play(0);
+    }, () => departure.reverse());
   }
 }
 
@@ -120,7 +150,9 @@ function deviceTimeline(tl, pose) {
   move("laptop", laptop[8], at(7, 0.9), at(8, 0.35));
 
   const phone = POSES.phone;
-  move("phone", phone[4], at(4, 0.3), at(4, 0.45), "power3.out");
+  // In place as the act arrives, so its question is on screen before the
+  // scene asks it.
+  move("phone", phone[4], at(4, 0.04), at(4, 0.2), "power3.out");
   move("phone", departPose("phone", phone[4]), at(4, 0.85), at(4, 1), "power2.in");
   tl.set(pose.phone, fullPose(entrancePose("phone", phone[8])), at(8, 0));
   move("phone", phone[8], at(8, 0.05), at(8, 0.35), "power3.out");
@@ -166,6 +198,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     stage = createDeviceStage({ canvas });
   } catch (error) {
     delete root.dataset.mode;
+    delete root.dataset.stage;
     throw error;
   }
 
@@ -204,8 +237,15 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   deviceTimeline(tl, pose);
   overlays.addTo(tl);
   const scenes = overlays.scenes(sceneScreens);
+  const departures = overlays.departures();
   copyGates(gates, acts);
-  sceneGates(gates, scenes);
+  sceneGates(gates, scenes, departures);
+  // The bar's hero-only variant leaves with the hero's copy. The persistent
+  // one ignores the mark.
+  const nav = document.querySelector(".site-nav");
+  if (nav) {
+    gates.add(at(1, COPY_OUT), () => { nav.dataset.pastHero = ""; }, () => { delete nav.dataset.pastHero; });
+  }
   // The scrub maps scroll onto the timeline's whole duration; the last beat
   // does not run to the end of act 8, so hold the clock open to it.
   tl.set({}, {}, TOTAL_TRAVEL);
@@ -251,18 +291,22 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     ScrollTrigger.removeEventListener("refresh", sync);
     tl.scrollTrigger.kill();
     tl.kill();
-    for (const scene of Object.values(scenes)) scene.kill();
+    for (const scene of [...Object.values(scenes), ...Object.values(departures)]) scene.kill();
     gsap.set(acts.flatMap((act) => [...copyItems(act), ...act.querySelectorAll("[data-beat], .captions li")]), { clearProps: "all" });
     overlays.dispose();
     stage.dispose();
     delete root.dataset.mode;
+    delete root.dataset.stage;
     delete film.dataset.act;
+    if (nav) delete nav.dataset.pastHero;
     acts[act - 1].scrollIntoView({ block: "start", behavior: "instant" });
   }
 
   // The lid does the last quarter as a welcome: it plays once, on the first
-  // real frame, only when the page opens at the top. A restored scroll
-  // position skips it, and the poster is on screen until the frame exists.
+  // real frame, only when the page opens at the top. Until that frame exists
+  // the hero cutout holds its place: a capture of this stage at this pose,
+  // lid where the welcome starts, so the hand-over is a crossfade between two
+  // pictures of the same thing. A restored scroll position skips the welcome.
   function showFirstFrame() {
     if (firstFrameShown) return;
     firstFrameShown = true;
@@ -272,24 +316,25 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
       return;
     }
     stage.setQualityScale(renderQualityScale(cost));
-    root.dataset.stage = "ready";
-    gsap.to(heroPoster, { autoAlpha: 0, duration: 0.45, ease: "power1.out" });
     // A page that opens mid-film has its copy and scenes where the gates put
-    // them on the first frame; only the top gets the welcome.
-    const copy = query(acts[0], ".act__copy");
+    // them on the first frame; only the top gets the welcome. The copy is
+    // already on the page and stays put.
     const opening = tl.scrollTrigger.progress * TOTAL_TRAVEL < at(1, 0.15);
     if (opening) {
       pose.laptop.lidOpen = LID_ENTRANCE_START;
-      gsap.to(pose.laptop, { lidOpen: 1, duration: LID_ENTRANCE_SECONDS, ease: "power3.out" });
-      gsap.fromTo(copy.children, { autoAlpha: 0, y: 24 }, {
-        autoAlpha: 1, y: 0, duration: 0.8, stagger: 0.08, ease: "power2.out", delay: 0.15, overwrite: "auto",
-      });
+      draw();
     }
+    root.dataset.stage = "ready";
+    const handover = gsap.timeline();
+    handover.fromTo(canvas, { autoAlpha: 0 }, { autoAlpha: 1, duration: HANDOVER_SECONDS, ease: "none" }, 0);
+    handover.to(heroPoster, { autoAlpha: 0, duration: HANDOVER_SECONDS, ease: "none" }, 0);
+    if (opening) handover.to(pose.laptop, { lidOpen: 1, duration: LID_ENTRANCE_SECONDS, ease: "power3.out" }, HANDOVER_SECONDS);
   }
 
-  // "See how it works" and "Join the waitlist" point at acts; inside the pin
-  // an anchor jump lands nowhere useful, so they scroll the film instead.
-  film.addEventListener("click", (event) => {
+  // "See how it works" and "Join the waitlist" point at acts, in the film and
+  // in the bar; inside the pin an anchor jump lands nowhere useful, so they
+  // scroll the film instead.
+  document.addEventListener("click", (event) => {
     const anchor = event.target.closest('a[href^="#act-"]');
     if (!anchor || stopped) return;
     const actId = Number(anchor.getAttribute("href").slice(5));

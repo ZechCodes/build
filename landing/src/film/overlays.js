@@ -4,7 +4,9 @@
 // a panel that matches the fixture under it is nothing to look at. What a
 // person reads (a lift, typing, a card moving, a commit, an approval) is a
 // scene: its own timeline in seconds, played once the act has arrived.
-// update() turns each panel's state into a matrix3d.
+// A close-up that lifted to reading size stays up while the visitor stays in
+// the act; its return is a departure, played on the clock as the act's copy
+// leaves. update() turns each panel's state into a matrix3d.
 import gsap from "gsap";
 import { SCENES, TEXTURE_SIZES, at, sceneClock, span } from "./acts.js";
 import { flatQuad, panelTransform } from "../stage/overlay.js";
@@ -25,7 +27,9 @@ function readPanel(element) {
     width,
     height,
     flat: flat ? { fx: flat[0], fy: flat[1], fw: flat[2] } : null,
-    state: { visible: 0, lift: 0, x, y },
+    // `visible` is the scroll's; `shown` is the scene's, for a panel that
+    // must give way to the display under it before the act is over.
+    state: { visible: 0, shown: 1, lift: 0, x, y },
   };
 }
 
@@ -163,7 +167,7 @@ function captionBeats(tl, film, { at, span }) {
 }
 
 // Act 3: the card lifts out of Ready, gets its assignee, moves to In progress
-// with its branch, and is back in the board before the laptop moves on.
+// with its branch, and holds there, readable, until the act is left.
 function issueBeats(tl, panels, { at, span }) {
   const issue = panels.issue;
   const hole = panels.hole;
@@ -182,8 +186,13 @@ function issueBeats(tl, panels, { at, span }) {
   hide(tl, ready, at(3, 0.5), at(3, 0.55));
   show(tl, progress, at(3, 0.53), at(3, 0.6));
   tl.to(branch, { autoAlpha: 1, height: "auto", duration: span(3, 0.58, 0.68), ease: "power2.out" }, at(3, 0.58));
-  tl.to(branch, { autoAlpha: 0, height: 0, duration: span(3, 0.72, 0.76), ease: "power2.in" }, at(3, 0.72));
-  tl.to(issue.state, { lift: 0, x: 892, y: 362, duration: span(3, 0.74, 0.85), ease: "power3.inOut" }, at(3, 0.74));
+}
+
+// Leaving act 3: the branch folds away and the card drops into In progress.
+function issueDeparture(tl, panels) {
+  const branch = panels.issue.element.querySelector("[data-branch-line]");
+  tl.to(branch, { autoAlpha: 0, height: 0, duration: 0.3, ease: "power2.in" }, 0);
+  tl.to(panels.issue.state, { lift: 0, x: 892, y: 362, duration: 0.8, ease: "power3.inOut" }, 0.15);
 }
 
 // Act 4: two more agents join, Implement waits on a question the phone
@@ -198,10 +207,12 @@ function teamBeats(tl, panels, { at, span }, screens) {
   tl.to(rows[1], { autoAlpha: 1, x: 0, duration: span(4, 0.22, 0.3), ease: "power3.out" }, at(4, 0.22));
   tl.to(rows[2], { autoAlpha: 1, x: 0, duration: span(4, 0.32, 0.4), ease: "power3.out" }, at(4, 0.32));
   tl.to(counter, { value: 3, duration: span(4, 0.22, 0.4), snap: "value", onUpdate: () => { count.textContent = String(counter.value); } }, at(4, 0.22));
-  flip(tl, status, at(4, 0.5), { text: "Waiting", className: "waiting" });
-  screenCue(tl, screens, 4, at(4, 0.64), "phone", "ui03-answer-iphone");
-  screenCue(tl, screens, 4, at(4, 0.78), "phone", "ui03-resumed-iphone");
-  flip(tl, status, at(4, 0.78), { text: "Working", className: "waiting", off: true });
+  // The phone is in place before the scene starts; the question holds on it
+  // for two seconds before the answer.
+  flip(tl, status, at(4, 0.45), { text: "Waiting", className: "waiting" });
+  screenCue(tl, screens, 4, at(4, 0.66), "phone", "ui03-answer-iphone");
+  screenCue(tl, screens, 4, at(4, 0.8), "phone", "ui03-resumed-iphone");
+  flip(tl, status, at(4, 0.8), { text: "Working", className: "waiting", off: true });
 }
 
 // The builder's canvas, in the panel's own pixels: nodes are 150 wide on a
@@ -280,7 +291,10 @@ function builderBeats(tl, panels, { at, span }) {
   flip(tl, status("gate"), at(5, 0.76), { text: "Waiting for you" });
   flip(tl, node("gate"), at(5, 0.76), { className: "waiting" });
   tl.to(caption, { autoAlpha: 1, y: 0, duration: span(5, 0.8, 0.85), ease: "power2.out" }, at(5, 0.8));
-  tl.to(builder.state, { lift: 0, duration: span(5, 0.88, 1), ease: "power3.inOut" }, at(5, 0.88));
+}
+
+function lowerDeparture(panel) {
+  return (tl) => tl.to(panel.state, { lift: 0, duration: 0.9, ease: "power3.inOut" }, 0);
 }
 
 // Act 6: gutter highlights, author chips, one line added to the diff (the
@@ -333,12 +347,12 @@ function gitBeats(tl, panels, { at, span }) {
   flip(tl, treeCount, at(6, 0.79), { text: "0" });
   tl.to(changedFiles, { autoAlpha: 0, height: 0, paddingTop: 0, paddingBottom: 0, duration: span(6, 0.79, 0.83), ease: "power2.in" }, at(6, 0.79));
   show(tl, cleanTree, at(6, 0.82), at(6, 0.85));
-  tl.to(git.state, { lift: 0, duration: span(6, 0.87, 1), ease: "power3.inOut" }, at(6, 0.87));
 }
 
 // Act 7: the triage lifts out to reading size, narrows to what needs a
 // person, opens the finding with its diff and evidence, holds, then a person
-// approves and the displays show the merge.
+// approves, the panel settles back onto the tablet, the displays show the
+// merge and the panel gives way to it.
 function reviewBeats(tl, panels, { at, span }, screens) {
   const review = panels.review;
   const root = review.element;
@@ -357,7 +371,7 @@ function reviewBeats(tl, panels, { at, span }, screens) {
   tl.to([row("verified"), row("failed")], { autoAlpha: 0, height: 0, marginTop: 0, duration: span(7, 0.37, 0.45), ease: "power2.inOut" }, at(7, 0.37));
   tl.to(row("rest"), { autoAlpha: 1, height: "auto", duration: span(7, 0.41, 0.48), ease: "power2.out" }, at(7, 0.41));
   tl.to(finding, { height: "auto", autoAlpha: 1, duration: span(7, 0.45, 0.55), ease: "power2.out" }, at(7, 0.45));
-  // .55 to .66: the reading hold.
+  // .55 to .66, and the scene's hold after .6: the reading time.
   screenCue(tl, screens, 7, at(7, 0.65), "tablet", "ui05-approval-ipad");
   tl.to(approval, { autoAlpha: 1, duration: span(7, 0.66, 0.69), ease: "power2.out" }, at(7, 0.66));
   press(tl, approveButton, at(7, 0.7), at(7, 0.73));
@@ -367,6 +381,7 @@ function reviewBeats(tl, panels, { at, span }, screens) {
   tl.to(review.state, { lift: 0, duration: span(7, 0.78, 0.82), ease: "power3.inOut" }, at(7, 0.78));
   screenCue(tl, screens, 7, at(7, 0.8), "laptop", "ui05-merged-macbook");
   screenCue(tl, screens, 7, at(7, 0.82), "tablet", "ui05-merged-ipad");
+  tl.fromTo(review.state, { shown: 1 }, { shown: 0, duration: span(7, 0.82, 0.86), ease: "power2.in", immediateRender: false }, at(7, 0.82));
 }
 
 const SCENE_BEATS = {
@@ -377,6 +392,12 @@ const SCENE_BEATS = {
   5: (tl, panels, clock) => builderBeats(tl, panels, clock),
   6: (tl, panels, clock) => gitBeats(tl, panels, clock),
   7: (tl, panels, clock, screens) => reviewBeats(tl, panels, clock, screens),
+};
+
+const DEPARTURES = {
+  3: (tl, panels) => issueDeparture(tl, panels),
+  5: (tl, panels) => lowerDeparture(panels.builder)(tl),
+  6: (tl, panels) => lowerDeparture(panels.git)(tl),
 };
 
 export function createOverlays({ film, stage, pose }) {
@@ -390,7 +411,8 @@ export function createOverlays({ film, stage, pose }) {
     const viewport = { width: film.clientWidth, height: film.clientHeight };
     for (const panel of Object.values(panels)) {
       const { element, state } = panel;
-      if (state.visible <= 0.001) {
+      const opacity = state.visible * state.shown;
+      if (opacity <= 0.001) {
         element.style.visibility = "hidden";
         continue;
       }
@@ -406,7 +428,7 @@ export function createOverlays({ film, stage, pose }) {
         lift: state.lift,
         flat,
       });
-      element.style.opacity = String(state.visible);
+      element.style.opacity = String(opacity);
       element.style.visibility = "visible";
       element.style.setProperty("--lift", String(state.lift));
     }
@@ -427,6 +449,17 @@ export function createOverlays({ film, stage, pose }) {
         scenes[actId] = tl;
       }
       return scenes;
+    },
+    // One paused timeline, in seconds, for each act whose close-up lifted
+    // and has to go back as the act is left.
+    departures() {
+      const departures = {};
+      for (const [actId, beats] of Object.entries(DEPARTURES)) {
+        const tl = gsap.timeline({ paused: true });
+        beats(tl, panels);
+        departures[actId] = tl;
+      }
+      return departures;
     },
     update,
     dispose() {

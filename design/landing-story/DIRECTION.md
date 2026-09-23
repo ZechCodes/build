@@ -102,6 +102,17 @@ Scrolling back rewinds a scene at its act's arrival and shows an act as it finis
 between. The hero laptop turns a little toward the copy, not the visitor. In the builder
 the handoff is a highlight running each step's outline and the arrow after it, not a dot.
 
+Round 3 amendment (Zech, 2026-09-23). The first desktop paint is the film's layout: a
+head script picks film or document before paint, the hero copy and call to action are
+there at once, and a capture of the live stage at the hero pose (lid where the welcome
+starts) holds the laptop's place until the first WebGL frame, then crossfades. The
+hardware is classic silver aluminium, not space black. A slim bar (Build, Docs, GitHub,
+Join the waitlist) reserves its height; whether it stays or leaves after the hero is
+Zech's call. A lifted close-up stays readable while the visitor stays in its act and
+goes back as the act's copy leaves; act 7 holds the open finding at least four seconds
+before approval, and its panel gives way to the merge on the clock. Act 4 is a close
+pair, the phone toward the middle, in place before its question.
+
 Desktop and tablet viewports run the pinned film. Phones and reduced-motion readers get the
 document version: the same acts in order, each as a still plus copy plus one legible HTML
 close-up. Nothing depends on the 3D to be understood (see section 5).

@@ -20,35 +20,49 @@ export const ACTS = Object.freeze([
 // Where, in each act, the device has settled and what a person reads begins.
 // From there the act's scene runs on the clock, in seconds, not on the wheel:
 // a scene's `at(act, local)` maps the storyboard's local progress onto those
-// seconds so the beats keep the numbers DIRECTION.md gives them.
+// seconds so the beats keep the numbers DIRECTION.md gives them. A `hold`
+// ([local, seconds]) is reading time added after that beat, so something a
+// person has to read gets seconds of its own without slowing what came before.
 export const SCENES = Object.freeze({
   1: { arrive: 0.2, seconds: 6 },
   2: { arrive: 0.22, seconds: 3.5 },
   3: { arrive: 0.2, seconds: 7 },
-  4: { arrive: 0.2, seconds: 7.5 },
+  4: { arrive: 0.2, seconds: 9 },
   5: { arrive: 0.15, seconds: 9.5 },
   6: { arrive: 0.1, seconds: 8.5 },
-  7: { arrive: 0.25, seconds: 9.5 },
+  // The finding and its evidence are open from .55; the hold gives them at
+  // least four seconds before the approval comes up at .66.
+  7: { arrive: 0.25, seconds: 9.5, holds: [[0.6, 2.7]] },
 });
 
 export function sceneClock(actId) {
   const scene = SCENES[actId];
   if (!scene) throw new Error(`act ${actId} has no scene`);
   const scale = scene.seconds / (1 - scene.arrive);
+  const holds = scene.holds ?? [];
+  const held = (local) => holds.reduce((total, [after, seconds]) => total + (local > after ? seconds : 0), 0);
   return {
     at: (act, local) => {
       if (act !== actId) throw new Error(`scene ${actId} cannot place act ${act}`);
-      return Math.max(0, local - scene.arrive) * scale;
+      return Math.max(0, local - scene.arrive) * scale + held(local);
     },
+    // A duration: a span of locals, with any hold that falls inside it.
     span: (act, fromLocal, toLocal) => {
       if (act !== actId) throw new Error(`scene ${actId} cannot span act ${act}`);
-      return (toLocal - fromLocal) * scale;
+      return (toLocal - fromLocal) * scale + held(toLocal) - held(fromLocal);
     },
   };
 }
 
+// A scene's whole length in seconds, holds included.
+export function sceneSeconds(actId) {
+  return sceneClock(actId).at(actId, 1);
+}
+
 // Where the copy of an act comes in and goes out, on the clock, as the
-// playhead crosses these; and where the next act's move begins.
+// playhead crosses these; and where the next act's move begins. The copy's
+// exit is also where a close-up that lifted to reading size goes back: it
+// stays readable for as long as the visitor stays in the act.
 export const COPY_IN = 0.03;
 export const COPY_OUT = 0.86;
 
@@ -95,29 +109,31 @@ export function actAt(time) {
 // The devices at rest in each act, desktop profile. A device absent from an
 // act is hidden. `opacity` defaults to 1, `lidOpen` to 1, `faceCamera` to 1.
 // The hero turns a little toward the copy on the left, not the visitor.
-const HERO = { x: 65, y: 57, w: 52, yaw: -10, pitch: 4 };
+const HERO = { x: 65, y: 53, w: 52, yaw: -10, pitch: 4 };
 const HOST = { x: 17, y: 74, w: 24, yaw: 14, pitch: 3, opacity: 0.9 };
 export const POSES = Object.freeze({
   laptop: Object.freeze({
     1: HERO,
     // The push-in while the visitor types: the editor's code pane fills the
     // right of the stage and the copy keeps the left.
-    "1-typing": { x: 68, y: 60, w: 62, yaw: -8, pitch: 4 },
+    "1-typing": { x: 68, y: 57, w: 62, yaw: -8, pitch: 4 },
     2: { x: 61, y: 58, w: 40, yaw: -12, pitch: 3 },
     3: { x: 67, y: 58, w: 50, yaw: -12, pitch: 2 },
-    4: { x: 27, y: 63, w: 38, yaw: 12, pitch: 3 },
+    // Act 4 is a pair: the host and, close to the middle, the phone that
+    // answers for it.
+    4: { x: 35, y: 65, w: 40, yaw: 12, pitch: 3 },
     5: { x: 50, y: 66, w: 60, faceCamera: 0 },
     6: { x: 50, y: 62, w: 58, faceCamera: 0 },
     7: HOST,
     8: { x: 53, y: 74, w: 30, yaw: 4, pitch: 8 },
   }),
   phone: Object.freeze({
-    4: { x: 83, y: 62, w: 21, yaw: -12, pitch: 2, roll: -2 },
+    4: { x: 64, y: 65, w: 17, yaw: -12, pitch: 2, roll: -2 },
     8: { x: 89, y: 78.5, w: 7.5, yaw: -10, pitch: 2 },
   }),
   tablet: Object.freeze({
-    "7-arrive": { x: 66, y: 58, w: 58, yaw: -8, pitch: 3 },
-    7: { x: 66, y: 58, w: 58, faceCamera: 0 },
+    "7-arrive": { x: 66, y: 62, w: 54, yaw: -8, pitch: 3 },
+    7: { x: 66, y: 62, w: 54, faceCamera: 0 },
     8: { x: 75, y: 77, w: 24, yaw: -8, pitch: 3 },
   }),
 });

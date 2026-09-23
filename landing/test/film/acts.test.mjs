@@ -13,7 +13,9 @@ import {
   at,
   entrancePose,
   fullPose,
+  POSES,
   sceneClock,
+  sceneSeconds,
   span,
 } from "../../src/film/acts.js";
 import { createScreenResolver, cueAt, upcomingCues } from "../../src/film/cues.js";
@@ -67,6 +69,23 @@ describe("a scene's clock", () => {
     assert.ok(Math.abs(clock.span(5, 0.6, 0.74) - (clock.at(5, 0.74) - clock.at(5, 0.6))) < 1e-9);
   });
 
+  it("gives act 7's open finding at least four seconds before the approval", () => {
+    const clock = sceneClock(7);
+    assert.ok(clock.at(7, 0.66) - clock.at(7, 0.55) >= 4, `${clock.at(7, 0.66) - clock.at(7, 0.55)}s`);
+    assert.ok(Math.abs(clock.span(7, 0.55, 0.66) - (clock.at(7, 0.66) - clock.at(7, 0.55))) < 1e-9);
+    assert.ok(Math.abs(clock.span(7, 0.7, 0.8) - (clock.at(7, 0.8) - clock.at(7, 0.7))) < 1e-9, "a span past the hold is not stretched");
+    assert.ok(Math.abs(sceneSeconds(7) - (SCENES[7].seconds + 2.7)) < 1e-9);
+  });
+
+  it("measures a duration from before the arrival at full length", () => {
+    assert.ok(sceneClock(2).span(2, 0, 0.08) > 0);
+  });
+
+  it("holds the phone's question for two seconds before its answer", () => {
+    const clock = sceneClock(4);
+    assert.ok(clock.at(4, 0.66) - clock.at(4, 0.45) >= 2);
+  });
+
   it("refuses another act's beats and an act without a scene", () => {
     assert.throws(() => sceneClock(5).at(6, 0.5));
     assert.throws(() => sceneClock(8));
@@ -91,6 +110,16 @@ describe("a scene's clock", () => {
 });
 
 describe("poses", () => {
+  it("keeps act 4's pair close, the phone toward the middle", () => {
+    const gap = POSES.phone[4].x - POSES.laptop[4].x;
+    assert.ok(gap <= 32, `centres ${gap}% apart`);
+    assert.ok(POSES.phone[4].x <= 70);
+  });
+
+  it("raises the hero a little above centre", () => {
+    assert.ok(POSES.laptop[1].y <= 54);
+  });
+
   it("fills every field so a tween has a target for each", () => {
     const pose = fullPose({ x: 65, y: 57, w: 52, pitch: 4 });
     assert.deepEqual(pose, { x: 65, y: 57, w: 52, yaw: 0, pitch: 4, roll: 0, opacity: 1, lidOpen: 1, faceCamera: 1 });

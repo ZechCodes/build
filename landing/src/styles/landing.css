@@ -16,6 +16,7 @@
   --measure: 34rem;
   --page-max: 74rem;
   --gap: clamp(1.5rem, 4vw, 4rem);
+  --nav-height: 56px;
 }
 
 *,
@@ -67,6 +68,76 @@ a {
   outline-offset: 3px;
 }
 
+/* The bar. Its height is reserved in both variants, so the story sits in the
+   same place whether it stays or goes. */
+html:not([data-mode="film"]) body {
+  padding-top: var(--nav-height);
+}
+
+[id^="act-"] {
+  scroll-margin-top: var(--nav-height);
+}
+
+.site-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  height: var(--nav-height);
+  background: var(--page);
+  border-bottom: 1px solid var(--line);
+  transition: transform 0.35s ease, visibility 0.35s;
+}
+
+.site-nav[data-nav="hero"][data-past-hero] {
+  transform: translateY(-100%);
+  visibility: hidden;
+}
+
+.site-nav__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 100%;
+  padding: 0 clamp(1rem, 4vw, 2.5rem);
+}
+
+.site-nav__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.site-nav nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(1rem, 2.5vw, 1.75rem);
+}
+
+.site-nav nav a:not(.cta) {
+  color: var(--ink-dim);
+  text-decoration: none;
+  font-size: 0.9375rem;
+}
+
+.site-nav nav a:not(.cta):hover {
+  color: var(--ink);
+}
+
+.cta.cta--small {
+  padding: 0.45rem 0.9rem;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 420px) {
+  .site-nav nav a[href="/docs"] {
+    display: none;
+  }
+}
+
 .skip-link {
   position: absolute;
   left: -9999px;
@@ -78,7 +149,7 @@ a {
   padding: 0.5rem 1rem;
   background: var(--surface);
   border: 1px solid var(--line);
-  z-index: 10;
+  z-index: 30;
 }
 
 .story,

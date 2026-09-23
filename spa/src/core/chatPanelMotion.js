@@ -110,6 +110,7 @@ function concealPanel(panel, apply, finish) {
   apply();
   if (reducedMotion()) {
     panel.classList.add(CONCEALED_CLASS);
+    finish();
     return null;
   }
   const timer = setTimeout(() => {
@@ -214,7 +215,7 @@ export function createChatPanelMotion(host, { onPhase = () => {} } = {}) {
   /** Keep the live panel mounted while it fades away. Accessibility changes
    * happen with `apply`; `visibility:hidden` waits for the fade so it remains
    * paintable, and is cancelled if the reader reverses direction mid-flight. */
-  const setVisible = ({ panel, visible, apply, opening = false }) => {
+  const setVisible = ({ panel, visible, apply, opening = false, onFinish = () => {} }) => {
     cancel();
     if (!panel) {
       apply();
@@ -225,6 +226,7 @@ export function createChatPanelMotion(host, { onPhase = () => {} } = {}) {
     const finish = () => {
       if (current !== generation) return;
       cleanup = null;
+      onFinish();
     };
     cleanup = visible
       ? revealPanel(panel, { opening, apply, finish })

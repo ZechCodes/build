@@ -139,7 +139,7 @@ export function shellPartsForRoute(route = {}) {
     paintsFromRecords: parts.paintsFromRecords === true,
     // The agent a conversation link names (`?agent=…`, core/router.js): the
     // rail comes up standing on it, whichever kind of page it landed on.
-    rail: { ...parts.rail, deviceId, openAgentId: route.agent || null },
+    rail: { ...parts.rail, deviceId, openAgentId: route.agent || null, addingAgent: route.newAgent === true },
     console: parts.console ? { ...parts.console, deviceId } : null,
   };
 }

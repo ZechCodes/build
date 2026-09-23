@@ -165,6 +165,7 @@ import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
 import { createChatTitleMotion } from "./chatTitleMotion.js";
 import { createAgentOverview, overviewHtml } from "./agentOverview.js";
+import { workspaceDisplayName } from "./workspaceModel.js";
 import { ICON_MAXIMIZE } from "./icons.js";
 import "../styles/shell.css";
 
@@ -617,6 +618,7 @@ const HEAD_DEFAULTS = Object.freeze({
   removable: false,
   hasTerminal: true,
   surfaceOptions: [],
+  showHarnessIcon: true,
   heading: null,
   pinned: true,
   removalWho: "",
@@ -632,7 +634,7 @@ const railWatchButtonHtml = (watch) => (watch ? watchButtonHtml(watch) : "");
 export function panelHeadHtml(who, mode, given = {}) {
   const head = { ...HEAD_DEFAULTS, ...given };
   return `<div class="rail-head">
-    ${harnessIconHtml(head.provider)}
+    ${head.showHarnessIcon ? harnessIconHtml(head.provider) : ""}
     ${railWhoHtml(who, head.heading)}
     ${railTuiButtonHtml(mode, head.hasTerminal)}
     ${railRemoveButtonHtml(head.removalWho || who, head.removable)}
@@ -761,7 +763,8 @@ export function mountAgentRail(host, context) {
   // conversation. It may be the project's — the project's agent is reachable
   // from every workspace in the project — and the side that finds it in its own
   // half of the strip is the side that stands the rail there.
-  stand(workItemContext(context, known, { openAgentId: context.openAgentId || null }), projectSide());
+  stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
+    addingAgent: context.addingAgent === true }), projectSide());
   return {
     collapse() {
       live?.collapse();
@@ -827,7 +830,7 @@ const openingAgentId = (context, railView, agents) => {
  *  taking over instead: the card was already out, and a re-mount is not a
  *  reason to put it away. */
 const panelStartsOut = (context, pinned) =>
-  context.panelOpen ?? (pinned || context.autofocusComposer === true || !!context.openAgentId);
+  context.panelOpen ?? (pinned || context.autofocusComposer === true || !!context.openAgentId || context.addingAgent === true);
 
 /**
  * Whether this rail offers a watch switch, and what it says to begin with.
@@ -1062,6 +1065,7 @@ function mountRailOnContext(host, context, swap) {
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
+  let overviewMotion = null;
 
 
   const agentIdOf = (agent) => agent.id;
@@ -1330,14 +1334,24 @@ function mountRailOnContext(host, context, swap) {
     alive: () => !disposed,
   });
 
+  const workspaceNameFor = (workspaceId) =>
+    workspaceDisplayName(feedView?.workspaces?.find((workspace) =>
+      (workspace.workspace_id || workspace.id) === workspaceId), workspaceId || "Workspace");
+  const overviewSource = (slot, standing, entityId) => ({
+    slot, kind: standing.kind, entityId,
+    section: standing.kind === "project" ? "project" : standing.kind === "workspace" ? "workspace" : "other",
+    sectionName: standing.kind === "project" ? "Project agents"
+      : standing.kind === "workspace" ? workspaceNameFor(standing.workspaceId) : "Agents",
+    workspaceId: standing.kind === "workspace" ? standing.workspaceId : null,
+    address: records.rowAddress(entityId),
+  });
+
   const overview = createAgentOverview({
     scope: cacheScope,
-    sources: () => [
-      { slot: "current", kind: context.kind, entityId: records.entityId() || entity.entityId,
-        address: records.rowAddress(records.entityId() || entity.entityId) },
-      ...(alongside ? [{ slot: "alongside", kind: alongside.kind, entityId: watchedAlongsideId,
-        address: records.rowAddress(watchedAlongsideId) }] : []),
-    ],
+    projectId,
+    includeProjectWorkspaces: context.kind === "project",
+    sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
+      ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
     onRows: (rows) => paintOverviewRows(rows),
   });
 
@@ -1663,7 +1677,12 @@ function mountRailOnContext(host, context, swap) {
   const openOverviewRow = (button) => {
     const agentId = button.dataset.overviewAgent;
     const source = button.dataset.overviewSource;
+    const workspaceId = button.dataset.overviewWorkspace;
     leaveOverview();
+    if (source === "workspace" && workspaceId) {
+      go({ name: "workspace", deviceId: context.deviceId, projectId, workspaceId, tab: "changes", agent: agentId });
+      return;
+    }
     if (source === "alongside" && swap) {
       if (onProjectAgentRail) swap.toWorkItem(agentId);
       else swap.toProject(projectOwner, agentId);
@@ -1673,26 +1692,50 @@ function mountRailOnContext(host, context, swap) {
     paint();
   };
 
+  const openOverviewAdd = (workspaceId) => {
+    leaveOverview();
+    if (workspaceId === context.workspaceId && !onProjectAgentRail) {
+      pressAddBubble();
+      return;
+    }
+    if (workspaceId === alongside?.workspaceId && onProjectAgentRail && swap) {
+      swap.toWorkItem(null, { adding: true });
+      return;
+    }
+    go({ name: "workspace", deviceId: context.deviceId, projectId, workspaceId, tab: "changes", newAgent: true });
+  };
+
   const paintOverviewRows = (rows) => {
     const list = host.querySelector(".rail-overview-list");
     if (!overviewVisible || !list) return;
-    const markup = overviewHtml(rows);
+    const markup = overviewHtml(rows, { showProjectAgents: !!projectId });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
+      const add = event.target.closest?.("[data-overview-add]");
+      if (add) { openOverviewAdd(add.dataset.overviewAdd); return; }
       const button = event.target.closest?.("[data-overview-agent]");
       if (button) openOverviewRow(button);
     };
   };
 
   const paintOverviewFrame = (strip) => {
-    host.classList.toggle("rail-overview", overviewVisible);
+    host.classList.toggle("rail-overview", overviewVisible || !!host.querySelector("#rail-overview"));
     if (!overviewVisible || host.querySelector("#rail-overview")) return;
     const content = document.createElement("section");
     content.id = "rail-overview";
     content.className = "rail-overview-content";
     content.setAttribute("aria-label", "Agent overview");
-    content.innerHTML = '<h2>Agents</h2><div class="rail-overview-list"></div>';
+    content.innerHTML = `${panelHeadHtml("Agents", "chat", { hasTerminal: false, showHarnessIcon: false, pinned })}<div class="rail-overview-list"></div>`;
     host.insertBefore(content, strip);
+    content.querySelector(`.${PIN_CLASS}`).onclick = () => overviewMotion.run({
+      panel: content, direction: pinned ? "popover" : "pinned",
+      apply: () => { void setPinned(!pinned); },
+    });
+  };
+
+  const syncOverviewPin = () => {
+    const button = host.querySelector(`#rail-overview .${PIN_CLASS}`);
+    if (button) syncPinButton(button, { subject: PANEL_SUBJECT, pinned });
   };
 
   const paint = () => {
@@ -1720,6 +1763,7 @@ function mountRailOnContext(host, context, swap) {
     // that then has to be discarded.
     if (!pinnedKnown) return;
     paintOverviewFrame(strip);
+    syncOverviewPin();
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
       panel = document.createElement("div");
@@ -1800,7 +1844,7 @@ function mountRailOnContext(host, context, swap) {
   /** Outside press, Escape and navigation put an unpinned card away without
    * changing the remembered pin preference. */
   const dismissPopover = ({ restoreFocus = false } = {}) => {
-    if (pinned || !panelVisible) return;
+    if (pinned || !panelVisible || overviewVisible) return;
     closePanel({ restoreFocus });
   };
 
@@ -3253,17 +3297,35 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const leaveOverview = () => {
+    if (!overviewVisible) return;
+    const content = host.querySelector("#rail-overview");
     overviewVisible = false;
     overview.close();
-    host.querySelector("#rail-overview")?.remove();
+    overviewMotion.setVisible({ panel: content, visible: false, apply: () => {
+      content?.setAttribute("aria-hidden", "true");
+      content?.setAttribute("inert", "");
+      paint();
+    }, onFinish: () => {
+      content?.remove();
+      paint();
+    } });
   };
 
   const pressStripControl = (type) => {
     if (type === "expand") {
       if (overviewVisible) leaveOverview();
-      else overviewVisible = true;
-      paint();
-      if (overviewVisible) overview.open();
+      else {
+        host.querySelector("#rail-overview")?.remove();
+        overviewVisible = true;
+        paint();
+        overview.open();
+        overviewMotion.setVisible({ panel: host.querySelector("#rail-overview"), visible: true,
+          opening: true, apply: () => {
+            host.querySelector("#rail-overview")?.setAttribute("aria-hidden", "false");
+            host.querySelector("#rail-overview")?.removeAttribute("inert");
+            syncPopover();
+          } });
+      }
       return true;
     }
     return false;
@@ -3501,6 +3563,7 @@ function mountRailOnContext(host, context, swap) {
   window.addEventListener("hashchange", dismissPopover);
   const cancelPanelMotion = () => panelMotion.cancel();
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
+  overviewMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
 
   return {
@@ -3524,6 +3587,7 @@ function mountRailOnContext(host, context, swap) {
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);
       panelMotion.cancel();
+      overviewMotion.cancel();
       unwatchCache();
       clearInterval(statusTicker);
       statusTicker = null;

@@ -12,6 +12,10 @@ const workRoute = (hash) => {
 };
 
 describe("routeFromHash", () => {
+  it("round-trips a workspace request to create an agent", () => {
+    const route = { name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "changes", newAgent: true };
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+  });
   it("round-trips a routed issue comment and a workspace commit", () => {
     const comment = { name: "trackerIssue", deviceId: "d1", projectId: "p", issueId: "issue-42", commentId: "ic-7" };
     expect(hashFromRoute(comment)).toBe("#/device/d1/project/p/issues/issue-42/c/ic-7");

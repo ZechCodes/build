@@ -22,6 +22,32 @@ function mount() {
   return document.querySelector("#scroller");
 }
 
+function mountMany(count) {
+  document.body.innerHTML = `<div id="scroller" style="scroll-padding-top:20px">${threadHtml({ items: Array.from({ length: count }, (_, index) => ({
+    type: "message", data: { sequence: index + 1, role: "user", body: `Message ${index + 1}` },
+  })) })}</div>`;
+  const scroller = document.querySelector("#scroller");
+  const rows = [...scroller.querySelectorAll(".thread-items > .thread-message.user")];
+  scroller.getBoundingClientRect = () => ({ top: 100 });
+  let active = -1;
+  rows.forEach((row, index) => {
+    row.getBoundingClientRect = () => ({ top: 120 + (index - active) * 80 });
+  });
+  return {
+    scroller, rows,
+    setActive(index) {
+      active = index;
+      rows.forEach((row, rowIndex) => {
+        row.getBoundingClientRect = () => ({ top: 120 + (rowIndex - active) * 80 });
+      });
+      syncUserMessageTicks(scroller);
+    },
+  };
+}
+
+const visibleIndexes = (scroller) => [...scroller.querySelectorAll(".thread-user-tick")]
+  .map((tick) => Number(tick.dataset.userTickIndex));
+
 describe("grouped user message navigator", () => {
   it("groups pill ticks in the existing gutter without reserving message width", () => {
     const scroller = mount();
@@ -117,5 +143,51 @@ describe("grouped user message navigator", () => {
     expect(jumpToUserMessage({ target: tick.querySelector("span") })).toBe(true);
     expect(row.scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
     expect(jumpToUserMessage({ target: scroller })).toBe(false);
+  });
+
+  it("slides a contiguous twelve-tick window down and back up, keeping the nearest pill", () => {
+    const { scroller, setActive } = mountMany(24);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(scroller.querySelector(".thread-user-tick.active")).toBeNull();
+
+    setActive(10);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index + 5));
+    expect(scroller.querySelectorAll(".thread-user-tick.active")).toHaveLength(1);
+    expect(scroller.querySelector(".thread-user-tick.active").dataset.userTickIndex).toBe("10");
+
+    setActive(18);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index + 12));
+    setActive(7);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index + 2));
+    expect(scroller.querySelector(".thread-user-tick.active").dataset.userTickIndex).toBe("7");
+  });
+
+  it("pins to the first and last twelve, and leaves the top state without an active pill", () => {
+    const { scroller, setActive } = mountMany(20);
+    setActive(-1);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+    expect(scroller.querySelector(".thread-user-tick.active")).toBeNull();
+    setActive(0);
+    expect(visibleIndexes(scroller)[0]).toBe(0);
+    setActive(1);
+    expect(visibleIndexes(scroller)[0]).toBe(0);
+    setActive(18);
+    expect(visibleIndexes(scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index + 8));
+    setActive(19);
+    expect(visibleIndexes(scroller).at(-1)).toBe(19);
+
+    const short = mountMany(12);
+    short.setActive(11);
+    expect(visibleIndexes(short.scroller)).toEqual(Array.from({ length: 12 }, (_, index) => index));
+  });
+
+  it("jumps from a window-edge pill to the matching global message", () => {
+    const { scroller, rows, setActive } = mountMany(20);
+    setActive(19);
+    rows[8].scrollIntoView = vi.fn();
+    const edge = scroller.querySelector('.thread-user-tick[data-user-tick-index="8"]');
+    expect(edge.type).toBe("button");
+    expect(jumpToUserMessage({ target: edge.querySelector("span") })).toBe(true);
+    expect(rows[8].scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
   });
 });

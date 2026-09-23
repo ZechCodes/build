@@ -1085,20 +1085,28 @@ function messageHtml(message, agentLabel, context) {
   </article>`;
 }
 
-function userMessageTickHtml({ message, index }) {
+function userMessageTickHtml({ key, message, index }) {
   const date = new Date(message.created_at || "");
   const when = Number.isNaN(date.getTime()) ? "an earlier time" : date.toLocaleString("en-US", {
     dateStyle: "medium", timeStyle: "short",
   });
-  return `<button type="button" class="thread-user-tick" data-user-tick-index="${index}" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
+  return `<button type="button" class="thread-user-tick" data-key="${esc(key)}" data-user-tick-index="${index}" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
 }
+
+const USER_TICK_WINDOW = 12;
 
 const userMessageTicks = (built) => built.entries
   .filter(({ item }) => item?.type === "message" && isReaderMessage(item.data))
   .map(({ key, item }, index) => ({ key, message: item.data, index }));
 
-const userMessageNavHtml = (built) => `<nav class="thread-user-nav" aria-label="Your messages"><div class="thread-user-nav-list">${userMessageTicks(built)
-  .map(userMessageTickHtml).join("")}</div></nav>`;
+const userMessageNavHtml = (built) => {
+  const ticks = userMessageTicks(built);
+  // The template is the cache-backed source for windows reached by scrolling.
+  // Its contents are inert: only the first twelve buttons are painted.
+  return `<nav class="thread-user-nav" aria-label="Your messages"><template class="thread-user-nav-source">${ticks
+    .map(userMessageTickHtml).join("")}</template><div class="thread-user-nav-list" data-window-start="0">${ticks
+    .slice(0, USER_TICK_WINDOW).map(userMessageTickHtml).join("")}</div></nav>`;
+};
 
 function nearestUserMessageIndex(rows, boundary) {
   let previous = -1;
@@ -1109,6 +1117,21 @@ function nearestUserMessageIndex(rows, boundary) {
   return previous;
 }
 
+function userTickWindowStart(count, active) {
+  if (count <= USER_TICK_WINDOW || active < 0) return 0;
+  return Math.max(0, Math.min(active - Math.floor((USER_TICK_WINDOW - 1) / 2), count - USER_TICK_WINDOW));
+}
+
+function paintUserTickWindow(list, source, start) {
+  if (list.dataset.windowStart === String(start) && list.childElementCount === Math.min(USER_TICK_WINDOW, source.childElementCount)) return;
+  const visible = [...source.children].slice(start, start + USER_TICK_WINDOW);
+  patchList(list, visible, {
+    keyOf: (tick) => tick.dataset.key,
+    render: (tick) => tick.cloneNode(true),
+  });
+  list.dataset.windowStart = String(start);
+}
+
 function keepUserTickInView(list, tick) {
   if (!list.clientHeight) return;
   if (tick.offsetTop < list.scrollTop) list.scrollTop = tick.offsetTop;
@@ -1117,23 +1140,29 @@ function keepUserTickInView(list, tick) {
   }
 }
 
-/** The last reader message whose top has reached the viewport, never the next
- * one below it. Only the active width changes on scroll; the group stays put. */
-export function syncUserMessageTicks(scroller) {
-  const timeline = scroller?.querySelector(".thread-items");
-  const list = scroller?.querySelector(".thread-user-nav-list");
-  if (!timeline || !list) return;
-  const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
-  const boundary = scroller.getBoundingClientRect().top + scrollPadding;
-  const rows = timeline.querySelectorAll(":scope > .thread-message.user");
-  const previous = nearestUserMessageIndex(rows, boundary);
-  for (const [index, tick] of [...list.querySelectorAll(".thread-user-tick")].entries()) {
-    const active = index === previous;
+function markNearestUserTick(list, previous) {
+  for (const tick of list.querySelectorAll(".thread-user-tick")) {
+    const active = Number(tick.dataset.userTickIndex) === previous;
     tick.classList.toggle("active", active);
     if (active) tick.setAttribute("aria-current", "location");
     else tick.removeAttribute("aria-current");
     if (active) keepUserTickInView(list, tick);
   }
+}
+
+/** The last reader message whose top has reached the viewport, never the next
+ * one below it. The group stays pinned while its twelve-tick window follows. */
+export function syncUserMessageTicks(scroller) {
+  const timeline = scroller?.querySelector(".thread-items");
+  const list = scroller?.querySelector(".thread-user-nav-list");
+  const source = scroller?.querySelector(".thread-user-nav-source")?.content;
+  if (!timeline || !list || !source) return;
+  const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+  const boundary = scroller.getBoundingClientRect().top + scrollPadding;
+  const rows = timeline.querySelectorAll(":scope > .thread-message.user");
+  const previous = nearestUserMessageIndex(rows, boundary);
+  paintUserTickWindow(list, source, userTickWindowStart(rows.length, previous));
+  markNearestUserTick(list, previous);
 }
 
 const pendingTickSyncs = new WeakSet();
@@ -1910,10 +1939,10 @@ export function paintThreadEntries(container, built, options = {}) {
     keyOf: (row) => row.key,
     render: (row) => row.html,
   });
-  patchList(section.querySelector(".thread-user-nav-list"), userMessageTicks(built), {
-    keyOf: (tick) => tick.key,
-    render: userMessageTickHtml,
-  });
+  const source = section.querySelector(".thread-user-nav-source");
+  source.innerHTML = userMessageTicks(built).map(userMessageTickHtml).join("");
+  section.querySelector(".thread-user-nav-list").removeAttribute("data-window-start");
+  syncUserMessageTicks(container);
   return framed;
 }
 

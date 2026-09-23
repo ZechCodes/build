@@ -1,34 +1,15 @@
 /** @vitest-environment jsdom */
-// #119: an issue moved to Done while nobody was pushed about it — the device
-// was away, or the bridge was restarting — must still leave both "Needs you"
-// surfaces. Real pane, real cache, real change watcher; the wire (`callRpc`)
-// and the machine's reachability are the only stand-ins.
+// #119: an issue the background pass has pulled as Done must leave both
+// "Needs you" surfaces, even once the pane's own filtered answer has loaded.
+// Real pane, real cache, real change watcher; the wire (`callRpc`) and the
+// machine's reachability are the only stand-ins.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";
 
-let away = false;
-let movedListeners = new Set();
 vi.mock("../src/core/deviceReconnect.js", () => ({
-  deviceWatch: () => ({
-    away: () => away,
-    reconnecting: () => away,
-    moved: (fn) => {
-      movedListeners.add(fn);
-      return () => movedListeners.delete(fn);
-    },
-  }),
+  deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
-
-const machineMoved = () => [...movedListeners].forEach((fn) => fn());
-const goAway = () => {
-  away = true;
-  machineMoved();
-};
-const comeBack = () => {
-  away = false;
-  machineMoved();
-};
 
 const DEVICE = "dev-119";
 const PROJECT = "proj-1";
@@ -91,8 +72,6 @@ beforeEach(async () => {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
-  away = false;
-  movedListeners = new Set();
   document.body.innerHTML = '<div id="issues"></div>';
   host = document.querySelector("#issues");
   trackerCache = await import("../src/core/trackerCache.js");
@@ -119,18 +98,6 @@ describe.each(Object.keys(VIEWS))("the %s view's Needs you", (view) => {
     answer = () => new Promise(() => {});
     // The background pass (core/cacheSync.js readIssues) pulls the whole list.
     await trackerCache.writeIssuesRecord(DEVICE, PROJECT, trackerCache.issuesRecord([moved], columns()));
-
-    await vi.waitFor(VIEWS[view].cleared, WAIT);
-  });
-
-  it("reads the list again when its machine comes back, so a move made in the gap lands", async () => {
-    mount(view);
-    await vi.waitFor(VIEWS[view].shows, WAIT);
-
-    goAway();
-    // Moved over MCP while this client was disconnected: no push will say so.
-    answer = async () => ({ issues: [moved] });
-    comeBack();
 
     await vi.waitFor(VIEWS[view].cleared, WAIT);
   });

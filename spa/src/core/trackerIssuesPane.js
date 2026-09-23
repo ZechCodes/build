@@ -29,6 +29,7 @@ import {
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
+import { trailingRead } from "./trailingRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
 import {
   DEFAULT_FILTERS,
@@ -79,7 +80,6 @@ export function mountIssuesPane(host, options) {
     picker: null,
     composer: null,
     focusIssue: null,
-    readSerial: 0,
     // When the cache took each list this pane can paint from (#119).
     queryAt: 0,
     wholeAt: 0,
@@ -139,10 +139,9 @@ export function mountIssuesPane(host, options) {
    *  than because the bridge said no: keeps the list that is already on screen,
    *  marks when it was read, and reads again when the machine is back. The
    *  list and the board share it — they are two drawings of one read. */
-  const machine = deviceWatch(state.deviceId);
   const reads = createReadRetry({
     host,
-    watch: machine,
+    watch: deviceWatch(state.deviceId),
     retry: () => void refresh(),
     hasContent: () => state.shown.length > 0 || state.all.length > 0,
   });
@@ -374,14 +373,22 @@ export function mountIssuesPane(host, options) {
    *  that mean something on a board are sent; the status is not. */
   const shownFilters = () => (state.view === BOARD_VIEW ? { ...state.filters, status: "" } : state.filters);
 
-  async function refresh() {
+  /** Read the list again. A busy project pushes every flush, so a read asked
+   *  for while one is out waits for it and runs once after it (#119): every
+   *  answer lands, and a push is never answered by a read begun before it. */
+  let listReads = null;
+  function refresh() {
+    listReads ||= trailingRead(readList);
+    return listReads();
+  }
+
+  async function readList() {
     if (state.disposed) return;
-    const serial = ++state.readSerial;
     const filters = shownFilters();
     try {
       const params = issueListParams(state.projectId, filters);
       const answer = await state.callRpc("issues.list", params);
-      if (state.disposed || serial !== state.readSerial) return;
+      if (state.disposed) return;
       const columns = state.columns;
       // The fetch is a writer only. The matching cache announcement above is
       // what re-reads this record and repaints the pane.
@@ -630,17 +637,6 @@ export function mountIssuesPane(host, options) {
     watchQuery();
     void paintFromCache().then(() => refresh());
   });
-  // A reconnect or a bridge restart has a gap behind it that no push will
-  // ever describe (#119): an issue moved to Done in it is news nobody sends.
-  // Coming back is therefore a read, the same one mounting does — unless a
-  // failed read is already waiting to be retried, which is that same read.
-  let machineAway = machine.away();
-  const stopMachineWatch = machine.moved(() => {
-    const nowAway = machine.away();
-    if (machineAway && !nowAway && !reads.waiting()) void refresh();
-    machineAway = nowAway;
-  });
-
   // No cadence: nothing in this client polls. The tab hears that an issue of
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
@@ -668,7 +664,6 @@ export function mountIssuesPane(host, options) {
       state.disposed = true;
       uiRecord.dispose();
       watcher.dispose();
-      stopMachineWatch();
       wholeListWatcher?.();
       details.dispose();
       activity.dispose();

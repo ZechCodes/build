@@ -963,6 +963,28 @@ describe("every project's issues", () => {
     expect(await issuesOf("p1")).toBeUndefined();
   });
 
+  // #119: a busy project pushes every flush. Each push used to start its own
+  // read of the whole list, all of them crossing the wire at once; a push
+  // heard while that read is out now waits for it and reads once after it.
+  it("reads a project's list once more after a burst of pushes, never alongside", async () => {
+    await boot([]);
+    const before = calls("issues.list").length;
+    const answers = [];
+    script["issues.list"] = () => new Promise((resolve) => answers.push(resolve));
+    const inbox = registeredWatchers.find((watcher) => watcher.id === "s-inbox");
+    const pushed = { entity_id: "p1", issues: { issue_ids: ["issue-1"], truncated: false } };
+    for (let n = 0; n < 4; n += 1) inbox.onChanges([pushed]);
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    expect(calls("issues.list")).toHaveLength(before + 1);
+
+    answers[0]({ issues: [{ id: "issue-1", number: 12, status: "done" }] });
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    expect(calls("issues.list")).toHaveLength(before + 2);
+    answers[1]({ issues: [{ id: "issue-1", number: 12, status: "done" }] });
+    await vi.waitFor(async () =>
+      expect((await issuesOf("p1")).value.issues.map((one) => one.status)).toEqual(["done"]));
+  });
+
   // A bridge that predates the tracker refuses both verbs; the tab falls back
   // to phase 1's five columns and nothing reaches the reader.
   it("writes nothing when the bridge does not serve the tracker", async () => {

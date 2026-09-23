@@ -1,7 +1,8 @@
 import { esc } from "./text.js";
 import {
   bridgeCanInstall, bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged,
-  bridgeUpdateRevision, refreshBridgeUpdateStatus, rememberBridgeUpdateStatus, watchBridgeUpdateDevice,
+  bridgeUpdateCacheGeneration, bridgeUpdateRevision, refreshBridgeUpdateStatus,
+  rememberBridgeUpdateStatus, watchBridgeUpdateDevice,
 } from "./bridgeUpdates.js";
 
 const dateText = (value) => {
@@ -90,9 +91,13 @@ export function mountBridgeUpdatePanel(host, { deviceId, callRpc }) {
     paint();
     const revision = bridgeUpdateRevision(deviceId);
     try {
+      const generation = await bridgeUpdateCacheGeneration(deviceId);
+      if (!active) return;
       const status = await callRpc(method, args);
       if (!active) return;
-      if (bridgeUpdateRevision(deviceId) === revision) await rememberBridgeUpdateStatus(deviceId, status);
+      if (bridgeUpdateRevision(deviceId) === revision) {
+        await rememberBridgeUpdateStatus(deviceId, status, generation);
+      }
       requestNote = method === "bridge.check_update" ? "Check started. Results will appear here." : "Update request accepted.";
     } catch (error) {
       if (!active) return;

@@ -1,5 +1,5 @@
 import { compare, parse } from "./bridgeApi/semver.js";
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { cacheAvailable, captureCachedGeneration, readCached, subscribeCache, writeCached, writeCachedIfGeneration } from "./localCache.js";
 
 export const bridgeUpdateAddress = (deviceId) => ({ deviceId, entityId: "", kind: "bridge-update" });
 
@@ -12,6 +12,8 @@ export function bridgeUpdateStatus(deviceId) {
   return statuses.get(deviceId) || null;
 }
 export const bridgeUpdateRevision = (deviceId) => revisions.get(deviceId) || 0;
+export const bridgeUpdateCacheGeneration = async (deviceId) =>
+  captureCachedGeneration(bridgeUpdateAddress(deviceId));
 
 export function bridgeUpdateAvailable(status) {
   if (!status) return false;
@@ -73,26 +75,46 @@ export function trackBridgeUpdateDevices(devices) {
   for (const deviceId of ids) watchDevice(deviceId);
 }
 
-export async function rememberBridgeUpdateStatus(deviceId, status) {
+async function showStoredStatus(deviceId, fallback) {
+  const record = await readCached(bridgeUpdateAddress(deviceId));
+  const status = record?.value ?? (await cacheAvailable() ? null : fallback);
+  if (watched.has(deviceId)) announce(deviceId, status);
+}
+
+export async function rememberBridgeUpdateStatus(deviceId, status, generation) {
   if (!status || typeof status.running_version !== "string") return false;
   advanceRevision(deviceId);
   watchDevice(deviceId);
-  await writeCached(bridgeUpdateAddress(deviceId), status);
+  if (generation === undefined) {
+    if (!await writeCached(bridgeUpdateAddress(deviceId), status)) await showStoredStatus(deviceId, status);
+  }
+  else if (!await writeCachedIfGeneration(bridgeUpdateAddress(deviceId), status, generation)) {
+    await showStoredStatus(deviceId, status);
+    return false;
+  }
   return true;
 }
+
+const requestIsCurrent = (deviceId, revision, isCurrent) =>
+  isCurrent() && bridgeUpdateRevision(deviceId) === revision;
 
 /** Unknown-method errors are the expected answer from an older bridge. */
 export async function refreshBridgeUpdateStatus(deviceId, call, isCurrent = () => true) {
   watchDevice(deviceId);
   const revision = bridgeUpdateRevision(deviceId);
+  const generation = await bridgeUpdateCacheGeneration(deviceId);
   try {
     const status = await call("bridge.update_status", {});
-    if (isCurrent() && bridgeUpdateRevision(deviceId) === revision) await rememberBridgeUpdateStatus(deviceId, status);
+    if (requestIsCurrent(deviceId, revision, isCurrent)) {
+      await rememberBridgeUpdateStatus(deviceId, status, generation);
+    }
     return status;
   } catch (error) {
     if (/unknown method|method not found/i.test(String(error?.message || ""))) {
-      if (isCurrent() && bridgeUpdateRevision(deviceId) === revision) {
-        await writeCached(bridgeUpdateAddress(deviceId), null);
+      if (requestIsCurrent(deviceId, revision, isCurrent)) {
+        if (!await writeCachedIfGeneration(bridgeUpdateAddress(deviceId), null, generation)) {
+          await showStoredStatus(deviceId, null);
+        }
       }
       return null;
     }

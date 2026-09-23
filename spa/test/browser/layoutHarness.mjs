@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
@@ -30,9 +31,16 @@ async function chromiumExecutable() {
  * styles. Each call owns its Vite server and browser, so failures also clean up. */
 export async function withLayoutPage(check, { width = 1180, height = 840, plugins = [] } = {}) {
   const chromiumPath = await chromiumExecutable();
-  const server = await createServer({ root: spaRoot, logLevel: "silent", plugins, server: { host: "127.0.0.1", port: 0 } });
+  // Browser suites start Vite servers in parallel. Each optimizer must own its
+  // cache or another server can replace dependency files mid-import.
+  const cacheDir = await mkdtemp(join(tmpdir(), "build-layout-vite-"));
+  let server;
   let browser;
   try {
+    server = await createServer({
+      root: spaRoot, cacheDir, logLevel: "silent", plugins,
+      server: { host: "127.0.0.1", port: 0 },
+    });
     await server.listen();
     const port = server.httpServer.address().port;
     const basePath = server.config.base;
@@ -41,10 +49,17 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
     // A CSS URL gives the page Vite's origin without booting the SPA. That lets
     // a test mount just the production renderer it needs into a stable shell.
     await page.goto(`http://127.0.0.1:${port}${basePath}src/styles.css`);
-    return await check({ page, basePath });
+    return await check({ page, basePath, cacheDir: server.config.cacheDir });
   } finally {
-    await browser?.close();
-    await server.close();
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        await server?.close();
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+      }
+    }
   }
 }
 
@@ -61,12 +76,27 @@ export async function mountLayout(page, markup, { styles = "", basePath = "/app/
 export async function loadBrowserModules(page, modules, basePath = "/app/static/") {
   const names = Object.keys(modules);
   const paths = Object.values(modules).map((path) => `${basePath}${path}`);
-  await page.addScriptTag({ type: "module", content: `
-    Promise.all(${JSON.stringify(paths)}.map((path) => import(path)))
-      .then((loaded) => { window.__layoutModules = Object.fromEntries(${JSON.stringify(names)}.map((name, index) => [name, loaded[index]])); })
-      .catch((error) => { window.__layoutModuleError = String(error); });
-  ` });
-  await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError);
-  const error = await page.evaluate(() => window.__layoutModuleError);
-  if (error) throw new Error(error);
+  const failures = [];
+  const requestFailed = (request) => failures.push(`${request.failure()?.errorText || "request failed"} ${request.url()}`);
+  const badResponse = (response) => {
+    if (response.status() < 400) return;
+    failures.push(response.text().then((body) =>
+      `${response.status()} ${response.url()} ${body.slice(0, 500)}`,
+    ).catch(() => `${response.status()} ${response.url()}`));
+  };
+  page.on("requestfailed", requestFailed);
+  page.on("response", badResponse);
+  try {
+    await page.addScriptTag({ type: "module", content: `
+      Promise.all(${JSON.stringify(paths)}.map((path) => import(path)))
+        .then((loaded) => { window.__layoutModules = Object.fromEntries(${JSON.stringify(names)}.map((name, index) => [name, loaded[index]])); })
+        .catch((error) => { window.__layoutModuleError = String(error); });
+    ` });
+    await page.waitForFunction(() => window.__layoutModules || window.__layoutModuleError);
+    const error = await page.evaluate(() => window.__layoutModuleError);
+    if (error) throw new Error(`${error}; network: ${(await Promise.all(failures)).join(" | ") || "no failed requests"}`);
+  } finally {
+    page.off("requestfailed", requestFailed);
+    page.off("response", badResponse);
+  }
 }

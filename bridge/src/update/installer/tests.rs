@@ -23,6 +23,7 @@ fn fixture(dir: &Path) -> Job {
     fs::set_permissions(&staged_binary, fs::Permissions::from_mode(0o700)).unwrap();
     let staged_digest = super::super::provenance::binary_digest(&staged_binary).unwrap();
     Job {
+        backup_protocol: 1,
         nonce: "attempt".into(),
         running_pid: std::process::id(),
         staged_digest,
@@ -130,6 +131,7 @@ fn stale_or_wrong_version_heartbeat_cannot_pass() {
     let binary = dir.path().join("bridge");
     fs::write(&binary, b"binary").unwrap();
     let job = Job {
+        backup_protocol: 1,
         nonce: "expected".into(),
         running_pid: std::process::id(),
         staged_digest: String::new(),
@@ -211,6 +213,88 @@ fn completed_job_restart_clears_own_marker_after_shared_result_was_consumed() {
         fs::read(job.tasks_dir.join("build.db")).unwrap(),
         b"old store"
     );
+}
+
+#[test]
+fn invalid_backup_checkpoint_keeps_recovery_pending_without_touching_install() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = fixture(dir.path());
+    let binary = dir.path().join("previous-build-bridge");
+    let running = dir.path().join("running-build-bridge");
+    let marker = dir.path().join("previous-install-marker");
+    publish_backup(&job.installed_binary, &binary).unwrap();
+    publish_backup(&job.installed_binary, &running).unwrap();
+    publish_backup(&super::super::provenance::marker_path(&job.home), &marker).unwrap();
+    let mut ready = backup_checkpoint(&job, &binary, &running, &marker).unwrap();
+    ready.nonce = "wrong-attempt".into();
+    write_json(&dir.path().join("backup-ready.json"), &ready).unwrap();
+    fs::write(dir.path().join("started"), b"").unwrap();
+    fs::create_dir_all(updates_dir(&job.home)).unwrap();
+    write_json(&job_file(dir.path()), &job).unwrap();
+    write_json(&active_path(&job.home), &job).unwrap();
+    let old_binary = fs::read(&job.installed_binary).unwrap();
+    let old_marker = fs::read(super::super::provenance::marker_path(&job.home)).unwrap();
+    assert!(run_helper(dir.path()).is_err());
+    assert_eq!(fs::read(&job.installed_binary).unwrap(), old_binary);
+    assert_eq!(
+        fs::read(super::super::provenance::marker_path(&job.home)).unwrap(),
+        old_marker
+    );
+    assert!(active_path(&job.home).exists());
+    let result: HelperResult =
+        serde_json::from_slice(&fs::read(result_path(&job.home)).unwrap()).unwrap();
+    assert!(result.rollback_pending);
+}
+
+#[test]
+fn saved_marker_must_match_saved_binary_even_with_matching_checkpoint_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = fixture(dir.path());
+    let binary = dir.path().join("previous-build-bridge");
+    let running = dir.path().join("running-build-bridge");
+    let marker = dir.path().join("previous-install-marker");
+    publish_backup(&job.installed_binary, &binary).unwrap();
+    publish_backup(&job.installed_binary, &running).unwrap();
+    fs::write(
+        &marker,
+        format!("{}\n{}\n", job.installed_binary.display(), "0".repeat(64)),
+    )
+    .unwrap();
+    let ready = backup_checkpoint(&job, &binary, &running, &marker).unwrap();
+    assert!(validate_backups(&job, &binary, &running, &marker, &ready).is_err());
+}
+
+#[test]
+fn legacy_job_without_checkpoint_keeps_valid_candidate_in_probation() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = fixture(dir.path());
+    fs::copy(&job.staged_binary, &job.installed_binary).unwrap();
+    super::super::provenance::write_marker(&job.home, &job.installed_binary).unwrap();
+    let manager = crate::service::manager_for(std::env::consts::OS).unwrap();
+    let service = manager.unit_path(&job.home);
+    fs::create_dir_all(service.parent().unwrap()).unwrap();
+    let config = crate::service::ServiceConfig {
+        binary_path: job.installed_binary.clone(),
+        log_dir: job.home.join(".build/log"),
+        env: vec![],
+    };
+    fs::write(&service, manager.render_unit(&config)).unwrap();
+    assert!(super::super::provenance::managed_binary(&job.home, &job.installed_binary).is_ok());
+    let mut serialized = serde_json::to_value(&job).unwrap();
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("backup_protocol");
+    fs::create_dir_all(updates_dir(&job.home)).unwrap();
+    write_json(&job_file(dir.path()), &serialized).unwrap();
+    write_json(&active_path(&job.home), &serialized).unwrap();
+    fs::write(dir.path().join("started"), b"").unwrap();
+    assert!(run_helper(dir.path()).is_err());
+    assert!(active_path(&job.home).exists());
+    assert!(super::super::provenance::managed_binary(&job.home, &job.installed_binary).is_ok());
+    let result: HelperResult =
+        serde_json::from_slice(&fs::read(result_path(&job.home)).unwrap()).unwrap();
+    assert!(result.rollback_pending);
 }
 
 #[cfg(target_os = "linux")]
@@ -455,13 +539,14 @@ int fsync(int fd) {
     assert!(helper < job_dir && job_dir < active);
     let stop = index("/stop-event");
     for backup in [
-        "/previous-build-bridge",
-        "/running-build-bridge",
-        "/previous-install-marker",
+        "/previous-build-bridge.tmp",
+        "/running-build-bridge.tmp",
+        "/previous-install-marker.tmp",
+        "/backup-ready.tmp",
     ] {
         assert!(index(backup) < stop);
     }
-    let marker_backup = index("/previous-install-marker");
+    let marker_backup = index("/previous-install-marker.tmp");
     assert!(lines[marker_backup..stop]
         .iter()
         .any(|line| line.ends_with("/home")));
@@ -485,4 +570,174 @@ int fsync(int fd) {
     assert!(lines[first_start..second_start]
         .iter()
         .any(|line| line.ends_with("/.build")));
+}
+
+#[cfg(target_os = "linux")]
+fn run_interrupted_backup_child(stage: &str, root: &Path) {
+    if stage == "install" {
+        let mut job = fixture(root);
+        job.installed_binary = root.join("installed-daemon");
+        job.running_pid = std::env::var("BUILD_UPDATE_RUNNING_PID")
+            .unwrap()
+            .parse()
+            .unwrap();
+        super::super::provenance::write_marker(root, &job.installed_binary).unwrap();
+        let service = root.join(".config/systemd/user/build-bridge.service");
+        fs::create_dir_all(service.parent().unwrap()).unwrap();
+        fs::write(
+            &service,
+            format!("ExecStart=\"{}\" serve\n", job.installed_binary.display()),
+        )
+        .unwrap();
+        write_json(&job_file(root), &job).unwrap();
+        fs::create_dir_all(updates_dir(root)).unwrap();
+        write_json(&active_path(root), &job).unwrap();
+    }
+    let result = run_helper(root);
+    if stage == "install" {
+        panic!("expected interruption during marker backup: {result:?}");
+    }
+    result.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn interrupted_marker_backup_keeps_managed_install_and_service_untouched() {
+    struct DaemonGuard(std::process::Child);
+    impl Drop for DaemonGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    const TEST_NAME: &str = "update::installer::tests::interrupted_marker_backup_keeps_managed_install_and_service_untouched";
+    if let Ok(stage) = std::env::var("BUILD_UPDATE_BACKUP_TEST_STAGE") {
+        let root = PathBuf::from(std::env::var_os("BUILD_UPDATE_BACKUP_TEST_ROOT").unwrap());
+        run_interrupted_backup_child(&stage, &root);
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let installed = root.join("installed-daemon");
+    let daemon_source = root.join("daemon.c");
+    fs::write(
+        &daemon_source,
+        b"#include <unistd.h>\nint main(void) { for (;;) pause(); }\n",
+    )
+    .unwrap();
+    assert!(Command::new("cc")
+        .arg("-o")
+        .arg(&installed)
+        .arg(&daemon_source)
+        .status()
+        .unwrap()
+        .success());
+    let mut daemon = DaemonGuard(Command::new(&installed).spawn().unwrap());
+    let daemon_pid = daemon.0.id();
+    let source = root.join("interrupt.c");
+    fs::write(
+        &source,
+        r#"#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+static int intercept(const char *path, int fd) {
+    if (fd >= 0 && path && strstr(path, "previous-install-marker")) {
+        const char *signal_path = getenv("BUILD_UPDATE_BACKUP_INTERRUPTED");
+        if (signal_path) {
+            int signal_fd = open(signal_path, O_WRONLY | O_CREAT, 0600);
+            if (signal_fd >= 0) close(signal_fd);
+        }
+        _exit(97);
+    }
+    return fd;
+}
+int open64(const char *path, int flags, ...) {
+    static int (*real_open64)(const char *, int, ...);
+    if (!real_open64) real_open64 = dlsym(RTLD_NEXT, "open64");
+    int fd = real_open64(path, flags, 0600);
+    return (flags & O_TRUNC) ? intercept(path, fd) : fd;
+}
+int openat64(int dirfd, const char *path, int flags, ...) {
+    static int (*real_openat64)(int, const char *, int, ...);
+    if (!real_openat64) real_openat64 = dlsym(RTLD_NEXT, "openat64");
+    int fd = real_openat64(dirfd, path, flags, 0600);
+    return (flags & O_TRUNC) ? intercept(path, fd) : fd;
+}
+int open(const char *path, int flags, ...) {
+    static int (*real_open)(const char *, int, ...);
+    if (!real_open) real_open = dlsym(RTLD_NEXT, "open");
+    int fd = real_open(path, flags, 0600);
+    return (flags & O_TRUNC) ? intercept(path, fd) : fd;
+}
+int openat(int dirfd, const char *path, int flags, ...) {
+    static int (*real_openat)(int, const char *, int, ...);
+    if (!real_openat) real_openat = dlsym(RTLD_NEXT, "openat");
+    int fd = real_openat(dirfd, path, flags, 0600);
+    return (flags & O_TRUNC) ? intercept(path, fd) : fd;
+}
+"#,
+    )
+    .unwrap();
+    let library = root.join("libinterrupt.so");
+    assert!(Command::new("cc")
+        .args(["-shared", "-fPIC", "-o"])
+        .arg(&library)
+        .arg(&source)
+        .arg("-ldl")
+        .status()
+        .unwrap()
+        .success());
+    let fake_path = root.join("bin");
+    fs::create_dir(&fake_path).unwrap();
+    let manager = fake_path.join("systemctl");
+    fs::write(&manager, b"#!/bin/sh\nif [ \"$2\" = show ]; then printf '%s\\n' \"$BUILD_UPDATE_RUNNING_PID\"; else printf '%s\\n' \"$2\" >> \"$BUILD_UPDATE_SERVICE_EVENTS\"; if [ \"$2\" = stop ]; then kill \"$BUILD_UPDATE_RUNNING_PID\" 2>/dev/null || :; fi; fi\n").unwrap();
+    fs::set_permissions(&manager, fs::Permissions::from_mode(0o700)).unwrap();
+    let events = root.join("service-events");
+    let interrupted = root.join("interrupted");
+    let run = |stage: &str, preload: bool| {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("--exact")
+            .arg(TEST_NAME)
+            .env("BUILD_UPDATE_BACKUP_TEST_STAGE", stage)
+            .env("BUILD_UPDATE_BACKUP_TEST_ROOT", root)
+            .env("BUILD_UPDATE_BACKUP_INTERRUPTED", &interrupted)
+            .env("BUILD_UPDATE_RUNNING_PID", daemon_pid.to_string())
+            .env("BUILD_UPDATE_SERVICE_EVENTS", &events)
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_path.display()));
+        if preload {
+            command.env("LD_PRELOAD", &library);
+        }
+        command.status().unwrap()
+    };
+    assert_eq!(run("install", true).code(), Some(97));
+    assert!(
+        interrupted.exists(),
+        "helper did not reach marker backup copy"
+    );
+    assert!(run("recover", false).success());
+    assert!(
+        daemon.0.try_wait().unwrap().is_none(),
+        "managed service stopped"
+    );
+    let job = load_job(root).unwrap();
+    assert!(super::super::provenance::managed_binary(root, &job.installed_binary).is_ok());
+    assert_eq!(
+        fs::read(job.tasks_dir.join("build.db")).unwrap(),
+        b"old store"
+    );
+    assert!(
+        !events.exists(),
+        "service was touched before backups were ready"
+    );
+    assert!(!active_path(root).exists());
+    let result: HelperResult =
+        serde_json::from_slice(&fs::read(result_path(root)).unwrap()).unwrap();
+    assert!(!result.success);
+    assert!(!result.rollback_pending);
 }

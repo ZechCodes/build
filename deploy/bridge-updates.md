@@ -8,6 +8,10 @@ fields at its top level.
 
 Install commands persist their accepted state before replying. Check commands
 return promptly and publish the completed check through the same event.
+RPC replies update the browser cache only if its persisted generation still
+matches the one read before the request. The comparison and write share one
+IndexedDB transaction, so a delayed cross-tab notification cannot hide a newer
+committed status.
 
 The status contains `running_version`, `platform`, `development_build`,
 `latest_release` (`version`, `tag`, nullable `published_at`), nullable
@@ -47,8 +51,10 @@ checking, and rollback. A launcher error does not prove the helper failed to
 start: the active attempt remains reserved, and the running bridge retries
 recovery until the helper records a terminal outcome. Helper and backup files,
 their directory entries, and install-marker replacement are synced before the
-next durable phase. The helper checks the staged digest again before executing
-the version probe and checks the exact replacement bytes before installing.
+next durable phase. Recovery consumes only validated backups published
+atomically and covered by a durable backup-ready checkpoint. The helper checks
+the staged digest again before executing the version probe and checks the exact
+replacement bytes before installing.
 Its outcome lives outside the restored store so a
 rollback does not erase its error. The new daemon must prove startup readiness
 with the expected version and attempt identity, then remain healthy for the

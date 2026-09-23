@@ -294,6 +294,7 @@ function writeFeed(address, update, observedFeedRows = false) {
  * owner and edit sequence for page-exit journal ordering. */
 export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
   if (address.kind === "feed") return writeFeed(address, () => value, observedFeedRows);
+  if (address.kind === "bridge-update") return writeBridgeUpdate(address, value);
   const key = recordKey(address);
   const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
   return wroteStore((store) => {
@@ -302,6 +303,70 @@ export function writeCached(address, value, { source, sequence, observedFeedRows
   }).then((wrote) => {
     if (wrote) announce(partsOfKey(key));
   });
+}
+
+/** An absent record differs from an older record without a generation. */
+export const cachedGeneration = (record) => record ? (record.generation || 0) : -1;
+export const cacheAvailable = async () => Boolean(await openDb());
+const newCacheGeneration = () => globalThis.crypto?.randomUUID?.() ||
+  `${Date.now()}-${Math.random()}-${Math.random()}`;
+const withBridgeGeneration = (address, record) => address.kind === "bridge-update"
+  ? { ...record, generation: newCacheGeneration() } : record;
+
+/** Snapshot a bridge record before its RPC starts. An absent record gets a
+ * stored token so deletion after this point cannot look absent again to the
+ * request that captured it. The null value paints as unavailable. */
+export function captureCachedGeneration(address) {
+  const key = recordKey(address);
+  let generation = -1;
+  return wroteStore((store) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      try {
+        if (request.result) {
+          generation = cachedGeneration(request.result);
+          return;
+        }
+        generation = newCacheGeneration();
+        store.put({ at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => committed ? generation : -1);
+}
+
+function writeBridgeUpdate(address, value, expectedGeneration) {
+  const key = recordKey(address);
+  let changed = false;
+  return wroteStore((store) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      try {
+        const current = request.result;
+        if (expectedGeneration !== undefined && cachedGeneration(current) !== expectedGeneration) return;
+        store.put({
+          at: Date.now(), order: nextWriteOrder(), value,
+          generation: newCacheGeneration(),
+        }, key);
+        changed = true;
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && changed) announce(partsOfKey(key));
+    return Boolean(committed && changed);
+  });
+}
+
+/** Commit a bridge response only if no writer changed its record since the
+ * request began. The comparison and write share the same IndexedDB transaction. */
+export function writeCachedIfGeneration(address, value, generation) {
+  if (!(typeof generation === "string" || Number.isSafeInteger(generation))) return Promise.resolve(false);
+  return writeBridgeUpdate(address, value, generation);
 }
 
 /** Merge a local undo into the current feed inside the same transaction that
@@ -326,7 +391,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        store.put({ at: Date.now(), order: nextWriteOrder(), value, source, sequence }, key);
+        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence }), key);
         applied = true;
       } catch {
         store.transaction.abort();
@@ -381,7 +446,7 @@ export function mergeCachedAtomically(address, merge) {
       try {
         const next = merge(request.result?.value);
         if (next == null) return;
-        store.put({ at: Date.now(), order: nextWriteOrder(), value: next }, key);
+        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next }), key);
         changed = true;
       } catch {
         store.transaction.abort();

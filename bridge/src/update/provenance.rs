@@ -57,6 +57,24 @@ pub fn binary_digest(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+/// Validate a saved marker against the saved binary before it can be restored.
+pub fn validate_saved_marker(saved: &Path, binary: &Path, installed: &Path) -> Result<(), String> {
+    let content = fs::read_to_string(saved).map_err(|e| e.to_string())?;
+    let mut lines = content.lines();
+    let marked = lines.next().ok_or("saved install marker is empty")?;
+    let digest = lines.next().ok_or("saved install marker has no digest")?;
+    if lines.next().is_some()
+        || marked
+            != fs::canonicalize(installed)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+        || digest != binary_digest(binary)?
+    {
+        return Err("saved install marker does not match previous bridge".into());
+    }
+    Ok(())
+}
+
 pub fn write_marker(home: &Path, binary: &Path) -> Result<(), String> {
     let canonical = fs::canonicalize(binary).map_err(|e| e.to_string())?;
     let content = format!("{}\n{}\n", canonical.display(), binary_digest(&canonical)?);

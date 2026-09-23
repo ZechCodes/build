@@ -21,6 +21,8 @@ const HEALTH_FRESH: u64 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
+    #[serde(default)]
+    pub backup_protocol: u8,
     pub nonce: String,
     pub running_pid: u32,
     pub staged_digest: String,
@@ -30,6 +32,15 @@ pub struct Job {
     pub tasks_dir: PathBuf,
     pub home: PathBuf,
     pub uid: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BackupReady {
+    nonce: String,
+    protocol: u8,
+    binary_digest: String,
+    running_digest: String,
+    marker_digest: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,6 +149,7 @@ pub fn create_job(
         return Err("could not determine user id".into());
     }
     let job = Job {
+        backup_protocol: 1,
         nonce,
         running_pid: std::process::id(),
         staged_digest: String::new(),
@@ -474,14 +486,43 @@ pub fn ensure_recovery(home: &Path) -> Result<(), String> {
 
 fn recover(job: &Job, dir: &Path) -> Result<(), TransactionFailure> {
     let binary = dir.join("previous-build-bridge");
+    let running = dir.join("running-build-bridge");
     let marker = dir.join("previous-install-marker");
-    if binary.exists() && marker.exists() {
-        let store = job
-            .tasks_dir
-            .with_extension(format!("bridge-update-{}", job.nonce));
-        rollback(job, &binary, &store, &marker)
-            .map_err(|e| TransactionFailure::Pending(format!("rollback failed: {e}")))?;
+    let ready = dir.join("backup-ready.json");
+    match fs::symlink_metadata(&ready) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err(TransactionFailure::Pending(
+                "invalid backup checkpoint type".into(),
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if job.backup_protocol != 1 {
+                return Err(TransactionFailure::Pending(
+                    "legacy update has no verified backup checkpoint; manual recovery required"
+                        .into(),
+                ));
+            }
+            return Err(TransactionFailure::Recovered(
+                "update helper interrupted before backup checkpoint; previous bridge was untouched"
+                    .into(),
+            ));
+        }
+        Err(error) => return Err(TransactionFailure::Pending(error.to_string())),
     }
+    let checkpoint: BackupReady = fs::read(&ready)
+        .map_err(|e| TransactionFailure::Pending(e.to_string()))
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes)
+                .map_err(|e| TransactionFailure::Pending(format!("invalid backup checkpoint: {e}")))
+        })?;
+    validate_backups(job, &binary, &running, &marker, &checkpoint)
+        .map_err(|e| TransactionFailure::Pending(format!("invalid rollback backup: {e}")))?;
+    let store = job
+        .tasks_dir
+        .with_extension(format!("bridge-update-{}", job.nonce));
+    rollback(job, &binary, &store, &marker)
+        .map_err(|e| TransactionFailure::Pending(format!("rollback failed: {e}")))?;
     Err(TransactionFailure::Recovered(
         "update helper restarted after interruption; restored previous bridge".into(),
     ))
@@ -518,13 +559,10 @@ fn install_with(
         .tasks_dir
         .with_extension(format!("bridge-update-{}", job.nonce));
     let old_marker = dir.join("previous-install-marker");
-    fs::copy(&job.installed_binary, &old_binary)
-        .map_err(|e| TransactionFailure::Recovered(e.to_string()))?;
-    sync_file(&old_binary).map_err(TransactionFailure::Recovered)?;
-    fs::copy(live_path, &running_binary).map_err(|e| {
+    publish_backup(&job.installed_binary, &old_binary).map_err(TransactionFailure::Recovered)?;
+    publish_backup(live_path, &running_binary).map_err(|e| {
         TransactionFailure::Recovered(format!("could not save running bridge: {e}"))
     })?;
-    sync_file(&running_binary).map_err(TransactionFailure::Recovered)?;
     if super::provenance::binary_digest(&running_binary).map_err(TransactionFailure::Recovered)?
         != super::provenance::binary_digest(&old_binary).map_err(TransactionFailure::Recovered)?
     {
@@ -532,12 +570,15 @@ fn install_with(
             "running bridge differs from the managed install".into(),
         ));
     }
-    fs::copy(super::provenance::marker_path(&job.home), &old_marker)
-        .map_err(|e| TransactionFailure::Recovered(e.to_string()))?;
-    sync_file(&old_marker).map_err(TransactionFailure::Recovered)?;
-    // Every rollback entry must be durable before the bridge is stopped.
-    sync_parent(&old_marker).map_err(TransactionFailure::Recovered)?;
+    publish_backup(&super::provenance::marker_path(&job.home), &old_marker)
+        .map_err(TransactionFailure::Recovered)?;
+    let checkpoint = backup_checkpoint(job, &old_binary, &running_binary, &old_marker)
+        .map_err(TransactionFailure::Recovered)?;
+    validate_backups(job, &old_binary, &running_binary, &old_marker, &checkpoint)
+        .map_err(TransactionFailure::Recovered)?;
     verify_staged_digest(job).map_err(TransactionFailure::Recovered)?;
+    write_json(&dir.join("backup-ready.json"), &checkpoint)
+        .map_err(TransactionFailure::Recovered)?;
     if let Err(error) = service("stop") {
         return match service("start") {
             Ok(()) => Err(TransactionFailure::Recovered(format!(
@@ -564,13 +605,61 @@ fn install_with(
     })();
     match operation {
         Ok(()) => Ok(()),
-        Err(error) => match rollback_with(job, &old_binary, &old_store, &old_marker, service) {
-            Ok(()) => Err(TransactionFailure::Recovered(error)),
-            Err(rollback) => Err(TransactionFailure::Pending(format!(
-                "{error}; rollback failed: {rollback}"
-            ))),
-        },
+        Err(error) => {
+            match validate_backups(job, &old_binary, &running_binary, &old_marker, &checkpoint)
+                .and_then(|()| rollback_with(job, &old_binary, &old_store, &old_marker, service))
+            {
+                Ok(()) => Err(TransactionFailure::Recovered(error)),
+                Err(rollback) => Err(TransactionFailure::Pending(format!(
+                    "{error}; rollback failed: {rollback}"
+                ))),
+            }
+        }
     }
+}
+
+fn publish_backup(source: &Path, destination: &Path) -> Result<(), String> {
+    let temporary = destination.with_extension("tmp");
+    fs::copy(source, &temporary).map_err(|e| e.to_string())?;
+    sync_file(&temporary)?;
+    fs::rename(&temporary, destination).map_err(|e| e.to_string())?;
+    sync_parent(destination)
+}
+
+fn backup_checkpoint(
+    job: &Job,
+    binary: &Path,
+    running: &Path,
+    marker: &Path,
+) -> Result<BackupReady, String> {
+    Ok(BackupReady {
+        nonce: job.nonce.clone(),
+        protocol: job.backup_protocol,
+        binary_digest: super::provenance::binary_digest(binary)?,
+        running_digest: super::provenance::binary_digest(running)?,
+        marker_digest: super::provenance::binary_digest(marker)?,
+    })
+}
+
+fn validate_backups(
+    job: &Job,
+    binary: &Path,
+    running: &Path,
+    marker: &Path,
+    ready: &BackupReady,
+) -> Result<(), String> {
+    let actual = backup_checkpoint(job, binary, running, marker)?;
+    if actual.nonce != ready.nonce
+        || actual.protocol != ready.protocol
+        || actual.protocol != 1
+        || actual.binary_digest != ready.binary_digest
+        || actual.running_digest != ready.running_digest
+        || actual.marker_digest != ready.marker_digest
+        || actual.running_digest != actual.binary_digest
+    {
+        return Err("rollback backup changed after checkpoint".into());
+    }
+    super::provenance::validate_saved_marker(marker, binary, &job.installed_binary)
 }
 
 fn rollback(job: &Job, binary: &Path, store: &Path, marker: &Path) -> Result<(), String> {

@@ -92,6 +92,49 @@ fn deleted_workspace_message_times_survive_reopen_for_project_rebuild() {
     assert!(times[0].4 < times[1].4);
 }
 
+#[test]
+fn removed_agent_times_survive_reopen_and_transfer_to_finished_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    let mut roster = AgentRoster::restore(
+        "run-1",
+        record.agents.clone(),
+        Default::default(),
+        ModelChoice::default(),
+        NOW,
+    );
+    let removed = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+    roster
+        .by_id_mut(&removed)
+        .unwrap()
+        .thread
+        .post_user("early", None, "2026-09-01T00:00:00Z");
+    record.agents = roster.agents().to_vec();
+    store.save_run(&record).unwrap();
+    roster.remove(&removed).unwrap();
+    record.agents = roster.agents().to_vec();
+    store.save_run(&record).unwrap();
+
+    let reopened = Store::new(&root).unwrap();
+    let times = reopened.session_message_times().unwrap();
+    assert_eq!(times.len(), 1);
+    assert_eq!(times[0].0.as_deref(), Some("run-1"));
+    assert_eq!(
+        times[0].4,
+        crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap()
+    );
+
+    reopened
+        .delete_run_retaining_inbox_messages("run-1", "proj-1")
+        .unwrap();
+    let times = Store::new(&root).unwrap().session_message_times().unwrap();
+    assert_eq!(times.len(), 1);
+    assert_eq!(times[0].0, None);
+    assert_eq!(times[0].1.as_deref(), Some("proj-1"));
+}
+
 /// Appending one message writes ONE row. This is the whole reason the store
 /// changed: the JSON records it replaced rewrote every conversation on the
 /// Issue for every append, and a store that upserted all N items per save

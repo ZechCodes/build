@@ -697,6 +697,83 @@ fn finished_workspace_message_keeps_project_session_after_restart() {
 }
 
 #[test]
+fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "removed-agent-session-repo");
+    let config = tmp.path().join("config.json");
+    let worktrees = tmp.path().join("worktrees");
+    let store = tmp.path().join("store");
+    let context =
+        || HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
+    let (project_id, workspace_id, start, last) = {
+        let mut state = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+            .with_config(&config)
+            .unwrap()
+            .with_task_store(&store)
+            .unwrap();
+        let project = state.handle(req("project.add", json!({"path": repo})));
+        assert_eq!(project["ok"], true, "{project:?}");
+        let project_id = project["result"]["project_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let workspace = create_workspace(&mut state, &project_id, "agent-history");
+        let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+        let ensured = state.handle(req(
+            "workspace.ensure_conversation",
+            json!({"workspace_id": workspace_id}),
+        ));
+        let run_id = ensured["result"]["run_id"].as_str().unwrap().to_string();
+        let a = state.handle(req("agent.add", json!({"entity_id": run_id})));
+        let a_id = a["result"]["agent"]["id"].as_str().unwrap().to_string();
+        let b = state.handle(req("agent.add", json!({"entity_id": run_id})));
+        let b_id = b["result"]["agent"]["id"].as_str().unwrap().to_string();
+        let mut active = state.runs.remove(&run_id).unwrap();
+        active.agents.by_id_mut(&a_id).unwrap().thread.post_user(
+            "first",
+            None,
+            "2026-09-01T00:00:00Z",
+        );
+        active.agents.by_id_mut(&b_id).unwrap().thread.post_user(
+            "second",
+            None,
+            "2026-09-01T08:00:00Z",
+        );
+        state.finish_run_mutation(run_id.clone(), active).unwrap();
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({"entity_id": run_id, "agent_id": a_id}),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        (
+            project_id,
+            workspace_id,
+            crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap(),
+            crate::session_summary::message_millis("2026-09-01T08:00:00Z").unwrap(),
+        )
+    };
+
+    let mut restarted = AppState::new_unrooted_configured(&worktrees, "main", true, context())
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(&store)
+        .unwrap();
+    let project = &restarted.project_list()["projects"][0];
+    assert_eq!(project["project_id"], project_id);
+    assert_eq!(project["session_started_ms"], start);
+    assert_eq!(project["last_activity_ms"], last);
+    let listed = restarted.handle(req("workspace.list", json!({"project_id": project_id})));
+    let workspace = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["workspace_id"] == workspace_id)
+        .unwrap();
+    assert_eq!(workspace["session_started_ms"], start);
+    assert_eq!(workspace["last_activity_ms"], last);
+}
+
+#[test]
 fn workspace_conversation_persistence_failure_leaves_no_owner_and_can_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let (repo, _) = repo_with_origin(tmp.path(), "repo");

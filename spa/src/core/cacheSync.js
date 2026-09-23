@@ -34,6 +34,7 @@ import { entityIdOf } from "./entityId.js";
 import { FEED_COLLECTIONS, liveFeedSnapshot, stampProject, stampRow, stampWorkspace, workspaceSummaries } from "./feedMerge.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
 import { syncThreadWindow, threadWindow } from "./threadSync.js";
+import { replaceSessionList, updateSessionSummary } from "./sessionListCache.js";
 import {
   cachedAddresses,
   cachedEntityIds,
@@ -953,22 +954,8 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
   && Number.isSafeInteger(record?.last_activity_ms)
   && record.session_started_ms <= record.last_activity_ms;
 
-/** A list read or push may cross a newer tip. Keep the summary with the
- * greatest last message time; equal times take the incoming bridge reading. */
-function monotonicSession(incoming, held) {
-  if (!validSession(held)) return incoming;
-  if (validSession(incoming) && incoming.last_activity_ms >= held.last_activity_ms) return incoming;
-  return { ...incoming, session_started_ms: held.session_started_ms, last_activity_ms: held.last_activity_ms };
-}
-
 async function writeSessionList(context, kind, incoming) {
-  const idOf = kind === "projects"
-    ? (row) => row.project_id || row.id
-    : (row) => row.workspace_id || row.id;
-  await mergeCached(addressOf(context, "", kind), (held) => {
-    const old = new Map((held || []).map((row) => [idOf(row), row]));
-    return incoming.map((row) => monotonicSession(row, old.get(idOf(row))));
-  });
+  await replaceSessionList(addressOf(context, "", kind), kind, incoming);
 }
 
 async function applyChanges(items, deviceId) {
@@ -1107,21 +1094,7 @@ async function applySessionTip(context, tip) {
     ["projects", tip.project_id, tip.project_session],
   ]) {
     if (!id || !validSession(session)) continue;
-    await mergeCached(addressOf(context, "", kind), (rows) => {
-      if (!Array.isArray(rows)) return null;
-      const idOf = kind === "projects"
-        ? (row) => row.project_id || row.id
-        : (row) => row.workspace_id || row.id;
-      let changed = false;
-      const updated = rows.map((row) => {
-        if (idOf(row) !== id) return row;
-        const merged = monotonicSession({ ...row, ...session }, row);
-        if (merged.last_activity_ms === row.last_activity_ms && merged.session_started_ms === row.session_started_ms) return row;
-        changed = true;
-        return merged;
-      });
-      return changed ? updated : null;
-    });
+    await updateSessionSummary(addressOf(context, "", kind), kind, id, session);
   }
 }
 

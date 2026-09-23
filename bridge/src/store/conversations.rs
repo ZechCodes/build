@@ -491,6 +491,16 @@ impl Store {
         }
         drop(rows);
         drop(statement);
+        let mut retained_runs =
+            connection.prepare("SELECT run_id, ts_ms FROM inbox_retained_run_messages")?;
+        let run_rows = retained_runs.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        for row in run_rows {
+            let (run_id, ts) = row?;
+            messages.push((Some(run_id), None, String::new(), 0, ts));
+        }
+        drop(retained_runs);
         let mut retained =
             connection.prepare("SELECT project_id, ts_ms FROM inbox_retained_messages")?;
         let retained_rows = retained.query_map([], |row| {

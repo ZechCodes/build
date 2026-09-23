@@ -204,6 +204,8 @@ pub enum BridgeAction {
     /// reachable are this project's.
     AddWorkspaceAgent {
         workspace_id: String,
+        /// Make the new agent watched, so its conversation appears in the user's inbox.
+        notify_user: Option<bool>,
         /// The harness the agent runs on; the account's default when absent.
         harness: Option<String>,
         model: Option<String>,
@@ -1001,7 +1003,8 @@ impl DoneServer {
                                 "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "With kind=new_workspace. Omit for the project's own setting." },
                                 "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
                                 "model": { "type": "string" },
-                                "effort": { "type": "string" }
+                                "effort": { "type": "string" },
+                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow that agent's work. Otherwise the new agent is unwatched. This is separate from the top-level notify_user, which watches the issue." }
                             },
                             "required": ["kind"]
                         },
@@ -1288,7 +1291,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "add_workspace_agent",
-                "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it.",
+                "description": "Put a new agent on one of your workspaces, in its own conversation there. The workspace gets a conversation of its own if it has none yet. Nothing is said to the agent until you message it. The agent is unwatched unless you pass notify_user: true when the user asked to follow its work.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1298,7 +1301,8 @@ impl DoneServer {
                         "harness": Self::harness_enum(),
                         "model": { "type": "string", "description": "A model id, when the user named one. list_harnesses is where the ids are. Omit to take the user's own choice for the role." },
                         "effort": Self::effort_enum(),
-                        "name": { "type": "string", "description": "What to call this agent: one or two meaningful words for the work you are putting it on, like \"Rail scroll\". It is what you and the user will see instead of \"Agent 2\". Omit and the agent names itself when the user first writes to it." }
+                        "name": { "type": "string", "description": "What to call this agent: one or two meaningful words for the work you are putting it on, like \"Rail scroll\". It is what you and the user will see instead of \"Agent 2\". Omit and the agent names itself when the user first writes to it." },
+                        "notify_user": { "type": "boolean", "description": "Watch this new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow its work; omit for an unwatched agent." }
                     },
                     "required": ["workspace_id"]
                 }
@@ -1941,6 +1945,7 @@ fn workspace_tool_action(
         "add_workspace_agent" => required_argument(params, "workspace_id").map(|workspace_id| {
             BridgeAction::AddWorkspaceAgent {
                 workspace_id,
+                notify_user: optional_flag(params, "notify_user"),
                 harness: optional_argument(params, "harness"),
                 model: optional_argument(params, "model"),
                 effort: optional_argument(params, "effort"),

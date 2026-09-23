@@ -390,10 +390,8 @@ pub struct AppState {
     /// Whether an issue an AGENT files goes into the user's inbox without
     /// being asked for (spec: Issues → Watching).
     ///
-    /// On by default: an agent filing an issue is usually filing it because
-    /// the user will care, and a board the user never sees fills up quietly.
-    /// Off is for a device where agents file between themselves and the user
-    /// wants only what they asked for.
+    /// Off by default: agent bookkeeping stays out of the user's inbox unless
+    /// the agent explicitly asks or the user enables the setting.
     watch_agent_filed_issues: bool,
     /// How many tokens of context an agent's last turn may leave before its
     /// next warm turn is preceded by a compaction; 0 never compacts. An
@@ -590,7 +588,7 @@ impl AppState {
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
-            watch_agent_filed_issues: true,
+            watch_agent_filed_issues: false,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
             compactions: Default::default(),
             dispatched_issue: HashMap::new(),

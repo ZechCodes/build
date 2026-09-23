@@ -381,6 +381,7 @@ fn a_coding_agent_works_the_workspaces_of_its_own_project_and_no_others() {
         },
         BridgeAction::AddWorkspaceAgent {
             workspace_id: elsewhere.clone(),
+            notify_user: None,
             harness: None,
             model: None,
             effort: None,
@@ -762,6 +763,7 @@ fn a_project_agent_puts_an_agent_on_a_workspace_and_takes_it_off() {
             &agent_id,
             BridgeAction::AddWorkspaceAgent {
                 workspace_id: workspace_id.clone(),
+                notify_user: None,
                 harness: None,
                 model: None,
                 effort: None,
@@ -802,6 +804,68 @@ fn a_project_agent_puts_an_agent_on_a_workspace_and_takes_it_off() {
     assert_eq!(removed["agents"], json!([]), "{removed:?}");
 }
 
+/// MCP creation uses the same watch rule as agent.add, and the digest the
+/// browser caches carries the resulting value for board and detail reads.
+#[test]
+fn a_project_agent_can_explicitly_watch_a_new_workspace_agent() {
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let quiet_workspace = workspace(&mut state, &project_id, "quiet");
+    let followed_workspace = workspace(&mut state, &project_id, "followed");
+    let (owner, caller) = project_agent(&mut state, &project_id);
+    assert!(
+        state.runs[&owner].agents.by_id(&caller).unwrap().watched,
+        "agent.add from the UI watches the agent by default"
+    );
+
+    for (workspace_id, notify_user, watched) in [
+        (&quiet_workspace, None, false),
+        (&followed_workspace, Some(true), true),
+    ] {
+        let added = state
+            .on_agent_mcp_action(
+                &owner,
+                &caller,
+                BridgeAction::AddWorkspaceAgent {
+                    workspace_id: workspace_id.clone(),
+                    notify_user,
+                    harness: None,
+                    model: None,
+                    effort: None,
+                    name: None,
+                    role: None,
+                    capability: None,
+                },
+            )
+            .expect("the MCP call creates an agent");
+        assert_eq!(added["agent"]["watched"], watched, "{added:?}");
+        let entity_id = added["entity_id"].as_str().unwrap();
+        let detail = state.handle(req("run.get", json!({ "run_id": entity_id })));
+        assert_eq!(
+            detail["result"]["agents"][0]["watched"], watched,
+            "{detail:?}"
+        );
+        let board = state.handle(req("board.list", json!({})));
+        let run = board["result"]["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|run| run["run_id"] == entity_id)
+            .expect("the board reports every run");
+        assert_eq!(run["agents"][0]["watched"], watched, "{run:?}");
+        let in_inbox = board["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["run_id"] == entity_id);
+        assert_eq!(in_inbox, watched, "{board:?}");
+    }
+}
+
 /// The write tools are scoped the way the reads are: a workspace of another
 /// project is refused by name before anything is created or removed.
 #[test]
@@ -823,6 +887,7 @@ fn a_project_agent_writes_no_workspace_outside_its_project() {
             &their_agent,
             BridgeAction::AddWorkspaceAgent {
                 workspace_id: elsewhere.clone(),
+                notify_user: None,
                 harness: None,
                 model: None,
                 effort: None,
@@ -838,6 +903,7 @@ fn a_project_agent_writes_no_workspace_outside_its_project() {
     for action in [
         BridgeAction::AddWorkspaceAgent {
             workspace_id: elsewhere.clone(),
+            notify_user: None,
             harness: None,
             model: None,
             effort: None,
@@ -893,6 +959,7 @@ fn a_project_agent_messages_a_workspace_agent_as_itself() {
             &agent_id,
             BridgeAction::AddWorkspaceAgent {
                 workspace_id: workspace_id.clone(),
+                notify_user: None,
                 harness: None,
                 model: None,
                 effort: None,
@@ -997,6 +1064,7 @@ fn a_project_agent_messages_no_agent_outside_its_project() {
             &their_agent,
             BridgeAction::AddWorkspaceAgent {
                 workspace_id: elsewhere.clone(),
+                notify_user: None,
                 harness: None,
                 model: None,
                 effort: None,
@@ -1046,6 +1114,7 @@ pub(super) fn handed_over(state: &mut AppState, project_id: &str, body: &str) ->
             &agent_id,
             BridgeAction::AddWorkspaceAgent {
                 workspace_id: workspace_id.clone(),
+                notify_user: None,
                 harness: None,
                 model: None,
                 effort: None,

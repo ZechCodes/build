@@ -489,6 +489,81 @@ fn an_agent_hands_an_issue_to_another_agent_of_its_project() {
         .contains("the parser is the part that matters"));
 }
 
+#[test]
+fn an_agent_assigning_an_issue_can_choose_whether_the_new_agent_is_watched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let workspace_id = workspace(&mut state, &project_id, "workers");
+
+    for (notify_user, watched) in [(None, false), (Some(true), true)] {
+        let id = filed(&mut state, &project_id, "new worker")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut assignee = json!({ "kind": "new_agent", "workspace_id": workspace_id });
+        if let Some(notify_user) = notify_user {
+            assignee["notify_user"] = json!(notify_user);
+        }
+        let assigned = call(
+            &mut state,
+            &caller,
+            BridgeAction::TrackerAssignIssue {
+                issue_id: id,
+                assignee,
+                note: None,
+                track: None,
+                notify_user: None,
+            },
+        )
+        .expect("the MCP call assigns to a new agent");
+        let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap();
+        let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap();
+        let agent = state.runs[entity_id].agents.by_id(agent_id).unwrap();
+        assert_eq!(agent.watched, watched, "{assigned:?}");
+    }
+}
+
+#[test]
+fn an_agent_assigning_an_issue_can_watch_a_new_workspace_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let caller = coding_agent(&mut state, &project_id, "caller");
+    let id = filed(&mut state, &project_id, "new workspace worker")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let assigned = state
+        .agent_action(
+            &caller.0,
+            &caller.1,
+            BridgeAction::TrackerAssignIssue {
+                issue_id: id,
+                assignee: json!({
+                    "kind": "new_workspace",
+                    "isolation": "worktree",
+                    "notify_user": true,
+                }),
+                note: None,
+                track: None,
+                notify_user: None,
+            },
+        )
+        .expect("the MCP call cuts a workspace and assigns its agent");
+    let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap();
+    let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap();
+    assert!(
+        state.runs[entity_id]
+            .agents
+            .by_id(agent_id)
+            .unwrap()
+            .watched
+    );
+}
+
 /// An agent of another project cannot be assigned to, and the issue is left
 /// exactly as it was.
 #[test]

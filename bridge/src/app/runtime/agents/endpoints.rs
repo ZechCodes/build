@@ -1426,6 +1426,7 @@ impl AppState {
         let next_start = agent.choice.clone();
         let mut digest = json!({
             "id": agent.id,
+            "watched": agent.watched,
             "conversation_id": agent.conversation_id(),
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,

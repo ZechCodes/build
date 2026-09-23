@@ -46,6 +46,7 @@ pub(in crate::app) enum AssignTarget {
         name: Option<String>,
         isolation: Option<String>,
         choice: OwnedChoice,
+        notify_user: Option<bool>,
         /// What to call the AGENT. Spelled `agent_name` on the wire because
         /// `name` on this kind is the workspace's, and one key meaning two
         /// things is how a caller names the wrong one.
@@ -54,6 +55,7 @@ pub(in crate::app) enum AssignTarget {
     NewAgent {
         workspace_id: String,
         choice: OwnedChoice,
+        notify_user: Option<bool>,
         /// The same key on both creating kinds, so a caller that learned it
         /// once has learned it.
         agent_name: Option<String>,
@@ -155,11 +157,13 @@ impl AssignTarget {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 choice: OwnedChoice::from_wire(value),
+                notify_user: value.get("notify_user").and_then(Value::as_bool),
                 agent_name: agent_name_of(value)?,
             }),
             "new_agent" => Ok(AssignTarget::NewAgent {
                 workspace_id: named("workspace_id")?,
                 choice: OwnedChoice::from_wire(value),
+                notify_user: value.get("notify_user").and_then(Value::as_bool),
                 agent_name: agent_name_of(value)?,
             }),
             other => Err(format!(
@@ -236,6 +240,7 @@ impl AppState {
             name,
             isolation,
             choice,
+            notify_user,
             agent_name,
         } = &target
         {
@@ -245,6 +250,7 @@ impl AppState {
                 name,
                 isolation,
                 choice,
+                notify_user.unwrap_or(matches!(actor, Actor::User)),
                 agent_name.clone(),
                 note,
                 actor,
@@ -252,8 +258,14 @@ impl AppState {
             );
         }
         let mut write = IssueWrite::by(actor.clone(), issue);
-        let delivery =
-            self.deliver_for(project_id, &write.issue, &target, note.as_deref(), sender)?;
+        let delivery = self.deliver_for(
+            project_id,
+            &write.issue,
+            &target,
+            note.as_deref(),
+            &actor,
+            sender,
+        )?;
         self.settle_assignment(&mut write, &target, &delivery, &actor, &now)?;
         let answered = self.commit_issue_write(project_id, write, &now)?;
         Ok(json!({
@@ -362,6 +374,7 @@ impl AppState {
         issue: &Issue,
         target: &AssignTarget,
         note: Option<&str>,
+        actor: &Actor,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Option<Delivered>, String> {
         let (workspace_id, entity_id) = match target {
@@ -384,6 +397,7 @@ impl AppState {
             AssignTarget::NewAgent {
                 workspace_id,
                 choice,
+                notify_user,
                 agent_name,
             } => {
                 let added = self.add_agent_for_issue(
@@ -391,6 +405,7 @@ impl AppState {
                     workspace_id,
                     choice.args(),
                     agent_name.as_deref(),
+                    notify_user.unwrap_or(matches!(actor, Actor::User)),
                 )?;
                 return self
                     .hand_over(issue, &added.1, &added.0, note, sender)
@@ -433,6 +448,7 @@ impl AppState {
         workspace_id: &str,
         choice: AgentChoiceArgs<'_>,
         agent_name: Option<&str>,
+        notify_user: bool,
     ) -> Result<(String, String), String> {
         let workspace = self
             .workspaces
@@ -457,10 +473,11 @@ impl AppState {
         if let Some(agent_name) = agent_name {
             params["name"] = json!(agent_name);
         }
-        // Dispatching an issue makes an agent for the WORK, not for the user's
-        // inbox. The issue is what the user watches; the conversation under it
-        // is the agent's own business unless somebody says otherwise.
+        // The default is based on who assigned the issue: an agent's new
+        // worker is unwatched, while a worker the user creates is watched.
+        // An explicit notify_user on the assignee overrides either default.
         params["made_by_agent"] = json!(true);
+        params["notify_user"] = json!(notify_user);
         let added = self.agent_add(&params)?;
         let agent_id = added["agent"]["id"]
             .as_str()
@@ -583,6 +600,7 @@ pub(in crate::app) struct DispatchPlan {
     issue_id: String,
     workspace_id: String,
     choice: OwnedChoice,
+    notify_user: bool,
     /// What to call the agent the drain will make, carried across the git.
     agent_name: Option<String>,
     note: Option<String>,
@@ -650,6 +668,7 @@ impl AppState {
         name: &Option<String>,
         isolation: &Option<String>,
         choice: &OwnedChoice,
+        notify_user: bool,
         agent_name: Option<String>,
         note: Option<String>,
         actor: Actor,
@@ -674,6 +693,7 @@ impl AppState {
             issue_id: issue.id.clone(),
             workspace_id: workspace_id.clone(),
             choice: choice.clone(),
+            notify_user,
             agent_name,
             note,
             actor,
@@ -719,6 +739,7 @@ impl AppState {
             &plan.workspace_id,
             plan.choice.args(),
             plan.agent_name.as_deref(),
+            plan.notify_user,
         )?;
         let sender = plan
             .sender
@@ -740,6 +761,7 @@ impl AppState {
             name: None,
             isolation: None,
             choice: plan.choice.clone(),
+            notify_user: Some(plan.notify_user),
             agent_name: None,
         };
         self.settle_assignment(&mut write, &target, &Some(delivered), &plan.actor, &now)?;

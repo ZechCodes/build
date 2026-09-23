@@ -183,18 +183,23 @@ fn an_agents_issue_reaches_the_user_by_the_setting_or_by_asking() {
     let who = coding_agent(&mut state, &project_id, "here");
 
     let by_default = agent_files(&mut state, &who, "by default", None);
-    assert_eq!(
-        issue(&mut state, &by_default)["watched"],
-        true,
-        "the device shows agent-filed issues until told not to"
-    );
+    assert_ne!(issue(&mut state, &by_default)["watched"], true);
+
+    let enabled = state.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_issues": true }),
+    ));
+    assert_eq!(enabled["ok"], true, "{enabled:?}");
+    assert_eq!(enabled["result"]["watch_agent_filed_issues"], true);
+
+    let watched = agent_files(&mut state, &who, "saved setting", None);
+    assert_eq!(issue(&mut state, &watched)["watched"], true);
 
     let quieted = state.handle(req(
         "settings.set",
         json!({ "watch_agent_filed_issues": false }),
     ));
     assert_eq!(quieted["ok"], true, "{quieted:?}");
-    assert_eq!(quieted["result"]["watch_agent_filed_issues"], false);
 
     let quiet = agent_files(&mut state, &who, "for another agent", None);
     assert!(

@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn agent_filed_issue_watching_defaults_off_but_preserves_saved_true() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.json");
+    let new_app = || {
+        AppState::new_unrooted(
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config_path)
+        .unwrap()
+    };
+
+    let mut initial = new_app();
+    assert_eq!(
+        initial.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_issues"],
+        false
+    );
+    let saved = initial.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_issues": true }),
+    ));
+    assert_eq!(saved["ok"], true, "{saved:?}");
+
+    let mut restarted = new_app();
+    assert_eq!(
+        restarted.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_issues"],
+        true
+    );
+}
+
+#[test]
 fn missing_config_is_the_only_absent_config_case() {
     let directory = tempfile::tempdir().unwrap();
     let missing = directory.path().join("missing-config.json");

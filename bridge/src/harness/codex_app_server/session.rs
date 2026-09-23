@@ -2491,10 +2491,12 @@ mod tests {
             session.epitaph().as_deref(),
             Some("Codex stdout did not settle within 100ms")
         );
-        assert!(matches!(
-            activity.try_recv(),
-            Err(broadcast::error::TryRecvError::Closed)
-        ));
+        wait_until("closed its activity channel", || {
+            matches!(
+                activity.try_recv(),
+                Err(broadcast::error::TryRecvError::Closed)
+            )
+        });
     }
 
     #[test]

@@ -72,10 +72,19 @@ fn run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout() {
         checkout.exists(),
         "the checkout is not removed out from under a process still writing into it"
     );
-    assert!(
-        state.try_lock().is_ok(),
-        "the wait for the agent is holding the app mutex"
-    );
+    // The reap gives up after five seconds. Prove the lock is available
+    // while the agent is still held at the gate, before that fallback runs.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if state.try_lock().is_ok() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the wait for the agent is holding the app mutex"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     death_handle.release();
     let abandoned = abandoned

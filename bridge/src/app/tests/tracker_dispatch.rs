@@ -499,13 +499,12 @@ fn a_new_workspace_is_cut_an_agent_added_and_the_issue_handed_over() {
     let dispatch = &answered["dispatch"];
     assert_eq!(dispatch["kind"], "new_workspace");
     let workspace_id = dispatch["workspace_id"].as_str().unwrap().to_string();
-    assert_eq!(
-        state
+    assert!(
+        !state
             .workspaces
             .get(&workspace_id)
             .unwrap()
             .created_by_agent,
-        false,
         "the UI created this workspace"
     );
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();

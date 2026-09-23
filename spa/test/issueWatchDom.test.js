@@ -204,6 +204,15 @@ describe("the read mark", () => {
     expect(listed("issues.read_through")).toHaveLength(0);
   });
 
+  it("does not send a timeline fallback key as a read mark", async () => {
+    answer.timeline = [...TIMELINE, comment({ id: undefined, body: "A legacy comment without an id." })];
+    await mount();
+    expect(host.textContent).toContain("A legacy comment without an id.");
+    expect(listed("issues.read_through")).toHaveLength(0);
+    await scrollToEnd();
+    expect(listed("issues.read_through")).toHaveLength(0);
+  });
+
   // The mark only moves forward, so the same point is never re-sent: a scroll
   // fires many times and a page that called on each would be a call a frame.
   it("is not re-sent for a point already marked", async () => {

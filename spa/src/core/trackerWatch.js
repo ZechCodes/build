@@ -65,11 +65,27 @@ export function watchStateOf(issue) {
   };
 }
 
+/// The key core/trackerTimeline.js invents for a record the bridge wrote
+/// without an id: `comment-3`, `event-0`. Never a mark.
+const INVENTED_KEY = /^(comment|event)-\d+$/;
+
 /**
  * How far this reader has read, out of the timeline as the page holds it.
  *
- * The newest row, whatever kind it is: the mark names a point in one ordering
- * that comments and events share, and the page cannot know which of the two
- * the bridge last wrote. Nothing to mark on an empty timeline.
+ * The newest row, whatever kind it is: `ic-…` and `ie-…` share one ordering,
+ * and #64 compares marks by the ULID after the prefix (`tracker/inbox.rs`
+ * `when`), so a comment id is as good a mark as an event id and the field is
+ * named `event_id` for the older of the two kinds rather than for the only one
+ * it takes. Nothing to mark on an empty timeline.
+ *
+ * A key the timeline invented is not sent at all. It is `comment-3`, and the
+ * bridge would read everything after the first `-` as the instant — `"3"`,
+ * which sorts above every real ULID, and its "never move a mark backwards"
+ * guard would then refuse every true mark that followed. Unread would stick at
+ * whatever it was, for good, and say nothing: the bridge answers that refusal
+ * with a quiet no-op and this page swallows read-mark failures by design.
  */
-export const readThrough = (rows) => (rows || []).at(-1)?.key || "";
+export const readThrough = (rows) => {
+  const newest = (rows || []).at(-1)?.key || "";
+  return INVENTED_KEY.test(newest) ? "" : newest;
+};

@@ -4,6 +4,7 @@
 // This module neither reads the bridge nor decides when a cache record loads.
 
 import { entityIdOf } from "./entityId.js";
+import { isFinished } from "./trackerAgentIssues.js";
 
 export const WORKING_GROUP = "working";
 export const NEEDS_YOU_GROUP = "needsYou";
@@ -11,14 +12,12 @@ export const REST_GROUP = "rest";
 
 export const ATTENTION_REASONS = Object.freeze({
   inReview: "in_review",
-  question: "unanswered_question",
   inbox: "inbox_comment",
   assigned: "assigned_to_user",
 });
 
 const REASON_LABELS = Object.freeze({
   [ATTENTION_REASONS.inReview]: "In review",
-  [ATTENTION_REASONS.question]: "Asked you a question",
   [ATTENTION_REASONS.inbox]: "Mentioned you",
   [ATTENTION_REASONS.assigned]: "Assigned to you",
 });
@@ -34,18 +33,6 @@ const orderedId = (id) => String(id || "").split("-", 2).at(-1);
 const afterMark = (id, mark) => !mark || orderedId(id) > orderedId(mark);
 
 const isAgentComment = (entry) => entry?.type === "comment" && entry.author?.kind === "agent";
-
-/** A later user comment answers the earlier agent question. The timeline is
- *  already ordered by the bridge, so a second sort would lose tied events. */
-export function hasUnansweredAgentQuestion(timeline) {
-  let asking = false;
-  for (const entry of timeline || []) {
-    if (entry?.type !== "comment") continue;
-    if (entry.author?.kind === "user") asking = false;
-    else if (isAgentComment(entry) && String(entry.body || "").includes("?")) asking = true;
-  }
-  return asking;
-}
 
 /** A cached inbox row is proof the user is watching the issue. Its unread
  *  count alone may be an event such as a move, so prefer the cached timeline
@@ -94,9 +81,9 @@ const workingAgentOf = (assignee, workingAgents, projectAgent) => {
 };
 
 const attentionReasonsOf = (issue, detail, inboxRow) => {
+  if (isFinished(issue)) return [];
   const reasons = [];
   if (issue?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
-  if (hasUnansweredAgentQuestion(detail?.timeline)) reasons.push(ATTENTION_REASONS.question);
   if (hasUnreadInboxComment(issue, detail, inboxRow)) reasons.push(ATTENTION_REASONS.inbox);
   if (issue?.assignee?.kind === "user") reasons.push(ATTENTION_REASONS.assigned);
   return reasons;

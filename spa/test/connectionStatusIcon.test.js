@@ -363,8 +363,11 @@ describe("where the menu opens", () => {
   // package root, as the other jsdom suites do.
   const sheet = readFileSync(resolve("src/styles.css"), "utf8");
   const ruleFor = (selector) => {
-    const found = sheet.match(new RegExp(`\\${selector} \\{([^}]*)\\}`));
-    return found ? found[1].replace(/\s+/g, " ") : "";
+    const start = sheet.indexOf(`${selector} {`);
+    if (start < 0) return "";
+    const body = start + selector.length + 2;
+    const end = sheet.indexOf("}", body);
+    return end < 0 ? "" : sheet.slice(body, end).replace(/\s+/g, " ");
   };
 
   it("opens upward from the ring, anchored to the corner it stands in", () => {

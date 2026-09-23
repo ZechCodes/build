@@ -152,9 +152,11 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
 /** Inbox visibility comes from the cached roster, including runs that the
  * board deliberately left out of `items`. A pushed row can still be present
  * after that omission, so an item's presence is never evidence of watching.
- * A workspace with no agent is the user's fresh checkout and stays visible. */
+ * A workspace with no agent stays visible only when it was user-created. */
 export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = []) {
   const rosterByEntity = new Map();
+  const agentCreated = new Set(workspaces.filter((workspace) => workspace.created_by_agent === true)
+    .map((workspace) => workspace.workspaceKey));
   for (const row of [...runs, ...items]) {
     const entityId = entityIdOf(row);
     if (entityId && Array.isArray(row.agents)) {
@@ -163,7 +165,7 @@ export function watchedWorkspaceEntries(workspaces = [], projects = [], items = 
   }
   return workspaceEntries(workspaces, projects, items).filter((entry) => {
     const agents = rosterByEntity.get(JSON.stringify([entry.projectKey, entry.entityId]));
-    return !agents?.length || agents.some((agent) => agent.watched !== false);
+    return agents?.length ? agents.some((agent) => agent.watched !== false) : !agentCreated.has(entry.workspaceKey);
   });
 }
 

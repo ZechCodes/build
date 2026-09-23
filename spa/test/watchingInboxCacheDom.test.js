@@ -13,12 +13,13 @@ const deviceId = "watching-device";
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
 
-async function seed({ watched, agents = [{ id: "agent-1", watched }] } = {}) {
+async function seed({ watched, agents = [{ id: "agent-1", watched }], createdByAgent = false, entityId = "run-1" } = {}) {
   const project = { id: "project-1", project_id: "project-1", name: "Payments", deviceId, projectKey: `${deviceId}/project-1` };
   const workspace = { id: "workspace-1", project_id: "project-1", name: "Agent work", status: "ready",
-    entity_id: "run-1", deviceId, projectKey: project.projectKey, workspaceKey: `${deviceId}/workspace-1` };
+    entity_id: entityId, created_by_agent: createdByAgent, deviceId, projectKey: project.projectKey,
+    workspaceKey: `${deviceId}/workspace-1` };
   const run = { run_id: "run-1", project_id: "project-1", agents, deviceId, projectKey: project.projectKey };
-  await writeCached(address("feed"), { items: [], runs: [run], projects: [project], workspaces: [workspace] });
+  await writeCached(address("feed"), { items: [], runs: entityId ? [run] : [], projects: [project], workspaces: [workspace] });
   await writeCached(address("projects"), [project]);
   await writeCached(address("workspaces"), [workspace]);
   return { project, workspace, run };
@@ -51,8 +52,25 @@ afterEach(() => {
 });
 
 describe("cached watching on both inbox faces", () => {
+  it("hides an agent-created workspace without agents on cold replay and a workspace push", async () => {
+    const { workspace } = await seed({ agents: [], createdByAgent: true, entityId: null });
+    let snapshot;
+    const unsubscribe = subscribeFeed((next) => { snapshot = next; });
+    mountInboxList();
+    await startFeed();
+    await vi.waitFor(() => expect(snapshot?.workspaces).toHaveLength(1));
+    expect(rows()).toHaveLength(0);
+
+    await writeCached(address("workspaces"), [{ ...workspace, status: "active" }]);
+    await vi.waitFor(() => expect(snapshot?.workspaces?.[0]?.status).toBe("active"));
+    expect(rows()).toHaveLength(0);
+    setInboxView("projects");
+    expect(rows()).toHaveLength(0);
+    unsubscribe();
+  });
+
   it("hides an unwatched agent's workspace from a cold cache and after a pushed row", async () => {
-    const { run } = await seed({ watched: false });
+    const { run } = await seed({ watched: false, createdByAgent: true });
     let snapshot;
     const unsubscribe = subscribeFeed((next) => { snapshot = next; });
     mountInboxList();
@@ -71,7 +89,7 @@ describe("cached watching on both inbox faces", () => {
   });
 
   it("shows a watched agent's workspace after the same cold replay and push", async () => {
-    const { run } = await seed({ watched: true });
+    const { run } = await seed({ watched: true, createdByAgent: true });
     mountInboxList();
     await startFeed();
     await vi.waitFor(() => expect(rows().map((row) => row.textContent)).toEqual([expect.stringContaining("Agent work")]));
@@ -82,7 +100,7 @@ describe("cached watching on both inbox faces", () => {
   });
 
   it("updates an inbox row when a cached agent is watched or unwatched", async () => {
-    const { run } = await seed({ watched: false });
+    const { run } = await seed({ watched: false, createdByAgent: true });
     mountInboxList();
     await startFeed();
     await writeCached(address("row", "run-1"), { ...run, kind: "branch", agents: [{ id: "agent-1", watched: true }] });
@@ -96,7 +114,7 @@ describe("cached watching on both inbox faces", () => {
     mountInboxList();
     await startFeed();
     const bridge = vi.fn(async (method) => method === "workspace.create"
-      ? { id: "workspace-new", project_id: "project-1", name: "My workspace", status: "ready", directories: [] }
+      ? { id: "workspace-new", project_id: "project-1", name: "My workspace", status: "ready", created_by_agent: false, directories: [] }
       : {});
     adoptDeviceSession({ deviceId, call: bridge, close: () => {}, peer: () => {}, onCarrier: () => {} });
 

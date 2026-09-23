@@ -4,6 +4,7 @@ use crate::app::{
 };
 use crate::operation::OperationStatus;
 use crate::timing::FrameTimer;
+use crate::update::AdmissionLease;
 use std::sync::{Arc, Mutex};
 
 /// Sending the queued turns, off the frame that queued them.
@@ -29,6 +30,14 @@ impl DeliveryRunner {
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+        let admission = state.lock().unwrap().update_admission();
+        let lease = match admission {
+            Some(gate) => match gate.try_enter() {
+                Some(lease) => Some(lease),
+                None => return, // The turns remain in the queue until admission reopens.
+            },
+            None => None,
+        };
         let (compactions, turns, settle_wake, usage_limit_wake) = {
             let mut app = timer.lock(state);
             // Before the turns are taken: an agent with a turn queued has
@@ -58,8 +67,8 @@ impl DeliveryRunner {
                 |_, _| {},
             );
         }
-        DeliveryRunner::spawn_compactions(state, timer, compactions);
-        DeliveryRunner::spawn(state, turns);
+        DeliveryRunner::spawn_compactions(state, timer, compactions, lease.clone());
+        DeliveryRunner::spawn(state, turns, lease);
     }
 
     /// Send the compactions agents asked for that a drain took, off this
@@ -69,6 +78,7 @@ impl DeliveryRunner {
         state: &Arc<Mutex<AppState>>,
         timer: &FrameTimer,
         compactions: Vec<CompactionSend>,
+        lease: Option<AdmissionLease>,
     ) {
         if compactions.is_empty() {
             return;
@@ -77,6 +87,7 @@ impl DeliveryRunner {
             let state = Arc::clone(state);
             let clock = Arc::clone(timer.clock());
             move || {
+                let _lease = lease;
                 let timer = clock.frame(AGENT_DELIVERY_METHOD);
                 for compaction in &compactions {
                     send_compaction(&state, &timer, compaction);
@@ -145,16 +156,24 @@ impl DeliveryRunner {
     /// it: a single-threaded runtime runs a spawned task only when something
     /// awaits, and a delivery that waited for its caller to await would be a
     /// delivery that never left the frame.
-    pub(in crate::app) fn spawn(state: &Arc<Mutex<AppState>>, turns: PendingTurns) {
+    pub(in crate::app) fn spawn(
+        state: &Arc<Mutex<AppState>>,
+        turns: PendingTurns,
+        lease: Option<AdmissionLease>,
+    ) {
         if turns.is_empty() {
             return;
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            let _lease = lease;
             DeliveryRunner::run(state, turns);
             return;
         };
         let state = Arc::clone(state);
-        let delivering = runtime.spawn_blocking(move || DeliveryRunner::run(&state, turns));
+        let delivering = runtime.spawn_blocking(move || {
+            let _lease = lease;
+            DeliveryRunner::run(&state, turns)
+        });
         runtime.spawn(async move {
             if let Err(joined) = delivering.await {
                 eprintln!("agent delivery failed: {joined}");

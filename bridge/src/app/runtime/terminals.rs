@@ -253,6 +253,7 @@ pub(in crate::app) fn session_hello(
     } else {
         changes.subscribe_legacy(sender);
     }
+    timer.lock(state).subscribe_update_status(sender);
     timer.clock().clients().record(
         sender.session_id(),
         DeclaredClient::from_hello_params(params),

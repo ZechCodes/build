@@ -10,6 +10,7 @@ import { railViewSwitchHtml } from "./railMode.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import { ICON_PIN, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
+import { anyBridgeUpdateAvailable, onBridgeUpdatesChanged } from "./bridgeUpdates.js";
 import { syncPinButton } from "./pinControl.js";
 import "../styles/shell.css";
 
@@ -302,6 +303,19 @@ function chooseView(view) {
 
 let mounted = false;
 
+export function paintBridgeUpdateMark() {
+  if (typeof document === "undefined") return;
+  const account = $("#nav-account");
+  if (!account) return;
+  const available = anyBridgeUpdateAvailable(App.devices);
+  account.classList.toggle("has-bridge-update", available);
+  account.setAttribute("aria-label", available ? "Settings; bridge update available" : "Settings");
+  account.querySelector(".bridge-update-dot")?.remove();
+  if (available) account.insertAdjacentHTML("beforeend", '<span class="bridge-update-dot" aria-hidden="true"></span>');
+}
+
+onBridgeUpdatesChanged(paintBridgeUpdateMark);
+
 function paintAttentionCount(count) {
   const open = $("#inbox-open");
   if (!open) return;
@@ -321,6 +335,7 @@ export function initInboxRail() {
   mounted = true;
   const account = $("#nav-account");
   if (account) account.innerHTML = ICON_SETTINGS;
+  paintBridgeUpdateMark();
   const startsCollapsed = railStartsCollapsed(null, window.innerWidth);
   setInboxCollapsed(startsCollapsed, { animate: false, persist: false, reveal: false });
   collapseRecord = watchUiState(COLLAPSED_ADDRESS, (saved) => {

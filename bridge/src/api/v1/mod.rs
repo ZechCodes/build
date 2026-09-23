@@ -31,7 +31,8 @@
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
 //! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`),
-//! [`workspace`] (`workspace.*`), [`issues`] (`issues.*`, the per-project
+//! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
+//! `bridge.check_update`, `bridge.install_update`), [`issues`] (`issues.*`, the per-project
 //! tracker — NOT `lifecycle`'s singular `issue.*`, which is the retired plan
 //! flow).
 
@@ -41,6 +42,7 @@ pub mod git;
 pub mod issues;
 pub mod lifecycle;
 pub mod thread;
+pub mod updates;
 pub mod workspace;
 
 use crate::api::ApiError;
@@ -264,7 +266,7 @@ pub fn call_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 7] {
+fn families() -> [&'static [(&'static str, Handler)]; 8] {
     [
         board::methods(),
         changes::methods(),
@@ -272,6 +274,7 @@ fn families() -> [&'static [(&'static str, Handler)]; 7] {
         git::methods(),
         issues::methods(),
         lifecycle::methods(),
+        updates::methods(),
         workspace::methods(),
     ]
 }

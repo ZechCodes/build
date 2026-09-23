@@ -57,6 +57,14 @@ impl AppState {
         dir: &Path,
         version: &str,
     ) -> Vec<String> {
+        let admission = state.lock().unwrap().update_admission();
+        let _lease = match admission {
+            Some(gate) => match gate.try_enter() {
+                Some(lease) => Some(lease),
+                None => return Vec::new(),
+            },
+            None => None,
+        };
         let wanted = resume_is_wanted(dir, |key| std::env::var(key).ok());
         clear_opt_out_file(dir);
         let Some(roster) = ResumeRoster::take(dir) else {

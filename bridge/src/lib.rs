@@ -97,6 +97,7 @@ pub mod tracker;
 pub mod transport;
 pub mod transport_ledger;
 pub mod transport_report;
+pub mod update;
 pub mod watch;
 pub mod workspace;
 pub mod worktree;

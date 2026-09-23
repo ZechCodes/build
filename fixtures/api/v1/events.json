@@ -309,6 +309,22 @@
       "id": "run-7"
     },
     {
+      "type": "bridge.update_status",
+      "running_version": "0.2.0",
+      "platform": "linux-x86_64",
+      "development_build": false,
+      "latest_release": {
+        "version": "0.3.0",
+        "tag": "bridge-v0.3.0",
+        "published_at": "2026-09-23T20:00:00Z"
+      },
+      "last_checked_at": "2026-09-23T20:10:00Z",
+      "state": "available",
+      "last_error": null,
+      "update_available": true,
+      "can_install": true
+    },
+    {
       "type": "term.output",
       "term_id": "term-1",
       "data": "aGVsbG8gd29ybGQK",

@@ -302,8 +302,10 @@ describe("the connect sequence", () => {
     await context.rpc("board.list", {});
 
     expect(greetings.greet).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(overTheChannel(link.app).sort()).toEqual(["board.list", "bridge.update_status"]);
+    });
     expect(overTheRelay()).toEqual(["rtc.offer"]);
-    expect(overTheChannel(link.app)).toEqual(["board.list"]);
   });
 
   it("blocks the device when the ICE servers cannot be minted, and does not try again", async () => {

@@ -66,6 +66,7 @@ use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
 use build_bridge::transport_report::TransportReporter;
+use build_bridge::update::{UpdateConfig, UpdateService};
 use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
@@ -78,15 +79,30 @@ async fn main() {
         Some("backup") => backup(),
         Some("install-service") => install_service().await,
         Some("uninstall-service") => uninstall_service(),
+        Some("update-helper") => update_helper(),
         Some("--version") | Some("-V") => {
             println!("build-bridge {}", env!("CARGO_PKG_VERSION"));
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|pair|backup <path>|provision|install-service|uninstall-service|--version]"
+                "unknown command: {other}\nusage: build-bridge [serve|pair|backup <path>|provision|install-service|uninstall-service|update-helper <job-path>|--version]"
             );
             std::process::exit(2);
         }
+    }
+}
+
+/// Run independently of the daemon while its executable is replaced and
+/// restarted. The job file is written by the update backend before spawning.
+fn update_helper() {
+    let Some(job_path) = std::env::args().nth(2) else {
+        eprintln!("usage: build-bridge update-helper <job-path>");
+        std::process::exit(2);
+    };
+    if let Err(error) = build_bridge::update::installer::run_helper(std::path::Path::new(&job_path))
+    {
+        eprintln!("update helper: {error}");
+        std::process::exit(1);
     }
 }
 
@@ -149,6 +165,12 @@ async fn serve() {
     // the peer transport (DTLS) all run on the one provider this installs.
     relay::install_crypto_provider();
     adopt_login_path();
+    // A power loss can remove the helper's transient service while leaving a
+    // candidate that fails before full app construction. Relaunch recovery as
+    // early as possible so that candidate cannot strand its prior binary.
+    if let Err(error) = build_bridge::update::installer::ensure_recovery(&home_dir()) {
+        eprintln!("bridge update recovery: {error}");
+    }
     let runtime = match resolve_runtime_paths() {
         Ok(runtime) => runtime,
         Err(error) => exit_startup(error),
@@ -159,11 +181,47 @@ async fn serve() {
         Ok(loaded) => loaded,
         Err(error) => exit_startup(error),
     };
-    let app = match construct_app(&runtime, &loaded.identity) {
+    let app = match construct_app(&runtime, &loaded.identity)
+        .and_then(|app| configure_updates(app, &runtime))
+    {
         Ok(app) => app,
         Err(error) => exit_startup(error),
     };
     run_daemon(runtime, loaded.identity, loaded.transport, app).await;
+}
+
+fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, String> {
+    let home = home_dir();
+    let running_binary = std::env::current_exe()
+        .map_err(|error| format!("cannot locate running bridge: {error}"))?;
+    let managed_binary = build_bridge::update::provenance::managed_binary(&home, &running_binary);
+    let platform_key = build_bridge::update::release::platform_key();
+    let development_build = managed_binary.is_err() || platform_key.is_err();
+    if let Err(reason) = &managed_binary {
+        eprintln!("bridge updates: read only ({reason})");
+    }
+    if let Err(reason) = &platform_key {
+        eprintln!("bridge updates: read only ({reason})");
+    }
+    let platform = platform_key
+        .map(str::to_string)
+        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH));
+    let config = UpdateConfig {
+        status_path: runtime.tasks_dir.join("bridge-update-status.json"),
+        result_path: build_bridge::update::installer::result_path(&home),
+        running_version: env!("CARGO_PKG_VERSION").to_string(),
+        platform,
+        development_build,
+        check_interval: Duration::from_secs(24 * 60 * 60),
+    };
+    let backend = build_bridge::update::release::ProductionBackend::new(
+        home,
+        runtime.tasks_dir.clone(),
+        managed_binary.unwrap_or(running_binary),
+    );
+    let service = UpdateService::new(config, Arc::new(backend))
+        .map_err(|error| format!("cannot load bridge update state: {error}"))?;
+    Ok(app.with_update_service(Arc::new(service)))
 }
 
 fn adopt_login_path() {
@@ -442,17 +500,6 @@ async fn run_daemon(
         runtime.mcp_socket
     );
     let app = app.shared();
-    AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
-    let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(300);
-    AppState::spawn_idle_monitor(
-        app.clone(),
-        Duration::from_secs(idle_threshold),
-        Duration::from_secs(5),
-    );
-    AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     let handler = AppState::handler(app.clone());
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
@@ -476,6 +523,7 @@ async fn run_daemon(
     // open a session to — and saying "online" for it is what had this account
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
+    spawn_update_heartbeat(home_dir(), app.clone());
     let _presence_beats = PresenceReporter::start(&runtime.config.api_url, &identity, &reachable);
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
@@ -488,6 +536,24 @@ async fn run_daemon(
         intake.clone(),
         runtime.ice_policy.clone(),
     ));
+
+    // While a candidate binary is on probation, its task-store copy may be
+    // restored. Keep it off the relay until the helper commits: no browser or
+    // agent can create work in state that might be discarded. The local health
+    // beat still proves the daemon initialized and its app lock is responsive.
+    wait_for_update_probation(&home_dir()).await;
+    AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
+    let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(300);
+    AppState::spawn_idle_monitor(
+        app.clone(),
+        Duration::from_secs(idle_threshold),
+        Duration::from_secs(5),
+    );
+    AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
+    spawn_update_checks(app.clone());
 
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed
@@ -606,7 +672,76 @@ fn spawn_resume_after_restart(
                 WAIT_FOR_RELAY.as_secs()
             );
         }
-        AppState::resume_after_restart(&app, &tasks_dir, env!("CARGO_PKG_VERSION"));
+        let admission = {
+            app.lock()
+                .unwrap()
+                .update_service()
+                .map(|service| service.admission())
+        };
+        // An unfinished helper may keep the gate closed beyond the relay
+        // wait. Hold admission across the roster read so an idle handoff
+        // cannot begin between the wake and the resumed turns.
+        let lease = match admission {
+            Some(gate) => Some(gate.enter_when_open().await),
+            None => None,
+        };
+        if let Err(joined) = tokio::task::spawn_blocking(move || {
+            let _lease = lease;
+            AppState::resume_after_restart(&app, &tasks_dir, env!("CARGO_PKG_VERSION"));
+        })
+        .await
+        {
+            eprintln!("resume: startup task failed: {joined}");
+        }
+    });
+}
+
+async fn wait_for_update_probation(home: &std::path::Path) {
+    while build_bridge::update::installer::probation_active(home) {
+        if let Err(error) = build_bridge::update::installer::ensure_recovery(home) {
+            eprintln!("bridge update recovery: {error}");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn spawn_update_checks(app: std::sync::Arc<std::sync::Mutex<AppState>>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            let (service, working_agents) = {
+                let app = app.lock().unwrap();
+                (app.update_service(), app.update_has_working_agents())
+            };
+            if let Some(service) = service {
+                if let Err(error) = service.tick(working_agents).await {
+                    eprintln!("bridge update tick: {error}");
+                }
+            }
+        }
+    });
+}
+
+fn spawn_update_heartbeat(
+    home: std::path::PathBuf,
+    app: std::sync::Arc<std::sync::Mutex<AppState>>,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            // The helper requires a fresh beat from a fully initialized
+            // daemon whose app state remains responsive. The relay is held
+            // closed until this probation ends, so it is not a health input.
+            if app.try_lock().is_ok() {
+                if let Err(error) =
+                    build_bridge::update::installer::heartbeat(&home, env!("CARGO_PKG_VERSION"))
+                {
+                    eprintln!("bridge update heartbeat: {error}");
+                }
+            }
+        }
     });
 }
 
@@ -752,10 +887,36 @@ fn manager_or_exit() -> Box<dyn ServiceManager> {
 /// What the daemon starts with: every BRIDGE_* var set right now, minus the
 /// device's key material, plus the two URLs and the identity file pinned to
 /// their resolved values so the daemon can't drift from what the gate just
-/// verified, plus the installing shell's PATH.
+/// verified, plus the installing shell's PATH. A validated release-repository
+/// override follows the service so daily checks use the same source.
 fn daemon_environment(cfg: &BridgeConfig) -> Vec<(String, String)> {
-    let inherited = std::env::vars().filter(|(key, _)| key.starts_with("BRIDGE_"));
+    let inherited = std::env::vars().filter(|(key, value)| {
+        if key.starts_with("BRIDGE_") {
+            return true;
+        }
+        if matches!(key.as_str(), "BUILD_RELEASES_REPO" | "RELEASES_REPO") {
+            if valid_release_repo(value) {
+                return true;
+            }
+            eprintln!("ignoring invalid {key} for installed bridge service");
+        }
+        false
+    });
     service_environment(inherited.collect(), cfg, || std::env::var("PATH").ok())
+}
+
+fn valid_release_repo(value: &str) -> bool {
+    let Some((owner, repo)) = value.split_once('/') else {
+        return false;
+    };
+    [owner, repo].into_iter().all(|part| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    })
 }
 
 /// The rule `daemon_environment` applies to the variables it collected, apart
@@ -935,7 +1096,15 @@ fn mcp_stdio() {
 
 #[cfg(test)]
 mod tests {
-    use super::{service_environment, PairingOutcome};
+    use super::{service_environment, valid_release_repo, PairingOutcome};
+
+    #[test]
+    fn release_repo_override_is_one_safe_owner_and_repo() {
+        assert!(valid_release_repo("ZechCodes/build-releases"));
+        assert!(!valid_release_repo("ZechCodes/build-releases/other"));
+        assert!(!valid_release_repo("../build-releases"));
+        assert!(!valid_release_repo("ZechCodes/repo\nExecStart=/other"));
+    }
 
     /// A config as `install-service` resolves one, from no environment at all.
     fn config() -> build_bridge::config::BridgeConfig {

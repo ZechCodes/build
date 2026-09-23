@@ -48,6 +48,7 @@ export const EVENT_TYPES = Object.freeze([
   "term.reset",
   "term.closed",
   "rtc.ice",
+  "bridge.update_status",
 ]);
 
 /** What a bridge that pushes but names no event list sends: the legacy pair. */

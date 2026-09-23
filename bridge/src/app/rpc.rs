@@ -61,6 +61,7 @@ pub(in crate::app) fn dispatch_frame(
         let (changes, watchers) = {
             let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
+            app.unsubscribe_update_status(sender.session_id());
             (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());
@@ -81,6 +82,26 @@ pub(in crate::app) fn dispatch_frame(
         .get("params")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // Keep a request admitted through its off-lock git work and queue drain.
+    // The idle updater can claim the bridge only between complete requests.
+    let admission = if matches!(
+        method.as_str(),
+        "ping" | "bridge.stats" | "bridge.update_status"
+    ) {
+        None
+    } else {
+        state.lock().unwrap().update_admission()
+    };
+    let _lease = match admission {
+        Some(gate) => match gate.try_enter() {
+            Some(lease) => Some(lease),
+            None => {
+                return api::reply(id, Err(ApiError::busy("bridge update handoff in progress")))
+            }
+        },
+        None => None,
+    };
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
         Some(outcome) => outcome.map_err(|error| {
@@ -277,6 +298,8 @@ fn allowed_during_project_deletion(method: &str) -> bool {
         "ping"
             | "session.hello"
             | "bridge.stats"
+            | "bridge.update_status"
+            | "bridge.check_update"
             | "changes.list"
             | "changes.subscribe"
             | "changes.unsubscribe"

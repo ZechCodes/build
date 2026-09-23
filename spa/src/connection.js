@@ -61,6 +61,7 @@ import { followTerminalDevice, provideTerminalSessions, terminalDeviceId } from 
 import { LIVENESS_TIMEOUT } from "./terminal/session.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
+import { refreshBridgeUpdateStatus } from "./core/bridgeUpdates.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
@@ -697,6 +698,8 @@ export function greetLiveBridge(context, {
       // milliseconds away.
       releaseDeferredAttachments(session.deviceId, repository);
       void repository?.resolveUncertainPosts();
+      void refreshBridgeUpdateStatus(session.deviceId, session.call, () =>
+        isAuthoritative() && contextFor(session.deviceId)?.session === session).catch(() => {});
     }
     return settled;
   }).catch((error) => {

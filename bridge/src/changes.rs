@@ -124,7 +124,12 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. The first two
 /// are the legacy pair; `changes` is what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 3] = ["board.changed", "entity.changed", CHANGES_EVENT];
+pub const ANNOUNCED_EVENTS: [&str; 4] = [
+    "board.changed",
+    "entity.changed",
+    CHANGES_EVENT,
+    "bridge.update_status",
+];
 
 // ------------------------------------------------------------ the wire ---
 

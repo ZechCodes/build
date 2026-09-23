@@ -29,6 +29,7 @@ mod session_summaries;
 mod streams;
 mod tracker;
 mod transactions;
+mod updates;
 mod watchers;
 mod workspaces;
 mod worktrees;
@@ -312,6 +313,10 @@ pub struct AppState {
     /// Single-flight per capture: one router at a time decides where one thing
     /// the user said goes, however many times something asks for it to.
     router_sessions: HashMap<String, crate::router::RouterSession>,
+    /// Update checks and installs live outside the app mutex and survive app
+    /// requests finishing. Each greeted session gets one status watch task.
+    updates: Option<Arc<crate::update::UpdateService>>,
+    update_subscriptions: HashMap<String, tokio::task::JoinHandle<()>>,
     /// Build's own state directory, fixed at construction. Router scratch is
     /// cut here, beside the store; attaching a store validates its parent and
     /// never changes this root.
@@ -575,6 +580,8 @@ impl AppState {
             store: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
+            updates: None,
+            update_subscriptions: HashMap::new(),
             state_root,
             bridge_exe,
             router_choice: None,
@@ -702,6 +709,42 @@ impl AppState {
             app.watchers.set_roots(app.worktree_roots());
             (Arc::clone(&app.changes), Arc::clone(&app.watchers))
         };
+        if let Some(updates) = state.lock().unwrap().update_service() {
+            let weak = Arc::downgrade(&state);
+            let probe = Arc::new(move || {
+                weak.upgrade()
+                    .and_then(|state| {
+                        state
+                            .try_lock()
+                            .ok()
+                            .map(|app| app.update_has_working_agents())
+                    })
+                    .unwrap_or(true)
+            });
+            assert!(
+                updates.set_working_agents_probe(probe).is_ok(),
+                "an update service belongs to one shared app state"
+            );
+            let weak = Arc::downgrade(&state);
+            let resume = Arc::new(move || {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                let drain = move || {
+                    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+                    DeliveryRunner::drain(&state, &clock.frame("update.admission_reopened"));
+                };
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    runtime.spawn_blocking(drain);
+                } else {
+                    drain();
+                }
+            });
+            assert!(
+                updates.admission().set_resume_work(resume).is_ok(),
+                "an update admission gate belongs to one shared app state"
+            );
+        }
         // The flusher runs on a task of its own and never takes this mutex —
         // that is the whole reason the bus is not a field it would have to
         // lock. A build with no runtime under it (the synchronous unit tests)

@@ -115,7 +115,12 @@ async fn the_greeting_announces_push_events() {
     );
     assert_eq!(
         hello["result"]["events"],
-        json!(["board.changed", "entity.changed", "changes"]),
+        json!([
+            "board.changed",
+            "entity.changed",
+            "changes",
+            "bridge.update_status"
+        ]),
         "{hello:?}"
     );
     // Step 1.5: what a Part 1 adapter reads instead of probing — now
@@ -137,7 +142,7 @@ async fn the_greeting_announces_push_events() {
     // number, so the number moving with the announcement is the contract —
     // which is why it is a literal here and an edit every time it moves. 1.3.0
     // is the issue tracker: ten `issues.*` verbs and an `issues` change kind.
-    assert_eq!(hello["result"]["api_version"], "1.20.0", "{hello:?}");
+    assert_eq!(hello["result"]["api_version"], "1.21.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

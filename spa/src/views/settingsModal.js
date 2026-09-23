@@ -5,6 +5,7 @@ import { renderSettings } from "./settings.js";
 import { renderDeviceSettings } from "./deviceSettings.js";
 import { renderArchive } from "./archive.js";
 import { onDevicesChanged, paintDevicePicker, readCachedDevices } from "../devices.js";
+import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged } from "../core/bridgeUpdates.js";
 
 export function isSettingsRoute(route) {
   return route.name === "device" || route.name === "account";
@@ -59,7 +60,10 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   };
   const paintSidebar = () => {
     const html = `<button class="btn" data-local ${selected === null ? 'aria-current="page"' : ""}>Local settings</button>
-      <h3>Devices</h3>${App.devices.map((device) => `<button class="btn" data-settings-device="${esc(device.id)}" ${selected === device.id ? 'aria-current="page"' : ""}>${esc(device.name)}<small>${esc(device.status)}</small></button>`).join("")}
+      <h3>Devices</h3>${App.devices.map((device) => {
+        const update = device.status === "online" && bridgeUpdateAvailable(bridgeUpdateStatus(device.id));
+        return `<button class="btn${update ? " has-bridge-update" : ""}" data-settings-device="${esc(device.id)}" ${selected === device.id ? 'aria-current="page"' : ""}>${esc(device.name)}<small>${esc(device.status)}${update ? '<span class="bridge-update-sidebar-note">Update available</span>' : ""}</small>${update ? '<span class="bridge-update-dot" aria-hidden="true"></span>' : ""}</button>`;
+      }).join("")}
       ${App.devices.length ? "" : '<p class="dim">No paired devices</p>'}
       <a class="btn settings-archive" href="#/account/archive" ${selected === "archive" ? 'aria-current="page"' : ""}>Archived work</a>`;
     if (sidebarHtml === html) return;
@@ -141,12 +145,14 @@ export function renderSettingsModal(returnRoute = { name: "inbox" }) {
   document.addEventListener("keydown", onKeydown, true);
   const unsubscribeState = onDeviceStateChanged(paintSidebar);
   const unsubscribeDevices = onDevicesChanged(paintSidebar);
+  const unsubscribeUpdates = onBridgeUpdatesChanged(paintSidebar);
   void readCachedDevices();
   const dispose = () => {
     generation += 1;
     disposePanel?.();
     unsubscribeState();
     unsubscribeDevices();
+    unsubscribeUpdates();
     document.removeEventListener("keydown", onKeydown, true);
     background.inert = wasInert;
     document.body.classList.remove("settings-open");

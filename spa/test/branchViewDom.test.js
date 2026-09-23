@@ -955,9 +955,7 @@ describe("the branch surface on the cache alone", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "row" },
       { ...finishableRow({ run_id: "run-1" }), deviceId: "dev-1", projectKey: "dev-1/p1" },
     );
-    for (let index = 0; index < 20; index += 1) await flush();
-
-    expect(document.querySelector("#tb-verb .btn")).toBeTruthy();
+    await vi.waitFor(() => expect(document.querySelector("#tb-verb .btn")).toBeTruthy());
   });
 
   it("says so when the cache names no checkout on this branch", async () => {

@@ -113,7 +113,6 @@ impl SettlingTurns {
         self.waiting.len()
     }
 
-    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.waiting.is_empty()
     }

@@ -214,7 +214,7 @@ describe("a long arrival", () => {
 /// that carries no envelope, which is every other message there is.
 const USER_MESSAGE_HTML = `<section class="review-thread pane-col">
     <div class="thread-title"><span class="thread-title-text">Conversation <span>1</span></span></div>
-    <nav class="thread-user-nav" aria-label="Your messages"><div class="thread-user-nav-list"><button type="button" class="thread-user-tick" data-user-tick-index="0" aria-label="Jump to your message from an earlier time"><span aria-hidden="true"></span></button></div></nav>
+    <nav class="thread-user-nav" aria-label="Your messages"><template class="thread-user-nav-source"><button type="button" class="thread-user-tick" data-key="38" data-user-tick-index="0" aria-label="Jump to your message from an earlier time"><span aria-hidden="true"></span></button></template><div class="thread-user-nav-list" data-window-start="0"><button type="button" class="thread-user-tick" data-key="38" data-user-tick-index="0" aria-label="Jump to your message from an earlier time"><span aria-hidden="true"></span></button></div></nav>
     <div class="thread-items thread-timeline"><article class="thread-message thread-comment user" data-sequence="38">
     <span class="thread-avatar" aria-hidden="true">Y</span>
     <div class="thread-comment-card">

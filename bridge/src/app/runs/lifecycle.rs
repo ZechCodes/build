@@ -590,6 +590,7 @@ impl AppState {
             .worktree
             .path
             .clone();
+        self.preserve_entity_issue_identities(&run_id)?;
         let row = PendingRow::discarding(run_id.clone(), project_id, title).on_checkout(
             crate::worktree::external_worktree_id(&Self::canonical_root(&worktree_path)),
         );
@@ -881,6 +882,7 @@ impl AppState {
                 run_state_str(&active.run.state)
             ));
         }
+        self.preserve_entity_issue_identities(&run_id)?;
         if let Some(store) = &self.store {
             store
                 .delete_run(&run_id)

@@ -564,11 +564,12 @@ export function mountIssuesPane(host, options) {
   // there, so a handler attached here survives every later paint; a handler
   // attached on a patch is a handler attached twice.
 
-  /** The one press on a row: the assignee. */
+  /** Delegate from the retained row: gaining or losing an agent link changes
+   *  the button's surrounding markup, so a patch can replace the button. */
   function wireRow(element) {
-    const assign = element.querySelector("[data-issue-assign]");
-    if (!assign) return;
-    assign.onclick = (event) => {
+    element.onclick = (event) => {
+      const assign = event.target.closest("[data-issue-assign]");
+      if (!assign || !element.contains(assign)) return;
       event.preventDefault();
       openPicker(assign.dataset.issueAssign);
     };

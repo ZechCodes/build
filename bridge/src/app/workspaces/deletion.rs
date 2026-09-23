@@ -130,7 +130,7 @@ impl AppState {
         if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
             return Err("Stop running agents before deleting the workspace".to_string());
         }
-        self.remove_workspace(&workspace, params, None);
+        self.remove_workspace(&workspace, params, None)?;
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
     }
 
@@ -158,7 +158,16 @@ impl AppState {
         workspace: &Workspace,
         params: &Value,
         finish: Option<PathBuf>,
-    ) {
+    ) -> Result<(), String> {
+        self.preserve_project_issue_identities(&workspace.project_id)?;
+        // Done closes linked open issues only after identity preservation
+        // succeeds. Do this before retiring agents, so retirement also drops
+        // any notices the automatic close queues for this workspace.
+        // Eligibility has been accepted; a later disk failure does not undo
+        // the completed work or reopen its issues.
+        if finish.is_some() {
+            self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
+        }
         let root = Self::canonical_root(&workspace.root);
         let run_ids = self.runs_under(&root);
         let retirements = self.retire_everything_at(&root);
@@ -177,6 +186,7 @@ impl AppState {
             #[cfg(test)]
             gate: None,
         })));
+        Ok(())
     }
 
     /// Everything that makes this workspace not Build's to remove, whether the

@@ -744,6 +744,39 @@ describe("the two presses", () => {
     expect(openAssigneePicker).toHaveBeenCalled();
   });
 
+  it.each(["list", "board"])("keeps the %s assignment press working when its cached destination disappears and returns", async (view) => {
+    const workspace = { id: "ws-history", workspace_id: "ws-history", name: "History", projectKey: PROJECT_KEY };
+    const localFeed = { workspaces: [workspace], items: [] };
+    const held = issue({
+      assignee: { kind: "agent", agent_id: "agent-history" },
+      identities: { "agent-history": { agent_id: "agent-history", name: "Finisher", ordinal: 1,
+        workspace_id: workspace.id, workspace_name: workspace.name, provider: "codex_app_server", available: true } },
+    });
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [held], columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ view, feed: () => localFeed });
+
+    for (const available of [true, false, true]) {
+      localFeed.workspaces = available ? [workspace] : [];
+      pane.feedMoved();
+      await flush();
+      const link = host.querySelector(".issue-assignee-link");
+      expect(Boolean(link)).toBe(available);
+      const priorCalls = openAssigneePicker.mock.calls.length;
+      if (link) {
+        const navigates = link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+        expect(navigates).toBe(true);
+        expect(openAssigneePicker).toHaveBeenCalledTimes(priorCalls);
+      }
+      const press = host.querySelector("[data-issue-assign]");
+      // The deleted agent's name and harness are nested inside this button.
+      // Clicking the label must work just like clicking the button itself.
+      (press.querySelector(".issue-assignee") || press).click();
+      expect(openAssigneePicker).toHaveBeenCalledTimes(priorCalls + 1);
+      expect(openAssigneePicker.mock.lastCall[0].issue.id).toBe(held.id);
+    }
+  });
+
   // #57: filing happens IN the tab. No dialog, no navigation — the list the
   // issue is being filed against stays on screen while it is written.
   it("opens the composer in place, above the list and over nothing", async () => {

@@ -532,6 +532,10 @@ impl AppState {
             }
             MergeCleanup::Keep => {}
             MergeCleanup::Release => {
+                if let Err(error) = self.preserve_entity_issue_identities(run_id) {
+                    eprintln!("merge cleanup release {run_id}: {error}; keeping the run");
+                    return;
+                }
                 if let Some(store) = &self.store {
                     if let Err(e) = store.delete_run(run_id) {
                         eprintln!("merge cleanup release {run_id}: run store: {e}");

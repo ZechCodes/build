@@ -98,6 +98,38 @@ fn retain_known_fields(
 }
 
 impl AppState {
+    /// Migrate every issue before a roster can disappear. An old author's
+    /// only reference may be in a closed, unlinked issue's timeline; reads
+    /// and the workspace's automatic close operation cannot cover that case.
+    /// A failed save refuses removal while the source records still exist.
+    pub(in crate::app) fn preserve_project_issue_identities(
+        &self,
+        project_id: &str,
+    ) -> Result<(), String> {
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
+        let project_path = self.tracker_project_path(project_id)?;
+        for issue in store
+            .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
+            .stored()?
+        {
+            let timeline = store.load_tracker_timeline(&issue.id).stored()?;
+            self.backfill_issue_identities(issue, &timeline)?;
+        }
+        Ok(())
+    }
+
+    pub(in crate::app) fn preserve_entity_issue_identities(
+        &self,
+        entity_id: &str,
+    ) -> Result<(), String> {
+        if let Some(project_id) = self.projects.project_id_of(entity_id) {
+            self.preserve_project_issue_identities(project_id)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn issue_json_with_live_identities(
         &self,
         project_id: &str,

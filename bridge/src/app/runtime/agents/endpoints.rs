@@ -1298,6 +1298,7 @@ impl AppState {
                  session is running"
             ));
         }
+        self.preserve_entity_issue_identities(&entity_id)?;
         let removed_agent_revived_clear = self
             .entity_agents(&entity_id)
             .ok()

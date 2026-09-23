@@ -500,6 +500,7 @@ impl AppState {
         }) {
             return Err("plan.delete: a non-terminal run still implements this plan".to_string());
         }
+        self.preserve_entity_issue_identities(&plan_id)?;
         if let Some(store) = &self.store {
             store
                 .delete_plan(&plan_id)

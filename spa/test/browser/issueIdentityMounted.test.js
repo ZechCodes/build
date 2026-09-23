@@ -21,6 +21,52 @@ const deviceShim = {
   },
 };
 
+it.each(["list", "board"])("opens the mounted %s assignment picker before and after its cached target disappears", async (view) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, '<main id="issues"></main>', {
+      basePath, styles: `@import url("${basePath}src/styles/issues.css"); body{display:block}`,
+    });
+    await loadBrowserModules(page, {
+      cache: "src/core/trackerCache.js", issuesPane: "src/core/trackerIssuesPane.js",
+    }, basePath);
+    await page.evaluate(async ({ fixture, view }) => {
+      const { cache, issuesPane } = window.__layoutModules;
+      const issue = structuredClone(fixture.result.issue);
+      const workspace = { id: "ws-3f2a91c4", workspace_id: "ws-3f2a91c4", name: "spa-flaky-tests", projectKey: "dev-1|proj-1" };
+      const feed = { projects: [{ id: "proj-1", name: "Build", projectKey: "dev-1|proj-1" }], workspaces: [workspace], items: [] };
+      await cache.writeIssuesRecord("dev-1", "proj-1", { issues: [issue], columns: [] });
+      const pane = issuesPane.mountIssuesPane(document.querySelector("#issues"), {
+        deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1", view,
+        feed: () => feed, callRpc: () => new Promise(() => {}),
+        catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
+      });
+      window.__assignmentMounted = { pane, feed, workspace };
+    }, { fixture: answer, view });
+
+    const press = page.locator("#issues [data-issue-assign]");
+    await press.waitFor();
+    for (const available of [true, false, true]) {
+      await page.evaluate((available) => {
+        const { pane, feed, workspace } = window.__assignmentMounted;
+        feed.workspaces = available ? [workspace] : [];
+        pane.feedMoved();
+      }, available);
+      expect(await page.locator("#issues .issue-assignee-link").count()).toBe(available ? 1 : 0);
+      if (!available) {
+        expect(await press.textContent()).toContain("spa-flaky-tests");
+        expect(await press.locator("[data-harness-icon='codex_app_server']").count()).toBe(1);
+      }
+      await press.click();
+      const picker = page.locator("#issue-assign-scrim [role='dialog']");
+      await picker.waitFor({ state: "visible", timeout: 5_000 });
+      expect(await picker.locator("h3").textContent()).toBe(`Assign #${answer.result.issue.number}`);
+      await picker.locator("[data-assign-cancel]").click();
+      await picker.waitFor({ state: "detached" });
+    }
+    await page.evaluate(() => window.__assignmentMounted.pane.dispose());
+  }, { plugins: [deviceShim] });
+}, 30_000);
+
 it("opens each unwatched identity from mounted issue, list, board and notice, then removes deleted routes", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     const errors = [];

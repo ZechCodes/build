@@ -474,7 +474,7 @@ describe("a branch on another device", () => {
   it("the view calls the route device's call, not the home device's", async () => {
     await mountTheirs();
 
-    expect(reachedGit(theirCall)).toBe(true);
+    await vi.waitFor(() => expect(reachedGit(theirCall)).toBe(true));
     expect(reached(theirCall, "branch.get")).toBe(false);
     expect(reachedGit(bridge.call)).toBe(false);
   });

@@ -37,10 +37,10 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 const { resetApplication } = await import("../src/app.js");
 const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
-const { detailLevelKey } = await import("../src/core/conversationDetail.js");
+const { uiAddress } = await import("../src/core/localUiState.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
-const { wipeCache } = await import("../src/core/localCache.js");
+const { wipeCache, writeCached, readCached } = await import("../src/core/localCache.js");
 const { writeRailBoard, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const DEVICE_ID = "device-1";
@@ -197,8 +197,11 @@ const mountRelayRail = async () => {
 const choose = async (level) => {
   menuCaret().click();
   menuItem(`detail:${level}`).click();
-  await flush();
+  await vi.waitFor(() => expect(markedLevel()).toBe(`detail:${level}`));
 };
+const detailAddress = (entityId, conversationId) => uiAddress({
+  deviceId: DEVICE_ID, entityId, view: "thread", kind: "filter", sub: conversationId,
+});
 
 beforeEach(async () => {
   document.body.innerHTML = '<div id="agent-rail"></div>';
@@ -373,7 +376,7 @@ describe("the level a conversation opens at", () => {
   });
 
   it("gives way to what the reader last chose for that conversation", async () => {
-    localStorage.setItem(detailLevelKey("conversation-pa-1"), "all");
+    await writeCached(detailAddress(PROJECT_OWNER, "conversation-pa-1"), { level: "all" });
 
     await mountProjectRail();
 
@@ -388,7 +391,7 @@ describe("remembering the choice", () => {
 
     await choose("agent");
 
-    expect(localStorage.getItem(detailLevelKey("conversation-wa-1"))).toBe("agent");
+    expect((await readCached(detailAddress("run-workspace", "conversation-wa-1"))).value.level).toBe("agent");
   });
 
   it("holds through a remount", async () => {
@@ -400,7 +403,7 @@ describe("remembering the choice", () => {
 
     await mountWorkspaceRail();
 
-    expect(markedLevel()).toBe("detail:messages");
+    await vi.waitFor(() => expect(markedLevel()).toBe("detail:messages"));
     expect(rowKinds().activity).toBe(0);
   });
 });

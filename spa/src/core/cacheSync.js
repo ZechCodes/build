@@ -71,6 +71,7 @@ import {
   LATEST_THREAD_ITEMS,
   PATCH_RECORD_KIND,
   UNPUSHED_COMMITS_MAX,
+  WORKING_DIFF_MAX_BYTES,
 } from "./cacheThresholds.js";
 
 export { threadWindow };
@@ -738,7 +739,7 @@ async function syncPatches(context, entityId, scope, commits, priority) {
   for (const hash of hashes) {
     if (held.includes(hash) || !context.active()) continue;
     const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES }, priority);
-    if (!answer || !context.active() || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) continue;
+    if (!answer || !context.active() || answer.truncated || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) continue;
     await writeCached(addressOf(context, entityId, PATCH_RECORD_KIND, hash), answer);
   }
 }
@@ -813,7 +814,9 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
  *  wire knows about and stays where it was put. A body in hand is the end of
  *  whatever staleness put the record here. */
 const diffRecord = (held, diff, row) => {
-  const record = { ...held, ...diff, stale: false, projectId: row?.project_id || held?.projectId || null };
+  const oversized = diff.truncated || !withinBytes(diff.patch, WORKING_DIFF_MAX_BYTES);
+  const record = { ...held, ...diff, stale: Boolean(oversized), projectId: row?.project_id || held?.projectId || null };
+  if (oversized) delete record.patch; // #94: body pages are deferred to #95.
   return record;
 };
 

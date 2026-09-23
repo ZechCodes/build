@@ -67,6 +67,10 @@ const recoveryMoved = (states) => {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  // Fake timers cannot drive fake IndexedDB's transaction callbacks. This
+  // icon suite exercises the cache-unavailable fallback; cache wiring has its
+  // own real-timer IndexedDB test.
+  globalThis.indexedDB = undefined;
   document.body.innerHTML = `<div id="connection-status" hidden></div>
     <div id="connection-announcement" aria-live="polite"></div>`;
   App.devices = [{ id: "a", name: "Studio" }, { id: "b", name: "Laptop" }];
@@ -215,7 +219,11 @@ describe("what a screen reader is told", () => {
 // answers "which ones, and what is happening to them". It is the only place
 // that says a machine is simply off.
 describe("the menu behind the ring", () => {
-  const press = () => icon().click();
+  beforeEach(() => vi.useRealTimers());
+  const press = async (open = true) => {
+    icon().click();
+    await vi.waitFor(() => expect(menu().hidden).toBe(!open));
+  };
 
   it("is shut until the ring is pressed, and says so", () => {
     mountConnectionStatus();
@@ -226,24 +234,24 @@ describe("the menu behind the ring", () => {
     expect(menu().getAttribute("role")).toBe("menu");
   });
 
-  it("opens on a press and shuts on the next one", () => {
+  it("opens on a press and shuts on the next one", async () => {
     mountConnectionStatus();
 
-    press();
+    await press();
     expect(menu().hidden).toBe(false);
     expect(icon().getAttribute("aria-expanded")).toBe("true");
     expect(host().classList.contains("is-open")).toBe(true);
 
-    press();
+    await press(false);
     expect(menu().hidden).toBe(true);
     expect(icon().getAttribute("aria-expanded")).toBe("false");
   });
 
-  it("lists every machine the account has, with what is true of each", () => {
+  it("lists every machine the account has, with what is true of each", async () => {
     contexts.live = ["a"];
     recovery.states = [{ deviceId: "b", status: "attempting", failedAttempts: 0, nextAttemptAt: null }];
     mountConnectionStatus();
-    press();
+    await press();
 
     expect(rows()).toEqual([
       { name: "Studio", status: "Connected" },
@@ -253,10 +261,10 @@ describe("the menu behind the ring", () => {
 
   // The one state the ring cannot show: a machine the account lists that holds
   // no session and has nothing being done about it.
-  it("says Offline for a machine nobody is reconnecting to", () => {
+  it("says Offline for a machine nobody is reconnecting to", async () => {
     contexts.live = ["a"];
     mountConnectionStatus();
-    press();
+    await press();
 
     expect(rows()).toEqual([
       { name: "Studio", status: "Connected" },
@@ -267,10 +275,10 @@ describe("the menu behind the ring", () => {
   // Both are connected and neither is a fault, but a reader who is on a relay
   // path is on a different connection from one who is not, and this is the
   // only place that says which.
-  it("says which way each connected machine is carrying", () => {
+  it("says which way each connected machine is carrying", async () => {
     contexts.paths = new Map([["a", "direct"], ["b", "turn"]]);
     mountConnectionStatus();
-    press();
+    await press();
 
     expect(rows()).toEqual([
       { name: "Studio", status: "Connected WebRTC" },
@@ -278,18 +286,19 @@ describe("the menu behind the ring", () => {
     ]);
   });
 
-  it("says the plain word for a machine whose path nothing has measured yet", () => {
+  it("says the plain word for a machine whose path nothing has measured yet", async () => {
     contexts.paths = new Map([["a", "direct"]]);
     mountConnectionStatus();
-    press();
+    await press();
 
     expect(rows()[1]).toEqual({ name: "Laptop", status: "Connected" });
   });
 
-  it("counts a waiting machine down on the same clock the ring uses", () => {
+  it("counts a waiting machine down on the same clock the ring uses", async () => {
     contexts.live = ["a"];
     mountConnectionStatus();
-    press();
+    await press();
+    vi.useFakeTimers();
     recoveryMoved([{ deviceId: "b", status: "waiting", failedAttempts: 1, nextAttemptAt: Date.now() + 3000 }]);
     expect(rows()[1].status).toBe("Reconnecting in 3 s");
 
@@ -301,47 +310,47 @@ describe("the menu behind the ring", () => {
     expect(menu().hidden, "the menu stays open while its rows move").toBe(false);
   });
 
-  it("shuts on Escape and hands the focus back to the ring", () => {
+  it("shuts on Escape and hands the focus back to the ring", async () => {
     mountConnectionStatus();
-    press();
+    await press();
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
-    expect(menu().hidden).toBe(true);
+    await vi.waitFor(() => expect(menu().hidden).toBe(true));
     expect(document.activeElement).toBe(icon());
   });
 
-  it("shuts on a press outside it, and leaves the focus where that press put it", () => {
+  it("shuts on a press outside it, and leaves the focus where that press put it", async () => {
     document.body.insertAdjacentHTML("beforeend", '<button id="elsewhere">elsewhere</button>');
     mountConnectionStatus();
-    press();
+    await press();
 
     const elsewhere = document.getElementById("elsewhere");
     elsewhere.dispatchEvent(new Event("pointerdown", { bubbles: true }));
 
-    expect(menu().hidden).toBe(true);
+    await vi.waitFor(() => expect(menu().hidden).toBe(true));
     expect(document.activeElement).not.toBe(icon());
   });
 
-  it("stays open when the press lands inside it", () => {
+  it("stays open when the press lands inside it", async () => {
     mountConnectionStatus();
-    press();
+    await press();
 
     menu().querySelector(".mi").dispatchEvent(new Event("pointerdown", { bubbles: true }));
 
     expect(menu().hidden).toBe(false);
   });
 
-  it("goes with the icon when the account has no machines left to list", () => {
+  it("goes with the icon when the account has no machines left to list", async () => {
     mountConnectionStatus();
-    press();
+    await press();
 
     App.devices = [];
     contexts.live = [];
     contexts.listener();
 
     expect(host().hidden).toBe(true);
-    expect(menu().hidden).toBe(true);
+    await vi.waitFor(() => expect(menu().hidden).toBe(true));
     expect(icon().getAttribute("aria-expanded")).toBe("false");
   });
 });

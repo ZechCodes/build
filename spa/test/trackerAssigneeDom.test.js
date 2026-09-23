@@ -203,8 +203,9 @@ describe("the inline issue composer", () => {
 
   /** One of the composer's own menus, by the filter it writes. */
   const menu = (name) => document.querySelector(`[data-filter-menu="${name}"]`);
-  const pickInMenu = (name, value) => {
+  const pickInMenu = async (name, value) => {
     menu(name).querySelector(".fmenu-press").click();
+    await vi.waitFor(() => expect(menu(name).querySelector(".fmenu-press").getAttribute("aria-expanded")).toBe("true"));
     const row = [...menu(name).querySelectorAll(".fmenu-row")].find((one) => one.dataset.value === value);
     row.click();
   };
@@ -280,10 +281,10 @@ describe("the inline issue composer", () => {
     open();
     type("#issue-new-title", "Kanban drag");
     type("#issue-new-body", "Dragging a card…");
-    pickInMenu("labels", "bug");
-    pickInMenu("labels", "ui");
-    pickInMenu("priority", "high");
-    pickInMenu("status", "ready");
+    await pickInMenu("labels", "bug");
+    await pickInMenu("labels", "ui");
+    await pickInMenu("priority", "high");
+    await pickInMenu("status", "ready");
     press("[data-compose-file]");
     await flush();
     expect(call.mock.calls[0][1]).toEqual({

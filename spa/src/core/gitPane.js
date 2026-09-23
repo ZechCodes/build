@@ -69,6 +69,7 @@ import { createReviewPlug } from "./changesReview.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { loadDiffSort, saveDiffSort } from "./diffSort.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { watchUiState } from "./localUiState.js";
 
 /** The unpushed answer a source read for itself, kept where the next mount of
  *  this source reads it — which is what puts the base on the rail on the first
@@ -581,6 +582,13 @@ export function mountGitPane(
     },
   });
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
+  const draftAddress = cacheAddress("ui-draft", draftKey);
+  const draftRecord = draftAddress ? watchUiState(draftAddress, (saved) => {
+    if (disposed || typeof saved?.text !== "string") return;
+    syncCommitDraft(commitDraftStash, draftKey, saved.text);
+    const field = messageBox();
+    if (field && field !== field.ownerDocument.activeElement) field.value = saved.text;
+  }, { debounceMs: 180 }) : null;
   let composer = null; // the one box under the diff, mounted once
   // What the reviewer has approved and selected on this surface's files. One
   // set of marks for every changeset it draws, its own and the review plug's,
@@ -991,6 +999,8 @@ export function mountGitPane(
         // rebuilds (which remount the pane from scratch) restore the draft.
         writeDraft: (value) => {
           syncCommitDraft(commitDraftStash, draftKey, value);
+          if (value) draftRecord?.schedule({ text: value });
+          else void draftRecord?.write({ text: "" });
           // `runWith` writes the stash before it clears the live textarea; wait
           // one microtask so the plug's busy check sees the final field value.
           queueMicrotask(() => {
@@ -1234,6 +1244,7 @@ export function mountGitPane(
   /** Drop the scope's draft everywhere it lives: the stash and the live box. */
   const clearCommitDraft = () => {
     commitDraftStash.delete(draftKey);
+    void draftRecord?.write({ text: "" });
     const box = messageBox();
     if (box) box.value = "";
   };
@@ -1357,11 +1368,13 @@ export function mountGitPane(
     // A patch the record cannot take stays in this mount's hand and nowhere
     // else — the cap is the cache's rule, not the reader's — so the record
     // goes on holding whichever files moved, and this mount holds how.
-    if (address && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) {
+    if (address && !show.truncated && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) {
       if (await recordStill(address, before)) await writeCached(address, show);
       await rereadRecords();
       return;
     }
+    // #94: show a cut or oversized patch from this answer only. #95 will
+    // retain large bodies in pages rather than a truncated cache record.
     patches.set(show.hash, show);
     headersOnly.delete(show.hash);
     if (!disposed && selected === hash) render();
@@ -1851,7 +1864,8 @@ export function mountGitPane(
     if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
   };
 
-  void standUp();
+  if (draftRecord) void draftRecord.ready.then(standUp);
+  else void standUp();
   const unwatchRecords = watchRecords();
   const checkoutWatcher = readsForItself
     ? watchChanges({
@@ -1869,6 +1883,7 @@ export function mountGitPane(
   return {
     dispose() {
       disposed = true;
+      draftRecord?.dispose();
       stopCommitMeasurement();
       stopToolbarMeasurement();
       unwatchRecords?.();

@@ -10,6 +10,7 @@
 // one thing that talks to the wire and the cache.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { withinBytes } from "./cacheLifetime.js";
 import { coordinatedRead, rpcReadKey } from "./readRequests.js";
 
 /** The local-cache kind one file's body is stored under, sub-keyed by path. */
@@ -17,6 +18,7 @@ export const FILE_DIFF_RECORD_KIND = "filediff";
 
 /** The most paths one `git.diff` takes — the bridge errors past it. */
 export const GIT_DIFF_MAX_PATHS = 50;
+export const FILE_DIFF_MAX_BYTES = 1_048_576;
 
 const filesOf = (status) => (status && status.files) || [];
 
@@ -109,6 +111,9 @@ export function createFileDiffs({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, truncated: Boolean(file.truncated) },
     }),
+    // #94: never retain a shortened or oversized patch. Until #95 adds
+    // pages, createCachedBodies paints that response directly in this mount.
+    cacheable: (body) => !body.truncated && withinBytes(body.patch, FILE_DIFF_MAX_BYTES),
     onChange,
   });
 

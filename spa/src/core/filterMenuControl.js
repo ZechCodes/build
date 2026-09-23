@@ -20,6 +20,7 @@
 
 import { esc } from "./text.js";
 import { patchList } from "./patchList.js";
+import { watchUiState } from "./localUiState.js";
 import {
   firstActive,
   menuPressLabel,
@@ -65,7 +66,7 @@ const rowHtml = (row, id, index) =>
  * and `summary` how a selection of several is said (core/filterMenu.js).
  * `onChange` is handed the whole new selection, as a list, every time.
  */
-export function mountFilterMenu(host, { name, label, multi = false, summary = "first", invent = null, onChange }) {
+export function mountFilterMenu(host, { name, label, multi = false, summary = "first", invent = null, onChange, cacheAddress = null }) {
   mounted += 1;
   const id = `fmenu-${mounted}`;
   host.insertAdjacentHTML("beforeend", frameHtml(id, name, multi));
@@ -88,6 +89,9 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   let rows = [];
   let active = -1;
   let open = false;
+  let record = null;
+  let focusSearch = false;
+  let restorePress = false;
 
   // ---- painting ------------------------------------------------------------
 
@@ -140,6 +144,11 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
 
   function show() {
     if (open) return;
+    if (record) {
+      focusSearch = true;
+      void record.write({ open: true, query: "" });
+      return;
+    }
     open = true;
     pop.hidden = false;
     press.setAttribute("aria-expanded", "true");
@@ -147,15 +156,20 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     active = -1;
     paintRows();
     search.focus();
-    document.addEventListener("pointerdown", onPointerDown, true);
+    root.ownerDocument.addEventListener("pointerdown", onPointerDown, true);
   }
 
   function shut({ focusPress = false } = {}) {
     if (!open) return;
+    if (record) {
+      restorePress = focusPress;
+      void record.write({ open: false, query: search.value });
+      return;
+    }
     open = false;
     pop.hidden = true;
     press.setAttribute("aria-expanded", "false");
-    document.removeEventListener("pointerdown", onPointerDown, true);
+    root.ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
     if (focusPress) press.focus();
   }
 
@@ -192,6 +206,7 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
   search.oninput = () => {
     active = -1;
     paintRows();
+    record?.schedule({ open: true, query: search.value });
   };
 
   press.onclick = () => (open ? shut({ focusPress: true }) : show());
@@ -209,6 +224,25 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     shut({ focusPress: true });
   };
 
+  if (cacheAddress) record = watchUiState(cacheAddress, (saved) => {
+    const nextOpen = Boolean(saved?.open);
+    open = nextOpen;
+    pop.hidden = !nextOpen;
+    press.setAttribute("aria-expanded", String(nextOpen));
+    search.value = typeof saved?.query === "string" ? saved.query : "";
+    active = -1;
+    if (nextOpen) {
+      paintRows();
+      root.ownerDocument.addEventListener("pointerdown", onPointerDown, true);
+      if (focusSearch) search.focus();
+    } else {
+      root.ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
+      if (restorePress) press.focus();
+    }
+    focusSearch = false;
+    restorePress = false;
+  }, { debounceMs: 180 });
+
   return {
     element: root,
     /** What is on offer and what is chosen. Never the open state, the query or
@@ -222,6 +256,11 @@ export function mountFilterMenu(host, { name, label, multi = false, summary = "f
     },
     isOpen: () => open,
     close: () => shut(),
-    dispose: () => shut(),
+    dispose: () => {
+      if (record) {
+        record.dispose();
+        root.ownerDocument.removeEventListener("pointerdown", onPointerDown, true);
+      } else shut();
+    },
   };
 }

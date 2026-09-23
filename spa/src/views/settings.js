@@ -28,6 +28,7 @@ import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../core/connectionDiagnostics.js";
 import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
 import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersionLine.js";
+import { uiAddress, watchUiState } from "../core/localUiState.js";
 
 /** The sha this bundle was built at, as core/version.js and core/changeEvents.js
  *  read it. `dev` for a bundle CI never stamped, which is what a dev server
@@ -125,8 +126,9 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   let disposeDevices = null;
   let disposeCatalog = null;
   let disposeCatalogState = null;
+  let disposePush = null;
   let catalogDeviceId;
-  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); });
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); disposePush?.(); });
   root.innerHTML = `
     <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -252,10 +254,9 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   }
 
   // Notifications: a single toggle backed by the browser's push subscription.
-  const refreshPushToggle = async () => {
+  const paintPushToggle = ({ state }) => {
     const toggle = $("#pushtoggle");
     const stateLabel = $("#pushstate");
-    const state = await pushState();
     if (!isCurrent()) return;
     toggle.disabled = state === "unsupported" || state === "denied";
     if (state === "unsupported") {
@@ -271,6 +272,20 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
       toggle.textContent = "Turn on notifications";
       stateLabel.textContent = "off — you'll only see changes when the app is open";
     }
+  };
+  const pushRecord = watchUiState(uiAddress({ view: "settings", kind: "push" }), paintPushToggle);
+  disposePush = pushRecord.dispose;
+  await pushRecord.ready;
+  const refreshPushToggle = async () => {
+    // The browser remains the authority. A cached last-known reading paints
+    // immediately; the fresh permission/subscription reading moves the record.
+    const state = await pushState();
+    if (!isCurrent()) return;
+    await pushRecord.write({
+      state,
+      permission: typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+      subscribed: state === "enabled",
+    });
   };
   await refreshPushToggle();
   if (!isCurrent()) return;

@@ -9,6 +9,7 @@
 // already has.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const subscribers = vi.hoisted(() => new Set());
 vi.mock("../src/core/taskFeed.js", () => ({
@@ -25,6 +26,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { filterByDevice, rememberDeviceFilter } = await import("../src/core/deviceFilter.js");
+const cache = await import("../src/core/localCache.js");
 
 const row = (deviceId, id) => ({ id, deviceId, projectKey: `${deviceId}/p1`, project_id: "p1" });
 
@@ -53,6 +55,8 @@ beforeEach(() => {
   merged = merge();
   subscribers.clear();
   localStorage.clear();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   App.deviceFilter = null;
 });
 
@@ -90,20 +94,20 @@ describe("filtering the merge to one machine", () => {
 });
 
 describe("remembering which machines the inbox shows", () => {
-  it("rememberDeviceFilter writes App.deviceFilter and build.deviceFilter, null removes the key, and every feed subscriber is handed the merge again", () => {
+  it("writes the filter to cache and repaints subscribers from its announcement", async () => {
     const painted = [];
     subscribers.add((snapshot) => painted.push(snapshot));
 
-    rememberDeviceFilter("dev-b");
+    await rememberDeviceFilter("dev-b");
 
     expect(App.deviceFilter).toBe("dev-b");
-    expect(localStorage.getItem("build.deviceFilter")).toBe("dev-b");
+    expect((await cache.readCached({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe("dev-b");
     expect(painted).toHaveLength(1);
 
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
 
     expect(App.deviceFilter).toBe(null);
-    expect(localStorage.getItem("build.deviceFilter")).toBe(null);
+    expect((await cache.readCached({ deviceId: "", entityId: "", kind: "ui-filter", sub: "inbox:device" })).value.deviceId).toBe(null);
     expect(painted).toHaveLength(2);
   });
 });

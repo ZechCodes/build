@@ -136,7 +136,7 @@ const standOnWorkspace = async () => {
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   if (!savedFeed) savedFeed = feed;
   stopToolbar();
   if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
@@ -150,7 +150,7 @@ beforeEach(() => {
   ];
   openCreateWork.mockClear();
   notifyError.mockClear();
-  rememberDeviceFilter(null);
+  await rememberDeviceFilter(null);
   workshopCall.mockReset();
   laptopCall.mockReset();
   workshopHolds({ p1: [payments] });
@@ -810,7 +810,7 @@ describe("an account with more than one device", () => {
     await refreshFeed();
     const standing = App.route;
 
-    rememberDeviceFilter("dev-2");
+    await rememberDeviceFilter("dev-2");
 
     expect([...openJump("project").querySelectorAll("[data-project]")].map((row) => row.dataset.project)).toEqual([
       "dev-2/p1",
@@ -822,7 +822,7 @@ describe("an account with more than one device", () => {
     expect(App.route).toBe(standing);
     expect(names()).toEqual(["relaydb", "build/login"]);
 
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
     feed = savedFeed;
     await refreshFeed();
   });

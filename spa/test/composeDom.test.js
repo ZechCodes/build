@@ -388,6 +388,7 @@ describe("while the device is away", () => {
     type("#compose-text", "remember the redirect");
     $("#compose-send").click();
     await vi.waitFor(() => expect(pendingCaptureRows().map((row) => row.state)).toEqual(["queued"]));
+    await vi.waitFor(() => expect($("#compose-text")).toBeNull());
 
     press("c");
     expect($(".compose-note").textContent).toBe("1 capture is waiting for Laptop.");

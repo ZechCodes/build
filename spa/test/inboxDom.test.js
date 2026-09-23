@@ -564,13 +564,13 @@ describe("an account with more than one device", () => {
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1"]);
   });
 
-  it("narrows the list to one machine without touching the route", () => {
+  it("narrows the list to one machine without touching the route", async () => {
     twoDevices();
     const standing = App.route;
-    rememberDeviceFilter("dev-2");
+    await rememberDeviceFilter("dev-2");
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-2/workspace-2"]);
     expect(App.route).toBe(standing);
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
     expect(rows()).toHaveLength(2);
   });
 
@@ -857,12 +857,12 @@ describe("a capture on another device", () => {
     document.querySelector("#compose-send").click();
     await vi.waitFor(() => expect(captureRowFor("cap-9")).toBeTruthy());
 
-    rememberDeviceFilter("dev-2");
+    await rememberDeviceFilter("dev-2");
     expect(captureRowFor("cap-9")).toBeNull();
 
-    rememberDeviceFilter("dev-1");
+    await rememberDeviceFilter("dev-1");
     expect(captureRowFor("cap-9")).toBeTruthy();
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
   });
 
   it("releases a late capture repaint when the rail unmounts", async () => {

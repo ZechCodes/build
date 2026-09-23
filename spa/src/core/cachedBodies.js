@@ -17,15 +17,17 @@
 // `ensure` is the only place that waits. `read` and `has` answer from what is
 // held right now, because a paint asks them.
 
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 
 export function createCachedBodies({
   addressOf,
   fetchMissing,
   valueOf,
+  cacheable = () => true,
   onChange = () => {},
 }) {
   const held = new Map(); // key → body
+  const direct = new Map(); // oversized response bodies, never stored (#94; paging is #95)
   const consulted = new Set(); // keys whose stored record has been looked at
   const observedAt = new Map(); // key → write stamp seen before a fetch
   const unwatches = new Map();
@@ -39,7 +41,10 @@ export function createCachedBodies({
 
   const takeRecord = (key, record) => {
     observedAt.set(key, record?.at);
-    if (record) held.set(key, record.value);
+    if (record) {
+      direct.delete(key);
+      held.set(key, record.value);
+    }
     else held.delete(key);
     return Boolean(record);
   };
@@ -87,33 +92,45 @@ export function createCachedBodies({
     return filled;
   }
 
-  /** The wire, then the write-through. The keys are handed over in one call:
-   *  batching is the caller's decision, because only the caller knows what the
-   *  verb will take. */
+  const acceptFetched = async (item, startedAt) => {
+    const { key, value } = valueOf(item);
+    const stringKey = String(key);
+    const at = addressOf(stringKey);
+    const current = at ? await readCached(at) : undefined;
+    if (at && current?.at !== startedAt.get(stringKey)) {
+      await reread(stringKey);
+      return stringKey;
+    }
+    if (!cacheable(value)) {
+      // #94: paint an oversized or cut response only in this mount; #95 adds
+      // pages. Remove an older record so a revisit cannot show stale content.
+      if (at) {
+        await deleteCached([at]);
+        await rereads.get(stringKey);
+      }
+      if (disposed) return null;
+      direct.set(stringKey, value);
+      onChange(stringKey);
+      return stringKey;
+    }
+    if (!at) {
+      held.set(stringKey, value);
+      onChange(stringKey);
+      return stringKey;
+    }
+    await writeCached(at, value);
+    await reread(stringKey, false);
+    return stringKey;
+  };
+
+  /** The wire, then the write-through. Batching belongs to the caller. */
   async function fetchBodies(keys) {
     if (!keys.length) return [];
     const startedAt = new Map(keys.map((key) => [String(key), observedAt.get(String(key))]));
     const filled = [];
     for (const item of await fetchMissing(keys)) {
-      const { key, value } = valueOf(item);
-      const stringKey = String(key);
-      const at = addressOf(stringKey);
-      if (!at) {
-        // A caller with no durable entity has nowhere to address a record.
-        // Keep that narrow fallback local; every addressable body takes the
-        // write -> announcement -> readback path below.
-        held.set(stringKey, value);
-        onChange(stringKey);
-        filled.push(stringKey);
-        continue;
-      }
-
-      // A cache writer may have won while the RPC was in flight. Never put the
-      // older answer over that announcement; take up the newer record instead.
-      const current = await readCached(at);
-      if (current?.at === startedAt.get(stringKey)) await writeCached(at, value);
-      await reread(stringKey, current?.at !== startedAt.get(stringKey));
-      filled.push(stringKey);
+      const accepted = await acceptFetched(item, startedAt);
+      if (accepted) filled.push(accepted);
     }
     return filled;
   }
@@ -132,8 +149,8 @@ export function createCachedBodies({
   }
 
   return {
-    read: (key) => held.get(String(key)),
-    has: (key) => held.has(String(key)),
+    read: (key) => direct.get(String(key)) ?? held.get(String(key)),
+    has: (key) => direct.has(String(key)) || held.has(String(key)),
     ensure,
     dispose: () => {
       disposed = true;

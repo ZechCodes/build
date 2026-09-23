@@ -131,7 +131,7 @@ describe("the list", () => {
     await mount();
     expect(titles()).toHaveLength(25);
     body.querySelector("[data-issue-more]").click();
-    expect(titles()).toHaveLength(28);
+    await vi.waitFor(() => expect(titles()).toHaveLength(28));
     expect(titles()[27]).toBe("Held 1");
   });
 

@@ -56,13 +56,25 @@ export function untouchedFold(key, approved) {
   return approved && approved.has(pathOf(key)) ? SHUT : CAPPED;
 }
 
-export function createFileFolds() {
+export function createFileFolds(onChange = () => {}) {
   const moved = new Map();
   const foldOf = (key, { approved = null } = {}) => moved.get(key) || untouchedFold(key, approved);
   return {
     foldOf,
-    press: (key, { approved = null } = {}) => moved.set(key, foldOf(key, { approved }) === SHUT ? OPEN : SHUT),
-    openBody: (key) => moved.set(key, OPEN),
+    press: (key, { approved = null } = {}) => {
+      moved.set(key, foldOf(key, { approved }) === SHUT ? OPEN : SHUT);
+      onChange();
+    },
+    openBody: (key) => {
+      moved.set(key, OPEN);
+      onChange();
+    },
+    snapshot: () => Object.fromEntries(moved),
+    restore: (saved) => {
+      moved.clear();
+      for (const [key, value] of Object.entries(saved || {}))
+        if (value === OPEN || value === SHUT) moved.set(key, value);
+    },
   };
 }
 

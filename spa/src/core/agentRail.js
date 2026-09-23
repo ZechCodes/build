@@ -143,10 +143,10 @@ import {
   detailLevelMenuOptions,
   detailLevelOfOptionId,
   itemsAtDetailLevel,
-  readDetailLevel,
+  defaultDetailLevel,
   readThroughHiddenItems,
-  writeDetailLevel,
 } from "./conversationDetail.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
@@ -1110,10 +1110,32 @@ function mountRailOnContext(host, context, swap) {
    *  would carry the last conversation's choice into the next one.
    */
   const chosenDetailLevels = new Map();
+  const detailRecords = new Map();
+
+  const detailRecord = (id) => {
+    if (detailRecords.has(id)) return detailRecords.get(id);
+    const address = uiAddress({
+      deviceId: cacheScope?.deviceId || "",
+      entityId: entity.entityId || "",
+      view: "thread",
+      kind: "filter",
+      sub: id,
+    });
+    const record = watchUiState(address, (saved) => {
+      if (!saved || !["all", "messages", "agent"].includes(saved.level)) return;
+      chosenDetailLevels.set(id, saved.level);
+      paintedChat = null;
+      paintChat();
+      paintSurfaceMenu();
+    });
+    detailRecords.set(id, record);
+    return record;
+  };
 
   const detailLevel = () => {
     const id = conversationDetailId();
-    if (!chosenDetailLevels.has(id)) chosenDetailLevels.set(id, readDetailLevel(id, entity.kind));
+    if (!chosenDetailLevels.has(id)) chosenDetailLevels.set(id, defaultDetailLevel(entity.kind));
+    detailRecord(id);
     return chosenDetailLevels.get(id);
   };
 
@@ -2465,7 +2487,7 @@ function mountRailOnContext(host, context, swap) {
     const digest = opened
       ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough)
       : null;
-    paintChat();
+    await runs.whenFoldPainted();
     if (!digest) return;
     await runs.open(digest).catch((error) => {
       notifyError("Could not load this activity", error.message);
@@ -2830,8 +2852,7 @@ function mountRailOnContext(host, context, swap) {
     const id = conversationDetailId();
     if (chosenDetailLevels.get(id) === level) return;
     chosenDetailLevels.set(id, level);
-    writeDetailLevel(id, level);
-    paintChat();
+    void detailRecord(id).write({ level });
     motionSettled().then(paintSurfaceMenu);
   };
 
@@ -3490,6 +3511,7 @@ function mountRailOnContext(host, context, swap) {
       disposed = true;
       overview.close();
       activityRuns?.dispose();
+      for (const record of detailRecords.values()) record.dispose();
       activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);

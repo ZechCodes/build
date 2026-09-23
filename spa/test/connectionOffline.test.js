@@ -1228,7 +1228,7 @@ describe("per-device connections", () => {
     initDevicePicker();
     paintDevicePicker();
     document.querySelector(".device-picker-toggle").click();
-    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector(".device-picker-menu").hidden).toBe(false));
 
     chooseCreationDevice("dev-b");
     await flush();

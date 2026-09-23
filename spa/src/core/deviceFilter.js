@@ -10,9 +10,24 @@
 // is the identity, applied where each list painter stores what it was handed.
 // No painter asks whether a filter is set.
 
-import { App, DEVICE_FILTER_KEY } from "../app.js";
+import { App } from "../app.js";
 import { FEED_COLLECTIONS } from "./feedMerge.js";
 import { deliverFeed } from "./taskFeed.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
+
+let filterRecord = null;
+export function resetDeviceFilterCache() {
+  filterRecord?.dispose({ flushPending: false });
+  filterRecord = null;
+}
+export function mountDeviceFilterCache() {
+  if (filterRecord) return filterRecord.ready;
+  filterRecord = watchUiState(uiAddress({ view: "inbox", kind: "filter", sub: "device" }), (saved) => {
+    App.deviceFilter = saved?.deviceId || null;
+    deliverFeed();
+  });
+  return filterRecord.ready;
+}
 
 /**
  * One machine's rows out of the merge, or the merge itself when the filter
@@ -58,8 +73,6 @@ function onlyDevice(devices, deviceId) {
  * through the subscription each of them already paints from.
  */
 export function rememberDeviceFilter(deviceId) {
-  App.deviceFilter = deviceId || null;
-  if (App.deviceFilter) localStorage.setItem(DEVICE_FILTER_KEY, App.deviceFilter);
-  else localStorage.removeItem(DEVICE_FILTER_KEY);
-  deliverFeed();
+  mountDeviceFilterCache();
+  return filterRecord.write({ deviceId: deviceId || null });
 }

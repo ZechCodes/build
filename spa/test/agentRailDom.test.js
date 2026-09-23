@@ -3170,7 +3170,7 @@ describe("the conversation's local cache", () => {
     expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
     ]);
-    expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint");
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
     expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
   });

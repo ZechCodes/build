@@ -14,7 +14,7 @@ pub mod v1;
 use serde_json::{json, Value};
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.12.0";
+pub const API_VERSION: &str = "1.13.0";
 
 /// Why a verb refused, as the wire spells it (step 2.4). A closed enum: a new
 /// variant is a minor bump, and a client that meets a code it does not know

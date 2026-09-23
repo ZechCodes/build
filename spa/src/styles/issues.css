@@ -429,7 +429,12 @@
 .issue-avatar.is-project { border-radius:8px; }
 .issue-comment-card {
   flex:1; min-width:0;
-  background:var(--panel); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;
+  --issue-comment-background:var(--panel);
+  background:var(--issue-comment-background); border:1px solid var(--line2); border-radius:10px; padding:9px 12px;
+}
+.issue-comment-mentioned .issue-comment-card {
+  --issue-comment-background:color-mix(in srgb, var(--accent-soft) 55%, var(--panel));
+  border-left:3px solid var(--accent); padding-left:10px;
 }
 .issue-entry-head { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; color:var(--ink2); }
 /* min-width:0 so a fenced block inside scrolls instead of widening the
@@ -676,7 +681,7 @@ a.thread-issue-action:focus-visible, a.thread-issue-notice:focus-visible {
   outline:2px solid var(--accent); outline-offset:2px;
   animation:issue-comment-arrival var(--motion-slow) var(--ease-out);
 }
-@keyframes issue-comment-arrival { from { background:var(--accent-soft); } to { background:var(--panel); } }
+@keyframes issue-comment-arrival { from { background:var(--accent-soft); } to { background:var(--issue-comment-background); } }
 @media (prefers-reduced-motion: reduce) {
   .issue-entry:target .issue-comment-card,
   .issue-comment-target .issue-comment-card { animation:none; }

@@ -32,6 +32,7 @@ const commentRow = (entry, base) => ({
   type: COMMENT,
   actor: entry.author || null,
   body: String(entry.body || ""),
+  mentionsUser: entry.mentions_user === true,
   refs: entry.refs || [],
 });
 

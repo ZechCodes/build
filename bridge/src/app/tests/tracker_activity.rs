@@ -516,6 +516,7 @@ fn nothing_an_agent_says_lands_on_the_issue_as_a_comment() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("comment_issue writes a comment");

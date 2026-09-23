@@ -89,7 +89,7 @@ const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.a
 
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
-const commentHtml = (row, context) => `<li class="issue-entry issue-comment" id="comment-${esc(row.key)}">
+const commentHtml = (row, context) => `<li class="issue-entry issue-comment${row.mentionsUser ? " issue-comment-mentioned" : ""}" id="comment-${esc(row.key)}">
     ${issueAvatarHtml(row.actor, context)}
     <div class="issue-comment-card">
       <div class="issue-entry-head"><strong>${esc(actorName(row.actor, context))}</strong>${whenHtml(row)}</div>

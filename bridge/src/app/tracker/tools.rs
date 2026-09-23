@@ -74,8 +74,16 @@ impl AppState {
                 body,
                 refs,
                 attachments,
+                mention_user,
                 ..
-            } => self.comment_issue_as_agent(&scope, issue_id, body, refs, attachments),
+            } => self.comment_issue_as_agent(
+                &scope,
+                issue_id,
+                body,
+                refs,
+                attachments,
+                mention_user.unwrap_or(false),
+            ),
             BridgeAction::TrackerAssignIssue {
                 issue_id,
                 assignee,
@@ -265,6 +273,9 @@ impl AppState {
             "body": comment.body,
             "refs": comment.refs,
         });
+        if comment.mentions_user {
+            read["mentions_user"] = json!(true);
+        }
         if let Some(reading) = &comment.author_context {
             read["author_context"] = json!(reading);
         }
@@ -354,6 +365,7 @@ impl AppState {
         body: &str,
         refs: &[crate::thread::ThreadLink],
         attachments: &[Value],
+        mentions_user: bool,
     ) -> Result<Value, String> {
         let issue = self.issue_of_this_agents_project(scope, issue_id)?;
         let params = json!({ "body": body, "refs": refs, "attachments": attachments });
@@ -366,6 +378,7 @@ impl AppState {
             issue_id: issue.id.clone(),
             author: scope.actor.clone(),
             body,
+            mentions_user,
             refs,
             attachments,
             created_at: now.clone(),
@@ -519,8 +532,12 @@ fn asked(fields: &[(&str, &Option<String>)]) -> Value {
 /// that already exists are here.
 fn wants_the_user_told(action: &BridgeAction) -> bool {
     match action {
-        BridgeAction::TrackerCommentIssue { notify_user, .. }
-        | BridgeAction::TrackerAssignIssue { notify_user, .. } => notify_user.unwrap_or(false),
+        BridgeAction::TrackerCommentIssue {
+            notify_user,
+            mention_user,
+            ..
+        } => notify_user.unwrap_or(false) || mention_user.unwrap_or(false),
+        BridgeAction::TrackerAssignIssue { notify_user, .. } => notify_user.unwrap_or(false),
         _ => false,
     }
 }

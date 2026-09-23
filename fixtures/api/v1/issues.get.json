@@ -85,6 +85,7 @@
           "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
         },
         "body": "Reproduced: the drop handler writes before the column read settles.",
+        "mentions_user": true,
         "refs": [
           {
             "kind": "file",

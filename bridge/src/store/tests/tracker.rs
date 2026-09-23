@@ -41,6 +41,7 @@ fn comment(issue: &Issue, body: &str, at: &str) -> IssueComment {
             agent_id: "agent-1".into(),
         },
         body: body.into(),
+        mentions_user: false,
         refs: Vec::new(),
         attachments: Vec::new(),
         created_at: at.into(),

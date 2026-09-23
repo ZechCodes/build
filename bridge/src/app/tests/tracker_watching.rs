@@ -239,6 +239,7 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent comments");
@@ -258,6 +259,7 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: Some(true),
+                mention_user: None,
             },
         )
         .expect("an agent asks the user");
@@ -286,6 +288,7 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
                     track: None,
                     attachments: Vec::new(),
                     notify_user: None,
+                    mention_user: None,
                 },
             )
             .expect("an agent says something");
@@ -357,6 +360,7 @@ fn the_unread_count_leaves_out_the_users_own_words() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent answers");
@@ -393,6 +397,7 @@ fn dismissing_clears_the_row_until_the_next_event() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent says something new");

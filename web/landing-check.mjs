@@ -223,7 +223,10 @@ const SCRUBS = [
   { name: "act 6 tree label", act: 6, selector: "[data-tree-label]", steps: [[0.7, "Staged"], [0.9, "Working tree"], [0.7, "Staged"], [0.5, "Working tree"]] },
 ];
 
-const sceneTimeout = () => (gpu ? 20_000 : 60_000);
+// A scene runs on GSAP's clock, which lag smoothing slows whenever a frame
+// takes over half a second: on a loaded SwiftShader box act 7's 12 s scene
+// can take minutes of wall time while running correctly.
+const sceneTimeout = () => (gpu ? 20_000 : 180_000);
 
 async function opacityOf(page, selector) {
   return page.evaluate((query) => getComputedStyle(document.querySelector(query)).opacity, selector);

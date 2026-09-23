@@ -1052,6 +1052,7 @@ function mountRailOnContext(host, context, swap) {
   let composerControl = null;
   let disposeComposerClearance = null;
   let composerModelMenu = null;
+  const disposeComposerModelMenu = () => composerModelMenu?.dispose();
   let composerGauge = null;
   let composerController = null;
   let unsubscribeComposerController = null;
@@ -1873,6 +1874,7 @@ function mountRailOnContext(host, context, swap) {
     disposeComposerClearance = null;
     closeSurfaceMenu?.();
     composerControl?.dispose?.();
+    disposeComposerModelMenu();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
     composerController = null;
@@ -2690,7 +2692,11 @@ function mountRailOnContext(host, context, swap) {
       },
       onError: (error) => notifyError("Message failed", error.message),
     });
-    composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    composerModelMenu = mountComposerModelMenu(panel, {
+      ids: COMPOSER_IDS,
+      onChoose: chooseModel,
+      cacheKey: conversationKey(controller),
+    });
     composerGauge = mountContextGauge(panel, { ids: COMPOSER_IDS });
     unsubscribeComposerController?.();
     unsubscribeComposerController = controller.subscribe(syncComposer);
@@ -3533,6 +3539,7 @@ function mountRailOnContext(host, context, swap) {
       disposeComposerClearance = null;
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
+      disposeComposerModelMenu();
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       releaseFaces();

@@ -29,6 +29,7 @@ import {
 } from "./icons.js";
 import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
 import { setMotionRowHtml } from "./motion.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import {
   modelMenuLabel,
   modelMenuSelection,
@@ -279,7 +280,7 @@ const choiceKey = (provider, choice, activeModel, activeEffort) =>
 /// the first send will create. Returns a controller whose `set(catalog,
 /// provider, choice)` paints it; a call that would change nothing repaints
 /// nothing, because a poll must not shut a menu the human just opened.
-export function mountComposerModelMenu(root, { ids, onChoose }) {
+export function mountComposerModelMenu(root, { ids, onChoose, cacheKey = null }) {
   const parts = composerPartIds(ids.input);
   const modelSlot = root.querySelector(`#${parts.modelMenu}`);
   const reasoningSlot = root.querySelector(`#${parts.reasoningMenu}`);
@@ -292,14 +293,39 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
   let paintedCatalog = null;
   let closeModelMenu = null;
   let closeReasoningMenu = null;
+  let openModelMenu = null;
+  let openReasoningMenu = null;
+  let savedOpen = null;
+  let menuRecord = null;
+  const applySavedMenu = () => {
+    if (savedOpen === "model") {
+      closeReasoningMenu?.(false);
+      openModelMenu?.(false);
+    } else if (savedOpen === "reasoning") {
+      closeModelMenu?.(false);
+      openReasoningMenu?.(false);
+    } else {
+      closeModelMenu?.(false);
+      closeReasoningMenu?.(false);
+    }
+  };
+  const writeOpen = (kind) => (open) => {
+    if (menuRecord) void menuRecord.write({ open: open ? kind : null });
+  };
 
   const render = (catalog, provider, choice, activeModel, activeEffort) => {
-    closeModelMenu?.();
-    closeReasoningMenu?.();
+    closeModelMenu?.(false);
+    closeReasoningMenu?.(false);
     painted = choiceKey(provider, choice, activeModel, activeEffort);
     paintedCatalog = catalog;
     const choose = (action) => {
       const next = modelMenuSelection(action, choice);
+      if (menuRecord) {
+        savedOpen = null;
+        onChoose(next);
+        void menuRecord.write({ open: null });
+        return;
+      }
       render(catalog, provider, next, activeModel, activeEffort);
       onChoose(next);
     };
@@ -308,18 +334,35 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
       modelSelectorOptions(catalog, provider, choice),
       { title: modelMenuTitle(catalog, provider, choice, activeModel), arrow: false },
     );
-    closeModelMenu = mountSplitMenu(modelSlot, { onChoose: choose }).closeMenu;
+    ({ closeMenu: closeModelMenu, openMenu: openModelMenu } = mountSplitMenu(modelSlot, {
+      onChoose: choose,
+      onOpenChange: writeOpen("model"),
+    }));
     const reasoningOptions = reasoningSelectorOptions(catalog, provider, choice, activeModel, activeEffort);
     reasoningSlot.hidden = reasoningOptions.length === 0;
     reasoningSlot.innerHTML = reasoningOptions.length
       ? menuButtonMarkup(reasoningSelectorLabel(catalog, provider, choice, activeModel, activeEffort), reasoningOptions, { title: "Reasoning level for the next turn", arrow: false })
       : "";
-    closeReasoningMenu = reasoningOptions.length
-      ? mountSplitMenu(reasoningSlot, { onChoose: choose }).closeMenu
+    const reasoning = reasoningOptions.length
+      ? mountSplitMenu(reasoningSlot, { onChoose: choose, onOpenChange: writeOpen("reasoning") })
       : null;
+    closeReasoningMenu = reasoning?.closeMenu || null;
+    openReasoningMenu = reasoning?.openMenu || null;
+    applySavedMenu();
   };
 
+  if (cacheKey) menuRecord = watchUiState(uiAddress({ entityId: cacheKey, view: "composer", kind: "menu", sub: "model" }), (saved) => {
+    savedOpen = saved?.open || null;
+    applySavedMenu();
+  });
+
   return {
+    ready: menuRecord?.ready || Promise.resolve(),
+    dispose() {
+      menuRecord?.dispose({ flushPending: false });
+      closeModelMenu?.(false);
+      closeReasoningMenu?.(false);
+    },
     set(catalog, provider, choice, activeModel = "", activeEffort = "") {
       if (choiceKey(provider, choice, activeModel, activeEffort) === painted && catalog === paintedCatalog) return;
       render(catalog, provider, choice, activeModel, activeEffort);

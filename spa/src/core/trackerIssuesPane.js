@@ -149,6 +149,7 @@ export function mountIssuesPane(host, options) {
   // (#43). Nothing that follows can take the reader's focus, their caret or
   // the menu they have open, because nothing that follows touches a control.
   const chrome = mountIssuesChrome(host, {
+    scopeLink: state.scopeLink || null,
     menuAddressOf: (name) => uiAddress({ ...uiScope, kind: "menu", sub: name }),
     onView: (view) => {
       if (state.view === view) return;

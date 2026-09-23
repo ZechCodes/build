@@ -8,6 +8,7 @@ import { firstLine } from "./activityDigest.js";
 import { EVENT_META } from "./threadEvents.js";
 import { esc } from "./text.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
+import { ICON_CHEVRON_RIGHT } from "./icons.js";
 
 const newest = (items, predicate) => [...items].reverse().find(predicate);
 const isMessage = (item) => item?.type === "message";
@@ -51,8 +52,38 @@ export function overviewRows(entries, threads) {
   }));
 }
 
-export function overviewHtml(rows, { showProjectAgents = false } = {}) {
-  if (!rows.length && !showProjectAgents) return '<p class="rail-overview-empty">No agents here yet.</p>';
+/** How many of a workspace's agents the project overview shows before it
+ *  offers the rest on that workspace's own overview. */
+export const WORKSPACE_PREVIEW_AGENTS = 3;
+
+const rowHtml = (row) => {
+  const state = [row.working ? "Working" : row.unread ? "Unread" : "",
+    row.watching === undefined ? "" : row.watching ? "Watching" : "Not watching"].filter(Boolean).join(" · ");
+  return `<button type="button" class="rail-overview-row" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
+    <span class="rail-overview-name">${esc(row.name)}</span>
+    <span class="rail-overview-snippet">${esc(row.snippet)}</span>
+    ${state ? `<span class="rail-overview-state">${state}</span>` : ""}
+  </button>`;
+};
+
+/** A workspace's heading. On the project overview it is the way into that
+ *  workspace's own overview; everywhere else it only names the section. */
+const sectionTitleHtml = (section, opensWorkspace) => opensWorkspace
+  ? `<h2><button type="button" class="rail-overview-open" data-overview-scope="${esc(section.workspaceId)}"><span>${esc(section.name)}</span>${ICON_CHEVRON_RIGHT}</button></h2>`
+  : `<h2>${esc(section.name)}</h2>`;
+
+const byLatestAgentMessage = (one, other) => other.lastAgentMessageAt - one.lastAgentMessageAt;
+const latestAgentMessage = (section) => Math.max(...section.rows.map((row) => row.lastAgentMessageAt));
+
+/** The rows a scope shows: one workspace's scope drops every other
+ *  workspace's, and keeps the project's agents beside it. */
+const rowsInScope = (rows, scope) => scope?.kind === "workspace"
+  ? rows.filter((row) => row.section !== "workspace" || row.workspaceId === scope.workspaceId)
+  : rows;
+
+/** Sections in reading order: the project's agents first, then the one heard
+ *  from most recently. */
+function overviewSections(rows, showProjectAgents) {
   const sections = new Map();
   if (showProjectAgents) sections.set("project", { section: "project", name: "Project agents", workspaceId: "", rows: [] });
   for (const row of rows) {
@@ -60,24 +91,39 @@ export function overviewHtml(rows, { showProjectAgents = false } = {}) {
     if (!sections.has(key)) sections.set(key, { section: row.section, name: row.sectionName, workspaceId: row.workspaceId, rows: [] });
     sections.get(key).rows.push(row);
   }
-  const ordered = [...sections.values()].sort((one, other) => {
+  return [...sections.values()].sort((one, other) => {
     if (one.section === "project") return -1;
     if (other.section === "project") return 1;
-    return Math.max(...other.rows.map((row) => row.lastAgentMessageAt))
-      - Math.max(...one.rows.map((row) => row.lastAgentMessageAt));
+    return latestAgentMessage(other) - latestAgentMessage(one);
   });
-  return ordered.map((section) => `<section class="rail-overview-section" aria-label="${esc(section.name)}">
-    <div class="rail-overview-section-head"><h2>${esc(section.name)}</h2>${section.section === "workspace"
-      ? `<button type="button" class="iconbtn rail-overview-add" data-overview-add="${esc(section.workspaceId)}" aria-label="Add an agent to ${esc(section.name)}" title="Add an agent to ${esc(section.name)}">+</button>` : ""}</div>
-    ${section.rows.sort((one, other) => other.lastAgentMessageAt - one.lastAgentMessageAt).map((row) => {
-    const state = [row.working ? "Working" : row.unread ? "Unread" : "",
-      row.watching === undefined ? "" : row.watching ? "Watching" : "Not watching"].filter(Boolean).join(" · ");
-    return `<button type="button" class="rail-overview-row" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
-    <span class="rail-overview-name">${esc(row.name)}</span>
-    <span class="rail-overview-snippet">${esc(row.snippet)}</span>
-    ${state ? `<span class="rail-overview-state">${state}</span>` : ""}
-  </button>`;
-    }).join("")}</section>`).join("");
+}
+
+const addButtonHtml = (section) => `<button type="button" class="iconbtn rail-overview-add" data-overview-add="${esc(section.workspaceId)}" aria-label="Add an agent to ${esc(section.name)}" title="Add an agent to ${esc(section.name)}">+</button>`;
+
+const seeAllHtml = (section, count) => `<button type="button" class="rail-overview-see-all" data-overview-scope="${esc(section.workspaceId)}" aria-label="See all ${count} agents in ${esc(section.name)}">See all</button>`;
+
+/** One section. On the project's scope a workspace shows its first few agents
+ *  by the overview's own order, and its heading and See all open the rest. */
+function sectionHtml(section, projectScope) {
+  const workspace = section.section === "workspace";
+  const capped = projectScope && workspace;
+  const sorted = section.rows.sort(byLatestAgentMessage);
+  const listed = capped ? sorted.slice(0, WORKSPACE_PREVIEW_AGENTS) : sorted;
+  const more = listed.length < sorted.length ? seeAllHtml(section, sorted.length) : "";
+  return `<section class="rail-overview-section" aria-label="${esc(section.name)}">
+    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${workspace ? addButtonHtml(section) : ""}</div>
+    ${listed.map(rowHtml).join("")}${more}</section>`;
+}
+
+/** `scope` is the rail's overview scope: `{ kind: "project" }` shows every
+ *  workspace, each capped and opening its own overview; `{ kind: "workspace",
+ *  workspaceId }` shows that one workspace beside the project's agents. Any
+ *  other scope draws the rows as they are. */
+export function overviewHtml(rows, { showProjectAgents = false, scope = null } = {}) {
+  const shown = rowsInScope(rows, scope);
+  if (!shown.length && !showProjectAgents) return '<p class="rail-overview-empty">No agents here yet.</p>';
+  const projectScope = scope?.kind === "project";
+  return overviewSections(shown, showProjectAgents).map((section) => sectionHtml(section, projectScope)).join("");
 }
 
 const cachedConversationId = (agent, execution) => execution
@@ -134,9 +180,17 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
   let active = false;
   let generation = 0;
   const watches = new Map();
-  const workspaceAddress = includeProjectWorkspaces && scope?.address({ entityId: "", kind: "workspaces" });
-  const feedAddress = includeProjectWorkspaces && scope?.address({ entityId: "", kind: "feed" });
-  const listAddresses = [workspaceAddress, feedAddress].filter(Boolean);
+  // A function when the breadth can change under a mounted overview: the
+  // rail's scope moves between one workspace and the whole project.
+  const includesWorkspaces = () => (typeof includeProjectWorkspaces === "function"
+    ? includeProjectWorkspaces() : includeProjectWorkspaces);
+  /** The machine's workspace list and feed, read only when the overview is
+   *  about more than its own sources. */
+  const listAddressesFor = (included) => {
+    const workspaceAddress = included && scope?.address({ entityId: "", kind: "workspaces" });
+    const feedAddress = workspaceAddress && scope?.address({ entityId: "", kind: "feed" });
+    return { workspaceAddress, listAddresses: [workspaceAddress, feedAddress].filter(Boolean) };
+  };
 
   const watch = (addresses) => {
     const wanted = new Set(addresses.map((address) => JSON.stringify(address)));
@@ -151,6 +205,7 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     if (!active) return;
     const current = ++generation;
     const stale = () => !active || current !== generation;
+    const { workspaceAddress, listAddresses } = listAddressesFor(includesWorkspaces());
     watch([...sources().map((source) => source.address).filter(Boolean), ...listAddresses]);
     const [workspaceRecord, feedRecord] = await readCachedMany(listAddresses);
     if (stale()) return;

@@ -219,3 +219,40 @@ describe("expanded agent overview", () => {
     reader.close();
   });
 });
+
+describe("overview scopes (#117)", () => {
+  const row = (id, workspaceId, at, section = "workspace") => ({ id, source: "workspace", workspaceId,
+    section, sectionName: workspaceId ? `Workspace ${workspaceId}` : "Project agents", name: id,
+    snippet: "", lastAgentMessageAt: at, working: false, unread: false });
+  const rows = () => [
+    row("project-agent", "", 1, "project"),
+    ...[1, 2, 3, 4].map((at) => row(`busy-${at}`, "busy", at)),
+    row("quiet-1", "quiet", 9),
+  ];
+  const namesIn = (html, section) => [...html.split(`aria-label="${section}"`)[1].split("</section>")[0]
+    .matchAll(/data-overview-agent="([^"]+)"/g)].map((match) => match[1]);
+
+  it("caps each workspace at three by the overview's order on the project's scope, offering the rest", () => {
+    const html = overview.overviewHtml(rows(), { showProjectAgents: true, scope: { kind: "project" } });
+    expect(namesIn(html, "Workspace busy")).toEqual(["busy-4", "busy-3", "busy-2"]);
+    expect(namesIn(html, "Workspace quiet")).toEqual(["quiet-1"]);
+    expect(namesIn(html, "Project agents")).toEqual(["project-agent"]);
+    expect(html.match(/rail-overview-see-all/g)).toHaveLength(1);
+    expect(html).toContain('data-overview-scope="busy" aria-label="See all 4 agents in Workspace busy">See all</button>');
+    expect(html).toContain('<button type="button" class="rail-overview-open" data-overview-scope="quiet"><span>Workspace quiet</span>');
+  });
+
+  it("shows one workspace whole, beside the project's agents, on a workspace scope", () => {
+    const html = overview.overviewHtml(rows(), { showProjectAgents: true, scope: { kind: "workspace", workspaceId: "busy" } });
+    expect(html).not.toContain("Workspace quiet");
+    expect(namesIn(html, "Workspace busy")).toEqual(["busy-4", "busy-3", "busy-2", "busy-1"]);
+    expect(html).not.toContain("rail-overview-see-all");
+    expect(html).not.toContain("rail-overview-open");
+  });
+
+  it("draws every row unscoped when the page has no scope to move between", () => {
+    const html = overview.overviewHtml(rows(), { showProjectAgents: true });
+    expect(namesIn(html, "Workspace busy")).toHaveLength(4);
+    expect(html).not.toContain("rail-overview-see-all");
+  });
+});

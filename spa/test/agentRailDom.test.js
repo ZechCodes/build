@@ -226,7 +226,7 @@ const mountOverviewReady = async (context = {}) => {
   await vi.waitFor(() => {
     expect(railHost().querySelector('[data-bubble="agent"]')).toBeTruthy();
     expect(panel()?.querySelector(".rail-head")).toBeTruthy();
-    expect(railHost().querySelector(".rail-expand")).toBeTruthy();
+    expect(railHost().querySelector(".rail-overview-toggle")).toBeTruthy();
   });
 };
 
@@ -1022,7 +1022,7 @@ describe("the bubble strip", () => {
       ? new Promise(() => {}) : originalCall(method, params);
     await mountOverviewReady();
 
-    railHost().querySelector(".rail-expand").click();
+    railHost().querySelector(".rail-overview-toggle").click();
     const rows = () => [...railHost().querySelectorAll(".rail-overview-row")];
     const rowFor = (agentId) => rows().find((row) => row.dataset.overviewAgent === agentId);
     await vi.waitFor(() => {
@@ -1068,7 +1068,7 @@ describe("the bubble strip", () => {
     });
     await mountOverviewReady({ kind: "project", projectId: "p1", entityId: "run-project" });
 
-    railHost().querySelector(".rail-expand").click();
+    railHost().querySelector(".rail-overview-toggle").click();
     await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(3));
     const sections = [...railHost().querySelectorAll(".rail-overview-section")];
     expect(sections.map((section) => section.getAttribute("aria-label"))).toEqual([
@@ -1119,7 +1119,7 @@ describe("the bubble strip", () => {
 
     railHost().querySelector('[data-bubble="project"]').click();
     await vi.waitFor(() => expect(headWho(panel())).toBe("Project agent"));
-    railHost().querySelector(".rail-expand").click();
+    railHost().querySelector(".rail-overview-toggle").click();
     await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
     const sections = [...railHost().querySelectorAll(".rail-overview-section")];
     expect(sections[0].getAttribute("aria-label")).toBe("Project agents");
@@ -1129,7 +1129,7 @@ describe("the bubble strip", () => {
 
   it("gives the overview a chat header with only a working pin", async () => {
     await mountOverviewReady();
-    railHost().querySelector(".rail-expand").click();
+    railHost().querySelector(".rail-overview-toggle").click();
     const head = railHost().querySelector("#rail-overview .rail-head");
     expect(head).toBeTruthy();
     expect(head.querySelector(".rail-who").textContent).toContain("Agents");
@@ -1150,7 +1150,7 @@ describe("the bubble strip", () => {
     await mountOverviewReady();
     const animations = recordAnimations();
     try {
-      railHost().querySelector(".rail-expand").click();
+      railHost().querySelector(".rail-overview-toggle").click();
       const overview = railHost().querySelector("#rail-overview");
       expect(overview).toBeTruthy();
       await vi.waitFor(() => expect(animations.some((run) => run.element === overview)).toBe(true));
@@ -1160,7 +1160,7 @@ describe("the bubble strip", () => {
       expect(opening.keyframes[1]).toMatchObject({ opacity: "1", transform: "none" });
       opening.onfinish();
 
-      railHost().querySelector(".rail-expand").click();
+      railHost().querySelector(".rail-overview-toggle").click();
       expect(railHost().querySelector("#rail-overview")).toBe(overview);
       expect(overview.getAttribute("aria-hidden")).toBe("true");
       expect(overview.hasAttribute("inert")).toBe(true);
@@ -1178,16 +1178,177 @@ describe("the bubble strip", () => {
     window.matchMedia = (query) => ({ matches: query === "(prefers-reduced-motion: reduce)" });
     const animations = recordAnimations();
     try {
-      railHost().querySelector(".rail-expand").click();
+      railHost().querySelector(".rail-overview-toggle").click();
       const overview = railHost().querySelector("#rail-overview");
       expect(overview.getAttribute("aria-hidden")).toBe("false");
       expect(animations.filter((run) => run.element === overview)).toHaveLength(0);
-      railHost().querySelector(".rail-expand").click();
+      railHost().querySelector(".rail-overview-toggle").click();
       expect(railHost().querySelector("#rail-overview")).toBeNull();
     } finally {
       window.matchMedia = originalMatchMedia;
       stopRecordingAnimations();
     }
+  });
+
+  // #117: the overview's control is a bare icon right after the `+`, not a
+  // bubble at the strip's far end.
+  it("puts the chat overview control right after the + as a bare, labelled icon", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mountOverviewReady();
+    const toggle = railHost().querySelector(".rail-overview-toggle");
+    expect(toggle.tagName).toBe("BUTTON");
+    expect(toggle.previousElementSibling.dataset.bubble).toBe("add");
+    expect(toggle.nextElementSibling).toBeNull();
+    expect(toggle.classList.contains("rail-bubble")).toBe(false);
+    expect(toggle.querySelector("svg.lucide-messages-square")).toBeTruthy();
+    expect(toggle.getAttribute("aria-label")).toBe("Chat overview");
+    expect(toggle.title).toBe("Chat overview");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe("rail-overview");
+
+    const rule = shellCss.match(/\.rail-overview-toggle \{([^}]*)\}/)[1];
+    expect(rule).toMatch(/border:0/);
+    expect(rule).toMatch(/background:none/);
+    expect(rule).not.toMatch(/margin-(top|left):auto/);
+    expect(shellCss).toMatch(/\.rail-overview-toggle:focus-visible \{ outline:2px solid var\(--accent\)/);
+
+    toggle.click();
+    await vi.waitFor(() => {
+      const open = railHost().querySelector(".rail-overview-toggle");
+      expect(open.getAttribute("aria-label")).toBe("Close chat overview");
+      expect(open.getAttribute("aria-expanded")).toBe("true");
+      expect(railHost().querySelector("#rail-overview")?.getAttribute("aria-label")).toBe("Chat overview");
+    });
+  });
+
+  describe("moving between a workspace's chat overview and the project's (#117)", () => {
+    const named = (id, name, over = {}) => agent({ id, name, ...over });
+    const sectionNames = () => [...railHost().querySelectorAll(".rail-overview-section")]
+      .map((section) => section.getAttribute("aria-label"));
+    const sectionNamed = (name) => [...railHost().querySelectorAll(".rail-overview-section")]
+      .find((section) => section.getAttribute("aria-label") === name);
+    const rowNames = (section) => [...section.querySelectorAll(".rail-overview-name")].map((one) => one.textContent);
+    const scopeOut = () => railHost().querySelector("#rail-overview .rail-head .rail-overview-up");
+    const openOverview = () => railHost().querySelector(".rail-overview-toggle").click();
+
+    const writeProjectBoard = async (current) => {
+      const busy = Array.from({ length: 5 }, (_, index) => named(`ag-busy-${index + 1}`, `Busy agent ${index + 1}`,
+        { ordinal: index + 1 }));
+      await writeRailBoard({
+        projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+        workspaces: [
+          { id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" },
+          { id: "ws-two", project_id: "p1", name: "Second workspace", entity_id: "run-two" },
+          { id: "ws-busy", project_id: "p1", name: "Busy workspace", entity_id: "run-busy" },
+        ],
+        items: [
+          current,
+          { kind: "project", project_id: "p1", entity_id: "run-project", agents: [named("ag-project", "Project agent")] },
+          { kind: "workspace", workspace_id: "ws-two", project_id: "p1", entity_id: "run-two",
+            agents: [named("ag-two", "Second workspace agent")] },
+          { kind: "workspace", workspace_id: "ws-busy", project_id: "p1", entity_id: "run-busy", agents: busy },
+        ],
+      });
+      // The busy workspace's agents answered in order, so the overview's own
+      // order — newest agent message first — is 5, 4, 3, 2, 1.
+      for (let index = 1; index <= 5; index += 1) {
+        await writeRailThread("run-busy", `ag-busy-${index}`, { items: [{ type: "message", data: {
+          sequence: 1, role: "agent", body: `Reply ${index}`, created_at: `2026-09-2${index}T10:00:00Z` } }] });
+      }
+    };
+
+    const mountWorkspacePage = async () => {
+      payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+        agents: [named("ag-one", "First workspace agent")] };
+      // The page's own workspace is named by the feed the rail subscribes to.
+      feedSnapshot = { items: [], projects: [], workspaces: [{ id: "ws-one", workspace_id: "ws-one", name: "First workspace" }] };
+      await writeProjectBoard(payload);
+      await mountOverviewReady({ kind: "workspace", workspaceId: "ws-one",
+        projectAgent: { projectId: "p1", entityId: "run-project" } });
+    };
+
+    const mountProjectPage = async () => {
+      payload = { kind: "project", entity_id: "run-project", project_id: "p1", agents: [named("ag-project", "Project agent")] };
+      await writeProjectBoard(payload);
+      await mountOverviewReady({ kind: "project", projectId: "p1", entityId: "run-project" });
+    };
+
+    it("gives a workspace's overview an arrow out to the project's, which lists every workspace", async () => {
+      await mountWorkspacePage();
+      openOverview();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(["Project agents", "First workspace"]));
+      const out = scopeOut();
+      expect(out.tagName).toBe("BUTTON");
+      expect(out.classList.contains("scope-link")).toBe(true);
+      expect(out.textContent.trim()).toBe("All workspaces");
+      expect(out.querySelector("svg.lucide-arrow-up-right")).toBeTruthy();
+      expect(out.previousElementSibling.classList.contains("rail-who")).toBe(true);
+
+      out.click();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(expect.arrayContaining([
+        "Project agents", "First workspace", "Second workspace", "Busy workspace",
+      ])));
+      expect(scopeOut()).toBeNull();
+      expect(document.activeElement).toBe(railHost().querySelector(".rail-overview-list"));
+    });
+
+    it("opens a workspace's own overview from its heading on the project's", async () => {
+      await mountProjectPage();
+      openOverview();
+      await vi.waitFor(() => expect(sectionNamed("Second workspace")).toBeTruthy());
+      expect(scopeOut()).toBeNull();
+      const heading = sectionNamed("Second workspace").querySelector(".rail-overview-section-head h2 > button.rail-overview-open");
+      expect(heading.textContent.trim()).toBe("Second workspace");
+      expect(heading.querySelector("svg.lucide-chevron-right")).toBeTruthy();
+      expect(sectionNamed("Project agents").querySelector(".rail-overview-open")).toBeNull();
+
+      heading.click();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(["Project agents", "Second workspace"]));
+      expect(rowNames(sectionNamed("Second workspace"))).toEqual(["Second workspace agent"]);
+      expect(sectionNamed("Second workspace").querySelector(".rail-overview-open")).toBeNull();
+      expect(scopeOut()).toBeTruthy();
+
+      scopeOut().click();
+      await vi.waitFor(() => expect(sectionNamed("Busy workspace")).toBeTruthy());
+    });
+
+    it("shows three agents a workspace on the project's overview, with See all only past three", async () => {
+      await mountProjectPage();
+      openOverview();
+      await vi.waitFor(() => expect(rowNames(sectionNamed("Busy workspace") || document.createElement("div")))
+        .toEqual(["Busy agent 5", "Busy agent 4", "Busy agent 3"]));
+      expect(sectionNamed("Project agents").querySelector(".rail-overview-see-all")).toBeNull();
+      expect(sectionNamed("Second workspace").querySelector(".rail-overview-see-all")).toBeNull();
+      const seeAll = sectionNamed("Busy workspace").querySelector(".rail-overview-see-all");
+      expect(seeAll.textContent).toBe("See all");
+      expect(seeAll.getAttribute("aria-label")).toBe("See all 5 agents in Busy workspace");
+
+      seeAll.click();
+      await vi.waitFor(() => expect(sectionNames()).toEqual(["Project agents", "Busy workspace"]));
+      expect(rowNames(sectionNamed("Busy workspace"))).toEqual([
+        "Busy agent 5", "Busy agent 4", "Busy agent 3", "Busy agent 2", "Busy agent 1",
+      ]);
+      expect(railHost().querySelector(".rail-overview-see-all")).toBeNull();
+    });
+
+    it("keeps the scope the reader chose across a remount", async () => {
+      await mountWorkspacePage();
+      openOverview();
+      await vi.waitFor(() => expect(scopeOut()).toBeTruthy());
+      scopeOut().click();
+      await vi.waitFor(() => expect(sectionNamed("Busy workspace")).toBeTruthy());
+      await vi.waitFor(async () => expect((await readCached(uiAddress({ deviceId: "dev-1", entityId: "p1",
+        view: "agent-rail", kind: "overview-scope", sub: "workspace:ws-one" })))?.value).toEqual({ kind: "project" }));
+
+      rail.dispose();
+      document.body.innerHTML = bodyHtml;
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
+        projectAgent: { projectId: "p1", entityId: "run-project" } }));
+      await vi.waitFor(() => expect(railHost().querySelector(".rail-overview-toggle")).toBeTruthy());
+      openOverview();
+      await vi.waitFor(() => expect(sectionNamed("Busy workspace")).toBeTruthy());
+      expect(scopeOut()).toBeNull();
+    });
   });
 
   it("is one bubble per agent plus the one that adds another", async () => {

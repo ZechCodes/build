@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
+import { loadChatOverviewModules, seedChatOverview } from "./chatOverviewSeed.mjs";
 
 const markup = `<div id="shell"><aside id="inbox-rail"></aside><div id="view">
   <header id="toolbar">Build / Workspace</header>
@@ -63,10 +64,10 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
     });
 
     await page.waitForSelector(".rail-panel:not([aria-hidden='true'])");
-    await page.waitForSelector(".rail-expand");
+    await page.waitForSelector(".rail-overview-toggle");
     const dockedPanel = await page.evaluate(rects);
     assert.ok(dockedPanel.panel.width > 0);
-    await page.locator(".rail-expand").click();
+    await page.locator(".rail-overview-toggle").click();
     await page.waitForSelector(".rail-overview-content");
     await page.waitForFunction(() => !document.querySelector(".rail-overview-content")?.getAnimations().length);
     const dockedOverview = await page.evaluate(rects);
@@ -86,7 +87,7 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
     await page.locator("#workspace-action").click();
     assert.equal(await page.evaluate(() => window.__workspaceClicks), 2);
 
-    await page.locator(".rail-expand").click();
+    await page.locator(".rail-overview-toggle").click();
     await page.waitForSelector(".rail-overview-content", { state: "detached" });
     await page.waitForFunction(() => document.querySelector(".rail-panel")?.getAttribute("aria-hidden") === "false");
     const popoverPanel = await page.evaluate(rects);
@@ -165,9 +166,44 @@ it("keeps overview scope on the workspace page after opening the project agent",
     await page.locator('[data-bubble="project"]').click();
     await page.waitForFunction(() => document.querySelector("#rail-panel .rail-who")?.title === "Project agent", null, { timeout: 5000 });
     await page.waitForSelector('[data-bubble="agent"][data-agent="workspace-agent"]', { timeout: 5000 });
-    await page.locator(".rail-expand").click();
+    await page.locator(".rail-overview-toggle").click();
     await page.waitForSelector('[data-overview-agent="workspace-agent"]', { timeout: 5000 });
     const agents = await page.locator(".rail-overview-row").evaluateAll((rows) => rows.map((row) => row.dataset.overviewAgent));
     assert.deepEqual(agents.sort(), ["project-agent", "workspace-agent"]);
+  });
+}, 30_000);
+
+// #117, unmocked end to end: the production rail on a cached project, moved
+// from the workspace's overview out to the project's, capped there, and back
+// into another workspace through its heading and its See all.
+it("moves the chat overview between one workspace and the whole project", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, markup, { basePath });
+    await loadChatOverviewModules(page, basePath);
+    await page.evaluate(seedChatOverview);
+    const sections = () => page.locator(".rail-overview-section").evaluateAll((all) => all.map((section) => ({
+      name: section.getAttribute("aria-label"),
+      agents: [...section.querySelectorAll(".rail-overview-row")].map((row) => row.dataset.overviewAgent),
+      seeAll: !!section.querySelector(".rail-overview-see-all"),
+    })));
+    const sectionsNamed = (names) => page.waitForFunction((wanted) => JSON.stringify([...document
+      .querySelectorAll(".rail-overview-section")].map((section) => section.getAttribute("aria-label")))
+      === JSON.stringify(wanted), names, { timeout: 5000 });
+
+    await page.waitForSelector('.rail-bubble-add + .rail-overview-toggle', { timeout: 5000 });
+    await page.locator(".rail-overview-toggle").click();
+    await sectionsNamed(["Project agents", "chat-overview-nav"]);
+    await page.locator("#rail-overview .rail-overview-up").click();
+    await sectionsNamed(["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav"]);
+    assert.deepEqual((await sections()).map(({ agents, seeAll }) => [agents.length, seeAll]),
+      [[1, false], [3, true], [2, false], [1, false]]);
+    assert.equal(await page.locator("#rail-overview .rail-overview-up").count(), 0);
+
+    await page.locator('.rail-overview-open[data-overview-scope="workspace-quiet"]').click();
+    await sectionsNamed(["Project agents", "landing-page"]);
+    await page.locator("#rail-overview .rail-overview-up").click();
+    await page.locator('.rail-overview-see-all[data-overview-scope="workspace-busy"]').click();
+    await sectionsNamed(["Project agents", "spa-flaky-tests"]);
+    assert.deepEqual((await sections())[1].agents, ["busy-5", "busy-4", "busy-3", "busy-2", "busy-1"]);
   });
 }, 30_000);

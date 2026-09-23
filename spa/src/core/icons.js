@@ -36,7 +36,12 @@ export { default as ICON_CHEVRON_LEFT } from "lucide-static/icons/chevron-left.s
 export { default as ICON_MESSAGE_SQUARE } from "lucide-static/icons/message-square.svg?raw";
 export { default as ICON_EXTERNAL_LINK } from "lucide-static/icons/external-link.svg?raw";
 export { default as ICON_CHECK } from "lucide-static/icons/check.svg?raw";
-export { default as ICON_MAXIMIZE } from "lucide-static/icons/maximize-2.svg?raw";
+// The chat overview's control in the rail strip (#117): stacked conversations,
+// not a maximize — it shows every chat, it does not enlarge this one.
+export { default as ICON_CHAT_OVERVIEW } from "lucide-static/icons/messages-square.svg?raw";
+// From a narrowed view out to the project's whole one (#117): the chat
+// overview's workspace scope and the workspace Issues tab both wear it.
+export { default as ICON_SCOPE_OUT } from "lucide-static/icons/arrow-up-right.svg?raw";
 export { default as ICON_REFRESH } from "lucide-static/icons/refresh-cw.svg?raw";
 export { default as ICON_HISTORY } from "lucide-static/icons/history.svg?raw";
 export { default as ICON_GIT_MERGE } from "lucide-static/icons/git-merge.svg?raw";

@@ -765,6 +765,18 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-overview-section { display:flex; flex-direction:column; gap:8px; }
 .rail-overview-section-head { display:flex; align-items:center; gap:6px; min-height:32px; }
 .rail-overview-section-head h2 { margin:0; color:var(--ink); font-size:14px; font-weight:650; }
+/* On the project's overview a workspace's heading is the way into its own. */
+.rail-overview-open { display:inline-flex; align-items:center; gap:2px; padding:0; border:0;
+  background:none; color:inherit; font:inherit; cursor:pointer; text-align:left; }
+.rail-overview-open svg { flex:none; width:15px; height:15px; color:var(--dim); }
+.rail-overview-open:hover svg { color:inherit; }
+.rail-overview-open:hover { color:var(--accent); }
+.rail-overview-open:focus-visible, .rail-overview-see-all:focus-visible {
+  outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
+.rail-overview-see-all { align-self:flex-start; padding:2px 0; border:0; background:none;
+  color:var(--accent); font:inherit; font-size:12px; font-weight:600; cursor:pointer; }
+.rail-overview-see-all:hover { text-decoration:underline; }
+.rail-overview-list:focus { outline:none; }
 .rail-overview-add { width:24px; height:24px; color:var(--ink2); font-size:20px; line-height:1; }
 .rail-overview-row { display:grid; grid-template-columns:minmax(0, 1fr) auto;
   align-items:center; gap:4px 8px; width:100%; padding:10px 12px; border:1px solid var(--line);
@@ -822,12 +834,16 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
-.rail-expand { flex:none; display:grid; place-items:center; width:32px; height:32px;
-  margin-top:auto; padding:0; border:1px solid var(--line); border-radius:8px;
-  background:var(--panel2); color:var(--ink2); cursor:pointer; }
-.rail-expand:hover, .rail-expand[aria-expanded="true"] { border-color:var(--accent); color:var(--accent); }
-.rail-expand:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-.rail-expand svg { display:block; width:17px; height:17px; }
+/* The chat overview's control (#117): right after the `+`, and a bare icon —
+   no face, no ring, no slab — because it is not a conversation. The box stays
+   bubble-sized so the strip's rhythm and the press target do not shrink. */
+.rail-overview-toggle { flex:none; display:grid; place-items:center; width:32px; height:32px;
+  padding:0; border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer;
+  -webkit-tap-highlight-color:transparent; }
+.rail-overview-toggle:hover { color:var(--ink); }
+.rail-overview-toggle[aria-expanded="true"] { color:var(--accent); }
+.rail-overview-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.rail-overview-toggle svg { display:block; width:19px; height:19px; }
 /* The project's agent is not one of this work item's: it wears the project's
    initial instead of a face off the same five tilings, and a squared-off
    bubble, so the strip says whose it is before the tip is read. */
@@ -1331,7 +1347,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     flex-direction:row; align-items:center; gap:10px; padding:0 44px 0 10px;
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
-  .rail-expand { margin-top:0; margin-left:auto; }
   #agent-rail.rail-overview { position:absolute; left:0; right:0;
     top:var(--toolbar-h); bottom:var(--console-space); width:auto; margin:0;
     pointer-events:none; }

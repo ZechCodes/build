@@ -206,3 +206,31 @@ describe("one issue, opened inside the tab", () => {
     expect(stamped.map((one) => [one.number, one.title])).toEqual([[1, "Held by an agent here"]]);
   });
 });
+
+// #117: the tab is narrowed to this workspace, so it offers the way out to the
+// project's whole list — the same arrow the chat overview's workspace scope
+// wears to reach every workspace.
+describe("the way out to the project's issues", () => {
+  it("links the list to the project's Issues view", async () => {
+    const { routeFromHash } = await import("../src/core/router.js");
+    await mount();
+    const out = body.querySelector(".issue-head a.scope-link.issue-scope-out");
+    expect(out.textContent.trim()).toBe("All project issues");
+    expect(out.querySelector("svg.lucide-arrow-up-right")).not.toBeNull();
+    expect(out.nextElementSibling.matches("[data-issue-new]")).toBe(true);
+    expect(routeFromHash(out.getAttribute("href"))).toMatchObject({
+      name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues",
+    });
+    const before = window.location.href;
+    const moved = new Promise((done) => window.addEventListener("hashchange", done, { once: true }));
+    out.click();
+    await moved;
+    expect(routeFromHash(window.location.hash)).toMatchObject({ name: "project", projectId: "proj-1", tab: "issues" });
+    window.history.replaceState({}, "", before);
+  });
+
+  it("is not on an issue's own page inside the tab", async () => {
+    await mount({ route: { issueId: "i1" } });
+    expect(body.querySelector(".scope-link")).toBeNull();
+  });
+});

@@ -166,7 +166,8 @@ import { createChatPanelMotion } from "./chatPanelMotion.js";
 import { createChatTitleMotion } from "./chatTitleMotion.js";
 import { createAgentOverview, overviewHtml } from "./agentOverview.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
-import { ICON_MAXIMIZE } from "./icons.js";
+import { ICON_CHAT_OVERVIEW } from "./icons.js";
+import { scopeLinkHtml } from "./scopeLink.js";
 import "../styles/shell.css";
 
 /** How close to the top of the conversation counts as asking for the page
@@ -460,7 +461,7 @@ const stripRunsAcross = () => chatOverlaysPage();
 /** The count over a bubble's face, hidden while nothing is waiting. The `+` is
  *  a control rather than a conversation, so nothing is ever waiting on it. */
 const bubbleCountHtml = (bubble) => {
-  if (bubble.type === "add" || bubble.type === "expand") return "";
+  if (bubble.type === "add") return "";
   if (!bubble.unread) return `<span class="rail-count" hidden></span>`;
   return `<span class="rail-count">${esc(String(bubble.unread))}</span>`;
 };
@@ -469,7 +470,6 @@ const bubbleCountHtml = (bubble) => {
  *  core/agentCanvas.js to paint into. The `+`, and the project's own initial,
  *  speak in a glyph and keep a label. */
 const bubbleFaceHtml = (bubble) => {
-  if (bubble.type === "expand") return ICON_MAXIMIZE;
   const count = bubbleCountHtml(bubble);
   if (bubble.pattern) return `<canvas class="rail-glyph" aria-hidden="true"></canvas>${count}`;
   return `<span class="rail-bubble-label">${esc(bubble.label)}</span>${count}`;
@@ -490,8 +490,10 @@ export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says
   // nothing and is pressed by nobody, so it is not a button.
   if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
-  if (bubble.type === "expand") return `<button type="button" class="rail-expand" data-bubble="expand"
-    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_MAXIMIZE}</button>`;
+  // The chat overview's control: a bare icon right after the `+`, not a
+  // bubble — it stands for no conversation (#117).
+  if (bubble.type === "overview") return `<button type="button" class="rail-overview-toggle" data-bubble="overview"
+    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_CHAT_OVERVIEW}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
@@ -784,6 +786,34 @@ export function mountAgentRail(host, context) {
  *  whether it was asked for one at all, whether it is the project's own
  *  conversation it is standing on, and the name and owner the swap before this
  *  mount already learned. */
+/** The page a rail's chat overview belongs to, the scope it opens on, and
+ *  where the reader's own choice of scope is kept (#117). The page is the
+ *  route's, not the conversation's: standing on the project's agent from a
+ *  workspace is still that workspace's page. Only a project and a workspace
+ *  page move between scopes; every other page keeps the one it has. */
+const pageWorkspaceId = (context, alongside) =>
+  [context, alongside].find((side) => side?.kind === "workspace")?.workspaceId || null;
+
+function overviewPageOf(context, alongside, projectId) {
+  const kind = context.overviewPageKind || context.kind;
+  const workspaceId = pageWorkspaceId(context, alongside);
+  const moves = !!projectId && (kind === "project" || (kind === "workspace" && !!workspaceId));
+  if (!moves) return { kind, workspaceId: null, scope: { kind: "page" }, address: null };
+  return {
+    kind,
+    workspaceId,
+    scope: kind === "project" ? { kind: "project" } : { kind: "workspace", workspaceId },
+    address: uiAddress({ deviceId: context.deviceId, entityId: projectId, view: "agent-rail",
+      kind: "overview-scope", sub: `${kind}:${workspaceId ?? ""}` }),
+  };
+}
+
+/** A page with no scope to move between keeps nothing. */
+const NO_SCOPE_RECORD = Object.freeze({ write: async () => {}, dispose() {} });
+
+const isOverviewScope = (saved) => saved?.kind === "project"
+  || (saved?.kind === "workspace" && typeof saved.workspaceId === "string" && saved.workspaceId !== "");
+
 function projectAgentState(context) {
   const projectAgent = context.projectAgent || null;
   const standing = !!projectAgent && context.kind === "project";
@@ -924,6 +954,18 @@ function mountRailOnContext(host, context, swap) {
   let pinChoicePending = false;
   let pinnedKnown = false;
   let overviewVisible = false;
+  // Which chat overview is open (#117): the project's, with every workspace in
+  // it, or one workspace's. It opens as the page's own and moves only when the
+  // reader moves it; the choice is cached per page so a remount — a swap to the
+  // project's agent is one — keeps it.
+  const overviewPage = overviewPageOf(context, alongside, projectId);
+  let overviewScope = overviewPage.scope;
+  let overviewRowsRead = [];
+  const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
+    if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
+    overviewScope = saved;
+    showOverviewScope();
+  }) : NO_SCOPE_RECORD;
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
@@ -1360,10 +1402,16 @@ function mountRailOnContext(host, context, swap) {
     address: records.rowAddress(entityId),
   });
 
+  /** Whether the overview needs every workspace of the project read: for the
+   *  project's scope, and for a workspace other than the page's own. */
+  const overviewReadsWorkspaces = () => overviewScope.kind === "project"
+    || (overviewScope.kind === "workspace" && overviewScope.workspaceId !== overviewPage.workspaceId)
+    || (overviewScope.kind === "page" && overviewPage.kind === "project");
+
   const overview = createAgentOverview({
     scope: cacheScope,
     projectId,
-    includeProjectWorkspaces: (context.overviewPageKind || context.kind) === "project",
+    includeProjectWorkspaces: overviewReadsWorkspaces,
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
     onRows: (rows) => paintOverviewRows(rows),
@@ -1720,16 +1768,51 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const paintOverviewRows = (rows) => {
+    overviewRowsRead = rows;
     const list = host.querySelector(".rail-overview-list");
     if (!overviewVisible || !list) return;
-    const markup = overviewHtml(rows, { showProjectAgents: !!projectId });
+    const markup = overviewHtml(rows, { showProjectAgents: !!projectId, scope: overviewScope });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
       const add = event.target.closest?.("[data-overview-add]");
       if (add) { openOverviewAdd(add.dataset.overviewAdd); return; }
+      const opens = event.target.closest?.("[data-overview-scope]");
+      if (opens) { moveOverviewScope({ kind: "workspace", workspaceId: opens.dataset.overviewScope }); return; }
       const button = event.target.closest?.("[data-overview-agent]");
       if (button) openOverviewRow(button);
     };
+  };
+
+  /** The head's way out to the project's overview, there only while the
+   *  overview is one workspace's. */
+  const syncOverviewHead = () => {
+    const head = host.querySelector("#rail-overview .rail-head");
+    if (!head) return;
+    const wanted = overviewScope.kind === "workspace";
+    const present = head.querySelector(".rail-overview-up");
+    if (!wanted) { present?.remove(); return; }
+    if (present) return;
+    head.querySelector(".rail-who").insertAdjacentHTML("afterend",
+      scopeLinkHtml({ label: "All workspaces", className: "rail-overview-up" }));
+    head.querySelector(".rail-overview-up").onclick = () => moveOverviewScope({ kind: "project" });
+  };
+
+  /** Redraw the open overview for the scope it is on now: what is already read
+   *  at once, then whatever the new breadth has to read. */
+  const showOverviewScope = () => {
+    syncOverviewHead();
+    paintOverviewRows(overviewRowsRead);
+    overview.refresh();
+  };
+
+  /** The reader moved the overview between the project and one workspace. The
+   *  press that did it is gone with the redraw, so focus goes to the list it
+   *  redrew rather than to the document. */
+  const moveOverviewScope = (scope) => {
+    overviewScope = scope;
+    void overviewScopeRecord.write(scope);
+    showOverviewScope();
+    host.querySelector("#rail-overview .rail-overview-list")?.focus();
   };
 
   const paintOverviewFrame = (strip) => {
@@ -1738,9 +1821,10 @@ function mountRailOnContext(host, context, swap) {
     const content = document.createElement("section");
     content.id = "rail-overview";
     content.className = "rail-overview-content";
-    content.setAttribute("aria-label", "Agent overview");
-    content.innerHTML = `${panelHeadHtml("Agents", "chat", { hasTerminal: false, showHarnessIcon: false, pinned })}<div class="rail-overview-list"></div>`;
+    content.setAttribute("aria-label", "Chat overview");
+    content.innerHTML = `${panelHeadHtml("Agents", "chat", { hasTerminal: false, showHarnessIcon: false, pinned })}<div class="rail-overview-list" tabindex="-1"></div>`;
     host.insertBefore(content, strip);
+    syncOverviewHead();
     content.querySelector(`.${PIN_CLASS}`).onclick = () => overviewMotion.run({
       panel: content, direction: pinned ? "popover" : "pinned",
       apply: () => { void setPinned(!pinned); },
@@ -1770,7 +1854,7 @@ function mountRailOnContext(host, context, swap) {
       projectAgent: projectAgentEntry(),
       projectName,
     });
-    paintStrip(strip, [...bubbles, { type: "expand", id: "", title: overviewVisible ? "Close agent overview" : "Show all agents",
+    paintStrip(strip, [...bubbles, { type: "overview", id: "", title: overviewVisible ? "Close chat overview" : "Chat overview",
       active: overviewVisible, label: "", unread: 0, working: false }]);
     // The strip is useful immediately; the panel waits for its cached pin
     // choice so a remount never flashes the wrong layout or creates a panel
@@ -1822,9 +1906,9 @@ function mountRailOnContext(host, context, swap) {
       bubble.setAttribute("aria-expanded", String(expanded));
       bubble.setAttribute("aria-controls", "rail-panel");
     });
-    const expand = host.querySelector(".rail-expand");
-    expand?.setAttribute("aria-expanded", String(overviewVisible));
-    expand?.setAttribute("aria-controls", "rail-overview");
+    const toggle = host.querySelector(".rail-overview-toggle");
+    toggle?.setAttribute("aria-expanded", String(overviewVisible));
+    toggle?.setAttribute("aria-controls", "rail-overview");
   };
 
   /** Dock the panel, or let it go. Unpinning leaves the conversation on screen
@@ -3331,7 +3415,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const pressStripControl = (type) => {
-    if (type === "expand") {
+    if (type === "overview") {
       if (overviewVisible) leaveOverview();
       else {
         host.querySelector("#rail-overview")?.remove();
@@ -3602,6 +3686,7 @@ function mountRailOnContext(host, context, swap) {
       activityRuns?.dispose();
       for (const record of detailRecords.values()) record.dispose();
       pinnedRecord.dispose({ flushPending: false });
+      overviewScopeRecord.dispose({ flushPending: false });
       activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);

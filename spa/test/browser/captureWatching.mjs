@@ -86,7 +86,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.waitForFunction(() => document.querySelector(".rail-watch")?.getAttribute("aria-pressed") === "false");
   await page.locator(".rail-watch").hover();
   await page.locator(".rail-head").screenshot({ path: `${output}agent-unwatched.png` });
-  await page.locator(".rail-expand").click();
+  await page.locator(".rail-overview-toggle").click();
   await page.waitForFunction(() => document.querySelector(".rail-overview-row")?.textContent.includes("Not watching"));
   await page.locator(".rail-overview-row").screenshot({ path: `${output}agent-overview-unwatched.png` });
 }, { width: 1320, height: 850 });

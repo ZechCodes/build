@@ -3,7 +3,6 @@ import {
   ATTENTION_REASONS,
   attentionGroups,
   attentionReasonLabel,
-  hasUnansweredAgentQuestion,
   hasUnreadInboxComment,
   issueAttention,
 } from "../src/core/trackerAttentionModel.js";
@@ -20,11 +19,9 @@ describe("Needs you", () => {
     expect(issueAttention(issue("mine", { assignee: { kind: "user" } })).reasons).toEqual([ATTENTION_REASONS.assigned]);
   });
 
-  it("recognizes an unanswered agent question, and clears it on a later user reply", () => {
-    const asked = [comment("ic-01", "agent", "Which name should I use?")];
-    expect(hasUnansweredAgentQuestion(asked)).toBe(true);
-    expect(hasUnansweredAgentQuestion([...asked, comment("ic-02", "user", "Use Zech")])).toBe(false);
-    expect(hasUnansweredAgentQuestion([...asked, comment("ic-02", "user", "Use Zech"), comment("ic-03", "agent", "And the color?")])).toBe(true);
+  it("does not treat an agent comment as an attention reason", () => {
+    const one = issue("commented");
+    expect(issueAttention(one, { detail: detail(one, [comment("ic-01", "agent", "Which name should I use?")]) }).reasons).toEqual([]);
   });
 
   it("recognizes an unread agent comment in the cached inbox, comparing ids without their type prefixes", () => {
@@ -51,8 +48,19 @@ describe("Needs you", () => {
 
   it("returns a display reason for each supported source", () => {
     expect(Object.values(ATTENTION_REASONS).map(attentionReasonLabel)).toEqual([
-      "In review", "Asked you a question", "Mentioned you", "Assigned to you",
+      "In review", "Mentioned you", "Assigned to you",
     ]);
+  });
+
+  it("never asks for attention on Done or closed issues, even with an unread inbox comment or user assignee", () => {
+    for (const fields of [{ status: "done" }, { state: "closed", status: "in_review" }]) {
+      const one = issue("finished", { ...fields, assignee: { kind: "user" } });
+      const cached = detail(one, [comment("ic-02", "agent", "Please look")]);
+      const attention = issueAttention(one, { detail: cached, inboxRow: inbox(one.id) });
+      expect(attention.needsYou).toBe(false);
+      expect(attention.reasons).toEqual([]);
+      expect(attention.reason).toBeNull();
+    }
   });
 });
 

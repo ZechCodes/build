@@ -33,6 +33,19 @@ describe("how far the reader has read", () => {
     expect(readThrough([{ key: "ie-1" }, { key: "ic-2" }])).toBe("ic-2");
   });
 
+  // core/trackerTimeline.js keys a record the bridge wrote without an id by
+  // its position. Sent as a mark, #64 would read the part after the first `-`
+  // as the instant — "3" sorts above every ULID — and its never-go-backwards
+  // guard would then refuse every real mark after it. Unread would stick for
+  // good, silently, because that refusal is a no-op on the bridge and this
+  // page swallows read-mark failures on purpose.
+  it("never sends a key the timeline invented for itself", () => {
+    expect(readThrough([{ key: "ic-01M30" }, { key: "comment-3" }])).toBe("");
+    expect(readThrough([{ key: "event-0" }])).toBe("");
+    // A real id that merely looks similar is still sent.
+    expect(readThrough([{ key: "ie-01M30" }])).toBe("ie-01M30");
+  });
+
   it("is nothing at all on an empty timeline", () => {
     expect(readThrough([])).toBe("");
     expect(readThrough(undefined)).toBe("");

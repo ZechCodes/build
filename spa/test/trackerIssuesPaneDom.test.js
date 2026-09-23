@@ -298,6 +298,44 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-link').getAttribute("href"))
       .toContain("done");
   });
+
+  it("derives Needs you from cached unread comments and excludes questions, Done, and closed issues", async () => {
+    const questioned = issue({ id: "questioned", number: 4, title: "Question only" });
+    const unread = issue({ id: "unread", number: 3, title: "Unread comment", watched: true });
+    const done = issue({ id: "done", number: 2, title: "Done", status: "done", assignee: { kind: "user" } });
+    const closed = issue({ id: "closed", number: 1, title: "Closed", state: "closed", status: "in_review" });
+    const issues = [questioned, unread, done, closed];
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues, columns: columns() });
+    for (const one of issues) {
+      await trackerCache.writeIssueRecord("dev-1", "proj-1", one.id, trackerCache.issueRecord(one, [{
+        type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Could you review this?",
+      }]));
+    }
+    const inboxFeed = { ...feed, items: [...feed.items, ...[unread, done, closed].map((one) => ({
+      kind: "tracker_issue", projectKey: PROJECT_KEY, issue_id: one.id, unread: 1,
+    }))] };
+    call = vi.fn(() => new Promise(() => {}));
+    pane = mountIssuesPane(host, {
+      projectId: "proj-1",
+      projectName: "Build",
+      deviceId: "dev-1",
+      projectKey: PROJECT_KEY,
+      callRpc: call,
+      catalog: () => ({ providers: [] }),
+      refreshCatalog: async () => ({ providers: [] }),
+      feed: () => inboxFeed,
+      defaultView: undefined,
+      navigate: vi.fn(),
+    });
+
+    await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual(["unread"]));
+
+    const read = { ...unread, read_through: "ic-02" };
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", unread.id, trackerCache.issueRecord(read, [{
+      type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Could you review this?",
+    }]));
+    await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual([]));
+  });
 });
 
 describe("the list", () => {
@@ -334,9 +372,7 @@ describe("the list", () => {
     await trackerCache.writeIssueRecord("dev-1", "proj-1", one.id, trackerCache.issueRecord(one, [{
       type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Please take a look",
     }]));
-    await flush();
-
-    expect(host.querySelector('[data-issue-group="needsYou"] [data-issue="watched"]')).not.toBeNull();
+    await vi.waitFor(() => expect(host.querySelector('[data-issue-group="needsYou"] [data-issue="watched"]')).not.toBeNull());
   });
 
   it("shows cached issues a page at a time and appends the next page without a bridge answer", async () => {

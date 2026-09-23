@@ -788,6 +788,26 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(callsTo("workspace.get")).toHaveLength(0);
   });
 
+  it("paints the selected agent's cached watch value and follows a push", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.9.0" }), { deviceId: "dev-1" });
+    try {
+      payload = branchRow({ agents: [agent({ watched: false })] });
+      await mount();
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false"));
+      expect(panel().querySelector(".rail-watch").title).toBe("Not watching");
+
+      await pushRow(branchRow({ agents: [agent({ watched: true })] }));
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("true"));
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+
+      panel().querySelector(".rail-watch").click();
+      await vi.waitFor(() => expect(callsTo("conversation.unwatch")[0]?.params).toEqual({ entity_id: "run-3", agent_id: "ag-1" }));
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
   it("redraws the remembered workspace head and composer when its hidden run reaches the cache", async () => {
     await wipeCache();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
@@ -1303,6 +1323,7 @@ describe("the bubble strip", () => {
     railHost().querySelector("#railsend").click();
     await flush();
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
+    expect(callsTo("agent.add")[0].params).not.toHaveProperty("made_by_agent");
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
     expect(railHost().querySelector(".rail-newagent")).toBeNull();
   });

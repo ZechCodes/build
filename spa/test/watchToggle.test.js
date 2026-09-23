@@ -88,13 +88,15 @@ describe("the switch moving", () => {
 describe("what it is a watch of", () => {
   // Two kinds of thing are watched and the wire names them differently (#64).
   // The switch behaves the same for both; only the verb and its parameter move.
-  it("asks about a conversation by its own id", async () => {
+  it("asks about the selected agent on its entity", async () => {
     const call = vi.fn(async () => ({}));
-    const toggle = createWatchToggle({ watching: false, watchers: 0, conversationId: "run-7", call });
+    let selected = "agent-1";
+    const toggle = createWatchToggle({ watching: false, watchers: 0, entityId: "run-7", agentId: () => selected, call });
     await toggle.press();
-    expect(call).toHaveBeenCalledWith("conversation.watch", { conversation_id: "run-7" });
+    expect(call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-7", agent_id: "agent-1" });
+    selected = "agent-2";
     await toggle.press();
-    expect(call).toHaveBeenLastCalledWith("conversation.unwatch", { conversation_id: "run-7" });
+    expect(call).toHaveBeenLastCalledWith("conversation.unwatch", { entity_id: "run-7", agent_id: "agent-2" });
   });
 
   it("stays on the issue verbs when it is an issue, which is what the issue page imports", async () => {

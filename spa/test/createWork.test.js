@@ -90,9 +90,9 @@ describe("workspace creation", () => {
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: " Release ", isolation: "rift" });
-    expect(navigate).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith({
       name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes",
-    });
+    }));
     expect(modal()).toBeNull();
   });
 
@@ -107,7 +107,7 @@ describe("workspace creation", () => {
 
     expect(other).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "" });
     expect(bridge.call).not.toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-2" }));
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "dev-2" })));
   });
 
   it("keeps the draft and permits retry after a create failure", async () => {
@@ -199,7 +199,7 @@ describe("workspace creation", () => {
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(bridge.call).toHaveBeenCalledWith("workspace.create", { project_id: "p1", name: "" });
-    expect(navigate).toHaveBeenCalled();
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalled());
   });
 
   it("escapes project names", () => {

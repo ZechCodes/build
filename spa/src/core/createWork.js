@@ -12,6 +12,8 @@ import { deviceCall } from "./inboxDevices.js";
 import { isolationOptionsHtml } from "./isolation.js";
 import { modalDialogHtml, openModal } from "./modal.js";
 import { workspaceRoute } from "./projectModel.js";
+import { stampWorkspace } from "./feedMerge.js";
+import { readCached, writeCached } from "./localCache.js";
 import { esc } from "./text.js";
 
 export const CREATE_KINDS = ["workspace"];
@@ -34,6 +36,17 @@ function createdWorkspaceRoute(answer) {
   const route = workspace && workspaceRoute(workspace);
   if (!route) throw new Error("The workspace was created but returned no usable identity.");
   return route;
+}
+
+/** The create answer is already a durable workspace. Put it in the same cache
+ * list a board pull writes before leaving the dialog, so the inbox can paint
+ * this agentless checkout immediately on either face. */
+export async function cacheCreatedWorkspace(deviceId, answer) {
+  const workspace = answer?.workspace || answer;
+  const address = { deviceId, entityId: "", kind: "workspaces" };
+  const held = (await readCached(address))?.value || [];
+  const stamped = stampWorkspace(workspace, deviceId);
+  await writeCached(address, [...held.filter((entry) => entry.id !== stamped.id), stamped]);
 }
 
 export function createWorkBodyHtml(state) {
@@ -94,6 +107,7 @@ export function openCreateWork({ projectId, deviceId, projectName, navigate = go
       const answer = await askDevice("workspace.create", workspaceCreateParams(state));
       if (dismissed) return;
       const route = createdWorkspaceRoute(answer);
+      await cacheCreatedWorkspace(deviceId, answer);
       await close();
       // The machine that made it is the machine it is on: the answer to a fresh
       // workspace.create is not a feed row and carries no device of its own.

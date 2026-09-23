@@ -159,6 +159,22 @@ describe("expanded agent overview", () => {
     reader.close();
   });
 
+  it("shows each cached agent's watching state as its roster changes", async () => {
+    await cache.writeCached(rosterAddress, { kind: "branch", run_id: "run-overview", agents: [agent("A", { watched: false })] });
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope,
+      sources: () => [{ slot: "current", kind: "branch", entityId: "run-overview", address: rosterAddress }],
+      onRows: (rows) => paints.push(rows),
+    });
+    reader.open();
+    await vi.waitFor(() => expect(paints.at(-1)?.[0]?.watching).toBe(false));
+    expect(overview.overviewHtml(paints.at(-1))).toContain("Not watching");
+    await cache.writeCached(rosterAddress, { kind: "branch", run_id: "run-overview", agents: [agent("A", { watched: true })] });
+    await vi.waitFor(() => expect(paints.at(-1)?.[0]?.watching).toBe(true));
+    expect(overview.overviewHtml(paints.at(-1))).toContain("Watching");
+    reader.close();
+  });
+
   it("reads an issue agent's transcript through its cached execution context", async () => {
     const issueAddress = { deviceId: "dev-overview", entityId: "issue-1", kind: "issue", sub: "get" };
     const issueRow = { issue_id: "issue-1", agents: [agent("issue-agent", { name: "Issue agent", working: true })],

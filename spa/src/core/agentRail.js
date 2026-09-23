@@ -843,9 +843,9 @@ const panelStartsOut = (context, pinned) =>
  * with #64, and a switch wired to one an older bridge does not know can only
  * refuse. `panelHeadHtml` reads null as "this head has no switch".
  */
-function watchStateFor(context) {
-  if (!carriesWatching(context.deviceId)) return null;
-  return { watching: context.watching !== false, watchers: context.watchers || 0, pending: false };
+function watchStateFor(context, agent) {
+  if (!agent || !carriesWatching(context.deviceId)) return null;
+  return { watching: agent?.watched === true, watchers: agent?.watchers || 0, pending: false };
 }
 
 /** The rail standing on ONE of its contexts. `swap` is how it moves to the
@@ -884,10 +884,11 @@ function mountRailOnContext(host, context, swap) {
   // Whether the reader hears about this conversation (#65). One switch per
   // mounted rail, because the rail stands on one conversation at a time — a
   // swap to the project's side mounts a rail of its own with its own.
-  let watchState = watchStateFor(context);
+  let watchState = watchStateFor(context, entity.agents.find((agent) => agent.id === selectedId));
   const watchSwitch = createWatchToggle({
     ...watchState,
-    conversationId: context.entityId || null,
+    entityId: () => context.entityId || entity.entityId || records.entityId(),
+    agentId: () => selectedId,
     call: (method, params) => chatRepository.currentCall()(method, params),
     onChange: (next) => {
       watchState = next;
@@ -1086,11 +1087,17 @@ function mountRailOnContext(host, context, swap) {
   const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
 
   const agentOf = (id) => visibleAgents().find((agent) => agent.id === id) || null;
+  const syncWatchFromAgent = () => {
+    const current = watchStateFor(context, agentOf(selectedId));
+    if (current) watchSwitch.settle(current);
+    else watchState = null;
+  };
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
   const chooseAgent = (id) => {
     if (selectedId !== (id || null)) leaveUnreadMarker();
     selectedId = id || null;
+    syncWatchFromAgent();
     railView.chooseAgent(selectedId);
     if (!isProvisionalKey(selectedId)) {
       const addressed = controllerForAgent(agentOf(selectedId));

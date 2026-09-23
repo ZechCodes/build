@@ -13,9 +13,6 @@ import {
   autoGrow,
   composerHtml,
   composerPartIds,
-  attachmentGlyphHtml,
-  formatAttachmentSize,
-  isImageAttachment,
   mountComposerAttachments,
   sendControlHtml,
 } from "./composer.js";
@@ -24,7 +21,8 @@ import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 import { viewingContextChipsHtml } from "./viewingContext.js";
 import { ICON_CHECK } from "./icons.js";
-import { openThreadAttachmentLightbox } from "./threadAttachmentLightbox.js";
+import { openAttachmentLightbox } from "./threadAttachmentLightbox.js";
+import { attachmentListHtml, isMediaAttachment } from "./attachmentTiles.js";
 import { setMotionRowHtml } from "./motion.js";
 import { issueCardHtml } from "./trackerMessageCard.js";
 import { issueActionLineHtml } from "./trackerActionLine.js";
@@ -573,34 +571,15 @@ export function createThreadState({ ownerId = "" } = {}) {
 /// asked for and refused is drawn as refused, so that a repaint of the same
 /// conversation is the same markup down to the class.
 function attachmentsHtml(attachments, threadState) {
-  if (!attachments || !attachments.length) return "";
-  return `<div class="thread-attachments">${attachments
-    .map((attachment) => {
-      const path = esc(attachment.path || "");
-      const name = esc(attachment.name || attachment.path || "file");
-      const size = esc(formatAttachmentSize(attachment.size));
-      if (isImageAttachment(attachment.mime)) {
-        // Three states, and the caption says which: nothing (it is coming or it
-        // is here), refused (it is not coming), and waiting on a wire that is
-        // not there — which is a picture still loading, not a picture gone.
-        const refused = threadState.attachment(attachment.path) === null ? " unavailable" : "";
-        const waiting = !refused && threadState.attachmentDeferred?.(attachment.path) ? " waiting" : "";
-        return `<figure class="thread-attachment-figure${refused}${waiting}">
-          <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
-            <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
-          </button>
-          <figcaption><span class="thread-attachment-name">${name}</span> <span class="thread-attachment-size">${size}</span></figcaption>
-        </figure>`;
-      }
-      return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}" title="Download ${name}">
-        ${attachmentGlyphHtml(attachment.name, attachment.mime, "thread-attachment-glyph")}
-        <span class="thread-attachment-meta">
-          <span class="thread-attachment-name">${name}</span>
-          <span class="thread-attachment-size">${size}</span>
-        </span>
-      </button>`;
-    })
-    .join("")}</div>`;
+  // Three states, and the caption says which: nothing (it is coming or it is
+  // here), refused (it is not coming), and waiting on a wire that is not there
+  // — which is a picture still loading, not a picture gone.
+  const stateOf = (attachment) => {
+    if (!isMediaAttachment(attachment.mime)) return "";
+    if (threadState.attachment(attachment.path) === null) return " unavailable";
+    return threadState.attachmentDeferred?.(attachment.path) ? " waiting" : "";
+  };
+  return attachmentListHtml(attachments, { stateOf });
 }
 
 /// What the reader has picked on an offer and not yet sent, keyed by the offer
@@ -2177,6 +2156,10 @@ export function wireThreadArrivals(root, threadState = createThreadState()) {
   });
 }
 
+/// How big a video may be and still be fetched only to draw its first frame
+/// on the tile: one read's worth, which is every file a user can upload.
+const VIDEO_THUMBNAIL_MAX_BYTES = 5 * 1_048_576;
+
 export function wireThreadAttachments(root, load, threadState = createThreadState()) {
   if (!root) return;
   const dataUrlFor = (path) => {
@@ -2199,8 +2182,8 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
   /// device is back (#30). Telling them apart is the one rule
   /// core/transientRead.js owns, because a second reading of it would be a
   /// second answer about the same failure.
-  const failedToLoad = (path, image, error) => {
-    const figure = image?.closest(".thread-attachment-figure");
+  const failedToLoad = (path, element, error) => {
+    const figure = element?.closest(".thread-attachment-figure");
     const transient = isTransientTransportError(error);
     // Recorded, because "my attachments show unavailable" was half of the report
     // this came from and the answer turns entirely on which of the two this was.
@@ -2219,34 +2202,65 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     figure?.classList.add("unavailable");
   };
 
-  root.querySelectorAll("img.thread-attachment-image").forEach((image) => {
-    const path = image.dataset.attachmentPath;
+  const fill = (element) => {
+    const path = element.dataset.attachmentPath;
     // A picture already showing, one already asked for and refused, and one
     // waiting on a wire that is not there are all settled for now: asking again
     // on every poll would be a request a second and a half for bytes that are
     // not coming back on this render.
-    if (!path || image.getAttribute("src") || threadState.attachment(path) === null) return;
+    if (!path || element.getAttribute("src") || threadState.attachment(path) === null) return;
     if (threadState.attachmentDeferred(path)) return;
     dataUrlFor(path).then(
       (dataUrl) => {
-        image.setAttribute("src", dataUrl);
+        element.setAttribute("src", dataUrl);
       },
-      (error) => failedToLoad(path, image, error),
+      (error) => failedToLoad(path, element, error),
     );
+  };
+  root.querySelectorAll("img.thread-attachment-image").forEach(fill);
+  // A video's tile is its first frame, but a thumbnail is not worth a
+  // recording's worth of pieces: one past the cap keeps its play mark until it
+  // is opened, and wears the frame from then on because the bytes are held.
+  root.querySelectorAll("video.thread-attachment-video").forEach((video) => {
+    const small = Number(video.dataset.attachmentSize) <= VIDEO_THUMBNAIL_MAX_BYTES;
+    if (small || threadState.attachment(video.dataset.attachmentPath)) fill(video);
   });
 
-  root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
-    preview.onclick = async () => {
-      const image = preview.querySelector("img.thread-attachment-image");
-      const path = image?.dataset.attachmentPath;
-      if (!path) return;
-      try {
-        const dataUrl = image.getAttribute("src") || await dataUrlFor(path);
-        if (dataUrl) openThreadAttachmentLightbox(preview, { src: dataUrl, alt: image.alt });
-      } catch (error) {
-        failedToLoad(path, image, error);
-      }
+  /// One tile as the lightbox shows it. The source is the thumbnail's own
+  /// address when it has one, and a fetch — which also fills the thumbnail —
+  /// when it does not.
+  const lightboxItem = (preview) => {
+    const path = preview.dataset.attachmentPath;
+    const thumbnail = preview.querySelector("[data-attachment-path]");
+    return {
+      trigger: preview,
+      path,
+      kind: preview.dataset.attachmentKind === "video" ? "video" : "image",
+      name: preview.closest("figure")?.querySelector(".thread-attachment-name")?.textContent || "",
+      source: async () => {
+        const held = thumbnail?.getAttribute("src");
+        if (held) return held;
+        try {
+          const dataUrl = await dataUrlFor(path);
+          if (dataUrl && thumbnail?.isConnected) thumbnail.setAttribute("src", dataUrl);
+          return dataUrl;
+        } catch (error) {
+          failedToLoad(path, thumbnail, error);
+          throw error;
+        }
+      },
     };
+  };
+
+  /// The arrows move through the list the pressed tile is in — one message's
+  /// files, one comment's — and nothing past it.
+  const openFrom = (preview) => {
+    const list = preview.closest(".thread-attachments");
+    const previews = list ? [...list.querySelectorAll("button.thread-attachment-preview")] : [preview];
+    openAttachmentLightbox(previews.map(lightboxItem), Math.max(0, previews.indexOf(preview)));
+  };
+  root.querySelectorAll("button.thread-attachment-preview").forEach((preview) => {
+    preview.onclick = () => openFrom(preview);
   });
 
   root.querySelectorAll("button.thread-attachment").forEach((chip) => {

@@ -34,6 +34,7 @@ const commentRow = (entry, base) => ({
   body: String(entry.body || ""),
   mentionsUser: entry.mentions_user === true,
   refs: entry.refs || [],
+  attachments: entry.attachments || [],
 });
 
 const eventRow = (entry, base) => ({

@@ -40,6 +40,7 @@ import { carriesWatching, readThrough, watchStateOf } from "./trackerWatch.js";
 import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./watchToggle.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
+import { createIssueAttachmentBodies } from "./issueAttachmentBodies.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
 import { issueUnreadReading, issueUnreadRules, latestIssueMark } from "./trackerUnread.js";
@@ -509,13 +510,18 @@ export function mountIssuePage(host, options) {
   /// `issues.attachment` is the verb this asks for, and a bridge that does not
   /// have it yet refuses — which `wireThreadAttachments` draws as unavailable
   /// rather than as a picture that never arrives.
+  ///
+  /// The bytes are painted from the cache (core/issueAttachmentBodies.js), and
+  /// every list on the page is wired — the body's and each comment's — so the
+  /// lightbox steps through the one that was pressed.
   const attachmentState = createThreadState({ ownerId: `issue:${options.issueId}` });
+  const attachmentBodies = createIssueAttachmentBodies({
+    deviceId: state.deviceId,
+    issueId: state.issueId,
+    call: (method, params) => state.callRpc(method, params),
+  });
   const wireAttachments = () =>
-    wireThreadAttachments(
-      host.querySelector(".issue-page-attachments"),
-      (path) => state.callRpc("issues.attachment", { issue_id: state.issueId, path }),
-      attachmentState,
-    );
+    wireThreadAttachments(host.querySelector(".issue-page-main"), attachmentBodies.load, attachmentState);
 
   function wire() {
     wireRail();
@@ -564,6 +570,7 @@ export function mountIssuePage(host, options) {
       reads.dispose();
       unreadMarker.leave();
       unreadPill.dispose();
+      attachmentBodies.dispose();
       state.picker?.close?.();
     },
   };

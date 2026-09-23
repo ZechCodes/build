@@ -29,3 +29,11 @@ export const BACKGROUND_COOLDOWN_MS = 30000;
 
 /** The record one commit's patch is kept under. */
 export const PATCH_RECORD_KIND = "patch";
+
+/** The record one issue attachment's bytes are kept under, by path. */
+export const ATTACHMENT_RECORD_KIND = "attachment";
+
+/** The largest attachment body worth keeping: one bridge read's worth, which
+ *  is every file a user can upload. An agent's longer recording is painted
+ *  from the answer and never stored — #94's rule for an oversized body. */
+export const ATTACHMENT_BODY_MAX_BYTES = 5 * 1_048_576;

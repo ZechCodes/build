@@ -19,7 +19,8 @@ import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
 import { issueUnreadKey } from "./trackerUnread.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
-import { attachmentGlyphHtml, composerPartIds, formatAttachmentSize, isImageAttachment } from "./composer.js";
+import { composerPartIds } from "./composer.js";
+import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP } from "./icons.js";
 
 /** The head: what the issue is called, and the two facts that are independent
@@ -50,41 +51,18 @@ export const issueBodyHtml = (issue, refLinks = null) =>
 /**
  * The files filed with the issue (#57).
  *
- * Deliberately the conversation's own markup and classes, down to
+ * Deliberately the conversation's own tiles (core/attachmentTiles.js), down to
  * `data-attachment-path`: one attachment story in this client rather than two.
- * That is what lets `wireThreadAttachments` fill these — the loading, the
- * refusal and the wire-went-away deferral are all already written, and a
- * second copy of them would be a second set of answers about one failure.
+ * That is what lets `wireThreadAttachments` fill these and open them in the one
+ * lightbox — the loading, the refusal and the wire-went-away deferral are all
+ * already written, and a second copy of them would be a second set of answers
+ * about one failure.
  *
  * `src` is left empty and filled by that wiring, because the page is a string
  * and the bytes are a round trip away.
  */
-export const issueAttachmentsHtml = (attachments) => {
-  const held = (attachments || []).filter((one) => one && one.path);
-  if (!held.length) return "";
-  return `<div class="thread-attachments issue-page-attachments">${held.map(attachmentHtml).join("")}</div>`;
-};
-
-const attachmentHtml = (attachment) => {
-  const path = esc(attachment.path || "");
-  const name = esc(attachment.name || attachment.path || "file");
-  const size = esc(formatAttachmentSize(attachment.size));
-  if (isImageAttachment(attachment.mime)) {
-    return `<figure class="thread-attachment-figure">
-      <button type="button" class="thread-attachment-preview" aria-label="Open ${name}">
-        <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
-      </button>
-      <figcaption><span class="thread-attachment-name">${name}</span> <span class="thread-attachment-size">${size}</span></figcaption>
-    </figure>`;
-  }
-  return `<button type="button" class="thread-attachment" data-attachment-path="${path}" data-attachment-name="${name}" title="Download ${name}">
-    ${attachmentGlyphHtml(attachment.name, attachment.mime, "thread-attachment-glyph")}
-    <span class="thread-attachment-meta">
-      <span class="thread-attachment-name">${name}</span>
-      <span class="thread-attachment-size">${size}</span>
-    </span>
-  </button>`;
-};
+export const issueAttachmentsHtml = (attachments) =>
+  attachmentListHtml(attachments, { className: "issue-page-attachments" });
 
 const whenHtml = (row) => (row.at ? `<span class="issue-when" title="${esc(row.at)}">${esc(ageText(row.at))}</span>` : "");
 
@@ -95,6 +73,7 @@ const commentHtml = (row, context) => `<li class="issue-entry issue-comment${row
     <div class="issue-comment-card">
       <div class="issue-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
       <div class="issue-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(row.body, { links: context.refLinks })}</div>
+      ${attachmentListHtml(row.attachments, { className: "issue-comment-attachments" })}
     </div>
   </li>`;
 

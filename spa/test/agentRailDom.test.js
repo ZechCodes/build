@@ -220,6 +220,16 @@ const mount = async (context = {}) => {
   await flush();
 };
 
+const mountOverviewReady = async (context = {}) => {
+  await writeRailWorkItem(payload);
+  rail = mountAgentRail(railHost(), railAddress(context));
+  await vi.waitFor(() => {
+    expect(railHost().querySelector('[data-bubble="agent"]')).toBeTruthy();
+    expect(panel()?.querySelector(".rail-head")).toBeTruthy();
+    expect(railHost().querySelector(".rail-expand")).toBeTruthy();
+  });
+};
+
 /** The row moved: the sync layer writes what the bridge pushed, and every rail
  *  reading that record hears it. */
 const pushRow = async (row = payload) => {
@@ -910,29 +920,174 @@ describe("the bubble strip", () => {
     const originalCall = bridge.call;
     bridge.call = (method, params) => method === "thread.page"
       ? new Promise(() => {}) : originalCall(method, params);
-    await mount();
+    await mountOverviewReady();
 
     railHost().querySelector(".rail-expand").click();
-    await flush();
     const rows = () => [...railHost().querySelectorAll(".rail-overview-row")];
-    expect(rows().map((row) => row.textContent)).toEqual([
-      expect.stringContaining("Checking the build"),
-      expect.stringContaining("The diff is ready"),
-    ]);
+    const rowFor = (agentId) => rows().find((row) => row.dataset.overviewAgent === agentId);
+    await vi.waitFor(() => {
+      expect(rowFor("ag-1")?.textContent).toContain("Checking the build");
+      expect(rowFor("ag-2")?.textContent).toContain("The diff is ready");
+    });
+    expect(rowFor("ag-1").textContent).toContain("Checking the build");
+    expect(rowFor("ag-2").textContent).toContain("The diff is ready");
     expect(railHost().classList.contains("rail-overview")).toBe(true);
     expect(panel().getAttribute("aria-hidden")).toBe("true");
 
     await writeRailThread("run-3", "ag-1", { items: [
       { type: "event", data: { sequence: 3, event: "tool_use", summary: "Running tests" } },
     ] });
-    await flush();
-    expect(rows()[0].textContent).toContain("Running tests");
+    await vi.waitFor(() => expect(rowFor("ag-1")?.textContent).toContain("Running tests"));
 
-    rows()[1].click();
-    await flush();
+    rowFor("ag-2").click();
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
     expect(railHost().querySelector("#rail-overview")).toBeNull();
     expect(headWho(panel())).toBe("Second agent");
     expect(panel().getAttribute("aria-hidden")).toBe("false");
+  });
+
+  it("shows project and other workspace agents on a project page, with an add button in each workspace heading", async () => {
+    payload = { kind: "project", entity_id: "run-project", project_id: "p1", agents: [
+      agent({ id: "ag-project", name: "Project agent" }),
+    ] };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+      workspaces: [
+        { id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" },
+        { id: "ws-two", project_id: "p1", name: "Second workspace", entity_id: "run-two" },
+        { id: "ws-other", project_id: "another-project", name: "Outside workspace", entity_id: "run-other" },
+      ],
+      items: [
+        { kind: "workspace", workspace_id: "ws-one", project_id: "p1", entity_id: "run-one",
+          agents: [agent({ id: "ag-one", name: "First workspace agent" })] },
+        { kind: "workspace", workspace_id: "ws-two", project_id: "p1", entity_id: "run-two",
+          agents: [agent({ id: "ag-two", name: "Second workspace agent" })] },
+        { kind: "workspace", workspace_id: "ws-other", project_id: "another-project", entity_id: "run-other",
+          agents: [agent({ id: "ag-outside", name: "Outside agent" })] },
+      ],
+    });
+    await mountOverviewReady({ kind: "project", projectId: "p1", entityId: "run-project" });
+
+    railHost().querySelector(".rail-expand").click();
+    await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(3));
+    const sections = [...railHost().querySelectorAll(".rail-overview-section")];
+    expect(sections.map((section) => section.getAttribute("aria-label"))).toEqual([
+      "Project agents", "First workspace", "Second workspace",
+    ]);
+    expect(sections.map((section) => [...section.querySelectorAll(".rail-overview-name")]
+      .map((name) => name.textContent))).toEqual([
+      ["Project agent"], ["First workspace agent"], ["Second workspace agent"],
+    ]);
+    expect(railHost().textContent).not.toContain("Outside agent");
+    expect(sections[0].querySelector(".rail-overview-add")).toBeNull();
+    for (const section of sections.slice(1)) {
+      const add = section.querySelector(".rail-overview-section-head > .rail-overview-add");
+      expect(add).toBeTruthy();
+      expect(add.textContent).toBe("+");
+      expect(add.getAttribute("aria-label")).toBe(`Add an agent to ${section.getAttribute("aria-label")}`);
+    }
+
+    const beforeRoute = window.location.href;
+    const navigated = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+    sections[2].querySelector(".rail-overview-add").click();
+    await navigated;
+    expect(window.location.hash).toContain("/workspace/ws-two/changes");
+    expect(window.location.hash).toContain("newAgent=1");
+    window.history.replaceState({}, "", beforeRoute);
+  });
+
+  it("keeps workspace-page scope after switching to the project agent", async () => {
+    payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+      agents: [agent({ id: "ag-one", name: "First workspace agent" })] };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+      workspaces: [
+        { id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" },
+        { id: "ws-two", project_id: "p1", name: "Second workspace", entity_id: "run-two" },
+      ],
+      items: [
+        payload,
+        { kind: "project", project_id: "p1", entity_id: "run-project",
+          agents: [agent({ id: "ag-project", name: "Project agent" })] },
+        { kind: "workspace", workspace_id: "ws-two", project_id: "p1", entity_id: "run-two",
+          agents: [agent({ id: "ag-two", name: "Second workspace agent" })] },
+      ],
+    });
+    await mountOverviewReady({ kind: "workspace", workspaceId: "ws-one",
+      projectAgent: { projectId: "p1", entityId: "run-project" } });
+    await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="project"][data-agent="run-project"]')).toBeTruthy());
+
+    railHost().querySelector('[data-bubble="project"]').click();
+    await vi.waitFor(() => expect(headWho(panel())).toBe("Project agent"));
+    railHost().querySelector(".rail-expand").click();
+    await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
+    const sections = [...railHost().querySelectorAll(".rail-overview-section")];
+    expect(sections[0].getAttribute("aria-label")).toBe("Project agents");
+    expect(sections[1].querySelector('[data-overview-workspace="ws-one"]')).toBeTruthy();
+    expect(railHost().textContent).not.toContain("Second workspace agent");
+  });
+
+  it("gives the overview a chat header with only a working pin", async () => {
+    await mountOverviewReady();
+    railHost().querySelector(".rail-expand").click();
+    const head = railHost().querySelector("#rail-overview .rail-head");
+    expect(head).toBeTruthy();
+    expect(head.querySelector(".rail-who").textContent).toContain("Agents");
+    expect([...head.querySelectorAll("button")].map((button) => button.className)).toEqual([
+      expect.stringContaining("pinbtn"),
+    ]);
+    const pinButton = head.querySelector(".pinbtn");
+    expect(pinButton.getAttribute("aria-pressed")).toBe("true");
+    pinButton.click();
+    await vi.waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("false"));
+    expect(await pinnedValue()).toBe(false);
+    pinButton.click();
+    await vi.waitFor(() => expect(pinButton.getAttribute("aria-pressed")).toBe("true"));
+    expect(await pinnedValue()).toBe(true);
+  });
+
+  it("keeps the overview mounted while it closes and animates opening", async () => {
+    await mountOverviewReady();
+    const animations = recordAnimations();
+    try {
+      railHost().querySelector(".rail-expand").click();
+      const overview = railHost().querySelector("#rail-overview");
+      expect(overview).toBeTruthy();
+      await vi.waitFor(() => expect(animations.some((run) => run.element === overview)).toBe(true));
+      const opening = animations.find((run) => run.element === overview);
+      expect(opening.options.duration).toBe(160);
+      expect(opening.keyframes[0]).toMatchObject({ opacity: "0" });
+      expect(opening.keyframes[1]).toMatchObject({ opacity: "1", transform: "none" });
+      opening.onfinish();
+
+      railHost().querySelector(".rail-expand").click();
+      expect(railHost().querySelector("#rail-overview")).toBe(overview);
+      expect(overview.getAttribute("aria-hidden")).toBe("true");
+      expect(overview.hasAttribute("inert")).toBe(true);
+      expect(railHost().classList.contains("rail-overview")).toBe(true);
+      await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
+      expect(railHost().classList.contains("rail-overview")).toBe(false);
+    } finally {
+      stopRecordingAnimations();
+    }
+  });
+
+  it("opens and closes the overview immediately when reduced motion is requested", async () => {
+    await mountOverviewReady();
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = (query) => ({ matches: query === "(prefers-reduced-motion: reduce)" });
+    const animations = recordAnimations();
+    try {
+      railHost().querySelector(".rail-expand").click();
+      const overview = railHost().querySelector("#rail-overview");
+      expect(overview.getAttribute("aria-hidden")).toBe("false");
+      expect(animations.filter((run) => run.element === overview)).toHaveLength(0);
+      railHost().querySelector(".rail-expand").click();
+      expect(railHost().querySelector("#rail-overview")).toBeNull();
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      stopRecordingAnimations();
+    }
   });
 
   it("is one bubble per agent plus the one that adds another", async () => {
@@ -4171,7 +4326,7 @@ describe("sending to an agent that is already there", () => {
 
     await press("look at the login flow");
 
-    expect(copiesOf("look at the login flow")).toBe(0);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(0));
     expect(composer().value).toBe("look at the login flow");
     expect(document.activeElement).not.toBe(composer());
     expect(notifyError).toHaveBeenCalledTimes(1);

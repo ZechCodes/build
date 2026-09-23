@@ -12,6 +12,15 @@ const message = (sequence, role, body) => ({ type: "message", data: { sequence, 
 const activity = (sequence, summary) => ({ type: "event", data: { sequence, event: "tool_use", summary } });
 const rosterAddress = { deviceId: "dev-overview", entityId: "run-overview", kind: "row", sub: "" };
 const threadAddress = (id) => ({ deviceId: "dev-overview", entityId: "run-overview", kind: "thread", sub: id });
+const workspaceListAddress = { deviceId: "dev-overview", entityId: "", kind: "workspaces" };
+const rowAddress = (entityId) => ({ deviceId: "dev-overview", entityId, kind: "row", sub: "" });
+const workspaceThreadAddress = (entityId, agentId) => ({ deviceId: "dev-overview", entityId,
+  kind: "thread", sub: agentId });
+const datedMessage = (sequence, role, body, createdAt) => ({ type: "message",
+  data: { sequence, role, body, created_at: createdAt } });
+const sectionNames = (rows) => [...overview.overviewHtml(rows).matchAll(
+  /<section class="rail-overview-section" aria-label="([^"]+)"/g,
+)].map((match) => match[1]);
 const agent = (id, changes = {}) => ({ id, name: id, ordinal: 1, working: false,
   unread_count: 0, read_through_sequence: 0, ...changes });
 
@@ -25,6 +34,92 @@ beforeEach(async () => {
 });
 
 describe("expanded agent overview", () => {
+  it("groups a project's cached agents with its populated workspaces by latest agent message", async () => {
+    const projectAddress = rowAddress("run-overview");
+    await cache.writeCached(projectAddress, { kind: "project", agents: [agent("project-agent", { name: "Project agent" })] });
+    await cache.writeCached(workspaceListAddress, [
+      { id: "ws-first", project_id: "project-1", entity_id: "run-first", name: "First workspace" },
+      { id: "ws-second", project_id: "project-1", entity_id: "run-second", name: "Second workspace" },
+      { id: "ws-empty", project_id: "project-1", entity_id: "run-empty", name: "Empty workspace" },
+      { id: "ws-other", project_id: "project-2", entity_id: "run-other", name: "Other project" },
+    ]);
+    await cache.writeCached(rowAddress("run-first"), { agents: [
+      agent("first-older", { name: "First older" }), agent("first-newer", { name: "First newer" }),
+    ] });
+    await cache.writeCached(rowAddress("run-second"), { agents: [agent("second-agent", { name: "Second agent" })] });
+    await cache.writeCached(rowAddress("run-empty"), { agents: [] });
+    await cache.writeCached(rowAddress("run-other"), { agents: [agent("other-agent")] });
+    await cache.writeCached(workspaceThreadAddress("run-first", "first-older"), { items: [
+      datedMessage(1, "agent", "Older first reply", "2026-09-20T10:00:00Z"),
+    ] });
+    await cache.writeCached(workspaceThreadAddress("run-first", "first-newer"), { items: [
+      datedMessage(1, "agent", "Newer first reply", "2026-09-21T10:00:00Z"),
+    ] });
+    await cache.writeCached(workspaceThreadAddress("run-second", "second-agent"), { items: [
+      datedMessage(1, "agent", "Second reply", "2026-09-22T10:00:00Z"),
+      datedMessage(2, "user", "Later user prompt", "2026-09-23T10:00:00Z"),
+    ] });
+
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope, projectId: "project-1", includeProjectWorkspaces: true,
+      sources: () => [{ slot: "current", kind: "project", entityId: "run-overview", section: "project",
+        sectionName: "Project agents", address: projectAddress }],
+      onRows: (rows) => paints.push(rows),
+    });
+    try {
+      reader.open();
+      await vi.waitFor(() => expect(paints.at(-1)).toHaveLength(4));
+      const rows = paints.at(-1);
+      expect(sectionNames(rows)).toEqual(["Project agents", "Second workspace", "First workspace"]);
+      expect(rows.map((row) => row.name)).not.toContain("other-agent");
+      const firstSection = overview.overviewHtml(rows).split('aria-label="First workspace"')[1];
+      expect(firstSection.indexOf("First newer")).toBeLessThan(firstSection.indexOf("First older"));
+      expect(rows.find((row) => row.id === "second-agent").lastAgentMessageAt)
+        .toBe(Date.parse("2026-09-22T10:00:00Z"));
+    } finally {
+      reader.close();
+    }
+  });
+
+  it("refreshes workspace sections when cached threads and the workspace list change", async () => {
+    await cache.writeCached(workspaceListAddress, [
+      { id: "ws-one", project_id: "project-1", entity_id: "run-one", name: "One" },
+      { id: "ws-two", project_id: "project-1", entity_id: "run-two", name: "Two" },
+    ]);
+    await cache.writeCached(rowAddress("run-one"), { agents: [agent("one-agent")] });
+    await cache.writeCached(rowAddress("run-two"), { agents: [agent("two-agent")] });
+    await cache.writeCached(workspaceThreadAddress("run-one", "one-agent"), { items: [
+      datedMessage(1, "agent", "First", "2026-09-20T10:00:00Z"),
+    ] });
+    await cache.writeCached(workspaceThreadAddress("run-two", "two-agent"), { items: [
+      datedMessage(1, "agent", "Second", "2026-09-21T10:00:00Z"),
+    ] });
+
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope, projectId: "project-1", includeProjectWorkspaces: true,
+      sources: () => [], onRows: (rows) => paints.push(rows),
+    });
+    try {
+      reader.open();
+      await vi.waitFor(() => expect(sectionNames(paints.at(-1) || [])).toEqual(["Two", "One"]));
+
+      await cache.writeCached(workspaceThreadAddress("run-one", "one-agent"), { items: [
+        datedMessage(2, "agent", "Updated", "2026-09-22T10:00:00Z"),
+      ] });
+      await vi.waitFor(() => expect(sectionNames(paints.at(-1) || [])).toEqual(["One", "Two"]));
+
+      await cache.writeCached(rowAddress("run-three"), { agents: [agent("three-agent")] });
+      await cache.writeCached(workspaceListAddress, [
+        { id: "ws-two", project_id: "project-1", entity_id: "run-two", name: "Two" },
+        { id: "ws-three", project_id: "project-1", entity_id: "run-three", name: "Three" },
+      ]);
+      await vi.waitFor(() => expect(sectionNames(paints.at(-1) || [])).toEqual(["Two", "Three"]));
+      expect(paints.at(-1).map((row) => row.id)).toEqual(["two-agent", "three-agent"]);
+    } finally {
+      reader.close();
+    }
+  });
+
   it("prefers current work activity, then unread agent words, then the latest message", () => {
     const thread = { items: [message(1, "agent", "Earlier answer"),
       message(2, "user", "Please check this"), activity(3, "Running tests\nwith details"),

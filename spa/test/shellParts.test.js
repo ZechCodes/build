@@ -12,6 +12,11 @@ import { describe, it, expect } from "vitest";
 import { shellPartsForRoute } from "../src/core/shell.js";
 
 describe("what a route stands on", () => {
+  it("passes a workspace's new-agent request to the rail", () => {
+    const parts = shellPartsForRoute({ name: "workspace", deviceId: "d1", projectId: "p-1",
+      workspaceId: "w-1", newAgent: true });
+    expect(parts.rail.addingAgent).toBe(true);
+  });
   it("gives the tracker's issue page the project's conversation", () => {
     // The route Zech opened on his phone. It mounted no rail at all.
     //

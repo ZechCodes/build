@@ -250,8 +250,10 @@ const ISSUES_SURFACES = new Set(["project", "workspace"]);
 
 /// The agent a URL names, or null for one that names none.
 function railAgent(query) {
-  const agent = query ? new URLSearchParams(query).get("agent") : "";
-  return agent ? { agent } : null;
+  const params = new URLSearchParams(query || "");
+  const agent = params.get("agent");
+  if (agent) return { agent };
+  return params.get("newAgent") === "1" ? { newAgent: true } : null;
 }
 
 /// A project URL omits Dashboard, while a workspace URL omits List. The other
@@ -402,7 +404,7 @@ const tabPlacePairs = (route, tab) =>
     : [];
 
 /// The conversation the rail is standing on, where the route names one.
-const railAgentPairs = (route) => [["agent", route.agent || ""]];
+const railAgentPairs = (route) => [["agent", route.agent || ""], ["newAgent", route.newAgent ? "1" : ""]];
 
 /// The Issues tab's layout, omitting its own default on each surface.
 const issuesViewPairs = (route, standing = ISSUES_TAB) => {

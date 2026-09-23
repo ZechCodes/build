@@ -75,6 +75,10 @@ pub struct Workspace {
     /// False for adopted Git-root checkouts, which are never written into.
     #[serde(default)]
     pub managed: bool,
+    /// True when an agent asked Build to create this workspace. Persisted so
+    /// an agentless workspace stays muted across board pulls and restarts.
+    #[serde(default)]
+    pub created_by_agent: bool,
 }
 
 /// Source snapshot used while provisioning. Remote sources have already been
@@ -539,6 +543,7 @@ impl WorkspaceRegistry {
             directories,
             isolation,
             managed: true,
+            created_by_agent: false,
         };
         Ok(workspace)
     }
@@ -909,6 +914,7 @@ impl WorkspaceRegistry {
             }],
             isolation: Isolation::default(),
             managed: false,
+            created_by_agent: false,
         };
         if let Some(proof) = proof {
             workspace.directories[0].finished_head = proof

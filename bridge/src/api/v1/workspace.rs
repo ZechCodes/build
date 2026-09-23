@@ -268,6 +268,9 @@ pub struct WorkspaceRow {
     pub root: String,
     /// `provisioning`, `ready`, `finished` or `failed`.
     pub status: String,
+    /// Whether an agent created this workspace. Older peers omit the field.
+    #[serde(default)]
+    pub created_by_agent: bool,
     /// When a clean-only Done archived the workspace; otherwise `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,

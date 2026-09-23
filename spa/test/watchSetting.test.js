@@ -21,16 +21,14 @@ beforeEach(async () => {
 });
 
 describe("what the bridge's answer means", () => {
-  // Default ON: an agent filing an issue for you is the case the feature is
-  // for, so it works before anybody visits Settings.
-  it("is on unless the machine says otherwise", () => {
-    expect(watchesAgentFiledIssues({})).toBe(true);
-    expect(watchesAgentFiledIssues(null)).toBe(true);
-    expect(watchesAgentFiledIssues(undefined)).toBe(true);
+  it("is off until the machine explicitly saves on", () => {
+    expect(watchesAgentFiledIssues({})).toBe(false);
+    expect(watchesAgentFiledIssues(null)).toBe(false);
+    expect(watchesAgentFiledIssues(undefined)).toBe(false);
     expect(watchesAgentFiledIssues({ watch_agent_filed_issues: true })).toBe(true);
   });
 
-  it("is off only when the machine says off", () => {
+  it("is off when the machine says off", () => {
     expect(watchesAgentFiledIssues({ watch_agent_filed_issues: false })).toBe(false);
   });
 });

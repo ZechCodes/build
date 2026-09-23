@@ -488,12 +488,16 @@ impl AppState {
                     .and_then(|project| project.isolation)
                     .unwrap_or(self.isolation)
             });
-        let workspace = self.workspaces.prepare_with_isolation(
+        let mut workspace = self.workspaces.prepare_with_isolation(
             &project_id,
             requested_name,
             &sources,
             isolation,
         )?;
+        workspace.created_by_agent = params
+            .get("made_by_agent")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -1011,6 +1015,7 @@ fn workspace_json(workspace: &Workspace) -> Value {
         // two it is lets the client name it an adopted checkout rather than
         // report a summary as missing.
         "managed": workspace.managed,
+        "created_by_agent": workspace.created_by_agent,
         "directories": workspace.directories.iter().map(|directory| json!({
             "id": directory.id,
             "source_id": directory.source_id,

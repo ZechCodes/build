@@ -768,6 +768,7 @@ describe("the two presses", () => {
       title: "Kanban drag",
       body: "It does not persist.",
     });
+    expect(listed("issues.create")[0][1]).not.toHaveProperty("made_by_agent");
   });
 
   it("shuts once it has filed, and leaves the list behind it", async () => {

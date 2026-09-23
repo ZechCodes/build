@@ -128,7 +128,7 @@ impl AppState {
         isolation: Option<&str>,
     ) -> Result<Value, String> {
         let project_id = self.project_agent_project(owner_id)?;
-        let mut params = json!({ "project_id": project_id, "name": name });
+        let mut params = json!({ "project_id": project_id, "name": name, "made_by_agent": true });
         if let Some(isolation) = isolation {
             params["isolation"] = json!(isolation);
         }
@@ -220,6 +220,7 @@ impl AppState {
         workspace_id: &str,
         choice: AgentChoiceArgs<'_>,
         name: Option<&str>,
+        notify_user: Option<bool>,
     ) -> Result<Value, String> {
         self.project_agent_workspace(owner_id, workspace_id)?;
         let mut params = choice.params();
@@ -238,6 +239,9 @@ impl AppState {
         // An agent asked for this one, so the user only sees it if the agent
         // said they should.
         params["made_by_agent"] = json!(true);
+        if let Some(notify_user) = notify_user {
+            params["notify_user"] = json!(notify_user);
+        }
         let mut added = self.agent_add(&params)?;
         added["workspace_id"] = json!(workspace_id);
         Ok(added)

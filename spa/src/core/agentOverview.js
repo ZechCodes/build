@@ -47,6 +47,7 @@ export function overviewRows(entries, threads) {
     lastAgentMessageAt: agentMessageTime(threads[index]),
     working: !!state.working,
     unread: !!state.unread_count,
+    watching: agent.watched,
   }));
 }
 
@@ -68,11 +69,15 @@ export function overviewHtml(rows, { showProjectAgents = false } = {}) {
   return ordered.map((section) => `<section class="rail-overview-section" aria-label="${esc(section.name)}">
     <div class="rail-overview-section-head"><h2>${esc(section.name)}</h2>${section.section === "workspace"
       ? `<button type="button" class="iconbtn rail-overview-add" data-overview-add="${esc(section.workspaceId)}" aria-label="Add an agent to ${esc(section.name)}" title="Add an agent to ${esc(section.name)}">+</button>` : ""}</div>
-    ${section.rows.sort((one, other) => other.lastAgentMessageAt - one.lastAgentMessageAt).map((row) => `<button type="button" class="rail-overview-row" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
+    ${section.rows.sort((one, other) => other.lastAgentMessageAt - one.lastAgentMessageAt).map((row) => {
+    const state = [row.working ? "Working" : row.unread ? "Unread" : "",
+      row.watching === undefined ? "" : row.watching ? "Watching" : "Not watching"].filter(Boolean).join(" · ");
+    return `<button type="button" class="rail-overview-row" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
     <span class="rail-overview-name">${esc(row.name)}</span>
     <span class="rail-overview-snippet">${esc(row.snippet)}</span>
-    ${row.working ? '<span class="rail-overview-state">Working</span>' : row.unread ? '<span class="rail-overview-state">Unread</span>' : ""}
-  </button>`).join("")}</section>`).join("");
+    ${state ? `<span class="rail-overview-state">${state}</span>` : ""}
+  </button>`;
+    }).join("")}</section>`).join("");
 }
 
 const cachedConversationId = (agent, execution) => execution

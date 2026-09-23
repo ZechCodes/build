@@ -183,18 +183,23 @@ fn an_agents_issue_reaches_the_user_by_the_setting_or_by_asking() {
     let who = coding_agent(&mut state, &project_id, "here");
 
     let by_default = agent_files(&mut state, &who, "by default", None);
-    assert_eq!(
-        issue(&mut state, &by_default)["watched"],
-        true,
-        "the device shows agent-filed issues until told not to"
-    );
+    assert_ne!(issue(&mut state, &by_default)["watched"], true);
+
+    let enabled = state.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_issues": true }),
+    ));
+    assert_eq!(enabled["ok"], true, "{enabled:?}");
+    assert_eq!(enabled["result"]["watch_agent_filed_issues"], true);
+
+    let watched = agent_files(&mut state, &who, "saved setting", None);
+    assert_eq!(issue(&mut state, &watched)["watched"], true);
 
     let quieted = state.handle(req(
         "settings.set",
         json!({ "watch_agent_filed_issues": false }),
     ));
     assert_eq!(quieted["ok"], true, "{quieted:?}");
-    assert_eq!(quieted["result"]["watch_agent_filed_issues"], false);
 
     let quiet = agent_files(&mut state, &who, "for another agent", None);
     assert!(
@@ -275,7 +280,7 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "unread", None);
+    let id = agent_files(&mut state, &who, "unread", Some(true));
     for body in ["one", "two"] {
         state
             .on_agent_mcp_action(
@@ -375,7 +380,7 @@ fn dismissing_clears_the_row_until_the_next_event() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "done with this", None);
+    let id = agent_files(&mut state, &who, "done with this", Some(true));
     assert_eq!(row_for(&mut state, &id)["done_until_next"], false);
 
     let cleared = state.handle(req("issues.dismiss", json!({ "issue_id": id })));
@@ -417,7 +422,7 @@ fn an_inbox_row_says_what_last_happened_in_the_readers_voice() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = agent_files(&mut state, &who, "Kanban drag does not persist", None);
+    let id = agent_files(&mut state, &who, "Kanban drag does not persist", Some(true));
     state
         .on_agent_mcp_action(
             &who.0,

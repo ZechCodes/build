@@ -305,6 +305,14 @@ fn a_new_agent_on_an_existing_workspace_is_made_and_handed_the_issue() {
     assert_eq!(dispatch["kind"], "new_agent");
     assert_eq!(dispatch["workspace_id"], ws);
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+    let entity_id = dispatch["entity_id"].as_str().unwrap();
+    assert!(
+        state.runs[entity_id]
+            .agents
+            .by_id(&agent_id)
+            .unwrap()
+            .watched
+    );
     assert_eq!(
         answered["issue"]["assignee"],
         json!({ "kind": "agent", "agent_id": agent_id }),
@@ -491,8 +499,23 @@ fn a_new_workspace_is_cut_an_agent_added_and_the_issue_handed_over() {
     let dispatch = &answered["dispatch"];
     assert_eq!(dispatch["kind"], "new_workspace");
     let workspace_id = dispatch["workspace_id"].as_str().unwrap().to_string();
+    assert!(
+        !state
+            .workspaces
+            .get(&workspace_id)
+            .unwrap()
+            .created_by_agent,
+        "the UI created this workspace"
+    );
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
+    assert!(
+        state.runs[&entity_id]
+            .agents
+            .by_id(&agent_id)
+            .unwrap()
+            .watched
+    );
     assert!(
         dispatch["operation_id"]
             .as_str()

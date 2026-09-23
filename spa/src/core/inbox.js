@@ -32,6 +32,7 @@ import { carriesWatching } from "./trackerWatch.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
+import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -147,6 +148,28 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
     return toWorkspaceEntry(workspace, projectNames, conversation);
   }).sort(byAnchor);
+}
+
+/** Inbox visibility comes from the cached roster, including runs that the
+ * board deliberately left out of `items`. A pushed row can still be present
+ * after that omission, so an item's presence is never evidence of watching.
+ * A workspace with no agent stays visible only when it was user-created. */
+export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = []) {
+  const rosterByEntity = new Map();
+  const agentCreated = new Set(workspaces.filter((workspace) => workspace.created_by_agent === true)
+    .map((workspace) => workspace.workspaceKey));
+  for (const row of [...runs, ...items]) {
+    const entityId = entityIdOf(row);
+    if (entityId && Array.isArray(row.agents)) {
+      const key = JSON.stringify([row.projectKey, entityId]);
+      const current = rosterByEntity.get(key);
+      if (!current || isAtLeastAsFresh(row, current)) rosterByEntity.set(key, row);
+    }
+  }
+  return workspaceEntries(workspaces, projects, items).filter((entry) => {
+    const agents = rosterByEntity.get(JSON.stringify([entry.projectKey, entry.entityId]))?.agents;
+    return agents?.length ? agents.some((agent) => agent.watched !== false) : !agentCreated.has(entry.workspaceKey);
+  });
 }
 
 /** How long a row can say nothing before it belongs to Recent rather than to

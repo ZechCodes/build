@@ -29,7 +29,7 @@ import {
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
-  workspaceEntries,
+  watchedWorkspaceEntries,
   workspaceEntryKey,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
@@ -65,6 +65,7 @@ import { publishInboxAttentionCount } from "./inboxAttention.js";
 import { messageOf } from "./text.js";
 
 let items = [];
+let runs = [];
 // The board's rows for lifecycle verbs in flight (board.list's `pending`): a
 // checkout being cut is on the list while its git runs.
 let pendingLifecycle = [];
@@ -126,7 +127,7 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const unread = workspaceEntries(workspaces, projects, items).filter((entry) => entry.state === "unread");
+  const unread = watchedWorkspaceEntries(workspaces, projects, items, runs).filter((entry) => entry.state === "unread");
   publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
@@ -164,7 +165,7 @@ function draw() {
   // to no project, so they stand above the workspace rows on the flat face and
   // above the blocks on the other.
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const shown = withDeviceNames([...captureEntries(rows), ...workspaceEntries(workspaces, projects, rows)]);
+  const shown = withDeviceNames([...captureEntries(rows), ...watchedWorkspaceEntries(workspaces, projects, rows, runs)]);
   list.onclick = onListClick;
   list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,
@@ -751,6 +752,7 @@ export function mountInboxList() {
       // here: everything below paints whatever this snapshot holds.
       snapshot = filterByDevice(next, App.deviceFilter);
       items = snapshot.items || [];
+      runs = snapshot.runs || [];
       pendingLifecycle = snapshot.pending || [];
       projects = snapshot.projects || [];
       workspaces = snapshot.workspaces || [];

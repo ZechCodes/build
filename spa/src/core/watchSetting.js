@@ -6,10 +6,8 @@
 // different answers would make "did I ask to see this?" depend on which one
 // was open.
 //
-// Default ON. An agent filing an issue for you is the case the feature exists
-// for — "if they ask the agent to create an issue to workshop something the
-// user sees it in their inbox" — so it works before anybody visits Settings,
-// and the switch is how someone who does not want it says so.
+// Default OFF. Agents explicitly ask to notify the user when an issue needs
+// their attention; a saved true setting still watches all agent-filed issues.
 //
 // Painted from settings.get, saved with settings.set, repainted from whatever
 // the bridge answers: the control shows what the machine actually holds, never
@@ -21,11 +19,11 @@ import { deviceSettingsAddress, watchSettingsRecord } from "./settingsRecords.js
  * Whether this machine watches what its agents file, as a settings payload
  * states it.
  *
- * Absent means on, which is the same thing the bridge means by leaving it out.
+ * Absent means off, which is the same thing the bridge means by leaving it out.
  * Never throws: a machine answering something this client cannot read is not a
  * reason to leave the reader with no answer.
  */
-export const watchesAgentFiledIssues = (settings) => settings?.watch_agent_filed_issues !== false;
+export const watchesAgentFiledIssues = (settings) => settings?.watch_agent_filed_issues === true;
 
 /** The panel, with the switch disabled until the machine has said. Rendering
  *  it pre-checked would show a choice nobody has confirmed is this machine's. */

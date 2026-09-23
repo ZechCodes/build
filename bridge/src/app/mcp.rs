@@ -395,6 +395,7 @@ impl AppState {
             }
             BridgeAction::AddWorkspaceAgent {
                 workspace_id,
+                notify_user,
                 harness,
                 model,
                 effort,
@@ -412,6 +413,7 @@ impl AppState {
                     capability: capability.as_deref(),
                 },
                 name.as_deref(),
+                *notify_user,
             ),
             BridgeAction::RemoveWorkspaceAgent {
                 workspace_id,

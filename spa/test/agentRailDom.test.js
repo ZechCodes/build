@@ -788,6 +788,104 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(callsTo("workspace.get")).toHaveLength(0);
   });
 
+  it("paints the selected agent's cached watch value and follows a push", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.9.0" }), { deviceId: "dev-1" });
+    try {
+      payload = branchRow({ agents: [agent({ watched: false })] });
+      await writeRailWorkItem(payload);
+      rail = mountAgentRail(railHost(), railAddress());
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false"));
+      expect(panel().querySelector(".rail-watch").title).toBe("Not watching");
+
+      payload = branchRow({ agents: [agent({ watched: true })] });
+      await writeRailWorkItem(payload);
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("true"));
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+
+      panel().querySelector(".rail-watch").click();
+      await vi.waitFor(() => expect(callsTo("conversation.unwatch")[0]?.params).toEqual({ entity_id: "run-3", agent_id: "ag-1" }));
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
+  it("keeps B's cached watch state when A's earlier watch is refused", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    const originalCall = bridge.call;
+    let refuseA;
+    bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-1"
+      ? new Promise((_, reject) => { refuseA = reject; })
+      : originalCall(method, params));
+    try {
+      payload = branchRow({ agents: [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
+      await writeRailWorkItem(payload);
+      rail = mountAgentRail(railHost(), railAddress());
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
+
+      const pressedA = panel().querySelector(".rail-watch").onclick();
+      await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-3", agent_id: "ag-1" }));
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+      await vi.waitFor(() => {
+        expect(headWho()).toBe(TOPICS["ag-2"]);
+        expect(panel()?.querySelector(".rail-watch")?.title).toBe("Watching");
+      });
+
+      refuseA(new Error("A's watch was refused"));
+      await pressedA;
+      expect(panel().querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("true");
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+      expect(panel().querySelector(".rail-watch").disabled).toBe(false);
+      expect(notifyError).not.toHaveBeenCalled();
+      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
+  it("ignores a workspace watch refusal after the rail swaps to a watched project agent", async () => {
+    const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    const originalCall = bridge.call;
+    let refuseWorkspace;
+    bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-one"
+      ? new Promise((_, reject) => { refuseWorkspace = reject; })
+      : originalCall(method, params));
+    try {
+      payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+        agents: [agent({ id: "ag-one", watched: false })] };
+      await writeRailBoard({
+        projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+        workspaces: [{ id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" }],
+        items: [payload, { kind: "project", project_id: "p1", entity_id: "run-project",
+          agents: [agent({ id: "ag-project", name: "Project agent", watched: true })] }],
+      });
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
+        projectAgent: { projectId: "p1", entityId: "run-project" } }));
+      await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
+
+      const pressedWorkspace = panel().querySelector(".rail-watch").onclick();
+      await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("conversation.watch",
+        { entity_id: "run-one", agent_id: "ag-one" }));
+      railHost().querySelector('[data-bubble="project"]').click();
+      await vi.waitFor(() => {
+        expect(headWho(panel())).toBe("Project agent");
+        expect(panel()?.querySelector(".rail-watch")?.title).toBe("Watching");
+      });
+
+      refuseWorkspace(new Error("Workspace watch was refused"));
+      await pressedWorkspace;
+      expect(panel().querySelector(".rail-watch").getAttribute("aria-pressed")).toBe("true");
+      expect(panel().querySelector(".rail-watch").title).toBe("Watching");
+      expect(panel().querySelector(".rail-watch").disabled).toBe(false);
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      resetChangeEvents();
+    }
+  });
+
   it("redraws the remembered workspace head and composer when its hidden run reaches the cache", async () => {
     await wipeCache();
     chatRepository.railView("workspace:ws-unwatched").chooseAgent("ag-1");
@@ -1303,6 +1401,7 @@ describe("the bubble strip", () => {
     railHost().querySelector("#railsend").click();
     await flush();
     expect(callsTo("agent.add")[0].params).toMatchObject({ entity_id: "run-3", provider: "codex" });
+    expect(callsTo("agent.add")[0].params).not.toHaveProperty("made_by_agent");
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
     expect(railHost().querySelector(".rail-newagent")).toBeNull();
   });
@@ -3678,7 +3777,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     await flush();
     expect(pillKinds()).toEqual(["checklist"]);
     await openTasks();
-    expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-checklist")?.textContent).toContain("wire the seed"));
   });
 
   it("drops a seed whose agent was left while the read was in flight", async () => {
@@ -4314,9 +4413,10 @@ describe("sending to an agent that is already there", () => {
       type: "message",
       data: { sequence: 7, role: "user", body: "look at the login flow", operation_id: operationId },
     }]);
-    await flush();
-
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => {
+      expect(timeline().querySelector('.thread-message.user[data-sequence="7"]')).not.toBeNull();
+      expect(copiesOf("look at the login flow")).toBe(1);
+    });
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {

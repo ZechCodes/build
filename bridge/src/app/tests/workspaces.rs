@@ -59,6 +59,34 @@ fn create_workspace(state: &mut AppState, project_id: &str, name: &str) -> Value
     created["result"].clone()
 }
 
+#[test]
+fn a_workspace_created_by_the_user_is_not_marked_agent_created() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "source");
+    let mut state = app(tmp.path());
+    let project_id = state.add_project(repo, "main".into());
+    let created = create_workspace(&mut state, &project_id, "manual");
+    assert_eq!(created["created_by_agent"], false, "{created:?}");
+    let listed = state.handle(req("workspace.list", json!({ "project_id": project_id })));
+    let workspace_id = created["workspace_id"].as_str().unwrap();
+    let workspace = listed["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["workspace_id"] == workspace_id)
+        .unwrap();
+    assert_eq!(workspace["created_by_agent"], false, "{listed:?}");
+
+    // Older manifests have no creator field. They remain user-visible.
+    let manifest =
+        Path::new(created["root"].as_str().unwrap()).join(crate::workspace::MANIFEST_FILE);
+    let mut saved: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("created_by_agent");
+    std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
+    state.workspaces.reload().unwrap();
+    assert!(!state.workspaces.get(workspace_id).unwrap().created_by_agent);
+}
+
 fn directory<'a>(workspace: &'a Value, source_id: &str) -> &'a Value {
     workspace["directories"]
         .as_array()

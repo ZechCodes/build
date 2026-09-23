@@ -17,6 +17,8 @@
 // wrote, and what eviction took away — for one frame of latency on a revisit.
 // The store is read directly, and every writer announces what it changed.
 
+import { feedWithObservations } from "./cacheFreshness.js";
+
 const DB_NAME = "build-cache";
 // v3: the cache-first client's shapes, and the write-time index the lifetime
 // rules sweep. A format change is a cold start by design — the records a
@@ -24,6 +26,16 @@ const DB_NAME = "build-cache";
 // refills what the reader is looking at.
 const DB_VERSION = 3;
 const STORE = "records";
+// A board record and a row can be written in the same clock millisecond.
+// Keep their order beside the timestamp without changing the timestamp used
+// for cache lifetime and page-exit journal comparisons.
+let lastWriteOrder = 0;
+const nextWriteOrder = () => {
+  const clock = globalThis.performance;
+  const now = Number.isFinite(clock?.timeOrigin) ? clock.timeOrigin + clock.now() : Date.now();
+  lastWriteOrder = Math.max(now, lastWriteOrder + 0.001);
+  return lastWriteOrder;
+};
 
 /** The index on each record's write time. It exists so "how old is what this
  *  workspace holds" can be answered from index keys alone: a key cursor
@@ -248,21 +260,53 @@ export function readCachedMany(addresses) {
   }).then(() => records);
 }
 
-/** Write one record, stamped with when. A local UI writer may also stamp its
- * owner and edit sequence so a page-exit journal can distinguish its own
- * unfinished write from a newer write in another tab. */
-export function writeCached(address, value, { source, sequence } = {}) {
-  const record = { at: Date.now(), value, ...(source ? { source, sequence } : {}) };
+/** Every feed write goes through this transaction. A local rewrite carries
+ * surviving rows' observation times; a bridge board read explicitly replaces
+ * them. An undo can merge into the current value inside the same transaction. */
+function writeFeed(address, update, observedFeedRows = false) {
   const key = recordKey(address);
+  let changed = false;
+  return wroteStore((store) => {
+    // Read and put in the same transaction: another tab can write between a
+    // separate read and write, and its newer row observation must survive.
+    const request = store.get(key);
+    request.onsuccess = () => {
+      try {
+        const previous = request.result;
+        const next = update(previous?.value, previous);
+        if (next == null) return;
+        const at = Date.now();
+        const order = nextWriteOrder();
+        store.put({ at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) }, key);
+        changed = true;
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && changed) announce(partsOfKey(key));
+    return Boolean(committed && changed);
+  });
+}
+
+/** Write one record, stamped with when. A local UI writer may also stamp its
+ * owner and edit sequence for page-exit journal ordering. */
+export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
+  if (address.kind === "feed") return writeFeed(address, () => value, observedFeedRows);
+  const key = recordKey(address);
+  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
   return wroteStore((store) => {
     store.put(record, key);
     return null;
   }).then((wrote) => {
-    // The key that was stored is the address announced, so a listener is
-    // never sent to re-read an address the record is not under.
     if (wrote) announce(partsOfKey(key));
   });
 }
+
+/** Merge a local undo into the current feed inside the same transaction that
+ * preserves its row observation times. Null leaves the feed untouched. */
+export const updateCachedFeed = (address, update) => writeFeed(address, update);
 
 /** Replay one page-exit UI edit only if it is still the newest edit. The get
  * and conditional put share a readwrite transaction, so another tab cannot
@@ -282,7 +326,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        store.put({ at: Date.now(), value, source, sequence }, key);
+        store.put({ at: Date.now(), order: nextWriteOrder(), value, source, sequence }, key);
         applied = true;
       } catch {
         store.transaction.abort();
@@ -337,7 +381,7 @@ export function mergeCachedAtomically(address, merge) {
       try {
         const next = merge(request.result?.value);
         if (next == null) return;
-        store.put({ at: Date.now(), value: next }, key);
+        store.put({ at: Date.now(), order: nextWriteOrder(), value: next }, key);
         changed = true;
       } catch {
         store.transaction.abort();

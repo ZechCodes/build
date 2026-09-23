@@ -29,14 +29,14 @@ export function watchTitle({ watching = false, watchers = 0 } = {}) {
  * What a watch is asked for, by what it is a watch OF.
  *
  * Two kinds of thing are watched and they are named differently on the wire
- * (#64): an issue by `issue_id`, a conversation by `conversation_id`. The
+ * (#64): an issue by `issue_id`, a conversation by its entity and agent. The
  * switch behaves identically for both, so the difference is one table rather
  * than two copies of the logic — and the issue form is the default, because
  * that is the shape the issue page already imports.
  */
-function verbsFor({ issueId, conversationId }) {
-  if (conversationId) {
-    return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { conversation_id: conversationId } };
+function verbsFor({ issueId, entityId, agentId }) {
+  if (entityId && agentId) {
+    return { watch: "conversation.watch", unwatch: "conversation.unwatch", params: { entity_id: entityId, agent_id: agentId } };
   }
   return { watch: "issues.watch", unwatch: "issues.unwatch", params: { issue_id: issueId } };
 }
@@ -44,7 +44,7 @@ function verbsFor({ issueId, conversationId }) {
 /**
  * A watch switch for one issue, or for one conversation.
  *
- * Pass `issueId` for an issue or `conversationId` for a conversation; the verb
+ * Pass `issueId` for an issue or `entityId` and `agentId` for a conversation; the verb
  * and its parameter follow from which (`verbsFor` above).
  *
  * `watchers` is how many OTHERS watch it, so pressing counts the reader in or
@@ -61,17 +61,23 @@ export function createWatchToggle({
   watching = false,
   watchers = 0,
   issueId,
-  conversationId,
+  entityId,
+  agentId,
   call,
   onChange = () => {},
   onFailure = () => {},
 }) {
-  const asked = verbsFor({ issueId, conversationId });
+  const asked = () => verbsFor({
+    issueId,
+    entityId: typeof entityId === "function" ? entityId() : entityId,
+    agentId: typeof agentId === "function" ? agentId() : agentId,
+  });
   let state = { watching: Boolean(watching), watchers: Number(watchers) || 0, pending: false };
+  let requestVersion = 0;
 
-  const moveTo = (next) => {
+  const moveTo = (next, params = asked().params) => {
     state = { ...state, ...next };
-    onChange({ ...state });
+    onChange({ ...state }, params);
   };
 
   return {
@@ -83,6 +89,8 @@ export function createWatchToggle({
      *  answered last. */
     async press() {
       if (state.pending) return;
+      const request = asked();
+      const version = ++requestVersion;
       const before = { watching: state.watching, watchers: state.watchers };
       const watchingNow = !before.watching;
       moveTo({
@@ -90,19 +98,21 @@ export function createWatchToggle({
         // The reader joins or leaves the count their own press changes.
         watchers: Math.max(0, before.watchers + (watchingNow ? 1 : -1)),
         pending: true,
-      });
+      }, request.params);
       try {
-        await call(watchingNow ? asked.watch : asked.unwatch, asked.params);
-        moveTo({ pending: false });
+        await call(watchingNow ? request.watch : request.unwatch, request.params);
+        if (version === requestVersion) moveTo({ pending: false }, request.params);
       } catch (error) {
-        moveTo({ ...before, pending: false });
-        onFailure(error);
+        if (version !== requestVersion) return;
+        moveTo({ ...before, pending: false }, request.params);
+        onFailure(error, request.params);
       }
     },
 
     /** What the bridge says, which outranks anything this guessed. The push
      *  carries the truth; a guess that disagrees with it was wrong. */
     settle({ watching: isWatching, watchers: count }) {
+      requestVersion += 1;
       moveTo({
         watching: Boolean(isWatching),
         watchers: Number(count) || 0,

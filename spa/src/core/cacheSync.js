@@ -305,7 +305,7 @@ async function readLists(context) {
 }
 
 async function writeLists(context, view) {
-  await writeCached(addressOf(context, "", "feed"), view);
+  await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
   await writeCached(addressOf(context, "", "projects"), view.projects);
   await writeCached(addressOf(context, "", "workspaces"), view.workspaces);
   for (const row of view.items || []) {
@@ -1022,8 +1022,8 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
  */
 async function dropRemovedRows(context, removed) {
   const gone = new Set(removed);
-  const held = await heldValue(context, "", "feed");
-  if (held) await writeCached(addressOf(context, "", "feed"), withoutEntities(held, gone));
+  const record = await readCached(addressOf(context, "", "feed"));
+  if (record) await writeCached(addressOf(context, "", "feed"), withoutEntities(record.value, gone));
   for (const entityId of removed) {
     if (!context.active()) return;
     await evictEntity(context.deviceId, entityId);

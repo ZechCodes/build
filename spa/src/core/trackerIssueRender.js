@@ -17,6 +17,7 @@ import { actorName } from "./trackerLineWords.js";
 import { issueAvatarHtml } from "./issueAvatar.js";
 import { watchButtonHtml } from "./watchToggle.js";
 import { eventSentence } from "./trackerTimeline.js";
+import { issueUnreadKey } from "./trackerUnread.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } from "./trackerChips.js";
 import { attachmentGlyphHtml, composerPartIds, formatAttachmentSize, isImageAttachment } from "./composer.js";
 import { ICON_PAPERCLIP } from "./icons.js";
@@ -111,7 +112,11 @@ const eventHtml = (row, context) => `<li class="issue-entry issue-event">
 export function timelineHtml(rows, context) {
   if (!rows.length) return `<p class="empty issue-empty">Nothing has happened on this issue yet.</p>`;
   return `<ul class="issue-timeline">${rows
-    .map((row) => (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context)))
+    .map((row) => {
+      const line = context.unreadFrom != null && context.unreadFrom === issueUnreadKey(row.key)
+        ? '<li class="thread-unread-line issue-unread-line" role="separator"><span>New</span></li>' : "";
+      return line + (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context));
+    })
     .join("")}</ul>`;
 }
 

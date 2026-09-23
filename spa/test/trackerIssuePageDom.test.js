@@ -20,7 +20,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({
     changes: { subscriptions: true, kinds: carriedKinds },
     // #57: whether this bridge can carry files on an issue.
-    issues: { attachments: carriesAttachments },
+    issues: { attachments: carriesAttachments, watching: carriesWatching },
   }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
@@ -37,6 +37,7 @@ const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
 let carriedKinds = EVERY_KIND;
 /** Whether the bridge under test has `issues.attach` (1.8). */
 let carriesAttachments = true;
+let carriesWatching = false;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -137,6 +138,7 @@ beforeEach(async () => {
   watchers = [];
   carriedKinds = EVERY_KIND;
   carriesAttachments = true;
+  carriesWatching = false;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -156,6 +158,61 @@ beforeEach(async () => {
 
 afterEach(() => {
   page?.dispose();
+});
+
+describe("issue unread navigation", () => {
+  it("does not claim unread history on a bridge without issue read marks", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
+    expect(host.querySelector(".issue-unread-line")).toBeNull();
+    expect(host.querySelector(".new-messages-pill")).toBeNull();
+  });
+
+  it("paints a cached pre-visit mark, then jumps from the floating pill to the first unread entry", async () => {
+    carriesWatching = true;
+    const timeline = [
+      event({ id: "ie-01M37FGQD48628P29BG1A4BB01", actor: { kind: "user" } }),
+      comment({ id: "ic-01M37FGQD48628P29BG1A4BB02", author: { kind: "user" } }),
+      event({ id: "ie-01M37FGQD48628P29BG1A4BB03", actor: { kind: "agent", agent_id: "agent-1" } }),
+      comment({ id: "ic-01M37FGQD48628P29BG1A4BB04", author: { kind: "agent", agent_id: "agent-1" } }),
+    ];
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: timeline[0].id }),
+      timeline,
+    });
+    // Keep the live read pending so this assertion can only pass from the
+    // actual cached issue-page wiring, before this visit's mark returns.
+    call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({}));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    const line = host.querySelector(".issue-unread-line");
+    expect(line.nextElementSibling.classList.contains("issue-event")).toBe(true);
+    expect(line.previousElementSibling.id).toBe(`comment-${timeline[1].id}`);
+    expect(listed("issues.read_through")[0][1].event_id).toBe(timeline[3].id);
+
+    const hostRect = vi.spyOn(host, "getBoundingClientRect").mockReturnValue({ bottom: 600 });
+    const lineRect = vi.spyOn(line, "getBoundingClientRect").mockReturnValue({ top: 900 });
+    const scrollIntoView = vi.fn();
+    line.scrollIntoView = scrollIntoView;
+    host.dispatchEvent(new Event("scroll"));
+    const pill = host.querySelector(".new-messages-pill");
+    expect(pill.getAttribute("aria-label")).toBe("Jump to first unread activity");
+    expect(pill.closest(".new-messages-dock").hidden).toBe(false);
+    pill.click();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start" });
+    expect(pill.closest(".new-messages-dock").hidden).toBe(true);
+
+    lineRect.mockReturnValue({ top: 100 });
+    host.dispatchEvent(new Event("scroll"));
+    lineRect.mockReturnValue({ top: 900 });
+    host.dispatchEvent(new Event("scroll"));
+    expect(pill.closest(".new-messages-dock").hidden).toBe(false);
+    lineRect.mockReturnValue({ top: 100 });
+    host.dispatchEvent(new Event("scroll"));
+    expect(pill.closest(".new-messages-dock").hidden).toBe(true);
+    hostRect.mockRestore();
+    lineRect.mockRestore();
+  });
 });
 
 describe("the issue", () => {

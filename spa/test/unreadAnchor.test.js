@@ -116,6 +116,12 @@ describe("unread marker grace period", () => {
     expect(unreadAnchorSequence(reading({ items: mixed }))).toBe(7);
   });
 
+  it("does not infer a cursor for an older chat bridge that omitted it", () => {
+    const { visit } = marker();
+    expect(visit.update({ unreadCount: 2, items: items(7, 9) })).toBeNull();
+    visit.leave();
+  });
+
   it("waits until the latest agent reply is read then keeps the line for exactly 60 seconds", () => {
     const { visit, expired } = marker();
     expect(visit.update(reading({ readThrough: 7 }))).toBe(7);

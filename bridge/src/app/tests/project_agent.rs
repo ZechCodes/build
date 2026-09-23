@@ -722,6 +722,13 @@ fn a_project_agent_cuts_a_workspace_in_the_project_it_belongs_to() {
         )
         .expect("a project agent cuts a workspace in its own project");
     let workspace_id = created["workspace_id"].as_str().unwrap().to_string();
+    assert_eq!(created["created_by_agent"], true, "{created:?}");
+
+    let detail = state.handle(req(
+        "workspace.get",
+        json!({ "workspace_id": workspace_id }),
+    ));
+    assert_eq!(detail["result"]["created_by_agent"], true, "{detail:?}");
 
     let ours = state.handle(req("workspace.list", json!({ "project_id": mine })));
     let names: Vec<&str> = ours["result"]["workspaces"]
@@ -731,6 +738,23 @@ fn a_project_agent_cuts_a_workspace_in_the_project_it_belongs_to() {
         .map(|workspace| workspace["name"].as_str().unwrap())
         .collect();
     assert!(names.contains(&"read the router"), "{ours:?}");
+    let workspace = ours["result"]["workspaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|workspace| workspace["workspace_id"] == workspace_id)
+        .unwrap();
+    assert_eq!(workspace["created_by_agent"], true, "{workspace:?}");
+
+    state.workspaces.reload().unwrap();
+    assert!(
+        state
+            .workspaces
+            .get(&workspace_id)
+            .unwrap()
+            .created_by_agent,
+        "the manifest remembers that an agent created the empty workspace"
+    );
 
     let elsewhere = state.handle(req("workspace.list", json!({ "project_id": theirs })));
     let ids: Vec<&str> = elsewhere["result"]["workspaces"]

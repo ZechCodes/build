@@ -676,6 +676,7 @@ impl AppState {
     ) -> Result<Value, String> {
         let mut params = json!({
             "project_id": project_id,
+            "made_by_agent": matches!(actor, Actor::Agent { .. }),
             // The issue's title when the caller named nothing: a workspace cut
             // for an issue is about that issue, and it names the branch too.
             "name": name.clone().unwrap_or_else(|| issue.title.clone()),

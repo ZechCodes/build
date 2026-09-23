@@ -128,7 +128,7 @@ impl AppState {
         isolation: Option<&str>,
     ) -> Result<Value, String> {
         let project_id = self.project_agent_project(owner_id)?;
-        let mut params = json!({ "project_id": project_id, "name": name });
+        let mut params = json!({ "project_id": project_id, "name": name, "made_by_agent": true });
         if let Some(isolation) = isolation {
             params["isolation"] = json!(isolation);
         }

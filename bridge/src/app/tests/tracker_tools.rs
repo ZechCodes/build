@@ -555,6 +555,11 @@ fn an_agent_assigning_an_issue_can_watch_a_new_workspace_agent() {
         .expect("the MCP call cuts a workspace and assigns its agent");
     let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap();
     let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap();
+    let workspace_id = assigned["dispatch"]["workspace_id"].as_str().unwrap();
+    assert!(
+        state.workspaces.get(workspace_id).unwrap().created_by_agent,
+        "the workspace keeps its agent origin even though this agent is watched"
+    );
     assert!(
         state.runs[entity_id]
             .agents

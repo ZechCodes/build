@@ -13,6 +13,7 @@
     "name": "wire-facade",
     "root": "/home/ada/.build/workspaces/proj-1/wire-facade",
     "status": "ready",
+    "created_by_agent": false,
     "directories": [
       {
         "id": "ws-3f2a91c4:source-1",

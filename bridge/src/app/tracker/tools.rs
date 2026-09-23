@@ -328,11 +328,13 @@ impl AppState {
         let mut params = asked(&[("body", body), ("status", status), ("priority", priority)]);
         params["title"] = json!(title);
         params["labels"] = json!(labels);
-        params["attachments"] = json!(attachments);
         if let Some(asked) = notify_user {
             params["notify_user"] = json!(asked);
         }
         let mut draft = edits::drafted_issue(&params, &project_path, scope.actor.clone(), &now)?;
+        // Taken in only once the rest of the filing has been read: a refused
+        // title should not leave a copied recording behind it.
+        params["attachments"] = json!(self.take_in_agent_files(attachments)?);
         draft.attachments = self.parse_issue_attachments(&params)?;
         // Whether the user hears about an issue an AGENT filed. Two ways to
         // say yes: the agent asked for it with `notify_user`, because the user
@@ -378,10 +380,12 @@ impl AppState {
         mentions_user: bool,
     ) -> Result<Value, String> {
         let issue = self.issue_of_this_agents_project(scope, issue_id)?;
-        let params = json!({ "body": body, "refs": refs, "attachments": attachments });
+        let params = json!({ "body": body, "refs": refs });
         let body = edits::required_text(&params, "body", MAX_BODY_BYTES)?;
         let refs = super::refs::fenced_refs(&params, &issue, &self.issue_checkout_ids(&issue))?;
-        let attachments = self.parse_issue_attachments(&params)?;
+        let attachments = self.parse_issue_attachments(
+            &json!({ "attachments": self.take_in_agent_files(attachments)? }),
+        )?;
         let now = crate::store::now_rfc3339();
         let comment = crate::tracker::IssueComment {
             id: crate::tracker::new_comment_id(),

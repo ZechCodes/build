@@ -888,17 +888,18 @@ impl DoneServer {
             "type": "boolean",
             "description": "And follow this issue from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
         });
-        // Files the user already sent you: pass back the `path` an attachment
-        // arrived on, and it is filed with the issue. You cannot make one up —
-        // a path that is not an attachment is refused.
+        // Two kinds of file: one the user already sent you, passed back by the
+        // `path` it arrived on, and one you made yourself, named by its full
+        // path on this machine and copied into the store when the call lands
+        // (#116). Either way the issue holds the bytes, not a pointer.
         let attachments = json!({
             "type": "array",
             "maxItems": 10,
-            "description": "Files to file with this issue. Each is the `path` of an attachment you were sent; pass it through unchanged. Use this to put the screenshot, log or document the user gave you where the issue can be read with it, instead of describing it in words.",
+            "description": "Files to file with this issue, shown on it to anyone reading, phone included. Use this for the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed — instead of listing their paths in the text, which nobody reading the issue can open. Two kinds: an attachment you were sent (pass its `path` through unchanged), or a file you made, by its full path on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
             "items": {
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "The attachment's path, exactly as you received it." },
+                    "path": { "type": "string", "description": "An attachment's path exactly as you received it, or the full (absolute) path of a file you made." },
                     "name": { "type": "string", "description": "What to call it. Optional; the stored name is used otherwise." }
                 },
                 "required": ["path"]

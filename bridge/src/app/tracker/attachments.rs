@@ -43,6 +43,13 @@ use crate::encoding::{b64decode, b64encode};
 use serde_json::{json, Value};
 use std::io::Read;
 
+/// The most one `issues.attachment` answer carries. A user's upload is capped
+/// at the same size so it always comes back whole; an agent's recording can be
+/// ten times that, and is read back in pieces of this size. Base64 costs a
+/// third on top, and the piece plus its envelope still fits under the 8 MiB
+/// DataChannel reassembly cap.
+pub const ATTACHMENT_READ_CHUNK_BYTES: u64 = ATTACHMENT_MAX_BYTES;
+
 /// How much of a file is read to type it — the same head `thread.attach` sniffs,
 /// so one file typed twice types the same both times.
 const MIME_SNIFF_BYTES: usize = 8192;
@@ -93,6 +100,12 @@ impl AppState {
     /// that is drawing the issue. The browser cannot reach the disk, and
     /// routing the read through the issue means no caller has to know (or can
     /// get wrong) where the file landed.
+    ///
+    /// One piece at a time (1.19): `offset` and `length` name a range, the
+    /// answer says where it starts, and `size` is always the whole file's, so
+    /// a reader asks again from `offset + piece` until it has `size` bytes. A
+    /// file no bigger than one piece comes back whole from an unranged read,
+    /// exactly as it did before ranges.
     pub(crate) fn issues_attachment(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let path = require_str(params, "path")?;
@@ -101,14 +114,21 @@ impl AppState {
         // an issue that is not there.
         self.tracker_issue(&issue_id)?;
         let target = self.resolve_issue_attachment(&path)?;
-        let content =
-            std::fs::read(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
-        let head = &content[..content.len().min(MIME_SNIFF_BYTES)];
+        let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+        let length = params
+            .get("length")
+            .and_then(Value::as_u64)
+            .unwrap_or(ATTACHMENT_READ_CHUNK_BYTES)
+            .min(ATTACHMENT_READ_CHUNK_BYTES);
+        let (size, piece) = read_range(&target, offset, length)
+            .map_err(|e| format!("cannot read the attachment: {e}"))?;
+        let head = read_head(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
         Ok(json!({
             "path": path,
-            "size": content.len(),
-            "mime": mime_hint(&target, head),
-            "content_b64": b64encode(&content),
+            "size": size,
+            "mime": mime_hint(&target, &head),
+            "offset": offset,
+            "content_b64": b64encode(&piece),
         }))
     }
 
@@ -178,12 +198,7 @@ impl AppState {
         let size = std::fs::metadata(&resolved)
             .map_err(|e| format!("cannot stat the attachment: {e}"))?
             .len();
-        let mut head = Vec::new();
-        std::fs::File::open(&resolved)
-            .map_err(|e| format!("cannot read the attachment: {e}"))?
-            .take(MIME_SNIFF_BYTES as u64)
-            .read_to_end(&mut head)
-            .map_err(|e| format!("cannot read the attachment: {e}"))?;
+        let head = read_head(&resolved).map_err(|e| format!("cannot read the attachment: {e}"))?;
         let name = entry
             .get("name")
             .and_then(Value::as_str)
@@ -199,4 +214,26 @@ impl AppState {
             size,
         })
     }
+}
+
+/// The first bytes of a file, enough to type it.
+fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    std::fs::File::open(path)?
+        .take(MIME_SNIFF_BYTES as u64)
+        .read_to_end(&mut head)?;
+    Ok(head)
+}
+
+/// The whole file's size, and at most `length` bytes of it from `offset`. An
+/// offset at or past the end answers an empty piece rather than an error: the
+/// reader asked for what is left, and nothing is.
+fn read_range(path: &std::path::Path, offset: u64, length: u64) -> std::io::Result<(u64, Vec<u8>)> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut piece = Vec::new();
+    file.seek(SeekFrom::Start(offset.min(size)))?;
+    file.take(length).read_to_end(&mut piece)?;
+    Ok((size, piece))
 }

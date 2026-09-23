@@ -65,7 +65,7 @@ fn issue_id(issue: &Value) -> String {
 }
 
 /// The refusal one call answered with, as the client reads it.
-fn refused(state: &mut AppState, method: &str, params: Value) -> String {
+pub(super) fn refused(state: &mut AppState, method: &str, params: Value) -> String {
     let answered = state.handle(req(method, params));
     assert_eq!(answered["ok"], false, "{answered:?}");
     answered["error"].as_str().unwrap_or_default().to_string()
@@ -592,7 +592,12 @@ fn the_tracker_does_not_reach_the_retired_plan_flow() {
 // rather than failing the filing.
 
 /// One file up, as the composer sends it. Answers the descriptor.
-fn attached(state: &mut AppState, project_id: &str, filename: &str, bytes: &[u8]) -> Value {
+pub(super) fn attached(
+    state: &mut AppState,
+    project_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Value {
     let answered = state.handle(req(
         "issues.attach",
         json!({

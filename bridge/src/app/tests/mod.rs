@@ -221,6 +221,7 @@ mod runtime;
 mod shell;
 mod tracker;
 mod tracker_activity;
+mod tracker_agent_files;
 mod tracker_dispatch;
 mod tracker_identity_removal;
 mod tracker_tools;

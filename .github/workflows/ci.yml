@@ -171,11 +171,9 @@ jobs:
         if: failure()
         run: docker compose -f deploy/compose.real.yml logs --tail 150
 
-  # The app tier's own gate, and the reason it no longer waits on Rust. The web
-  # client had NO unit job here at all: its 800+ vitest tests ran only on a
-  # developer's machine, while its deploy was gated on a bridge compile that
-  # cannot fail because of anything in spa/. This inverts that — fast checks on
-  # the tier that changed, heavy ones on the tier that needs them.
+  # The app tier owns its client gate. The update wiring test also builds one
+  # Rust RPC probe so the browser checks a real bridge frame; it does not depend
+  # on the separate relay, interoperability, or full-stack jobs.
   spa:
     name: Web client unit tests
     concurrency:
@@ -186,6 +184,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      # The update wiring test takes its frames from the real Rust RPC handler.
+      - name: Install Rust for the bridge-to-browser wiring test
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Cache the bridge wiring probe
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            bridge/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock') }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"

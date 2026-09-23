@@ -384,6 +384,16 @@ fn every_event_example_is_what_the_bridge_serialises() {
             "term.reset" => check_untyped_push(event, &["term_id", "data", "cursor"]),
             "term.closed" => check_untyped_push(event, &["term_id", "reason"]),
             "rtc.ice" => check_untyped_push(event, &["candidate"]),
+            "bridge.update_status" => {
+                let mut status = event.clone();
+                status.as_object_mut().unwrap().remove("type");
+                let parsed: build_bridge::update::UpdateStatus = typed(&status, "bridge update");
+                assert_eq!(
+                    serde_json::to_value(parsed).unwrap(),
+                    status,
+                    "bridge update event is the status wire shape plus type"
+                );
+            }
             other => panic!("{other}: the bridge sends no such push"),
         }
     }

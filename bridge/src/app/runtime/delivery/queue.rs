@@ -256,7 +256,6 @@ impl DeliveryQueue {
         self.settling.lapse(Instant::now());
     }
 
-    #[cfg(test)]
     pub(in crate::app) fn is_idle(&self) -> bool {
         self.queued.is_empty()
             && self.settling.is_empty()

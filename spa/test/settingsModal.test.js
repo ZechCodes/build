@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 const { App, go, markRoute, local, device, archive, paintDevicePicker, listeners, deviceListeners } = vi.hoisted(() => ({
   App: { route: { name: "account", page: "settings" }, devices: [], viewDispose: null },
   go: vi.fn(), markRoute: vi.fn(), local: vi.fn(), device: vi.fn(), archive: vi.fn(), paintDevicePicker: vi.fn(), listeners: new Set(), deviceListeners: new Set(),
@@ -21,6 +22,10 @@ vi.mock("../src/core/deviceContexts.js", () => ({ onDeviceStateChanged: (listene
   return () => listeners.delete(listener);
 } }));
 import { isSettingsRoute, renderSettingsModal } from "../src/views/settingsModal.js";
+import { rememberBridgeUpdateStatus, trackBridgeUpdateDevices } from "../src/core/bridgeUpdates.js";
+import { wipeCache } from "../src/core/localCache.js";
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 // The modal hands its teardown BACK rather than claiming App.viewDispose: that
 // slot belongs to the page underneath, which stays mounted while settings are
@@ -29,8 +34,9 @@ let closeModal = null;
 const openModal = (returnRoute) => {
   closeModal = renderSettingsModal(returnRoute);
 };
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  await wipeCache();
   deviceListeners.clear();
   document.body.innerHTML = '<div id="shell"><main id="root">Workspace content</main></div><div id="scrim"></div>';
   App.devices = [{ id: "a", name: "Laptop", status: "online" }, { id: "b", name: "Server", status: "offline" }];
@@ -41,6 +47,19 @@ beforeEach(() => {
 });
 afterEach(() => { closeModal?.(); closeModal = null; App.viewDispose?.(); App.viewDispose = null; });
 describe("settings modal", () => {
+  it("marks the device with a release in the settings sidebar", async () => {
+    trackBridgeUpdateDevices(App.devices);
+    openModal();
+    await rememberBridgeUpdateStatus("a", {
+      running_version: "0.2.0", platform: "linux-x86_64", development_build: false,
+      latest_release: { version: "0.3.0", tag: "bridge-v0.3.0", published_at: null },
+      last_checked_at: "2026-09-23T12:00:00Z", state: "available", last_error: null,
+      update_available: true, can_install: true,
+    });
+    await vi.waitFor(() => expect(document.querySelector('[data-settings-device="a"] .bridge-update-dot')).toBeTruthy());
+    expect(document.querySelector('[data-settings-device="a"]').textContent).toContain("Update available");
+    expect(document.querySelector('[data-settings-device="b"] .bridge-update-dot')).toBeNull();
+  });
   it("lists local settings and devices over the existing surface, returning on close", async () => {
     const returnRoute = { name: "workspace", deviceId: "a", workspaceId: "w1" };
     openModal(returnRoute);

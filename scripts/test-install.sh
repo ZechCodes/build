@@ -114,7 +114,7 @@ COSIGN
 # in for the network and the machine, and an empty install directory.
 new_sandbox() {
     ns_root="$WORK/$1"
-    mkdir -p "$ns_root/mirror" "$ns_root/dest" "$ns_root/payload"
+    mkdir -p "$ns_root/mirror" "$ns_root/dest" "$ns_root/payload" "$ns_root/home"
 
     printf '#!/bin/sh\nprintf "build-bridge 0.0.0-test\\n"\n' > "$ns_root/payload/build-bridge"
     chmod 0755 "$ns_root/payload/build-bridge"
@@ -145,8 +145,9 @@ run_install() {
         BUILD_TEST_COSIGN_STATUS="${CASE_COSIGN_STATUS:-0}"
         BUILD_BRIDGE_INSTALL_DIR="$ri_root/dest"
         BUILD_BRIDGE_SKIP_SERVICE=1
+        HOME="$ri_root/home"
         export PATH BUILD_TEST_MIRROR BUILD_TEST_UNAME_S BUILD_TEST_UNAME_M
-        export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE
+        export BUILD_TEST_COSIGN_STATUS BUILD_BRIDGE_INSTALL_DIR BUILD_BRIDGE_SKIP_SERVICE HOME
         /bin/sh "$INSTALL_SH" > "$ri_root/stdout" 2> "$ri_root/stderr"
     ) || ri_status=$?
     printf '%s\n' "$ri_status"
@@ -163,6 +164,11 @@ installs_a_verified_tarball() {
     fi
     if ! grep -q "^installed build-bridge $root/dest/build-bridge\$" "$root/stdout"; then
         fail "$name" "stdout was '$(cat "$root/stdout")'"
+        return 1
+    fi
+    if [ "$(sed -n '1p' "$root/home/.build/installed-bridge")" != "$root/dest/build-bridge" ] ||
+        [ "$(sed -n '2p' "$root/home/.build/installed-bridge")" != "$(digest_of "$root/dest/build-bridge")" ]; then
+        fail "$name" "install marker has the wrong path or binary digest"
         return 1
     fi
     pass "$name"

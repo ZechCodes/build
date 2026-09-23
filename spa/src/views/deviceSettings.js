@@ -17,6 +17,7 @@ import { openDeviceSettingsSession, retireDevice } from "../connection.js";
 import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 import { deviceSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
+import { mountBridgeUpdatePanel } from "../core/bridgeUpdatePanel.js";
 
 export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
   let device = App.devices.find((item) => item.id === deviceId);
@@ -47,6 +48,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
     </div>
+    <div id="device-updates-panel"></div>
     <div id="device-bridge-panels"></div>
     <div class="panel danger-zone">
       <h3>Deactivate device</h3>
@@ -69,6 +71,13 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   let connectionAttempt = 0;
   let session = null;
   let disposePanels = null;
+  let disposeUpdates = null;
+  const disposeUpdatePanel = () => {
+    disposeUpdates?.();
+    disposeUpdates = null;
+    const panel = root.querySelector("#device-updates-panel");
+    if (panel) panel.innerHTML = "";
+  };
   let browserOpen = false;
   let savingAttempt = null;
   let savingName = false;
@@ -90,6 +99,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       session = null;
       disposePanels?.();
       disposePanels = null;
+      disposeUpdatePanel();
       settingsRecord.dispose();
       stopWatchingDevices();
       showDeactivated(root, onDeviceDeactivated, deviceId);
@@ -109,6 +119,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     stopWatchingDevices();
     closeBrowser();
     disposePanels?.();
+    disposeUpdatePanel();
     settingsRecord.dispose();
     session?.close();
   });
@@ -162,6 +173,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       session = null;
       disposePanels?.();
       disposePanels = null;
+      disposeUpdatePanel();
       settingsRecord.dispose();
       retireDevice(device.id);
     } catch (error) {
@@ -184,6 +196,8 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   // status line, rather than standing up six panels that all say it again.
   const standUpPanels = () => {
     disposePanels?.();
+    disposeUpdatePanel();
+    disposeUpdates = mountBridgeUpdatePanel(root.querySelector("#device-updates-panel"), { deviceId, callRpc });
     disposePanels = standUpDevicePanels({
       projectsHost: root.querySelector("#device-projects-panel"),
       bridgeHost: root.querySelector("#device-bridge-panels"),
@@ -233,6 +247,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     session = null;
     disposePanels?.();
     disposePanels = null;
+    disposeUpdatePanel();
     closeBrowser();
     change.disabled = true;
     status.textContent = "Device disconnected. Bring it online, then retry.";
@@ -266,6 +281,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       session = null;
       disposePanels?.();
       disposePanels = null;
+      disposeUpdatePanel();
       if (!active) return;
       if (!projectsPath) pathLabel.textContent = "Unavailable";
       status.textContent = error.message;

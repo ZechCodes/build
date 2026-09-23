@@ -303,7 +303,7 @@ describe("the connect sequence", () => {
 
     expect(greetings.greet).toHaveBeenCalled();
     expect(overTheRelay()).toEqual(["rtc.offer"]);
-    expect(overTheChannel(link.app)).toEqual(["board.list"]);
+    expect(overTheChannel(link.app)).toEqual(["bridge.update_status", "board.list"]);
   });
 
   it("blocks the device when the ICE servers cannot be minted, and does not try again", async () => {

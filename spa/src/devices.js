@@ -16,13 +16,14 @@ import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
 import { App } from "./app.js";
-import { goFromInbox } from "./core/inboxShell.js";
+import { goFromInbox, paintBridgeUpdateMark } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { mountDeviceFilterCache, rememberDeviceFilter } from "./core/deviceFilter.js";
 import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
+import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -47,6 +48,8 @@ function takeUpCachedDevices({ clearMissing = false } = {}) {
     if (!record && !clearMissing) return App.devices;
     const devices = Array.isArray(record?.value) ? record.value : [];
     App.devices = devices;
+    trackBridgeUpdateDevices(devices);
+    paintBridgeUpdateMark();
     syncDeviceRecoveryPresence(devices);
     await forgetFilterOnMissingDevice();
     for (const listener of [...deviceListListeners]) listener(devices);
@@ -313,13 +316,16 @@ function allDevicesRowHtml(filter) {
 
 function deviceRowHtml(device, filter) {
   const offline = deviceIsOffline(device);
+  const update = !offline && bridgeUpdateAvailable(bridgeUpdateStatus(device.id));
   return `<div class="device-picker-row">
     ${choiceHtml(device.id, deviceLabel(device), filter === device.id)}
     ${offline
       ? `<span class="device-picker-offline" role="img" aria-label="Device offline" title="Device offline">${ICON_WIFI_OFF}</span>`
-      : `<button type="button" class="device-picker-settings" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}" title="Settings for ${esc(device.name)}"><span aria-hidden="true">${ICON_SETTINGS}</span></button>`}
+      : `<button type="button" class="device-picker-settings${update ? " has-bridge-update" : ""}" data-settings-device="${esc(device.id)}" aria-label="Settings for ${esc(device.name)}${update ? "; bridge update available" : ""}" title="Settings for ${esc(device.name)}${update ? " — bridge update available" : ""}"><span aria-hidden="true">${ICON_SETTINGS}</span>${update ? '<span class="bridge-update-dot" aria-hidden="true"></span>' : ""}</button>`}
   </div>${limitLinesHtml(device.id)}`;
 }
+
+onBridgeUpdatesChanged(() => paintDevicePicker());
 
 /** What every row is picked by: the device the rail is to show, with the
  *  account's own row naming no device at all. */

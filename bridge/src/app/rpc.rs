@@ -61,6 +61,7 @@ pub(in crate::app) fn dispatch_frame(
         let (changes, watchers) = {
             let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
+            app.unsubscribe_update_status(sender.session_id());
             (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());
@@ -277,6 +278,8 @@ fn allowed_during_project_deletion(method: &str) -> bool {
         "ping"
             | "session.hello"
             | "bridge.stats"
+            | "bridge.update_status"
+            | "bridge.check_update"
             | "changes.list"
             | "changes.subscribe"
             | "changes.unsubscribe"

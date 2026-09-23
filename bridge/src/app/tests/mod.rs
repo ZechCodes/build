@@ -227,6 +227,7 @@ mod tracker_identity_removal;
 mod tracker_tools;
 mod tracker_tracking;
 mod tracker_watching;
+mod updates;
 mod usage_limits;
 mod workflow;
 mod workspaces;

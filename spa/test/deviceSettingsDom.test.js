@@ -58,9 +58,12 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 }));
 vi.mock("../src/core/taskFeed.js", () => ({ refreshFeed }));
 import { renderDeviceSettings } from "../src/views/deviceSettings.js";
-import { readCachedDevices } from "../src/devices.js";
+import { paintDevicePicker, readCachedDevices } from "../src/devices.js";
+import { paintBridgeUpdateMark } from "../src/core/inboxShell.js";
 import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { deviceProjectsAddress, deviceSettingsAddress } from "../src/core/settingsRecords.js";
+import { bridgeUpdateAddress } from "../src/core/bridgeUpdates.js";
+import { dispatchChangeEvent } from "../src/core/changeEvents.js";
 
 const CATALOG = {
   default_provider: "claude",
@@ -87,6 +90,12 @@ const PROJECTS = [
     is_git: true,
   },
 ];
+const UPDATE = {
+  running_version: "0.2.0", platform: "linux-x86_64", development_build: false,
+  latest_release: { version: "0.3.0", tag: "bridge-v0.3.0", published_at: "2026-09-23T12:00:00Z" },
+  last_checked_at: "2026-09-23T12:00:00Z", state: "available", last_error: null,
+  update_available: true, can_install: true,
+};
 
 let session;
 beforeEach(async () => {
@@ -103,6 +112,9 @@ beforeEach(async () => {
     call: vi.fn(async (method) => {
       if (method === "project.list") return { projects: PROJECTS };
       if (method === "models.list") return CATALOG;
+      if (method === "bridge.update_status") return UPDATE;
+      if (method === "bridge.check_update") return UPDATE;
+      if (method === "bridge.install_update") return UPDATE;
       return { ...SETTINGS };
     }),
     close: vi.fn(),
@@ -115,6 +127,65 @@ beforeEach(async () => {
 afterEach(() => App.viewDispose?.());
 
 describe("the machine's own panels", () => {
+  it("shows bridge version and sends both install choices to this device", async () => {
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toContain("0.3.0"));
+    expect(document.querySelector(".bridge-update-body").textContent).toContain("0.2.0");
+    document.querySelector("[data-bridge-check]").click();
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("bridge.check_update", {}));
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-now]").click();
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("bridge.install_update", { when: "now" }));
+    await vi.waitFor(() => expect(document.querySelector("[data-bridge-install-idle]").disabled).toBe(false));
+    document.querySelector("[data-bridge-install-idle]").click();
+    await vi.waitFor(() => expect(session.call).toHaveBeenCalledWith("bridge.install_update", { when: "idle" }));
+  });
+
+  it("keeps development builds visible while refusing replacement", async () => {
+    session.call.mockImplementation(async (method) => method === "bridge.update_status"
+      ? { ...UPDATE, development_build: true, can_install: false }
+      : method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS);
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-body")?.textContent).toContain("development build"));
+    expect(document.querySelector("[data-bridge-check]").disabled).toBe(false);
+    expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(true);
+    expect(document.querySelector("[data-bridge-install-idle]").disabled).toBe(true);
+  });
+
+  it("shows an older bridge's compatibility message", async () => {
+    session.call.mockImplementation(async (method) => {
+      if (method === "bridge.update_status") throw new Error("unknown method: bridge.update_status");
+      return method === "project.list" ? { projects: PROJECTS } : method === "models.list" ? CATALOG : SETTINGS;
+    });
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-body")?.textContent).toContain("unavailable on this bridge"));
+    expect(document.querySelector("[data-bridge-install-now]").disabled).toBe(true);
+  });
+
+  it("takes a bridge push through the real event dispatcher, cache, and live settings panel", async () => {
+    await renderDeviceSettings();
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-state")?.textContent).toContain("0.3.0"));
+    const event = { type: "bridge.update_status", ...UPDATE, state: "failed", last_error: "Health check did not pass" };
+    expect(dispatchChangeEvent(event, "other")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector(".bridge-update-error")?.textContent).toContain("Health check did not pass"));
+    expect((await readCached(bridgeUpdateAddress("other"))).value.last_error).toBe("Health check did not pass");
+    expect(document.querySelector(".bridge-update-state").textContent).toBe("The update failed.");
+  });
+
+  it("marks the inbox settings cog and only the device that needs an update", async () => {
+    document.body.insertAdjacentHTML("beforeend", '<div id="devpick"></div><button id="nav-account" aria-label="Settings"></button>');
+    App.devices.push({ id: "second", name: "Server", status: "online" });
+    paintDevicePicker();
+    paintBridgeUpdateMark();
+    expect(dispatchChangeEvent({ type: "bridge.update_status", ...UPDATE }, "other")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector("#nav-account .bridge-update-dot")).toBeTruthy());
+    expect(document.querySelector('[data-settings-device="other"] .bridge-update-dot')).toBeTruthy();
+    expect(document.querySelector('[data-settings-device="second"] .bridge-update-dot')).toBeNull();
+    App.devices[0].status = "offline";
+    paintBridgeUpdateMark();
+    expect(document.querySelector("#nav-account .bridge-update-dot")).toBeNull();
+  });
+
   it("paints a cached projects folder while settings.get is absent", async () => {
     await writeCached(deviceSettingsAddress("other"), { ...SETTINGS, projects_dir: "/cached-projects" });
     session.call = vi.fn((method) => method === "settings.get"

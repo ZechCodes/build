@@ -24,6 +24,7 @@ import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
 import { mountFocusMemory } from "./core/focusMemory.js";
 import { resetDeviceFilterCache } from "./core/deviceFilter.js";
+import { trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 // Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
@@ -84,6 +85,7 @@ export const App = {
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  trackBridgeUpdateDevices([]);
   settingsReturnRoute = { name: "inbox" };
   modalDispose?.();
   modalDispose = null;

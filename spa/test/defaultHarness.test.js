@@ -328,7 +328,8 @@ describe("the device's settings page", () => {
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
     expect(at("Device name")).toBe(0);
     expect(at("Projects")).toBe(1);
-    expect(at("Agent modes")).toBe(at("Projects folder") + 1);
+    expect(at("Bridge updates")).toBe(at("Projects folder") + 1);
+    expect(at("Agent modes")).toBe(at("Bridge updates") + 1);
     expect(at("Fallback agent")).toBe(at("Agent modes") + 1);
     // The project agent is this machine's too, and it is the fallback's
     // neighbour: both say what an agent nobody configured starts on.

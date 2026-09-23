@@ -123,6 +123,18 @@ install_binary() {
     mkdir -p "$INSTALL_DIR" || fail "could not create $INSTALL_DIR"
     chmod 0755 build-bridge
     mv build-bridge "$INSTALL_DIR/build-bridge" || fail "could not write $INSTALL_DIR/build-bridge"
+    # The updater only changes a binary this installer placed. Record the
+    # canonical path and its exact digest; a locally built replacement remains
+    # visible in Settings but cannot be overwritten from the app.
+    ib_dir="$(cd "$INSTALL_DIR" && pwd -P)" || fail "could not resolve $INSTALL_DIR"
+    case "$ib_dir" in *'
+'*) fail "install path contains a newline" ;; esac
+    ib_path="$ib_dir/build-bridge"
+    ib_digest="$(actual_sum "$ib_path")"
+    mkdir -p "$HOME/.build" || fail "could not create install marker directory"
+    umask 077
+    printf '%s\n%s\n' "$ib_path" "$ib_digest" > "$HOME/.build/installed-bridge" \
+        || fail "could not record installed bridge provenance"
     case ":$PATH:" in
         *":$INSTALL_DIR:"*) ;;
         *) say "$INSTALL_DIR is not on your PATH — add it with: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;

@@ -279,6 +279,15 @@ a { color:inherit; }
 .device-picker-choice > span:first-child { overflow-wrap:anywhere; }
 .device-picker-choice[aria-pressed="true"] { color:var(--accent); }
 .device-picker-settings, .device-picker-offline { flex:0 0 36px; display:grid; place-items:center; }
+.device-picker-settings.has-bridge-update, .inbox-account.has-bridge-update { position:relative; }
+.bridge-update-dot { position:absolute; top:3px; right:3px; width:8px; height:8px; border-radius:50%; background:var(--amber); box-shadow:0 0 0 2px var(--panel); }
+.bridge-update-sidebar-note { display:block; color:var(--amber); font-size:11px; }
+.settings-sidebar [data-settings-device].has-bridge-update { position:relative; padding-right:24px; }
+.bridge-update-panel .row { max-width:520px; }
+.bridge-update-state { margin:12px 0 4px; font-weight:600; }
+.bridge-update-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+.bridge-update-request { min-height:1.5em; margin:8px 0 0; }
+.bridge-update-error { color:var(--red, #bb3f3f); overflow-wrap:anywhere; }
 .device-picker-offline { color:var(--dim); }
 /* A machine with a harness out of usage (#58): its line under its row, and the
    toggle's mark while a machine it stands for is limited. Amber, as the

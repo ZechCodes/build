@@ -64,6 +64,7 @@
 import { pageVisible } from "./visibility.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
+import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -663,6 +664,11 @@ const EVENT_DISPATCHERS = new Map([["changes", dispatchItems]]);
  *  behave as if it could not hear them. Returns whether the event was one we act
  *  on. */
 export function dispatchChangeEvent(payload, deviceId = null) {
+  if (payload?.type === "bridge.update_status" && deviceId) {
+    const { type: _type, ...status } = payload;
+    void rememberBridgeUpdateStatus(deviceId, status);
+    return true;
+  }
   if (!payload || !armedFor(deviceId)) return false;
   const dispatch = EVENT_DISPATCHERS.get(payload.type);
   return dispatch ? dispatch(payload, deviceId) : false;

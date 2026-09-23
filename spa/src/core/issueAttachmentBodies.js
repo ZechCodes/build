@@ -6,7 +6,7 @@
 // the page reads the stored record back (core/cachedBodies.js).
 //
 // A recording can be ten times what one DataChannel message carries, so the
-// bridge hands it back in pieces (`issues.attachment` `offset`, 1.18) and
+// bridge hands it back in pieces (`issues.attachment` `offset`, 1.19) and
 // this puts them back together. A bridge older than ranges ignores `offset`
 // and answers the whole file, which the same loop reads as one piece.
 //

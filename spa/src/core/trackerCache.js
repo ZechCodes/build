@@ -17,7 +17,8 @@
 // record is written through by the issue page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { readCached, writeCached } from "./localCache.js";
+import { mergeCachedAtomically, readCached, writeCached } from "./localCache.js";
+import { issueUnreadKey, latestIssueMark } from "./trackerUnread.js";
 
 export const TRACKER_ISSUES_KIND = "tracker-issues";
 export const TRACKER_ISSUES_QUERY_KIND = "tracker-issues-query";
@@ -81,8 +82,28 @@ export async function readIssuesQueryRecord(deviceId, projectId, params) {
 export const writeIssuesRecord = (deviceId, projectId, record) =>
   writeCached(issuesAddress(deviceId, projectId), record);
 
+/** Pulls may carry an older server read mark than one this browser has already
+ * accepted. Keep the accepted mark in the cached issue while replacing its
+ * other fields and timeline with the newest pull. The transaction makes two
+ * tabs' writes obey the same floor. */
 export const writeIssueRecord = (deviceId, projectId, issueId, record) =>
-  writeCached(issueAddress(deviceId, projectId, issueId), record);
+  mergeCachedAtomically(issueAddress(deviceId, projectId, issueId), (held) => {
+    const floor = latestIssueMark(held?.issue?.read_through, record?.issue?.read_through);
+    if (!record?.issue || !floor || floor === record.issue.read_through) return record;
+    return { ...record, issue: { ...record.issue, read_through: floor } };
+  });
+
+/** Only an accepted read report may raise the cached floor. Do not touch the
+ * timeline, and never accept a synthetic key as a read mark. */
+export const advanceIssueReadThrough = (deviceId, projectId, issueId, mark) => {
+  if (issueUnreadKey(mark) === null) return Promise.resolve(false);
+  return mergeCachedAtomically(issueAddress(deviceId, projectId, issueId), (held) => {
+    if (!held?.issue) return null;
+    const floor = latestIssueMark(held.issue.read_through, mark);
+    if (floor === held.issue.read_through) return null;
+    return { ...held, issue: { ...held.issue, read_through: floor } };
+  });
+};
 
 export const writeIssuesQueryRecord = (deviceId, projectId, params, record) =>
   writeCached(issuesQueryAddress(deviceId, projectId, params), record);

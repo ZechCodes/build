@@ -16,6 +16,7 @@ import { watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
+  advanceIssueReadThrough,
   issueAddress,
   issueRecord,
   issueRecordAt,
@@ -40,6 +41,9 @@ import { createWatchToggle, syncWatchButton, WATCH_BUTTON_SELECTOR } from "./wat
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { createThreadState, wireThreadAttachments } from "./thread.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { createUnreadMarker } from "./unreadAnchor.js";
+import { issueUnreadReading, issueUnreadRules, latestIssueMark } from "./trackerUnread.js";
+import { mountNewMessagesPill } from "./newMessagesPill.js";
 
 /** Whether one flush of `issues` items says anything about this issue. */
 const namesIssue = (items, issueId) =>
@@ -121,6 +125,17 @@ export function mountIssuePage(host, options) {
    *  the mark only ever moves forward, and re-sending the same point says
    *  nothing. */
   let markedThrough = "";
+  let unreadFrom = null;
+  const unreadMarker = createUnreadMarker(() => {
+    unreadFrom = null;
+    paint();
+  }, issueUnreadRules);
+  const unreadPill = mountNewMessagesPill(host, { targetSelector: ".issue-unread-line" });
+
+  const updateUnread = () => {
+    if (!offersWatch) return;
+    unreadFrom = unreadMarker.update(issueUnreadReading(state.rows, state.issue?.read_through, markedThrough));
+  };
 
   /**
    * Say how far this reader has read.
@@ -135,8 +150,14 @@ export function mountIssuePage(host, options) {
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
     markedThrough = through;
-    void Promise.resolve(state.callRpc("issues.read_through", { issue_id: state.issueId, event_id: through }))
-      .catch(() => { markedThrough = ""; });
+    updateUnread();
+    void Promise.resolve()
+      .then(() => state.callRpc("issues.read_through", { issue_id: state.issueId, event_id: through }))
+      .then((answer) => advanceIssueReadThrough(
+        state.deviceId, state.projectId, state.issueId,
+        latestIssueMark(through, answer?.issue?.read_through),
+      ))
+      .catch(() => { if (markedThrough === through) markedThrough = ""; });
   }
 
   /** The reader reached the end of the timeline, which is the only thing that
@@ -146,6 +167,7 @@ export function mountIssuePage(host, options) {
   const AT_THE_END = 8;
   const onScroll = () => {
     if (host.scrollTop + host.clientHeight >= host.scrollHeight - AT_THE_END) markRead();
+    unreadPill.update();
   };
   host.addEventListener("scroll", onScroll, { passive: true });
 
@@ -203,6 +225,7 @@ export function mountIssuePage(host, options) {
         agentGroups: groups(),
       }),
       rows: state.rows,
+      unreadFrom,
       links: issueLinkRows(state.issue, place(), state.feed()),
       watch: watch?.state() || null,
       draft: state.draft,
@@ -225,6 +248,7 @@ export function mountIssuePage(host, options) {
     painted = html;
     host.innerHTML = html;
     if (state.issue) wire();
+    unreadPill.sync();
     reads.mark(); // the host was just rewritten; the mark lives among its children
     restoreField(typing);
     if (state.commentId) {
@@ -249,6 +273,9 @@ export function mountIssuePage(host, options) {
     // route names an id, but only a read knows its number and title.
     state.onIssueRead?.(record.issue);
     state.rows = timelineRows(record.timeline);
+    // Read the mark while it still says where this visit began. The open
+    // mark below advances it, but the held divider must not move with it.
+    updateUnread();
     if (!keepDrafts) state.labelsDraft = (record.issue.labels || []).join(", ");
     // What the record says outranks anything the switch guessed, and opening
     // an issue is reading it: the mark moves on open as well as on the scroll
@@ -520,6 +547,8 @@ export function mountIssuePage(host, options) {
       issueWatcher?.();
       listWatcher?.();
       reads.dispose();
+      unreadMarker.leave();
+      unreadPill.dispose();
       state.picker?.close?.();
     },
   };

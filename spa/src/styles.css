@@ -1662,6 +1662,23 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-unread-line { display:flex; align-items:center; gap:8px; margin:8px 0 4px; color:var(--accent); }
 .thread-unread-line::after { content:""; flex:1; height:1px; background:currentColor; opacity:.45; }
 .thread-unread-line span { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+
+/* A zero-height sticky dock floats over a scroll surface without moving its
+   content. The control itself uses the readable accent token in both themes. */
+.new-messages-dock {
+  position:sticky; bottom:16px; z-index:20; height:0;
+  display:flex; justify-content:center; align-items:flex-start; pointer-events:none;
+}
+.new-messages-dock[hidden] { display:none; }
+.new-messages-pill {
+  flex:none; transform:translateY(-100%); pointer-events:auto; cursor:pointer;
+  padding:8px 15px; border:1px solid var(--accent); border-radius:999px;
+  background:var(--panel); color:var(--accent);
+  box-shadow:0 3px 14px rgba(0,0,0,.18);
+  font:inherit; font-size:12px; font-weight:700;
+}
+.new-messages-pill:hover { background:var(--accent-soft); }
+.new-messages-pill:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 @media (prefers-reduced-motion: reduce) { }
 .thread-revision-link { border:0; padding:0; background:none; color:var(--accent); font:inherit; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }

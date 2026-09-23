@@ -310,7 +310,7 @@ describe("the mounted control", () => {
 
     await choose("rift");
 
-    expect(select().value).toBe("worktree");
+    await vi.waitFor(() => expect(select().value).toBe("worktree"));
   });
 
   it("says a refused save in the bridge's own words and puts the control back", async () => {

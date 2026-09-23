@@ -66,10 +66,6 @@ const branchRow = () => ({
 
 let rail = null;
 
-const flush = async () => {
-  for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
-};
-
 const panel = () => document.getElementById("rail-panel");
 
 /** The rail's own composer, with both menus painted on it. The rail asks its
@@ -83,7 +79,7 @@ const mountRailWithMenus = async () => {
     branch: "build/login",
     call: (method, params) => bridge.call(method, params),
   });
-  await flush();
+  await vi.waitFor(() => expect(panel()?.querySelector("#railinputmodel")).toBeTruthy());
   mountComposerModelMenu(panel(), {
     ids: { input: "railinput", send: "railsend", hint: "railhint" },
     onChoose: () => {},

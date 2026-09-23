@@ -19,6 +19,7 @@ import { notifyError } from "./notify.js";
 import {
   issuesAddress,
   issuesQueryAddress,
+  issuesQueryRecordAt,
   issuesRecord,
   issuesRecordAt,
   readIssuesQueryRecord,
@@ -79,6 +80,9 @@ export function mountIssuesPane(host, options) {
     composer: null,
     focusIssue: null,
     readSerial: 0,
+    // When the cache took each list this pane can paint from (#119).
+    queryAt: 0,
+    wholeAt: 0,
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
   const uiSnapshot = () => ({
@@ -135,9 +139,10 @@ export function mountIssuesPane(host, options) {
    *  than because the bridge said no: keeps the list that is already on screen,
    *  marks when it was read, and reads again when the machine is back. The
    *  list and the board share it — they are two drawings of one read. */
+  const machine = deviceWatch(state.deviceId);
   const reads = createReadRetry({
     host,
-    watch: deviceWatch(state.deviceId),
+    watch: machine,
     retry: () => void refresh(),
     hasContent: () => state.shown.length > 0 || state.all.length > 0,
   });
@@ -286,11 +291,23 @@ export function mountIssuesPane(host, options) {
   let querySerial = 0;
   let queryLoaded = false;
 
+  /** Whether the whole list landed no earlier than the filtered answer. The pass
+   *  behind this tab (core/cacheSync.js) pulls only the whole list, so after a
+   *  gap no push described, it is the newer news about these same issues and
+   *  the filters are applied to it locally, as before the first answer (#119). */
+  const wholeListIsNewer = () => state.wholeAt >= state.queryAt;
+
   async function paintFromQuery(params, serial = querySerial) {
-    const record = await readIssuesQueryRecord(state.deviceId, state.projectId, params);
+    const [record, at] = await Promise.all([
+      readIssuesQueryRecord(state.deviceId, state.projectId, params),
+      issuesQueryRecordAt(state.deviceId, state.projectId, params),
+    ]);
     if (state.disposed || serial !== querySerial || !record) return;
     queryLoaded = true;
-    state.unscopedShown = sortIssues(record.issues);
+    state.queryAt = at;
+    state.unscopedShown = wholeListIsNewer()
+      ? filterIssues(state.unscoped, shownFilters())
+      : sortIssues(record.issues);
     state.shown = kept(state.unscopedShown);
     details?.updateIssues(state.shown);
     // On a cold device the background whole-list pass may not have landed
@@ -329,7 +346,8 @@ export function mountIssuesPane(host, options) {
     state.unscoped = sortIssues(record.issues);
     state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);
-    if (!queryLoaded) {
+    state.wholeAt = at;
+    if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterIssues(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
     }
@@ -612,6 +630,17 @@ export function mountIssuesPane(host, options) {
     watchQuery();
     void paintFromCache().then(() => refresh());
   });
+  // A reconnect or a bridge restart has a gap behind it that no push will
+  // ever describe (#119): an issue moved to Done in it is news nobody sends.
+  // Coming back is therefore a read, the same one mounting does — unless a
+  // failed read is already waiting to be retried, which is that same read.
+  let machineAway = machine.away();
+  const stopMachineWatch = machine.moved(() => {
+    const nowAway = machine.away();
+    if (machineAway && !nowAway && !reads.waiting()) void refresh();
+    machineAway = nowAway;
+  });
+
   // No cadence: nothing in this client polls. The tab hears that an issue of
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
@@ -639,6 +668,7 @@ export function mountIssuesPane(host, options) {
       state.disposed = true;
       uiRecord.dispose();
       watcher.dispose();
+      stopMachineWatch();
       wholeListWatcher?.();
       details.dispose();
       activity.dispose();

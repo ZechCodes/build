@@ -115,5 +115,8 @@ export const writeIssuesQueryRecord = (deviceId, projectId, params, record) =>
 export const issuesRecordAt = async (deviceId, projectId) =>
   (await readCached(issuesAddress(deviceId, projectId)))?.at || 0;
 
+export const issuesQueryRecordAt = async (deviceId, projectId, params) =>
+  (await readCached(issuesQueryAddress(deviceId, projectId, params)))?.at || 0;
+
 export const issueRecordAt = async (deviceId, projectId, issueId) =>
   (await readCached(issueAddress(deviceId, projectId, issueId)))?.at || 0;

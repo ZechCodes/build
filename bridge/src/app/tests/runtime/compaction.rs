@@ -23,6 +23,10 @@ impl CompactingAgent {
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), RUN, RunState::Building);
         let agent_id = crate::agent::derived_agent_id(RUN);
+        app.edit_agent_record("test", RUN, &agent_id, |agent| {
+            agent.name = Some("Compaction".to_string());
+            agent.name_asked = true;
+        });
         app.set_agent_model_choice(
             RUN,
             &agent_id,

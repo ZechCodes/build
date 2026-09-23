@@ -16,6 +16,11 @@ use crate::thread::ThreadMessage;
 
 pub const THREAD_POST_METHOD: &str = "thread.post";
 pub const NATIVE_REVIEWER_MESSAGES_HEADING: &str = "Exact accepted messages:";
+pub(crate) const AGENT_NAME_NOTE: &str =
+    "\nYou have no name yet. Before you answer, call set_name with one or two meaningful \
+words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". It is \
+what the user sees instead of \"Agent 1\" everywhere you are named, so pick something \
+they would recognise from across a list. Then answer normally.\n";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -258,11 +263,7 @@ impl OperationPayload {
         if !self.ask_to_name {
             return String::new();
         }
-        "\nYou have no name yet. Before you answer, call set_name with one or two meaningful \
-         words for what you are working on — \"Tracker\", \"Rail scroll\", \"Transport\". It is \
-         what the user sees instead of \"Agent 1\" everywhere you are named, so pick something \
-         they would recognise from across a list. Then answer normally.\n"
-            .to_string()
+        AGENT_NAME_NOTE.to_string()
     }
 
     /// One line naming the issue the user was LOOKING at, when the message

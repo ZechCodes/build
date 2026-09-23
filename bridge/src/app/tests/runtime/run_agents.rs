@@ -459,21 +459,18 @@ async fn agent_start_tells_a_fresh_agent_what_is_waiting_for_it() {
     );
 }
 
-/// The other half: a start with nothing waiting says NOTHING. The button
-/// means "give me an agent", not "go do something" — the human drives it
-/// from there. An unsolicited prompt would put a fresh agent to work nobody
-/// asked it to do.
+/// A start with nothing waiting does not invent work. An unnamed agent still
+/// receives the one request to name itself.
 #[tokio::test]
-async fn agent_start_says_nothing_when_nothing_is_waiting() {
+async fn agent_start_with_no_work_only_asks_for_a_name() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_state_and_handler(&repo, dir.path());
     let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-quiet");
 
     let started = call(&handler, "agent.start", json!({ "id": "run-quiet" }));
     assert_eq!(started["ok"], true, "{started:?}");
-    // Give a prompt every chance to appear before concluding none did.
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let screen = agent_screen_text(&state, &root);
+    let screen = wait_for_agent_screen(&state, &root, "You have no name yet").await;
+    assert!(screen.contains("You have no name yet"), "{screen:?}");
     assert!(
         !screen.contains("Exact accepted messages:") && !screen.contains("read_unread_messages"),
         "an agent with nothing waiting must be left alone: {screen:?}"

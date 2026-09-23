@@ -199,6 +199,7 @@ impl AppState {
                 crate::app::RoutedCapture {
                     capture_id: capture_id.clone(),
                     rationale,
+                    agent_name: None,
                     answer: capture_after_routing,
                     from_agent: None,
                 },

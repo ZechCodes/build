@@ -25,8 +25,7 @@ pub(in crate::app::tests) use super::routing::captures::capture_rows;
 pub(in crate::app::tests) use super::routing::router::{capture_record, captured};
 pub(in crate::app::tests) use super::rtc::{offer, signaling_fixture};
 pub(in crate::app::tests) use super::runtime::agent_tabs::{
-    agent_screen_text, agent_tab_fixture, agent_tab_fixture_at, open_session_count,
-    wait_for_agent_screen,
+    agent_tab_fixture, agent_tab_fixture_at, open_session_count, wait_for_agent_screen,
 };
 pub(in crate::app::tests) use super::runtime::delivery::{
     open_a_turn, primary_thread, primary_thread_mut,

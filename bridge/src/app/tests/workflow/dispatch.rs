@@ -349,6 +349,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
             BridgeAction::DispatchBranch {
                 project_id: project_id.clone(),
                 branch: None,
+                name: "Branch Worker".to_string(),
                 instruction: "finish the toast".to_string(),
                 rationale: None,
             },
@@ -402,6 +403,7 @@ fn a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing() {
             BridgeAction::DispatchBranch {
                 project_id,
                 branch: Some("feature-elsewhere".to_string()),
+                name: "Branch Worker".to_string(),
                 instruction: "one more thing".to_string(),
                 rationale: None,
             },

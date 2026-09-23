@@ -274,8 +274,9 @@ impl AppState {
     /// conversation and an agent on it, then goes through the one send path
     /// every agent-originated message goes through — the same role, the same
     /// sender stamp, the same requester on the operation, the same refusals.
-    /// Naming no agent is the workspace's primary one, and a workspace nobody
-    /// has staffed gets one, the way every addressed verb reads it.
+    /// Naming no agent is the workspace's existing primary one. An empty
+    /// roster needs a named `add_workspace_agent` call before it can be sent
+    /// anything.
     pub(in crate::app) fn project_agent_message_workspace_agent(
         &mut self,
         owner_id: &str,
@@ -293,7 +294,14 @@ impl AppState {
                 .resolve(Some(agent_id))?
                 .id
                 .clone(),
-            None => self.ensure_primary_agent(&entity_id)?,
+            None => self
+                .entity_agents(&entity_id)?
+                .primary()
+                .map(|agent| agent.id.clone())
+                .ok_or_else(|| {
+                    "This workspace has no agent. Call add_workspace_agent with a name before messaging it."
+                        .to_string()
+                })?,
         };
         let sender = crate::app::AgentSender {
             entity_id: owner_id,

@@ -170,6 +170,7 @@ pub enum BridgeAction {
     DispatchBranch {
         project_id: String,
         branch: Option<String>,
+        name: String,
         instruction: String,
         rationale: Option<String>,
     },
@@ -630,10 +631,11 @@ impl DoneServer {
                 "properties": {
                     "project_id": { "type": "string" },
                     "branch": { "type": "string", "description": "The existing branch the work continues on, spelled exactly as it is — it is used as given, prefix and all. Omit only when the capture is new branch work whose name comes from the instruction." },
+                    "name": { "type": "string", "description": "A short name for the new agent, required because you are creating it." },
                     "instruction": { "type": "string", "description": "What the agent should do, in the user's terms." },
                     "rationale": { "type": "string", "description": "One line on why this branch is the destination." }
                 },
-                "required": ["project_id", "instruction"]
+                "required": ["project_id", "name", "instruction"]
             }
         }, {
             "name": "ask_user",
@@ -1335,7 +1337,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "message_workspace_agent",
-                "description": "Say something to an agent on one of your workspaces: what to work on, or a question about what it is doing. It arrives knowing you sent it and not the user, and its reply comes back to you. Use post_thread_message to talk to the user; this one talks to an agent.",
+                "description": "Say something to an existing agent on one of your workspaces: what to work on, or a question about what it is doing. With no agent_id, this addresses the existing primary agent; an empty workspace roster is refused, so call add_workspace_agent with a name first. It arrives knowing you sent it and not the user, and its reply comes back to you. Use post_thread_message to talk to the user; this one talks to an agent.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1710,6 +1712,7 @@ impl DoneServer {
                 Ok(BridgeAction::DispatchBranch {
                     project_id,
                     branch: text("branch"),
+                    name: required_created_agent_name(params, "name")?,
                     instruction: required("instruction")?,
                     rationale: text("rationale"),
                 })
@@ -3292,11 +3295,25 @@ mod tests {
                 if entity_id == "run-1" && agent_id.as_deref() == Some("agent-2") && limit == 5
         ));
         assert!(matches!(
-            call("dispatch_branch", r#"{"project_id":"proj-1","branch":"build/login","instruction":"finish the toast"}"#).action,
-            Some(BridgeAction::DispatchBranch { ref project_id, ref branch, ref instruction, rationale: None })
+            call("dispatch_branch", r#"{"project_id":"proj-1","branch":"build/login","name":"Branch Worker","instruction":"finish the toast"}"#).action,
+            Some(BridgeAction::DispatchBranch { ref project_id, ref branch, ref name, ref instruction, rationale: None })
                 if project_id == "proj-1" && branch.as_deref() == Some("build/login")
-                    && instruction == "finish the toast"
+                    && name == "Branch Worker" && instruction == "finish the toast"
         ));
+        for name in [None, Some(""), Some("x")] {
+            let arguments = serde_json::json!({
+                "project_id": "proj-1", "name": name, "instruction": "finish the toast"
+            });
+            let refused = router().handle_message(
+                &serde_json::json!({
+                    "jsonrpc": "2.0", "id": 51, "method": "tools/call",
+                    "params": { "name": "dispatch_branch", "arguments": arguments }
+                })
+                .to_string(),
+            );
+            assert!(refused.action.is_none(), "{name:?}");
+            assert_eq!(parse(&refused.reply.unwrap())["result"]["isError"], true);
+        }
         assert!(matches!(
             call("ask_user", r#"{"question":"which project?"}"#).action,
             Some(BridgeAction::AskUser { ref question, ref options })

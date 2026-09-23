@@ -257,10 +257,40 @@ fn mcp_issue_dispatch_names_the_agent_it_creates() {
     );
 }
 
-/// The first thing the user says to an unnamed agent carries the ask, and
-/// nothing after it does.
 #[test]
-fn the_user_s_first_message_asks_an_unnamed_agent_to_name_itself() {
+fn mcp_workspace_message_refuses_to_create_an_unnamed_primary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let workspace_id = workspace(&mut state, &project_id, "empty conversation");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace_id }),
+    ));
+    assert_eq!(ensured["ok"], true, "{ensured:?}");
+    let entity_id = ensured["result"]["run_id"].as_str().unwrap();
+    let (owner, sender) = project_agent(&mut state, &project_id);
+    let frame = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "message_workspace_agent", "arguments": {
+            "workspace_id": workspace_id, "body": "start here"
+        }}
+    });
+    let parsed = DoneServer::for_owner(&sender).handle_message(&frame.to_string());
+    let action = parsed.action.expect("the MCP message call is routed");
+    let refusal = state
+        .on_agent_mcp_action(&owner, &sender, action)
+        .unwrap_err();
+    assert!(
+        refusal.contains("Call add_workspace_agent with a name"),
+        "{refusal}"
+    );
+    assert!(state.entity_agents(entity_id).unwrap().is_empty());
+}
+
+/// Queuing a message does not mark the agent asked before the turn is sent.
+#[test]
+fn queued_messages_leave_the_name_request_for_delivery() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -291,8 +321,10 @@ fn the_user_s_first_message_asks_an_unnamed_agent_to_name_itself() {
 
     let first = said(&mut state, "have a look at the retry path");
     assert_eq!(first.len(), 1, "{first:?}");
-    assert!(first[0].contains("You have no name yet"), "{}", first[0]);
-    assert!(first[0].contains("call set_name"), "{}", first[0]);
+    assert!(!first[0].contains("You have no name yet"), "{}", first[0]);
+    assert!(!listed(&mut state, &entity_id, &agent_id)["name_asked"]
+        .as_bool()
+        .unwrap_or(false));
     assert!(
         first[0].contains("have a look at the retry path"),
         "and the user's own words are still what it answers: {}",
@@ -303,7 +335,7 @@ fn the_user_s_first_message_asks_an_unnamed_agent_to_name_itself() {
     assert_eq!(second.len(), 1, "{second:?}");
     assert!(
         !second[0].contains("You have no name yet"),
-        "asked once: {}",
+        "still queued: {}",
         second[0]
     );
 }
@@ -343,10 +375,10 @@ fn the_projects_agent_is_never_asked_to_name_itself() {
     }
 }
 
-/// A named agent is never asked. An unnamed user-created agent is asked even
-/// when another agent's message starts its first turn.
+/// A named agent never needs a request, and an agent-to-agent message leaves
+/// an unnamed agent's request for delivery.
 #[test]
-fn a_named_agent_is_not_asked_and_an_unnamed_agent_is_asked_on_a_hand_off() {
+fn an_agent_hand_off_leaves_the_name_request_for_delivery() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -374,7 +406,7 @@ fn a_named_agent_is_not_asked_and_an_unnamed_agent_is_asked_on_a_hand_off() {
     }
 
     // This agent was made by the user's agent.add flow, without a name. An
-    // agent message is still its first turn and must carry the ask.
+    // agent message will be its first turn, when the ask is attached.
     let (other_entity, unnamed) = agent_on(&mut state, &project_id, "unnamed");
     state
         .on_agent_mcp_action(
@@ -390,7 +422,7 @@ fn a_named_agent_is_not_asked_and_an_unnamed_agent_is_asked_on_a_hand_off() {
     assert_eq!(handed.len(), 1, "the hand-off starts one turn");
     for turn in &handed {
         let warm = turn.say.as_ref().map(|say| say.warm.as_str()).unwrap_or("");
-        assert!(warm.contains("You have no name yet"), "{warm}");
+        assert!(!warm.contains("You have no name yet"), "{warm}");
     }
     assert!(
         !other_entity.is_empty(),
@@ -398,10 +430,10 @@ fn a_named_agent_is_not_asked_and_an_unnamed_agent_is_asked_on_a_hand_off() {
     );
 }
 
-/// The SPA may dispatch an issue into an unnamed agent. Its first turn still
-/// asks it to choose a name even though the payload came from the issue.
+/// The SPA may dispatch an issue into an unnamed agent. The name request is
+/// attached when the issue turn is sent, not while it is queued.
 #[test]
-fn an_unnamed_agent_is_asked_on_its_first_issue_dispatch() {
+fn an_unnamed_issue_agent_waits_for_delivery_to_be_asked() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -423,7 +455,7 @@ fn an_unnamed_agent_is_asked_on_its_first_issue_dispatch() {
         .filter_map(|turn| turn.say.as_ref().map(|say| say.warm.as_str()))
         .find(|warm| warm.contains("Fix the rail"))
         .expect("the issue delivery starts a turn for its agent");
-    assert!(warm.contains("You have no name yet"), "{warm}");
+    assert!(!warm.contains("You have no name yet"), "{warm}");
     assert!(warm.contains("Fix the rail"), "{warm}");
 }
 

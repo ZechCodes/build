@@ -392,6 +392,130 @@ fn use_agent(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, wt: PathBuf, 
     );
 }
 
+fn capture_turns(
+    state: &Arc<Mutex<AppState>>,
+    repo: &std::path::Path,
+    dir: &std::path::Path,
+) -> PathBuf {
+    let capture = dir.join("named-agent-stdin.txt");
+    let path = capture.clone();
+    use_agent(
+        state,
+        repo,
+        dir.join("wt-capture"),
+        Agent::WarmBuilder(std::sync::Arc::new(move |_, _, _| {
+            Ok(HarnessSpec::new("sh")
+                .arg("-c")
+                .arg("cat > \"$1\"")
+                .arg("build-agent-capture")
+                .arg(path.to_string_lossy()))
+        })),
+    );
+    capture
+}
+
+async fn capture_containing(path: &std::path::Path, needle: &str) -> String {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(path) {
+                if contents.contains(needle) {
+                    return contents;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the agent receives the turn")
+}
+
+#[tokio::test]
+async fn legacy_post_asks_an_unnamed_agent_once_when_its_turn_is_sent() {
+    let (dir, repo) = init_repo();
+    let owner = "run-legacy-name";
+    let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), owner);
+    let capture = capture_turns(&state, &repo, dir.path());
+    let agent_id = crate::agent::derived_agent_id(owner);
+    let posted = state.lock().unwrap().handle(req(
+        "thread.post",
+        json!({ "entity_id": owner, "agent_id": agent_id, "body": "first legacy message" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    deliver_pending_agent_turns(&state);
+    let first = capture_containing(&capture, "first legacy message").await;
+    assert!(first.contains("call set_name"), "{first}");
+    assert!(
+        state
+            .lock()
+            .unwrap()
+            .entity_agents(owner)
+            .unwrap()
+            .by_id(&agent_id)
+            .unwrap()
+            .name_asked
+    );
+
+    deliver(
+        &state,
+        &root,
+        owner,
+        &agent_id,
+        &ModelChoice::default(),
+        "followup",
+        ["second turn", "second turn"],
+    )
+    .unwrap();
+    let second = capture_containing(&capture, "second turn").await;
+    assert_eq!(
+        second.matches("You have no name yet").count(),
+        1,
+        "{second}"
+    );
+}
+
+#[tokio::test]
+async fn direct_issue_notice_asks_an_unnamed_agent_on_its_first_turn() {
+    let (dir, repo) = init_repo();
+    let owner = "run-notice-name";
+    let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), owner);
+    let capture = capture_turns(&state, &repo, dir.path());
+    let agent_id = crate::agent::derived_agent_id(owner);
+    {
+        let mut app = state.lock().unwrap();
+        let agent = app
+            .runs
+            .get_mut(owner)
+            .unwrap()
+            .agents
+            .primary_mut()
+            .unwrap();
+        agent
+            .thread
+            .post_user_from_build("Issue moved", crate::store::now_rfc3339());
+        let conversation_id = agent.conversation_id().to_string();
+        app.delivery_queue.enqueue(PendingAgentTurn {
+            operation_id: None,
+            root: AppState::canonical_root(&root),
+            owner: owner.to_string(),
+            agent_id: agent_id.clone(),
+            conversation_id,
+            model_choice: ModelChoice::default(),
+            choice_revision: 0,
+            interrupt: false,
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
+            phase: "issue_notice",
+            wants_catch_up: true,
+            survives_refusal: false,
+        });
+    }
+    deliver_pending_agent_turns(&state);
+    let heard = capture_containing(&capture, "Issue moved").await;
+    assert!(heard.contains("call set_name"), "{heard}");
+}
+
 /// The rendered turn is always multi-line (the conversation protocol block
 /// is appended), so through a real TUI it must arrive as ONE bracketed
 /// paste. The capture harness never paints, so this also proves the

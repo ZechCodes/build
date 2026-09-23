@@ -609,36 +609,6 @@ impl AppState {
         Ok(Some(receipt))
     }
 
-    /// Whether this delivery should also ask the agent to name itself.
-    ///
-    /// Three things have to hold. The agent has no name and has not been asked
-    /// for one — asking twice is nagging, and asking a named agent is asking
-    /// for what it already gave. A user-created agent can first wake for a
-    /// user message, an issue dispatch, or another agent's message.
-    fn should_ask_for_a_name(&mut self, delivery: &DeliveryIntent) -> bool {
-        if delivery.payload.is_none() {
-            return false;
-        }
-        // The project's agent is named by its project (#51) and is offered no
-        // `set_name`, so the ask is an instruction it cannot follow — and one
-        // that would arrive on every message the user ever sent it, because
-        // nothing it can do would answer it.
-        if crate::agent::is_project_agent(&delivery.agent_id) {
-            return false;
-        }
-        self.entity_agents(&delivery.owner_id)
-            .ok()
-            .and_then(|agents| agents.by_id(&delivery.agent_id).cloned())
-            .is_some_and(|agent| agent.name.is_none() && !agent.name_asked)
-    }
-
-    /// Remember that the ask went out, so it goes out once.
-    fn mark_agent_name_asked(&mut self, owner: &str, agent_id: &str) {
-        self.edit_agent_record("ask_agent_to_name_itself", owner, agent_id, |agent| {
-            agent.name_asked = true;
-        });
-    }
-
     pub(in crate::app) fn queue_message_delivery(
         &mut self,
         delivery: &DeliveryIntent,
@@ -666,15 +636,9 @@ impl AppState {
                     .map(|address| address.conversation_id)
             })
             .unwrap_or_default();
-        // The first turn of an agent with no name carries the ask to pick one.
-        // Decided here because this is where the agent record
-        // is readable, and marked here for the same reason — an ask that was
-        // sent has been asked whatever the agent does with it.
-        let asks_a_name = self.should_ask_for_a_name(delivery);
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| {
                 let payload = OperationPayload {
-                    ask_to_name: asks_a_name || payload.ask_to_name,
                     tells_sender_context: crate::agent::is_project_agent(&delivery.agent_id),
                     ..payload.clone()
                 };
@@ -692,9 +656,6 @@ impl AppState {
                 }
             })
         });
-        if asks_a_name && operation_prompt.is_some() {
-            self.mark_agent_name_asked(&delivery.owner_id, &delivery.agent_id);
-        }
         self.delivery_queue.enqueue(PendingAgentTurn {
             operation_id,
             root,

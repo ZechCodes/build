@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 pub(in crate::app) struct DispatchInstruction {
     pub(in crate::app) words: String,
     pub(in crate::app) from_agent: Option<crate::thread::AgentIdentity>,
+    pub(in crate::app) agent_name: Option<String>,
 }
 
 impl DispatchInstruction {
@@ -28,6 +29,7 @@ impl DispatchInstruction {
         Self {
             words,
             from_agent: routed.and_then(|routed| routed.from_agent.clone()),
+            agent_name: routed.and_then(|routed| routed.agent_name.clone()),
         }
     }
 }
@@ -77,6 +79,15 @@ impl AppState {
         params: &Value,
         routed: Option<RoutedCapture>,
     ) -> Result<Value, String> {
+        let mut routed = routed;
+        if let Some(route) = routed.as_mut().filter(|route| route.from_agent.is_some()) {
+            let name = route
+                .agent_name
+                .as_deref()
+                .filter(|name| !name.trim().is_empty())
+                .ok_or("Build cannot start an agent without a name.")?;
+            route.agent_name = Some(crate::agent::agent_name_from(name)?);
+        }
         let project_id = require_str(params, "project_id")?;
         if !self.projects.iter().any(|project| project.id == project_id) {
             return Err(format!("branch.dispatch: unknown project_id: {project_id}"));
@@ -256,6 +267,10 @@ impl AppState {
             .agents
             .resolve_mut(Some(&agent_id))
             .expect("the agent was just put on this roster");
+        if let Some(name) = instruction.agent_name {
+            agent.name = Some(name);
+            agent.name_asked = true;
+        }
         let model_choice = agent.choice.clone();
         let choice_revision = agent.choice_revision;
         let conversation_id = agent.conversation_id().to_string();

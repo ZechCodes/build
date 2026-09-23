@@ -320,6 +320,7 @@ pub enum BridgeAction {
         refs: Vec<crate::thread::ThreadLink>,
         track: Option<bool>,
         notify_user: Option<bool>,
+        mention_user: Option<bool>,
     },
     /// Hand one over, which starts whoever gets it.
     ///
@@ -949,7 +950,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you.",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. Use mention_user when the comment needs the user to read or answer it; leave it off for bookkeeping.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -960,6 +961,10 @@ impl DoneServer {
                         "notify_user": {
                             "type": "boolean",
                             "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                        },
+                        "mention_user": {
+                            "type": "boolean",
+                            "description": "Highlight this comment for the user and put the issue in the user's inbox. Use when the comment needs the user to read or answer it; leave it off for bookkeeping."
                         },
                         "refs": {
                             "type": "array",
@@ -1119,6 +1124,7 @@ impl DoneServer {
                                 attachments: value_list_argument(params, "attachments"),
                                 track: optional_flag(params, "track"),
                                 notify_user: optional_flag(params, "notify_user"),
+                                mention_user: optional_flag(params, "mention_user"),
                             },
                         ),
                         Err(message) => refused(id.clone(), message),

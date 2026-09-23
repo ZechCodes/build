@@ -216,6 +216,7 @@ impl AppState {
             issue_id: issue.id.clone(),
             author: Actor::User,
             body,
+            mentions_user: false,
             refs,
             attachments,
             created_at: now.clone(),

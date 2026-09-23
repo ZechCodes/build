@@ -1111,6 +1111,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
             "commented_on",
         ),
@@ -1171,6 +1172,7 @@ fn a_comment_message_carries_its_comment_id() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent comments");
@@ -1358,6 +1360,7 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
                 track: Some(true),
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("a comment that follows");

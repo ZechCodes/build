@@ -423,6 +423,9 @@ pub struct IssueComment {
     pub issue_id: String,
     pub author: Actor,
     pub body: String,
+    /// A durable request for the user to read or answer this comment.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mentions_user: bool,
     /// Typed references, fenced twice: shape by `validate_thread_links`, then
     /// ownership by the issue. See the spec's "Typed references".
     #[serde(default)]
@@ -437,6 +440,10 @@ pub struct IssueComment {
     /// written before it had a reading, and on every comment before #68.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_context: Option<crate::thread::ContextReading>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// What happened to an issue. Comments and events interleave into the one

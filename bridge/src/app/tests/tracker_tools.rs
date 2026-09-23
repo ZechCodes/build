@@ -161,6 +161,7 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
             track: None,
             attachments: Vec::new(),
             notify_user: None,
+            mention_user: None,
         },
     )
     .expect("an agent comments");
@@ -196,6 +197,107 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
     assert_eq!(
         timeline["result"]["issue"]["status"], "in_review",
         "Complete means ready to be looked at"
+    );
+}
+
+/// A real MCP frame carries the mention through the action, durable record,
+/// issue timeline, and read_comment answer. Mentioning also watches the issue.
+#[test]
+fn mcp_comment_mention_round_trips_through_the_bridge() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    state.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_issues": false }),
+    ));
+    let created = call(
+        &mut state,
+        &who,
+        BridgeAction::TrackerCreateIssue {
+            title: "Needs a choice".into(),
+            body: None,
+            status: None,
+            labels: Vec::new(),
+            priority: None,
+            attachments: Vec::new(),
+            track: None,
+            notify_user: None,
+        },
+    )
+    .unwrap();
+    let issue_id = created["issue"]["id"].as_str().unwrap();
+    assert_ne!(created["issue"]["watched"], true);
+
+    let frame = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "comment_issue", "arguments": {
+            "issue_id": issue_id, "body": "Which option should I use?",
+            "mention_user": true
+        }}
+    });
+    let parsed = DoneServer::new(&who.1).handle_message(&frame.to_string());
+    let action = parsed.action.expect("MCP frame emits a comment action");
+    assert!(matches!(
+        &action,
+        BridgeAction::TrackerCommentIssue {
+            mention_user: Some(true),
+            ..
+        }
+    ));
+    let commented = call(&mut state, &who, action).unwrap();
+    assert_eq!(commented["comment"]["mentions_user"], true);
+    assert_eq!(commented["issue"]["watched"], true);
+    let comment_id = commented["comment"]["id"].as_str().unwrap();
+
+    let timeline = call(
+        &mut state,
+        &who,
+        BridgeAction::TrackerGetIssue {
+            issue_id: issue_id.into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        timeline["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == comment_id)
+            .unwrap()["mentions_user"],
+        true
+    );
+    let read = call(
+        &mut state,
+        &who,
+        BridgeAction::TrackerReadComment {
+            comment_id: comment_id.into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(read["mentions_user"], true);
+
+    let quiet_frame = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "comment_issue", "arguments": {
+            "issue_id": issue_id, "body": "Routine update."
+        }}
+    });
+    let quiet_action = DoneServer::new(&who.1)
+        .handle_message(&quiet_frame.to_string())
+        .action
+        .expect("MCP frame emits a quiet comment action");
+    let quiet = call(&mut state, &who, quiet_action).unwrap();
+    assert!(quiet["comment"].get("mentions_user").is_none());
+    let timeline = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    assert!(
+        timeline["result"]["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"] == quiet["comment"]["id"]
+                && entry.get("mentions_user").is_none())
     );
 }
 
@@ -239,6 +341,7 @@ fn an_issue_of_another_project_is_unknown_to_this_agents_tools() {
             track: None,
             attachments: Vec::new(),
             notify_user: None,
+            mention_user: None,
         },
     ] {
         let name = action.tool_name();

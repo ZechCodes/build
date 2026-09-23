@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, event, issue } from "./trackerWireFixture.js";
+import issuesGetFixture from "../../fixtures/api/v1/issues.get.json";
 
 let watchers = [];
 // The real module refuses a registration that names a cadence — nothing in
@@ -245,6 +246,49 @@ describe("the issue", () => {
 });
 
 describe("the timeline", () => {
+  it("renders a mentioned comment from the bridge's issues.get fixture", async () => {
+    call = vi.fn(async () => issuesGetFixture.result);
+    await mount({ issueId: issuesGetFixture.params.issue_id }, { waitForPaint: false });
+
+    const mentioned = issuesGetFixture.result.timeline.find((entry) => entry.type === "comment" && entry.mentions_user);
+    await vi.waitFor(() => expect(host.querySelector(`#comment-${mentioned.id}`)).not.toBeNull());
+    const row = host.querySelector(`#comment-${mentioned.id}`);
+    expect(row?.classList.contains("issue-comment-mentioned")).toBe(true);
+    expect(row.querySelector(".issue-comment-body").textContent).toBe(mentioned.body);
+  });
+
+  it("keeps a mentioned comment marked through cached, live, and read-state paints", async () => {
+    const mentioned = comment({ id: "ic-mention", author: { kind: "agent", agent_id: "agent-1" }, mentions_user: true });
+    const plain = comment({ id: "ic-plain", author: { kind: "agent", agent_id: "agent-1" } });
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor({}, [mentioned, plain]));
+    let settle;
+    call = vi.fn((method) => method === "issues.get"
+      ? new Promise((resolve) => { settle = resolve; })
+      : Promise.resolve({}));
+    await mount({}, { waitForPaint: false });
+
+    const marked = () => host.querySelector("#comment-ic-mention");
+    const unmarked = () => host.querySelector("#comment-ic-plain");
+    await vi.waitFor(() => {
+      expect(marked()).not.toBeNull();
+      expect(unmarked()).not.toBeNull();
+      expect(listed("issues.get")).toHaveLength(1);
+    });
+    expect(settle).toBeTypeOf("function");
+    expect(marked().classList.contains("issue-comment-mentioned")).toBe(true);
+    expect(unmarked().classList.contains("issue-comment-mentioned")).toBe(false);
+
+    settle(answerFor({ read_through: "ic-mention" }, [{ ...mentioned, body: "New live wording" }, plain]));
+    await vi.waitFor(() => expect(marked().querySelector(".issue-comment-body").textContent).toBe("New live wording"));
+    expect(marked().classList.contains("issue-comment-mentioned")).toBe(true);
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor({}, [
+      { ...mentioned, mentions_user: false }, { ...plain, mentions_user: true },
+    ]));
+    await vi.waitFor(() => expect(unmarked().classList.contains("issue-comment-mentioned")).toBe(true));
+    expect(marked().classList.contains("issue-comment-mentioned")).toBe(false);
+  });
+
   it("scrolls to and highlights a routed comment after the cache paints", async () => {
     const scrollIntoView = vi.fn();
     HTMLElement.prototype.scrollIntoView = scrollIntoView;

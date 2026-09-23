@@ -160,6 +160,7 @@ fn worker_comments(state: &mut AppState, handed: &HandedOver, issue_id: &str) ->
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent comments");

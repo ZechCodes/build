@@ -392,6 +392,8 @@ pub struct IssueCommentView {
     pub issue_id: String,
     pub author: Value,
     pub body: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mentions_user: bool,
     pub refs: Vec<crate::thread::ThreadLink>,
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,
@@ -400,6 +402,10 @@ pub struct IssueCommentView {
     /// on the user's comments and wherever the agent had no reading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author_context: Option<crate::thread::ContextReading>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Deserialize, Serialize)]

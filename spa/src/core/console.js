@@ -19,13 +19,10 @@ import {
   consoleKey,
   consoleScope,
   consoleTakesKey,
+  consoleSize,
   grownConsoleSize,
-  readConsoleReopenSize,
-  readConsoleSize,
   takeConsoleTerminal,
   toggledConsoleSize,
-  writeConsoleReopenSize,
-  writeConsoleSize,
 } from "./consoleModel.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
 import { el } from "../dom.js";
@@ -42,6 +39,7 @@ import { directoryCacheId } from "./directoryScope.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import "../styles/shell.css";
 
 const TAB_MOTION = motionHooks({ axis: "width" });
@@ -148,8 +146,11 @@ export function mountConsole(host, context) {
   // this is, so a stale mark cannot open some later console on a stranger.
   const wanted = takeConsoleTerminal();
   const wantedHere = context && context.kind === "branch" ? wanted : null;
-  let requestedSize = wantedHere ? DEFAULT_OPEN_SIZE : readConsoleSize(key);
-  let reopenSize = readConsoleReopenSize(key);
+  let requestedSize = "collapsed";
+  let reopenSize = DEFAULT_OPEN_SIZE;
+  let sizeKnown = false;
+  let wantedApplied = false;
+  let sizeRecord;
   let entityId = null; // which entity's records this console is standing in
   let scope = null; // the checkout's terminal scope, once the row names one
   let terms = null; // the controller, once there is a scope to stand it on
@@ -428,9 +429,7 @@ export function mountConsole(host, context) {
     selected = created.term_id;
     scrollToTerminal = created.term_id;
     if (requestedSize === "collapsed") {
-      requestedSize = reopenSize;
-      writeConsoleSize(key, requestedSize);
-      writeConsoleReopenSize(key, requestedSize);
+      await setSize(reopenSize);
     }
     await changeTabs((tabs) =>
       tabs.some((tab) => tab.term_id === created.term_id) ? [...tabs] : [...tabs, { term_id: created.term_id }],
@@ -457,7 +456,7 @@ export function mountConsole(host, context) {
   // ---- painting --------------------------------------------------------------
 
   const paint = () => {
-    if (disposed) return;
+    if (disposed || !sizeKnown) return;
     if (!host.querySelector(".console")) {
       host.innerHTML = `<div class="console"><div class="console-head"></div><div class="console-body" hidden></div></div>`;
     }
@@ -632,13 +631,7 @@ export function mountConsole(host, context) {
   // ---- size ------------------------------------------------------------------
 
   const setSize = (next) => {
-    requestedSize = next;
-    writeConsoleSize(key, next);
-    if (next !== "collapsed") {
-      reopenSize = next;
-      writeConsoleReopenSize(key, next);
-    }
-    paint();
+    return sizeRecord.write({ size: next, reopenSize: next === "collapsed" ? reopenSize : next });
   };
 
   const openPanel = () => {
@@ -665,7 +658,27 @@ export function mountConsole(host, context) {
   };
   document.addEventListener("keydown", onKeydown);
 
-  paint();
+  sizeRecord = watchUiState(uiAddress({
+    deviceId: context.deviceId || "",
+    entityId: key,
+    view: "console",
+    kind: "fold",
+  }), (saved) => {
+    requestedSize = consoleSize(saved?.size);
+    reopenSize = saved?.reopenSize === "full" ? "full" : DEFAULT_OPEN_SIZE;
+    sizeKnown = true;
+    if (!wantedHere || wantedApplied) paint();
+  });
+  void sizeRecord.ready.then(async () => {
+    if (disposed) return;
+    if (wantedHere) {
+      wantedApplied = true;
+      await sizeRecord.write({ size: DEFAULT_OPEN_SIZE, reopenSize: DEFAULT_OPEN_SIZE });
+    } else {
+      sizeKnown = true;
+      paint();
+    }
+  });
   void takeUpCache();
 
   return {
@@ -673,6 +686,7 @@ export function mountConsole(host, context) {
     toggle: () => toggleConsole(),
     dispose() {
       disposed = true;
+      sizeRecord.dispose();
       document.removeEventListener("keydown", onKeydown);
       unwatchCache?.();
       unwatchCache = null;

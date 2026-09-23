@@ -437,6 +437,17 @@ describe("the timeline", () => {
 });
 
 describe("the composer", () => {
+  const pressEnter = (field, modifiers = {}) => {
+    const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...modifiers });
+    field.dispatchEvent(event);
+    return event;
+  };
+
+  const typeComment = (field, body) => {
+    field.value = body;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
   it("sends a comment and re-reads the issue", async () => {
     await mount();
     const field = host.querySelector("#issue-comment");
@@ -447,6 +458,78 @@ describe("the composer", () => {
     await flush();
     expect(listed("issues.comment")[0][1]).toEqual({ issue_id: "issue-1", body: "Looking at the drag handler." });
     expect(listed("issues.get")).toHaveLength(1);
+  });
+
+  it("sends Ctrl+Enter from the mounted comment box through issues.comment", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    typeComment(field, "From the keyboard");
+    call.mockClear();
+
+    expect(pressEnter(field, { ctrlKey: true }).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1]).toEqual({ issue_id: "issue-1", body: "From the keyboard" });
+  });
+
+  it("sends Cmd+Enter while leaving plain Enter available for a newline", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    typeComment(field, "Mac comment");
+    call.mockClear();
+
+    expect(pressEnter(field).defaultPrevented).toBe(false);
+    expect(field.value).toBe("Mac comment");
+    expect(listed("issues.comment")).toHaveLength(0);
+    expect(pressEnter(field, { metaKey: true }).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1].body).toBe("Mac comment");
+  });
+
+  it("does not send an empty comment on Ctrl+Enter", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    typeComment(field, "   ");
+    call.mockClear();
+
+    expect(pressEnter(field, { ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(listed("issues.comment")).toHaveLength(0);
+  });
+
+  it("ignores Ctrl+Enter during IME composition", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    typeComment(field, "Still composing");
+    call.mockClear();
+
+    expect(pressEnter(field, { ctrlKey: true, isComposing: true }).defaultPrevented).toBe(false);
+    expect(listed("issues.comment")).toHaveLength(0);
+  });
+
+  it("does not post twice when Ctrl+Enter is pressed again while sending", async () => {
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    typeComment(field, "Only once");
+    let finishSend;
+    call.mockImplementation((method) => method === "issues.comment"
+      ? new Promise((resolve) => { finishSend = resolve; })
+      : Promise.resolve(method === "issues.get" ? answerFor() : {}));
+    call.mockClear();
+
+    pressEnter(field, { ctrlKey: true });
+    pressEnter(field, { ctrlKey: true });
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    const sendingField = host.querySelector("#issue-comment");
+    expect(sendingField.disabled).toBe(true);
+    pressEnter(sendingField, { ctrlKey: true });
+    expect(listed("issues.comment")).toHaveLength(1);
+    finishSend({});
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment").disabled).toBe(false));
+    expect(listed("issues.comment")).toHaveLength(1);
   });
 
   it("will not send an empty one", async () => {
@@ -474,7 +557,12 @@ describe("the composer", () => {
   });
 
   it("sends a dropped file with the comment, through issues.attach", async () => {
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-issue-composer]")).not.toBeNull();
+      expect(host.querySelector("#issue-comment")?.disabled).toBe(false);
+      expect(host.querySelector(".issue-composer .composer.attachable")).not.toBeNull();
+    });
     call.mockImplementation(async (method) => {
       if (method === "issues.attach") {
         return { name: "shot.png", path: "/store/abc-shot.png", mime: "image/png", size: 3 };
@@ -486,15 +574,17 @@ describe("the composer", () => {
       value: { files: [new File(["png"], "shot.png", { type: "image/png" })] },
     });
     host.querySelector("[data-issue-composer]").dispatchEvent(event);
-    await flush();
+    await vi.waitFor(() => {
+      expect(host.querySelector(".issue-composer .composer-chip.ready .composer-chip-name")?.textContent).toBe("shot.png");
+      expect(host.querySelector('.issue-composer button[type="submit"]')?.disabled).toBe(false);
+    });
     expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
 
     // A comment that is only a screenshot is a comment: the press turns on
     // with an empty box.
-    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(false);
     call.mockClear();
-    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
-    await flush();
+    pressEnter(host.querySelector("#issue-comment"), { ctrlKey: true });
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
     expect(listed("issues.comment")[0][1]).toEqual({
       issue_id: "issue-1",
       body: "",

@@ -98,11 +98,14 @@ async function inspectDocument(width, height, options, label) {
 
 async function seek(page, act, local) {
   await page.evaluate(({ act, local }) => window.BuildFilm.seek(act, local), { act, local });
-  // The scrub eases the playhead toward the scroll position.
+  // The scrub eases the playhead toward the scroll position. On SwiftShader
+  // GSAP's lag smoothing slows that clock with the renderer: a 1920x1080 jump
+  // from act 1 to act 7 measured 14-21 s on a quiet machine (round 2's film
+  // included), so its budget is a minute.
   await page.waitForFunction(({ act, local }) => {
     const film = window.BuildFilm;
     return Math.abs(film.timeline.time() - film.time()) < 0.5 && document.querySelector("[data-film]").dataset.act === String(act);
-  }, { act, local }, { timeout: gpu ? 5000 : 30_000 });
+  }, { act, local }, { timeout: gpu ? 5000 : 60_000 });
   await page.waitForTimeout(150);
 }
 

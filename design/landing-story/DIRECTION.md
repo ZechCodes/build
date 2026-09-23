@@ -107,8 +107,8 @@ head script picks film or document before paint, the hero copy and call to actio
 there at once, and a capture of the live stage at the hero pose (lid where the welcome
 starts) holds the laptop's place until the first WebGL frame, then crossfades. The
 hardware is classic silver aluminium, not space black. A slim bar (Build, Docs, GitHub,
-Join the waitlist) reserves its height; whether it stays or leaves after the hero is
-Zech's call. A lifted close-up stays readable while the visitor stays in its act and
+Join the waitlist) stays on screen and reserves its height (Zech, 2026-09-23: "The slim
+is good"). A lifted close-up stays readable while the visitor stays in its act and
 goes back as the act's copy leaves; act 7 holds the open finding at least four seconds
 before approval, and its panel gives way to the merge on the clock. Act 4 is a close
 pair, the phone toward the middle, in place before its question.

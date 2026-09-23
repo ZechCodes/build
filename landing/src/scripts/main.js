@@ -16,10 +16,6 @@ const root = document.documentElement;
 const params = new URLSearchParams(location.search);
 const requested = params.get("film");
 
-// The bar's two variants, for comparing: ?nav=hero, or the persistent default.
-const nav = document.querySelector(".site-nav");
-if (nav && params.get("nav") === "hero") nav.dataset.nav = "hero";
-
 function backToDocument(error) {
   console.warn("The film could not start; the document stands.", error);
   delete root.dataset.mode;

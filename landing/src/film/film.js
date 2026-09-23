@@ -247,12 +247,6 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   const departures = overlays.departures();
   copyGates(gates, acts);
   sceneGates(gates, scenes, departures);
-  // The bar's hero-only variant leaves with the hero's copy. The persistent
-  // one ignores the mark.
-  const nav = document.querySelector(".site-nav");
-  if (nav) {
-    gates.add(at(1, COPY_OUT), () => { nav.dataset.pastHero = ""; }, () => { delete nav.dataset.pastHero; });
-  }
   // The scrub maps scroll onto the timeline's whole duration; the last beat
   // does not run to the end of act 8, so hold the clock open to it.
   tl.set({}, {}, TOTAL_TRAVEL);
@@ -307,7 +301,6 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     delete root.dataset.mode;
     delete root.dataset.stage;
     delete film.dataset.act;
-    if (nav) delete nav.dataset.pastHero;
     acts[act - 1].scrollIntoView({ block: "start", behavior: "instant" });
   }
 
@@ -354,6 +347,10 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     const actId = Number(anchor.getAttribute("href").slice(5));
     if (!Number.isInteger(actId) || !ACTS.some((act) => act.id === actId)) return;
     event.preventDefault();
+    // Before the first frame the scroll may not be the film's yet; the hash
+    // keeps the destination for the first frame, or for the document if the
+    // film gives up first.
+    if (!firstFrameShown) history.replaceState(null, "", `#act-${actId}`);
     goToAct(actId, "smooth");
   });
   // A click that came before this module did (the hero's call to action on

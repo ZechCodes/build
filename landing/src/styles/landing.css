@@ -68,8 +68,7 @@ a {
   outline-offset: 3px;
 }
 
-/* The bar. Its height is reserved in both variants, so the story sits in the
-   same place whether it stays or goes. */
+/* The bar. It stays, and its height is reserved: the story sits below it. */
 html:not([data-mode="film"]) body {
   padding-top: var(--nav-height);
 }
@@ -87,12 +86,6 @@ html:not([data-mode="film"]) body {
   height: var(--nav-height);
   background: var(--page);
   border-bottom: 1px solid var(--line);
-  transition: transform 0.35s ease, visibility 0.35s;
-}
-
-.site-nav[data-nav="hero"][data-past-hero] {
-  transform: translateY(-100%);
-  visibility: hidden;
 }
 
 .site-nav__inner {

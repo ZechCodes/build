@@ -443,15 +443,38 @@ async function inspectStartup(width, height) {
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
   assert.ok(await blockedPage.locator("#act-4-title").isVisible(), `${label}: a later act is readable after a blocked film`);
   await blocked.close();
+
+  // The module in and starting, the hardware still loading: a call to action
+  // pressed now, then a failed load, still lands on the form in the document.
+  const held = await browser.newContext({ viewport: { width, height } });
+  const heldPage = await held.newPage();
+  let release;
+  const clicked = new Promise((resolve) => { release = resolve; });
+  await heldPage.route(/\/assets\/devices\/.*\.glb$/, async (route) => {
+    await clicked;
+    await route.abort();
+  });
+  await heldPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await heldPage.waitForFunction(() => document.documentElement.dataset.stage === "starting" && window.BuildFilm, null, { timeout: 15_000 });
+  await heldPage.locator("#act-1 .actions .cta").click();
+  release();
+  await heldPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
+  await heldPage.waitForTimeout(300);
+  const formInView = await heldPage.evaluate(() => {
+    const rect = document.querySelector("#act-8 form").getBoundingClientRect();
+    return rect.top < innerHeight && rect.bottom > 0;
+  });
+  assert.ok(formInView, `${label}: a call to action pressed while the hardware loads lands on the form after a failed load`);
+  await held.close();
   findings.push({ label, viewport: [width, height], mode: "film" });
 }
 
-// The bar: on screen with its call to action in both variants; the hero-only
-// variant leaves after the hero without moving the story.
+// The bar: on screen through the film, the story laid out below it, and its
+// call to action takes the film to the form.
 async function inspectNav(width, height) {
-  for (const variant of ["persistent", "hero"]) {
-    const label = `${width}x${height}-nav-${variant}`;
-    const { context, page, errors, state } = await openFilm(width, height, label, variant === "hero" ? "&nav=hero" : "");
+  {
+    const label = `${width}x${height}-nav`;
+    const { context, page, errors, state } = await openFilm(width, height, label);
     const nav = page.locator(".site-nav");
     assert.ok(await nav.isVisible(), `${label}: the bar is there on the hero`);
     const before = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
@@ -459,12 +482,10 @@ async function inspectNav(width, height) {
     await page.waitForTimeout(500);
     const after = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
     assert.equal(before, after, `${label}: the story sits in the same place`);
-    assert.equal(await nav.isVisible(), variant === "persistent", `${label}: the bar in act 4`);
+    assert.ok(await nav.isVisible(), `${label}: the bar stays in act 4`);
     await page.screenshot({ path: path.join(output, `${label}-act-4.png`) });
-    if (variant === "persistent") {
-      await page.locator(".site-nav .cta").click();
-      await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
-    }
+    await page.locator(".site-nav .cta").click();
+    await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
     assert.deepEqual(errors, [], `${label}: browser errors`);
     findings.push({ label, viewport: [width, height], mode: state.mode });
     await context.close();

@@ -96,10 +96,9 @@ const testStepLabel = "Test · runs archive.test.ts";
   <body>
     <a class="skip-link" href="#act-1">Skip to the story</a>
 
-    <!-- The bar reserves its height in both variants: "persistent" stays,
-         "hero" leaves once the hero's copy does (?nav=hero to compare), and
-         the story is laid out the same either way. -->
-    <header class="site-nav" data-nav="persistent">
+    <!-- The bar stays on screen through the film and reserves its height,
+         so the story is laid out below it. -->
+    <header class="site-nav">
       <div class="site-nav__inner">
         <a class="site-nav__brand" href="/"><img src="/landing/brand-mark.svg" alt="" width="20" height="20" />Build</a>
         <nav aria-label="Primary">

@@ -245,8 +245,13 @@ describe("painting before the bridge is asked", () => {
 describe("the Dashboard", () => {
   const dashboardRows = (section) => [...host.querySelectorAll(`[data-dashboard-section="${section}"] .issue-dashboard-row`)]
     .map((row) => row.dataset.issue);
+  const tabs = () => [...host.querySelectorAll('[role="tablist"] [role="tab"]')];
+  const chooseTab = async (id) => {
+    host.querySelector(`[data-dashboard-tab="${id}"]`).click();
+    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe(id));
+  };
 
-  it("defaults the project to Dashboard and paints all sections from cached records while the payload is absent", async () => {
+  it("defaults to Needs you with three counted tabs and switches the sole list from cached records", async () => {
     const working = issue({ id: "working", number: 4, title: "Write release notes", assignee: { kind: "agent", agent_id: "agent-1" } });
     const review = issue({ id: "review", number: 3, title: "Review patch", status: "in_review" });
     const done = issue({ id: "done", number: 2, title: "Shipped fix", status: "done", state: "closed", links: { commits: ["abc123def456"] } });
@@ -264,11 +269,18 @@ describe("the Dashboard", () => {
 
     expect(host.querySelector('[data-issue-view="dashboard"]').getAttribute("aria-pressed")).toBe("true");
     expect(clearPress()).toBeNull();
-    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    expect(tabs().map((tab) => [tab.dataset.dashboardTab, tab.textContent.trim(), tab.getAttribute("aria-selected")]))
+      .toEqual([["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"], ["doneToday", "Done1", "false"]]);
     expect(dashboardRows("needsYou")).toEqual(["review"]);
-    expect(dashboardRows("doneToday")).toEqual(["done"]);
+    expect(host.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
+    await chooseTab("inProgress");
+    expect(dashboardRows("inProgress")).toEqual(["working"]);
+    expect(dashboardRows("needsYou")).toEqual([]);
+    expect(host.querySelector('[role="tab"][aria-selected="true"]').dataset.dashboardTab).toBe("inProgress");
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
       .toContain("Writing summary");
+    await chooseTab("doneToday");
+    expect(dashboardRows("doneToday")).toEqual(["done"]);
     expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-detail').textContent)
       .toContain("abc123def456");
   });
@@ -280,8 +292,8 @@ describe("the Dashboard", () => {
     const activeFeed = { ...feed, items: [{ ...feed.items[0], agents: [{ id: "agent-1", working: true, conversation_id: "conv-1" }] }] };
     call = vi.fn(() => new Promise(() => {}));
     await mount({ feed: () => activeFeed, defaultView: undefined });
+    await chooseTab("inProgress");
     expect(dashboardRows("inProgress")).toEqual(["working"]);
-    expect(dashboardRows("doneToday")).toEqual([]);
 
     const { threadCacheAddress } = await import("../src/core/conversationCache.js");
     await cache.writeCached(threadCacheAddress({ deviceId: "dev-1", entityId: "run-1", agentId: "agent-1", conversationId: "conv-1" }), {
@@ -294,6 +306,7 @@ describe("the Dashboard", () => {
 
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
       .toContain("Cached new activity");
+    await chooseTab("doneToday");
     expect(dashboardRows("doneToday")).toEqual(["done"]);
     expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-link').getAttribute("href"))
       .toContain("done");
@@ -335,6 +348,43 @@ describe("the Dashboard", () => {
       type: "comment", id: "ic-02", author: { kind: "agent", agent_id: "agent-1" }, body: "Could you review this?",
     }]));
     await vi.waitFor(() => expect(dashboardRows("needsYou")).toEqual([]));
+  });
+
+  it("keeps the chosen tab across a remount and moves it with arrow keys", async () => {
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ defaultView: undefined });
+    const first = host.querySelector('[data-dashboard-tab="needsYou"]');
+    first.focus();
+    first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe("inProgress"));
+    expect(document.activeElement.dataset.dashboardTab).toBe("inProgress");
+    pane.dispose();
+    host.innerHTML = "";
+    await mount({ defaultView: undefined });
+    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe("inProgress"));
+    expect(host.querySelector('[data-dashboard-tab="inProgress"]').getAttribute("tabindex")).toBe("0");
+  });
+
+  it("shows each section's existing empty text under its tab", async () => {
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ defaultView: undefined });
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
+    await chooseTab("inProgress");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent is working on an issue.");
+    await chooseTab("doneToday");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing moved to Done in the last 24 hours.");
+  });
+
+  it("updates tab counts and the selected list after a whole-list cache write", async () => {
+    const first = issue({ id: "first", number: 5, status: "in_review" });
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [first], columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ defaultView: undefined });
+    expect(tabs()[0].textContent.trim()).toBe("Needs you1");
+    const second = issue({ id: "second", number: 6, status: "in_review" });
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [second, first], columns: columns() });
+    await vi.waitFor(() => expect(tabs()[0].textContent.trim()).toBe("Needs you2"));
+    expect(dashboardRows("needsYou")).toEqual(["second", "first"]);
   });
 });
 

@@ -250,6 +250,20 @@ describe("the Dashboard", () => {
     host.querySelector(`[data-dashboard-tab="${id}"]`).click();
     await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe(id));
   };
+  const mountDashboard = () => {
+    pane = mountIssuesPane(host, {
+      projectId: "proj-1",
+      projectName: "Build",
+      deviceId: "dev-1",
+      projectKey: PROJECT_KEY,
+      callRpc: call,
+      catalog: () => ({ providers: [] }),
+      refreshCatalog: async () => ({ providers: [] }),
+      feed: () => feed,
+      defaultView: "dashboard",
+      navigate: vi.fn(),
+    });
+  };
 
   it("defaults to Needs you with three counted tabs and switches the sole list from cached records", async () => {
     const working = issue({ id: "working", number: 4, title: "Write release notes", assignee: { kind: "agent", agent_id: "agent-1" } });
@@ -352,7 +366,12 @@ describe("the Dashboard", () => {
 
   it("keeps the chosen tab across a remount and moves it with arrow keys", async () => {
     call = vi.fn(() => new Promise(() => {}));
-    await mount({ defaultView: undefined });
+    mountDashboard();
+    await vi.waitFor(() => {
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("needsYou");
+      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("Nothing needs your look right now.");
+    });
     const first = host.querySelector('[data-dashboard-tab="needsYou"]');
     first.focus();
     first.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
@@ -360,14 +379,23 @@ describe("the Dashboard", () => {
     expect(document.activeElement.dataset.dashboardTab).toBe("inProgress");
     pane.dispose();
     host.innerHTML = "";
-    await mount({ defaultView: undefined });
-    await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]').dataset.dashboardSection).toBe("inProgress"));
+    mountDashboard();
+    await vi.waitFor(() => {
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress");
+      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent is working on an issue.");
+    });
     expect(host.querySelector('[data-dashboard-tab="inProgress"]').getAttribute("tabindex")).toBe("0");
   });
 
   it("shows each section's existing empty text under its tab", async () => {
     call = vi.fn(() => new Promise(() => {}));
-    await mount({ defaultView: undefined });
+    mountDashboard();
+    await vi.waitFor(() => {
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("needsYou");
+      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("Nothing needs your look right now.");
+    });
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
     await chooseTab("inProgress");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent is working on an issue.");
@@ -379,8 +407,11 @@ describe("the Dashboard", () => {
     const first = issue({ id: "first", number: 5, status: "in_review" });
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [first], columns: columns() });
     call = vi.fn(() => new Promise(() => {}));
-    await mount({ defaultView: undefined });
-    expect(tabs()[0].textContent.trim()).toBe("Needs you1");
+    mountDashboard();
+    await vi.waitFor(() => {
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["1", "0", "0"]);
+      expect(dashboardRows("needsYou")).toEqual(["first"]);
+    });
     const second = issue({ id: "second", number: 6, status: "in_review" });
     await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: [second, first], columns: columns() });
     await vi.waitFor(() => expect(tabs()[0].textContent.trim()).toBe("Needs you2"));

@@ -183,3 +183,53 @@ it("rejects an old reply after an absent record is written and deleted", async (
     expect(current).toEqual({ cached: undefined, staleAvailable: false });
   });
 }, 30_000);
+
+it("keeps a second RPC valid when an older reply loses to a peer write", async () => {
+  await withTwoTabs(async ({ page, writer }) => {
+    await page.evaluate(async (status) => {
+      const { cache, updates } = window.__layoutModules;
+      await cache.writeCached(updates.bridgeUpdateAddress("laptop"), status);
+    }, AVAILABLE);
+    await page.waitForFunction(() => document.querySelector(".bridge-update-state")?.textContent === "Version 0.3.0 is available.");
+    await page.evaluate(() => {
+      window.__old = window.__layoutModules.updates.refreshBridgeUpdateStatus("laptop",
+        () => new Promise((resolve) => { window.__releaseOld = resolve; }));
+    });
+    await page.waitForFunction(() => Boolean(window.__releaseOld));
+    const oldRevision = await page.evaluate(() => window.__layoutModules.updates.bridgeUpdateRevision("laptop"));
+    await writer.evaluate(async (status) => {
+      await window.__layoutModules.cache.writeCached(
+        { deviceId: "laptop", entityId: "", kind: "bridge-update" }, status,
+      );
+    }, QUEUED);
+    await page.waitForFunction(() => window.__heldCacheAnnouncements.length > 0);
+    await page.evaluate(() => {
+      window.__new = window.__layoutModules.updates.refreshBridgeUpdateStatus("laptop",
+        () => new Promise((resolve) => { window.__releaseNew = resolve; }));
+    });
+    await page.waitForFunction(() => Boolean(window.__releaseNew));
+    expect(await page.evaluate(() => window.__layoutModules.updates.bridgeUpdateRevision("laptop"))).toBe(oldRevision);
+    await page.evaluate(async (status) => {
+      window.__releaseOld(status);
+      await window.__old;
+    }, AVAILABLE);
+    expect(await page.evaluate(async () => {
+      const { cache, updates } = window.__layoutModules;
+      return (await cache.readCached(updates.bridgeUpdateAddress("laptop")))?.value;
+    })).toEqual(QUEUED);
+    expect(await page.evaluate(() => window.__layoutModules.updates.bridgeUpdateRevision("laptop"))).toBe(oldRevision);
+    await page.evaluate(async (status) => {
+      window.__releaseNew(status);
+      await window.__new;
+    }, FAILED);
+    const current = await page.evaluate(async () => {
+      const { cache, updates } = window.__layoutModules;
+      return {
+        cached: (await cache.readCached(updates.bridgeUpdateAddress("laptop")))?.value,
+        state: document.querySelector(".bridge-update-state")?.textContent,
+        error: document.querySelector(".bridge-update-error")?.textContent,
+      };
+    });
+    expect(current).toEqual({ cached: FAILED, state: "The update failed.", error: FAILED.last_error });
+  });
+}, 30_000);

@@ -77,13 +77,16 @@ export function trackBridgeUpdateDevices(devices) {
 
 async function showStoredStatus(deviceId, fallback) {
   const record = await readCached(bridgeUpdateAddress(deviceId));
-  const status = record?.value ?? (await cacheAvailable() ? null : fallback);
+  const available = await cacheAvailable();
+  // Without a cache there is no commit announcement; the visible fallback
+  // still fences older local RPCs. A rejected persisted CAS fences nothing.
+  if (!available) advanceRevision(deviceId);
+  const status = record?.value ?? (available ? null : fallback);
   if (watched.has(deviceId)) announce(deviceId, status);
 }
 
 export async function rememberBridgeUpdateStatus(deviceId, status, generation) {
   if (!status || typeof status.running_version !== "string") return false;
-  advanceRevision(deviceId);
   watchDevice(deviceId);
   if (generation === undefined) {
     if (!await writeCached(bridgeUpdateAddress(deviceId), status)) await showStoredStatus(deviceId, status);

@@ -9,7 +9,7 @@
 use super::project_agent::{project_agent, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
-use crate::mcp::BridgeAction;
+use crate::mcp::{BridgeAction, DoneServer};
 
 fn issue_id(issue: &Value) -> String {
     issue["id"].as_str().unwrap().to_string()
@@ -184,6 +184,79 @@ fn an_agent_can_be_made_with_a_name() {
     );
 }
 
+/// A real MCP tools/call frame is refused without a name; the named call goes
+/// through the application and the new agent record keeps that name.
+#[test]
+fn mcp_agent_creation_wires_a_name_into_the_record() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let workspace_id = workspace(&mut state, &project_id, "test work");
+    let (owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let server = DoneServer::for_owner(&project_agent_id);
+    let call = |arguments: Value| {
+        server.handle_message(
+            &json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "add_workspace_agent", "arguments": arguments }
+            })
+            .to_string(),
+        )
+    };
+
+    let missing = call(json!({ "workspace_id": workspace_id }));
+    assert!(missing.action.is_none());
+    let refused: Value = serde_json::from_str(&missing.reply.unwrap()).unwrap();
+    assert_eq!(refused["result"]["isError"], true);
+    assert_eq!(
+        refused["result"]["content"][0]["text"],
+        "Build cannot start an agent without a name."
+    );
+
+    let named = call(json!({ "workspace_id": workspace_id, "name": "Flaky test fixer" }));
+    let action = named.action.expect("the MCP call produces an action");
+    let added = state
+        .on_agent_mcp_action(&owner, &project_agent_id, action)
+        .unwrap();
+    let entity_id = added["entity_id"].as_str().unwrap();
+    let agent_id = added["agent"]["id"].as_str().unwrap();
+    assert_eq!(
+        listed(&mut state, entity_id, agent_id)["name"],
+        "Flaky test fixer"
+    );
+}
+
+#[test]
+fn mcp_issue_dispatch_names_the_agent_it_creates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let workspace_id = workspace(&mut state, &project_id, "issue work");
+    let issue = filed(&mut state, &project_id, "Fix flaky tests");
+    let (owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let frame = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "assign_issue", "arguments": {
+            "issue_id": issue_id(&issue),
+            "assignee": { "kind": "new_agent", "workspace_id": workspace_id,
+                "agent_name": "Flaky test fixer" }
+        }}
+    });
+    let parsed = DoneServer::for_owner(&project_agent_id).handle_message(&frame.to_string());
+    let action = parsed
+        .action
+        .expect("named issue dispatch is accepted by MCP");
+    let assigned = state
+        .on_agent_mcp_action(&owner, &project_agent_id, action)
+        .unwrap();
+    let entity_id = assigned["dispatch"]["entity_id"].as_str().unwrap();
+    let agent_id = assigned["dispatch"]["agent_id"].as_str().unwrap();
+    assert_eq!(
+        listed(&mut state, entity_id, agent_id)["name"],
+        "Flaky test fixer"
+    );
+}
+
 /// The first thing the user says to an unnamed agent carries the ask, and
 /// nothing after it does.
 #[test]
@@ -270,10 +343,10 @@ fn the_projects_agent_is_never_asked_to_name_itself() {
     }
 }
 
-/// An agent that HAS a name is never asked, and neither is one woken by
-/// another agent rather than by the user.
+/// A named agent is never asked. An unnamed user-created agent is asked even
+/// when another agent's message starts its first turn.
 #[test]
-fn a_named_agent_and_an_agent_to_agent_hand_off_are_not_asked() {
+fn a_named_agent_is_not_asked_and_an_unnamed_agent_is_asked_on_a_hand_off() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -300,8 +373,8 @@ fn a_named_agent_and_an_agent_to_agent_hand_off_are_not_asked() {
         assert!(!warm.contains("You have no name yet"), "{warm}");
     }
 
-    // An unnamed agent written to by ANOTHER agent is being given work, not
-    // greeted. The ask waits for the user.
+    // This agent was made by the user's agent.add flow, without a name. An
+    // agent message is still its first turn and must carry the ask.
     let (other_entity, unnamed) = agent_on(&mut state, &project_id, "unnamed");
     state
         .on_agent_mcp_action(
@@ -314,14 +387,44 @@ fn a_named_agent_and_an_agent_to_agent_hand_off_are_not_asked() {
         )
         .expect("an agent may write to a colleague");
     let handed = state.delivery_queue.take_ready(|_| false);
+    assert_eq!(handed.len(), 1, "the hand-off starts one turn");
     for turn in &handed {
         let warm = turn.say.as_ref().map(|say| say.warm.as_str()).unwrap_or("");
-        assert!(!warm.contains("You have no name yet"), "{warm}");
+        assert!(warm.contains("You have no name yet"), "{warm}");
     }
     assert!(
         !other_entity.is_empty(),
         "the second conversation was made for this"
     );
+}
+
+/// The SPA may dispatch an issue into an unnamed agent. Its first turn still
+/// asks it to choose a name even though the payload came from the issue.
+#[test]
+fn an_unnamed_agent_is_asked_on_its_first_issue_dispatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let workspace_id = workspace(&mut state, &project_id, "issue work");
+    let issue = filed(&mut state, &project_id, "Fix the rail");
+    state.delivery_queue.take_ready(|_| false);
+    let assigned = state.handle(req(
+        "issues.assign",
+        json!({ "issue_id": issue_id(&issue), "assignee": {
+            "kind": "new_agent", "workspace_id": workspace_id
+        }}),
+    ));
+    assert_eq!(assigned["ok"], true, "{assigned:?}");
+    let turns = state.delivery_queue.take_ready(|_| false);
+    let agent_id = assigned["result"]["dispatch"]["agent_id"].as_str().unwrap();
+    let warm = turns
+        .iter()
+        .filter(|turn| turn.agent_id == agent_id)
+        .filter_map(|turn| turn.say.as_ref().map(|say| say.warm.as_str()))
+        .find(|warm| warm.contains("Fix the rail"))
+        .expect("the issue delivery starts a turn for its agent");
+    assert!(warm.contains("You have no name yet"), "{warm}");
+    assert!(warm.contains("Fix the rail"), "{warm}");
 }
 
 /// A name rides every place an agent is named: the message it sent, and the

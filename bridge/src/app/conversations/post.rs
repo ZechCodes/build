@@ -613,20 +613,10 @@ impl AppState {
     ///
     /// Three things have to hold. The agent has no name and has not been asked
     /// for one — asking twice is nagging, and asking a named agent is asking
-    /// for what it already gave. And the turn carries something the USER said:
-    /// an agent woken by another agent's hand-off is being given work, not
-    /// greeted, and the ask exists because a name the user will read should be
-    /// chosen the first time the user is in the room.
+    /// for what it already gave. A user-created agent can first wake for a
+    /// user message, an issue dispatch, or another agent's message.
     fn should_ask_for_a_name(&mut self, delivery: &DeliveryIntent) -> bool {
-        let Some(payload) = delivery.payload.as_ref() else {
-            return false;
-        };
-        let from_the_user = payload.messages.iter().any(|message| {
-            message.role == crate::thread::MessageRole::User
-                && message.from_agent.is_none()
-                && !message.from_build
-        });
-        if !from_the_user {
+        if delivery.payload.is_none() {
             return false;
         }
         // The project's agent is named by its project (#51) and is offered no
@@ -676,8 +666,8 @@ impl AppState {
                     .map(|address| address.conversation_id)
             })
             .unwrap_or_default();
-        // The first thing the user says to an agent with no name carries the
-        // ask to pick one. Decided here because this is where the agent record
+        // The first turn of an agent with no name carries the ask to pick one.
+        // Decided here because this is where the agent record
         // is readable, and marked here for the same reason — an ask that was
         // sent has been asked whatever the agent does with it.
         let asks_a_name = self.should_ask_for_a_name(delivery);

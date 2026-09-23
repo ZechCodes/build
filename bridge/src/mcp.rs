@@ -987,7 +987,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "assign_issue",
-                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the issue is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself.",
+                "description": "Hand an issue to somebody. Assigning IS dispatching: it delivers the issue into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the issue is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself. For a new_workspace or new_agent assignee, give the agent a short job name in agent_name.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -999,14 +999,19 @@ impl DoneServer {
                                 "kind": { "type": "string", "enum": ["user", "project_agent", "agent", "new_workspace", "new_agent"] },
                                 "agent_id": { "type": "string", "description": "With kind=agent. An agent of your project; one outside it is refused." },
                                 "workspace_id": { "type": "string", "description": "With kind=new_agent: the workspace the new agent works in." },
-                                "name": { "type": "string", "description": "With kind=new_workspace. The issue's title when omitted." },
+                                "name": { "type": "string", "description": "With kind=new_workspace, the WORKSPACE name. The issue's title when omitted." },
+                                "agent_name": { "type": "string", "minLength": 1, "description": "Required with kind=new_workspace or new_agent. A short name describing the agent's job, like \"Flaky test fixer\"." },
                                 "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "With kind=new_workspace. Omit for the project's own setting." },
                                 "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
                                 "model": { "type": "string" },
                                 "effort": { "type": "string" },
                                 "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow that agent's work. Otherwise the new agent is unwatched. This is separate from the top-level notify_user, which watches the issue." }
                             },
-                            "required": ["kind"]
+                            "required": ["kind"],
+                            "allOf": [
+                                { "if": { "properties": { "kind": { "const": "new_workspace" } } }, "then": { "required": ["agent_name"] } },
+                                { "if": { "properties": { "kind": { "const": "new_agent" } } }, "then": { "required": ["agent_name"] } }
+                            ]
                         },
                         "note": { "type": "string", "description": "Extra instruction delivered under the issue. The issue's body is the issue; this is what you would have said in a message." },
                         "track": track,
@@ -1135,14 +1140,18 @@ impl DoneServer {
                     Err(message) => refused(id.clone(), message),
                 }
             }
-            "assign_issue" => match issue() {
-                Ok(issue_id) => acted(
+            "assign_issue" => match issue().and_then(|issue_id| {
+                let assignee = argument(params, "assignee").unwrap_or(Value::Null);
+                require_created_agent_name(&assignee)?;
+                Ok((issue_id, assignee))
+            }) {
+                Ok((issue_id, assignee)) => acted(
                     id.clone(),
                     BridgeAction::TrackerAssignIssue {
                         issue_id,
                         // Absent and null are both unassignment, which is a
                         // legible thing to ask for.
-                        assignee: argument(params, "assignee").unwrap_or(Value::Null),
+                        assignee,
                         note: optional_argument(params, "note"),
                         track: optional_flag(params, "track"),
                         notify_user: optional_flag(params, "notify_user"),
@@ -1301,10 +1310,10 @@ impl DoneServer {
                         "harness": Self::harness_enum(),
                         "model": { "type": "string", "description": "A model id, when the user named one. list_harnesses is where the ids are. Omit to take the user's own choice for the role." },
                         "effort": Self::effort_enum(),
-                        "name": { "type": "string", "description": "What to call this agent: one or two meaningful words for the work you are putting it on, like \"Rail scroll\". It is what you and the user will see instead of \"Agent 2\". Omit and the agent names itself when the user first writes to it." },
+                        "name": { "type": "string", "minLength": 1, "description": "Required. A short name describing the agent's job, like \"Flaky test fixer\". It is what you and the user will see instead of \"Agent 2\"." },
                         "notify_user": { "type": "boolean", "description": "Watch this new agent and show its workspace in the USER's inbox. Pass true when the user asked to follow its work; omit for an unwatched agent." }
                     },
-                    "required": ["workspace_id"]
+                    "required": ["workspace_id", "name"]
                 }
             }),
             json!({
@@ -1912,6 +1921,34 @@ fn required_argument(params: Option<&Value>, field: &str) -> Result<String, Stri
         .ok_or_else(|| format!("{field} is required"))
 }
 
+/// Agent-originated creation always names its agent. The wire's `agent.add`
+/// and `issues.assign` remain optional so a user can create an unnamed agent.
+fn created_agent_name(name: Option<&str>) -> Result<String, String> {
+    let name = name
+        .filter(|name| !name.trim().is_empty())
+        .ok_or("Build cannot start an agent without a name.")?;
+    crate::agent::agent_name_from(name)
+}
+
+fn required_created_agent_name(params: Option<&Value>, field: &str) -> Result<String, String> {
+    created_agent_name(
+        params
+            .and_then(|p| p.get("arguments"))
+            .and_then(|arguments| arguments.get(field))
+            .and_then(Value::as_str),
+    )
+}
+
+fn require_created_agent_name(assignee: &Value) -> Result<(), String> {
+    if matches!(
+        assignee.get("kind").and_then(Value::as_str),
+        Some("new_workspace" | "new_agent")
+    ) {
+        created_agent_name(assignee.get("agent_name").and_then(Value::as_str))?;
+    }
+    Ok(())
+}
+
 /// One workspace tool call, on whichever surface asked for it. `None` is "not
 /// one of theirs", which is how each surface goes on to its own tools.
 ///
@@ -1942,18 +1979,21 @@ fn workspace_tool_action(
                 isolation: optional_argument(params, "isolation"),
             })
         }
-        "add_workspace_agent" => required_argument(params, "workspace_id").map(|workspace_id| {
-            BridgeAction::AddWorkspaceAgent {
-                workspace_id,
-                notify_user: optional_flag(params, "notify_user"),
-                harness: optional_argument(params, "harness"),
-                model: optional_argument(params, "model"),
-                effort: optional_argument(params, "effort"),
-                name: optional_argument(params, "name"),
-                role: optional_argument(params, "role"),
-                capability: optional_argument(params, "capability"),
-            }
-        }),
+        "add_workspace_agent" => {
+            required_argument(params, "workspace_id").and_then(|workspace_id| {
+                let name = required_created_agent_name(params, "name")?;
+                Ok(BridgeAction::AddWorkspaceAgent {
+                    workspace_id,
+                    notify_user: optional_flag(params, "notify_user"),
+                    harness: optional_argument(params, "harness"),
+                    model: optional_argument(params, "model"),
+                    effort: optional_argument(params, "effort"),
+                    name: Some(name),
+                    role: optional_argument(params, "role"),
+                    capability: optional_argument(params, "capability"),
+                })
+            })
+        }
         "remove_workspace_agent" => {
             required_argument(params, "workspace_id").and_then(|workspace_id| {
                 Ok(BridgeAction::RemoveWorkspaceAgent {
@@ -3052,10 +3092,67 @@ mod tests {
             Some(BridgeAction::CreateWorkspace { ref name, isolation: None }) if name == "one"
         ));
         assert!(matches!(
-            call("add_workspace_agent", r#"{"workspace_id":"ws-1","harness":"codex","project_id":"proj-9"}"#).action,
-            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None, name: None, .. })
-                if workspace_id == "ws-1" && harness.as_deref() == Some("codex")
+            call("add_workspace_agent", r#"{"workspace_id":"ws-1","harness":"codex","project_id":"proj-9","name":"Flaky test fixer"}"#).action,
+            Some(BridgeAction::AddWorkspaceAgent { ref workspace_id, ref harness, model: None, effort: None, name: Some(ref name), .. })
+                if workspace_id == "ws-1" && harness.as_deref() == Some("codex") && name == "Flaky test fixer"
         ));
+    }
+
+    #[test]
+    fn every_agent_creation_tool_requires_a_name() {
+        let tools = project().tools();
+        let tools = tools.as_array().unwrap();
+        let named = |name: &str| tools.iter().find(|tool| tool["name"] == name).unwrap();
+        assert!(named("add_workspace_agent")["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("name")));
+        let assignee = &named("assign_issue")["inputSchema"]["properties"]["assignee"];
+        assert_eq!(
+            assignee["allOf"][0]["then"]["required"],
+            json!(["agent_name"])
+        );
+        assert_eq!(
+            assignee["allOf"][1]["then"]["required"],
+            json!(["agent_name"])
+        );
+
+        for (tool, args) in [
+            ("add_workspace_agent", r#"{"workspace_id":"ws-1"}"#),
+            (
+                "add_workspace_agent",
+                r#"{"workspace_id":"ws-1","name":"  "}"#,
+            ),
+            (
+                "assign_issue",
+                r#"{"issue_id":"issue-1","assignee":{"kind":"new_agent","workspace_id":"ws-1"}}"#,
+            ),
+            (
+                "assign_issue",
+                r#"{"issue_id":"issue-1","assignee":{"kind":"new_agent","workspace_id":"ws-1","agent_name":" "}}"#,
+            ),
+            (
+                "assign_issue",
+                r#"{"issue_id":"issue-1","assignee":{"kind":"new_workspace","name":"workspace"}}"#,
+            ),
+            (
+                "assign_issue",
+                r#"{"issue_id":"issue-1","assignee":{"kind":"new_workspace","agent_name":" "}}"#,
+            ),
+        ] {
+            for server in [project(), server()] {
+                let refused = server.handle_message(&format!(
+                    r#"{{"jsonrpc":"2.0","id":71,"method":"tools/call","params":{{"name":"{tool}","arguments":{args}}}}}"#
+                ));
+                assert!(refused.action.is_none(), "{tool}: {args}");
+                let reply = parse(&refused.reply.unwrap());
+                assert_eq!(reply["result"]["isError"], true, "{tool}: {args}");
+                assert_eq!(
+                    reply["result"]["content"][0]["text"],
+                    "Build cannot start an agent without a name."
+                );
+            }
+        }
     }
 
     /// A call the parser cannot act on is a tool error and no action, so the

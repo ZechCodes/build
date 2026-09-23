@@ -251,8 +251,8 @@ impl OperationPayload {
 
     /// Ask the agent to name itself, on the one turn that asks.
     ///
-    /// The first thing the user says to an agent that has no name, and only
-    /// then: an agent that was asked and did not do it has decided, and asking
+    /// The first turn of an agent that has no name, and only then: an agent
+    /// that was asked and did not do it has decided, and asking
     /// again on every message would be nagging in the user's voice.
     fn name_note(&self) -> String {
         if !self.ask_to_name {

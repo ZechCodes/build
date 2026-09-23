@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +39,20 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
   try {
     server = await createServer({
       root: spaRoot, cacheDir, logLevel: "silent", plugins,
+      optimizeDeps: {
+        // Prebundle CJS grammars before the page imports a renderer. Discovery
+        // during an import can invalidate dependency requests already in flight.
+        noDiscovery: true,
+        include: [
+          "ghostty-web",
+          ...["core", "markup", "clike", "css", "javascript", "jsx", "typescript",
+            "tsx", "python", "rust", "json", "bash", "yaml", "toml", "markdown"]
+            .map((grammar) => `prismjs/components/prism-${grammar}`),
+        ],
+        // Vite's ESM resolver shim handles this package's ./libsodium.mjs
+        // import; the dependency optimizer bypasses that shim.
+        exclude: ["libsodium-wrappers"],
+      },
       server: { host: "127.0.0.1", port: 0 },
     });
     await server.listen();
@@ -46,6 +60,14 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
     const basePath = server.config.base;
     browser = await chromium.launch({ executablePath: chromiumPath, headless: true, args: ["--no-sandbox"] });
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    // Chromium can cancel loopback imports with ERR_NETWORK_CHANGED when the
+    // host's network changes. Fetch this server's real responses through the
+    // driver so host network notifications cannot abort the module graph.
+    // No response mocks or retries: Vite errors still reach the browser.
+    await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
+      const response = await route.fetch({ maxRetries: 0 });
+      await route.fulfill({ response });
+    });
     // A CSS URL gives the page Vite's origin without booting the SPA. That lets
     // a test mount just the production renderer it needs into a stable shell.
     await page.goto(`http://127.0.0.1:${port}${basePath}src/styles.css`);
@@ -68,6 +90,14 @@ export async function mountLayout(page, markup, { styles = "", basePath = "/app/
     <link rel="stylesheet" href="${basePath}src/styles/shell.css">
     <style>${styles}</style></head><body>${markup}</body></html>`, { waitUntil: "load" });
   await page.evaluate(() => document.fonts.ready);
+}
+
+/** Optional review artifacts; normal gates do not rewrite tracked images. */
+export async function captureLayout(page, name) {
+  const directory = process.env.BUILD_LAYOUT_SCREENSHOTS;
+  if (!directory) return;
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ path: join(directory, name) });
 }
 
 /** Load production ES modules in the browser itself. Vitest rewrites dynamic

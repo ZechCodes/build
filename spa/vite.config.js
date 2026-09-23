@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { availableParallelism } from "node:os";
 import { defineConfig } from "vite";
 
 // libsodium-wrappers' ESM build imports "./libsodium.mjs", which actually lives
@@ -21,6 +22,7 @@ const libsodiumShim = {
 // One env var feeds both sides of the comparison: import.meta.env in the
 // bundle, and the version.json the plugin below emits beside it.
 const buildVersion = process.env.VITE_BUILD_VERSION || "dev";
+const testWorkers = Math.max(1, Math.min(12, Math.floor(availableParallelism() / 2)));
 
 /** A versioned bundle is deployable, so it must never inherit the browser-only
  * local relay fallback. Development builds keep the zero-config localhost
@@ -69,6 +71,30 @@ export default defineConfig({
     target: "es2022",
   },
   test: {
+    // Leave room for cargo and other workspaces. More workers multiply jsdom
+    // startup and app-graph imports rather than making those suites faster.
+    maxWorkers: testWorkers,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["test/**/*.test.js"],
+          exclude: ["test/browser/**"],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: "layout",
+          include: ["test/browser/*.test.js"],
+          // Each check owns Chromium and a Vite server. Bound those process
+          // trees and run them after the node/jsdom workers.
+          maxWorkers: Math.min(2, testWorkers),
+          sequence: { groupOrder: 1 },
+        },
+      },
+    ],
     // Node 25+ defines a `localStorage` global that answers undefined without
     // --localstorage-file, and vitest's jsdom environment will not replace a
     // global that is already there. Every suite is given one here instead.

@@ -1,10 +1,5 @@
 import { expect, it } from "vitest";
-import { mkdir } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-
-const screenshotDir = fileURLToPath(new URL("../../../design/bridge-updates/", import.meta.url));
-await mkdir(screenshotDir, { recursive: true });
+import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 
 const UPDATE = {
   running_version: "0.2.0", platform: "linux-x86_64", development_build: false,
@@ -50,7 +45,7 @@ for (const { label, width, height, state } of [
       expect(bounds.actionsRight).toBeLessThanOrEqual(bounds.viewport);
       expect(await page.locator("[data-bridge-install-now]").count()).toBe(1);
       expect(await page.locator("[data-bridge-install-idle]").count()).toBe(1);
-      await page.screenshot({ path: `${screenshotDir}/${label === "desktop" ? "available-desktop" : "queued-mobile"}.png` });
+      await captureLayout(page, `${label === "desktop" ? "available-desktop" : "queued-mobile"}.png`);
     }, { width, height });
   }, 30_000);
 }
@@ -93,13 +88,13 @@ it("renders the complete device settings view with a connected fixture bridge", 
     }
     expect(await page.locator(".settings-content #device-settings-title").textContent()).toBe("Laptop settings");
     await page.locator("#device-updates-panel").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `${screenshotDir}/full-settings-available.png` });
+    await captureLayout(page, "full-settings-available.png");
     await page.evaluate((update) => window.__layoutModules.events.dispatchChangeEvent({
       type: "bridge.update_status", ...update, state: "failed", last_error: "Health check failed; previous bridge restored.",
     }, "laptop"), UPDATE);
     await page.waitForSelector(".bridge-update-error");
     await page.locator("#device-updates-panel").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `${screenshotDir}/full-settings-failed.png` });
+    await captureLayout(page, "full-settings-failed.png");
   }, { width: 1280, height: 820 });
 }, 60_000);
 
@@ -125,6 +120,6 @@ it("shows the update bubble on the inbox cog and device picker", async () => {
     await page.waitForSelector("#nav-account .bridge-update-dot");
     expect(await page.locator('[data-settings-device="laptop"] .bridge-update-dot').count()).toBe(1);
     await page.evaluate(() => { document.querySelector(".device-picker-menu").hidden = false; });
-    await page.screenshot({ path: `${screenshotDir}/inbox-cog-badge.png` });
+    await captureLayout(page, "inbox-cog-badge.png");
   }, { width: 420, height: 340 });
 }, 30_000);

@@ -31,6 +31,7 @@ const workspaceHref = (id, context) => {
 export function actorHref(actor, context = {}) {
   if (!context.deviceId || !context.projectId || !actor) return "";
   const id = agentIdOf(actor);
+  if (context.identities?.[id]?.available === false) return "";
   return projectActor(actor, id) ? projectHref(id, context) : workspaceHref(id, context);
 }
 

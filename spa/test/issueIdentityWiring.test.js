@@ -82,6 +82,21 @@ describe("bridge identity through the issue cache", () => {
     expect(host.querySelector(".issue-comment .issue-avatar.is-project")).not.toBeNull();
   });
 
+  it("names a deleted project agent without an agent route", async () => {
+    const issue = structuredClone(answer.result.issue);
+    const agent = { kind: "agent", agent_id: "project-01M2SCB" };
+    issue.identities[agent.agent_id] = { agent_id: agent.agent_id, name: null, ordinal: 1,
+      workspace_id: null, workspace_name: null, provider: "claude_adk", available: false };
+    issue.assignee = agent;
+    await writeIssueRecord(DEVICE, PROJECT, answer.params.issue_id, issueRecord(issue, [
+      { type: "comment", id: "ic-project-gone", author: agent, body: "Ready.", created_at: "2026-09-19T10:12:00Z" },
+    ]));
+    const host = await renderCached();
+    expect(host.querySelector(".issue-comment .issue-entry-head strong").textContent).toBe("Build");
+    expect(host.querySelector(".issue-comment .issue-entry-head a")).toBeNull();
+    expect(host.querySelector(".issue-assignee-current a")).toBeNull();
+  });
+
   it("links the actor, assignment target, dispatch target, assignee and workspace", async () => {
     const issue = structuredClone(answer.result.issue);
     const agent = { kind: "agent", agent_id: AGENT };

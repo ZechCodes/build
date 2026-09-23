@@ -38,6 +38,14 @@ const workspaceNamed = (workspaces, said) =>
 const groupHolding = (groups, agentId) =>
   (groups || []).find((group) => (group.agents || []).some((agent) => agent.id === agentId)) || null;
 
+const identityAgent = (id, identity, identities, workspaces, at) => {
+  const workspaceId = identity.workspace_id;
+  if (!identity.available || !workspaceId || !workspaces.some((workspace) =>
+    (workspace.workspace_id || workspace.id) === workspaceId)) return null;
+  return { ...at, workspaceId, agentId: id,
+    name: actorName({ kind: "agent", agent_id: id }, { identities }) };
+};
+
 /**
  * The resolver core/markdownLinks.js asks, built from what this surface holds.
  *
@@ -69,15 +77,11 @@ export function referenceLinks({ place, issues = [], workspaces = [], agentGroup
     },
 
     agent(id) {
-      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) return { ...at, agentId: id };
-      const identity = identities[id];
-      if (identity) {
-        const workspaceId = identity.workspace_id;
-        if (!identity.available || !workspaceId || !workspaces.some((workspace) =>
-          (workspace.workspace_id || workspace.id) === workspaceId)) return null;
-        return { ...at, workspaceId, agentId: id,
-          name: actorName({ kind: "agent", agent_id: id }, { identities }) };
+      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) {
+        return identities[id]?.available === false ? null : { ...at, agentId: id };
       }
+      const identity = identities[id];
+      if (identity) return identityAgent(id, identity, identities, workspaces, at);
       const group = groupHolding(agentGroups, id);
       if (!group) return null;
       const agent = group.agents.find((one) => one.id === id);

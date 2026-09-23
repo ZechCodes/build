@@ -100,6 +100,7 @@ const malformedToolStrategies = new Map([
 const toolListEffects = new Map([
   ["stderr_saturation", () => process.stderr.write("warning\n".repeat(200000))],
   ["write_failure", () => {
+    process.stdin.destroy();
     closeSync(0);
     setInterval(() => {}, 1000);
   }],

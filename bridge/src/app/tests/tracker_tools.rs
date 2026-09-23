@@ -1,4 +1,4 @@
-//! The tracker's eight tools, on both working surfaces (spec: Issues → The
+//! The tracker's twelve tools, on both working surfaces (spec: Issues → The
 //! MCP tools).
 //!
 //! What the tests here are about is the scope: the project comes from the
@@ -36,8 +36,8 @@ fn call(
     state.on_agent_mcp_action(&who.0, &who.1, action)
 }
 
-/// The eleven the tracker adds, by name.
-const ISSUE_TOOLS: [&str; 11] = [
+/// The twelve the tracker adds, by name.
+const ISSUE_TOOLS: [&str; 12] = [
     "list_issues",
     "get_issue",
     "read_comment",
@@ -45,13 +45,14 @@ const ISSUE_TOOLS: [&str; 11] = [
     "comment_issue",
     "assign_issue",
     "move_issue",
+    "label_issue",
     "close_issue",
     "link_issue",
     "track_issue",
     "untrack_issue",
 ];
 
-/// Both working surfaces are shown the same eleven tools. The router is shown
+/// Both working surfaces are shown the same twelve tools. The router is shown
 /// none of them: it has no project to be scoped to.
 #[test]
 fn both_working_surfaces_carry_the_issue_tools_and_the_router_carries_none() {
@@ -197,6 +198,138 @@ fn a_comment_and_a_move_are_signed_by_the_agent_that_made_them() {
     assert_eq!(
         timeline["result"]["issue"]["status"], "in_review",
         "Complete means ready to be looked at"
+    );
+}
+
+/// Parse real MCP frames, execute them against the store, and read through the
+/// same list filter the next agent call uses.
+#[test]
+fn mcp_label_issue_round_trips_through_store_timeline_and_filter() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    let id = filed(&mut state, &project_id, "one")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let server = DoneServer::new(&who.1);
+    let invoke = |state: &mut AppState, arguments: Value| -> Result<Value, String> {
+        let frame = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "label_issue", "arguments": arguments }
+        });
+        let action = server
+            .handle_message(&frame.to_string())
+            .action
+            .expect("the MCP frame dispatches label_issue");
+        call(state, &who, action)
+    };
+
+    let added = invoke(
+        &mut state,
+        json!({ "issue_id": id, "add": ["public launch", "Bug"] }),
+    )
+    .expect("labels added");
+    assert_eq!(added["labels"], json!(["public launch", "Bug"]));
+    assert_eq!(added["issue"]["labels"], added["labels"]);
+    let list_frame = json!({
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": { "name": "list_issues", "arguments": { "label": "public launch" } }
+    });
+    let list_action = server
+        .handle_message(&list_frame.to_string())
+        .action
+        .expect("MCP frame dispatches list_issues with its label filter");
+    let filtered = call(&mut state, &who, list_action).unwrap();
+    assert_eq!(filtered["issues"][0]["id"], id);
+    assert_eq!(filtered["issues"].as_array().unwrap().len(), 1);
+    let stored = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(stored["result"]["issue"]["labels"], added["labels"]);
+    let events = stored["result"]["timeline"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["kind"], "labelled");
+    assert_eq!(
+        events[1]["payload"]["added"],
+        json!(["public launch", "Bug"])
+    );
+    assert_eq!(
+        events[1]["actor"],
+        json!({ "kind": "agent", "agent_id": who.1 })
+    );
+
+    assert_label_removal_and_validation(&mut state, &who, &server, &id, &added, invoke);
+}
+
+fn assert_label_removal_and_validation(
+    state: &mut AppState,
+    who: &(String, String),
+    server: &DoneServer,
+    id: &str,
+    added: &Value,
+    invoke: impl Fn(&mut AppState, Value) -> Result<Value, String>,
+) {
+    let same = invoke(
+        state,
+        json!({
+            "issue_id": id, "add": ["PUBLIC LAUNCH"], "remove": ["absent"]
+        }),
+    )
+    .unwrap();
+    assert_eq!(same["labels"], added["labels"]);
+    assert_eq!(same["issue"]["updated_at"], added["issue"]["updated_at"]);
+    assert_eq!(
+        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let removed = invoke(
+        state,
+        json!({ "issue_id": id, "remove": ["PUBLIC LAUNCH"] }),
+    )
+    .expect("label removed case insensitively");
+    assert_eq!(removed["labels"], json!(["Bug"]));
+    let filtered = call(
+        state,
+        who,
+        BridgeAction::TrackerListIssues {
+            state: None,
+            status: None,
+            label: Some("public launch".into()),
+        },
+    )
+    .unwrap();
+    assert!(filtered["issues"].as_array().unwrap().is_empty());
+    let stored = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let events = stored["result"]["timeline"].as_array().unwrap();
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[2]["kind"], "labelled");
+    assert_eq!(events[2]["payload"]["removed"], json!(["public launch"]));
+
+    let invalid = invoke(state, json!({ "issue_id": id, "add": ["x".repeat(1000)] }));
+    assert!(invalid.unwrap_err().contains("label exceeds"));
+    let malformed = json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "label_issue", "arguments": {
+            "issue_id": id, "add": ["valid", 42]
+        }}
+    });
+    let refused = server.handle_message(&malformed.to_string());
+    assert!(
+        refused.action.is_none(),
+        "a malformed label list is refused"
+    );
+    assert!(refused.reply.is_some());
+    assert_eq!(
+        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3,
+        "invalid labels do not write an event"
     );
 }
 
@@ -394,7 +527,7 @@ fn list_issues_answers_this_agents_own_project_only() {
     assert_eq!(listed["project_id"], project_id.as_str());
 }
 
-/// A project agent gets the same eight tools over the same code path, so the
+/// A project agent gets the same twelve tools over the same code path, so the
 /// board an agent runs and the board the client reads are one board.
 #[test]
 fn a_project_agent_runs_the_same_board_the_client_reads() {

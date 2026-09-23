@@ -868,6 +868,34 @@ describe("the bubble strip", () => {
     expect(railHost().querySelector(".thread-items").textContent).toContain("One more question");
   });
 
+  it("slides the twelve-tick window when a cached user message arrives", async () => {
+    const userMessage = (index) => ({
+      type: "message", data: { sequence: index + 1, role: "user", body: `Cached question ${index + 1}` },
+    });
+    payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items: Array.from({ length: 13 }, (_, index) => userMessage(index)) } } });
+    const originalCall = bridge.call;
+    bridge.call = (method, params) => method === "thread.page"
+      ? new Promise(() => {}) : originalCall(method, params);
+    await writeRailWorkItem(payload);
+    rail = mountAgentRail(railHost(), railAddress());
+
+    const body = railHost().querySelector("#rail-body");
+    const indexes = () => [...body.querySelectorAll(".thread-user-tick")]
+      .map((tick) => Number(tick.dataset.userTickIndex));
+    await vi.waitFor(() => {
+      expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
+      expect(body.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("12");
+      expect(body.querySelector(".thread-items")?.textContent).toContain("Cached question 13");
+    }, { timeout: 5000 });
+
+    await pushRailThreadItems("run-3", "ag-1", [userMessage(13)]);
+    await vi.waitFor(() => {
+      expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 2));
+      expect(body.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("13");
+      expect(body.querySelector(".thread-items")?.textContent).toContain("Cached question 14");
+    }, { timeout: 5000 });
+  });
+
   it("opens a cache-backed agent overview and returns to the chosen chat", async () => {
     payload = branchRow({ agents: [
       agent({ id: "ag-1", name: "First agent", working: true }),

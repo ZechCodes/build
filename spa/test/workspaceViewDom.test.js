@@ -56,6 +56,7 @@ const deliverWorkspaces = (workspaces) => {
 };
 
 import { App } from "../src/app.js";
+import { hashFromRoute } from "../src/core/router.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
@@ -153,6 +154,22 @@ afterEach(() => {
 });
 
 describe("workspace surface", () => {
+  it("hands a routed commit to Changes and records hand selection in the URL", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1",
+      sourceId: "repo", tab: "changes", commit: "aaaaaaaa" };
+    device("dev-1", async () => workspace);
+    await standUp();
+    const options = mountGitPane.mock.calls[0][1];
+    expect(options.requestedCommit).toBe("aaaaaaaa");
+
+    options.onCommitSelection("a".repeat(40));
+    expect(location.hash).toBe(hashFromRoute({ ...App.route, commit: "a".repeat(40) }));
+    expect(mountGitPane).toHaveBeenCalledTimes(1);
+    options.onCommitSelection(null);
+    expect(location.hash).toBe(hashFromRoute(App.route));
+    expect(App.route.commit).toBeUndefined();
+  });
+
   it("keeps cache-feed announcements wired to an open Issues tab", async () => {
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "issues" };
     device("dev-1", async () => workspace);

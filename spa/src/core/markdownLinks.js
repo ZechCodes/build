@@ -47,15 +47,14 @@ const workspacePlace = (found, extra) => ({
 });
 
 /** What each kind of reference resolves to: the route it opens and the words
- *  the reader sees on hover. A kind that answers null is left as text — which
- *  is how `commit` behaves, its shape reserved by markdownRefs.js but with no
- *  route in core/router.js to send it to yet. */
+ *  the reader sees on hover. A kind that answers null is left as text. */
 const PLACES = {
   issue(reference, links) {
     const found = links.issue?.(reference.number);
     if (!found?.issueId) return null;
     return {
-      route: { name: "trackerIssue", deviceId: found.deviceId, projectId: found.projectId, issueId: found.issueId },
+      route: { name: "trackerIssue", deviceId: found.deviceId, projectId: found.projectId, issueId: found.issueId,
+        ...(reference.commentId ? { commentId: reference.commentId } : null) },
       title: found.title ? `Issue #${reference.number} — ${found.title}` : `Issue #${reference.number}`,
     };
   },
@@ -86,6 +85,11 @@ const PLACES = {
       title: reference.line ? `${path} line ${reference.line}` : path,
     };
   },
+  commit(reference, links) {
+    const found = links.workspace?.(unesc(reference.workspace));
+    if (!found?.workspaceId) return null;
+    return { route: workspacePlace(found, { commit: reference.sha }), title: `Commit ${reference.sha}` };
+  },
 };
 
 /** One reference as an anchor, or null when nothing answers for it. The label
@@ -99,17 +103,17 @@ function anchorFor(reference, links) {
   return `<a href="${esc(href)}" title="${esc(place.title)}">${reference.raw}</a>`;
 }
 
-/// The code spans this renderer emits. References inside one are literal: a
-/// message explaining this syntax is mostly examples, and they have to read as
-/// what an agent should type rather than quietly becoming links.
-const CODE_SPAN = /<code>[\s\S]*?<\/code>/g;
+/// Code and existing anchors are already complete HTML. URL text and Markdown
+/// link targets may carry `#42` as a fragment, where it is part of that URL.
+/// Keep each whole span literal before looking for Build references beside it.
+const PROTECTED_SPAN = /<code>[\s\S]*?<\/code>|<a\b[^>]*>[\s\S]*?<\/a>|\]\([^\s)]*\)|(?:https?:\/\/|www\.)[^\s<>"']+/g;
 
-/** The stretches of `html` that are outside a code span, in order. */
-function outsideCode(html) {
+/** The stretches of `html` that are outside protected spans, in order. */
+function outsideProtected(html) {
   const spans = [];
   let at = 0;
-  CODE_SPAN.lastIndex = 0;
-  for (let match = CODE_SPAN.exec(html); match; match = CODE_SPAN.exec(html)) {
+  PROTECTED_SPAN.lastIndex = 0;
+  for (let match = PROTECTED_SPAN.exec(html); match; match = PROTECTED_SPAN.exec(html)) {
     spans.push({ text: html.slice(at, match.index), open: true });
     spans.push({ text: match[0], open: false });
     at = match.index + match[0].length;
@@ -138,7 +142,7 @@ function expandRun(text, links) {
  */
 export function expandReferences(html, links = null) {
   if (!links || !html) return html;
-  return outsideCode(html)
+  return outsideProtected(html)
     .map((span) => (span.open ? expandRun(span.text, links) : span.text))
     .join("");
 }

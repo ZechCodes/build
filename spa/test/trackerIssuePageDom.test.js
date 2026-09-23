@@ -100,7 +100,7 @@ const answerFor = (over = {}, timeline = TIMELINE) => ({
   timeline,
 });
 
-const mount = async (over = {}) => {
+const mount = async (over = {}, { waitForPaint = true } = {}) => {
   page = mountIssuePage(host, {
     projectId: "proj-1",
     deviceId: "dev-1",
@@ -113,7 +113,7 @@ const mount = async (over = {}) => {
     navigate: vi.fn(),
     ...over,
   });
-  await flush();
+  if (waitForPaint) await flush();
   return page;
 };
 
@@ -223,6 +223,24 @@ describe("the issue", () => {
 });
 
 describe("the timeline", () => {
+  it("scrolls to and highlights a routed comment after the cache paints", async () => {
+    const scrollIntoView = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", answerFor());
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ commentId: "ic-2" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#comment-ic-2")?.classList.contains("issue-comment-target")).toBe(true));
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+  });
+
+  it("opens a missing comment at the top without an error", async () => {
+    await mount({ commentId: "ic-missing" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-page-title")?.textContent).toBe("Kanban drag does not persist"));
+    expect(host.querySelector(".issue-comment-target")).toBeNull();
+    expect(host.scrollTop).toBe(0);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
   // Comments and events interleave into one ascending list, in the order the
   // bridge answered them.
   it("interleaves comments and events in the order they arrived", async () => {

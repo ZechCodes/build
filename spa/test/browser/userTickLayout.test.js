@@ -56,3 +56,33 @@ it("the grouped ticks consume only the chat's existing left padding", async () =
     expect(measurements.pillRight).toBeLessThanOrEqual(measurements.gutterRight);
   });
 }, 30_000);
+
+it("renders twelve contiguous ticks at a mid-thread scroll position", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountLayout(page, '<div class="rail-body" id="scroller"></div>', {
+      basePath,
+      styles: 'body{display:block;height:auto} #scroller{box-sizing:border-box;width:640px;height:320px;margin:20px auto;overflow:auto;scroll-padding-top:20px}',
+    });
+    await loadBrowserModules(page, { thread: "src/core/thread.js" }, basePath);
+    const result = await page.evaluate(() => {
+      const { threadHtml, syncUserMessageTicks } = window.__layoutModules.thread;
+      const scroller = document.querySelector("#scroller");
+      scroller.innerHTML = threadHtml({ id: "window-check", items: Array.from({ length: 24 }, (_, index) => ({
+        type: "message", data: { sequence: index + 1, role: "user", body: `Message ${index + 1}` },
+      })) });
+      const rows = scroller.querySelectorAll(".thread-items > .thread-message.user");
+      rows[12].scrollIntoView({ block: "start", behavior: "instant" });
+      scroller.scrollTop += 2;
+      syncUserMessageTicks(scroller);
+      const ticks = [...scroller.querySelectorAll(".thread-user-tick")];
+      return {
+        count: ticks.length,
+        indexes: ticks.map((tick) => Number(tick.dataset.userTickIndex)),
+        active: Number(scroller.querySelector(".thread-user-tick.active")?.dataset.userTickIndex),
+      };
+    });
+    expect(result.count).toBe(12);
+    expect(result.active).toBe(12);
+    expect(result.indexes).toEqual(Array.from({ length: 12 }, (_, index) => index + 7));
+  });
+}, 30_000);

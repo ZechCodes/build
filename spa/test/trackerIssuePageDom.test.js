@@ -557,7 +557,12 @@ describe("the composer", () => {
   });
 
   it("sends a dropped file with the comment, through issues.attach", async () => {
-    await mount();
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-issue-composer]")).not.toBeNull();
+      expect(host.querySelector("#issue-comment")?.disabled).toBe(false);
+      expect(host.querySelector(".issue-composer .composer.attachable")).not.toBeNull();
+    });
     call.mockImplementation(async (method) => {
       if (method === "issues.attach") {
         return { name: "shot.png", path: "/store/abc-shot.png", mime: "image/png", size: 3 };
@@ -569,12 +574,14 @@ describe("the composer", () => {
       value: { files: [new File(["png"], "shot.png", { type: "image/png" })] },
     });
     host.querySelector("[data-issue-composer]").dispatchEvent(event);
-    await flush();
+    await vi.waitFor(() => {
+      expect(host.querySelector(".issue-composer .composer-chip.ready .composer-chip-name")?.textContent).toBe("shot.png");
+      expect(host.querySelector('.issue-composer button[type="submit"]')?.disabled).toBe(false);
+    });
     expect(listed("issues.attach")[0][1]).toMatchObject({ project_id: "proj-1", filename: "shot.png" });
 
     // A comment that is only a screenshot is a comment: the press turns on
     // with an empty box.
-    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(false);
     call.mockClear();
     pressEnter(host.querySelector("#issue-comment"), { ctrlKey: true });
     await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));

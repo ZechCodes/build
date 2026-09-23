@@ -481,6 +481,12 @@ export function mountIssuePage(host, options) {
       pendingCommentText = field.value;
       commentDraft.schedule({ body: field.value });
     };
+    field.onkeydown = (event) => {
+      if (event.isComposing || event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      if (!field.value.trim() && !comments?.attachments().length) return;
+      form.requestSubmit();
+    };
     form.onsubmit = (event) => {
       event.preventDefault();
       void sendComment();

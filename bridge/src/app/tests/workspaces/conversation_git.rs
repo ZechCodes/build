@@ -51,6 +51,46 @@ fn a_workspace_conversation_reads_git_from_its_git_directory() {
 }
 
 #[test]
+fn workspace_conversation_files_share_the_source_root_while_terminals_keep_the_container() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(tmp.path(), "code");
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "work");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap();
+    let source = directory(&workspace, "source-1");
+    let source_root = PathBuf::from(source["path"].as_str().unwrap());
+    let source_name = source_root.file_name().unwrap().to_str().unwrap();
+    let run_id = conversation_run(&mut state, workspace_id);
+    std::fs::write(source_root.join("note.txt"), b"hello").unwrap();
+
+    let run_tree = state
+        .fs_tree(&json!({"run_id": run_id, "path": ""}))
+        .unwrap();
+    let source_tree = state
+        .fs_tree(&json!({"workspace_id": workspace_id, "source_id": "source-1", "path": ""}))
+        .unwrap();
+    assert_eq!(run_tree["entries"], source_tree["entries"]);
+    assert!(run_tree["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["name"] == "note.txt"));
+    assert!(state
+        .fs_tree(&json!({"run_id": run_id, "path": source_name}))
+        .is_err());
+
+    let terminal_root =
+        crate::app::runtime::terminals::terminal_scope_root(&mut state, &json!({"run_id": run_id}))
+            .unwrap();
+    assert_eq!(
+        terminal_root,
+        PathBuf::from(workspace["root"].as_str().unwrap())
+    );
+}
+
+#[test]
 fn a_workspace_conversation_is_a_git_subject_at_its_git_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = init_repo_named(tmp.path(), "code");

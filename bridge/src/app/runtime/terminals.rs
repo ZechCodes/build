@@ -17,9 +17,10 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
-/// resolved server-side ONLY (spec §1): ids map to roots through the bridge's own
-/// records — a client-supplied filesystem path is never a scope root.
+/// A worktree-backed scope. Run-scoped files use the git root; terminals and
+/// agents use the container root through `terminal_scope_root`. Scope roots
+/// are resolved server-side ONLY (spec §1): ids map to roots through the
+/// bridge's own records — a client-supplied filesystem path is never a scope root.
 #[derive(Debug, Clone)]
 pub(in crate::app) enum TermScope {
     Run {
@@ -59,7 +60,7 @@ impl TermScope {
         }
     }
 
-    /// Resolve to the scope's canonical root directory, server-side only.
+    /// Resolve to the scope's canonical file root, server-side only.
     /// `&mut AppState` because the external-worktree arm may refresh the scan
     /// cache; it never accepts a raw path and never canonicalizes client input.
     ///
@@ -76,7 +77,7 @@ impl TermScope {
         let root = match self {
             TermScope::Run { run_id } => {
                 let active = state.runs.get(run_id).ok_or("unknown run_id")?;
-                let root = active.worktree.path.clone();
+                let root = state.run_git_root(run_id, &active.worktree.path);
                 if !root.exists() {
                     return Err("worktree no longer exists".to_string());
                 }
@@ -103,13 +104,28 @@ impl TermScope {
 
 /// Resolve the terminal's owning workspace. Workspace-aware clients use the
 /// container root; old work-item clients retain their checkout-root behavior.
-fn terminal_scope_root(state: &mut AppState, params: &Value) -> Result<std::path::PathBuf, String> {
+pub(in crate::app) fn terminal_scope_root(
+    state: &mut AppState,
+    params: &Value,
+) -> Result<std::path::PathBuf, String> {
     if let Some(workspace_id) = params
         .get("workspace_id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
     {
         return state.workspace_root(workspace_id);
+    }
+    if let Some(run_id) = params
+        .get("run_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        let active = state.runs.get(run_id).ok_or("unknown run_id")?;
+        let root = &active.worktree.path;
+        if !root.exists() {
+            return Err("worktree no longer exists".to_string());
+        }
+        return Ok(AppState::canonical_root(root));
     }
     TermScope::parse(params)?.resolve_root(state)
 }

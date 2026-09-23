@@ -1998,7 +1998,11 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 @media (max-width: 720px) {
   .thread-lightbox { max-width:100vw; max-height:100dvh; padding:40px 0 0; border-radius:0; }
   .thread-lightbox-image, .thread-lightbox-video { max-width:100vw; max-height:calc(100dvh - 40px); }
-  .thread-lightbox-step { top:auto; bottom:12px; margin-top:0; }
+  /* At phone width the steps move up into the close button's row, off the
+     picture and clear of a video's own controls along its bottom edge. */
+  .thread-lightbox-step { top:4px; width:32px; height:32px; margin-top:0; background:none; color:var(--ink2); }
+  .thread-lightbox-prev { left:auto; right:80px; }
+  .thread-lightbox-next { right:44px; }
 }
 .thread-event { min-height:24px; padding:1px 0 1px 20px; }
 .thread-event-icon { left:0; top:2px; width:14px; height:14px; border:0;

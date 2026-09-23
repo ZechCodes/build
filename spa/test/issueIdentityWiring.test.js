@@ -108,6 +108,8 @@ describe("bridge identity through the issue cache", () => {
     host.innerHTML = html;
     expect(host.querySelector(".thread-issue-by").textContent).toContain("spa-flaky-tests · Fix drag");
     expect(host.querySelector(".rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
+    expect(host.querySelector(".thread-issue-by a[href*='agent=']")).not.toBeNull();
+    expect(host.querySelector("a.thread-issue-number[href*='issues']")).not.toBeNull();
   });
 
   it("names an unwatched notice assignee and draws its harness", () => {
@@ -120,14 +122,30 @@ describe("bridge identity through the issue cache", () => {
     host.innerHTML = html;
     expect(host.querySelector(".thread-issue-said").textContent.replace(/\s+/g, " ").trim()).toBe("assigned to spa-flaky-tests · Fix drag");
     expect(host.querySelector(".thread-issue-said .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
+    expect(host.querySelector(".thread-issue-said a[href*='agent=']")).not.toBeNull();
+  });
+
+  it("keeps a deleted notice agent as text while its issue number still opens", () => {
+    const identity = answer.result.issue.identities[AGENT];
+    const host = document.createElement("div");
+    host.innerHTML = issueNoticeLineHtml({
+      issue_id: answer.params.issue_id, number: 102, action: "assigned",
+      actor: { kind: "agent", agent_id: AGENT, identity },
+      assignee: { kind: "agent", agent_id: AGENT }, assignee_identity: identity,
+    }, { place, projectName: "Build", workspaces: [] });
+    expect(host.querySelector("a[href*='agent=']")).toBeNull();
+    expect(host.querySelector("a.thread-issue-number[href*='issues']")).not.toBeNull();
+    expect(host.querySelector(".thread-issue-by").textContent).toContain("spa-flaky-tests · Fix drag");
   });
 
   it("uses the issue identity on list rows and board cards without a watched digest", () => {
     for (const html of [issueRowHtml, issueCardHtml]) {
       const host = document.createElement("div");
-      host.innerHTML = html(answer.result.issue, { href: () => "#/issue", projectName: "Build", columns: [] });
+      host.innerHTML = html(answer.result.issue, { ...place, href: () => "#/issue", projectName: "Build", columns: [] });
       expect(host.querySelector(".issue-assignee").textContent.replace(/\s+/g, " ").trim()).toBe("spa-flaky-tests · Fix drag");
       expect(host.querySelector(".issue-assignee .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
+      expect(host.querySelector(".issue-assignee-link[href*='agent=']")).not.toBeNull();
+      expect(host.querySelector(".issue-assign[data-issue-assign]")).not.toBeNull();
     }
   });
 });

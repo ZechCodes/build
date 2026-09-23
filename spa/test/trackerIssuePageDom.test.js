@@ -145,6 +145,8 @@ beforeEach(async () => {
   movedListeners = new Set();
   notifyError.mockClear();
   openAssigneePicker.mockClear();
+  feed.workspaces = [{ id: "ws-1", workspace_id: "ws-1", name: "wire-facade", projectKey: PROJECT_KEY, entity_id: "run-1" }];
+  feed.items = [{ kind: "branch", projectKey: PROJECT_KEY, run_id: "run-1", agents: [{ id: "agent-1", ordinal: 1 }] }];
   document.body.innerHTML = '<div id="pane"></div>';
   host = document.querySelector("#pane");
   trackerCache = await import("../src/core/trackerCache.js");
@@ -159,6 +161,40 @@ beforeEach(async () => {
 
 afterEach(() => {
   page?.dispose();
+});
+
+describe("mounted issue identity links", () => {
+  it("links an unwatched prose author, then removes dead routes when the workspace cache changes", async () => {
+    const agentId = "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E";
+    const workspaceId = "ws-3f2a91c4";
+    const agent = { kind: "agent", agent_id: agentId };
+    feed.items = [];
+    feed.workspaces = [{ id: workspaceId, workspace_id: workspaceId,
+      name: "spa-flaky-tests", projectKey: PROJECT_KEY, entity_id: "run-unwatched" }];
+    const wire = structuredClone(issuesGetFixture.result.issue);
+    wire.id = "issue-1";
+    wire.body = `Ask @agent:${agentId} on this issue.`;
+    wire.assignee = agent;
+    wire.links.workspace_ids = [workspaceId];
+    call = vi.fn(async (method) => method === "issues.get" ? {
+      issue: wire,
+      timeline: [{ type: "comment", id: "ic-unwatched", author: agent,
+        body: "I can take this.", created_at: "2026-09-19T10:12:00Z" }],
+    } : {});
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-comment .issue-entry-head a[href*='agent=']")).not.toBeNull());
+    expect(host.querySelector(".issue-page-body a[href*='agent=']")).not.toBeNull();
+    expect(host.querySelector(".issue-assignee-current a[href*='agent=']")).not.toBeNull();
+    expect(host.querySelector(".issue-links a[href*='workspace']")).not.toBeNull();
+
+    feed.workspaces = [];
+    page.feedMoved();
+    expect(host.querySelector(".issue-comment .issue-entry-head a[href*='agent=']")).toBeNull();
+    expect(host.querySelector(".issue-page-body a[href*='agent=']")).toBeNull();
+    expect(host.querySelector(".issue-assignee-current a[href*='agent=']")).toBeNull();
+    expect(host.querySelector(".issue-links a[href*='workspace']")).toBeNull();
+    expect(host.querySelector(".issue-comment .issue-entry-head").textContent).toContain("spa-flaky-tests · Fix drag");
+  });
 });
 
 describe("issue unread navigation", () => {

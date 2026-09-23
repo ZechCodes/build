@@ -436,9 +436,36 @@ fn issue_identity_survives_workspace_finish() {
             },
         )
         .expect("agent comments");
+    // This record predates identity snapshots: the timeline still knows the
+    // author, and a read must persist the backfill before Done removes them.
+    let mut old = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_issue(&id)
+        .unwrap()
+        .unwrap();
+    old.identities.clear();
+    state
+        .tracker_store()
+        .unwrap()
+        .save_tracker_issue_activity(&old, &[], &[])
+        .unwrap();
     let before = state.handle(req("issues.get", json!({ "issue_id": id })));
     let identity = &before["result"]["issue"]["identities"][&agent_id];
     assert_historian_identity(identity, &ws, true);
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[&agent_id]
+            .name
+            .as_deref(),
+        Some("Historian"),
+        "the old author's backfill is durable"
+    );
 
     let reassigned = state.handle(req(
         "issues.assign",
@@ -459,6 +486,113 @@ fn issue_identity_survives_workspace_finish() {
     assert_eq!(
         listed["result"]["issues"][0]["identities"][&agent_id],
         *identity
+    );
+}
+
+#[test]
+fn user_create_captures_prose_agent_before_workspace_finish() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "prose checkout");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap();
+    state
+        .set_agent_name(entity_id, agent_id, "Prose agent")
+        .unwrap();
+    let created = state.handle(req(
+        "issues.create",
+        json!({ "project_id": project_id, "title": "Prose reference", "body": format!("Ask @agent:{agent_id}.") }),
+    ));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let id = created["result"]["issue"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[agent_id]
+            .name
+            .as_deref(),
+        Some("Prose agent")
+    );
+    let finished = state.handle(req("workspace.finish", json!({ "workspace_id": ws })));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    let after = state.handle(req("issues.get", json!({ "issue_id": id })));
+    assert_eq!(
+        after["result"]["issue"]["identities"][agent_id]["name"],
+        "Prose agent"
+    );
+    assert_eq!(
+        after["result"]["issue"]["identities"][agent_id]["available"],
+        false
+    );
+}
+
+#[test]
+fn old_actor_falls_back_to_stored_agent_without_live_roster() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "stored checkout");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ));
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+    let added = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": entity_id, "provider": "pi" }),
+    ));
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state
+        .set_agent_name(&entity_id, &agent_id, "Stored agent")
+        .unwrap();
+    let id = issue_id(&filed(&mut state, &project_id, "Old actor"));
+    let mut old = state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_issue(&id)
+        .unwrap()
+        .unwrap();
+    old.body = format!("Ask @agent:{agent_id}.");
+    old.identities.clear();
+    state
+        .tracker_store()
+        .unwrap()
+        .save_tracker_issue_activity(&old, &[], &[])
+        .unwrap();
+    state.runs.remove(&entity_id);
+    let answer = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let identity = &answer["result"]["issue"]["identities"][&agent_id];
+    assert_eq!(identity["name"], "Stored agent");
+    assert_eq!(identity["provider"], "pi");
+    assert_eq!(identity["workspace_name"], "stored checkout");
+    assert_eq!(identity["available"], false);
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_issue(&id)
+            .unwrap()
+            .unwrap()
+            .identities[&agent_id]
+            .name
+            .as_deref(),
+        Some("Stored agent")
     );
 }
 

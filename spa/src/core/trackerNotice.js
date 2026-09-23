@@ -35,6 +35,7 @@ import { actionPhrase, actorName } from "./trackerLineWords.js";
 import { FALLBACK_COLUMNS } from "./trackerModel.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { projectInitial } from "./agentRailModel.js";
+import { actorHref } from "./trackerIdentity.js";
 
 export const NOTICE_CLASS = "thread-issue-notice";
 
@@ -179,21 +180,60 @@ const noticeActorMarkHtml = (actor, projectName) => {
   return provider ? `<span class="thread-issue-actor-mark" aria-hidden="true">${harnessIconHtml(provider)}</span>` : "";
 };
 
-const noticeActionMarkup = (notice, did, reading) => {
+const noticeActionMarkup = (notice, did, reading, linkContext = null) => {
   if (notice.action !== "assigned" || !notice.assignee) return esc(did);
   const target = actorName(notice.assignee, noticeReading(notice, reading));
   const icon = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
-  return `assigned to ${icon}${esc(target)}`;
+  const href = linkContext && actorHref(notice.assignee, linkContext);
+  const named = `${icon}${esc(target)}`;
+  return `assigned to ${href ? `<a class="thread-issue-agent-link" href="${esc(href)}">${named}</a>` : named}`;
 };
 
-const noticeSpansHtml = (notice, did, who, reading) =>
-  [
-    `<span class="thread-issue-number">#${esc(String(notice.number ?? ""))}</span>`,
-    did ? `<span class="thread-issue-said">${noticeActionMarkup(notice, did, reading)}</span>` : "",
-    who ? `<span class="thread-issue-by">by ${noticeActorMarkHtml(notice.actor, reading.projectName)}${esc(who)}</span>` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+const noticeNumberHtml = (notice, issueHref) => {
+  const number = `#${esc(String(notice.number ?? ""))}`;
+  return issueHref
+    ? `<a class="thread-issue-number" href="${esc(issueHref)}">${number}</a>`
+    : `<span class="thread-issue-number">${number}</span>`;
+};
+
+const noticeSaidHtml = (notice, did, reading, issueHref, linkContext) => {
+  if (!did) return "";
+  const said = issueHref && notice.action !== "assigned"
+    ? `<a class="thread-issue-action" href="${esc(issueHref)}">${esc(did)}</a>`
+    : noticeActionMarkup(notice, did, reading, linkContext);
+  return `<span class="thread-issue-said">${said}</span>`;
+};
+
+const noticeByHtml = (notice, who, reading, linkContext) => {
+  if (!who) return "";
+  const name = `${noticeActorMarkHtml(notice.actor, reading.projectName)}${esc(who)}`;
+  const href = linkContext && actorHref(notice.actor, linkContext);
+  return `<span class="thread-issue-by">by ${href
+    ? `<a class="thread-issue-agent-link" href="${esc(href)}">${name}</a>` : name}</span>`;
+};
+
+const noticeSpansHtml = (notice, did, who, reading, issueHref = "", linkContext = null) => [
+  noticeNumberHtml(notice, issueHref),
+  noticeSaidHtml(notice, did, reading, issueHref, linkContext),
+  noticeByHtml(notice, who, reading, linkContext),
+].filter(Boolean).join(" ");
+
+const noticeLinkContext = (notice, place, workspaces) => {
+  if (!place) return null;
+  const identities = [notice.actor?.identity, notice.assignee_identity]
+    .filter((identity) => identity?.agent_id)
+    .reduce((byId, identity) => ({ ...byId, [identity.agent_id]: identity }), {});
+  return { ...place, identities, workspaces };
+};
+
+const splitNoticeNames = (notice, context) => Boolean(context &&
+  (notice.actor?.identity || notice.assignee_identity || actorHref(notice.actor, context)));
+
+const noticeWrapHtml = (notice, said, href, hover, split) => {
+  const attrs = `${hover} data-issue-notice="${esc(notice.issue_id)}"`;
+  if (split || !href) return `<span class="${NOTICE_CLASS}"${attrs}>${said}</span>`;
+  return `<a class="${NOTICE_CLASS}" href="${esc(href)}"${attrs}>${said}</a>`;
+};
 
 /**
  * The line: `#41 moved to In review by transport-liveness · Agent 1`.
@@ -207,7 +247,7 @@ const noticeSpansHtml = (notice, did, who, reading) =>
  * heading of the page the link opens. It stays as hover text, where length
  * costs nothing.
  */
-export function issueNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "" } = {}) {
+export function issueNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "", workspaces } = {}) {
   if (!notice?.issue_id) return "";
   const reading = { agentLabels, projectName };
   const did = noticeAction(notice, reading);
@@ -215,12 +255,12 @@ export function issueNoticeLineHtml(notice, { place = null, agentLabels = {}, pr
   // The spaces between the spans are for the reader, not for the layout: flex
   // drops whitespace-only nodes and `gap` does the spacing, but they stay in
   // the text a screen reader speaks and a copy takes.
-  const said = noticeSpansHtml(notice, did, who, reading);
   // The title the line no longer shows. Hover costs nothing and a reader who
   // wants to know which issue #41 is can ask without opening it.
   const hover = notice.title ? ` title="${esc(notice.title)}"` : "";
   const href = noticeHref(notice, place);
-  return href
-    ? `<a class="${NOTICE_CLASS}" href="${esc(href)}"${hover} data-issue-notice="${esc(notice.issue_id)}">${said}</a>`
-    : `<span class="${NOTICE_CLASS}"${hover} data-issue-notice="${esc(notice.issue_id)}">${said}</span>`;
+  const linkContext = noticeLinkContext(notice, place, workspaces);
+  const splitNames = splitNoticeNames(notice, linkContext);
+  const said = noticeSpansHtml(notice, did, who, reading, splitNames ? href : "", splitNames ? linkContext : null);
+  return noticeWrapHtml(notice, said, href, hover, splitNames);
 }

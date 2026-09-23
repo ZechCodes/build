@@ -176,6 +176,10 @@ export function mountIssuesPane(host, options) {
 
   const paintContext = () => ({
     columns: state.columns,
+    deviceId: state.deviceId,
+    projectId: state.projectId,
+    agentGroups: groups(),
+    workspaces: (state.feed()?.workspaces || []).filter((workspace) => workspace.projectKey === state.projectKey),
     ...reading(),
     filters: state.filters,
     href: hrefOf,

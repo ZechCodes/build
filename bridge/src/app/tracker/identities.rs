@@ -1,6 +1,7 @@
 //! Durable names for agents an issue mentions. A Done workspace loses its
 //! conversation, so these facts live on the issue before that happens.
 
+use super::StoredAnswer;
 use crate::app::AppState;
 use crate::tracker::{Actor, Issue, IssueAgentIdentity, TimelineEntry};
 use std::collections::BTreeSet;
@@ -76,6 +77,26 @@ fn add_actor(ids: &mut BTreeSet<String>, actor: &Actor) {
     }
 }
 
+fn retain_known_fields(
+    prior: &IssueAgentIdentity,
+    current: IssueAgentIdentity,
+) -> IssueAgentIdentity {
+    if current.available {
+        return current;
+    }
+    IssueAgentIdentity {
+        agent_id: current.agent_id,
+        name: current.name.or_else(|| prior.name.clone()),
+        ordinal: current.ordinal.or(prior.ordinal),
+        workspace_id: current.workspace_id.or_else(|| prior.workspace_id.clone()),
+        workspace_name: current
+            .workspace_name
+            .or_else(|| prior.workspace_name.clone()),
+        provider: current.provider.or_else(|| prior.provider.clone()),
+        available: false,
+    }
+}
+
 impl AppState {
     pub(super) fn issue_json_with_live_identities(
         &self,
@@ -120,14 +141,86 @@ impl AppState {
         })
     }
 
+    /// A run can have left the active roster while its agent row still lives
+    /// in the store. Read that row before calling an older actor unknown.
+    fn stored_issue_identity(&self, agent_id: &str) -> Option<IssueAgentIdentity> {
+        let store = self.tracker_store().ok()?;
+        for run in store.load_all_runs().ok()? {
+            let roster = run.roster();
+            let Some(agent) = roster.by_id(agent_id) else {
+                continue;
+            };
+            let workspace = self.workspaces.list(None).into_iter().find(|workspace| {
+                crate::app::workspaces::same_path(
+                    &workspace.root,
+                    std::path::Path::new(&run.worktree_path),
+                )
+            });
+            return Some(IssueAgentIdentity {
+                agent_id: agent_id.to_string(),
+                name: agent.name.clone(),
+                ordinal: Some(agent.ordinal),
+                workspace_id: workspace.map(|workspace| workspace.id.clone()),
+                workspace_name: Some(run.worktree_name),
+                provider: Some(agent.choice.provider.wire_id().to_string()),
+                available: false,
+            });
+        }
+        for plan in store.load_all_plans().ok()? {
+            let roster = plan.roster();
+            let Some(agent) = roster.by_id(agent_id) else {
+                continue;
+            };
+            return Some(IssueAgentIdentity {
+                agent_id: agent_id.to_string(),
+                name: agent.name.clone(),
+                ordinal: Some(agent.ordinal),
+                workspace_id: None,
+                workspace_name: None,
+                provider: Some(agent.choice.provider.wire_id().to_string()),
+                available: false,
+            });
+        }
+        None
+    }
+
+    fn resolved_issue_identity(&self, agent_id: &str) -> Option<IssueAgentIdentity> {
+        self.live_issue_identity(agent_id)
+            .or_else(|| self.stored_issue_identity(agent_id))
+    }
+
     /// Add the identities this write can still inspect before a workspace is
     /// removed. Existing snapshots stay when an agent is no longer present.
     pub(super) fn capture_issue_identities(&self, issue: &mut Issue, timeline: &[TimelineEntry]) {
         for id in mentioned(issue, timeline) {
-            if let Some(identity) = self.live_issue_identity(&id) {
-                issue.identities.insert(id, identity);
+            if let Some(identity) = self.resolved_issue_identity(&id) {
+                issue
+                    .identities
+                    .entry(id)
+                    .and_modify(|saved| {
+                        *saved = retain_known_fields(saved, identity.clone());
+                    })
+                    .or_insert(identity);
             }
         }
+    }
+
+    /// Backfill all historical actors while their records can still be read.
+    /// A read is a durable migration: the next workspace removal must not
+    /// turn an older comment's author back into an opaque id.
+    pub(super) fn backfill_issue_identities(
+        &self,
+        mut issue: Issue,
+        timeline: &[TimelineEntry],
+    ) -> Result<Issue, String> {
+        let before = issue.identities.clone();
+        self.capture_issue_identities(&mut issue, timeline);
+        if issue.identities != before {
+            self.tracker_store()?
+                .save_tracker_issue_activity(&issue, &[], &[])
+                .stored()?;
+        }
+        Ok(issue)
     }
 
     /// Fill old issues from living agents and mark departed ones unavailable.
@@ -139,8 +232,14 @@ impl AppState {
     ) -> Issue {
         let ids = mentioned(&issue, timeline);
         for id in ids {
-            if let Some(identity) = self.live_issue_identity(&id) {
-                issue.identities.insert(id, identity);
+            if let Some(identity) = self.resolved_issue_identity(&id) {
+                issue
+                    .identities
+                    .entry(id)
+                    .and_modify(|saved| {
+                        *saved = retain_known_fields(saved, identity.clone());
+                    })
+                    .or_insert(identity);
             } else {
                 issue
                     .identities

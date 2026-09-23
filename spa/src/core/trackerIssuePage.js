@@ -96,6 +96,8 @@ export function mountIssuePage(host, options) {
   }, { debounceMs: 180 });
 
   const groups = () => workspaceAgents(state.feed(), state.projectKey);
+  const projectWorkspaces = () => (state.feed()?.workspaces || [])
+    .filter((workspace) => workspace.projectKey === state.projectKey);
 
   /** Whether this bridge can be asked about watching at all (#65). Read once
    *  at mount: a greeting arrives before any surface paints, and a bridge does
@@ -218,6 +220,7 @@ export function mountIssuePage(host, options) {
       agentLabels: agentLabels(groups()),
       agentProviders: agentProviders(groups()),
       agentGroups: groups(),
+      workspaces: projectWorkspaces(),
       identities: state.issue.identities || {},
       deviceId: state.deviceId,
       projectId: state.projectId,
@@ -225,8 +228,9 @@ export function mountIssuePage(host, options) {
       refLinks: referenceLinks({
         place: place(),
         issues: state.issues,
-        workspaces: (state.feed()?.workspaces || []).filter((workspace) => workspace.projectKey === state.projectKey),
+        workspaces: projectWorkspaces(),
         agentGroups: groups(),
+        identities: state.issue.identities || {},
       }),
       rows: state.rows,
       unreadFrom,

@@ -117,6 +117,7 @@ impl AppState {
                 .tracker_store()?
                 .load_tracker_timeline(&issue.id)
                 .stored()?;
+            let issue = self.backfill_issue_identities(issue, &timeline)?;
             let issue = self.issue_with_read_identities(issue, &timeline);
             rows.push(issue_json(&project_id, &issue));
         }
@@ -131,6 +132,7 @@ impl AppState {
             .tracker_store()?
             .load_tracker_timeline(&issue.id)
             .stored()?;
+        let issue = self.backfill_issue_identities(issue, &timeline)?;
         let issue = self.issue_with_read_identities(issue, &timeline);
         Ok(issue_with_timeline_json(&project_id, &issue, &timeline))
     }
@@ -182,6 +184,10 @@ impl AppState {
             IssueEventKind::Created,
             json!({ "title": draft.title }),
             &now,
+        );
+        self.capture_issue_identities(
+            &mut draft,
+            &[crate::tracker::TimelineEntry::Event(created.clone())],
         );
         let issue = self
             .tracker_store()?
@@ -302,19 +308,25 @@ impl AppState {
         now: &str,
     ) -> Result<Value, String> {
         write.issue.updated_at = now.to_string();
-        let timeline = write
-            .comments
-            .iter()
-            .cloned()
-            .map(crate::tracker::TimelineEntry::Comment)
-            .chain(
-                write
-                    .events
-                    .iter()
-                    .cloned()
-                    .map(crate::tracker::TimelineEntry::Event),
-            )
-            .collect::<Vec<_>>();
+        let mut timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&write.issue.id)
+            .stored()?;
+        timeline.extend(
+            write
+                .comments
+                .iter()
+                .cloned()
+                .map(crate::tracker::TimelineEntry::Comment)
+                .chain(
+                    write
+                        .events
+                        .iter()
+                        .cloned()
+                        .map(crate::tracker::TimelineEntry::Event),
+                )
+                .collect::<Vec<_>>(),
+        );
         self.capture_issue_identities(&mut write.issue, &timeline);
         self.tracker_store()?
             .save_tracker_issue_activity(&write.issue, &write.comments, &write.events)

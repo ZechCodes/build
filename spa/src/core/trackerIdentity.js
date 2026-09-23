@@ -13,12 +13,17 @@ const projectHref = (id, context) => hashFromRoute({
   name: "project", deviceId: context.deviceId, projectId: context.projectId, agent: id || undefined,
 });
 
+const workspaceInCache = (context, workspaceId) =>
+  !Array.isArray(context.workspaces) || context.workspaces.some((workspace) =>
+    (workspace.workspace_id || workspace.id) === workspaceId);
+
 const workspaceHref = (id, context) => {
   const identity = context.identities?.[id];
   const group = (context.agentGroups || []).find((one) => one.agents?.some((agent) => agent.id === id));
   const workspaceId = identity?.workspace_id || group?.workspaceId;
   if (identity && !identity.available) return "";
   if (!workspaceId) return "";
+  if (!workspaceInCache(context, workspaceId)) return "";
   return hashFromRoute({ name: "workspace", deviceId: context.deviceId, projectId: context.projectId,
     workspaceId, tab: "changes", agent: id });
 };

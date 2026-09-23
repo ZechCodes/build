@@ -1,6 +1,6 @@
 # Bridge updates
 
-The device settings page reads a cached bridge status. Wire 1.18.0 adds
+The device settings page reads a cached bridge status. Wire 1.21.0 adds
 `bridge.update_status`, `bridge.check_update`, and
 `bridge.install_update {"when":"now"|"idle"}`. Each returns the status; subsequent
 changes arrive as an event with `type: "bridge.update_status"` and the status

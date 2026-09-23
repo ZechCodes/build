@@ -1,6 +1,6 @@
 {
   "method": "bridge.update_status",
-  "since": "1.18.0",
+  "since": "1.21.0",
   "params": {},
   "result": {
     "running_version": "0.2.0",

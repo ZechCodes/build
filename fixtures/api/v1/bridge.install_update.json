@@ -1,6 +1,6 @@
 {
   "method": "bridge.install_update",
-  "since": "1.18.0",
+  "since": "1.21.0",
   "params": {"when": "idle"},
   "result": {
     "running_version": "0.2.0",

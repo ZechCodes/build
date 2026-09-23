@@ -388,6 +388,8 @@ async function inspectStartup(width, height) {
   const blockedPage = await blocked.newPage();
   await blockedPage.route(/\/_astro\/.*\.js$/, (route) => route.abort());
   await blockedPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  // First the boot chooses the film, then its deadline gives the page back.
+  await blockedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
   await blockedPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
   assert.ok(await blockedPage.locator("#act-8 form").isVisible() || await blockedPage.locator("#act-8").count(), `${label}: the document is back`);
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();

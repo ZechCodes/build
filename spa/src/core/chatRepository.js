@@ -2,6 +2,7 @@ import { createThreadCache, createThreadState } from "./thread.js";
 import { createOptimisticStore } from "./optimistic.js";
 import { createChatChoiceController } from "./chatChoiceController.js";
 import { normalizeViewingContext } from "./viewingContext.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [] });
 export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
@@ -26,6 +27,17 @@ const withoutViewingContext = (message) => {
 };
 
 const cloneAttachments = (attachments = []) => attachments.map((attachment) => ({ ...attachment }));
+// An upload in flight carries a Promise and often a megabyte thumbnail. Those
+// are live resources, not a durable draft; only its descriptor can survive a
+// reload. A pending upload returns as a retryable chip without cloning bytes.
+const storedAttachments = (attachments = []) => attachments.map((attachment) => ({
+  name: attachment.name,
+  size: attachment.size,
+  mime: attachment.mime,
+  status: attachment.status === "uploading" ? "failed" : attachment.status,
+  descriptor: attachment.descriptor || null,
+  error: attachment.status === "uploading" ? "Attach this file again" : attachment.error || "",
+}));
 const deepFreeze = (value) => {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
   Object.values(value).forEach(deepFreeze);
@@ -183,15 +195,18 @@ class ChatController {
    *  automatic recovery is once per post and not once per reconnect. */
   #resent;
   #threadState;
+  #cacheDraft;
+  #draftOwner;
 
   constructor(repository, identity) {
     this.#repository = repository;
+    this.#draftOwner = randomOperationId();
     this.#identity = { ...identity };
     this.#bound = !identity.draftId;
     const saved = repository.readControllerState(identity);
     this.#draft = {
-      body: typeof saved.draft?.body === "string" ? saved.draft.body : "",
-      attachments: cloneAttachments(Array.isArray(saved.draft?.attachments) ? saved.draft.attachments : []),
+      body: !repository.cacheDrafts && typeof saved.draft?.body === "string" ? saved.draft.body : "",
+      attachments: cloneAttachments(!repository.cacheDrafts && Array.isArray(saved.draft?.attachments) ? saved.draft.attachments : []),
       revision: 0,
       attachmentRevision: 0,
     };
@@ -207,6 +222,33 @@ class ChatController {
     });
     this.#operations = new Map();
     this.#resent = new Set();
+    this.#startDraftCache();
+  }
+
+  #startDraftCache() {
+    if (!this.#repository.cacheDrafts) return;
+    this.#cacheDraft = watchUiState(this.#repository.draftAddress(this.#identity), (saved) => {
+      if (!saved || typeof saved.body !== "string") return;
+      const savedAttachments = Array.isArray(saved.attachments) ? saved.attachments : [];
+      // This controller's cache write contains only restart-safe descriptors.
+      // Its live upload still owns a Promise, preview and completion callback;
+      // replacing it with that descriptor would turn an in-flight upload into
+      // a failed chip and invalidate the binding's attachment revision.
+      const ownsLiveAttachments = saved.owner === this.#draftOwner
+        && JSON.stringify(storedAttachments(this.#draft.attachments)) === JSON.stringify(savedAttachments);
+      const attachments = ownsLiveAttachments ? this.#draft.attachments : cloneAttachments(savedAttachments);
+      const attachmentsChanged = !ownsLiveAttachments
+        && JSON.stringify(attachments) !== JSON.stringify(this.#draft.attachments);
+      if (saved.body !== this.#draft.body || attachmentsChanged) {
+        this.#draft = {
+          body: saved.body,
+          attachments,
+          revision: this.#draft.revision + 1,
+          attachmentRevision: this.#draft.attachmentRevision + (attachmentsChanged ? 1 : 0),
+        };
+      }
+      this.announce();
+    }, { debounceMs: 180 });
   }
 
   get identity() {
@@ -239,7 +281,8 @@ class ChatController {
       attachmentRevision: this.#draft.attachmentRevision + (replacesAttachments ? 1 : 0),
     };
     this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
-    this.announce();
+    this.#cacheDraft?.schedule({ body: this.#draft.body, attachments: storedAttachments(this.#draft.attachments), owner: this.#draftOwner });
+    if (!this.#repository.cacheDrafts) this.announce();
     return this.readDraft();
   }
 
@@ -280,6 +323,7 @@ class ChatController {
       attachmentRevision: this.#draft.attachmentRevision + 1,
     };
     this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
+    void this.#cacheDraft?.write({ body: "", attachments: [], owner: this.#draftOwner });
     const submission = Object.freeze({
       operationId,
       address: publicIdentity(this.#identity),
@@ -313,6 +357,7 @@ class ChatController {
       attachmentRevision: this.#draft.attachmentRevision + 1,
     };
     this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
+    void this.#cacheDraft?.write({ body: "", attachments: [], owner: this.#draftOwner });
     const submission = Object.freeze({
       operationId,
       creationId: `creation:${operationId}`,
@@ -556,6 +601,7 @@ class ChatController {
         attachmentRevision: this.#draft.attachmentRevision + 1,
       };
       this.#repository.writeControllerState(this.#identity, { draft: this.#draft });
+      this.#cacheDraft?.schedule({ body: this.#draft.body, attachments: storedAttachments(this.#draft.attachments), owner: this.#draftOwner });
       this.announce();
       return "restored";
     }
@@ -609,6 +655,7 @@ class ChatController {
   }
 
   dispose() {
+    this.#cacheDraft?.dispose();
     this.#listeners.clear();
   }
 
@@ -622,9 +669,12 @@ class ChatController {
 
   bindIdentity(identity) {
     const previous = this.#identity;
+    this.#cacheDraft?.dispose();
     this.#identity = { ...identity, draftId: this.#identity.draftId };
     this.#bound = true;
     this.#repository.moveControllerState(previous, this.#identity);
+    this.#startDraftCache();
+    void this.#cacheDraft?.write({ body: this.#draft.body, attachments: storedAttachments(this.#draft.attachments), owner: this.#draftOwner });
   }
 
   adoptThreadState(threadState) {
@@ -669,6 +719,16 @@ export function createChatRepository({
   const optimisticStore = createOptimisticStore();
 
   const repository = {
+    cacheDrafts: providedStorage === undefined,
+    draftAddress(identity) {
+      return uiAddress({
+        deviceId: scope?.deviceId || "",
+        entityId: identity.conversationId || identity.entityId || "",
+        view: "chat",
+        kind: "draft",
+        sub: storedControllerKey(identity),
+      });
+    },
     get epoch() {
       return epoch;
     },
@@ -684,9 +744,11 @@ export function createChatRepository({
     },
 
     writeControllerState(identity, patch) {
+      const savedPatch = repository.cacheDrafts ? Object.fromEntries(Object.entries(patch).filter(([key]) => key !== "draft")) : patch;
+      if (!Object.keys(savedPatch).length) return;
       const key = storedControllerKey(identity);
       mutateStoredState((fresh) => {
-        fresh.controllers[key] = { ...recordOrEmpty(fresh.controllers[key]), ...patch };
+        fresh.controllers[key] = { ...recordOrEmpty(fresh.controllers[key]), ...savedPatch };
       });
     },
 

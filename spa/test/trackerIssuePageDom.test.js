@@ -207,6 +207,28 @@ describe("the issue", () => {
     expect(held.timeline).toHaveLength(4);
   });
 
+  it("restores an unsent comment and clears it only after a successful send", async () => {
+    const { readCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ deviceId: "dev-1", entityId: "issue-1", view: "tracker-issue", kind: "draft", sub: "proj-1" });
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    const field = host.querySelector("#issue-comment");
+    field.value = "Keep this thought";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe("Keep this thought"));
+    page.dispose();
+    await mount({ issueId: "issue-2" }, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")).not.toBeNull());
+    expect(host.querySelector("#issue-comment").value).toBe("");
+    page.dispose();
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("#issue-comment")?.value).toBe("Keep this thought"));
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    await vi.waitFor(async () => expect((await readCached(address))?.value.body).toBe(""));
+  });
+
   it("repaints from an issue-cache write while issues.get stays absent", async () => {
     call = vi.fn(() => new Promise(() => {}));
     await mount();

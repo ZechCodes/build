@@ -92,10 +92,13 @@ const { scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { evictEntity, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { uiAddress } = await import("../src/core/localUiState.js");
+const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
+const pinnedValue = async () => (await readCached(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
-const { SURFACE_PILL_GRACE_MS, writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
+const { SURFACE_PILL_GRACE_MS } = await import("../src/core/agentSurfacesModel.js");
 const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfacesCache.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -185,6 +188,10 @@ const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 const railStatusLead = () => railHost().querySelector("#rail-status-lead");
 const railStatusPills = () => railHost().querySelector("#rail-status-pills");
+const openSurfacePill = async (kind) => {
+  railHost().querySelector(`[data-surface-kind="${kind}"]`).click();
+  await vi.waitFor(() => expect(railHost().querySelector(`.surface-${kind}`)).toBeTruthy());
+};
 const railStatusGit = () => railHost().querySelector("#rail-status-git");
 const workingWord = () => railHost().querySelector(".rail-status-working-word");
 
@@ -377,7 +384,7 @@ describe("the conversation panel's pin", () => {
     expect(railHost().querySelector("#rail-scrim")).toBeNull();
     expect(pin().getAttribute("aria-pressed")).toBe("false");
     expect(pin().title).toBe("Pin the conversation");
-    expect(localStorage.getItem("build.rail.expanded")).toBe("0");
+    expect(await pinnedValue()).toBe(false);
 
     rail.dispose();
     await mount();
@@ -418,7 +425,7 @@ describe("the conversation panel's pin", () => {
     await flush();
     expect(railHost().classList.contains("rail-popover")).toBe(false);
     expect(railHost().querySelector("#rail-scrim")).toBeNull();
-    expect(localStorage.getItem("build.rail.expanded")).toBe("1");
+    expect(await pinnedValue()).toBe(true);
 
     rail.dispose();
     await mount();
@@ -473,7 +480,7 @@ describe("the unpinned panel's popover", () => {
     expect(press.defaultPrevented).toBe(false);
     expect(clicked).toHaveBeenCalledOnce();
     // Dismissing a popover is not unpinning anything: the choice stands.
-    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+    expect(await pinnedValue()).toBeUndefined();
   });
 
   it("leaves the panel's confirmation popover usable", async () => {
@@ -872,20 +879,20 @@ describe("the bubble strip", () => {
     await writeRailWorkItem(payload);
     rail = mountAgentRail(railHost(), railAddress());
 
-    const body = railHost().querySelector("#rail-body");
-    const indexes = () => [...body.querySelectorAll(".thread-user-tick")]
+    const body = () => railHost().querySelector("#rail-body");
+    const indexes = () => [...(body()?.querySelectorAll(".thread-user-tick") || [])]
       .map((tick) => Number(tick.dataset.userTickIndex));
     await vi.waitFor(() => {
       expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 1));
-      expect(body.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("12");
-      expect(body.querySelector(".thread-items")?.textContent).toContain("Cached question 13");
+      expect(body()?.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("12");
+      expect(body()?.querySelector(".thread-items")?.textContent).toContain("Cached question 13");
     }, { timeout: 5000 });
 
     await pushRailThreadItems("run-3", "ag-1", [userMessage(13)]);
     await vi.waitFor(() => {
       expect(indexes()).toEqual(Array.from({ length: 12 }, (_, index) => index + 2));
-      expect(body.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("13");
-      expect(body.querySelector(".thread-items")?.textContent).toContain("Cached question 14");
+      expect(body()?.querySelector(".thread-user-tick.active")?.dataset.userTickIndex).toBe("13");
+      expect(body()?.querySelector(".thread-items")?.textContent).toContain("Cached question 14");
     }, { timeout: 5000 });
   });
 
@@ -963,7 +970,7 @@ describe("the bubble strip", () => {
     expect(panel().getAttribute("aria-hidden")).toBe("true");
     expect(bubbles()[0].getAttribute("aria-expanded")).toBe("false");
     expect(document.activeElement).toBe(bubbles()[0]);
-    expect(localStorage.getItem("build.rail.expanded")).toBeNull();
+    expect(await pinnedValue()).toBeUndefined();
 
     bubbles()[0].click();
     await flush();
@@ -2409,7 +2416,7 @@ describe("focusing the composer on a freshly created branch", () => {
 
   it("expands a rail the human had collapsed, so there is a composer to focus at all", async () => {
     freshBranch();
-    localStorage.setItem("build.rail.expanded", "0");
+    await writeCached(pinnedAddress, { pinned: false });
     await mount({ kind: "branch", projectId: "p1", branch: "build/login", autofocusComposer: true });
     expect(panel()).toBeTruthy();
     expect(document.activeElement).toBe(panel().querySelector("#railinput"));
@@ -3198,7 +3205,7 @@ describe("the conversation's local cache", () => {
     expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
     ]);
-    expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint");
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
     expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
   });
@@ -3349,7 +3356,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     input.value = "half a sentence";
     input.focus();
 
-    railHost().querySelector('[data-surface-kind="shells"]').click();
+    await openSurfacePill("shells");
     await flush();
 
     const row = railHost().querySelector(".surface-shells .surface-row");
@@ -3371,7 +3378,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     });
     await mount();
 
-    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
     await flush();
 
@@ -3410,7 +3417,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>
     railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
-  const openTasks = () => railStatusPills().querySelector('[data-surface-kind="checklist"]').click();
+  const openTasks = () => openSurfacePill("checklist");
   const answerNothing = () => {
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -3446,7 +3453,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["checklist"]);
-    openTasks();
+    await openTasks();
     expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
@@ -3455,7 +3462,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["shells", "checklist"]);
-    openTasks();
+    await openTasks();
     expect(railHost().querySelector(".surface-checklist-context").textContent).toContain("Last known");
   });
 
@@ -3467,11 +3474,22 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {
-    writeOpenSurface("run-3:ag-1", "shells");
+    await writeCached(uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" }), { kind: "shells" });
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     answerNothing();
     await mount();
     expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+  });
+
+  it("repaints an open surface when its local cache record changes externally", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    await mount();
+    const address = uiAddress({ entityId: "run-3:ag-1", view: "agent-surfaces", kind: "menu" });
+    await writeCached(address, { kind: "shells" });
+    await vi.waitFor(() => expect(railHost().querySelector(".surface-shells")?.textContent).toContain("cargo test"));
+    await writeCached(address, { kind: null });
+    await vi.waitFor(() => expect(railHost().querySelector('[data-surface-kind="shells"]')?.getAttribute("aria-pressed")).toBe("false"));
   });
 
   const shapelessRecords = [{ surfaces: "boom" }, { surfaces: { shells: "boom" } }, {}];
@@ -3504,7 +3522,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     bubbles()[1].click();
     await flush();
     expect(pillKinds()).toEqual(["checklist"]);
-    openTasks();
+    await openTasks();
     expect(railHost().querySelector(".surface-checklist").textContent).toContain("wire the seed");
   });
 
@@ -3528,7 +3546,7 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["checklist"]);
-    openTasks();
+    await openTasks();
     expect(railHost().querySelector(".surface-checklist").textContent).toContain("old process step");
 
     await pushRow(branchRow({
@@ -4549,7 +4567,7 @@ describe("a run of activity in the rail", () => {
     payload.agents = [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 2 }] } })];
     await mount();
 
-    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
     await flush();
 
@@ -4597,7 +4615,7 @@ describe("a run of activity in the rail", () => {
     });
     await mount();
 
-    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    await openSurfacePill("subagents");
     railHost().querySelector(".surface-subagents [data-call-sequence]").click();
     await flush();
 

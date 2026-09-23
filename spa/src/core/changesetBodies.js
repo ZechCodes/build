@@ -18,6 +18,7 @@
 
 import { createCachedBodies } from "./cachedBodies.js";
 import { bodyMatches } from "./fileDiffs.js";
+import { withinBytes } from "./cacheLifetime.js";
 
 /** The local-cache kind one changeset file's body is stored under, sub-keyed
  *  by path. */
@@ -25,6 +26,7 @@ export const CHANGESET_DIFF_RECORD_KIND = "changesetdiff";
 
 /** The most paths one `git.changeset_diff` takes — the bridge errors past it. */
 export const CHANGESET_DIFF_MAX_PATHS = 50;
+export const CHANGESET_DIFF_MAX_BYTES = 1_048_576;
 
 /** How many bodies one turn asks for.
  *
@@ -139,9 +141,16 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, onChange 
         path,
         content_key: answered.get(path) ?? keyFor(path),
         patch: segments.get(path) || "",
+        truncated: Boolean(answer.truncated),
       }));
     },
-    valueOf: (file) => ({ key: file.path, value: { content_key: file.content_key, patch: file.patch } }),
+    valueOf: (file) => ({
+      key: file.path,
+      value: { content_key: file.content_key, patch: file.patch, ...(file.truncated ? { truncated: true } : {}) },
+    }),
+    // #94: direct response paint is the temporary exception for an oversized
+    // or cut body; #95 will cache it in pages.
+    cacheable: (body) => !body.truncated && withinBytes(body.patch, CHANGESET_DIFF_MAX_BYTES),
     onChange,
   });
 

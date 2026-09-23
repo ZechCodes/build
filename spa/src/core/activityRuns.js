@@ -13,6 +13,7 @@
 // land.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 /** The local-cache kind one run's items are stored under. */
 export const ACTIVITY_RECORD_KIND = "activity";
@@ -43,6 +44,15 @@ const runRecordSub = (agentId, fromSequence) => `${agentId || ""}:${fromSequence
  */
 export function createActivityRuns({ deviceId, entityId, agentId, call, onChange = () => {} }) {
   const openRuns = new Set();
+  let foldPaint = Promise.resolve();
+  const folds = deviceId && entityId ? watchUiState(
+    uiAddress({ deviceId, entityId, view: "thread", kind: "fold", sub: agentId || "" }),
+    (saved) => {
+      openRuns.clear();
+      for (const key of saved?.openKeys || []) openRuns.add(String(key));
+      onChange();
+    },
+  ) : null;
   // Where each fetched run starts and how far it reaches, learned from the
   // digest that opened it. The record is written under the start; the fold asks
   // with a key somewhere inside the span.
@@ -123,12 +133,15 @@ export function createActivityRuns({ deviceId, entityId, agentId, call, onChange
     /** Flip a run's fold, and answer the side it landed on. */
     toggle(key) {
       const runKey = String(key);
-      if (openRuns.delete(runKey)) return false;
-      openRuns.add(runKey);
-      return true;
+      const opened = !openRuns.delete(runKey);
+      if (opened) openRuns.add(runKey);
+      if (folds) foldPaint = folds.write({ openKeys: [...openRuns] });
+      else onChange();
+      return opened;
     },
 
     openKeys: () => new Set(openRuns),
-    dispose: () => bodies.dispose(),
+    whenFoldPainted: () => foldPaint,
+    dispose: () => { folds?.dispose(); bodies.dispose(); },
   };
 }

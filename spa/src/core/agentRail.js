@@ -143,10 +143,10 @@ import {
   detailLevelMenuOptions,
   detailLevelOfOptionId,
   itemsAtDetailLevel,
-  readDetailLevel,
+  defaultDetailLevel,
   readThroughHiddenItems,
-  writeDetailLevel,
 } from "./conversationDetail.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { surfaceSessionGeneration } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
@@ -178,7 +178,6 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
  *  — the panel out or shut — and holding what it means now: docked beside the
  *  work, or a popover on the bubble strip. One key, so a reader who had the
  *  panel out keeps a pinned panel. */
-const PINNED_KEY = "build.rail.expanded";
 /** The thing this rail's pin docks, as the reader would name it. */
 const PANEL_SUBJECT = "conversation";
 const POPOVER_CLASS = "rail-popover";
@@ -451,23 +450,7 @@ export function resetAgentRailMemory() {
  *  conversation and nothing else — no Files, no Changes, and nothing on screen
  *  saying the strip is the way back to them. A reader who has made the choice
  *  keeps it, at either width. */
-const readPinned = () => {
-  try {
-    const remembered = localStorage.getItem(PINNED_KEY);
-    if (remembered !== null) return remembered !== "0";
-  } catch {
-    /* private mode: the default below is the whole answer */
-  }
-  return panelDocksByDefault();
-};
-
-const writePinned = (on) => {
-  try {
-    localStorage.setItem(PINNED_KEY, on ? "1" : "0");
-  } catch {
-    /* private mode: the choice lasts the session */
-  }
-};
+const PINNED_ADDRESS = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 
 /** Which way the popover faces, which is which way the strip runs: down the
  *  view's right edge on a desktop, across its foot on a phone. */
@@ -925,12 +908,27 @@ function mountRailOnContext(host, context, swap) {
   // Docked beside the work, or a card on the strip. The pin is the reader's
   // remembered layout choice; visibility belongs to this visit and never
   // rewrites that choice.
-  let pinned = readPinned();
+  let pinned = panelDocksByDefault();
   let panelVisible = panelStartsOut(context, pinned);
+  let pinChoicePending = false;
+  let pinnedKnown = false;
   let overviewVisible = false;
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
+  const pinnedRecord = watchUiState(PINNED_ADDRESS, (saved) => {
+    if (typeof saved?.pinned !== "boolean") return;
+    pinned = saved.pinned;
+    panelVisible = pinChoicePending ? true : panelStartsOut(context, pinned);
+    pinChoicePending = false;
+    pinnedKnown = true;
+    paint();
+  });
+  void pinnedRecord.ready.then(() => {
+    if (pinnedKnown || disposed) return;
+    pinnedKnown = true;
+    paint();
+  });
   // What this rail is listening to in the cache: the row it is the rail of, the
   // row of the conversation beside it, and the conversation in the panel.
   // Undefined until the rail has looked: `null` is an answer — this machine
@@ -1054,6 +1052,7 @@ function mountRailOnContext(host, context, swap) {
   let composerControl = null;
   let disposeComposerClearance = null;
   let composerModelMenu = null;
+  const disposeComposerModelMenu = () => composerModelMenu?.dispose();
   let composerGauge = null;
   let composerController = null;
   let unsubscribeComposerController = null;
@@ -1110,10 +1109,32 @@ function mountRailOnContext(host, context, swap) {
    *  would carry the last conversation's choice into the next one.
    */
   const chosenDetailLevels = new Map();
+  const detailRecords = new Map();
+
+  const detailRecord = (id) => {
+    if (detailRecords.has(id)) return detailRecords.get(id);
+    const address = uiAddress({
+      deviceId: cacheScope?.deviceId || "",
+      entityId: entity.entityId || "",
+      view: "thread",
+      kind: "filter",
+      sub: id,
+    });
+    const record = watchUiState(address, (saved) => {
+      if (!saved || !["all", "messages", "agent"].includes(saved.level)) return;
+      chosenDetailLevels.set(id, saved.level);
+      paintedChat = null;
+      paintChat();
+      paintSurfaceMenu();
+    });
+    detailRecords.set(id, record);
+    return record;
+  };
 
   const detailLevel = () => {
     const id = conversationDetailId();
-    if (!chosenDetailLevels.has(id)) chosenDetailLevels.set(id, readDetailLevel(id, entity.kind));
+    if (!chosenDetailLevels.has(id)) chosenDetailLevels.set(id, defaultDetailLevel(entity.kind));
+    detailRecord(id);
     return chosenDetailLevels.get(id);
   };
 
@@ -1694,6 +1715,10 @@ function mountRailOnContext(host, context, swap) {
     });
     paintStrip(strip, [...bubbles, { type: "expand", id: "", title: overviewVisible ? "Close agent overview" : "Show all agents",
       active: overviewVisible, label: "", unread: 0, working: false }]);
+    // The strip is useful immediately; the panel waits for its cached pin
+    // choice so a remount never flashes the wrong layout or creates a panel
+    // that then has to be discarded.
+    if (!pinnedKnown) return;
     paintOverviewFrame(strip);
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
@@ -1748,9 +1773,8 @@ function mountRailOnContext(host, context, swap) {
    *  as the popover it becomes — the same move the inbox's pin makes
    *  (core/inboxShell.js) — unless the press was a way of shutting it. */
   const setPinned = (on) => {
-    pinned = on;
-    writePinned(on);
-    panelVisible = true;
+    pinChoicePending = true;
+    return pinnedRecord.write({ pinned: on });
   };
 
   const activeBubble = () => host.querySelector(".rail-bubble.active");
@@ -1850,6 +1874,7 @@ function mountRailOnContext(host, context, swap) {
     disposeComposerClearance = null;
     closeSurfaceMenu?.();
     composerControl?.dispose?.();
+    disposeComposerModelMenu();
     unsubscribeComposerController?.();
     unsubscribeComposerController = null;
     composerController = null;
@@ -2020,8 +2045,7 @@ function mountRailOnContext(host, context, swap) {
       direction: pinned ? "popover" : "pinned",
       scroller: panel.querySelector(".rail-body"),
       apply: () => {
-        setPinned(!pinned);
-        paint();
+        void setPinned(!pinned);
       },
     });
   };
@@ -2465,7 +2489,7 @@ function mountRailOnContext(host, context, swap) {
     const digest = opened
       ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough)
       : null;
-    paintChat();
+    await runs.whenFoldPainted();
     if (!digest) return;
     await runs.open(digest).catch((error) => {
       notifyError("Could not load this activity", error.message);
@@ -2668,7 +2692,11 @@ function mountRailOnContext(host, context, swap) {
       },
       onError: (error) => notifyError("Message failed", error.message),
     });
-    composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    composerModelMenu = mountComposerModelMenu(panel, {
+      ids: COMPOSER_IDS,
+      onChoose: chooseModel,
+      cacheKey: conversationKey(controller),
+    });
     composerGauge = mountContextGauge(panel, { ids: COMPOSER_IDS });
     unsubscribeComposerController?.();
     unsubscribeComposerController = controller.subscribe(syncComposer);
@@ -2830,8 +2858,7 @@ function mountRailOnContext(host, context, swap) {
     const id = conversationDetailId();
     if (chosenDetailLevels.get(id) === level) return;
     chosenDetailLevels.set(id, level);
-    writeDetailLevel(id, level);
-    paintChat();
+    void detailRecord(id).write({ level });
     motionSettled().then(paintSurfaceMenu);
   };
 
@@ -2839,6 +2866,7 @@ function mountRailOnContext(host, context, swap) {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
       ...surfaceViewerCallbacks(),
+      cacheKey: key,
       host: host.querySelector("#rail-panel"),
       onClose: () => {
         surfaceOverlay = null;
@@ -3490,6 +3518,8 @@ function mountRailOnContext(host, context, swap) {
       disposed = true;
       overview.close();
       activityRuns?.dispose();
+      for (const record of detailRecords.values()) record.dispose();
+      pinnedRecord.dispose({ flushPending: false });
       activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);
@@ -3509,6 +3539,7 @@ function mountRailOnContext(host, context, swap) {
       disposeComposerClearance = null;
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
+      disposeComposerModelMenu();
       unsubscribeComposerController?.();
       unsubscribeComposerController = null;
       releaseFaces();

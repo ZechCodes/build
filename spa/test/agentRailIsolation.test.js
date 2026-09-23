@@ -264,7 +264,7 @@ describe("agent rail chat ownership", () => {
     expect(input().value).toBe("");
   });
 
-  it("paints the remembered conversation frame but keeps its composer shut until the work item is in hand", async () => {
+  it("restores the remembered conversation and draft without posting during hydration", async () => {
     await mountBranch();
     bubble("agent-b").click();
     await flush();
@@ -273,10 +273,9 @@ describe("agent rail chat ownership", () => {
     rail = null;
     document.body.innerHTML = '<div id="agent-rail"></div>';
 
-    // The row is on disk, and reading it is a turn away: in that turn the
-    // panel knows which conversation it is coming back to and nothing about
-    // its roster. It paints the cache-backed conversation frame without
-    // offering a composer addressed at nobody.
+    // The pin, work item, conversation and draft are separate cached records.
+    // Their readbacks may settle together; a remount must still choose agent B
+    // before any send and restore the draft against that conversation.
     rail = mountAgentRail(host(), {
       kind: "branch",
       deviceId: DEVICE_ID,
@@ -287,15 +286,12 @@ describe("agent rail chat ownership", () => {
       chatRepository: device().chatRepository,
     });
 
-    expect(input()).toBeNull();
-    expect(host().querySelector("#railsend")).toBeNull();
+    await vi.waitFor(() => expect(input()?.value).toBe("agent B draft"));
     expect(host().querySelector("#rail-body").textContent).toContain("No conversation yet.");
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(0);
     expect(calls.filter((entry) => entry.method === "thread.post")).toHaveLength(0);
 
-    await flush();
     expect(input().disabled).toBe(false);
-    expect(input().value).toBe("agent B draft");
     writeDraft("send after hydration");
     host().querySelector("#railsend").click();
     await flush();

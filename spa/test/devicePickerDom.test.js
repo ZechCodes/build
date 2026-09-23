@@ -29,7 +29,7 @@ vi.mock("../src/connection.js", () => ({
 }));
 vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mountInboxList: vi.fn(), setInboxView: vi.fn() }));
 import { initDevicePicker, markNothingAnswers, paintDevicePicker } from "../src/devices.js";
-import { rememberDeviceFilter } from "../src/core/deviceFilter.js";
+import { rememberDeviceFilter, resetDeviceFilterCache } from "../src/core/deviceFilter.js";
 import { nothingAnswersMark } from "../src/core/text.js";
 import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
 import { resetUsageLimits, setUsageLimitsForTest as setUsageLimits } from "../src/core/usageLimits.js";
@@ -52,6 +52,7 @@ beforeEach(() => {
   resetDeviceContexts();
   resetUsageLimits();
   clearMemoryCacheRecords();
+  resetDeviceFilterCache();
   markNothingAnswers(false);
   initDevicePicker();
   paintDevicePicker();
@@ -88,7 +89,7 @@ describe("custom device picker", () => {
     // all-devices row is about no machine, so it has no cog.
     expect(choices()[0].closest(".device-picker-row").querySelector("[data-settings-device]")).toBeNull();
   });
-  it("shows an offline icon instead of a settings control, while still allowing its filter", () => {
+  it("shows an offline icon instead of a settings control, while still allowing its filter", async () => {
     document.querySelector(".device-picker-toggle").click();
     const row = choices()[2].closest(".device-picker-row");
     const offline = row.querySelector(".device-picker-offline");
@@ -99,7 +100,7 @@ describe("custom device picker", () => {
     expect(offline.tabIndex).toBe(-1);
 
     choices()[2].click();
-    expect(App.deviceFilter).toBe("b");
+    await vi.waitFor(() => expect(App.deviceFilter).toBe("b"));
     expect(toggleLabel()).toBe("Desktop");
   });
   // The rows in the rail say why a machine cannot be asked anything; the picker
@@ -133,9 +134,10 @@ describe("custom device picker", () => {
     expect(document.querySelector('[data-settings-device="a"]')).not.toBeNull();
   });
 
-  it("keeps an open menu and its row focused when that device goes offline", () => {
+  it("keeps an open menu and its row focused when that device goes offline", async () => {
     deviceAnswering("a");
     document.querySelector(".device-picker-toggle").click();
+    await vi.waitFor(() => expect(document.querySelector(".device-picker-menu").hidden).toBe(false));
     document.querySelector('[data-settings-device="a"]').focus();
 
     setContextOffline("a", { offline: true });
@@ -170,12 +172,11 @@ describe("custom device picker", () => {
     expect(labelOf(choices()[1])).toBe("Laptop");
   });
 
-  it("picking a device sets the filter and does not touch selectedDeviceId", () => {
+  it("picking a device sets the filter and does not touch selectedDeviceId", async () => {
     document.querySelector(".device-picker-toggle").click();
     document.querySelector('[data-filter-device="b"]').click();
 
-    expect(App.deviceFilter).toBe("b");
-    expect(localStorage.getItem("build.deviceFilter")).toBe("b");
+    await vi.waitFor(() => expect(App.deviceFilter).toBe("b"));
     expect(App.selectedDeviceId).toBe("a"); // where creation goes is said elsewhere
     expect(toggleLabel()).toBe("Desktop");
     expect(document.querySelector(".device-picker-menu").hidden).toBe(true);
@@ -183,12 +184,12 @@ describe("custom device picker", () => {
     document.querySelector(".device-picker-toggle").click();
     document.querySelector('[data-filter-device=""]').click();
 
+    await vi.waitFor(() => expect(toggleLabel()).toBe("All devices"));
     expect(App.deviceFilter).toBe(null);
-    expect(localStorage.getItem("build.deviceFilter")).toBe(null);
     expect(toggleLabel()).toBe("All devices");
   });
   it("names the device the rail is filtered to, until that device leaves the account", async () => {
-    rememberDeviceFilter("b");
+    await rememberDeviceFilter("b");
     paintDevicePicker();
     expect(toggleLabel()).toBe("Desktop");
 
@@ -202,27 +203,34 @@ describe("custom device picker", () => {
     expect(App.deviceFilter).toBe(null);
     expect(toggleLabel()).toBe("All devices");
   });
-  it("supports arrow navigation and Escape returns focus to the trigger", () => {
+  it("supports arrow navigation and Escape returns focus to the trigger", async () => {
     const toggle = document.querySelector(".device-picker-toggle");
     toggle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.filterDevice).toBe(""));
     expect(document.activeElement.dataset.filterDevice).toBe(""); // All devices, first
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.filterDevice).toBe("a"));
     expect(document.activeElement.dataset.filterDevice).toBe("a");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.settingsDevice).toBe("a"));
     expect(document.activeElement.dataset.settingsDevice).toBe("a");
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(document.activeElement).toBe(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await vi.waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("false"));
 
     toggle.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.filterDevice).toBe(""));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.filterDevice).toBe("a"));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.settingsDevice).toBe("a"));
     document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    await vi.waitFor(() => expect(document.activeElement.dataset.filterDevice).toBe("b"));
     expect(document.activeElement.dataset.filterDevice).toBe("b");
     // Native button activation is what Enter/Space does in the browser. The
     // static offline icon is absent from this tab sequence.
     document.activeElement.click();
-    expect(App.deviceFilter).toBe("b");
+    await vi.waitFor(() => expect(App.deviceFilter).toBe("b"));
   });
 });
 
@@ -265,22 +273,22 @@ describe("a device out of usage", () => {
   const limitLine = (deviceId) => document.querySelector(`.device-picker-limit[data-limit-device="${deviceId}"]`);
   const limitMark = () => document.querySelector(".device-picker-limited");
 
-  it("says so under that machine's row, and marks the toggle", () => {
+  it("says so under that machine's row, and marks the toggle", async () => {
     setUsageLimits("a", [limit(34)]);
     document.querySelector(".device-picker-toggle").click();
     expect(limitLine("a").textContent).toBe("Claude session limit reached · resets in 34 min");
     expect(limitLine("b")).toBeNull();
     expect(limitMark().getAttribute("aria-label")).toBe("Laptop: Claude session limit reached · resets in 34 min");
     expect(limitMark().getAttribute("title")).toBe(limitMark().getAttribute("aria-label"));
-    expect(document.querySelector(".device-picker-menu").hidden).toBe(false);
+    await vi.waitFor(() => expect(document.querySelector(".device-picker-menu").hidden).toBe(false));
   });
 
-  it("marks the toggle only for the machines it stands for", () => {
+  it("marks the toggle only for the machines it stands for", async () => {
     setUsageLimits("a", [limit(34)]);
-    rememberDeviceFilter("b");
+    await rememberDeviceFilter("b");
     paintDevicePicker();
     expect(limitMark()).toBeNull();
-    rememberDeviceFilter("a");
+    await rememberDeviceFilter("a");
     paintDevicePicker();
     expect(limitMark()).not.toBeNull();
   });

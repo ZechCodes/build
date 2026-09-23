@@ -57,7 +57,9 @@ const { consoleBranchRow, consoleCacheScope, emptyConsoleWorld, seedConsoleTermi
   await import("./consoleWorld.js");
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
-const { markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
+const { consoleKey, markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
+const { readCached, writeCached } = await import("../src/core/localCache.js");
+const { uiAddress } = await import("../src/core/localUiState.js");
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -81,6 +83,12 @@ const branchAddress = (over = {}) => ({
   call: (...args) => bridge.call(...args),
   cacheScope: consoleCacheScope(over.deviceId || "dev-1"),
   ...over,
+});
+const sizeAddress = (context = branchAddress()) => uiAddress({
+  deviceId: context.deviceId,
+  entityId: consoleKey(context),
+  view: "console",
+  kind: "fold",
 });
 
 const mount = async (context = branchAddress()) => {
@@ -259,6 +267,17 @@ describe("the sizes", () => {
     await mount({ kind: "issue", deviceId: "dev-1", projectId: "p1", issueId: "i-1", call: (...args) => bridge.call(...args), cacheScope: consoleCacheScope() });
     expect(size()).toBe("collapsed");
   });
+
+  it("repaints an open console when its cached fold record changes", async () => {
+    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
+    await seedConsoleWorld({ terminals: ["term-1"] });
+    panel = mountConsole(region(), branchAddress());
+    await vi.waitFor(() => expect(size()).toBe("half"));
+
+    await writeCached(sizeAddress(), { size: "full", reopenSize: "full" });
+    await vi.waitFor(() => expect(size()).toBe("full"));
+    expect(region().querySelector(".console-grow").getAttribute("aria-label")).toBe("Half the view");
+  });
 });
 
 describe("the terminals", () => {
@@ -312,7 +331,7 @@ describe("the terminals", () => {
 });
 
 describe("a console with no terminals", () => {
-  const storedSize = () => localStorage.getItem("build.console.size.branch:p1:build/login");
+  const storedSize = async () => (await readCached(sizeAddress()))?.value?.size ?? null;
 
   it("opens on the tab that was pressed", async () => {
     await mountOver(["term-1", "term-2"]);
@@ -328,7 +347,7 @@ describe("a console with no terminals", () => {
     await open();
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
-    expect(storedSize()).toBeNull();
+    expect(await storedSize()).toBeNull();
   });
 
   it("is the same control under the backtick, and just as inert", async () => {
@@ -336,7 +355,7 @@ describe("a console with no terminals", () => {
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "`", bubbles: true, cancelable: true }));
     await flush();
     expect(size()).toBe("collapsed");
-    expect(storedSize()).toBeNull();
+    expect(await storedSize()).toBeNull();
   });
 
   it("shuts when the last terminal is closed, and reopens at the size it was left", async () => {
@@ -348,14 +367,14 @@ describe("a console with no terminals", () => {
     region().querySelector('[data-close="term-1"]').click();
     await flush();
     expect(size()).toBe("collapsed");
-    expect(storedSize()).toBe("full");
+    expect(await storedSize()).toBe("full");
     region().querySelector(".console-new").click();
     await flush();
     expect(size()).toBe("full");
   });
 
   it("renders shut when the size it remembers is open and nothing is running", async () => {
-    localStorage.setItem("build.console.size.branch:p1:build/login", "half");
+    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
     await mountOver([]);
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
@@ -371,7 +390,7 @@ describe("a console with no terminals", () => {
   });
 
   it("stays shut until the checkout it remembers as open has something in it", async () => {
-    localStorage.setItem("build.console.size.branch:p1:build/login", "half");
+    await writeCached(sizeAddress(), { size: "half", reopenSize: "half" });
     await seedConsoleWorld({ terminals: [] });
     panel = mountConsole(region(), branchAddress());
     await flush();

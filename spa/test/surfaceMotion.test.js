@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
+import { resetMemoryCache } from "./memoryCache.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
@@ -12,6 +13,7 @@ import {
 import { surfacesSnapshot } from "./surfacesFixture.js";
 
 vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notifySuccess: () => {} }));
+vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 
 const SURFACES_KEY = "branch-1:agent-1";
 
@@ -51,6 +53,7 @@ const mount = () => {
 
 beforeEach(() => {
   globalThis.localStorage.clear();
+  resetMemoryCache();
   started = recordAnimations();
 });
 
@@ -166,6 +169,7 @@ describe("the rows of an open viewer", () => {
     const surfaces = mount();
     surfaces.set(shells("cargo test"));
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     started.length = 0;
@@ -195,13 +199,14 @@ describe("completed history", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(AGENT_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     const completed = viewerHost().querySelector(".surface-completed");
     const history = viewerHost().querySelector(".surface-history-toggle");
     started.length = 0;
     history.click();
-    await motionBeat();
+    await vi.waitFor(() => expect(animationsOn(completed)).toHaveLength(1));
 
     expect(history.getAttribute("aria-pressed")).toBe("true");
     expect(animationsOn(completed)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
@@ -210,7 +215,7 @@ describe("completed history", () => {
 
     started.length = 0;
     history.click();
-    await motionBeat();
+    await vi.waitFor(() => expect(animationsOn(completed)).toHaveLength(1));
     expect(history.getAttribute("aria-pressed")).toBe("false");
     expect(animationsOn(completed)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
     await settleMotion();
@@ -221,11 +226,13 @@ describe("completed history", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(AGENT_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     const completed = viewerHost().querySelector(".surface-completed");
     const history = viewerHost().querySelector(".surface-history-toggle");
     history.click();
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("true"));
     await settleMotion();
     completed.querySelector(".surface-agent-summary").click();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -234,6 +241,7 @@ describe("completed history", () => {
     const updated = surfacesSnapshot();
     updated.subagents[0] = { ...updated.subagents[0], tokens: 1400 };
     surfaces.set(updated);
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("false"));
     await settleMotion();
 
     expect(history.getAttribute("aria-pressed")).toBe("false");
@@ -241,6 +249,7 @@ describe("completed history", () => {
     expect(completed.hidden).toBe(false);
 
     history.click();
+    await vi.waitFor(() => expect(history.getAttribute("aria-pressed")).toBe("true"));
     await settleMotion();
     expect(history.getAttribute("aria-pressed")).toBe("true");
     expect(completed.open).toBe(true);
@@ -268,6 +277,7 @@ describe("the phases an open workflow stacks", () => {
   const openWorkflowViewer = async (surfaces, phases) => {
     surfaces.set(workflow(phases));
     pillOf(WORKFLOW_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
     started.length = 0;
   };
@@ -311,6 +321,7 @@ describe("the viewer at the bottom of the conversation", () => {
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await motionBeat();
 
     expect(animationsOn(viewerHost())[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
@@ -323,10 +334,12 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await motionBeat();
 
     expect(animationsOn(viewerHost())[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
@@ -341,12 +354,15 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await motionBeat();
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     expect(viewerHost().hidden).toBe(false);
@@ -360,6 +376,8 @@ describe("the viewer at the bottom of the conversation", () => {
     await settleMotion();
 
     pillOf(SHELL_ENTRY_KIND).click();
+
+    await block.settled();
     await motionBeat();
     surfaces.dispose();
     block = null;
@@ -373,10 +391,12 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
+    await block.settled();
     await settleMotion();
 
     started.length = 0;
     pillOf(CHECKLIST_ENTRY_KIND).click();
+    await block.settled();
     await motionBeat();
 
     expect(animationsOn(viewerHost())).toEqual([]);

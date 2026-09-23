@@ -52,6 +52,7 @@ import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
 import { carriesIssueAttachments } from "./issueAttachments.js";
 import { labelsOf } from "./trackerFilters.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 export const ISSUE_PAGE_SIZE = 25;
 const VIEW_IDS = new Set([DASHBOARD_VIEW, LIST_VIEW, BOARD_VIEW]);
@@ -78,6 +79,16 @@ export function mountIssuesPane(host, options) {
     focusIssue: null,
     readSerial: 0,
   };
+  const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
+  const uiSnapshot = () => ({
+    view: state.view,
+    filters: state.filters,
+    stateFilterTouched: state.stateFilterTouched,
+    collapsedGroups: [...state.collapsedGroups],
+    visibleCount: state.visibleCount,
+  });
+  let uiRecord;
+  const saveUi = () => { if (uiRecord) void uiRecord.write(uiSnapshot()); };
 
   // ---- what the feed knows about this project's agents ---------------------
 
@@ -136,26 +147,20 @@ export function mountIssuesPane(host, options) {
   // (#43). Nothing that follows can take the reader's focus, their caret or
   // the menu they have open, because nothing that follows touches a control.
   const chrome = mountIssuesChrome(host, {
+    menuAddressOf: (name) => uiAddress({ ...uiScope, kind: "menu", sub: name }),
     onView: (view) => {
       if (state.view === view) return;
       state.view = view;
       if (!state.stateFilterTouched) state.filters.state = view === DASHBOARD_VIEW ? "" : DEFAULT_FILTERS.state;
       state.visibleCount = ISSUE_PAGE_SIZE;
-      state.onViewChange?.(state.view);
-      previewQuery();
-      paint();
-      watchQuery();
-      void refresh();
+      saveUi();
     },
     onNew: () => fileIssue(),
     onFilter: (name, chosen) => {
       state.filters = { ...state.filters, [name]: chosen };
       if (name === "state") state.stateFilterTouched = true;
       state.visibleCount = ISSUE_PAGE_SIZE;
-      previewQuery();
-      paint();
-      watchQuery();
-      void refresh();
+      saveUi();
     },
     onClear: () => {
       // Back to what the tab opens on, not to everything: Clear undoes the
@@ -163,10 +168,7 @@ export function mountIssuesPane(host, options) {
       state.filters = { ...DEFAULT_FILTERS, state: state.view === DASHBOARD_VIEW ? "" : DEFAULT_FILTERS.state };
       state.stateFilterTouched = false;
       state.visibleCount = ISSUE_PAGE_SIZE;
-      previewQuery();
-      paint();
-      watchQuery();
-      void refresh();
+      saveUi();
     },
   });
 
@@ -179,13 +181,13 @@ export function mountIssuesPane(host, options) {
       total: state.shown.length,
       more: () => {
         state.visibleCount += ISSUE_PAGE_SIZE;
-        paint();
+        saveUi();
       },
     },
     onToggleGroup: (id) => {
       if (state.collapsedGroups.has(id)) state.collapsedGroups.delete(id);
       else state.collapsedGroups.add(id);
-      paint();
+      saveUi();
     },
   });
 
@@ -239,6 +241,21 @@ export function mountIssuesPane(host, options) {
     wireColumnDrops();
     focusPendingIssue();
   };
+
+  uiRecord = watchUiState(uiAddress({ ...uiScope, kind: "filters" }), (saved) => {
+    if (state.disposed || !saved) return;
+    const priorView = state.view;
+    state.view = VIEW_IDS.has(saved.view) ? saved.view : state.view;
+    state.filters = { ...state.filters, ...(saved.filters || {}) };
+    state.stateFilterTouched = Boolean(saved.stateFilterTouched);
+    state.collapsedGroups = new Set(saved.collapsedGroups || []);
+    state.visibleCount = Number(saved.visibleCount) || ISSUE_PAGE_SIZE;
+    if (priorView !== state.view) state.onViewChange?.(state.view);
+    previewQuery();
+    paint();
+    watchQuery();
+    void refresh();
+  });
 
   function focusPendingIssue() {
     if (!state.focusIssue) return;
@@ -500,6 +517,7 @@ export function mountIssuesPane(host, options) {
     }
     state.composer = openIssueComposer(chrome.composeSlot, {
       projectId: state.projectId,
+      deviceId: state.deviceId,
       projectName: state.projectName,
       columns: state.columns,
       labels: labelsOf(state.all),
@@ -573,9 +591,12 @@ export function mountIssuesPane(host, options) {
 
   // ---- lifecycle -----------------------------------------------------------
 
-  paint();
-  watchQuery();
-  void paintFromCache().then(() => refresh());
+  void uiRecord.ready.then(() => {
+    if (state.disposed) return;
+    paint();
+    watchQuery();
+    void paintFromCache().then(() => refresh());
+  });
   // No cadence: nothing in this client polls. The tab hears that an issue of
   // this project moved and reads the list again, and the pass behind it
   // (core/cacheSync.js) is the whole of the safety net.
@@ -601,6 +622,7 @@ export function mountIssuesPane(host, options) {
     },
     dispose() {
       state.disposed = true;
+      uiRecord.dispose();
       watcher.dispose();
       wholeListWatcher?.();
       details.dispose();

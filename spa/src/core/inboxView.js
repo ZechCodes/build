@@ -44,7 +44,7 @@ import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
-import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
+import { CAPTURE_CONTROLS, captureError, disposeCaptureRows, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { hideProject } from "./projectHide.js";
 import {
@@ -54,7 +54,7 @@ import {
   rowDeviceNames,
   workspaceProjectBlocks,
 } from "./inboxProjects.js";
-import { loadProjectFolds, persistProjectFolds } from "./railMode.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { openCreateWork } from "./createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -84,6 +84,20 @@ const recentOpen = new Map();
 // they have said nothing about folds as the face decides. Remembered on this
 // device.
 let folds = new Map();
+let foldRecord = null;
+let recentRecord = null;
+let menuRecord = null;
+const onOutsideMenu = (event) => {
+  if (!event.target.closest(".inbox-actions")) closeMenu();
+};
+const syncMenuDismissal = () => {
+  document.removeEventListener("pointerdown", onOutsideMenu);
+  if (openMenuKey !== null) document.addEventListener("pointerdown", onOutsideMenu);
+};
+const foldAddress = uiAddress({ view: "inbox", kind: "fold", sub: "projects" });
+const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
+const menuAddress = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
+const writeFolds = () => foldRecord?.write({ entries: [...folds] });
 // Each block as last painted, by project key: where its head opens, what it is
 // called — which is what the create it offers is titled with — and the bare
 // project id every RPC still wants.
@@ -138,6 +152,7 @@ export function setInboxView(next) {
   if (next === view) return;
   view = next;
   openMenuKey = null;
+  if (menuRecord) void menuRecord.write({ key: null });
   draw();
 }
 
@@ -349,8 +364,12 @@ const blockOf = (projectKey) => blocksPainted.get(projectKey) || null;
 
 function closeMenu() {
   if (openMenuKey === null) return;
-  openMenuKey = null;
-  draw();
+  if (menuRecord) void menuRecord.write({ key: null });
+  else {
+    openMenuKey = null;
+    syncMenuDismissal();
+    draw();
+  }
 }
 
 /** One control per attribute a row paints, in the order a press is read in:
@@ -374,7 +393,8 @@ function finishRow(key) {
 
 function toggleRecent(control) {
   recentOpen.set(control.dataset.recentToggle, control.getAttribute("aria-expanded") !== "true");
-  draw();
+  if (recentRecord) void recentRecord.write({ entries: [...recentOpen] });
+  else draw();
 }
 
 /** The press answered off a table of controls: true when it was one of them. */
@@ -425,15 +445,13 @@ function onListClick(event) {
 /** The row's menu, one step behind the row: it opens, and the next press
  *  anywhere outside it shuts it again. */
 function openMenu(key) {
-  openMenuKey = openMenuKey === key ? null : key;
-  draw();
-  if (openMenuKey === null) return;
-  const close = (outside) => {
-    if (outside.target.closest(".inbox-actions")) return;
-    document.removeEventListener("pointerdown", close);
-    closeMenu();
-  };
-  setTimeout(() => document.addEventListener("pointerdown", close), 0);
+  const next = openMenuKey === key ? null : key;
+  if (menuRecord) void menuRecord.write({ key: next });
+  else {
+    openMenuKey = next;
+    syncMenuDismissal();
+    draw();
+  }
 }
 
 // ---- project blocks -----------------------------------------------------------
@@ -490,7 +508,7 @@ function hideBlock(projectKey) {
   const block = blockOf(projectKey);
   if (!block) return;
   folds.delete(projectKey);
-  persistProjectFolds(folds, localStorage);
+  void writeFolds();
   void hideProject({ deviceId: block.deviceId, projectKey });
 }
 
@@ -521,8 +539,8 @@ function toggleFold(projectKey) {
   const block = blockOf(projectKey);
   if (!block) return;
   folds.set(projectKey, !blockIsFolded(block, folds));
-  persistProjectFolds(folds, localStorage);
-  draw();
+  if (foldRecord) void writeFolds();
+  else draw();
 }
 
 /** Creating a branch gives the new row somewhere visible to land. */
@@ -530,8 +548,8 @@ function expandFold(projectKey) {
   const block = blockOf(projectKey);
   if (!block || !blockIsFolded(block, folds)) return;
   folds.set(projectKey, false);
-  persistProjectFolds(folds, localStorage);
-  draw();
+  if (foldRecord) void writeFolds();
+  else draw();
 }
 
 /** Opening an entry reads it — every agent on it — and goes where it lives. */
@@ -544,7 +562,7 @@ function openEntry(entry) {
 async function toggleMute(entry) {
   if (!entry) return;
   const muted = !entry.muted;
-  openMenuKey = null;
+  closeMenu();
   await optimisticVerb(entry, {
     write: () => patchFeedRow(entry.deviceId, entry, { muted }),
     call: () => verbCall(entry)("entity.mute", { entity_id: entry.entityId, muted }),
@@ -564,7 +582,7 @@ async function toggleMute(entry) {
 async function dismissEntry(entry) {
   const params = entry && dismissParamsOf(entry);
   if (!params) return;
-  openMenuKey = null;
+  closeMenu();
   await optimisticVerb(entry, {
     write: () => patchFeedRow(entry.deviceId, entry, { dismissed: true }),
     call: async () => {
@@ -686,7 +704,14 @@ export function unmountInboxList() {
   mounted = false;
   stopSubscriptions.forEach((stop) => stop());
   stopSubscriptions = [];
-  initCaptureRows({ onChange: () => {}, entryOf: () => null });
+  foldRecord?.dispose();
+  recentRecord?.dispose();
+  menuRecord?.dispose();
+  document.removeEventListener("pointerdown", onOutsideMenu);
+  foldRecord = null;
+  recentRecord = null;
+  menuRecord = null;
+  disposeCaptureRows();
 }
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
@@ -696,7 +721,23 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
-  folds = loadProjectFolds(localStorage);
+  folds = new Map();
+  recentOpen.clear();
+  openMenuKey = null;
+  foldRecord = watchUiState(foldAddress, (saved) => {
+    folds = new Map(saved?.entries || []);
+    draw();
+  });
+  recentRecord = watchUiState(recentAddress, (saved) => {
+    recentOpen.clear();
+    for (const [key, value] of saved?.entries || []) recentOpen.set(key, value);
+    draw();
+  });
+  menuRecord = watchUiState(menuAddress, (saved) => {
+    openMenuKey = saved?.key || null;
+    syncMenuDismissal();
+    draw();
+  });
   initCaptureRows({ onChange: draw, entryOf });
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost

@@ -39,6 +39,7 @@ import { esc, messageOf } from "./text.js";
 import { ICON_PAPERCLIP } from "./icons.js";
 import { composerPartIds, autoGrow, mountComposerAttachments } from "./composer.js";
 import { mountFilterMenu } from "./filterMenuControl.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { confirmAction } from "./confirm.js";
 import { PRIORITIES, columnsOf } from "./trackerModel.js";
 import { assignRefusalText } from "./trackerAssignee.js";
@@ -136,6 +137,13 @@ export const composerHasContent = (draft, attachments) =>
   );
 
 const ids = composerPartIds(INPUT_ID);
+const savedDraftFields = (saved) => ({
+  title: saved.title,
+  body: saved.body || "",
+  status: saved.status || [],
+  priority: saved.priority || [],
+  labels: saved.labels || [],
+});
 
 /// The body box, in the shape `mountComposerAttachments` reads: it asks for
 /// `.composer`, the tray, the textarea, the hidden file input and the
@@ -191,6 +199,7 @@ const FACETS = [
  */
 export function openIssueComposer(host, {
   projectId,
+  deviceId = "",
   projectName,
   columns,
   labels = [],
@@ -214,6 +223,23 @@ export function openIssueComposer(host, {
 
   const draft = { title: "", body: "", status: [], priority: [], labels: [] };
   const state = { draft: emptyAssigneeDraft("none"), catalog, busy: false, closed: false };
+  const draftAddress = uiAddress({ deviceId, entityId: projectId, view: "issue-composer", kind: "draft" });
+  const snapshot = () => ({ ...draft, assignee: state.draft });
+  const draftRecord = watchUiState(draftAddress, (saved) => {
+    if (state.closed || !saved || typeof saved.title !== "string") return;
+    Object.assign(draft, savedDraftFields(saved));
+    state.draft = saved.assignee || state.draft;
+    if (title.value !== draft.title) title.value = draft.title;
+    if (body.value !== draft.body) body.value = draft.body;
+    paintMenus();
+    paintAssignee();
+    paintPress();
+    autoGrow(body);
+  }, { debounceMs: 180 });
+  const saveDraft = (debounced = false) => {
+    if (debounced) draftRecord.schedule(snapshot());
+    else void draftRecord.write(snapshot());
+  };
 
   // ---- the parts that are made once ----------------------------------------
 
@@ -235,8 +261,10 @@ export function openIssueComposer(host, {
       facet.name,
       mountFilterMenu(facets, {
         ...facet,
+        cacheAddress: uiAddress({ deviceId, entityId: projectId, view: "issue-composer", kind: "menu", sub: facet.name }),
         onChange: (chosen) => {
           draft[facet.name] = chosen;
+          saveDraft();
           paintMenus();
           paintPress();
         },
@@ -263,6 +291,7 @@ export function openIssueComposer(host, {
       onDraft: (next) => {
         const reshaped = next.optionId !== state.draft.optionId || next.choiceOpen !== state.draft.choiceOpen;
         state.draft = next;
+        saveDraft(reshaped === false);
         if (reshaped) paintAssignee();
         paintPress();
       },
@@ -330,6 +359,7 @@ export function openIssueComposer(host, {
       const params = composedIssueParams(draft, { projectId, assignee, attachments: sent });
       const answer = await callRpc("issues.create", params);
       if (state.closed) return;
+      await draftRecord.write({ title: "", body: "", status: [], priority: [], labels: [], assignee: emptyAssigneeDraft("none") });
       close({ filed: true });
       onFiled?.(answer, outcomeOf(assignee, sent, answer));
     } catch (error) {
@@ -343,6 +373,7 @@ export function openIssueComposer(host, {
   function close({ filed = false } = {}) {
     if (state.closed) return;
     state.closed = true;
+    draftRecord.dispose();
     menus.forEach((menu) => menu.dispose());
     host.innerHTML = "";
     onClosed?.({ filed });
@@ -363,6 +394,7 @@ export function openIssueComposer(host, {
       });
       if (!sure || state.closed) return;
     }
+    await draftRecord.write({ title: "", body: "", status: [], priority: [], labels: [], assignee: emptyAssigneeDraft("none") });
     close();
   }
 
@@ -386,9 +418,11 @@ export function openIssueComposer(host, {
   };
   title.oninput = () => {
     draft.title = title.value;
+    saveDraft(true);
   };
   body.oninput = () => {
     draft.body = body.value;
+    saveDraft(true);
   };
   body.onkeydown = (event) => {
     if (!files(event)) return;

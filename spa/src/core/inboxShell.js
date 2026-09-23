@@ -6,13 +6,21 @@
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { inboxListRouteChanged, mountInboxList, openNewProject, setInboxView } from "./inboxView.js";
-import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
+import { railViewSwitchHtml } from "./railMode.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import { subscribeInboxAttentionCount } from "./inboxAttention.js";
 import { ICON_PIN, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { syncPinButton } from "./pinControl.js";
 import "../styles/shell.css";
 
-const COLLAPSED_KEY = "build.inbox.collapsed";
+const COLLAPSED_ADDRESS = uiAddress({ view: "inbox", kind: "fold", sub: "rail" });
+const VIEW_ADDRESS = uiAddress({ view: "inbox", kind: "filter", sub: "face" });
+let collapseRecord = null;
+let viewRecord = null;
+let pendingCollapseOptions = null;
+let desiredCollapsed = false;
+let collapsePaint = Promise.resolve();
+let railReady = Promise.resolve();
 
 /** The width the rail stops being a column and is laid over the view instead
  *  (styles/shell.css, `@media (max-width: 900px)`). One number, because every
@@ -33,6 +41,23 @@ export function railStartsCollapsed(stored, viewportWidth) {
 }
 
 export function setInboxCollapsed(on, { animate = true, persist = true, reveal = on } = {}) {
+  desiredCollapsed = on;
+  if (persist && collapseRecord) {
+    pendingCollapseOptions = { animate, reveal };
+    collapsePaint = collapseRecord.write({ collapsed: on });
+    return collapsePaint;
+  }
+  applyInboxCollapsed(on, { animate, reveal });
+  collapsePaint = Promise.resolve();
+  return collapsePaint;
+}
+
+/** Resolves after the last committed rail choice has painted from its cache readback. */
+export function whenInboxCollapsedPainted() {
+  return collapsePaint;
+}
+
+function applyInboxCollapsed(on, { animate, reveal }) {
   const wasCollapsed = document.body.classList.contains("inbox-collapsed");
   setInboxPeek(false);
   if (on) collapsedAt = Date.now();
@@ -42,13 +67,8 @@ export function setInboxCollapsed(on, { animate = true, persist = true, reveal =
   const beforeFootPadding = footerPadding(foot);
   document.body.classList.toggle("inbox-collapsed", on);
   document.body.classList.toggle("inbox-popover-open", on && reveal);
-  persistCollapsedChoice(on, persist);
   syncInboxControls(on);
   animateCollapsedChange(animate && wasCollapsed !== on, rail, before, foot, beforeFootPadding);
-}
-
-function persistCollapsedChoice(on, persist) {
-  if (persist) localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
 }
 
 function animateCollapsedChange(changed, rail, before, foot, beforeFootPadding) {
@@ -276,9 +296,8 @@ function paintViewSwitch(view) {
 }
 
 function chooseView(view) {
-  persistRailView(view, localStorage);
-  paintViewSwitch(view);
-  setInboxView(view);
+  if (viewRecord) void viewRecord.write({ view });
+  else { paintViewSwitch(view); setInboxView(view); }
 }
 
 let mounted = false;
@@ -297,20 +316,28 @@ function paintAttentionCount(count) {
 export function initInboxRail() {
   if (mounted) {
     inboxRouteChanged();
-    return;
+    return railReady;
   }
   mounted = true;
   const account = $("#nav-account");
   if (account) account.innerHTML = ICON_SETTINGS;
-  const startsCollapsed = railStartsCollapsed(localStorage.getItem(COLLAPSED_KEY), window.innerWidth);
+  const startsCollapsed = railStartsCollapsed(null, window.innerWidth);
   setInboxCollapsed(startsCollapsed, { animate: false, persist: false, reveal: false });
+  collapseRecord = watchUiState(COLLAPSED_ADDRESS, (saved) => {
+    if (typeof saved?.collapsed !== "boolean") return;
+    const options = pendingCollapseOptions || { animate: false, reveal: false };
+    pendingCollapseOptions = null;
+    const collapsed = railStartsCollapsed(saved.collapsed ? "1" : "", window.innerWidth);
+    desiredCollapsed = collapsed;
+    applyInboxCollapsed(collapsed, options);
+  });
   // One toggle in two places: the head button docks or puts the rail away, and
   // the floating one — at the same spot, while the rail is away — docks it.
   const pin = $("#inbox-collapse");
   pin.innerHTML = ICON_PIN;
   pin.onclick = () => {
     if (railOverlays()) return;
-    setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
+    setInboxCollapsed(!desiredCollapsed);
   };
   const newProject = $("#inbox-new-project");
   newProject.innerHTML = `${ICON_PLUS}<span>New project</span>`;
@@ -347,11 +374,17 @@ export function initInboxRail() {
     const button = event.target.closest("[data-inbox-view]");
     if (button) chooseView(button.dataset.inboxView);
   };
-  const view = loadRailView(localStorage);
-  paintViewSwitch(view);
-  setInboxView(view);
+  paintViewSwitch("inbox");
+  setInboxView("inbox");
+  viewRecord = watchUiState(VIEW_ADDRESS, (saved) => {
+    const view = saved?.view === "projects" ? "projects" : "inbox";
+    paintViewSwitch(view);
+    setInboxView(view);
+  });
   mountInboxList();
   inboxRouteChanged();
+  railReady = Promise.all([collapseRecord.ready, viewRecord.ready]);
+  return railReady;
 }
 
 /** Keep the rail tracking the route: the account entry at its foot, and the

@@ -317,7 +317,7 @@ describe("the list", () => {
     expect([...host.querySelectorAll(".issue-group-heading")].map((one) => one.textContent.trim()))
       .toEqual(["In progress with an agent1", "Needs you2", "Other issues1"]);
     host.querySelector('[data-issue-group-toggle="working"]').click();
-    expect(host.querySelector('[data-issue-group="working"] .issue-rows').hidden).toBe(true);
+    await vi.waitFor(() => expect(host.querySelector('[data-issue-group="working"] .issue-rows').hidden).toBe(true));
     expect(host.querySelector('[data-issue-group-toggle="working"]').getAttribute("aria-expanded")).toBe("false");
   });
 
@@ -351,10 +351,10 @@ describe("the list", () => {
     expect(titles()[0]).toBe("Cached 54");
     expect(host.querySelector(".issue-paging").textContent).toContain("25 of 54");
     host.querySelector("[data-issue-more]").click();
-    expect(titles()).toHaveLength(50);
+    await vi.waitFor(() => expect(titles()).toHaveLength(50));
     expect(titles()[25]).toBe("Cached 29");
     host.querySelector("[data-issue-more]").click();
-    expect(titles()).toHaveLength(54);
+    await vi.waitFor(() => expect(titles()).toHaveLength(54));
     expect(host.querySelector("[data-issue-more]")).toBeNull();
   });
 

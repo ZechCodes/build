@@ -43,6 +43,7 @@ import { replyOrNothing } from "./session.js";
 import { esc, messageOf } from "./text.js";
 import { captureRecordAddress } from "./captureRecords.js";
 import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import "../styles/shell.css";
 
 const CHOICE_PREFIX = "compose-choice";
@@ -56,6 +57,19 @@ const listeners = new Set(); // who repaints when the held captures change
 let feed = { items: [], projects: [] };
 let box = null; // the open box's state, or null while it is shut
 let mounted = false;
+const boxSnapshot = () => ({
+  value: box.value,
+  branch: box.branch,
+  projectId: box.projectId,
+  advancedOpen: box.advancedOpen,
+  choiceOpen: box.choiceOpen,
+  choice: box.choice,
+});
+const saveBox = (debounced = false) => {
+  if (!box?.state) return;
+  if (debounced) box.state.schedule(boxSnapshot());
+  else void box.state.write(boxSnapshot());
+};
 // Every call this box makes is the creation device's, asked for the way every
 // other surface asks: by the device it is about, with naming none meaning home.
 // A machine that cannot answer hands back a caller that refuses, so nothing
@@ -292,6 +306,8 @@ function paintBox({ focus = true } = {}) {
     busy: box.busy,
     advanced: box.advancedOpen ? advancedHtml() : "",
   });
+  box.renderedAdvancedOpen = box.advancedOpen;
+  box.renderedSnapshot = structuredClone(boxSnapshot());
   wireBox(host);
   const text = host.querySelector("#compose-text");
   if (focus) {
@@ -311,6 +327,8 @@ function wireBox(host) {
   const text = host.querySelector("#compose-text");
   text.oninput = () => {
     box.value = text.value;
+    if (box.renderedSnapshot) box.renderedSnapshot.value = text.value;
+    saveBox(true);
   };
   text.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
@@ -323,12 +341,7 @@ function wireBox(host) {
   host.querySelector("#compose-advanced").onclick = () => {
     box.value = text.value;
     box.advancedOpen = !box.advancedOpen;
-    if (!box.advancedOpen) {
-      box.stopCatalog?.();
-      box.stopCatalog = null;
-    }
-    paintBox({ focus: false });
-    if (box.advancedOpen) loadCatalogForPanel();
+    saveBox();
   };
   if (box.advancedOpen) wireAdvanced(host);
 }
@@ -339,7 +352,7 @@ function wireAdvanced(host) {
     project.onchange = () => {
       box.projectId = project.value;
       box.branch = "";
-      paintBox({ focus: false });
+      saveBox();
     };
   }
   const branchKind = host.querySelector('[data-compose-kind="branch"]');
@@ -348,6 +361,8 @@ function wireAdvanced(host) {
   if (branch) {
     branch.oninput = () => {
       box.branch = branch.value;
+      if (box.renderedSnapshot) box.renderedSnapshot.branch = branch.value;
+      saveBox(true);
     };
   }
   host.querySelector("#compose-manual-go").onclick = () => submitManual();
@@ -362,14 +377,14 @@ function wireChoice(host) {
   if (!holder) return;
   holder.querySelector("[data-agent-choice-toggle]").onclick = () => {
     box.choiceOpen = !box.choiceOpen;
-    repaintChoice(host);
+    saveBox();
   };
   // A model belongs to its provider, so a new provider starts from that
   // harness's own saved model and effort rather than the old one's.
   const onChange = (changed) => () => {
     const read = readAgentChoice(host, CHOICE_PREFIX);
     box.choice = changed.providerChanged ? agentDefaultsFor(read.provider) : reconcileAgentChoice(read, changed);
-    repaintChoice(host);
+    saveBox();
   };
   const provider = holder.querySelector(`#${CHOICE_PREFIX}-provider`);
   if (provider) provider.onchange = onChange({ providerChanged: true });
@@ -383,6 +398,7 @@ function repaintChoice(host) {
   const holder = host.querySelector(".agent-choice");
   if (!holder) return;
   holder.outerHTML = agentChoicePanelHtml(box.catalog, box.choice, { prefix: CHOICE_PREFIX, open: box.choiceOpen });
+  box.renderedSnapshot = structuredClone(boxSnapshot());
   wireChoice(host);
 }
 
@@ -424,6 +440,40 @@ function loadCatalogForPanel() {
 
 // ---- opening, closing, sending ------------------------------------------------
 
+const savedBoxFields = (saved, current) => ({
+  value: saved.value,
+  branch: saved.branch || "",
+  projectId: saved.projectId || current.projectId,
+  advancedOpen: Boolean(saved.advancedOpen),
+  choiceOpen: Boolean(saved.choiceOpen),
+  choice: saved.choice || current.choice,
+});
+
+function syncAdvancedCatalog(wasAdvanced) {
+  if (wasAdvanced && !box.advancedOpen) {
+    box.stopCatalog?.();
+    box.stopCatalog = null;
+  } else if (!wasAdvanced && box.advancedOpen) loadCatalogForPanel();
+}
+
+function restoreComposeBox(saved, opened) {
+  if (box !== opened || !saved || typeof saved.value !== "string") return;
+  const restored = savedBoxFields(saved, box);
+  // The cache announces our own writes too. Replacing the box for an identical
+  // readback drops the live control between a keystroke and the next click.
+  if (JSON.stringify(restored) === JSON.stringify(box.renderedSnapshot)) return;
+  const wasAdvanced = box.renderedAdvancedOpen;
+  const focusedId = document.activeElement?.id;
+  Object.assign(box, restored);
+  paintBox({ focus: false });
+  if (focusedId) $("#compose")?.querySelector(`#${focusedId}`)?.focus();
+  syncAdvancedCatalog(wasAdvanced);
+}
+
+async function clearBoxDraft() {
+  await box?.state?.write({ ...boxSnapshot(), value: "" });
+}
+
 export function openCompose() {
   if (!$("#compose")) return;
   if (box) {
@@ -438,17 +488,26 @@ export function openCompose() {
     // knows: nothing until that machine has answered the panel's question.
     catalog: UNASKED_CATALOG,
     advancedOpen: false,
+    renderedAdvancedOpen: false,
+    renderedSnapshot: null,
     choiceOpen: false,
     choice: loadAgentDefaults(),
     kind: "branch",
     branch: "",
     projectId: (feed.projects[0] || {}).id || "",
   };
+  const opened = box;
+  box.state = watchUiState(
+    uiAddress({ deviceId: captureDeviceId() || "", view: "compose", kind: "draft" }),
+    (saved) => restoreComposeBox(saved, opened),
+    { debounceMs: 180 },
+  );
   paintBox();
 }
 
 export function closeCompose() {
   if (!box) return;
+  box.state?.dispose();
   box.stopCatalog?.();
   box = null;
   paintPrompt();
@@ -470,6 +529,7 @@ async function submitCapture() {
   }
   if (!canSend()) {
     hold(text);
+    await clearBoxDraft();
     closeCompose();
     return;
   }
@@ -478,12 +538,14 @@ async function submitCapture() {
   paintBox({ focus: false });
   try {
     await track(await homeCall("capture.create", { text }), captureDeviceId());
+    await clearBoxDraft();
     closeCompose();
     await refreshFeed();
   } catch {
     // The text is the one thing the user cannot produce again: a device that
     // would not take it holds it here instead of losing it.
     hold(text);
+    await clearBoxDraft();
     closeCompose();
   }
 }
@@ -526,6 +588,7 @@ async function submitManual() {
  *  wherever the reply named it — on the machine it was dispatched to, since
  *  that is the only machine the new branch is on. */
 function settleManualRoute(destination) {
+  void clearBoxDraft();
   closeCompose();
   refreshFeed();
   if (destination) go({ ...destination, deviceId: captureDeviceId() });

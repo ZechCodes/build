@@ -22,6 +22,8 @@ import { resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
+import { mountFocusMemory } from "./core/focusMemory.js";
+import { resetDeviceFilterCache } from "./core/deviceFilter.js";
 
 const SELECTED_DEVICE_KEY = "build.selectedDeviceId";
 // Which machines the rail lists (core/deviceFilter.js). Minted here, beside the
@@ -48,7 +50,7 @@ export const App = {
   // Which machines the inbox, the projects face and the project menu list —
   // null for all of them. It narrows lists and nothing else: no route, no
   // session and no creation reads it.
-  deviceFilter: localStorage.getItem(DEVICE_FILTER_KEY) || null,
+  deviceFilter: null,
 
   // One-shot: set right before navigating to a branch just cut from the
   // toolbar's create form, so the branch view knows to focus the rail's
@@ -100,6 +102,8 @@ export function resetApplication() {
   terminalRouteDeviceId = null;
   forgetHomeFollow();
   forgetSecurityStops();
+  resetDeviceFilterCache();
+  App.deviceFilter = null;
   clearCacheScope();
   // The cache is what the app paints from, so the previous account's board,
   // conversations and diffs go with its devices. Not awaited: the reset is
@@ -299,6 +303,8 @@ function followRouteDevice() {
  * holding screen with nowhere to go.
  */
 export function unmountView() {
+  disposeFocus?.();
+  disposeFocus = null;
   App.routeLeaveGuard = null;
   mountedRoute = null;
   if (App.poll) {
@@ -320,6 +326,7 @@ let settingsReturnRoute = { name: "inbox" };
 // mounted; the answer to "is the reader already here?", which is what closing a
 // modal has to ask before it rebuilds a page that never went away.
 let mountedRoute = null;
+let disposeFocus = null;
 // The open modal's teardown, which is NOT App.viewDispose: that slot belongs to
 // the page underneath, and a modal that claimed it would tear that page down.
 let modalDispose = null;
@@ -394,4 +401,8 @@ function renderPage() {
   $("#root").className = "";
   mountedRoute = { ...App.route };
   (VIEWS[App.route.name] || renderInbox)();
+  disposeFocus = mountFocusMemory($("#root"), hashFromRoute(App.route), {
+    deviceId: App.route.deviceId || "",
+    entityId: App.route.workspaceId || App.route.branchId || App.route.projectId || App.route.id || "",
+  });
 }

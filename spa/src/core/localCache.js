@@ -248,9 +248,11 @@ export function readCachedMany(addresses) {
   }).then(() => records);
 }
 
-/** Write one record, stamped with when. Resolves to undefined always. */
-export function writeCached(address, value) {
-  const record = { at: Date.now(), value };
+/** Write one record, stamped with when. A local UI writer may also stamp its
+ * owner and edit sequence so a page-exit journal can distinguish its own
+ * unfinished write from a newer write in another tab. */
+export function writeCached(address, value, { source, sequence } = {}) {
+  const record = { at: Date.now(), value, ...(source ? { source, sequence } : {}) };
   const key = recordKey(address);
   return wroteStore((store) => {
     store.put(record, key);
@@ -259,6 +261,37 @@ export function writeCached(address, value) {
     // The key that was stored is the address announced, so a listener is
     // never sent to re-read an address the record is not under.
     if (wrote) announce(partsOfKey(key));
+  });
+}
+
+/** Replay one page-exit UI edit only if it is still the newest edit. The get
+ * and conditional put share a readwrite transaction, so another tab cannot
+ * insert a newer record between the comparison and the write. A same-owner
+ * in-flight write made just before page exit is ordered by edit sequence;
+ * other writers are ordered by timestamp, with ties left untouched. */
+export function writeCachedIfNewer(address, value, { at, source, sequence }) {
+  if (!Number.isFinite(at) || !source || !Number.isFinite(sequence)) return Promise.resolve(false);
+  const key = recordKey(address);
+  let applied = false;
+  return wroteStore((store) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const current = request.result;
+      const newer = !current || (current.source === source
+        ? (Number(current.sequence) || 0) < sequence
+        : (Number(current.at) || 0) < at);
+      if (!newer) return;
+      try {
+        store.put({ at: Date.now(), value, source, sequence }, key);
+        applied = true;
+      } catch {
+        store.transaction.abort();
+      }
+    };
+    return null;
+  }).then((committed) => {
+    if (committed && applied) announce(partsOfKey(key));
+    return Boolean(committed && applied);
   });
 }
 

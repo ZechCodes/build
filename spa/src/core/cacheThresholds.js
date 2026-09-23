@@ -21,6 +21,9 @@ export const UNPUSHED_COMMITS_MAX = 20;
  *  a record this side says is 256 KB. */
 export const COMMIT_PATCH_MAX_BYTES = 262144;
 
+/** Largest aggregate working-tree diff body retained until #95 adds pages. */
+export const WORKING_DIFF_MAX_BYTES = 1_048_576;
+
 /** How long the background tier holds a flush before sending it. */
 export const BACKGROUND_COOLDOWN_MS = 30000;
 

@@ -207,7 +207,7 @@ function liftMenuOutOfScroll(container, menu, closeMenu) {
  *  button whose press is NOT a single-flight action with a busy label: it is a
  *  submit that restores its own button, and re-rendering it under the poll is
  *  the composer's business. What both share is the menu. */
-export function mountSplitMenu(container, { onChoose }) {
+export function mountSplitMenu(container, { onChoose, onOpenChange = null }) {
   const caret = container.querySelector(CARET_SELECTOR);
   const menu = container.querySelector(SPLIT_MENU_SELECTOR);
 
@@ -220,9 +220,11 @@ export function mountSplitMenu(container, { onChoose }) {
   let stopWatchingOutsidePress = null;
   let settleLiftedMenu = null;
   let menuIsOpen = false;
-  const closeMenu = () => {
+  const closeMenu = (announce = true) => {
     if (!menu) return Promise.resolve();
+    const wasOpen = menuIsOpen;
     menuIsOpen = false;
+    if (wasOpen && announce) onOpenChange?.(false);
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
     return hide(menu, MENU_MOVE).then(() => {
       if (menuIsOpen || !settleLiftedMenu) return;
@@ -230,8 +232,10 @@ export function mountSplitMenu(container, { onChoose }) {
       settleLiftedMenu = null;
     });
   };
-  const openMenu = () => {
+  const openMenu = (announce = true) => {
+    if (!menu || menuIsOpen) return;
     menuIsOpen = true;
+    if (announce) onOpenChange?.(true);
     if (!settleLiftedMenu && scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
     reveal(menu, MENU_MOVE);
     if (stopWatchingOutsidePress) return;
@@ -261,7 +265,7 @@ export function mountSplitMenu(container, { onChoose }) {
         }),
     );
   }
-  return { closeMenu };
+  return { closeMenu, openMenu };
 }
 
 const menuMountedInContainer = new WeakMap();

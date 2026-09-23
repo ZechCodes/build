@@ -20,7 +20,9 @@
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { withinBytes } from "./cacheLifetime.js";
+import { WORKING_DIFF_MAX_BYTES } from "./cacheThresholds.js";
 import { createCommentLayer } from "./changesComments.js";
 import { fileKey, createFileFolds, pathOf } from "./diff.js";
 import { fileFoldOf, stackClaims } from "./diffRender.js";
@@ -34,7 +36,8 @@ import { createReviewMarks } from "./reviewMarks.js";
 import { watchEditedTimes } from "./editedTime.js";
 import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
-import { diffSortHtml, loadDiffSort, saveDiffSort } from "./diffSort.js";
+import { diffSortHtml, DIFF_SORT_LATEST } from "./diffSort.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 const fileEditedAtOf = (payload) => payload.file_edited_at || {};
 
@@ -120,7 +123,8 @@ export function createReviewPlug({
   let trayMounted = false;
   let noiseExpanded = false; // the collapsed generated-files group at the bottom
   let contextFrame = 0;
-  const folds = createFileFolds();
+  const folds = createFileFolds(() => saveReviewUi());
+  let reviewUi = null;
   // Re-review memory, per plug instance (per session): what the reviewer saw
   // when they last sent comments, which files they have approved, which they
   // have selected, and whether the stack is narrowed to only what moved since.
@@ -130,7 +134,9 @@ export function createReviewPlug({
   // at mount where it has one, so a mark made on this changeset is the same
   // mark on the stacks beside it.
   let marks = createReviewMarks();
-  let sortOrder = loadDiffSort();
+  let sortOrder = DIFF_SORT_LATEST;
+  const reviewSnapshot = () => ({ changedOnlyFilter, noiseExpanded, sortOrder, folds: folds.snapshot() });
+  const saveReviewUi = () => { if (reviewUi) void reviewUi.write(reviewSnapshot()); };
 
   /** The rendered files as the views a stamp is taken of: a whole patch's file
    *  wears a hash of its own rows as its content key, a file list's wears the
@@ -156,6 +162,7 @@ export function createReviewPlug({
 
   // The hunks behind the files in that list. A surface that reads whole
   // patches has no use for it and makes none.
+  const cacheEntityId = () => (typeof cacheEntity === "function" ? cacheEntity() : cacheEntity);
   const bodies = fetchFiles
     ? createChangesetBodies({
         addressOf: (path) => {
@@ -191,6 +198,12 @@ export function createReviewPlug({
           diffKey = null; // the stamp changes what is drawn — force the rebuild
         },
         revisionId,
+        cacheAddressOf: () => {
+          const entityId = cacheEntityId();
+          return entityId && cacheScope?.deviceId
+            ? uiAddress({ deviceId: cacheScope.deviceId, entityId, view: "changes", kind: "draft", sub: "comments" })
+            : null;
+        },
         onChange: () => {
           render();
           onCommentsChanged();
@@ -349,7 +362,8 @@ export function createReviewPlug({
   const claimNoiseGroup = (event) => {
     if (!event.target.closest(".noisehead")) return false;
     noiseExpanded = !noiseExpanded;
-    render();
+    saveReviewUi();
+    if (!reviewUi) render();
     return true;
   };
 
@@ -373,7 +387,7 @@ export function createReviewPlug({
       openFile: () => openFile,
       folds: () => folds,
       approved: () => marks.approved,
-      repaint: render,
+      repaint: () => { if (!reviewUi) render(); },
     }),
   ];
 
@@ -383,14 +397,15 @@ export function createReviewPlug({
       if (!target.classList) return;
       if (target.classList.contains("changedonly-box")) {
         changedOnlyFilter = target.checked;
+        saveReviewUi();
         diffKey = null;
-        render();
+        if (!reviewUi) render();
         return;
       }
       if (target.classList.contains("diffsort-select")) {
         sortOrder = target.value;
-        saveDiffSort(sortOrder);
-        render();
+        saveReviewUi();
+        if (!reviewUi) render();
         return;
       }
       if (!target.classList.contains("fselect-box")) return;
@@ -417,10 +432,28 @@ export function createReviewPlug({
   // entity the diff belongs to. A worktree names its entity with a function —
   // the id moves when the worktree is adopted — so it is asked, never read as
   // an id. A surface that names none caches nothing.
-  const cacheEntityId = () => (typeof cacheEntity === "function" ? cacheEntity() : cacheEntity);
   const diffAddress = () => {
     const entityId = cacheEntityId();
     return entityId ? cacheScope?.address({ entityId, kind: "diff" }) || null : null;
+  };
+  const mountReviewUi = () => {
+    reviewUi?.dispose();
+    const entityId = cacheEntityId();
+    const address = entityId && cacheScope?.deviceId
+      ? uiAddress({ deviceId: cacheScope.deviceId, entityId, view: "changes", kind: "review" })
+      : null;
+    reviewUi = address ? watchUiState(address, (saved) => {
+      if (!host || !saved) return;
+      changedOnlyFilter = Boolean(saved.changedOnlyFilter);
+      noiseExpanded = Boolean(saved.noiseExpanded);
+      sortOrder = saved.sortOrder || DIFF_SORT_LATEST;
+      folds.restore(saved.folds);
+      if (paintChangeset) render();
+    }) : null;
+  };
+  const standUpAfterUi = () => {
+    if (reviewUi) void reviewUi.ready.then(standUp);
+    else void standUp();
   };
   let refreshHeld = false; // a wire answer dropped because repainting was frozen
   let recordHeld = false; // a record that moved while repainting was frozen
@@ -550,6 +583,25 @@ export function createReviewPlug({
     render();
   };
 
+  const acceptPulledDiff = async (address, before, payload, patchUnchanged) => {
+    if (payload.truncated || !withinBytes(payload.patch, WORKING_DIFF_MAX_BYTES)) {
+      // #94: show this response only in this mount. #95 will retain large
+      // diffs as pages; neither an oversized body nor a cut one enters cache.
+      if (address) {
+        const current = await readCached(address);
+        if (current?.at !== before?.at) return;
+        await deleteCached([address]);
+      }
+      paintCachelessDiff(payload, patchUnchanged);
+      return;
+    }
+    if (address) {
+      await writePulledDiff(address, before, payload, patchUnchanged);
+      return;
+    }
+    paintCachelessDiff(payload, patchUnchanged);
+  };
+
   const paintOnce = async () => {
     if (!host || isOffline()) return;
     const address = diffAddress();
@@ -568,13 +620,7 @@ export function createReviewPlug({
         patch: renderedPatch,
         file_edited_at: payload.file_edited_at || fileEditedAt,
       };
-    if (address) {
-      // A push may have moved the record while this read was in flight. The
-      // announcement already takes that newer record up; never roll it back.
-      await writePulledDiff(address, before, payload, patchUnchanged);
-      return;
-    }
-    paintCachelessDiff(payload, patchUnchanged);
+    await acceptPulledDiff(address, before, payload, patchUnchanged);
   };
 
   // Push delivery and the safety timer can land together. Serialize them so a
@@ -649,7 +695,7 @@ export function createReviewPlug({
       onCommentsChanged = onComments;
       onMarksChanged = onMarks;
       if (reviewMarks) marks = reviewMarks;
-      sortOrder = loadDiffSort();
+      mountReviewUi();
       paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       refreshHeld = false;
@@ -657,7 +703,7 @@ export function createReviewPlug({
       responseDiffKey = null;
       host.innerHTML = '<div class="empty">loading…</div>';
       watchDiffRecord();
-      void standUp();
+      standUpAfterUi();
       editedTimeWatcher = watchEditedTimes(host);
     },
 
@@ -674,6 +720,8 @@ export function createReviewPlug({
     sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
+      reviewUi?.dispose();
+      reviewUi = null;
       detachViewingContext();
       unwatchDiff?.();
       unwatchDiff = null;

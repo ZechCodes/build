@@ -88,7 +88,7 @@ const showView = (button, view) => {
  * `onFilter` is given the filter's name and its new value, and the rest take
  * nothing — a press is a press.
  */
-export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
+export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear, menuAddressOf = () => null }) {
   host.innerHTML = chromeHtml();
   const body = host.querySelector(".issue-body");
   // Between the bar and the rows, and OUTSIDE the body: the body is repainted
@@ -104,7 +104,11 @@ export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear }) {
   // order the mounts happened to run in.
   const menus = FILTERS.map((filter) => ({
     ...filter,
-    control: mountFilterMenu(bar, { ...filter, onChange: (chosen) => onFilter(filter.name, chosen) }),
+    control: mountFilterMenu(bar, {
+      ...filter,
+      cacheAddress: menuAddressOf(filter.name),
+      onChange: (chosen) => onFilter(filter.name, chosen),
+    }),
   }));
   menus.forEach(({ control }) => bar.insertBefore(control.element, clear));
 

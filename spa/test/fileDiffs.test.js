@@ -114,6 +114,27 @@ describe("createFileDiffs", () => {
     diffs.dispose();
   });
 
+  it("keeps a normal body but paints an oversized or truncated body only from the response", async () => {
+    const call = vi.fn(async () => ({ files: [
+      { path: "a.js", content_key: "key-a", patch: "ok", truncated: false },
+      { path: "b.js", content_key: "key-b", patch: "x".repeat(fileDiffs.FILE_DIFF_MAX_BYTES + 1), truncated: false },
+    ] }));
+    const diffs = mountDiffs(call);
+    await diffs.sync({ status: TWO, openPaths: new Set(["a.js", "b.js"]) });
+    expect((await cache.readCached(address("a.js"))).value.patch).toBe("ok");
+    expect(await cache.readCached(address("b.js"))).toBeUndefined();
+    expect(diffs.bodyOf("b.js").patch).toHaveLength(fileDiffs.FILE_DIFF_MAX_BYTES + 1);
+    diffs.dispose();
+
+    const cut = mountDiffs(vi.fn(async () => ({ files: [
+      { path: "a.js", content_key: "next", patch: "cut", truncated: true },
+    ] })));
+    await cut.sync({ status: status([statusFile("a.js", "next")]), openPaths: new Set(["a.js"]) });
+    expect(await cache.readCached(address("a.js"))).toBeUndefined();
+    expect(cut.bodyOf("a.js")).toMatchObject({ patch: "cut", truncated: true });
+    cut.dispose();
+  });
+
   it("reads a body back from the local cache instead of the wire", async () => {
     await cache.writeCached(address("a.js"), bodyFor("a.js", "key-a"));
     const calls = [];

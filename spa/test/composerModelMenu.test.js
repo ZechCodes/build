@@ -10,7 +10,13 @@
 // spends, which is why the menu can be pressed mid-turn without stopping one.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { composerHtml, composerPartIds, mountComposerModelMenu } from "../src/core/composer.js";
+import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import { uiAddress } from "../src/core/localUiState.js";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const IDS = { input: "ti", send: "ts", hint: "th" };
 const CATALOG = {
@@ -41,11 +47,11 @@ const reasoningItems = () => [...reasoningMenu().querySelectorAll(".mi")].map((i
 const item = (action) => menu().querySelector(`.mi[data-action="${action}"]`);
 const reasoningItem = (action) => reasoningMenu().querySelector(`.mi[data-action="${action}"]`);
 
-const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "", activeEffort = "" } = {}) => {
+const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "", activeEffort = "", cacheKey = null } = {}) => {
   document.body.innerHTML = `<div id="host">${composerHtml({
     inputId: IDS.input, sendId: IDS.send, hintId: IDS.hint, placeholder: "…", modelMenu: true,
   })}</div>`;
-  const control = mountComposerModelMenu(host(), { ids: IDS, onChoose });
+  const control = mountComposerModelMenu(host(), { ids: IDS, onChoose, cacheKey });
   control.set(CATALOG, provider, choice, activeModel, activeEffort);
   return { control, onChoose };
 };
@@ -55,6 +61,23 @@ beforeEach(() => {
 });
 
 describe("where the menu sits", () => {
+  it("restores and redraws an open conversation menu from real cache writes", async () => {
+    await wipeCache();
+    const address = uiAddress({ entityId: "conversation-menu", view: "composer", kind: "menu", sub: "model" });
+    await writeCached(address, { open: "model" });
+    const { control } = mount({ provider: "claude_adk", model: "", effort: "" }, { cacheKey: "conversation-menu" });
+    await control.ready;
+    expect(menu().hidden).toBe(false);
+
+    await writeCached(address, { open: "reasoning" });
+    await vi.waitFor(() => expect(reasoningMenu().hidden).toBe(false));
+    expect(menu().hidden).toBe(true);
+
+    reasoningButton().click();
+    await vi.waitFor(async () => expect((await readCached(address))?.value?.open).toBeNull());
+    control.dispose();
+  });
+
   it("is on the row's left, opposite the send", () => {
     const html = composerHtml({ inputId: "i", sendId: "s", hintId: "h", placeholder: "p", modelMenu: true });
     const bar = html.slice(html.indexOf('class="composer-bar"'));

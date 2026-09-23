@@ -19,9 +19,10 @@ import { App } from "./app.js";
 import { goFromInbox } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
-import { rememberDeviceFilter } from "./core/deviceFilter.js";
+import { mountDeviceFilterCache, rememberDeviceFilter } from "./core/deviceFilter.js";
 import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
+import { uiAddress, watchUiState } from "./core/localUiState.js";
 
 let presenceGeneration = 0;
 const deviceListListeners = new Set();
@@ -41,13 +42,13 @@ let latestDeviceRead = Promise.resolve([]);
  */
 function takeUpCachedDevices({ clearMissing = false } = {}) {
   const generation = ++deviceReadGeneration;
-  const read = readCached(DEVICES_ADDRESS).then((record) => {
+  const read = readCached(DEVICES_ADDRESS).then(async (record) => {
     if (generation !== deviceReadGeneration) return App.devices;
     if (!record && !clearMissing) return App.devices;
     const devices = Array.isArray(record?.value) ? record.value : [];
     App.devices = devices;
     syncDeviceRecoveryPresence(devices);
-    forgetFilterOnMissingDevice();
+    await forgetFilterOnMissingDevice();
     for (const listener of [...deviceListListeners]) listener(devices);
     return devices;
   });
@@ -109,7 +110,8 @@ export const cacheRevokedDevice = (deviceId) => changeCachedDevices((devices) =>
  *  at all, with nothing on screen to say why. The account is what the picker is
  *  a filter over, so a device leaving it takes the filter with it. */
 function forgetFilterOnMissingDevice() {
-  if (App.deviceFilter && !deviceFor(App.deviceFilter)) rememberDeviceFilter(null);
+  if (App.deviceFilter && !deviceFor(App.deviceFilter)) return rememberDeviceFilter(null);
+  return Promise.resolve();
 }
 
 /** The account's entry for one device, as the list last saw it. */
@@ -214,7 +216,7 @@ export function paintDevicePicker() {
   const picker = $("#devpick");
   if (!picker) return;
   const menu = picker.querySelector(".device-picker-menu");
-  const wasOpen = Boolean(menu && !menu.hidden);
+  const wasOpen = pickerMenuOpen;
   const focused = focusedPickerControl(picker);
   picker.hidden = App.gated || App.devices.length === 0;
   if (picker.hidden) return;
@@ -228,7 +230,7 @@ export function paintDevicePicker() {
     <div class="device-picker-menu" id="device-picker-menu" aria-label="Devices" hidden>
       ${pickerRowsHtml()}
     </div>`;
-  setPickerOpen(picker, wasOpen);
+  applyPickerOpen(picker, wasOpen);
   restorePickerFocus(picker, focused);
   scheduleLimitCountdown();
 }
@@ -344,11 +346,21 @@ function deviceIsOffline(device) {
   return device.status !== "online" || Boolean(contextFor(device.id)?.offline);
 }
 
-function setPickerOpen(picker, open) {
+let pickerMenuOpen = false;
+let pickerMenuRecord = null;
+
+function applyPickerOpen(picker, open) {
   const menu = picker.querySelector(".device-picker-menu");
   if (!menu) return;
   menu.hidden = !open;
   picker.querySelector(".device-picker-toggle").setAttribute("aria-expanded", String(open));
+}
+
+function setPickerOpen(picker, open) {
+  if (pickerMenuRecord) return pickerMenuRecord.write({ open });
+  pickerMenuOpen = open;
+  applyPickerOpen(picker, open);
+  return Promise.resolve();
 }
 
 /** Show one machine's work, or every machine's. Nothing is connected and
@@ -356,8 +368,7 @@ function setPickerOpen(picker, open) {
  *  already said (core/deviceFilter.js), and the reader stays where they are. */
 function chooseDeviceFilter(picker, deviceId) {
   setPickerOpen(picker, false);
-  rememberDeviceFilter(deviceId);
-  paintDevicePicker();
+  void rememberDeviceFilter(deviceId).then(paintDevicePicker);
 }
 
 function pickerClick(event, picker) {
@@ -388,11 +399,12 @@ function pickerKeydown(event, picker) {
   }
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
-  setPickerOpen(picker, true);
-  const buttons = [...picker.querySelectorAll(".device-picker-menu button")];
-  const index = buttons.indexOf(document.activeElement);
-  const next = pickerFocusIndex(event.key, index, buttons.length);
-  buttons[next]?.focus();
+  void setPickerOpen(picker, true).then(() => {
+    const buttons = [...picker.querySelectorAll(".device-picker-menu button")];
+    const index = buttons.indexOf(document.activeElement);
+    const next = pickerFocusIndex(event.key, index, buttons.length);
+    buttons[next]?.focus();
+  });
 }
 
 function pickerFocusIndex(key, index, length) {
@@ -404,7 +416,13 @@ function pickerFocusIndex(key, index, length) {
 let removePickerListeners = () => {};
 export function initDevicePicker() {
   removePickerListeners();
+  pickerMenuOpen = false;
+  void mountDeviceFilterCache().then(paintDevicePicker);
   const picker = $("#devpick");
+  pickerMenuRecord = watchUiState(uiAddress({ view: "inbox", kind: "menu", sub: "device-picker" }), (saved) => {
+    pickerMenuOpen = Boolean(saved?.open);
+    applyPickerOpen(picker, pickerMenuOpen);
+  });
   picker.onclick = (event) => pickerClick(event, picker);
   picker.onkeydown = (event) => pickerKeydown(event, picker);
   const dismiss = (event) => {
@@ -422,6 +440,8 @@ export function initDevicePicker() {
   void readCachedDevices();
   takeUpDevices();
   removePickerListeners = () => {
+    pickerMenuRecord?.dispose();
+    pickerMenuRecord = null;
     document.removeEventListener("click", dismiss);
     document.removeEventListener("focusin", dismiss);
     stopWatchingDeviceState();

@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -146,6 +147,8 @@ let laptopCall;
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   subscribers = [];
   hidden = [];
   navigate.mockReset();
@@ -180,6 +183,21 @@ beforeEach(async () => {
 afterEach(() => unmountInboxList?.());
 
 describe("the workspace inbox", () => {
+  it("closes a restored menu state when the reader presses outside it", async () => {
+    const { writeCached, readCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
+    feed([workspace()]);
+    unmountInboxList();
+    await writeCached(address, { key: "workspace:dev-1/workspace-1" });
+    mountInboxList();
+    await vi.waitFor(() => expect(rows()[0]?.dataset.key).toBe("workspace:dev-1/workspace-1"));
+    expect((await readCached(address)).value.key).toBe("workspace:dev-1/workspace-1");
+    await vi.waitFor(async () => {
+      document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+      expect((await readCached(address))?.value.key).toBeNull();
+    });
+  });
   it("paints workspace rows with project and directory context", () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1", "workspace:dev-1/workspace-2"]);
@@ -332,6 +350,18 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
+  it("restores a project fold from cache and repaints an external fold write", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const address = { deviceId: "", entityId: "", kind: "ui-fold", sub: "inbox:projects" };
+    unmountInboxList();
+    await writeCached(address, { entries: [["dev-1/project-1", true]] });
+    mountInboxList();
+    feed([workspace()]);
+    setInboxView("projects");
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
+    await writeCached(address, { entries: [["dev-1/project-1", false]] });
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(false));
+  });
   it("opens settings on the owning device and leaves a deleted project's route", async () => {
     feed([], [project("project-1", "Website", "dev-2")]);
     setInboxView("projects");
@@ -365,12 +395,12 @@ describe("the projects face", () => {
     expect(document.getElementById("inbox-list").textContent).not.toMatch(/branch|issue/i);
   });
 
-  it("folds a project and preserves workspace row identity across refreshes", () => {
+  it("folds a project and preserves workspace row identity across refreshes", async () => {
     feed([workspace(), workspace({ id: "workspace-2", name: "Refunds" })]);
     setInboxView("projects");
     const first = rows()[0];
     document.querySelector('[data-project-fold="dev-1/project-1"]').click();
-    expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true));
     feed([workspace({ name: "Checkout updated" }), workspace({ id: "workspace-2", name: "Refunds" })]);
     expect(rows()[0]).toBe(first);
     expect(rows()[0].textContent).toContain("Checkout updated");
@@ -564,13 +594,13 @@ describe("an account with more than one device", () => {
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1"]);
   });
 
-  it("narrows the list to one machine without touching the route", () => {
+  it("narrows the list to one machine without touching the route", async () => {
     twoDevices();
     const standing = App.route;
-    rememberDeviceFilter("dev-2");
+    await rememberDeviceFilter("dev-2");
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-2/workspace-2"]);
     expect(App.route).toBe(standing);
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
     expect(rows()).toHaveLength(2);
   });
 
@@ -626,6 +656,10 @@ describe("an account with more than one device", () => {
 // machine holding the capture.
 
 const captureRowFor = (id) => document.querySelector(`.capture-entry[data-capture="${id}"]`);
+const waitForRerouteMenu = async () => {
+  await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).not.toBeNull());
+  return captureRowFor("cap-1").querySelector(".reroute-menu");
+};
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
 /** A branch the feed still carries. The rail no longer lists branches, but the
@@ -651,6 +685,20 @@ const failedCapture = (over = {}) =>
   capture({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed", ...over });
 
 describe("captures on the rail", () => {
+  it("restores and redraws the destination picker from real cache records", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ view: "inbox-captures", kind: "menu" });
+    unmountInboxList();
+    await writeCached(address, { key: "capture:cap-1", branchProject: null });
+    mountInboxList();
+    feed([], undefined, [routedCapture()]);
+    await waitForRerouteMenu();
+
+    await writeCached(address, { key: null, branchProject: null });
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).toBeNull());
+  });
+
   // A capture leaves the inbox by being routed, so there is nothing to clear —
   // and no entity to clear it on.
   it("offers no way to clear a capture", () => {
@@ -739,16 +787,14 @@ describe("captures on the rail", () => {
   it("sends a capture somewhere else through the picker on its row", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
-
-    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    const picker = await waitForRerouteMenu();
     expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual([
       "Payments",
       "Website",
     ]);
 
     picker.querySelector('[data-reroute-branch-open="project-2"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     captureRowFor("cap-1").querySelector('[data-reroute-project="project-2"][data-reroute-kind="branch"]').click();
     await flush();
 
@@ -763,9 +809,9 @@ describe("captures on the rail", () => {
   it("names the branch it is rerouted to, offering the ones the project has", async () => {
     feed([], undefined, [branchRow(), routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
+    await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
@@ -788,9 +834,9 @@ describe("captures on the rail", () => {
   it("holds the feed off the branch box while it is being typed into", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
+    await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     field.focus();
@@ -819,12 +865,11 @@ describe("a capture on another device", () => {
     feed([], [...mine.projects, ...theirs.projects], [...mine.items, ...theirs.items], { "dev-1": mine, "dev-2": theirs });
 
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
-    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    const picker = await waitForRerouteMenu();
     expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual(["their notes"]);
 
     picker.querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
       "build/away",
     ]);
@@ -857,12 +902,12 @@ describe("a capture on another device", () => {
     document.querySelector("#compose-send").click();
     await vi.waitFor(() => expect(captureRowFor("cap-9")).toBeTruthy());
 
-    rememberDeviceFilter("dev-2");
+    await rememberDeviceFilter("dev-2");
     expect(captureRowFor("cap-9")).toBeNull();
 
-    rememberDeviceFilter("dev-1");
+    await rememberDeviceFilter("dev-1");
     expect(captureRowFor("cap-9")).toBeTruthy();
-    rememberDeviceFilter(null);
+    await rememberDeviceFilter(null);
   });
 
   it("releases a late capture repaint when the rail unmounts", async () => {

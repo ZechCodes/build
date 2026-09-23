@@ -10,7 +10,8 @@
 // label or a locked look.
 
 import { beforeEach, describe, it, expect, vi } from "vitest";
-import { wipeCache } from "../src/core/localCache.js";
+import { readCached, wipeCache } from "../src/core/localCache.js";
+import { deviceSettingsAddress, projectSettingsAddress } from "../src/core/settingsRecords.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -233,11 +234,9 @@ describe("the mounted control", () => {
   const lock = () => document.querySelector("[data-isolation=lock]");
   const error = () => document.querySelector("[data-isolation=error]");
   const saved = () => document.querySelector("[data-isolation=saved]");
-  const choose = async (value) => {
+  const choose = (value) => {
     select().value = value;
     select().dispatchEvent(new Event("change"));
-    await flush();
-    await flush();
   };
 
   // Whether "no choice" is a choice is the target's capability, not its copy:
@@ -249,9 +248,13 @@ describe("the mounted control", () => {
 
     expect(select().value).toBe("worktree");
 
-    await choose("worktree");
+    choose("worktree");
 
-    expect(callRpc).toHaveBeenCalledWith("t", { isolation: "worktree" });
+    await vi.waitFor(() => {
+      expect(callRpc).toHaveBeenCalledWith("t", { isolation: "worktree" });
+      expect(saved().textContent).toContain("Saved");
+      expect(select().disabled).toBe(false);
+    });
   });
 
   // The account has no row to be painted from, so the control reads the account
@@ -292,13 +295,15 @@ describe("the mounted control", () => {
     const callRpc = vi.fn(async () => ({ isolation: "rift", isolation_available: { rift: true } }));
     await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
-    await choose("rift");
+    choose("rift");
 
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
-    expect(select().value).toBe("rift");
-    expect(select().disabled).toBe(false);
-    expect(saved().textContent).toContain("Saved");
-    expect(error().textContent).toBe("");
+    await vi.waitFor(() => {
+      expect(callRpc).toHaveBeenCalledWith("settings.set", { isolation: "rift" });
+      expect(select().value).toBe("rift");
+      expect(select().disabled).toBe(false);
+      expect(saved().textContent).toContain("Saved");
+      expect(error().textContent).toBe("");
+    });
   });
 
   // The bridge is the authority: if it answers with something other than what
@@ -308,9 +313,12 @@ describe("the mounted control", () => {
     const callRpc = vi.fn(async () => ({ isolation: "worktree", isolation_available: { rift: true } }));
     await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
-    await choose("rift");
+    choose("rift");
 
-    expect(select().value).toBe("worktree");
+    await vi.waitFor(() => {
+      expect(select().value).toBe("worktree");
+      expect(select().disabled).toBe(false);
+    });
   });
 
   it("says a refused save in the bridge's own words and puts the control back", async () => {
@@ -319,12 +327,15 @@ describe("the mounted control", () => {
     });
     await mount(DEVICE_ISOLATION, { isolation: "worktree", isolation_available: { rift: true } }, callRpc);
 
-    await choose("rift");
+    choose("rift");
 
-    expect(error().textContent).toContain("locked to worktrees");
-    expect(saved().textContent).toBe("");
-    expect(select().value).toBe("worktree");
-    expect(select().disabled).toBe(false);
+    await vi.waitFor(() => {
+      expect(error().textContent).toContain("locked to worktrees");
+      expect(saved().textContent).toBe("");
+      expect(select().value).toBe("worktree");
+      expect(select().disabled).toBe(false);
+    });
+    expect((await readCached(deviceSettingsAddress()))?.value.isolation).toBe("worktree");
   });
 
   it("shows why Rift is unavailable and still lets a worktree be chosen", async () => {
@@ -339,10 +350,13 @@ describe("the mounted control", () => {
     expect(select().disabled).toBe(false);
     expect([...select().options].map((option) => option.disabled)).toEqual([false, true]);
 
-    await choose("worktree");
+    choose("worktree");
 
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { isolation: "worktree" });
-    expect(error().textContent).toBe("");
+    await vi.waitFor(() => {
+      expect(callRpc).toHaveBeenCalledWith("settings.set", { isolation: "worktree" });
+      expect(error().textContent).toBe("");
+      expect(select().disabled).toBe(false);
+    });
   });
 
   it("renders the bridge's lock sentence as words, never as markup", async () => {
@@ -372,10 +386,13 @@ describe("the mounted control", () => {
 
     expect(select().value).toBe("rift");
 
-    await choose("");
+    choose("");
 
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "p1", isolation: null });
-    expect(select().value).toBe("");
+    await vi.waitFor(() => {
+      expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "p1", isolation: null });
+      expect(saved().textContent).toContain("Saved");
+      expect(select().value).toBe("");
+    });
   });
 
   it("sends a project's own choice keyed on the project", async () => {
@@ -383,10 +400,13 @@ describe("the mounted control", () => {
     const callRpc = vi.fn(async () => ({ ...row, isolation: "rift" }));
     await mount(projectIsolationTarget(row), row, callRpc);
 
-    await choose("rift");
+    choose("rift");
 
-    expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "p1", isolation: "rift" });
-    expect(select().value).toBe("rift");
+    await vi.waitFor(() => {
+      expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "p1", isolation: "rift" });
+      expect(saved().textContent).toContain("Saved");
+      expect(select().value).toBe("rift");
+    });
   });
 
   it("puts a refused project back on the override it still has", async () => {
@@ -396,10 +416,14 @@ describe("the mounted control", () => {
     });
     await mount(projectIsolationTarget(row), row, callRpc);
 
-    await choose("rift");
+    choose("rift");
 
-    expect(error().textContent).toContain("locked to worktrees");
-    expect(select().value).toBe("worktree");
+    await vi.waitFor(() => {
+      expect(error().textContent).toContain("locked to worktrees");
+      expect(select().value).toBe("worktree");
+      expect(select().disabled).toBe(false);
+    });
+    expect((await readCached(projectSettingsAddress("", "p1")))?.value.isolation).toBe("worktree");
   });
 });
 

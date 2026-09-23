@@ -22,6 +22,7 @@ import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
 import { liveContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { connectionStatus } from "./core/connectionStatusModel.js";
+import { uiAddress, watchUiState } from "./core/localUiState.js";
 
 /** How often the countdown is redrawn while a machine waits for its next try. */
 const TICK_MS = 1000;
@@ -31,6 +32,8 @@ const STATE_CLASSES = ["is-connected", "is-attempting", "is-waiting"];
 let stopRecoveryWatch = null;
 let stopDeviceWatch = null;
 let countdownTimer = null;
+let menuRecord = null;
+let restoreMenuFocus = false;
 /** What was last written, so a tick that says nothing writes nothing — a
  *  rewrite mid-transition would cut the transition short. */
 let painted = "";
@@ -103,6 +106,15 @@ function paintMenu(menu, rows) {
 const menuIsOpen = (button) => button.getAttribute("aria-expanded") === "true";
 
 function setMenuOpen(host, open, { restoreFocus = false } = {}) {
+  if (menuRecord) {
+    restoreMenuFocus = restoreFocus;
+    void menuRecord.write({ open });
+    return;
+  }
+  paintMenuOpen(host, open, restoreFocus);
+}
+
+function paintMenuOpen(host, open, restoreFocus = false) {
   // Asked of the DOM as it stands rather than built: shutting a menu is also
   // what teardown does, and teardown must not stand an icon back up to do it.
   const button = host.querySelector(".connection-status");
@@ -111,12 +123,12 @@ function setMenuOpen(host, open, { restoreFocus = false } = {}) {
   if (menu) menu.hidden = !open;
   host.classList.toggle("is-open", open);
   if (open) {
-    document.addEventListener("keydown", onMenuKey, true);
-    document.addEventListener("pointerdown", onOutsidePress, true);
+    host.ownerDocument.addEventListener("keydown", onMenuKey, true);
+    host.ownerDocument.addEventListener("pointerdown", onOutsidePress, true);
     return;
   }
-  document.removeEventListener("keydown", onMenuKey, true);
-  document.removeEventListener("pointerdown", onOutsidePress, true);
+  host.ownerDocument.removeEventListener("keydown", onMenuKey, true);
+  host.ownerDocument.removeEventListener("pointerdown", onOutsidePress, true);
   // Only where the reader shut it themselves: an outside press has already put
   // the focus where they meant it to go.
   if (restoreFocus) button?.focus();
@@ -194,10 +206,17 @@ export function mountConnectionStatus() {
   stopRecoveryWatch = onDeviceRecoveryChanged(paint);
   stopDeviceWatch = onDeviceStateChanged(paint);
   paint();
+  menuRecord = watchUiState(uiAddress({ view: "connection", kind: "menu" }), (saved) => {
+    const host = document.getElementById("connection-status");
+    if (host) paintMenuOpen(host, Boolean(saved?.open), restoreMenuFocus);
+    restoreMenuFocus = false;
+  });
   return unmountConnectionStatus;
 }
 
 export function unmountConnectionStatus() {
+  menuRecord?.dispose();
+  menuRecord = null;
   stopRecoveryWatch?.();
   stopRecoveryWatch = null;
   stopDeviceWatch?.();
@@ -207,7 +226,7 @@ export function unmountConnectionStatus() {
   shownState = "";
   const host = document.getElementById("connection-status");
   if (host) {
-    setMenuOpen(host, false);
+    paintMenuOpen(host, false);
     host.hidden = true;
     host.innerHTML = "";
     host.classList.remove("is-open");

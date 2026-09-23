@@ -8,6 +8,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -76,8 +80,9 @@ vi.mock("../src/devices.js", () => ({
     return () => deviceListeners.delete(listener);
   },
 }));
+let pushReading = async () => "unsupported";
 vi.mock("../src/push.js", () => ({
-  pushState: async () => "unsupported",
+  pushState: () => pushReading(),
   enablePush: async () => {},
   disablePush: async () => {},
 }));
@@ -94,6 +99,9 @@ let resetDeviceContexts;
 let setContextOffline;
 
 beforeEach(async () => {
+  pushReading = async () => "unsupported";
+  const { wipeCache } = await import("../src/core/localCache.js");
+  await wipeCache();
   vi.clearAllMocks();
   deviceListeners.clear();
   devices = [
@@ -111,6 +119,21 @@ beforeEach(async () => {
   ({ renderSettings } = await import("../src/views/settings.js"));
   ({ adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
   resetDeviceContexts();
+});
+
+it("paints the cached notification state before the browser answers, then writes the fresh reading", async () => {
+  const { readCached, writeCached } = await import("../src/core/localCache.js");
+  const { uiAddress } = await import("../src/core/localUiState.js");
+  const address = uiAddress({ view: "settings", kind: "push" });
+  await writeCached(address, { state: "enabled", permission: "granted", subscribed: true });
+  let answer;
+  pushReading = () => new Promise((resolve) => { answer = resolve; });
+  const rendering = renderSettings();
+  await vi.waitFor(() => expect($("#pushtoggle")?.textContent).toBe("Turn off notifications"));
+  answer("denied");
+  await rendering;
+  await vi.waitFor(() => expect($("#pushtoggle").textContent).toBe("Blocked"));
+  expect((await readCached(address)).value).toMatchObject({ state: "denied", subscribed: false });
 });
 
 describe("Settings → Creation device", () => {

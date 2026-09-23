@@ -14,6 +14,7 @@ import {
 } from "../src/core/agentSurfacesModel.js";
 
 const SURFACES_KEY = "branch-1:agent-1";
+vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 
 const snapshot = () => surfacesSnapshot();
 
@@ -36,16 +37,20 @@ const conversationColumn = () => {
   };
 };
 
-const mount = (options = {}) =>
-  mountAgentSurfaces({
+let lastMountedSurface;
+const mount = (options = {}) => {
+  lastMountedSurface = mountAgentSurfaces({
     ...conversationColumn(),
     key: SURFACES_KEY,
     onOpenThreadItem: options.onOpenThreadItem || (() => {}),
   });
+  return lastMountedSurface;
+};
 
 const pill = (kind) => document.querySelector(`[data-surface-kind="${kind}"]`);
 const pressPill = async (kind) => {
   pill(kind).click();
+  await lastMountedSurface.settled();
   await motionSettled();
 };
 const pillCount = (kind) => {
@@ -64,7 +69,11 @@ const agentRowsIn = (section) => [...section.querySelectorAll(`.surface-row:not(
 const agentLabelsIn = (section) =>
   agentRowsIn(section).map((row) => row.querySelector(".surface-row-label").textContent);
 
-beforeEach(() => globalThis.localStorage.clear());
+beforeEach(async () => {
+  globalThis.localStorage.clear();
+  const { resetMemoryCache } = await import("../src/core/localCache.js");
+  resetMemoryCache();
+});
 
 describe("the surface pills", () => {
   it("paints one pill per kind with content, and toggles one viewer at a time", async () => {
@@ -119,6 +128,7 @@ describe("the surface pills", () => {
     await pressPill(SHELL_ENTRY_KIND);
 
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await surfaces.settled();
     await motionSettled();
 
     expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
@@ -135,12 +145,14 @@ describe("the surface pills", () => {
 
     const second = mount();
     second.set(snapshot());
+    await second.ready;
     expect(pressed(AGENT_ENTRY_KIND)).toBe("true");
     expect(document.querySelector(".surface-subagents")).not.toBe(null);
     second.dispose();
 
     const third = mount();
     third.set({ shells: snapshot().shells });
+    await third.ready;
     expect(document.querySelector(".surface-viewer")).toBe(null);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
     third.dispose();

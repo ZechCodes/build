@@ -7,6 +7,7 @@ import { elapsedClock } from "./agentRailModel.js";
 import { checklistObservationModel } from "./agentObservationModel.js";
 import { ICON_HISTORY, ICON_X } from "./icons.js";
 import { openModal } from "./modal.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
@@ -19,13 +20,11 @@ import {
   openSurfaceKind,
   openWorkflow,
   openedSurfaceVisibility,
-  readOpenSurface,
   runningAndCompletedRows,
   surfaceKindLabel,
   surfacePills,
   surfaceRows,
   workflowPhases,
-  writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
   PRESSABLE_CLIP_SELECTOR,
@@ -406,7 +405,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, onClose
 export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, modelLabel, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
-  let chosenKind = readOpenSurface(key);
+  let chosenKind = null;
   let viewer = null;
   let closingFrame = null;
   let visibility = emptySurfaceVisibility();
@@ -417,10 +416,9 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
 
   const closeOpenSurface = ({ restoreFocus = false } = {}) => {
     const openButton = pillHost.querySelector('[aria-pressed="true"]');
-    chosenKind = null;
-    writeOpenSurface(key, null);
-    paint();
-    if (restoreFocus) openButton?.focus();
+    void writeChoice(null).then(() => {
+      if (restoreFocus && openButton?.isConnected) openButton.focus();
+    });
   };
 
   const viewerCanvas = (kind) => {
@@ -530,14 +528,25 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     armPillHidingTimer(nowMs);
   };
 
+  const choiceRecord = watchUiState(
+    uiAddress({ entityId: key, view: "agent-surfaces", kind: "menu" }),
+    (saved) => {
+      chosenKind = typeof saved?.kind === "string" ? saved.kind : null;
+      paint();
+    },
+  );
+  let paintCommit = Promise.resolve();
+  const writeChoice = (kind) => {
+    paintCommit = choiceRecord.write({ kind });
+    return paintCommit;
+  };
+
   const onPillPress = (event) => {
     const button = event.target.closest("[data-surface-kind]");
     if (!button) return;
     const kind = button.dataset.surfaceKind;
     if (kind === openKind()) return closeOpenSurface();
-    chosenKind = kind;
-    writeOpenSurface(key, chosenKind);
-    paint();
+    void writeChoice(kind);
   };
 
   const onEscape = (event) => {
@@ -552,6 +561,8 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
   document.addEventListener("keydown", onEscape);
 
   return {
+    ready: choiceRecord.ready,
+    settled: () => paintCommit,
     set(nextSurfaces, seenAtMs = Date.now()) {
       const arriving = JSON.stringify(nextSurfaces || null);
       const unchangedSinceLastPaint = arriving === paintedSurfaces;
@@ -562,6 +573,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       paint();
     },
     dispose() {
+      choiceRecord.dispose({ flushPending: false });
       if (hidingTimer !== null) clearTimeout(hidingTimer);
       hidingTimer = null;
       closingFrame = null;

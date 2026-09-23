@@ -235,12 +235,20 @@ async fn a_silent_result_publishes_the_completed_turn_boundary() {
         .expect("the turn is written");
     assert_eq!(changed.borrow_and_update().status, AgentStatus::Working);
 
-    tokio::time::timeout(Duration::from_secs(5), changed.changed())
-        .await
-        .expect("the silent result publishes promptly")
-        .expect("the status channel remains open");
-    let completed = changed.borrow_and_update().clone();
-    assert_eq!(completed.status, AgentStatus::Waiting);
+    let completed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            changed
+                .changed()
+                .await
+                .expect("the status channel remains open");
+            let snapshot = changed.borrow_and_update().clone();
+            if snapshot.status == AgentStatus::Waiting {
+                break snapshot;
+            }
+        }
+    })
+    .await
+    .expect("the silent result publishes promptly");
     assert!(
         completed.last_worked_at.is_some(),
         "the cumulative snapshot remembers the completed turn even if later updates coalesce"

@@ -78,7 +78,7 @@ const journalFits = (storage, key, raw) => {
     .reduce((sum, entryKey) => sum + bytes(entryKey) + bytes(storage.getItem(entryKey) || ""), 0);
   return otherBytes + bytes(key) + bytes(raw) <= UI_JOURNAL_TOTAL_MAX_BYTES;
 };
-const holdPending = (address, value, source, sequence) => {
+const holdPending = (address, value, source, sequence, at) => {
   const key = pendingKey(address);
   try {
     if (!address.kind?.startsWith("ui-") || hasBody(value)) {
@@ -86,7 +86,7 @@ const holdPending = (address, value, source, sequence) => {
       return;
     }
     const storage = globalThis.sessionStorage;
-    const raw = JSON.stringify({ at: Date.now(), source, sequence, value });
+    const raw = JSON.stringify({ at, source, sequence, value });
     if (!journalFits(storage, key, raw)) {
       storage.removeItem(key);
       return;
@@ -114,12 +114,14 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   const source = uiWriterId();
   let disposed = false;
   let pending;
+  let pendingAt;
   let timer;
   let writes = Promise.resolve();
   let reads = Promise.resolve();
   let revision = 0;
   let dirty = false;
   let unresolved;
+  let unresolvedAt;
 
   const read = (mountedRevision = revision) => {
     const next = reads.then(async () => {
@@ -133,10 +135,11 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   const unwatch = subscribeCache(address, () => { void read(); });
   const journaled = pendingFor(address, debounceMs);
 
-  const commit = (value) => {
+  const commit = (value, editAt = Date.now()) => {
     revision += 1;
     dirty = true;
     unresolved = value;
+    unresolvedAt = editAt;
     const committedRevision = revision;
     const next = writes.then(async () => {
       await writeCached(address, value, { source, sequence: committedRevision });
@@ -146,8 +149,13 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
       if (committedRevision !== revision || pending !== undefined) return;
       dirty = false;
       const cached = await read();
-      if (cached !== undefined && JSON.stringify(cached) === JSON.stringify(value)) {
+      if (committedRevision !== revision || pending !== undefined) return;
+      // A competing committed value can replace ours between the write and
+      // this readback. It is now the painted truth, so the old edit must not
+      // survive in the page-exit journal and resurrect on reload.
+      if (cached !== undefined) {
         unresolved = undefined;
+        unresolvedAt = undefined;
         releasePending(address);
       }
       // IndexedDB may be unavailable (private mode). Keep the active control
@@ -162,11 +170,14 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     timer = null;
     if (pending === undefined) return writes;
     const value = pending;
+    const editAt = pendingAt;
     pending = undefined;
-    return commit(value);
+    pendingAt = undefined;
+    return commit(value, editAt);
   };
   const schedule = (value) => {
     pending = value;
+    pendingAt = Date.now();
     revision += 1; // an in-flight mount read must not erase active typing
     dirty = true;
     if (timer) clearTimeout(timer);
@@ -174,7 +185,8 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   };
   const flushOnPageExit = () => {
     const unfinished = pending === undefined ? unresolved : pending;
-    if (unfinished !== undefined) holdPending(address, unfinished, source, revision);
+    const editAt = pending === undefined ? unresolvedAt : pendingAt;
+    if (unfinished !== undefined) holdPending(address, unfinished, source, revision, editAt);
     if (pending !== undefined) void flush();
   };
   const flushWhenHidden = () => {
@@ -194,6 +206,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     ready,
     write(value) {
       pending = undefined;
+      pendingAt = undefined;
       if (timer) clearTimeout(timer);
       timer = null;
       return commit(value);

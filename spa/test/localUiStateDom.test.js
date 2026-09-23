@@ -104,6 +104,56 @@ describe("local UI cache wiring", () => {
     afterSend.dispose();
   });
 
+  it("drops a local edit superseded before readback, including on the next mount", async () => {
+    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "competing-draft", view: "chat", kind: "draft" });
+    const key = `build.ui.pending:${JSON.stringify([address.deviceId, address.entityId, address.kind, address.sub])}`;
+    let finishCompeting;
+    const competing = new Promise((resolve) => { finishCompeting = resolve; });
+    let raced = false;
+    const stopCompeting = cache.subscribeCache(address, () => {
+      if (raced) return;
+      raced = true;
+      void cache.writeCached(address, { text: "newer other writer" }).then(finishCompeting);
+    });
+    const painted = [];
+    const first = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
+    await first.ready;
+    await first.write({ text: "old local writer" });
+    await competing;
+    await vi.waitFor(() => expect(painted.at(-1)).toBe("newer other writer"));
+    expect(painted).not.toContain("old local writer");
+    expect((await cache.readCached(address)).value.text).toBe("newer other writer");
+    window.dispatchEvent(new Event("pagehide"));
+    expect(sessionStorage.getItem(key)).toBeNull();
+    first.dispose({ flushPending: false });
+    stopCompeting();
+
+    const reloaded = ui.watchUiState(address, (saved) => painted.push(saved.text), { debounceMs: 60_000 });
+    await reloaded.ready;
+    expect(painted.at(-1)).toBe("newer other writer");
+    expect((await cache.readCached(address)).value.text).toBe("newer other writer");
+    reloaded.dispose();
+  });
+
+  it("dates the exit journal when the edit happened, not when the page exited", async () => {
+    const address = ui.uiAddress({ entityId: "edit-order", view: "chat", kind: "draft" });
+    const key = `build.ui.pending:${JSON.stringify(["", address.entityId, address.kind, address.sub])}`;
+    let clock = 10_000;
+    const now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      const record = ui.watchUiState(address, () => {}, { debounceMs: 60_000 });
+      await record.ready;
+      record.schedule({ text: "typed earlier" });
+      clock = 20_000;
+      window.dispatchEvent(new Event("pagehide"));
+      expect(JSON.parse(sessionStorage.getItem(key)).at).toBe(10_000);
+      await record.flush();
+      record.dispose({ flushPending: false });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("bounds journal entries and total storage, and refuses body records on write and replay", async () => {
     const records = [];
     for (let index = 0; index < 5; index += 1) {

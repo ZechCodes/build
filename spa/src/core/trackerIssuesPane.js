@@ -45,7 +45,7 @@ import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trac
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
 import { dashboardSections } from "./trackerDashboardModel.js";
-import { paintIssueDashboard } from "./trackerDashboardRender.js";
+import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
@@ -67,6 +67,7 @@ export function mountIssuesPane(host, options) {
     shown: [], // the narrowed list, which is what is painted
     visibleCount: ISSUE_PAGE_SIZE,
     collapsedGroups: new Set(),
+    dashboardTab: DEFAULT_DASHBOARD_TAB,
     columns: [],
     // Open, not everything (#33): a closed issue is done, and done work is not
     // what the tab is for. It is still one press away on the state filter.
@@ -85,6 +86,7 @@ export function mountIssuesPane(host, options) {
     filters: state.filters,
     stateFilterTouched: state.stateFilterTouched,
     collapsedGroups: [...state.collapsedGroups],
+    dashboardTab: state.dashboardTab,
     visibleCount: state.visibleCount,
   });
   let uiRecord;
@@ -189,6 +191,12 @@ export function mountIssuesPane(host, options) {
       else state.collapsedGroups.add(id);
       saveUi();
     },
+    dashboardTab: state.dashboardTab,
+    onDashboardTab: (id) => {
+      if (!dashboardTabIds.includes(id) || state.dashboardTab === id) return;
+      state.dashboardTab = id;
+      saveUi();
+    },
   });
 
   const groupLabels = [
@@ -249,6 +257,7 @@ export function mountIssuesPane(host, options) {
     state.filters = { ...state.filters, ...(saved.filters || {}) };
     state.stateFilterTouched = Boolean(saved.stateFilterTouched);
     state.collapsedGroups = new Set(saved.collapsedGroups || []);
+    state.dashboardTab = dashboardTabIds.includes(saved.dashboardTab) ? saved.dashboardTab : DEFAULT_DASHBOARD_TAB;
     state.visibleCount = Number(saved.visibleCount) || ISSUE_PAGE_SIZE;
     if (priorView !== state.view) state.onViewChange?.(state.view);
     previewQuery();

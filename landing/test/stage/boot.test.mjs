@@ -9,15 +9,17 @@ import { stageMode } from "../../src/stage/fallback.js";
 
 const source = readFileSync(new URL("../../public/film-boot.js", import.meta.url), "utf8");
 
-function boot({ reducedMotion = false, viewportWidth = 1440, saveData = false, webgl = true, search = "" } = {}) {
+function boot({ reducedMotion = false, viewportWidth = 1440, saveData = false, webgl = true, search = "", hash = "" } = {}) {
   const dataset = {};
   const timers = [];
+  const scrolled = [];
   const context = {
     document: {
       documentElement: { dataset },
       createElement: () => ({ getContext: (kind) => (webgl && kind === "webgl2" ? {} : null) }),
+      getElementById: (id) => ({ scrollIntoView: () => scrolled.push(id) }),
     },
-    location: { search },
+    location: { search, hash },
     innerWidth: viewportWidth,
     navigator: { connection: { saveData } },
     matchMedia: (query) => ({ matches: query.includes("reduce") && reducedMotion }),
@@ -25,7 +27,7 @@ function boot({ reducedMotion = false, viewportWidth = 1440, saveData = false, w
     URLSearchParams,
   };
   vm.runInNewContext(source, context);
-  return { dataset, timers };
+  return { dataset, timers, scrolled };
 }
 
 test("chooses the film exactly where fallback.js would", () => {
@@ -66,4 +68,13 @@ test("leaves a film that started alone", () => {
     timers[0].callback();
     assert.equal(dataset.mode, "film", stage);
   }
+});
+
+test("a call to action pressed while pending still lands in the document", () => {
+  const { timers, scrolled } = boot({ hash: "#act-8" });
+  timers[0].callback();
+  assert.deepEqual(scrolled, ["act-8"]);
+  const plain = boot({ hash: "#details" });
+  plain.timers[0].callback();
+  assert.deepEqual(plain.scrolled, [], "only an act is a destination the film owed");
 });

@@ -40,6 +40,13 @@ function departPose(deviceName, settled) {
   return { ...entrancePose(deviceName, settled), x: settled.x + 14, y: settled.y + 6 };
 }
 
+// An act named in the hash (#act-8): a link, or a call to action pressed
+// before the film was running to take it over.
+function hashedAct() {
+  const actId = Number(/^#act-(\d+)$/.exec(location.hash)?.[1]);
+  return ACTS.some((act) => act.id === actId) ? actId : null;
+}
+
 function query(root, selector) {
   const element = root.querySelector(selector);
   if (!element) throw new Error(`The film needs ${selector}.`);
@@ -285,7 +292,9 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     if (stopped) return;
     stopped = true;
     console.info(`The film stops (${reason}); the document stands.`);
-    const { act } = actAt(tl.scrollTrigger.progress * TOTAL_TRAVEL);
+    // Before its first frame the film has put nobody anywhere; a destination
+    // asked for meanwhile still stands in the document.
+    const act = (!firstFrameShown && hashedAct()) || actAt(tl.scrollTrigger.progress * TOTAL_TRAVEL).act;
     gsap.ticker.remove(frame);
     boxWatcher?.disconnect();
     ScrollTrigger.removeEventListener("refresh", sync);
@@ -352,8 +361,8 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   // film opens there rather than at the top, with that act's state set on
   // the first frame instead of played through from the hero.
   function openAtPendingAct() {
-    const pendingAct = Number(/^#act-(\d+)$/.exec(location.hash)?.[1]);
-    if (!ACTS.some((act) => act.id === pendingAct)) return;
+    const pendingAct = hashedAct();
+    if (!pendingAct) return;
     ScrollTrigger.refresh();
     goToAct(pendingAct, "instant");
     tl.scrollTrigger.update();

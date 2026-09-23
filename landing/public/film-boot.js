@@ -32,5 +32,9 @@
     if (root.dataset.stage === "starting" || root.dataset.stage === "ready") return;
     delete root.dataset.mode;
     delete root.dataset.stage;
+    // A call to action pressed while the film was pending still goes where
+    // it pointed, now in the document.
+    var target = /^#act-\d+$/.test(location.hash) ? document.getElementById(location.hash.slice(1)) : null;
+    if (target) target.scrollIntoView();
   }, START_DEADLINE_MS);
 })();

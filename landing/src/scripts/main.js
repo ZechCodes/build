@@ -24,6 +24,9 @@ function backToDocument(error) {
   console.warn("The film could not start; the document stands.", error);
   delete root.dataset.mode;
   delete root.dataset.stage;
+  // A call to action pressed while the film was pending still goes where it
+  // pointed, now in the document.
+  if (/^#act-\d+$/.test(location.hash)) document.getElementById(location.hash.slice(1))?.scrollIntoView();
 }
 
 if (root.dataset.mode === "film") {

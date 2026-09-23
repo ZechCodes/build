@@ -384,36 +384,45 @@ async function inspectStartup(width, height) {
   await context.close();
 
   // The film's module slow to arrive: nothing of the film's covers the hero
-  // while it waits, and a call to action pressed meanwhile is honoured once
-  // the film starts.
-  const slow = await browser.newContext({ viewport: { width, height } });
-  const slowPage = await slow.newPage();
-  const slowErrors = watchErrors(slowPage);
-  await slowPage.route(/\/_astro\/.*\.js$/, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 3500));
-    await route.continue();
-  });
-  await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
-  await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
-  await slowPage.waitForSelector("#act-1 .actions .cta");
-  const pending = await slowPage.evaluate(() => ({
-    stage: document.documentElement.dataset.stage,
-    panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
-  }));
-  assert.equal(pending.stage, "pending", `${label}: the module is still on its way`);
-  assert.deepEqual(pending.panels, [], `${label}: no close-up shows before the film places it`);
-  await slowPage.screenshot({ path: path.join(output, `${label}-pending.png`) });
-  await slowPage.locator("#act-1 .actions .cta").click();
-  await slowPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
-  await slowPage.waitForFunction(() => {
-    const field = document.querySelector("#act-8 form input");
-    const rect = field?.getBoundingClientRect();
-    if (document.querySelector("[data-film]").dataset.act !== "8" || !rect || rect.width === 0) return false;
-    return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
-  }, null, { timeout: gpu ? 10_000 : 30_000 });
-  await slowPage.screenshot({ path: path.join(output, `${label}-early-cta.png`) });
-  assert.deepEqual(slowErrors, [], `${label}: browser errors with a slow module`);
-  await slow.close();
+  // while it waits, and a link to an act pressed meanwhile (the hero's call
+  // to action, the bar's, "See how it works") is honoured once the film
+  // starts.
+  for (const [name, selector, act] of [["hero-cta", "#act-1 .actions .cta", 8], ["nav-cta", ".site-nav .cta", 8], ["see-how", '#act-1 .actions a[href="#act-2"]', 2]]) {
+    const slow = await browser.newContext({ viewport: { width, height } });
+    const slowPage = await slow.newPage();
+    const slowErrors = watchErrors(slowPage);
+    await slowPage.route(/\/_astro\/.*\.js$/, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 3500));
+      await route.continue();
+    });
+    await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+    await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
+    await slowPage.waitForSelector(selector);
+    const pending = await slowPage.evaluate(() => ({
+      stage: document.documentElement.dataset.stage,
+      overlays: getComputedStyle(document.querySelector("[data-overlays]")).display,
+      panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
+    }));
+    assert.equal(pending.stage, "pending", `${label} ${name}: the module is still on its way`);
+    assert.deepEqual(pending.panels, [], `${label} ${name}: no close-up shows before the film places it (overlays ${pending.overlays})`);
+    if (name === "hero-cta") await slowPage.screenshot({ path: path.join(output, `${label}-pending.png`) });
+    await slowPage.locator(selector).click();
+    await slowPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
+    await slowPage.waitForFunction((n) => document.querySelector("[data-film]").dataset.act === String(n), act, { timeout: gpu ? 10_000 : 30_000 });
+    if (act === 8) {
+      await slowPage.waitForFunction(() => {
+        const field = document.querySelector("#act-8 form input");
+        const rect = field?.getBoundingClientRect();
+        if (!rect || rect.width === 0) return false;
+        return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
+      }, null, { timeout: gpu ? 10_000 : 30_000 });
+    } else {
+      await waitForOpacity(slowPage, `#act-${act}-title`, "1");
+    }
+    await slowPage.screenshot({ path: path.join(output, `${label}-early-${name}.png`) });
+    assert.deepEqual(slowErrors, [], `${label} ${name}: browser errors with a slow module`);
+    await slow.close();
+  }
 
   // The film's module blocked: the boot's deadline hands the page back.
   const blocked = await browser.newContext({ viewport: { width, height } });
@@ -422,7 +431,14 @@ async function inspectStartup(width, height) {
   await blockedPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
   // First the boot chooses the film, then its deadline gives the page back.
   await blockedPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
+  await blockedPage.locator("#act-1 .actions .cta").click();
   await blockedPage.waitForFunction(() => !document.documentElement.dataset.mode, null, { timeout: 15_000 });
+  await blockedPage.waitForTimeout(300);
+  const landed = await blockedPage.evaluate(() => {
+    const rect = document.querySelector("#act-8 form").getBoundingClientRect();
+    return rect.top < innerHeight && rect.bottom > 0;
+  });
+  assert.ok(landed, `${label}: the call to action pressed while pending lands on the form in the document`);
   assert.ok(await blockedPage.locator("#act-8 form").isVisible() || await blockedPage.locator("#act-8").count(), `${label}: the document is back`);
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
   assert.ok(await blockedPage.locator("#act-4-title").isVisible(), `${label}: a later act is readable after a blocked film`);

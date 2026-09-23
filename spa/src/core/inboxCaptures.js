@@ -17,6 +17,7 @@ import { adoptCaptureRecord } from "./composeView.js";
 import { refreshFeed } from "./taskFeed.js";
 import { verbCall } from "./inboxDevices.js";
 import { messageOf } from "./text.js";
+import { uiAddress, watchUiState } from "./localUiState.js";
 
 let repaint = () => {};
 let entryFor = () => null;
@@ -25,12 +26,26 @@ let entryFor = () => null;
  *  and the entry behind a row key — a row is never found by a selector built
  *  out of an id the daemon minted. */
 export function initCaptureRows({ onChange, entryOf }) {
+  pickerRecord?.dispose({ flushPending: false });
   repaint = onChange;
   entryFor = entryOf;
+  pickerRecord = watchUiState(uiAddress({ view: "inbox-captures", kind: "menu" }), (saved) => {
+    rerouteKey = saved?.key || null;
+    rerouteBranchProject = saved?.branchProject || null;
+    repaint();
+  });
+}
+
+export function disposeCaptureRows() {
+  pickerRecord?.dispose({ flushPending: false });
+  pickerRecord = null;
+  repaint = () => {};
+  entryFor = () => null;
 }
 
 let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
+let pickerRecord = null;
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // capture id → the message its row is showing
 
@@ -53,24 +68,22 @@ export const CAPTURE_CONTROLS = [
 
 function openPicker(captureId) {
   const key = `capture:${captureId}`;
-  rerouteKey = rerouteKey === key ? null : key;
-  rerouteBranchProject = null;
-  repaint();
+  void pickerRecord?.write({ key: rerouteKey === key ? null : key, branchProject: null });
 }
 
 function openRerouteBranch(projectId) {
-  rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
-  repaint();
+  const branchProject = rerouteBranchProject === projectId ? null : projectId;
+  void pickerRecord?.write({ key: rerouteKey, branchProject }).then(() => {
   // The field is found through the list that was just painted, never through a
   // selector built out of an id the daemon minted.
-  if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
+    if (branchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
+  });
 }
 
 function dispatchReroute(control) {
   const row = control.closest(".capture-entry");
   const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
-  rerouteKey = null;
-  rerouteBranchProject = null;
+  void pickerRecord?.write({ key: null, branchProject: null });
   rerouteCapture(row.dataset.capture, {
     projectId: control.dataset.rerouteProject,
     kind: control.dataset.rerouteKind,

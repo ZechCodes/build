@@ -641,6 +641,10 @@ describe("an account with more than one device", () => {
 // machine holding the capture.
 
 const captureRowFor = (id) => document.querySelector(`.capture-entry[data-capture="${id}"]`);
+const waitForRerouteMenu = async () => {
+  await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).not.toBeNull());
+  return captureRowFor("cap-1").querySelector(".reroute-menu");
+};
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
 /** A branch the feed still carries. The rail no longer lists branches, but the
@@ -666,6 +670,20 @@ const failedCapture = (over = {}) =>
   capture({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed", ...over });
 
 describe("captures on the rail", () => {
+  it("restores and redraws the destination picker from real cache records", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ view: "inbox-captures", kind: "menu" });
+    unmountInboxList();
+    await writeCached(address, { key: "capture:cap-1", branchProject: null });
+    mountInboxList();
+    feed([], undefined, [routedCapture()]);
+    await waitForRerouteMenu();
+
+    await writeCached(address, { key: null, branchProject: null });
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector(".reroute-menu")).toBeNull());
+  });
+
   // A capture leaves the inbox by being routed, so there is nothing to clear —
   // and no entity to clear it on.
   it("offers no way to clear a capture", () => {
@@ -754,16 +772,14 @@ describe("captures on the rail", () => {
   it("sends a capture somewhere else through the picker on its row", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
-
-    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    const picker = await waitForRerouteMenu();
     expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual([
       "Payments",
       "Website",
     ]);
 
     picker.querySelector('[data-reroute-branch-open="project-2"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     captureRowFor("cap-1").querySelector('[data-reroute-project="project-2"][data-reroute-kind="branch"]').click();
     await flush();
 
@@ -778,9 +794,9 @@ describe("captures on the rail", () => {
   it("names the branch it is rerouted to, offering the ones the project has", async () => {
     feed([], undefined, [branchRow(), routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
+    await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
@@ -803,9 +819,9 @@ describe("captures on the rail", () => {
   it("holds the feed off the branch box while it is being typed into", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
+    await waitForRerouteMenu();
     captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
 
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     field.focus();
@@ -834,12 +850,11 @@ describe("a capture on another device", () => {
     feed([], [...mine.projects, ...theirs.projects], [...mine.items, ...theirs.items], { "dev-1": mine, "dev-2": theirs });
 
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
-    await flush();
-    const picker = captureRowFor("cap-1").querySelector(".reroute-menu");
+    const picker = await waitForRerouteMenu();
     expect([...picker.querySelectorAll(".reroute-project .mt")].map((name) => name.textContent)).toEqual(["their notes"]);
 
     picker.querySelector('[data-reroute-branch-open="project-1"]').click();
-    await flush();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
     expect([...captureRowFor("cap-1").querySelectorAll("#reroute-branches option")].map((option) => option.value)).toEqual([
       "build/away",
     ]);

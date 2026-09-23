@@ -2860,6 +2860,7 @@ function mountRailOnContext(host, context, swap) {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
       ...surfaceViewerCallbacks(),
+      cacheKey: key,
       host: host.querySelector("#rail-panel"),
       onClose: () => {
         surfaceOverlay = null;

@@ -482,6 +482,7 @@ describe("the surface a menu option opens", () => {
     await mount();
     menuCaret().click();
     menuItem(SHELL_ENTRY_KIND).click();
+    await vi.waitFor(() => expect(overlayRows().map((row) => row.dataset.key)).toEqual(["sh1"]));
   };
 
   it("lays over the chat panel alone, not the whole page", async () => {

@@ -144,7 +144,7 @@ function expandClippedText(event) {
 
 const CLIP_KEYS = ["Enter", " "];
 
-export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel, historyControl = null }) {
+export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel, historyControl = null, cacheKey = null }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
@@ -157,6 +157,31 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   let ticker = null;
   let completedCount = 0;
   let historyOpen = false;
+  let foldState = {};
+  let foldKnown = !cacheKey;
+  let foldRecord = null;
+  let disposed = false;
+
+  const foldKey = (element) => {
+    if (element.matches(COMPLETED_FOLD_SELECTOR)) return "history";
+    if (element.matches(".surface-agent[data-key]")) return `agent:${element.dataset.key}`;
+    if (element.matches(".surface-phase[data-key]")) return `phase:${element.dataset.key}`;
+    if (element.matches(".surface-shell-tail")) return `tail:${element.closest(".surface-row[data-key]")?.dataset.key || ""}`;
+    return null;
+  };
+  const writeFold = (key, open, extra = {}) => {
+    if (!foldRecord || !key || foldState[key] === open) return;
+    void foldRecord.write({ ...foldState, [key]: open, ...extra });
+  };
+  const applyCachedFolds = () => {
+    if (!foldRecord) return;
+    for (const detail of host.querySelectorAll("details")) {
+      const key = foldKey(detail);
+      if (key && Object.hasOwn(foldState, key)) detail.open = foldState[key];
+    }
+    historyOpen = Boolean(foldState.history);
+    syncHistoryControl();
+  };
 
   const syncHistoryControl = (count = completedCount) => {
     if (!historyControl) return;
@@ -278,6 +303,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 
   const paint = () => {
+    if (disposed || !foldKnown) return;
     const reading = { nowMs: Date.now(), modelLabel };
     const paintContext = { surfaces, reading, rowOptions, openedPhases };
     if (kind === WORKFLOW_ENTRY_KIND) {
@@ -293,12 +319,17 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       }
     }
     syncHistoryControl();
+    applyCachedFolds();
     tickWhileAnyRowIsRunning();
   };
 
   const onHistoryPress = () => {
     const completed = host.querySelector(COMPLETED_FOLD_SELECTOR);
     if (!completed) return;
+    if (foldRecord) {
+      writeFold("history", !historyOpen);
+      return;
+    }
     historyOpen = !historyOpen;
     if (historyOpen) {
       completed.open = true;
@@ -322,7 +353,12 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     if (expandClippedText(event)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
-      selectedWorkflowKey = openWorkflow(surfaces, Number(workflow.dataset.workflowIndex))?.key ?? null;
+      const chosen = openWorkflow(surfaces, Number(workflow.dataset.workflowIndex))?.key ?? null;
+      if (foldRecord) {
+        void foldRecord.write({ ...foldState, selectedWorkflowKey: chosen });
+        return;
+      }
+      selectedWorkflowKey = chosen;
       selectedWorkflowWasRunning = false;
       paint();
       return;
@@ -339,6 +375,8 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 
   const onViewerToggle = (event) => {
+    const key = foldKey(event.target);
+    if (foldRecord && key) writeFold(key, event.target.open);
     const agent = event.target.closest("details.surface-agent");
     if (agent) {
       if (agent.open) openedAgentKeys.add(agent.dataset.key);
@@ -364,15 +402,37 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   host.addEventListener("toggle", onViewerToggle, true);
   historyControl?.addEventListener("click", onHistoryPress);
   syncHistoryControl(0);
+  if (cacheKey) {
+    foldRecord = watchUiState(uiAddress({ entityId: cacheKey, view: "surface-viewer", kind: "fold", sub: kind }), (saved) => {
+      foldState = saved && typeof saved === "object" ? saved : {};
+      selectedWorkflowKey = typeof foldState.selectedWorkflowKey === "string" ? foldState.selectedWorkflowKey : null;
+      openedAgentKeys.clear();
+      openedPhases.clear();
+      for (const [name, open] of Object.entries(foldState)) {
+        if (name.startsWith("agent:") && open) openedAgentKeys.add(name.slice(6));
+        if (name.startsWith("phase:")) openedPhases.add(name.slice(6));
+      }
+      foldKnown = true;
+      paint();
+    });
+    void foldRecord.ready.then(() => {
+      if (disposed || foldKnown) return;
+      foldKnown = true;
+      paint();
+    });
+  }
 
   return {
     kind,
+    ready: foldRecord?.ready || Promise.resolve(),
     set(nextSurfaces) {
       surfaces = nextSurfaces || null;
       paint();
     },
     dispose() {
+      disposed = true;
       stopTicking();
+      foldRecord?.dispose({ flushPending: false });
       host.removeEventListener("click", onViewerPress);
       host.removeEventListener("keydown", onViewerKey);
       host.removeEventListener("toggle", onViewerToggle, true);
@@ -382,7 +442,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 }
 
-export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, cacheKey = null, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -392,7 +452,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, onClose
       if (onClose) onClose();
     },
   });
-  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem, modelLabel });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem, modelLabel, cacheKey });
   return {
     kind,
     set(surfaces) {
@@ -481,6 +541,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
       onOpenThreadItem,
       modelLabel,
       compact: true,
+      cacheKey: key,
       historyControl: viewerHost.querySelector(".surface-history-toggle"),
     });
     reveal(viewerHost, { axis: "height" });

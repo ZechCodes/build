@@ -44,7 +44,7 @@ import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
 import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
 import { creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
-import { CAPTURE_CONTROLS, captureError, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
+import { CAPTURE_CONTROLS, captureError, disposeCaptureRows, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { hideProject } from "./projectHide.js";
 import {
@@ -703,7 +703,7 @@ export function unmountInboxList() {
   foldRecord = null;
   recentRecord = null;
   menuRecord = null;
-  initCaptureRows({ onChange: () => {}, entryOf: () => null });
+  disposeCaptureRows();
 }
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */

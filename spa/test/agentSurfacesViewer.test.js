@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { SPAWNING_CALL_SEQUENCE, WORKFLOW_STARTED_AT, surfacesSnapshot } from "./surfacesFixture.js";
 import { mountSurfaceViewer } from "../src/core/agentSurfaces.js";
+import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
+import { uiAddress } from "../src/core/localUiState.js";
 import {
   AGENT_ENTRY_KIND,
   SHELL_ENTRY_KIND,
@@ -9,6 +12,9 @@ import {
 } from "../src/core/agentSurfacesModel.js";
 
 const snapshot = () => surfacesSnapshot();
+
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const host = () => {
   document.body.innerHTML = `<div class="overlay-host"></div>`;
@@ -37,6 +43,23 @@ const withModel = (model) =>
   });
 
 describe("mountSurfaceViewer", () => {
+  it("restores and redraws a conversation's surface folds from real cache writes", async () => {
+    await wipeCache();
+    const address = uiAddress({ entityId: "conversation-folds", view: "surface-viewer", kind: "fold", sub: AGENT_ENTRY_KIND });
+    await writeCached(address, { history: true, "agent:s1": true });
+    const viewer = mount(AGENT_ENTRY_KIND, { cacheKey: "conversation-folds" });
+    viewer.set(snapshot());
+    await viewer.ready;
+    expect(document.querySelector(".surface-completed").open).toBe(true);
+    expect(document.querySelector('.surface-agent[data-key="s1"]').open).toBe(true);
+
+    await writeCached(address, { history: false, "agent:s1": false });
+    await vi.waitFor(() => expect(document.querySelector(".surface-completed").open).toBe(false));
+    expect(document.querySelector('.surface-agent[data-key="s1"]').open).toBe(false);
+    expect((await readCached(address)).value.history).toBe(false);
+    viewer.dispose();
+  });
+
   it("paints the kind it was mounted for, with its rows and no menu on any of them", () => {
     const viewer = mount(SHELL_ENTRY_KIND);
     viewer.set(snapshot());

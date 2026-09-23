@@ -682,10 +682,24 @@ async fn a_board_item_carries_the_project_list_when_a_project_arrives() {
         ),
     );
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
-    settled_pushes(&mut rx, &key).await;
 
+    let before_move = state.lock().unwrap().changes.board_revision();
     state.lock().unwrap().note_board_changed();
-    let moved = board_item(&settled_pushes(&mut rx, &key).await);
+    let moved_item = |pushes: &[Value]| {
+        pushes
+            .iter()
+            .filter(|push| push["type"] == "changes")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .find(|item| {
+                item["entity_id"] == crate::changes::BOARD_ITEM_ID
+                    && item["state"]["revision"]
+                        .as_u64()
+                        .is_some_and(|revision| revision > before_move)
+            })
+            .map(|item| item["state"].clone())
+    };
+    let pushes = pushes_until(&mut rx, &key, |pushes| moved_item(pushes).is_some()).await;
+    let moved = moved_item(&pushes).expect("the board move reaches the subscription");
     assert!(moved["revision"].is_u64(), "{moved:?}");
     assert!(
         moved.get("projects").is_none(),
@@ -756,17 +770,6 @@ async fn a_board_items_project_list_renders_with_the_app_lock_released() {
         state.lock().unwrap().project_list()["projects"],
         "the same list `project.list` answers"
     );
-}
-
-/// The board's own item out of a push history.
-fn board_item(pushes: &[Value]) -> Value {
-    pushes
-        .iter()
-        .filter(|push| push["type"] == "changes")
-        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
-        .map(|item| item["state"].clone())
-        .unwrap_or_else(|| panic!("no board item: {pushes:?}"))
 }
 
 /// A `files` item carries the worktree's root listing beside the paths that

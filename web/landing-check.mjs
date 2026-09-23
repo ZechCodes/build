@@ -172,14 +172,14 @@ async function checkHeroPointerPath(page, label) {
   }, [x, y]);
   assert.ok(under.isCta, `${label}: the hero call to action is under the pointer (${JSON.stringify(under)})`);
   await page.mouse.click(x, y);
-  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: 10_000 });
+  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
   // Where the click lands, the form takes the pointer too.
   await page.waitForFunction(() => {
     const field = document.querySelector("#act-8 form input");
     const rect = field?.getBoundingClientRect();
     if (!rect || rect.width === 0) return false;
     return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
-  }, null, { timeout: 10_000 });
+  }, null, { timeout: gpu ? 10_000 : 30_000 });
   await page.screenshot({ path: path.join(output, `${label}-hero-cta-click.png`) });
   await seek(page, 1, 0);
   await page.waitForTimeout(400);
@@ -383,6 +383,38 @@ async function inspectStartup(width, height) {
   assert.deepEqual(errors, [], `${label}: browser errors`);
   await context.close();
 
+  // The film's module slow to arrive: nothing of the film's covers the hero
+  // while it waits, and a call to action pressed meanwhile is honoured once
+  // the film starts.
+  const slow = await browser.newContext({ viewport: { width, height } });
+  const slowPage = await slow.newPage();
+  const slowErrors = watchErrors(slowPage);
+  await slowPage.route(/\/_astro\/.*\.js$/, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    await route.continue();
+  });
+  await slowPage.goto(`${base}/?film=${gpu ? "1" : "force"}`, { waitUntil: "commit" });
+  await slowPage.waitForFunction(() => document.documentElement.dataset.mode === "film", null, { timeout: 10_000 });
+  await slowPage.waitForSelector("#act-1 .actions .cta");
+  const pending = await slowPage.evaluate(() => ({
+    stage: document.documentElement.dataset.stage,
+    panels: [...document.querySelectorAll("[data-panel]")].filter((panel) => getComputedStyle(panel).visibility !== "hidden").map((panel) => panel.dataset.panel),
+  }));
+  assert.equal(pending.stage, "pending", `${label}: the module is still on its way`);
+  assert.deepEqual(pending.panels, [], `${label}: no close-up shows before the film places it`);
+  await slowPage.screenshot({ path: path.join(output, `${label}-pending.png`) });
+  await slowPage.locator("#act-1 .actions .cta").click();
+  await slowPage.waitForFunction(() => document.documentElement.dataset.stage === "ready", null, { timeout: 60_000 });
+  await slowPage.waitForFunction(() => {
+    const field = document.querySelector("#act-8 form input");
+    const rect = field?.getBoundingClientRect();
+    if (document.querySelector("[data-film]").dataset.act !== "8" || !rect || rect.width === 0) return false;
+    return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
+  }, null, { timeout: gpu ? 10_000 : 30_000 });
+  await slowPage.screenshot({ path: path.join(output, `${label}-early-cta.png`) });
+  assert.deepEqual(slowErrors, [], `${label}: browser errors with a slow module`);
+  await slow.close();
+
   // The film's module blocked: the boot's deadline hands the page back.
   const blocked = await browser.newContext({ viewport: { width, height } });
   const blockedPage = await blocked.newPage();
@@ -415,7 +447,7 @@ async function inspectNav(width, height) {
     await page.screenshot({ path: path.join(output, `${label}-act-4.png`) });
     if (variant === "persistent") {
       await page.locator(".site-nav .cta").click();
-      await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: 10_000 });
+      await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "8", null, { timeout: gpu ? 10_000 : 30_000 });
     }
     assert.deepEqual(errors, [], `${label}: browser errors`);
     findings.push({ label, viewport: [width, height], mode: state.mode });

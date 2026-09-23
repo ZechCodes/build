@@ -158,6 +158,13 @@
 
 /* --- the close-ups ------------------------------------------------------ */
 
+/* Out of sight until the film places them: before its module runs, a panel
+   has no transform and would sit over the hero. update() sets each one's
+   visibility inline once it has a place. */
+[data-mode="film"] .panel {
+  visibility: hidden;
+}
+
 .panel {
   --lift: 0;
   position: absolute;

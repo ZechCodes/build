@@ -333,17 +333,32 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
 
   // "See how it works" and "Join the waitlist" point at acts, in the film and
   // in the bar; inside the pin an anchor jump lands nowhere useful, so they
-  // scroll the film instead.
+  // scroll the film instead. Act 8's form is on screen from its second beat.
+  const goToAct = (actId, behavior) => {
+    const local = actId === 8 ? 0.72 : 0.08;
+    const trigger = tl.scrollTrigger;
+    scrollTo({ top: trigger.start + (at(actId, local) / TOTAL_TRAVEL) * (trigger.end - trigger.start), behavior });
+  };
   document.addEventListener("click", (event) => {
     const anchor = event.target.closest('a[href^="#act-"]');
     if (!anchor || stopped) return;
     const actId = Number(anchor.getAttribute("href").slice(5));
-    if (!Number.isInteger(actId)) return;
+    if (!Number.isInteger(actId) || !ACTS.some((act) => act.id === actId)) return;
     event.preventDefault();
-    const local = actId === 8 ? 0.72 : 0.08;
-    const trigger = tl.scrollTrigger;
-    scrollTo({ top: trigger.start + (at(actId, local) / TOTAL_TRAVEL) * (trigger.end - trigger.start), behavior: "smooth" });
+    goToAct(actId, "smooth");
   });
+  // A click that came before this module did (the hero's call to action on
+  // a slow connection), or a link to an act, left its act in the hash; the
+  // film opens there rather than at the top, with that act's state set on
+  // the first frame instead of played through from the hero.
+  function openAtPendingAct() {
+    const pendingAct = Number(/^#act-(\d+)$/.exec(location.hash)?.[1]);
+    if (!ACTS.some((act) => act.id === pendingAct)) return;
+    ScrollTrigger.refresh();
+    goToAct(pendingAct, "instant");
+    tl.scrollTrigger.update();
+    tl.progress(tl.scrollTrigger.progress);
+  }
 
   canvas.addEventListener("webglcontextlost", (event) => {
     event.preventDefault();
@@ -359,6 +374,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   stage.load(["laptop"])
     .then(() => stage.setScreen("laptop", SCREEN_CUES.laptop[0][1]))
     .then(() => {
+      openAtPendingAct();
       gates.update(tl.time());
       resolveScreens(tl.time());
       stage.resize();

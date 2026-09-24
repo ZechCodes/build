@@ -53,6 +53,9 @@ vi.mock("../src/core/confirm.js", () => ({ confirmAction }));
 vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor,
   canAnswer: () => false,
+  // Every context this suite hands out is a machine that has answered: it
+  // carries a greeting's verdict or a catalog.
+  awaitingFirstAnswer: () => false,
   onDeviceStateChanged: () => () => {},
   routeContext: () => null,
 }));

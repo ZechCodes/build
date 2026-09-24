@@ -207,12 +207,13 @@ export const canAnswer = (context) =>
 
 /**
  * A context stood up over a machine's records before that machine has ever
- * answered (core/surfaceContext.js): no session, and no mark saying why not —
- * every stand-down stamps `offlineSince`. Nothing has been tried and failed,
- * so whatever speaks for the machine's reachability treats it as a machine
- * this client has not opened yet.
+ * answered (core/surfaceContext.js): no session, no greeting's verdict, and no
+ * mark saying why not — every stand-down stamps `offlineSince`. Nothing has
+ * been tried and failed, so whatever speaks for the machine's reachability
+ * treats it as a machine this client has not opened yet.
  */
-export const awaitingFirstAnswer = (context) => Boolean(context) && !context.session && !context.offlineSince;
+export const awaitingFirstAnswer = (context) =>
+  Boolean(context) && !context.session && !context.offlineSince && !context.unsupported;
 
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */

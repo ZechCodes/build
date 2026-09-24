@@ -2,7 +2,10 @@
 // #140: nothing on the rail is shut because its machine is away. Every control
 // a row or block has stays live, and the press is what finds out: each one is
 // refused at the moment it acts, in one plain sentence on the surface that was
-// pressed — "Build cannot … because this machine is away."
+// pressed — "Build cannot … because this machine is away.", or the actual
+// reason when the machine is not away but blocked or behind. Which it is, is
+// read at the press: a sheet opened while the machine was away sends once it is
+// back, and one opened while it was here refuses once it has gone.
 //
 // Real cache, feed, device registry, rail, create dialog and settings sheet;
 // the session's `call` is the only stand-in, and a machine that is away never
@@ -35,7 +38,18 @@ const watchedIssue = issue({ id: "issue-7", number: 7, title: "Wire 1.22", watch
 let modules;
 /** The bridge: greets, and answers every verb — so a verb that reached it would
  *  succeed, and a sentence on screen can only have come from the refusal. */
-const call = vi.fn((method) => Promise.resolve(method === "session.hello" ? GREETING : {}));
+const answerAll = (method) => Promise.resolve(method === "session.hello" ? GREETING : {});
+const call = vi.fn(answerAll);
+/** A new session on the machine, greeted: how it comes back. */
+async function connect() {
+  const session = vi.fn((method, params) => call(method, params));
+  const context = modules.deviceContexts.adoptDeviceSession({
+    deviceId: DEVICE, call: session, close: () => {}, peer: () => {}, onCarrier: () => {},
+    installAdapter: (selection) => selection.create(session),
+  });
+  await modules.connection.greetLiveBridge(context);
+  return context;
+}
 const sentVerbs = () => call.mock.calls.map(([method]) => method).filter((method) => method !== "session.hello");
 
 const $ = (selector) => document.querySelector(selector);
@@ -50,6 +64,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = bodyHtml;
   call.mockClear();
+  call.mockImplementation(answerAll);
   const { App } = await import("../src/app.js");
   Object.assign(App, { route: { name: "inbox" }, devices: [{ id: DEVICE, name: "Laptop", status: "online" }],
     selectedDeviceId: DEVICE, deviceFilter: null });
@@ -68,11 +83,7 @@ beforeEach(async () => {
   await modules.tracker.writeIssueRecord(DEVICE, PROJECT, watchedIssue.id, issueDetail(watchedIssue, []));
   // The machine answered once — which is how this tab knows it carries
   // watching — and is away now.
-  const context = modules.deviceContexts.adoptDeviceSession({
-    deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
-    installAdapter: (selection) => selection.create(call),
-  });
-  await modules.connection.greetLiveBridge(context);
+  await connect();
   modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
   modules.inboxView.setInboxView("projects");
   modules.inboxView.mountInboxList();
@@ -143,6 +154,16 @@ describe("a press on a machine that is away", () => {
       expect(sentVerbs()).toEqual([]);
     });
 
+    it("sends the remote once the machine is back, though the sheet opened while it was away", async () => {
+      await connect();
+      await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
+      $("#psremote").value = "git@example.com:build.git";
+      $("#pssave").click();
+      await vi.waitFor(() => expect(sentVerbs()).toContain("project.set_remote"), WAIT);
+      expect(call).toHaveBeenCalledWith("project.set_remote", { project_id: PROJECT, url: "git@example.com:build.git" });
+      expect($("#pserr").textContent).toBe("");
+    });
+
     it("says why a folder was not removed", async () => {
       $('[data-remove-source="src-1"]').click();
       await vi.waitFor(() => expect($("#pssrcerr").textContent).not.toBe(""), WAIT);
@@ -157,6 +178,69 @@ describe("a press on a machine that is away", () => {
       await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
       expect($("#pserr").textContent).toBe("Build cannot delete this project because this machine is away.");
       expect(sentVerbs()).toEqual([]);
+    });
+  });
+
+  it("says why the remote was not saved when the machine went while the sheet was open", async () => {
+    const { writeProjectSetting } = await import("../src/core/settingsRecords.js");
+    await writeProjectSetting(DEVICE, project);
+    await connect();
+    await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
+    block().querySelector("[data-project-settings]").click();
+    await vi.waitFor(() => expect($("#pssave")).not.toBe(null), WAIT);
+    modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
+    call.mockClear();
+    $("#psremote").value = "git@example.com:build.git";
+    $("#pssave").click();
+    await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
+    expect($("#pserr").textContent).toBe("Build cannot save this project's remote because this machine is away.");
+    expect(sentVerbs()).toEqual([]);
+  });
+
+  it("says the machine went, when it goes while the press is in flight", async () => {
+    await connect();
+    await vi.waitFor(() => expect(block().classList.contains("inbox-offline")).toBe(false), WAIT);
+    const key = `workspace:${DEVICE}/ws-1`;
+    let drop;
+    call.mockImplementation((method) => (method === "workspace.finish"
+      ? new Promise((_, reject) => { drop = reject; })
+      : answerAll(method)));
+    await vi.waitFor(() => expect(rowFor(key)?.querySelector("[data-workspace-done]")).toBeTruthy(), WAIT);
+    rowFor(key).querySelector("[data-workspace-done]").click();
+    await vi.waitFor(() => expect(drop).toBeTypeOf("function"), WAIT);
+    modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
+    drop(new Error("Device offline"));
+    await vi.waitFor(() => expect(shown(rowError(key))).toBe(true), WAIT);
+    expect(rowError(key).textContent).toBe("Build cannot archive this workspace because this machine is away.");
+  });
+
+  describe("on a machine that is not away", () => {
+    const pressDone = async () => {
+      const key = `workspace:${DEVICE}/ws-1`;
+      await vi.waitFor(() => expect(rowFor(key)?.querySelector("[data-workspace-done]")).toBeTruthy(), WAIT);
+      rowFor(key).querySelector("[data-workspace-done]").click();
+      await vi.waitFor(() => expect(shown(rowError(key))).toBe(true), WAIT);
+      return rowError(key).textContent;
+    };
+
+    it("says this browser could not connect to it, when it is blocked", async () => {
+      const { blockedMark } = await import("../src/core/deviceAway.js");
+      modules.deviceContexts.setContextOffline(DEVICE, blockedMark("no-webrtc"));
+      expect(await pressDone()).toBe(
+        "Build cannot archive this workspace because a direct connection to this machine could not be made: this browser cannot open one.",
+      );
+      expect(sentVerbs()).toEqual([]);
+    });
+
+    it("says this app needs a reload, when the machine's bridge is newer", async () => {
+      // What a greeting in an API major nothing here speaks settles.
+      const context = await connect();
+      modules.deviceContexts.adoptBridgeSelection(context, { unsupported: "app", version: "2.0.0" });
+      call.mockClear();
+      expect(await pressDone()).toBe(
+        "Build cannot archive this workspace because this machine's bridge is newer than this app, which needs a reload.",
+      );
+      expect(sentVerbs()).not.toContain("workspace.finish");
     });
   });
 

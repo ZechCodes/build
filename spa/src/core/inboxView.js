@@ -524,7 +524,7 @@ function openBlockHead(projectKey) {
 }
 
 /** What each verb the settings sheet sends was for, in the reader's words — the
- *  sentence a press on it says when the block's machine is away. A verb this
+ *  sentence a press on it says when the block's machine cannot take it. A verb this
  *  does not name is still a change to the project's settings. */
 const SETTINGS_DOING = {
   "project.list": "open this project's settings",

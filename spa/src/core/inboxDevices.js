@@ -3,10 +3,10 @@
 // The inbox is one list across every machine on the account, so a row names the
 // device that answered for it, and a verb on a row must reach THAT device:
 // clearing a row the laptop answered for through the desktop's session would
-// clear nothing. So every verb asks this module for its call, and a device that
-// cannot answer right now hands back one that refuses, at the press, in a
-// sentence naming what the press was for — the verb sites are written once, for
-// every row, whichever machine it came from. A surface that is about one
+// clear nothing. So every verb asks this module for its call, which at each
+// press either reaches that device or refuses, in a sentence naming what the
+// press was for and why the machine cannot take it — the verb sites are written
+// once, for every row, whichever machine it came from. A surface that is about one
 // machine rather than one row — the create dialog — asks the same way, by
 // device id.
 //
@@ -19,32 +19,27 @@ import { App } from "../app.js";
 import { canAnswer, contextFor, creationDevice, homeContext } from "./deviceContexts.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { allDevicesOfflineText } from "./text.js";
-import { deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
+import { deviceAwayBecause, deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
-
-/** What a device that cannot answer offers: nothing to call, the mark a call
- *  that names no verb is refused with, and the word its rows are greyed with —
- *  which say why it cannot, since a machine answering in a shape this tab cannot
- *  read is not away at all. */
-const noDevice = (context) => ({ call: null, mark: deviceAwayMark(context), word: deviceAwayWord(context) });
 
 /** The machine a surface is about: the one it names, or the one creation goes
  *  to when it names none. */
 const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext());
 
 /**
- * What one machine offers right now: `{ call, mark, word }`.
+ * The word a machine's greyed rows wear while it cannot answer — which says
+ * why it cannot, since a machine answering in a shape this tab cannot read is
+ * not away at all — and null while it can.
  *
  * Naming no machine means the one where creation goes: home. A row this client
  * is holding itself — a capture taken while no device could take it — names
  * none, and so does a surface that is about nowhere in particular.
  */
-function deviceTarget(deviceId) {
+function awayWordOf(deviceId) {
   const context = contextOf(deviceId);
-  if (!canAnswer(context)) return noDevice(context);
-  return { call: context.rpc, mark: null, word: null };
+  return canAnswer(context) ? null : deviceAwayWord(context);
 }
 
 /**
@@ -74,30 +69,46 @@ export const followDeviceCatalog = (deviceId, listener) =>
   contextOf(deviceId)?.onModelCatalogChanged(listener) || (() => {});
 
 /** What a press on a machine that cannot answer says, wherever it was
- *  pressed: one plain sentence naming what the press was for. `doing` is that,
- *  in the reader's words — "archive this workspace". */
-export const awayRefusal = (doing) => `Build cannot ${doing} because this machine is away.`;
+ *  pressed: one plain sentence naming what the press was for, and why the
+ *  machine cannot take it. `doing` is that, in the reader's words — "archive
+ *  this workspace"; `context` is the machine's, whose reason is said when it
+ *  has one, and a machine that is simply not here is away. */
+export const awayRefusal = (doing, context = null) =>
+  `Build cannot ${doing} because ${deviceAwayBecause(context)}.`;
 
 /** The words a call is refused with: the sentence for what it was doing when
  *  its caller said, else the machine's short mark. `doing` is a phrase, or —
  *  for a surface that sends more than one verb through the one call, like a
  *  project's settings sheet — a phrase per method. */
-function refusalOf(mark, doing, method, params) {
-  if (!doing) return mark;
-  return awayRefusal(typeof doing === "function" ? doing(method, params) : doing);
+function refusalOf(context, doing, method, params) {
+  if (!doing) return deviceAwayMark(context);
+  return awayRefusal(typeof doing === "function" ? doing(method, params) : doing, context);
 }
 
-/** The call a surface about one machine makes: that machine's, or one that
- *  refuses at the press — so no call site asks whether the machine is there,
- *  and no control has to be shut in case it is not. */
+/**
+ * The call a surface about one machine makes: that machine's, or a refusal at
+ * the press — so no call site asks whether the machine is there, and no
+ * control has to be shut in case it is not.
+ *
+ * Which it is, is decided at each press, not when the call is handed out: a
+ * sheet opened while the machine was away sends once it is back, and one opened
+ * while it was here refuses in the sentence once it has gone. A call the
+ * machine drops mid-flight, because it went, is refused in that sentence too.
+ */
 export function deviceCall(deviceId, doing = null) {
-  const { call, mark } = deviceTarget(deviceId);
-  return call || ((method, params) => Promise.reject(new Error(refusalOf(mark, doing, method, params))));
+  // Passed through as asked, so an argument the caller left out stays left out.
+  return (...asked) => {
+    const context = contextOf(deviceId);
+    const refused = () => new Error(refusalOf(contextOf(deviceId), doing, ...asked));
+    if (!canAnswer(context)) return Promise.reject(refused());
+    return context.rpc(...asked).catch((error) => {
+      throw canAnswer(contextOf(deviceId)) ? error : refused();
+    });
+  };
 }
 
-/** The device a row's verbs run against, and the call they make: the row says
- *  which machine answered for it, so no verb site asks whose row it is. */
-const verbTarget = (row) => deviceTarget(row && row.deviceId);
+/** The call a row's verbs make: the row says which machine answered for it, so
+ *  no verb site asks whose row it is. */
 export const verbCall = (row, doing = null) => deviceCall(row && row.deviceId, doing);
 
 /**
@@ -127,10 +138,9 @@ export function paintDeviceState(list, { entryFor, blockFor }) {
  *  word that device's rows wear, which is what a row's own mark is painted
  *  from. */
 function greyAway(element, painted) {
-  const target = painted && painted.deviceId ? verbTarget(painted) : null;
-  const away = Boolean(target && target.mark);
-  element.classList.toggle("inbox-offline", away);
-  return away ? target.word : null;
+  const word = painted && painted.deviceId ? awayWordOf(painted.deviceId) : null;
+  element.classList.toggle("inbox-offline", Boolean(word));
+  return word;
 }
 
 /** The word a greyed row wears — offline, or the update that would make its

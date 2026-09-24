@@ -76,6 +76,7 @@ import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
 import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
+import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog } from "./inboxDevices.js";
@@ -3062,7 +3063,10 @@ function mountRailOnContext(host, context, swap) {
   /// A scroll gesture fires this many times over, so a report that says what
   /// the last one said is never made.
   const reportRead = (body) => {
-    if (!chatIsVisible()) return;
+    // Shown is not read: a window left showing a chat overnight must not mark
+    // what agents post, nor keep the user's session alive. What is on screen
+    // is reported when the user comes back (readerPresence.js).
+    if (!chatIsVisible() || !readerIsHere()) return;
     const agent = agentInFocus();
     const thread = threadFor();
     // The drawn rows are all `readThroughSequence` can ask, so the items this
@@ -3670,6 +3674,7 @@ function mountRailOnContext(host, context, swap) {
     else paintChat();
   };
   document.addEventListener("visibilitychange", visibilityChanged);
+  const stopWaitingForReader = onReaderReturns(paintChat);
   document.addEventListener("keydown", dismissOnEscape);
   document.addEventListener("pointerdown", dismissOnOutsidePointer);
   window.addEventListener("hashchange", dismissPopover);
@@ -3699,6 +3704,7 @@ function mountRailOnContext(host, context, swap) {
       activityRuns = null;
       for (const marker of unreadMarkers.values()) marker.leave();
       document.removeEventListener("visibilitychange", visibilityChanged);
+      stopWaitingForReader();
       panelMotion.cancel();
       overviewMotion.cancel();
       unwatchCache();

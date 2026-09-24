@@ -29,6 +29,7 @@ import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import { trailingRead } from "./trailingRead.js";
+import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
@@ -150,10 +151,11 @@ export function mountIssuePage(host, options) {
    * worse than one that quietly re-sends on the next scroll.
    */
   function markRead() {
-    // A page in a hidden tab is open, not read. A read mark is also the user
-    // being here (the bridge's user session), and a tab left in the
-    // background overnight must not say so each time an agent comments.
-    if (!offersWatch || !state.issue || globalThis.document?.hidden) return;
+    // A page in a hidden tab or an unfocused window is open, not read. A read
+    // mark is also the user being here (the bridge's user session), and a
+    // window left showing this overnight must not say so each time an agent
+    // comments. Coming back marks what is on screen (readerPresence.js).
+    if (!offersWatch || !state.issue || !readerIsHere()) return;
     const through = readThrough(state.rows);
     if (!through || through === markedThrough) return;
     markedThrough = through;
@@ -177,8 +179,7 @@ export function mountIssuePage(host, options) {
     unreadPill.update();
   };
   host.addEventListener("scroll", onScroll, { passive: true });
-  const onVisible = () => { if (!document.hidden) markRead(); };
-  document.addEventListener("visibilitychange", onVisible);
+  const stopWaitingForReader = onReaderReturns(markRead);
 
   const place = () => ({ projectId: state.projectId, deviceId: state.deviceId, projectKey: state.projectKey });
 
@@ -579,7 +580,7 @@ export function mountIssuePage(host, options) {
       state.disposed = true;
       commentDraft.dispose();
       host.removeEventListener("scroll", onScroll);
-      document.removeEventListener("visibilitychange", onVisible);
+      stopWaitingForReader();
       watcher.dispose();
       issueWatcher?.();
       listWatcher?.();

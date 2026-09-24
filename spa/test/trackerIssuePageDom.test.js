@@ -224,6 +224,31 @@ describe("issue unread navigation", () => {
     }
   });
 
+  it("does not mark an issue read in a visible unfocused window, and marks it on focus", async () => {
+    carriesWatching = true;
+    const timeline = [
+      event({ id: "ie-01M37FGQD48628P29BG1A4BB01", actor: { kind: "user" } }),
+      comment({ id: "ic-01M37FGQD48628P29BG1A4BB02", author: { kind: "agent", agent_id: "agent-1" } }),
+    ];
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: timeline[0].id }),
+      timeline,
+    });
+    call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({}));
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      await mount({}, { waitForPaint: false });
+      await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+      expect(listed("issues.read_through")).toEqual([]);
+      focused.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(listed("issues.read_through")).toHaveLength(1));
+      expect(listed("issues.read_through")[0][1].event_id).toBe(timeline[1].id);
+    } finally {
+      focused.mockRestore();
+    }
+  });
+
   it("does not claim unread history on a bridge without issue read marks", async () => {
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());

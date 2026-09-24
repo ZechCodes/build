@@ -886,6 +886,12 @@ cached timelines.
   Reads, subscriptions, acks, resizes and re-attaches are not in it, and
   neither is `term.input`, which a terminal also sends by itself. Agents act
   through MCP and never reach it.
+- **Automatic read marks** (a chat or issue page marking what arrives on
+  screen, rather than the user sending, moving or opening something) are sent
+  only while the document is visible and focused (`document.hasFocus()`). A
+  window left showing a chat overnight neither reads the user's messages for
+  them nor keeps their session alive; when focus returns, what is on screen is
+  marked then (`spa/src/core/readerPresence.js`).
 - **A session** ends after `gap_ms` (6 hours) without activity. The update is
   #98's session function with that gap; when a new session starts,
   `previous_session_ended_ms` becomes the old `last_activity_ms`.

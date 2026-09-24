@@ -91,7 +91,7 @@ const { App } = await import("../src/app.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
-const { evictEntity, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { evictEntity, mergeCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 const pinnedValue = async () => (await readCached(pinnedAddress))?.value?.pinned;
@@ -273,12 +273,19 @@ beforeEach(async () => {
   adoptDeviceSession(sessionAnswering(bridge));
 });
 
-afterEach(() => {
+afterEach(async () => {
   if (rail) rail.dispose();
   rail = null;
   chatRepository?.dispose();
   chatRepository = null;
   vi.useRealTimers();
+  // Posting queues record merges without awaiting disk. Let this fixture's
+  // writes finish before the next one clears the shared IndexedDB; otherwise
+  // an old write can land after that clear and look like a duplicate message.
+  await Promise.all(callsTo("thread.post").map(({ params }) => mergeCached({
+    deviceId: "dev-1", entityId: params.entity_id, kind: "thread",
+    sub: params.conversation_id || params.agent_id || "",
+  }, () => null)));
 });
 
 // On a phone the panel is not a column beside the work, it is laid over it
@@ -4489,7 +4496,7 @@ describe("sending to an agent that is already there", () => {
 
     await pushRow();
 
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
 
     release();
     await flush();
@@ -4499,7 +4506,7 @@ describe("sending to an agent that is already there", () => {
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await mount();
     await press("look at the login flow");
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
 
     payload = branchRow({
       agents: [agent({ state: "live" })],
@@ -4513,7 +4520,7 @@ describe("sending to an agent that is already there", () => {
     });
     await pushRow();
 
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
   });
 
   it("leaves a delivered message where it landed when only the wake is refused", async () => {
@@ -4529,7 +4536,7 @@ describe("sending to an agent that is already there", () => {
     await press("look at the login flow");
 
     expect(callsTo("thread.post")).toHaveLength(1);
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
     expect(composer().value).toBe("");
     expect(notifyError).toHaveBeenCalledTimes(1);
   });
@@ -4553,7 +4560,7 @@ describe("sending to an agent that is already there", () => {
     await press("look at the login flow");
 
     expect(callsTo("thread.post")).toHaveLength(1);
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
     expect(composer().value).toBe("");
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -4576,7 +4583,7 @@ describe("sending to an agent that is already there", () => {
 
     await press("look at the login flow");
 
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
     expect(composer().value).toBe("");
     expect(notifyError).not.toHaveBeenCalled();
   });
@@ -4599,7 +4606,7 @@ describe("sending to an agent that is already there", () => {
     });
 
     await press("look at the login flow");
-    expect(copiesOf("look at the login flow")).toBe(1);
+    await vi.waitFor(() => expect(copiesOf("look at the login flow")).toBe(1));
 
     const operationId = callsTo("thread.post")[0].params.operation_id;
     expect(operationId).toBeTruthy();

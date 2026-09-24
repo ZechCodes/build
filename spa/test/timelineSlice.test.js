@@ -12,7 +12,7 @@ import {
   createTimelineSlice,
   sliceTimeline,
 } from "../src/core/timelineSlice.js";
-import { timelineEntries } from "../src/core/thread.js";
+import { acknowledgeProvisionalItem, mergeThreadItems, provisionalThreadItem, timelineEntries } from "../src/core/thread.js";
 
 const said = (sequence, role = "agent") => ({
   type: "message",
@@ -101,6 +101,91 @@ describe("the slice a conversation is drawn from", () => {
 
     expect(drawnKeys(afterPush)[0]).toBe(top);
     expect(drawnKeys(afterPush)).toHaveLength(TIMELINE_SLICE_SIZE + 5);
+  });
+
+  it.each([null, undefined])("keeps an expanded slice across an unassigned %s append and repaints", (sequence) => {
+    const slice = createTimelineSlice();
+    const items = messages(500);
+    paint(items, slice);
+    slice.showEarlier();
+    const before = drawnKeys(paint(items, slice));
+    const pending = provisionalThreadItem({ operationId: "send-1", message: { body: "pending" } });
+    pending.data.sequence = sequence;
+    items.push(pending);
+
+    for (let repaint = 0; repaint < 3; repaint += 1) {
+      const after = drawnKeys(paint(items, slice));
+      expect(after.slice(0, before.length)).toEqual(before);
+      expect(after).toHaveLength(121);
+      expect(slice.drawnFloor()).toBe(381);
+    }
+  });
+
+  it("keeps the expanded slice through acknowledgement, reordering and the real echo", () => {
+    const slice = createTimelineSlice();
+    let items = messages(500);
+    paint(items, slice);
+    slice.showEarlier();
+    paint(items, slice);
+    const pending = provisionalThreadItem({ operationId: "send-1", message: { body: "pending" } });
+    items = mergeThreadItems(items, [pending, said(502)]);
+    expect(drawnKeys(paint(items, slice))).toHaveLength(122);
+    items = acknowledgeProvisionalItem(items, "send-1", 501);
+    expect(drawnKeys(paint(items, slice))).toEqual(Array.from({ length: 122 }, (_, i) => String(i + 381)));
+    items = mergeThreadItems(items, [{ ...said(501, "user"), data: { ...said(501, "user").data, operation_id: "send-1" } }]);
+    expect(drawnKeys(paint(items, slice))).toEqual(Array.from({ length: 122 }, (_, i) => String(i + 381)));
+  });
+
+  it("remembers an expanded history with no assigned sequences through appends and settlement", () => {
+    const slice = createTimelineSlice({ size: 3 });
+    let items = Array.from({ length: 8 }, (_, i) => provisionalThreadItem({ operationId: `send-${i}`, message: { body: `pending ${i}` } }));
+    paint(items, slice);
+    slice.showEarlier();
+    expect(drawnKeys(paint(items, slice))).toHaveLength(6);
+    items.push(provisionalThreadItem({ operationId: "send-8" }));
+    expect(drawnKeys(paint(items, slice))).toHaveLength(7);
+    items = items.map((item, i) => ({ ...item, data: { ...item.data, sequence: i + 1 } }));
+    expect(drawnKeys(paint(items, slice))).toEqual(["3", "4", "5", "6", "7", "8", "9"]);
+  });
+
+  it("includes a real append sorted before a slice containing only pending rows", () => {
+    const slice = createTimelineSlice({ size: 3 });
+    const pending = Array.from({ length: 8 }, (_, i) => provisionalThreadItem({ operationId: `send-${i}` }));
+    let items = [...messages(500), ...pending];
+    paint(items, slice);
+    slice.showEarlier();
+    expect(drawnKeys(paint(items, slice))).toHaveLength(6);
+    items = mergeThreadItems(items, [said(501)]);
+    const built = paint(items, slice);
+    expect(drawnKeys(built)).toContain("501");
+    for (const item of pending.slice(2)) expect(built.entries.some((entry) => entry.item?.data.operation_id === item.data.operation_id)).toBe(true);
+  });
+
+  it("keeps every drawn pending row when acknowledgements reorder them", () => {
+    const slice = createTimelineSlice({ size: 3 });
+    let items = Array.from({ length: 8 }, (_, i) => provisionalThreadItem({ operationId: `send-${i}` }));
+    paint(items, slice);
+    slice.showEarlier();
+    paint(items, slice);
+    items = acknowledgeProvisionalItem(items, "send-7", 1);
+    const built = paint(items, slice);
+    for (let i = 2; i < 8; i += 1) expect(built.entries.some((entry) => entry.item?.data.operation_id === `send-${i}`)).toBe(true);
+  });
+
+  it.each([null, undefined, NaN])("ignores a missing reach target %s", (target) => {
+    const slice = createTimelineSlice();
+    paint(messages(500), slice);
+    const request = slice.request();
+    slice.reachDown(target);
+    expect(slice.request()).toEqual(request);
+    expect(drawnKeys(paint(messages(500), slice))).toHaveLength(60);
+  });
+
+  it.each([null, undefined, NaN])("does not invent ownership for an unassigned sequence %s", (sequence) => {
+    const pending = provisionalThreadItem({ operationId: "send-1" });
+    const built = paint([...messages(500), pending], createTimelineSlice());
+    expect(built.entryKeyOf(sequence)).toBeNull();
+    expect(built.entryKeyOf(0)).toBeNull();
   });
 
   it("keeps a run that older history extended upwards, as one row", () => {

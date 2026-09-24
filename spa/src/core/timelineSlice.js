@@ -10,7 +10,9 @@
 // and a folded run of activity is one however many calls it holds. What the
 // panel remembers between paints is a FLOOR, a sequence, rather than a count,
 // so a push that lands at the bottom grows the slice instead of pushing its top
-// row out: nothing a repaint does ever shrinks it.
+// row out: nothing a repaint does ever shrinks it. Unassigned rows keep their
+// identities until they receive a sequence; the last assigned sequence also
+// lets a real append join a slice whose rows are all still pending.
 
 /** How many entries a first paint draws, and how many more each ask shows. */
 export const TIMELINE_SLICE_SIZE = 60;
@@ -30,7 +32,7 @@ export const EARLIER_ENTRY = {
 /// older history extended upwards is still one kept row.
 function cutAt(entries, floor) {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
-    if (entries[index].through < floor) return index + 1;
+    if (Number.isFinite(entries[index].through) && entries[index].through < floor) return index + 1;
   }
   return 0;
 }
@@ -43,11 +45,15 @@ function floorOf(kept) {
 }
 
 /**
- * The entries of `entries` (oldest first, each with numeric `from`/`through`)
+ * The entries of `entries` (oldest first, with `from`/`through` when assigned)
  * the panel draws.
  *
  * - `floor`: the sequence the last paint's slice started at. None draws the
- *   newest `size`, which is a first paint.
+ *   newest `size` when no pending anchors are remembered, which is a first paint.
+ * - `anchors`: identities of drawn rows still awaiting sequences.
+ * - `tail`: the last assigned sequence and pending identities at the previous
+ *   paint, so new real rows can join a slice of pending sends without treating
+ *   acknowledgement of hidden pending rows as new appends.
  * - `reach`: a sequence the slice has to reach down to whatever the floor says,
  *   so a target above it (the unread line, a deep link) is drawn to be landed
  *   on.
@@ -57,11 +63,49 @@ function floorOf(kept) {
  * Answers the kept entries, how many were left above them, and the floor to
  * remember for the next paint.
  */
-export function sliceTimeline(entries, { floor = null, reach = null, extend = 0, size = TIMELINE_SLICE_SIZE } = {}) {
-  const reached = Number.isFinite(reach) ? cutAt(entries, reach) : entries.length;
-  const cut = Math.max(0, Math.min(cutAtFloor(entries, floor, size), reached) - extend);
+export function sliceTimeline(entries, options = {}) {
+  const { floor = null, anchors = [], tail = null, reach = null, extend = 0, size = TIMELINE_SLICE_SIZE } = options;
+  const cut = Math.max(0, rememberedCut(entries, { floor, anchors, tail, reach, size }) - extend);
   const kept = entries.slice(cut);
-  return { entries: kept, hidden: cut, floor: floorOf(kept) ?? floor };
+  return {
+    entries: kept,
+    hidden: cut,
+    floor: floorOf(kept) ?? floor,
+    anchors: kept.filter((entry) => !Number.isFinite(entry.from)).map((entry) => entry.anchor),
+    tail: tailOf(entries),
+  };
+}
+
+function rememberedCut(entries, { floor, anchors, tail, reach, size }) {
+  const reached = Number.isFinite(reach) ? cutAt(entries, reach) : entries.length;
+  const anchored = cutAtAnchors(entries, anchors);
+  const standing = Number.isFinite(floor) || anchored === entries.length
+    ? cutAtFloor(entries, floor, size) : anchored;
+  const appended = firstAppend(entries, tail);
+  return Math.min(standing, anchored, reached, appended < 0 ? entries.length : appended);
+}
+
+function tailOf(entries) {
+  if (!entries.length) return null;
+  return {
+    sequence: entries.findLast((entry) => Number.isFinite(entry.through))?.through ?? 0,
+    pending: entries.filter((entry) => !Number.isFinite(entry.from)).map((entry) => entry.anchor),
+  };
+}
+
+function firstAppend(entries, tail) {
+  if (!tail) return -1;
+  const pending = new Set(tail.pending);
+  return entries.findIndex((entry) => entry.through > tail.sequence && !pending.has(entry.anchor));
+}
+
+/// Pending rows have no sequence yet. Remember their identities until they do,
+/// including every pending row: acknowledgements can reorder them above the
+/// numeric floor. These anchors belong only to the paint, never to the cache.
+function cutAtAnchors(entries, anchors) {
+  const remembered = new Set(anchors);
+  const at = entries.findIndex((entry) => entry.anchor != null && remembered.has(entry.anchor));
+  return at < 0 ? entries.length : at;
 }
 
 /// Where the slice standing on `floor` starts, or the newest `size` entries on
@@ -84,13 +128,17 @@ function cutAtFloor(entries, floor, size) {
  */
 export function createTimelineSlice({ size = TIMELINE_SLICE_SIZE } = {}) {
   let floor = null;
+  let anchors = [];
+  let tail = null;
   let extend = 0;
   let reach = null;
   let hidden = 0;
   return {
-    request: () => ({ floor, extend, reach, size }),
+    request: () => ({ floor, anchors, tail, extend, reach, size }),
     settle(sliced) {
       floor = sliced.floor;
+      anchors = sliced.anchors || [];
+      tail = sliced.tail ?? null;
       hidden = sliced.hidden;
       extend = 0;
       reach = null;
@@ -104,15 +152,17 @@ export function createTimelineSlice({ size = TIMELINE_SLICE_SIZE } = {}) {
       extend += size;
     },
     reachDown(sequence) {
-      const wanted = Number(sequence);
+      const wanted = Number(sequence ?? NaN);
       if (!Number.isFinite(wanted)) return;
       reach = Number.isFinite(reach) ? Math.min(reach, wanted) : wanted;
     },
     /** What the next paint has to draw differently, as a string the paint's
      *  fingerprint can carry. */
-    signature: () => `${floor ?? ""}:${extend}:${reach ?? ""}`,
+    signature: () => JSON.stringify([floor, anchors, tail, extend, reach]),
     reset() {
       floor = null;
+      anchors = [];
+      tail = null;
       extend = 0;
       reach = null;
       hidden = 0;

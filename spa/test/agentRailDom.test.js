@@ -5700,6 +5700,81 @@ describe("a long conversation held in the cache", () => {
     expect(drawnSequences()).toHaveLength(62);
   });
 
+  it("keeps the expanded slice while a pending send settles and its echo arrives", async () => {
+    heldConversation();
+    await mount();
+    earlierRow().click();
+    await flush();
+    const first = timelineRows()[1];
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const { writeProvisionalMessage, acknowledgeProvisionalMessage } = await import("../src/core/conversationCache.js");
+    await writeProvisionalMessage(address, "settling-send", { body: "pending send" });
+    await flush();
+    await pushRailThreadItems("run-3", "ag-1", [said(502)]);
+    await flush();
+    await acknowledgeProvisionalMessage(address, "settling-send", 501, "sent");
+    await flush();
+    expect(drawnSequences()).toEqual(Array.from({ length: 122 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+    const echo = said(501, "user");
+    Object.assign(echo.data, { operation_id: "settling-send", body: "confirmed send", delivery_status: "seen" });
+    await pushRailThreadItems("run-3", "ag-1", [echo]);
+    await flush();
+    expect(drawnSequences()).toEqual(Array.from({ length: 122 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+    expect(railBody().textContent).toContain("confirmed send");
+    expect(railBody().textContent).not.toContain("pending send");
+  });
+
+  it("repaints edits and delivery changes without losing revealed rows", async () => {
+    heldConversation();
+    await mount();
+    earlierRow().click();
+    await flush();
+    const first = timelineRows()[1];
+    const edit = said(490);
+    edit.data.body = "edited drawn message";
+    await pushRailThreadItems("run-3", "ag-1", [edit]);
+    await flush();
+    expect(railBody().textContent).toContain("edited drawn message");
+    const delivery = said(491, "user");
+    delivery.data.delivery_status = "queued";
+    await pushRailThreadItems("run-3", "ag-1", [delivery]);
+    await flush();
+    expect(railBody().querySelector('[data-sequence="491"] [data-delivery-status="queued"]')).not.toBeNull();
+    delivery.data.delivery_status = "seen";
+    await pushRailThreadItems("run-3", "ag-1", [delivery]);
+    await flush();
+    expect(railBody().querySelector('[data-sequence="491"] [data-delivery-status="seen"]')).not.toBeNull();
+    expect(drawnSequences()).toEqual(Array.from({ length: 120 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+  });
+
+  it("opens synchronously from held cache without reading connection state or waiting for the bridge", async () => {
+    heldConversation();
+    await mount();
+    // The pinned panel can be shut and reopened while its conversation stays
+    // in memory. The bubble's click must paint before returning to the caller.
+    bubbles()[0].click();
+    await flush();
+    // Discard the previous frame so the assertion requires a fresh paint.
+    railBody().replaceChildren();
+    expect(drawnSequences()).toHaveLength(0);
+    const reads = vi.fn(() => { throw new Error("paint read connection state"); });
+    const { existingDeviceLifecycle } = await import("../src/core/deviceContexts.js");
+    const snapshot = vi.spyOn(existingDeviceLifecycle("dev-1"), "snapshot").mockImplementation(reads);
+    bridge.call = vi.fn(() => new Promise(() => {}));
+    try {
+      bubbles()[0].click();
+      expect(drawnSequences()).toHaveLength(60);
+      expect(drawnSequences()[0]).toBe(441);
+      expect(reads).not.toHaveBeenCalled();
+      expect(callsTo("thread.page")).toEqual([]);
+    } finally {
+      snapshot.mockRestore();
+    }
+  });
+
   it("shows the next entries from the cache when pressed, asking the bridge nothing", async () => {
     heldConversation(true);
     await mount();
@@ -5913,5 +5988,76 @@ describe("a deep link past everything the cache holds", () => {
 
     expect(notifyError).not.toHaveBeenCalled();
     expect(railHost().querySelector('.thread-items [data-sequence="2"]')).not.toBeNull();
+  });
+});
+
+// Astra's round-three reproduction: the actual provisional cache write must
+// append to the 120 rows the reader revealed, preserving their first element.
+describe("review158 provisional append", () => {
+  it("keeps the expanded slice while a just-sent message awaits its sequence", async () => {
+    const items = Array.from({ length: 500 }, (_, i) => ({
+      type: "message", data: { sequence: i + 1, id: `provisional-review-${i + 1}`, role: "agent", body: `said ${i + 1}` },
+    }));
+    payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 500, thread_last_sequence: 500 } } });
+    await mount();
+    railHost().querySelector(".thread-earlier").click();
+    await flush();
+    const rows = () => [...railHost().querySelectorAll(".thread-items > .thread-message")];
+    const before = rows();
+    const first = before[0].dataset.sequence;
+    expect(before).toHaveLength(120);
+    expect(first).toBe("381");
+    const { writeProvisionalMessage } = await import("../src/core/conversationCache.js");
+    await writeProvisionalMessage({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" }, "review-pending-send", { body: "pending send" });
+    await flush();
+    expect(rows().some((row) => row.textContent.includes("pending send"))).toBe(true);
+    expect(rows()[0].dataset.sequence).toBe(first);
+    expect(rows()).toHaveLength(before.length + 1);
+    expect(rows()[0]).toBe(before[0]);
+  });
+});
+
+// The additional ownership cases from Astra's third-round review harness.
+describe("review158 independent ownership cases", () => {
+  const msg = (sequence) => ({ type: "message", data: { sequence, id: `nested-${sequence}`, role: "agent", body: `said ${sequence}` } });
+  const call = (sequence, parent_sequence) => ({ type: "event", data: { sequence, parent_sequence, event: "tool_use", summary: `call ${sequence}` } });
+  const range = (from, through) => Array.from({ length: through - from + 1 }, (_, i) => msg(from + i));
+  const pointing = (target, items, digests = []) => {
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "nested call", state: "running", call_sequence: target }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, activity_digests: digests, thread_total: items.length, thread_last_sequence: items.at(-1).data.sequence } },
+    });
+  };
+  const press = async () => {
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+  };
+
+  it("resolves a hidden nested owner whose top-level call is not first in its run", async () => {
+    pointing(120, [call(1), call(2), ...range(3, 89), call(90), ...range(91, 99), call(100, 2), ...range(101, 109), call(110, 90), ...range(111, 119), call(120, 100), ...range(121, 160)]);
+    await mount();
+    await press();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull();
+  });
+
+  it("resolves a top-level call within a hidden multievent run", async () => {
+    pointing(2, [call(1), call(2), ...range(3, 130)]);
+    await mount();
+    await press();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="2"]')).not.toBeNull();
+  });
+
+  it("reveals a hidden cut run then fetches its omitted prefix", async () => {
+    pointing(12, [msg(1), call(50), ...range(51, 160)], [{ from_sequence: 10, through_sequence: 50, tool_calls: 41, rows: 41, last_tool_call: null }]);
+    const previous = bridge.call.getMockImplementation();
+    bridge.call.mockImplementation(async (method, params) => method === "thread.activity"
+      ? { items: [call(12), call(50)], oldest_sequence: 12, has_more: false } : previous(method, params));
+    await mount();
+    await press();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-key="50"][open] [data-sequence="12"]')).not.toBeNull();
   });
 });

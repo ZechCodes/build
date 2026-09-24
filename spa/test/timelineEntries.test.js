@@ -8,7 +8,7 @@
 // what keeps a thousand-call run out of the document until somebody asks.
 
 import { describe, expect, it } from "vitest";
-import { activityRunDrawn, cutRunKeyAt, pressedActivityRunKey, timelineEntries } from "../src/core/thread.js";
+import { activityRunDrawn, cutRunKeyAt, pressedActivityRunKey, revealThreadSequence, timelineEntries } from "../src/core/thread.js";
 
 const toolCall = (sequence, summary, extra = {}) => ({
   type: "event",
@@ -154,5 +154,23 @@ describe("finding a run in the document", () => {
     expect(cutRunKeyAt(timeline, 50)).toBe(null);
     expect(cutRunKeyAt(timeline, 9)).toBe(null);
     expect(cutRunKeyAt(timeline, "not a sequence")).toBe(null);
+  });
+});
+
+
+describe("missing timeline sequences", () => {
+  it.each([null, undefined, NaN])("never turns a missing target %s into sequence zero", (target) => {
+    const scroller = document.createElement("div");
+    scroller.innerHTML = '<details data-activity-run="5" data-activity-from="0"><div data-sequence="0"></div></details>';
+    expect(cutRunKeyAt(scroller, target)).toBeNull();
+    expect(revealThreadSequence(scroller, target)).toBe(false);
+    expect(scroller.querySelector("details").open).toBe(false);
+  });
+
+  it.each([null, undefined])("does not assign sequence zero to a folded child with sequence %s", (sequence) => {
+    const built = build([toolCall(1, "parent"), toolCall(sequence, "unassigned child", { parent_sequence: 1 })]);
+    expect(built.entryKeyOf(0)).toBeNull();
+    expect(built.entryKeyOf(sequence)).toBeNull();
+    expect(built.entryKeyOf(1)).toBe("1");
   });
 });

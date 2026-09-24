@@ -1095,6 +1095,9 @@ function mountRailOnContext(host, context, swap) {
     onThreadSeeded: (seededFor) => {
       if (disposed) return;
       threadAgentId = seededFor;
+      // A record rewrite can edit a drawn row or settle a provisional send
+      // without changing its cursor or item count. Reconcile that fresh cache.
+      paintedChat = null;
       paintChat();
       // The line above the composer is drawn from the conversation too — what
       // the agent is doing, and what started it — so a window arriving moves

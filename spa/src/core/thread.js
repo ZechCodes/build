@@ -1320,7 +1320,7 @@ export function pressedActivityRunKey(target) {
   return run && run.hasAttribute(ACTIVITY_RUN_ATTRIBUTE) ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
 }
 
-const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
+const runSpanAttribute = (run, name) => Number(run.getAttribute(name) ?? NaN);
 
 /// The run whose cut half reaches over a sequence the window never held, or
 /// nothing.
@@ -1338,7 +1338,7 @@ const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
 /// fold under the call that spawned them wherever they land, so one run's span
 /// can reach across another's (#158).
 export function cutRunKeyAt(scroller, sequence) {
-  const wanted = Number(sequence);
+  const wanted = Number(sequence ?? NaN);
   if (!scroller || !Number.isFinite(wanted)) return null;
   const run = [...scroller.querySelectorAll(`[${ACTIVITY_RUN_ATTRIBUTE}]`)].find(
     (element) =>
@@ -1587,7 +1587,9 @@ function threadFolding(items, agentLabel) {
     standingFor(item, new Set())
       .filter((held) => (held.data || {}).event === TOOL_CALL_KIND)
       .map(callOf);
-  const parentBySequence = new Map(foldingChildren.map((item) => [Number(sequenceOf(item)), Number(parentSequenceOf(item))]));
+  const parentBySequence = new Map(foldingChildren
+    .filter((item) => Number.isFinite(sequenceOf(item)))
+    .map((item) => [sequenceOf(item), parentSequenceOf(item)]));
   /// The sequence of the row a sequence is drawn under: its own, unless it is
   /// folded under a call, and then that call's row, at whatever depth.
   const ownerSequenceOf = (sequence) => {
@@ -1603,7 +1605,7 @@ function threadFolding(items, agentLabel) {
 }
 
 export function revealThreadSequence(scroller, sequence) {
-  const wanted = Number(sequence);
+  const wanted = Number(sequence ?? NaN);
   if (!scroller || !Number.isFinite(wanted)) return false;
   const row = scroller.querySelector(`[data-sequence="${wanted}"]`);
   if (!row) return false;
@@ -1720,6 +1722,13 @@ function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from
   });
 }
 
+/// A pending row's paint identity survives its acknowledgement and real echo.
+const sliceAnchor = (data, index) => {
+  if (data.operation_id) return `operation:${data.operation_id}`;
+  if (data.id) return `message:${data.id}`;
+  return rowKey(data, index);
+};
+
 /// Where each entry of a timeline starts, and the span of the conversation it
 /// stands for, read off the items without drawing any of them — the same
 /// entries `foldActivityRuns` makes of the rows: a message or a lifecycle event
@@ -1734,13 +1743,13 @@ function entrySpansOf(topLevelItems) {
     const message = item.type === "message";
     if (message && drawsNoRow(data)) return;
     rows += 1;
-    const sequence = Number(data.sequence);
+    const sequence = Number(data.sequence ?? NaN);
     const activity = !message && !!activityMetaOf(data);
     if (activity && run) {
-      run.through = sequence;
+      if (Number.isFinite(sequence)) run.through = sequence;
       return;
     }
-    const span = { start: index, from: sequence, through: sequence };
+    const span = { start: index, from: sequence, through: sequence, anchor: sliceAnchor(data, index) };
     spans.push(span);
     run = activity ? span : null;
   });
@@ -1758,9 +1767,9 @@ function entryKeyOfTimeline({ folding, topLevelItems }, spans) {
     held ??= new Set(
       topLevelItems
         .filter((item) => !(item.type === "message" && drawsNoRow(item.data || {})))
-        .map((item) => Number((item.data || {}).sequence)),
+        .map((item) => Number(item.data?.sequence ?? NaN)).filter(Number.isFinite),
     );
-    const owner = folding.ownerSequenceOf(Number(sequence));
+    const owner = folding.ownerSequenceOf(Number(sequence ?? NaN));
     if (!held.has(owner)) return null;
     const span = spans.find((entry) => entry.from <= owner && owner <= entry.through);
     return span ? String(span.from) : null;
@@ -1841,7 +1850,7 @@ export function timelineEntries(
   return {
     entries: [...earlierRow(slice, sliced, olderOnBridge), ...withUnreadLine(entries, unreadFrom, sourceItems)],
     userTicks: userMessageTicksOf(timeline.topLevelItems),
-    sliced: { hidden: sliced.hidden, floor: sliced.floor },
+    sliced: { hidden: sliced.hidden, floor: sliced.floor, anchors: sliced.anchors, tail: sliced.tail },
     entryKeyOf: entryKeyOfTimeline(timeline, spans),
     itemCount: rows,
     // How many items the caller's detail level kept OUT of `sourceItems` —

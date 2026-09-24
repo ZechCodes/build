@@ -5,6 +5,8 @@ import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, wri
 import { readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { refreshGithubRepos } from "../core/githubRepos.js";
+import { attachRepoPicker } from "./repoPicker.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -28,6 +30,16 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const selectedDevice = () => choices.find((device) => device.id === selectedDeviceId) || null;
   const selectedCall = () => selectable ? callRpcFor(selectedDeviceId) : callRpc;
+  const pickerDeviceId = () => selectable ? selectedDeviceId : deviceId;
+  // Each machine is asked for its GitHub repositories once per opening; the
+  // pickers paint whatever it last answered meanwhile.
+  const askedForRepos = new Set();
+  const askForRepos = () => {
+    const target = pickerDeviceId();
+    if (!target || askedForRepos.has(target)) return;
+    askedForRepos.add(target);
+    void refreshGithubRepos(target, selectedCall());
+  };
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
   const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
@@ -175,6 +187,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; source.pathDeviceId = ""; cleared = true; } });
       saveDraft();
       paint();
+      askForRepos();
       if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
     };
     $("#nraddfolder").onclick = () => {
@@ -185,6 +198,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       void browseFor(source.id);
     };
     $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); saveDraft(); paint(); $(`#nrsource-${source.id}`)?.focus(); };
+    sheet.querySelectorAll("[data-source-value]").forEach((input) => attachRepoPicker(input, pickerDeviceId()));
     sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } saveDraft(true); });
     sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; saveDraft(true); });
     sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; saveDraft(true); });
@@ -197,7 +211,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     firstPaint = false;
   };
   function paint() { if (active) paintSources(); }
-  scrim.classList.add("show"); paint();
+  scrim.classList.add("show"); paint(); askForRepos();
   draftRecord = watchUiState(
     uiAddress({ deviceId: selectable ? "" : deviceId || "", view: "new-project", kind: "draft" }),
     (saved) => {

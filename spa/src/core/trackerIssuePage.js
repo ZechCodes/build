@@ -36,6 +36,9 @@ import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import {
   canComment,
+  COMMENT_BOX_ATTACHABLE_CLASSES,
+  commentAttachHtml,
+  commentTrayHtml,
   COMMENT_INPUT_ID,
   commentSendLabel,
   ISSUE_PAGE_FRAME,
@@ -298,6 +301,7 @@ export function mountIssuePage(host, options) {
     patchParts(main.parentElement, held.rail, parts.rail, { after: main }).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
+    syncCommentAttachments();
     syncCommentBox();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
@@ -306,7 +310,8 @@ export function mountIssuePage(host, options) {
 
   /** The timeline's rows, patched inside the list the `timeline` part stood
    *  up; a list just stood up holds none yet. Answers whether any row was
-   *  painted, which is what the wiring and the unread pill listen for. */
+   *  painted or taken out, which is what the wiring and the unread pill
+   *  listen for: a removed row can take the unread divider with it. */
   function patchTimeline(rows, newList) {
     if (newList) held.timeline.clear();
     const list = host.querySelector(".issue-timeline");
@@ -322,10 +327,57 @@ export function mountIssuePage(host, options) {
     const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
     const send = host.querySelector('[data-issue-composer] button[type="submit"]');
     if (!field || !send) return;
-    if (field.value !== state.draft) field.value = state.draft;
+    if (field.value !== state.draft) takeDraftInto(field, state.draft);
     field.disabled = state.sending;
     send.disabled = !canComment(state.draft, state.sending, state.files.length > 0);
     send.textContent = commentSendLabel(state.sending);
+  }
+
+  /** Put a draft that came from elsewhere — another tab writing the same
+   *  record, a restore, a send clearing it — into the box without moving the
+   *  reader: assigning a value throws the caret to its end and the field's
+   *  own scroll to wherever that is, so both are put back, the selection
+   *  clamped to what the new text holds. */
+  function takeDraftInto(field, draft) {
+    const { selectionStart: start, selectionEnd: end, scrollTop } = field;
+    field.value = draft;
+    if (document.activeElement === field && typeof start === "number") {
+      field.setSelectionRange(Math.min(start, draft.length), Math.min(end, draft.length));
+    }
+    field.scrollTop = scrollTop;
+  }
+
+  /** The paperclip, the picker, the drop mask and the tray, hung around the
+   *  textarea on screen when this bridge can carry files and taken off it when
+   *  it cannot. A greeting can land after the page painted from the cache, and
+   *  the reader may be typing by then: the textarea is one node per mount, so
+   *  its caret and its undo history stay with it (#153).
+   *
+   *  Controls taken off are kept, not dropped: their tray and its uploads are
+   *  wired to this textarea, and they go back on as they were. */
+  let heldControls = null;
+  function syncCommentAttachments() {
+    const frame = host.querySelector(".issue-comment-field");
+    const attachable = carriesIssueAttachments(state.deviceId);
+    if (!frame || frame.classList.contains("attachable") === attachable) return;
+    COMMENT_BOX_ATTACHABLE_CLASSES.forEach((name) => frame.classList.toggle(name, attachable));
+    if (!attachable) {
+      heldControls = { tray: frame.previousElementSibling, extras: [...frame.children].filter((child) => child.id !== COMMENT_INPUT_ID), comments };
+      heldControls.tray.remove();
+      heldControls.extras.forEach((node) => node.remove());
+      comments = null;
+      return;
+    }
+    if (heldControls) {
+      frame.before(heldControls.tray);
+      frame.append(...heldControls.extras);
+      comments = heldControls.comments;
+      heldControls = null;
+      return;
+    }
+    frame.insertAdjacentHTML("beforebegin", commentTrayHtml());
+    frame.insertAdjacentHTML("beforeend", commentAttachHtml());
+    wireCommentAttachments(frame.closest("[data-issue-composer]"));
   }
 
   /** The comment a link routed to: marked on every paint that stood its row
@@ -566,6 +618,7 @@ export function mountIssuePage(host, options) {
 
   function wireComposer() {
     const form = host.querySelector("[data-issue-composer]");
+    heldControls = null;
     const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
     wireCommentAttachments(form);
     field.oninput = () => {

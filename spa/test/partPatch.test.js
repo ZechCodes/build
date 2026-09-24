@@ -52,8 +52,10 @@ describe("patchParts", () => {
     ]);
     expect(names()).toEqual(["a", "b", "c"]);
     expect(container.children[0]).toBe(a);
-    patchParts(container, held, [{ name: "a", html: '<p data-part="a"></p>' }, { name: "c", html: '<p data-part="c"></p>' }]);
+    const changed = patchParts(container, held, [{ name: "a", html: '<p data-part="a"></p>' }, { name: "c", html: '<p data-part="c"></p>' }]);
     expect(names()).toEqual(["a", "c"]);
+    // A part taken out is a change: whatever it carried is gone from the page.
+    expect(changed).toEqual(["b"]);
   });
 
   it("moves a kept part that is out of place", () => {

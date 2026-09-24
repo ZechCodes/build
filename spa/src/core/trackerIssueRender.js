@@ -155,7 +155,7 @@ const commentParts = composerPartIds(COMMENT_INPUT_ID);
  * comment that is only a screenshot is a comment.
  */
 /// The paperclip, the hidden picker and the drop mask — or nothing at all.
-const commentAttachHtml = () => `<div class="composer-bar">
+export const commentAttachHtml = () => `<div class="composer-bar">
       <div class="composer-actions">
         <input type="file" id="${commentParts.file}" class="composer-file" multiple hidden>
         <button type="button" class="composer-attach" id="${commentParts.attach}" aria-label="Attach files" title="Attach files">${ICON_PAPERCLIP}</button>
@@ -173,17 +173,26 @@ export const commentSendLabel = (busy) => (busy ? "sending…" : "Comment");
 const commentFieldHtml = (draft, busy) =>
   `<textarea id="${COMMENT_INPUT_ID}" rows="3" ${fieldTraits("prose")} placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>`;
 
-/// The box, wrapped or bare. A bridge that cannot carry files gets exactly the
-/// box it always had — the same element, unwrapped — so gating the paperclip
-/// costs an older bridge nothing at all, not even a changed frame.
-const commentBoxHtml = (draft, busy, attachable) =>
-  attachable
-    ? `<div class="composer-tray" id="${commentParts.tray}" hidden></div>
-    <div class="composer attachable issue-comment-box">
+/// The tray the attached files sit in, above the box.
+export const commentTrayHtml = () => `<div class="composer-tray" id="${commentParts.tray}" hidden></div>`;
+
+/// The classes the box's frame wears on a bridge that carries files: the
+/// conversation's own composer, framed on the field with the paperclip under it.
+export const COMMENT_BOX_ATTACHABLE_CLASSES = ["composer", "attachable", "issue-comment-box"];
+
+/// The box in its frame. The frame is there on every bridge, so a greeting
+/// that arrives after the page painted can hang the paperclip, the picker and
+/// the tray around the textarea already on screen rather than standing up a
+/// new one under the reader's fingers (#153). A bridge that cannot carry files
+/// gets a bare frame: no paperclip, no tray, no drop mask.
+const commentBoxHtml = (draft, busy, attachable) => {
+  const frameClass = ["issue-comment-field", ...(attachable ? COMMENT_BOX_ATTACHABLE_CLASSES : [])].join(" ");
+  return `${attachable ? commentTrayHtml() : ""}
+    <div class="${frameClass}">
       ${commentFieldHtml(draft, busy)}
-      ${commentAttachHtml()}
-    </div>`
-    : commentFieldHtml(draft, busy);
+      ${attachable ? commentAttachHtml() : ""}
+    </div>`;
+};
 
 export const composerHtml = (draft, busy, attachable = false, hasFiles = false) => `<form class="issue-composer" data-issue-composer>
     <label class="sr-only" for="${COMMENT_INPUT_ID}">Comment on this issue</label>
@@ -262,10 +271,10 @@ export const ISSUE_PAGE_FRAME = '<div class="issue-page"><div class="issue-page-
  * that changed (core/partPatch.js): `main` fills the frame's column, `rail`
  * follows it, and `timeline` fills the list the `timeline` part stands up.
  *
- * The comment box is keyed by its shape alone. Its draft, whether it is
- * sending and whether it can be sent are updated in place by the page, so a
- * keystroke, a push or a send never stands up a new box under the reader
- * (#153); only a bridge gaining or losing attachments does.
+ * The comment box is painted once per frame and never again: its draft,
+ * whether it is sending, whether it can be sent and whether it takes files are
+ * all updated in place by the page, so the textarea is one node per mount and
+ * nothing stands up a new one under the reader (#153).
  */
 export function issuePageParts(issue, context) {
   const timeline = timelineParts(context.rows, context);
@@ -278,7 +287,7 @@ export function issuePageParts(issue, context) {
       {
         name: "composer",
         html: composerHtml(context.draft, context.sending, context.attachable, context.hasFiles),
-        key: context.attachable ? "attachable" : "plain",
+        key: "composer",
       },
     ],
     rail: [{ name: "rail", html: issueRailHtml(issue, context) }],

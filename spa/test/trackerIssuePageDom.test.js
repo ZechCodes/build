@@ -1112,3 +1112,130 @@ describe("typing in the comment box", () => {
     expect(host.querySelector(".issue-page-head")).toBe(head);
   });
 });
+
+// #153 review round 1: the three ways the box or the page still moved.
+describe("the comment box across what arrives while typing", () => {
+  const settle = async () => {
+    await new Promise((done) => setTimeout(done, 250));
+    await flush();
+  };
+  const typeText = (field, text) => {
+    for (const key of text) {
+      const at = field.selectionStart;
+      field.value = field.value.slice(0, at) + key + field.value.slice(field.selectionEnd);
+      field.setSelectionRange(at + 1, at + 1);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  };
+
+  it("hangs the paperclip around the textarea already on screen when a late greeting says files travel", async () => {
+    carriesAttachments = false;
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    typeText(field, "typed before the greeting");
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(field.isConnected).toBe(true);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("typed before the greeting");
+    expect(field.closest(".composer.attachable.issue-comment-box")).not.toBeNull();
+    expect(host.querySelector(".issue-composer .composer-attach")).not.toBeNull();
+    const tray = host.querySelector(".issue-composer .composer-tray");
+    expect(tray).not.toBeNull();
+
+    // The controls hung on late are wired: a dropped file goes up and rides
+    // the comment.
+    call.mockImplementation(async (method) => {
+      if (method === "issues.attach") return { name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 };
+      return method === "issues.get" ? answerFor() : {};
+    });
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [new File(["png"], "shot.png", { type: "image/png" })] } });
+    host.querySelector("[data-issue-composer]").dispatchEvent(drop);
+    await vi.waitFor(() => expect(host.querySelector(".issue-composer .composer-chip.ready")).not.toBeNull());
+
+    // And a bridge that stops carrying files takes them off the same box, and
+    // puts the same tray back if it carries them again.
+    carriesAttachments = false;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+    expect(host.querySelector(".issue-composer .composer-tray")).toBeNull();
+    expect(field.closest(".composer")).toBeNull();
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(host.querySelector(".issue-composer .composer-tray")).toBe(tray);
+    expect(host.querySelectorAll(".issue-composer .composer-attach")).toHaveLength(1);
+
+    call.mockClear();
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1]).toEqual({
+      issue_id: "issue-1",
+      body: "typed before the greeting",
+      attachments: [{ name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 }],
+    });
+  });
+
+  it("keeps the selection and the field's scroll when another tab writes a different draft", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ deviceId: "dev-1", entityId: "issue-1", view: "tracker-issue", kind: "draft", sub: "proj-1" });
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    let fieldScroll = 0;
+    Object.defineProperty(field, "scrollTop", { configurable: true, get: () => fieldScroll, set: (value) => { fieldScroll = value; } });
+    field.focus();
+    typeText(field, "abcdef");
+    await settle(); // persisted, and its own echo painted
+    field.setSelectionRange(2, 4);
+    fieldScroll = 40;
+
+    await writeCached(address, { body: "abcdefgh" }, { source: "another-tab", sequence: 1 });
+    await settle();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("abcdefgh");
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 4]);
+    expect(fieldScroll).toBe(40);
+
+    // A shorter draft clamps the selection to what it holds.
+    field.setSelectionRange(5, 7);
+    await writeCached(address, { body: "abc" }, { source: "another-tab", sequence: 2 });
+    await settle();
+    expect(field.value).toBe("abc");
+    expect([field.selectionStart, field.selectionEnd]).toEqual([3, 3]);
+  });
+
+  it("takes the New messages pill away when the unread row goes away through the cache", async () => {
+    carriesWatching = true;
+    const users = Array.from({ length: 20 }, (_, at) =>
+      comment({ id: `ic-01M37FGQD48628P29BG1A4B${String(at).padStart(3, "0")}`, author: { kind: "user" } }));
+    const agent = comment({ id: "ic-01M37FGQD48628P29BG1A4BZZZ", author: { kind: "agent", agent_id: "agent-1" } });
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: users.at(-1).id }),
+      timeline: [...users, agent],
+    });
+    call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({}));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    expect(host.querySelector(".new-messages-pill")).not.toBeNull();
+    const rows = [...host.querySelectorAll(".issue-entry")];
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: users.at(-1).id }),
+      timeline: users,
+    });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).toBeNull());
+    expect(host.querySelector(".new-messages-pill")).toBeNull();
+    expect(host.querySelectorAll(".new-messages-dock")).toHaveLength(0);
+    expect([...host.querySelectorAll(".issue-entry")]).toEqual(rows.slice(0, 20));
+  });
+});

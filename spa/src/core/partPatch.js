@@ -18,11 +18,10 @@
  * `held` is the caller's record of what was painted, kept between calls.
  * `after` is the node the first part follows (null: the container's start).
  *
- * Answers the names of the parts that were painted anew.
+ * Answers the names of the parts that changed: painted anew, or taken out.
  */
 export function patchParts(container, held, parts, { after = null } = {}) {
-  dropUnlisted(held, parts);
-  const painted = [];
+  const painted = dropUnlisted(held, parts);
   let last = after;
   for (const part of parts) {
     if (repaintPart(container, held, part)) painted.push(part.name);
@@ -45,13 +44,15 @@ function repaintPart(container, held, { name, html, key = html }) {
   return true;
 }
 
+/** Take out the parts no longer listed; answers their names. */
 function dropUnlisted(held, parts) {
   const listed = new Set(parts.map((part) => part.name));
-  for (const [name, { nodes }] of held) {
-    if (listed.has(name)) continue;
-    nodes.forEach((node) => node.remove());
+  const dropped = [...held.keys()].filter((name) => !listed.has(name));
+  for (const name of dropped) {
+    held.get(name).nodes.forEach((node) => node.remove());
     held.delete(name);
   }
+  return dropped;
 }
 
 /** Whether `node` already sits right after `last` (or first, with no `last`).

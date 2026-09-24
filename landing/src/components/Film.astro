@@ -69,7 +69,7 @@ const team = [
 
   <!-- Act 4: the fan-out, in the agent rail's chat overview. -->
   <div class="panel panel--team" data-panel="team" data-panel-device="laptop" data-panel-region="988 112 420 784">
-    <div class="rail-head"><strong>Agents · <b data-running-count>1</b> working</strong><span class="scope">All workspaces ↗</span><span class="pin" set:html={pinIcon}></span></div>
+    <div class="rail-head"><strong>Agents · <b data-running-count>1</b> working</strong><span class="pin" set:html={pinIcon}></span></div>
     <section class="overview-section"><h3>Project agents</h3></section>
     {team.map(([workspace, name, snippet], index) => (
       <section class="overview-section" data-team-row={index + 1}>
@@ -124,8 +124,8 @@ const team = [
       ))}
     </aside>
     <div class="git-detail">
-      <div class="git-toolbar"><span class="stat"><span class="add">+6</span> <span class="del">−1</span></span><span class="git-verb">Fetch</span><span class="git-verb split">↓ Pull<i>▾</i></span><span class="git-verb split">↑ Push<i>▾</i></span><span class="git-verb split">↧ Stash<i>▾</i></span><span class="machine-line">{machineLabel}</span></div>
-      <div class="diff-bar"><span>2 files <span class="add">+6</span> <span class="del">−1</span></span><button class="git-button with-lift" data-stage-all type="button" tabindex="-1">Stage all</button><span class="sort">Sort <i>Latest changes</i></span></div>
+      <div class="git-toolbar"><span class="stat"><span class="add" data-total="add">+6</span> <span class="del" data-total="del">−1</span></span><span class="git-verb">Fetch</span><span class="git-verb split">↓ Pull<i>▾</i></span><span class="git-verb split">↑ Push<i>▾</i></span><span class="git-verb split">↧ Stash<i>▾</i></span><span class="machine-line">{machineLabel}</span></div>
+      <div class="diff-bar"><span><span data-total-files>2 files</span> <span class="add" data-total="add">+6</span> <span class="del" data-total="del">−1</span></span><button class="git-button with-lift" data-stage-all type="button" tabindex="-1">Stage all</button><span class="sort">Sort <i>Latest changes</i></span></div>
       <div class="diff-file" data-changed-file><div class="diff-card">
         <div class="diff-title"><i class="select"></i><strong>src/search/archive.ts</strong><span class="author-chip agent" data-chip="agent"><i class="mark"></i>Claude Code</span><span class="badge">EDIT</span><span class="add" data-diff-add>+3</span><span class="del">−1</span><span class="edited">1 minute ago</span><span class="file-actions" set:html={fileActions}></span></div>
         <div class="diff-code" data-hunk="agent">

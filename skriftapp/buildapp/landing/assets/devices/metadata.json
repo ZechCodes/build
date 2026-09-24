@@ -458,13 +458,13 @@
       "file": "scene-04-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 34710,
-      "sha256": "6485c994b1b9b5dbbe14a58ef243c1db84cb5e221356dc08e1b79b2eb21fd8f7",
+      "bytes": 34624,
+      "sha256": "f52a7796fc24adf8c9e9d79f0948a8465ed3bc87ab997364fec3c3a4875690e4",
       "content_bounds_px_bottom_left": [
         207,
-        45,
+        44,
         909,
-        699
+        700
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -473,7 +473,7 @@
         "screen_fixtures": {
           "laptop": {
             "file": "screens/ui13-team-macbook.webp",
-            "sha256": "82cf6a2946bea0800bafe9cf6e52fc8a1366d0700ec3dae3a5290ab3c3838591"
+            "sha256": "e7eddf57897fba2781338edfbaf1921bc28373a745407266614e541ef663a42a"
           },
           "phone": {
             "file": "screens/ui03-answer-iphone.webp",
@@ -486,8 +486,8 @@
       "file": "scene-04-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 16486,
-      "sha256": "ef534dc37f2db54dc31b2ba7241c264220b09e02079e1b630652ebff79f29083",
+      "bytes": 16474,
+      "sha256": "c30351ee4f8b7c12ab258b222be4a7dc138ab3e8077147d7b1bbcd2dbcb48e32",
       "content_bounds_px_bottom_left": [
         36,
         224,
@@ -501,7 +501,7 @@
         "screen_fixtures": {
           "laptop": {
             "file": "screens/ui13-team-macbook.webp",
-            "sha256": "82cf6a2946bea0800bafe9cf6e52fc8a1366d0700ec3dae3a5290ab3c3838591"
+            "sha256": "e7eddf57897fba2781338edfbaf1921bc28373a745407266614e541ef663a42a"
           },
           "phone": {
             "file": "screens/ui03-answer-iphone.webp",

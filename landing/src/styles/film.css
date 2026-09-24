@@ -574,13 +574,6 @@
   font-weight: 650;
 }
 
-.panel--team .scope {
-  padding: 3px 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--app-ink2);
-}
-
 .panel--team .pin {
   display: grid;
   width: 31px;

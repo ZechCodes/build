@@ -221,6 +221,9 @@ const SCRUBS = [
   { name: "act 5 implement caption", act: 5, selector: '[data-node-status="implement"]', steps: [[0.5, "Done · handoff pending"], [0.82, "Done"], [0.5, "Done · handoff pending"]] },
   { name: "act 6 hunk count", act: 6, selector: "[data-diff-add]", steps: [[0.3, "+3"], [0.8, "+4"], [0.3, "+3"]] },
   { name: "act 6 tree label", act: 6, selector: "[data-tree-label]", steps: [[0.7, "Staged"], [0.9, "Uncommitted"], [0.7, "Staged"], [0.5, "Uncommitted"]] },
+  { name: "act 6 uncommitted weight", act: 6, selector: "[data-tree-count]", steps: [[0.3, "+6 −1"], [0.6, "+7 −1"], [0.9, "clean"], [0.6, "+7 −1"], [0.3, "+6 −1"]] },
+  { name: "act 6 diff total", act: 6, selector: '.diff-bar [data-total="add"]', steps: [[0.3, "+6"], [0.6, "+7"], [0.9, "+0"], [0.3, "+6"]] },
+  { name: "act 6 file count", act: 6, selector: "[data-total-files]", steps: [[0.6, "2 files"], [0.9, "0 files"], [0.6, "2 files"]] },
 ];
 
 // A scene runs on GSAP's clock, which lag smoothing slows whenever a frame

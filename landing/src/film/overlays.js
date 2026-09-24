@@ -302,9 +302,10 @@ function lowerDeparture(panel) {
 }
 
 // Act 6: gutter highlights, author chips, one line added to the diff (the
-// hunk's count goes +3 to +4, as the document's proof says), stage, a hold
-// on the finished message, commit; the graph gains the visitor's commit and
-// the working tree is clean.
+// hunk's count goes +3 to +4, as the document's proof says, and the totals
+// with it), stage, a hold on the finished message, commit; the graph gains
+// the visitor's commit and the working tree is clean, weighing +0 −0 as the
+// app says of a clean tree.
 function gitBeats(tl, panels, { at, span }) {
   const git = panels.git;
   const root = git.element;
@@ -324,6 +325,11 @@ function gitBeats(tl, panels, { at, span }) {
   const commitInput = root.querySelector("[data-commit-input] [data-type]");
   const commitButton = root.querySelector("[data-commit-button]");
   const newCommit = root.querySelector("[data-new-commit]");
+  const totals = (kind) => root.querySelectorAll(`[data-total="${kind}"]`);
+  const retotal = (time, add, del) => {
+    totals("add").forEach((element) => flip(tl, element, time, { text: add }));
+    if (del) totals("del").forEach((element) => flip(tl, element, time, { text: del }));
+  };
   gsap.set([chipAgent, chipYou], { autoAlpha: 0, x: 8 });
   gsap.set(humanLine, { height: 0, autoAlpha: 0 });
   gsap.set(newCommit, { height: 0, autoAlpha: 0 });
@@ -340,6 +346,8 @@ function gitBeats(tl, panels, { at, span }) {
   typeInto(tl, humanText, at(6, 0.42), at(6, 0.54));
   flip(tl, diffAdd, at(6, 0.54), { text: "+4" });
   flip(tl, closeNumber, at(6, 0.54), { text: "15" });
+  retotal(at(6, 0.54), "+7");
+  flip(tl, treeCount, at(6, 0.54), { text: "+7 −1" });
   press(tl, stageAll, at(6, 0.56), at(6, 0.62));
   flip(tl, treeLabel, at(6, 0.59), { text: "Staged" });
   caret(tl, root, "commit", at(6, 0.62), at(6, 0.73));
@@ -349,6 +357,8 @@ function gitBeats(tl, panels, { at, span }) {
   tl.to(newCommit, { height: "auto", autoAlpha: 1, duration: span(6, 0.78, 0.84), ease: "power2.out" }, at(6, 0.78));
   flip(tl, treeLabel, at(6, 0.79), { text: "Uncommitted" });
   flip(tl, treeCount, at(6, 0.79), { text: "clean" });
+  retotal(at(6, 0.79), "+0", "−0");
+  flip(tl, root.querySelector("[data-total-files]"), at(6, 0.79), { text: "0 files" });
   tl.to(changedFiles, { autoAlpha: 0, height: 0, paddingTop: 0, paddingBottom: 0, duration: span(6, 0.79, 0.83), ease: "power2.in" }, at(6, 0.79));
   show(tl, cleanTree, at(6, 0.82), at(6, 0.85));
 }

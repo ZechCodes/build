@@ -1,8 +1,9 @@
 // The app's own frame, written with the SPA's markup and class names so its
 // stylesheets lay it out: the inbox rail, the view column with its toolbar,
 // directory rail and console bar, and the agent rail with its bubble strip.
-// Scenes (scenes.js) only fill the regions; nothing here is a marketing
-// layout. The structure follows the live app's DOM at each device's width.
+// Scenes (workspace-scenes.js, project-scenes.js) only fill the regions;
+// nothing here is a marketing layout. The structure follows the live app's
+// DOM at each device's width.
 import { inboxRowHtml, workspaceEntries } from "../../spa/src/core/inbox.js";
 import { toolbarHtml } from "../../spa/src/core/toolbarRender.js";
 import { DIRECTORY_TABS, directoryRailHtml } from "../../spa/src/core/directoryRail.js";
@@ -10,7 +11,7 @@ import { harnessIconHtml } from "../../spa/src/core/harnessIcon.js";
 import { createPatternRenderer } from "../../spa/src/core/agentCanvas.js";
 import {
   ICON_ARROW_RIGHT, ICON_CHAT_OVERVIEW, ICON_CHEVRON_DOWN, ICON_EYE, ICON_FOLDERS, ICON_INBOX,
-  ICON_PAPERCLIP, ICON_PIN, ICON_PLUS, ICON_SCOPE_OUT, ICON_SETTINGS,
+  ICON_PAPERCLIP, ICON_PIN, ICON_PLUS, ICON_SETTINGS,
 } from "../../spa/src/core/icons.js";
 import { CONVERSATIONS, DEVICE, DIRECTORY, PROJECT, WORKSPACES } from "./story.js";
 
@@ -121,11 +122,12 @@ export const conversationPanel = ({ head, thread, composer = railComposer() }) =
     ${composer}
   </div>`;
 
-/** The chat overview: every agent of the work, grouped by workspace. */
+/** The chat overview at the project's scope: every agent of the work,
+ *  grouped by workspace. The app offers "All workspaces" only inside one
+ *  workspace's overview, so this head has no way out. */
 export const overviewPanel = ({ title = "Agents", sections }) => `<section id="rail-overview" class="rail-overview-content" aria-label="Chat overview">
     <div class="rail-head">
       <span class="rail-who" title="Agents">${title}</span>
-      <button type="button" class="scope-link rail-overview-up"><span>All workspaces</span>${ICON_SCOPE_OUT}</button>
       ${pin()}
       <span class="rail-surface-menu"></span>
     </div>

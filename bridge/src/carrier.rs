@@ -723,6 +723,12 @@ impl FrameIntake {
         &self.transport.public_key_b64
     }
 
+    /// Test-only: how many folded reads are waiting for a worker.
+    #[cfg(test)]
+    pub(crate) fn folded_reads_waiting(&self) -> usize {
+        self.dispatcher.folded_reads_waiting()
+    }
+
     /// A client opened a session on this carrier: unwrap its `session_init`
     /// with the device's transport key, register the session key it carried,
     /// and answer — **on that same carrier** — with the encrypted
@@ -1951,6 +1957,107 @@ mod intake_tests {
             2,
             "the running and the queued frame ran; the parked ones went with the wire"
         );
+    }
+
+    /// The round-2 review's reproduction (issue #128), at the wire: a wire
+    /// closes while its admitter waits for a queue slot with a `board.list`
+    /// in hand, the session lives on over a second wire, and that wire's own
+    /// `board.list` must be answered — not folded into what the closed wire
+    /// left behind. Nothing of it stays behind once the session ends either.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_wire_that_closes_mid_admission_leaves_the_session_s_reads_answerable() {
+        let (held_tx, held_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let holding = std::sync::atomic::AtomicBool::new(true);
+        let clock = crate::timing::FrameClock::new();
+        let intake = FrameIntake::with_pool_and_admission(
+            FrameHandler::new(Arc::clone(&clock), move |_sender, frame, _timer| {
+                // The first frame holds the one worker until the test says
+                // otherwise; everything after it answers at once.
+                if holding.swap(false, Ordering::SeqCst) {
+                    held_tx.send(()).unwrap();
+                    let _ = release_rx.lock().unwrap().recv();
+                }
+                json!({ "id": frame.payload["id"], "ok": true })
+            }),
+            TRANSPORT.clone(),
+            1,
+            1,
+            8,
+        );
+        let (first, mut first_out) = CarrierHandle::open_channel();
+        let (second, mut second_out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &first)
+            .unwrap();
+        first_out
+            .try_recv()
+            .expect("the accept rode the first wire");
+        intake
+            .open("s-1", &session_init("s-1", &key), &second)
+            .unwrap();
+        second_out
+            .try_recv()
+            .expect("the accept rode the second wire");
+
+        // One held by the worker, one filling the queue, and the read the
+        // first wire's admitter is holding at the queue's door.
+        for (id, method) in [(1, "term.list"), (2, "term.list"), (3, "board.list")] {
+            intake
+                .accept(
+                    client_request(&key, "s-1", "data", json!({ "id": id, "method": method })),
+                    &first,
+                )
+                .await
+                .expect("the frame was admitted");
+        }
+        held_rx
+            .recv_timeout(testing::PATIENCE)
+            .expect("the first frame is holding the worker");
+        let parked = tokio::time::timeout(testing::PATIENCE, async {
+            while clock.stats()["queue_depth"] != 2 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(parked.is_ok(), "the read is waiting at the queue's door");
+
+        // The first wire goes, mid-wait.
+        intake.close_carrier(&first);
+        release_tx.send(()).unwrap();
+        let drained = tokio::time::timeout(testing::PATIENCE, async {
+            while clock.stats()["queue_depth"] != 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(drained.is_ok(), "the queued frame ran");
+        assert_eq!(
+            intake.folded_reads_waiting(),
+            0,
+            "the read the closed wire was admitting left no fold behind"
+        );
+
+        // The surviving wire asks the same question.
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 4, "method": "board.list" }),
+                ),
+                &second,
+            )
+            .await
+            .expect("the frame was admitted");
+        let answer = answer_past_receipts(&key, &mut second_out).await;
+        assert_eq!(answer["id"], 4, "{answer}");
+
+        intake.close_carrier(&second);
+        assert_eq!(intake.folded_reads_waiting(), 0);
     }
 
     /// The next thing on the wire that is not a receipt.

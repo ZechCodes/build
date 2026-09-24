@@ -131,9 +131,11 @@ struct FoldedRead {
     /// one way — background to foreground, when a foreground caller joins — so
     /// nobody folded into a background pull inherits its wait.
     priority: Priority,
-    /// The request id of every folded frame, in arrival order. Each one is
-    /// answered — see [`Dispatcher`] on why none of them may simply be dropped.
-    ids: Vec<Value>,
+    /// Every folded frame's request id and the wire it asked over, in arrival
+    /// order. Each one is answered, on its own wire — see [`Dispatcher`] on
+    /// why none of them may simply be dropped, and a wire that closed while
+    /// its read waited must not take the other wires' answers with it.
+    callers: Vec<(Value, SessionSender)>,
     queued: QueuedFrame,
 }
 
@@ -150,7 +152,7 @@ impl FoldedRead {
         frame: Frame,
         priority: Priority,
     ) -> Folded {
-        self.ids.push(id);
+        self.callers.push((id, sender.clone()));
         self.sender = sender;
         self.frame = frame;
         if priority == Priority::Foreground && self.priority == Priority::Background {
@@ -171,7 +173,8 @@ enum Folded {
     /// worker takes first runs the read; the other finds the fold gone and does
     /// nothing, exactly as a marker for an already-computed read always has.
     Promoted,
-    /// It is the first of its kind: it now heads a fold that needs a queue slot.
+    /// It is the first of its kind: it now heads a fold, and the marker
+    /// standing for that fold goes in the queue.
     Heads,
     /// The fold it would have joined is full; it runs on its own. Boxed to keep
     /// the enum small: the other two arms carry nothing and this one is the rare
@@ -224,7 +227,8 @@ enum LaneMessage {
 /// keyed by `r<n>`, each entry rejected by a 12 s timer). A dropped frame is not a
 /// request the client forgets about — it is one that hangs until that timer fires
 /// and surfaces as "board.list timed out". So the fold saves the *compute*, not
-/// the reply: the one result is pushed back once per waiting id.
+/// the reply: the one result is pushed back once per waiting id, on the wire
+/// that id asked over.
 ///
 /// The pool takes from two queues, not one. A frame whose envelope says
 /// `"priority": "background"` — the tier that keeps the unfocused workspaces
@@ -252,6 +256,13 @@ pub(super) struct Dispatcher {
     /// The reads queued but not yet started, by what they ask. Shared with the
     /// workers: a worker takes an entry out at the moment it starts computing,
     /// which is exactly the moment further arrivals must stop joining it.
+    ///
+    /// Every entry here has its marker in a queue already, or a worker holding
+    /// that marker: an entry is made only with a queue slot in hand
+    /// (`dispatch_to_pool`), so nothing can leave a fold in this map that no
+    /// marker will ever drain — which is what an admitter aborted mid-wait
+    /// used to leave, and every later twin of that read joined it and waited
+    /// forever (issue #128, round-2 review).
     folded_reads: Arc<Mutex<HashMap<ReadKey, FoldedRead>>>,
 }
 
@@ -355,9 +366,17 @@ impl Dispatcher {
     }
 
     /// Queue an independent frame for whichever worker is free, joining an
-    /// identical read already waiting if there is one. A fold that heads the
-    /// queue and finds no worker left to take it is unparked again, so no frame
-    /// waits in a map nothing will ever drain.
+    /// identical read already waiting if there is one.
+    ///
+    /// The one wait here is for a queue slot, and it is the wait an admitter
+    /// (`carrier::admit_in_order`) is aborted across when its wire closes.
+    /// So the map of folds is touched on either side of that wait and never
+    /// held across it: a read that can join a fold already in the queue joins
+    /// it before the wait and needs no slot; one that has to head a fold takes
+    /// its slot FIRST, and only then enters the map and sends its marker,
+    /// back to back with no await between. Cancelled while it waits, it leaves
+    /// nothing behind — `reserve` takes no slot when its future is dropped —
+    /// and a fold is never in the map without the marker that drains it.
     async fn dispatch_to_pool(
         &self,
         priority: Priority,
@@ -365,33 +384,81 @@ impl Dispatcher {
         frame: Frame,
         queued: QueuedFrame,
     ) {
-        let job = |sender, frame, queued| {
-            QueuedWork::Frame(Job {
-                sender,
-                frame,
-                queued,
-            })
+        let Some(key) = read_key(&sender, &frame) else {
+            let _ = self
+                .queue(priority)
+                .send(QueuedWork::Frame(Job {
+                    sender,
+                    frame,
+                    queued,
+                }))
+                .await;
+            return;
         };
-        let (queue, work) = match read_key(&sender, &frame) {
-            None => (priority, job(sender, frame, queued)),
-            Some(key) => {
-                match self.fold_into_queued_read(key.clone(), priority, sender, frame, queued) {
-                    Folded::Joined => return,
-                    Folded::Heads => (priority, QueuedWork::FoldedRead(key)),
-                    Folded::Promoted => (Priority::Foreground, QueuedWork::FoldedRead(key)),
-                    Folded::Overflowed(job) => (priority, QueuedWork::Frame(*job)),
-                }
+        let Some((sender, frame, queued)) =
+            self.join_waiting_read(&key, priority, sender, frame, queued)
+        else {
+            return;
+        };
+        let Ok(slot) = self.queue(priority).reserve().await else {
+            return;
+        };
+        if let Some(work) = self.fold_or_queue(key, priority, sender, frame, queued) {
+            slot.send(work);
+        }
+    }
+
+    /// Join a read to an identical one already waiting for a worker, if there
+    /// is one with room and joining it costs the queue nothing. `None` when it
+    /// joined; otherwise the frame is handed back to take a slot of its own —
+    /// there is no fold, the fold is full, or the fold is a background one and
+    /// this caller is foreground, which moves the fold to the foreground queue
+    /// and needs a marker there.
+    fn join_waiting_read(
+        &self,
+        key: &ReadKey,
+        priority: Priority,
+        sender: SessionSender,
+        frame: Frame,
+        queued: QueuedFrame,
+    ) -> Option<(SessionSender, Frame, QueuedFrame)> {
+        let mut folded_reads = self.folded_reads.lock().unwrap();
+        match folded_reads.get_mut(key) {
+            Some(waiting)
+                if waiting.callers.len() < MAX_FOLDED_READS
+                    && !(priority == Priority::Foreground
+                        && waiting.priority == Priority::Background) =>
+            {
+                let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+                let joined = waiting.join(id, sender, frame, priority);
+                debug_assert!(matches!(joined, Folded::Joined));
+                None
             }
-        };
-        if let Err(mpsc::error::SendError(QueuedWork::FoldedRead(key))) =
-            self.queue(queue).send(work).await
-        {
-            self.folded_reads.lock().unwrap().remove(&key);
+            _ => Some((sender, frame, queued)),
+        }
+    }
+
+    /// With a queue slot in hand: join the identical read waiting by now if
+    /// there is one, else head a fold or, if the fold is full, queue the frame
+    /// on its own. What comes back is what the slot carries; `None` is a join
+    /// that needed no slot after all, and the slot goes back unused.
+    fn fold_or_queue(
+        &self,
+        key: ReadKey,
+        priority: Priority,
+        sender: SessionSender,
+        frame: Frame,
+        queued: QueuedFrame,
+    ) -> Option<QueuedWork> {
+        match self.fold_into_queued_read(key.clone(), priority, sender, frame, queued) {
+            Folded::Joined => None,
+            Folded::Heads | Folded::Promoted => Some(QueuedWork::FoldedRead(key)),
+            Folded::Overflowed(job) => Some(QueuedWork::Frame(*job)),
         }
     }
 
     /// Join a read to an identical one already waiting for a worker, if there is
-    /// one and it has room.
+    /// one and it has room; else head a new fold.
     fn fold_into_queued_read(
         &self,
         key: ReadKey,
@@ -403,7 +470,7 @@ impl Dispatcher {
         let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
         let mut folded_reads = self.folded_reads.lock().unwrap();
         match folded_reads.get_mut(&key) {
-            Some(waiting) if waiting.ids.len() < MAX_FOLDED_READS => {
+            Some(waiting) if waiting.callers.len() < MAX_FOLDED_READS => {
                 waiting.join(id, sender, frame, priority)
             }
             // A full fold: this read takes a queue slot of its own, which is what
@@ -417,16 +484,22 @@ impl Dispatcher {
                 folded_reads.insert(
                     key,
                     FoldedRead {
-                        sender,
+                        sender: sender.clone(),
                         frame,
                         priority,
-                        ids: vec![id],
+                        callers: vec![(id, sender)],
                         queued,
                     },
                 );
                 Folded::Heads
             }
         }
+    }
+
+    /// Test-only: how many folds are waiting for a worker.
+    #[cfg(test)]
+    pub(super) fn folded_reads_waiting(&self) -> usize {
+        self.folded_reads.lock().unwrap().len()
     }
 
     /// The lane for a terminal, started on first use.
@@ -633,12 +706,12 @@ fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
 }
 
 /// Run one read for every caller that asked it: compute once, then push that one
-/// result back under each waiting request id.
+/// result back under each waiting request id, on the wire that id asked over.
 async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     let FoldedRead {
         sender,
         frame,
-        ids,
+        callers,
         queued,
         priority: _,
     } = folded;
@@ -647,7 +720,7 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
         Some(Ok(payload)) => payload,
         Some(Err(_)) => json!({ "ok": false, "error": "handler failed" }),
     };
-    for id in ids {
+    for (id, caller) in callers {
         let mut for_caller = answer.clone();
         match for_caller.as_object_mut() {
             // The handler stamped the running frame's id; each caller needs its
@@ -657,7 +730,7 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
             }
             None => continue,
         }
-        sender.push(for_caller);
+        caller.push(for_caller);
     }
 }
 
@@ -1135,7 +1208,7 @@ mod dispatcher_tests {
             .lock()
             .unwrap()
             .values()
-            .map(|folded| folded.ids.len())
+            .map(|folded| folded.callers.len())
             .sum();
         gate.store(false, Ordering::SeqCst);
         assert_eq!(folded_now, MAX_FOLDED_READS, "the fold stops at its cap");
@@ -1941,6 +2014,120 @@ mod dispatcher_tests {
             clock.stats()["methods"]["board.list"]["served"],
             1,
             "one compute answered all four"
+        );
+    }
+
+    /// Wait for `condition`, or fail the test rather than hang it.
+    async fn until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(PATIENTLY, async {
+            while !condition() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the condition was reached in time");
+    }
+
+    /// The round-2 review's reproduction (issue #128): a wire's admitter is
+    /// aborted while it waits for a queue slot with a folded read in hand.
+    /// What it was admitting must vanish with it — not stay in the fold map
+    /// as an entry no marker will ever drain, which every later twin of the
+    /// read from a surviving wire would join and wait on forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_read_whose_admission_is_cancelled_leaves_no_fold_behind() {
+        let (gate, gated) = HandlerGate::new();
+        let handler = FrameHandler::new(FrameClock::new(), move |_sender, frame, _timer| {
+            if frame.payload["method"] == "held" {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let clock = Arc::clone(&handler.clock);
+        let dispatcher = Arc::new(Dispatcher::with_capacity(handler, 1, 1));
+        let (lost, _lost_rx, _) = SessionSender::observable("s-fold");
+        let (kept, mut kept_rx, kept_key) = SessionSender::observable("s-fold");
+
+        // One frame held by the worker, one filling the queue.
+        dispatcher
+            .dispatch(lost.clone(), request(1, "held", json!({})))
+            .await;
+        gate.wait_until_held();
+        dispatcher
+            .dispatch(lost.clone(), request(2, "filler", json!({})))
+            .await;
+        // The wire's admitter, parked at the queue's door with a read.
+        let admitting = {
+            let (dispatcher, lost) = (Arc::clone(&dispatcher), lost.clone());
+            tokio::spawn(async move {
+                dispatcher
+                    .dispatch(lost, request(3, "board.list", json!({})))
+                    .await
+            })
+        };
+        until(|| clock.stats()["queue_depth"] == 2).await;
+
+        // The wire closes: its admitter is aborted mid-wait.
+        admitting.abort();
+        let _ = admitting.await;
+        assert_eq!(
+            dispatcher.folded_reads_waiting(),
+            0,
+            "a read whose admission was cancelled heads no fold"
+        );
+
+        gate.release();
+        until(|| clock.stats()["queue_depth"] == 0).await;
+        // The surviving wire asks the same question, and is answered.
+        dispatcher
+            .dispatch(kept.clone(), request(4, "board.list", json!({})))
+            .await;
+        let answer = next_push(&mut kept_rx, &kept_key, PATIENTLY).await;
+        assert_eq!(answer["id"], 4, "{answer}");
+        assert_eq!(dispatcher.folded_reads_waiting(), 0);
+    }
+
+    /// A fold's answer goes to every caller on the wire that caller asked
+    /// over — not to whichever wire the newest of them used. Two wires, one
+    /// session: the read that heads the fold and the read that joins it are
+    /// each answered where they came from.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn each_folded_caller_is_answered_on_its_own_wire() {
+        let (gate, gated) = HandlerGate::new();
+        let handler = FrameHandler::new(FrameClock::new(), move |_sender, frame, _timer| {
+            if frame.payload["method"] == "held" {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "ok": true })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (one, mut one_rx, one_key) = SessionSender::observable("s-fold");
+        let (two, mut two_rx, two_key) = SessionSender::observable("s-fold");
+
+        dispatcher
+            .dispatch(one.clone(), request(1, "held", json!({})))
+            .await;
+        gate.wait_until_held();
+        dispatcher
+            .dispatch(one.clone(), request(2, "board.list", json!({})))
+            .await;
+        dispatcher
+            .dispatch(two.clone(), request(3, "board.list", json!({})))
+            .await;
+        gate.release();
+
+        let mut on_one = Vec::new();
+        for _ in 0..2 {
+            on_one.push(next_push(&mut one_rx, &one_key, PATIENTLY).await["id"].clone());
+        }
+        assert_eq!(
+            on_one,
+            vec![json!(1), json!(2)],
+            "wire one hears its own two answers"
+        );
+        let on_two = next_push(&mut two_rx, &two_key, PATIENTLY).await;
+        assert_eq!(
+            on_two["id"], 3,
+            "wire two hears the answer to the read it joined with"
         );
     }
 }

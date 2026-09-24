@@ -134,7 +134,7 @@ repo's own vitest runs.
 The scans (gitleaks before each push, semgrep before you post ready):
 
 ```bash
-nice -n 10 semgrep scan --config p/security-audit --config p/secrets --error --metrics off <changed files>
+nice -n 10 semgrep --config auto --error <changed js/mjs/css files>
 nice -n 10 gitleaks git --no-banner --redact --log-opts='main..HEAD' .
 git diff --check main..HEAD
 ```

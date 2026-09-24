@@ -154,6 +154,83 @@ describe("a conversation that changed under the cursor while the device was away
     expect(statusOf(window, 5)).toBe("sent");
     expect(window.deliveredSequence).toBe(6);
   });
+
+  // The forward read moves the cursor past the evidence that a repair is
+  // owed. Whatever happens to the repair after it, the next read must still
+  // know to make one.
+  const awayWhileThreeWasDelivered = [user(1, "sent"), user(2, "sent"), user(3, "sent", 4), user(5, "queued")];
+
+  it("repairs on the next read when the repair read failed", async () => {
+    await cache.writeCached(address, windowAt(user(1, "sent"), user(2, "sent"), user(3, "queued")));
+    const bridge = conversation(awayWhileThreeWasDelivered);
+    let dropped = false;
+    const call = async (method, params) => {
+      if (!params.newest && !dropped) {
+        dropped = true;
+        throw new Error("the connection dropped during the repair");
+      }
+      return bridge.call(method, params);
+    };
+
+    await sync(call);
+    expect((await saved()).deliveredSequence).toBe(5);
+    expect(statusOf(await saved(), 3)).toBe("queued");
+
+    await sync(call);
+    expect(statusOf(await saved(), 3)).toBe("sent");
+    expect((await saved()).repairThrough).toBeUndefined();
+  });
+
+  it("repairs on the next read when the pass was stood down under the repair", async () => {
+    await cache.writeCached(address, windowAt(user(1, "sent"), user(2, "sent"), user(3, "queued")));
+    const bridge = conversation(awayWhileThreeWasDelivered);
+    let active = true;
+    let stoodDown = false;
+    const call = async (method, params) => {
+      if (!params.newest && !stoodDown) {
+        stoodDown = true;
+        active = false;
+      }
+      return bridge.call(method, params);
+    };
+
+    await syncThreadWindow({ ...address, conversationId: address.sub, call, active: () => active });
+    expect(statusOf(await saved(), 3)).toBe("queued");
+
+    active = true;
+    await syncThreadWindow({ ...address, conversationId: address.sub, call, active: () => active });
+    expect(statusOf(await saved(), 3)).toBe("sent");
+  });
+
+  it("keeps what it owes across a reload", async () => {
+    await cache.writeCached(address, windowAt(user(1, "sent"), user(2, "sent"), user(3, "queued")));
+    const bridge = conversation(awayWhileThreeWasDelivered);
+    const failing = async (method, params) => {
+      if (!params.newest) throw new Error("the tab closed during the repair");
+      return bridge.call(method, params);
+    };
+    await sync(failing);
+
+    // A new page load: fresh modules over the same database.
+    vi.resetModules();
+    cache = await import("../src/core/localCache.js");
+    ({ syncThreadWindow } = await import("../src/core/threadSync.js"));
+    await sync(bridge.call);
+
+    expect(statusOf(await saved(), 3)).toBe("sent");
+  });
+
+  it("keeps the debt a repair read before it cannot have paid", async () => {
+    const { repairedThreadWindow } = await import("../src/core/threadSync.js");
+    const held = { ...windowAt(user(1, "sent"), user(3, "queued")), repairThrough: 6 };
+    const early = { items: [user(3, "sent", 4)], thread_last_sequence: 5 };
+
+    const repaired = repairedThreadWindow(held, early);
+
+    expect(statusOf(repaired, 3)).toBe("sent");
+    expect(repaired.repairThrough).toBe(6);
+    expect(repairedThreadWindow(repaired, { items: [], thread_last_sequence: 6 }).repairThrough).toBeUndefined();
+  });
 });
 
 describe("an item arriving older than the copy held", () => {

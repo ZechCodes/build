@@ -13,6 +13,11 @@
 // page says the conversation's counter moved on something the page does not
 // carry, the recent items the record holds are read again and the changed
 // ones taken.
+//
+// The forward read moves the cursor past the evidence, so the debt is written
+// down in the same write: `repairThrough`, the counter a repair must read at or
+// past. It stays on the record until a repair has — through a failed repair, a
+// pass stood down under it, a reload.
 
 import { LATEST_THREAD_ITEMS, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
 import { mergeCached, readCached } from "./localCache.js";
@@ -59,10 +64,19 @@ export async function syncThreadWindow(request) {
   const page = await requestThreadPage(request, threadPageParams(request.entityId, request.agentId || "", after));
   if (!page) return false;
   if (!requestIsActive(request)) return false;
+  const owed = changedUnderCursor(page, after) ? Number(page.thread_last_sequence) : 0;
   await mergeCached(target, (current) =>
-    requestIsActive(request) ? threadWindow(current, page, { newest: after > 0 }) : null);
-  if (changedUnderCursor(page, after)) await repairRecentItems(request, target);
+    requestIsActive(request) ? owingRepair(current, threadWindow(current, page, { newest: after > 0 }), owed) : null);
+  await repairRecentItems(request, target);
   return true;
+}
+
+/** The window the forward merge leaves, with the repair it owes written into
+ *  it — onto the window as it stood where the page added nothing to it. */
+function owingRepair(current, next, owed) {
+  const window = next || current;
+  if (!owed || !holdsAWindow(window)) return next;
+  return { ...window, repairThrough: Math.max(owed, Number(window.repairThrough || 0)) };
 }
 
 /**
@@ -93,12 +107,13 @@ function valuesWornPast(items, after) {
   return worn;
 }
 
-/** The newest items the record holds, read again, and the ones that changed
- *  taken. Nothing it does not hold is added and the cursor does not move: the
- *  forward read owns both, and a repair that crossed a new item on the wire
- *  must not carry the cursor past it. */
+/** Where the record owes one: the newest items it holds, read again, and the
+ *  ones that changed taken. Nothing it does not hold is added and the cursor
+ *  does not move: the forward read owns both, and a repair that crossed a new
+ *  item on the wire must not carry the cursor past it. */
 async function repairRecentItems(request, target) {
   const held = (await readCached(target))?.value;
+  if (!held?.repairThrough) return;
   const floor = repairFloor(held);
   if (floor === null || !requestIsActive(request)) return;
   const page = await requestThreadPage(request, {
@@ -119,16 +134,33 @@ function repairFloor(held) {
   return Math.max(0, Number(recent[0].data?.sequence || 0) - 1);
 }
 
-/** The window with the items a repair page carries newer copies of, or null
- *  where it carries none. */
+/** The window with the items a repair page carries newer copies of, and its
+ *  debt paid where the page was read at or past it — or null where neither. */
 export function repairedThreadWindow(held, page) {
   if (!holdsAWindow(held)) return null;
-  const heldByKey = new Map(held.items.map((item) => [threadItemKey(item), item]));
-  const newer = (page?.items || []).filter((item) => {
+  const newer = newerCopies(held.items, page?.items);
+  const paid = repaidBy(held, page);
+  if (!newer.length && !paid) return null;
+  const { repairThrough, ...window } = held;
+  return {
+    ...window,
+    ...(paid || !repairThrough ? {} : { repairThrough }),
+    items: newer.length ? mergeThreadItems(held.items, newer) : held.items,
+  };
+}
+
+/** Whether this page was read at or past the counter the record owes a
+ *  repair through. */
+const repaidBy = (held, page) =>
+  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough);
+
+/** The arrivals that are newer copies of items held. */
+function newerCopies(heldItems, arrived) {
+  const heldByKey = new Map(heldItems.map((item) => [threadItemKey(item), item]));
+  return (arrived || []).filter((item) => {
     const copy = heldByKey.get(threadItemKey(item));
     return copy && latestItemSequence(item) > latestItemSequence(copy);
   });
-  return newer.length ? { ...held, items: mergeThreadItems(held.items, newer) } : null;
 }
 
 export const threadPageParams = (entityId, agentId, after) => ({

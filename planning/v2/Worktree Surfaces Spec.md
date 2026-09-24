@@ -857,12 +857,18 @@ styles them); closable tabs append `<span class="tx">×</span>`; the `+` is
 export function renderFilesTab(body, { scope, callRpc })
 ```
 
-Layout: `.files` = flex row; left `.ftree` (one-level-at-a-time directory
-listing with a `..` row when below the root and a breadcrumb of the current
-relative path), right `.fpreview`. On phones (< 900px) they stack. Tree
-entries: dir rows navigate (`fs.tree`), file rows preview (`fs.read`),
-symlink rows render but do nothing (title: `symlink — not followed`). All
-names/paths through `esc()`.
+Layout: `.files` = flex row; left `.ftree`, right `.fpreview`. On phones
+(< 900px) the tree is a drawer over the preview. The tree is an IDE explorer
+(#151): the checkout's root, no breadcrumb and no `..` row, with directories
+expanding and collapsing in place under a chevron, indented per level; each
+expanded directory is listed with `fs.tree`. Symlink rows render but do
+nothing (title: `symlink — not followed`). The open file's row is highlighted
+on every paint. On a fine pointer a click on a file selects it and a
+double-click opens it; on a coarse pointer a tap opens it; arrows move the
+selection and expand/collapse, Enter opens. Opened files are closable tabs
+over the preview (a tab with unsaved edits is marked, and closing it asks).
+The expanded directories, the open tabs and the active tab are UI state,
+remembered per checkout. All names/paths through `esc()`.
 
 Preview rules by response `mime` (+ `truncated`):
 

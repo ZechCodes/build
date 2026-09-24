@@ -39,12 +39,23 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
 
   const markedKey = () => [...dirtyPaths()].sort().join("\n");
 
+  // The strip scrolls sideways; the active tab is always the one in view.
+  const showActiveTab = () => {
+    const active = stripEl.querySelector(".ftab.active");
+    if (!active) return;
+    const box = stripEl.getBoundingClientRect();
+    const tab = active.getBoundingClientRect();
+    if (tab.left < box.left) stripEl.scrollLeft -= box.left - tab.left;
+    else if (tab.right > box.right) stripEl.scrollLeft += tab.right - box.right;
+  };
+
   const paint = (value) => {
     if (disposed || !started) return;
     layout = keepingDirty(readTabLayout(value), dirtyPaths());
     marked = markedKey();
     stripEl.innerHTML = fileTabsHtml(layout, dirtyPaths());
     stripEl.hidden = !layout.tabs.length;
+    showActiveTab();
     if (layout.active === shown) return;
     shown = layout.active;
     onShow(shown);

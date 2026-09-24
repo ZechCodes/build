@@ -429,7 +429,7 @@ them into new code; each is a candidate to bring under the rule.
 
 - **Surface-owned reads.** A few surfaces read on demand, for data the sync
   pass does not hold:
-  - the Files tab lists a directory the reader opens with `fs.tree`
+  - the Files tab lists a directory the reader expands with `fs.tree`
     (`spa/src/views/files.js`);
   - the archive reads `archived.list` (`spa/src/views/archive.js`);
   - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
@@ -544,7 +544,7 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Issues list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerIssuesPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
 | Issue page | `spa/src/views/trackerIssueView.js` → `spa/src/core/trackerIssuePage.js` |
 | Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/workspaceView.js` and `spa/src/views/branchView.js` |
-| Files | `spa/src/views/files.js`, `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
+| Files | `spa/src/views/files.js`, `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
 

@@ -18,7 +18,7 @@
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
-import { peerFrameAt } from "./pathLiveness.js";
+import { peerHeardAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
@@ -277,9 +277,9 @@ export async function openSession({
      *
      * Asks again each time a ping goes unanswered: a path that has just come
      * back can lose the first question into an association still being made.
-     * `true` once a ping is answered or any frame arrives after asking;
-     * `false` when neither happens inside `timeoutMs`, when the channel
-     * refuses the question outright, or when there is no channel. Severs
+     * `true` once a ping is answered or any frame, or part of one, arrives
+     * after asking; `false` when neither happens inside `timeoutMs`, when the
+     * channel refuses the question outright, or when there is no channel. Severs
      * nothing and never rejects: what a dead restart costs is the link's call,
      * and the path probe's own verdict stays latched for real deadlines.
      */
@@ -292,7 +292,11 @@ export async function openSession({
           await rpc.call("ping", {}, { timeoutMs: Math.min(PING_TIMEOUT_MS, left()), carrier: riding });
           return true;
         } catch (error) {
-          if (peerFrameAt(rpc, riding) > asked) return true;
+          // Any part counts, not only a whole frame: a restart that reaches
+          // the same bridge resumes what was in flight, and a large answer
+          // holds the pong behind it on the ordered channel. A part arriving
+          // after asking can only come from a process that reaches us.
+          if (peerHeardAt(rpc, riding) > asked) return true;
           if (!error?.timedOut) return false;
         }
       }

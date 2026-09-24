@@ -44,6 +44,15 @@ export const peerFrameAt = (rpc, wire) =>
   Math.max(rpc?.lastFrameAt?.() || 0, wire?.peerFrameAt?.() || 0);
 
 /**
+ * When this peer last carried anything at all, a part of a frame included.
+ *
+ * A large envelope crosses as many parts and counts as a frame only once it
+ * is whole, so a path carrying one is silent to `peerFrameAt` until its last
+ * part lands. A part is still proof the path reaches the peer (#123).
+ */
+export const peerHeardAt = (rpc, wire) => Math.max(peerFrameAt(rpc, wire), wire?.peerPartAt?.() || 0);
+
+/**
  * What says this path is still there, in the order the evidence is worth
  * anything.
  *

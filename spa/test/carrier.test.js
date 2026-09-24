@@ -163,6 +163,19 @@ describe("the DataChannel carrier", () => {
     expect(seen).toEqual([big]);
   });
 
+  // #123 review: a restarted path that reaches the same bridge resumes an
+  // answer too large to finish inside the carry check. Each part that
+  // arrives is still proof the path carries.
+  it("marks the path as carrying on each part, before the envelope is whole", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const parts = splitEnvelope(JSON.stringify({ ...envelope, ciphertext: "c".repeat(CHUNK_BYTES * 2) }));
+    const before = Date.now();
+    channel.deliver(parts[0]);
+    expect(carrier.peerFrameAt()).toBe(0);
+    expect(carrier.peerPartAt()).toBeGreaterThanOrEqual(before);
+  });
+
   it("closes the channel on a reassembly it cannot finish", () => {
     const channel = new FakeChannel();
     const carrier = openCarrier({ channel });

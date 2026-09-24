@@ -40,8 +40,9 @@ function fakeCarrier({ sendFails = null } = {}) {
     // What a real carrier tells a liveness reader about the path under it
     // (core/carrier.js): when a frame last arrived on any channel of this peer,
     // and whether the browser's own ICE still holds it open.
-    frames: { at: 0, connected: false },
+    frames: { at: 0, partAt: 0, connected: false },
     peerFrameAt: () => carrier.frames.at,
+    peerPartAt: () => carrier.frames.partAt,
     peerIsConnected: () => carrier.frames.connected === true,
     send: async (envelope) => {
       if (sendFails) throw new Error(sendFails);
@@ -590,6 +591,19 @@ describe("confirming a restarted path carries this session", () => {
       const confirmed = session.confirmCarried();
       await vi.advanceTimersByTimeAsync(1);
       peer.frames.at = Date.now();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  // A path that reaches the same bridge resumes whatever was in flight, and an
+  // answer too large to finish inside the window holds the pong behind it on
+  // the ordered channel. Its parts arriving is proof enough.
+  it("is carried while the pong is behind a large envelope still arriving", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(1);
+      peer.frames.partAt = Date.now();
       await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
       expect(await confirmed).toBe(true);
     });

@@ -232,6 +232,9 @@ function fakeSession(deviceId, onLost = () => {}) {
     watchRecovery: vi.fn(),
     fireCarrier: () => carrierChanged(),
     reattachSignaling: vi.fn(async () => {}),
+    // Whether a restarted path carries this session (#123). The answer names
+    // the machine so a case can tell which session a link was handed.
+    confirmCarried: vi.fn(async () => `carried by ${deviceId}`),
     closed: false,
     close: vi.fn(() => {
       session.closed = true; // a session its client closed reports nothing more
@@ -419,6 +422,19 @@ describe("per-device connections", () => {
     await vi.waitFor(() => expect(hellos()).toBeGreaterThan(greeted));
     expect(lastSession("dev-a")).toBe(session); // the same session, greeted again
     expect(contextFor("dev-a").offline).toBe(false);
+  });
+
+  // The link only knows a restart landed on a dead process if it can ask the
+  // session. Without the question it takes every restart as carried.
+  it("hands each peer link its own session's carry check", async () => {
+    await connectEveryDevice();
+    const handed = wire.openPeerLink.mock.calls.map(([options]) => options.confirmCarried);
+    expect(handed.length).toBeGreaterThan(0);
+    expect(handed.every((ask) => typeof ask === "function")).toBe(true);
+    await expect(handed.at(-1)()).resolves.toMatch(/^carried by dev-/);
+    const asked = [...handedOut.values()].flat().filter((one) => one.confirmCarried.mock.calls.length > 0);
+    expect(asked).toHaveLength(1);
+    expect(await handed.at(-1)()).toBe(`carried by ${asked[0].deviceId}`);
   });
 
   it("closes a failed handoff instead of treating a network error as an old bridge", async () => {

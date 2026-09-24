@@ -427,15 +427,21 @@ In practice:
   `s-active` (the routed workspace, realtime).
 - **Reconnect catch-up.** The bridge starts a subscription empty and records a
   change only for the subscriptions it holds when the change happens. So a pass
-  takes its subscriptions out and waits for the bridge to answer them before it
-  reads anything. A change after a read is then pushed, and a read never writes
-  over a record a push wrote after the read was asked
-  (`spa/src/core/pushFence.js`). A conversation's forward read
-  (`syncThreadWindow` in `spa/src/core/threadSync.js`) only carries items made
-  past the cursor. When its page shows the conversation's counter moved on a
-  value none of its items wears, an item under the cursor changed in place, and
-  the newest `REPAIRED_THREAD_ITEMS` (50) held items are read again so the
-  changed copies replace the stale ones.
+  takes its subscriptions out before it reads anything, and where the cache has
+  something to show it waits (bounded) for the bridge to answer them. A device
+  with nothing cached reads at once. Either way, a subscription the bridge
+  takes on after a pass's reads were asked (`onSubscriptionHeld` in
+  `spa/src/core/changeEvents.js`) is followed by another pass. A push can
+  overtake a read, so a read never writes over a record a push wrote after the
+  read was asked, nor under an entity a push took off the board since
+  (`spa/src/core/pushFence.js`). A board read leaves a row a push wrote since
+  unobserved in the `feed`, so the row's own record paints. A conversation's
+  forward read (`syncThreadWindow` in `spa/src/core/threadSync.js`) only
+  carries items made past the cursor. When its page shows the conversation's
+  counter moved on a value none of its items wears, an item under the cursor
+  changed in place. The record then owes a repair (`repairThrough`, written
+  with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
+  have been read again at or past that counter.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

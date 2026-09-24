@@ -246,7 +246,10 @@ pub(in crate::app) fn session_hello(
     // The subscribe and the client record both happen with the app mutex
     // released — each takes its own leaf lock, and nothing in this daemon may
     // nest one lock inside another it did not have to.
-    let changes = timer.lock(state).changes();
+    let (changes, qa_agent) = {
+        let app = timer.lock(state);
+        (app.changes(), app.qa_agent)
+    };
     let subscriptions = params.get("changes").and_then(Value::as_str) == Some("subscriptions");
     if subscriptions {
         changes.unsubscribe_legacy(sender.session_id());
@@ -260,6 +263,7 @@ pub(in crate::app) fn session_hello(
     );
     Ok(json!({
         "api_version": API_VERSION,
+        "capabilities": crate::api::capabilities(qa_agent),
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,

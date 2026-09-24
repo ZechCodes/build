@@ -89,9 +89,11 @@ describe("adapter selection", () => {
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
-      issues: { attachments: false, watching: false },
+      issues: { attachments: false, watching: false, context: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
+      messages: { context: false },
+      threads: { postOperations: false },
     });
   });
 
@@ -199,8 +201,10 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
-        issues: { attachments: false, watching: false },
+        issues: { attachments: false, watching: false, context: false },
         conversations: { settings: false },
+        messages: { context: false },
+        threads: { postOperations: false },
       });
     }
   });
@@ -208,6 +212,78 @@ describe("adapter selection", () => {
   it("a 0.0.0 bridge that somehow claims subscriptions is still given none", () => {
     const selected = selectAdapter({ changes: { subscriptions: true } });
     expect(selected.create(vi.fn()).capabilities.changes.subscriptions).toBe(false);
+  });
+});
+
+describe("named capabilities", () => {
+  const features = [
+    "changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile",
+    "issues.attachments", "issues.watching", "issues.context", "conversations.settings",
+    "messages.context", "threads.postOperations",
+  ];
+  const flags = (greeting) => {
+    const capabilities = selectAdapter(greeting).create(async () => ({})).capabilities;
+    return features.filter((name) => {
+      const [group, feature] = name.split(".");
+      return capabilities[group][feature];
+    });
+  };
+  const namedGreeting = (capabilities) => ({
+    api_version: "1.22.0", capabilities,
+    // Old fields cannot override the list, in either direction.
+    changes: { subscriptions: true, kinds: ["issues"] },
+    requests: { priority: true }, errors: { codes: true },
+    issues: { attachments: true, watching: true },
+  });
+
+  it("maps a 1.19 bridge without a list through the historical table", () => {
+    expect(flags({ api_version: "1.19.0" })).toEqual(features.filter((name) => !["messages.context", "threads.postOperations"].includes(name)));
+    expect(flags({
+      api_version: "1.19.0", message_context: { version: 1 },
+      thread_post_operations: { version: 1, status_method: "thread.operation" },
+    })).toEqual(features);
+  });
+
+  it.each(features)("switches %s on and off independently", (feature) => {
+    expect(flags(namedGreeting([feature]))).toEqual([feature]);
+    expect(flags(namedGreeting(features.filter((name) => name !== feature))))
+      .toEqual(features.filter((name) => name !== feature));
+  });
+
+  it("uses names even when legacy booleans deny a feature", () => {
+    expect(flags({
+      ...namedGreeting(features),
+      changes: { subscriptions: false }, requests: { priority: false },
+      errors: { codes: false }, issues: { attachments: false, watching: false, context: false },
+    })).toEqual(features);
+  });
+
+  it("ignores unknown names and malformed list members", () => {
+    expect(flags(namedGreeting(["future.feature", null, 10, {}, "issues.attachments"])))
+      .toEqual(["issues.attachments"]);
+  });
+
+  it("never falls back for absent, empty or malformed lists on new bridges", () => {
+    for (const version of ["1.22.0", "1.23.0", "1.99.0"]) {
+      for (const capabilities of [undefined, [], null, {}, "issues.attachments"]) {
+        const greeting = { ...namedGreeting(capabilities), api_version: version };
+        if (capabilities === undefined) delete greeting.capabilities;
+        expect(flags(greeting)).toEqual([]);
+      }
+    }
+  });
+
+  it("prefers a list on an older bridge too", () => {
+    expect(flags({ ...namedGreeting(["issues.watching"]), api_version: "1.19.0" }))
+      .toEqual(["issues.watching"]);
+  });
+
+  it("keeps kind metadata and push events separate from feature flags", () => {
+    const greeting = { ...namedGreeting(["changes.subscriptions"]), events: ["changes", "future.event"] };
+    const adapter = selectAdapter(greeting).create(async () => ({}));
+    expect(adapter.capabilities.changes.kinds).toEqual(["issues"]);
+    expect(adapter.events).toEqual(greeting.events);
+    expect(v1.capabilitiesOf(namedGreeting([])).changes.kinds).toEqual([]);
   });
 });
 

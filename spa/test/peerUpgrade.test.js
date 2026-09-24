@@ -678,7 +678,7 @@ describe("what the live connection tells the surfaces", () => {
   it("applies the live bridge's operation capability to its chat repository", async () => {
     const context = await connect("dev-a");
     greetings.greet.mockImplementationOnce(async (_call, { onGreeting }) => {
-      onGreeting({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
+      onGreeting({ api_version: "1.22.0", capabilities: ["threads.postOperations"] });
       return true;
     });
 

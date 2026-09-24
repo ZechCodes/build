@@ -116,7 +116,7 @@ describe("chat controller ownership", () => {
       createOperationId: () => "operation-context",
       viewingContext: { snapshot: () => context },
     });
-    repository.configureCapabilities({ message_context: { version: 1 } });
+    repository.configureCapabilities({ api_version: "1.19.0", message_context: { version: 1 } });
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "look", attachments: [] });
     context.items[0].path = "src/later.js";
@@ -132,6 +132,42 @@ describe("chat controller ownership", () => {
     const controller = repository.controller(address());
     await controller.post(controller.captureSubmission({ body: "look" }));
     expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
+  });
+
+  it("uses 1.22 names for message context and post operations without legacy metadata", () => {
+    const context = { version: 1, items: [{ kind: "file", path: "src/a.js" }] };
+    const viewingContext = { snapshot: () => context, setEnabled: vi.fn() };
+    const repository = createChatRepository({ scope: {}, call: vi.fn(), viewingContext });
+
+    repository.configureCapabilities({
+      api_version: "1.22.0",
+      capabilities: ["messages.context", "threads.postOperations"],
+    });
+    expect(repository.contextualize({ body: "look" }).viewing_context).toEqual(context);
+    expect(repository.threadPostOperations()).toEqual({ version: 1, statusMethod: "thread.operation" });
+    expect(viewingContext.setEnabled).toHaveBeenLastCalledWith(true);
+
+    repository.configureCapabilities({
+      api_version: "1.22.0",
+      capabilities: [],
+      message_context: { version: 1 },
+      thread_post_operations: { version: 1, status_method: "thread.operation" },
+    });
+    expect(repository.contextualize({ body: "look" })).toEqual({ body: "look" });
+    expect(repository.threadPostOperations()).toBeNull();
+    expect(viewingContext.setEnabled).toHaveBeenLastCalledWith(false);
+  });
+
+  it("treats a missing 1.22 list as no chat capabilities", () => {
+    const repository = createChatRepository({ scope: {}, call: vi.fn() });
+    repository.configureCapabilities({
+      api_version: "1.22.0",
+      message_context: { version: 1 },
+      thread_post_operations: { version: 1, status_method: "thread.operation" },
+    });
+    expect(repository.threadPostOperations()).toBeNull();
+    expect(repository.contextualize({ body: "look", viewing_context: { version: 1, items: [] } }))
+      .toEqual({ body: "look" });
   });
   it("returns one private controller per agent while sharing canonical history identity", () => {
     const repository = createRepository();
@@ -253,7 +289,7 @@ describe("chat controller ownership", () => {
       posted_sequence: 2,
       operation_status: "queued",
     })));
-    repository.configureCapabilities({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "hello", attachments: [] });
 
@@ -307,7 +343,7 @@ describe("chat controller ownership", () => {
           operation_status: "queued",
         });
     const repository = createRepository(oldCall);
-    repository.configureCapabilities({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "retry me", attachments: [] });
 
@@ -341,7 +377,7 @@ describe("chat controller ownership", () => {
       posted_sequence: 4,
       operation_status: "delivered",
     })));
-    repository.configureCapabilities({ thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
     const controller = repository.controller(address());
 
     await controller.post(controller.captureSubmission({ body: "done" }));

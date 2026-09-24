@@ -8,51 +8,13 @@
 //! change is one edit both ends are held to.
 
 use build_bridge::api::v1;
-use build_bridge::api::API_VERSION;
+use build_bridge::api::{
+    capabilities, API_VERSION, FEATURE_CAPABILITIES, LEGACY_METHODS, QA_METHODS,
+};
 use build_bridge::changes;
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-
-/// Methods answered outside `api::v1`, on purpose. Each may have a fixture
-/// without a v1 registration, and none may ever gain one: the test below
-/// fails the moment a family registers a name listed here.
-///
-/// Why each stays: `session.hello`, `term.attach`, `term.ack`, `rtc.*` and
-/// `agent.attach` need the caller's own `SessionSender` (somewhere to push
-/// to); `term.create`, `term.input`, `term.resize`, `agent.start`,
-/// `agent.interrupt` and `stream.start` need the shared `Arc` (a producer,
-/// pump or delivery runner to spawn); `bridge.stats` is answered from the
-/// frame clock so it can never queue behind a wedged lock; `ping` is the
-/// probe an old client sends before it knows what version it is talking to;
-/// `term.list` and `term.close` are the terminal family's session-free reads,
-/// kept beside the rest of `term.*` so the whole family moves together;
-/// `stream.events` and `stream.state` are QA fixtures behind
-/// `BRIDGE_QA_AGENT=1`, not part of the wire.
-///
-/// Nothing here has an expiry date any more: the `workspace.*` family, the
-/// last entry that did, is served by `api::v1::workspace`.
-const LEGACY_METHODS: &[&str] = &[
-    "agent.attach",
-    "agent.interrupt",
-    "agent.start",
-    "bridge.stats",
-    "ping",
-    "rtc.close",
-    "rtc.ice",
-    "rtc.offer",
-    "session.hello",
-    "stream.events",
-    "stream.start",
-    "stream.state",
-    "term.ack",
-    "term.attach",
-    "term.close",
-    "term.create",
-    "term.input",
-    "term.list",
-    "term.resize",
-];
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/api")
@@ -139,14 +101,46 @@ fn every_v1_method_has_a_fixture_and_every_fixture_names_a_served_method() {
     }
     for method in &fixtures {
         assert!(
-            registered.contains(method.as_str()) || LEGACY_METHODS.contains(&method.as_str()),
+            registered.contains(method.as_str())
+                || LEGACY_METHODS.contains(&method.as_str())
+                || QA_METHODS.contains(&method.as_str()),
             "{method}: fixture names a method the bridge does not serve"
         );
     }
-    for method in LEGACY_METHODS {
+    for method in LEGACY_METHODS.iter().chain(QA_METHODS) {
         assert!(
             !registered.contains(method),
             "{method}: served by v1, drop it from LEGACY_METHODS"
+        );
+    }
+}
+
+#[test]
+fn every_fixture_verb_has_an_advertised_capability() {
+    let advertised: BTreeSet<&str> = capabilities(true).into_iter().collect();
+    for (method, _) in method_fixtures() {
+        assert!(
+            advertised.contains(method.as_str()),
+            "{method}: fixture verb absent from session.hello capabilities"
+        );
+    }
+    let normal: BTreeSet<&str> = capabilities(false).into_iter().collect();
+    let greeting_fixture = read_json(&fixtures_root().join("v1/session.hello.json"));
+    assert_eq!(
+        greeting_fixture["result"]["capabilities"],
+        serde_json::json!(capabilities(false)),
+        "session.hello fixture must list every production capability"
+    );
+    for method in QA_METHODS {
+        assert!(
+            !normal.contains(method),
+            "{method}: QA verb advertised in production"
+        );
+    }
+    for feature in FEATURE_CAPABILITIES {
+        assert!(
+            normal.contains(feature),
+            "{feature}: feature absent from greeting"
         );
     }
 }

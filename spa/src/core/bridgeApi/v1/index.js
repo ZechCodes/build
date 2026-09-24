@@ -1,9 +1,9 @@
 // The v1 adapter: everything this SPA knows about API major 1.
 //
 // A surface never asks what version the bridge reports — it asks the adapter's
-// `capabilities`, which are derived once from the greeting and the minor
-// version and never from probing a method to see whether it is refused. That
-// is the whole point of the version. The floor is 1.2: the client reads what
+// `capabilities`, derived from the names in the greeting. Only bridges before
+// 1.22 use the legacy minor table; feature branches no longer bump a version.
+// The floor is 1.2: the client reads what
 // a push carries and polls nothing, and a bridge below 1.2 pushes keys, not
 // bodies, so it is gated rather than served a client that would never move.
 //
@@ -11,6 +11,8 @@
 // `error_code`, `retryable` and `details` beside the string; from 1.0 it is
 // the string alone, which becomes `ApiError("unknown")` with the text intact.
 // A view therefore reads `error.code` whatever it is talking to.
+
+import { satisfies } from "../semver.js";
 
 /** The range of bridge versions this adapter claims. */
 export const range = ">=1.2.0 <2.0.0";
@@ -22,7 +24,7 @@ export const major = 1;
 export const UNKNOWN_CODE = "unknown";
 
 /** The closed set of codes a 1.x bridge refuses with (`api/mod.rs`), plus the
- *  client-side stand-in for a refusal that named none. Additive in a minor:
+ *  client-side stand-in for a refusal that named none. Additive within a major:
  *  an unrecognised code still arrives on the ApiError as it was sent. */
 export const ERROR_CODES = Object.freeze([
   "unknown_method",
@@ -38,7 +40,7 @@ export const ERROR_CODES = Object.freeze([
 
 /** Every push a 1.x bridge sends on a session: the change events, the terminal
  *  frames and the signalling one. An event of any other type is a no-op, never
- *  a throw — a later minor may add one. `fixtures/api/v1/events.json` carries
+ *  a throw — a later bridge may add one. `fixtures/api/v1/events.json` carries
  *  one example of each, and both ends are held to it. */
 export const EVENT_TYPES = Object.freeze([
   "board.changed",
@@ -116,87 +118,68 @@ export function parseEvent(event) {
   return EVENT_TYPES.includes(event.type) ? event : null;
 }
 
-/** The greeting of a bridge that named a version, with its optional sections
- *  filled in — anything else is pre-alpha and claims nothing. */
-function statedGreeting(greeting) {
-  const version = greeting && greeting.api_version;
-  if (typeof version !== "string" || !version) return null;
+/** Names this client understands, with the historical minor and (where one
+ *  existed) explicit greeting flag. This table is frozen history: new features
+ *  get names, never a new minor fallback. */
+const LEGACY_CAPABILITIES = Object.freeze([
+  { name: "changes.subscriptions", minor: 1, flag: ["changes", "subscriptions"] },
+  { name: "requests.priority", minor: 1, flag: ["requests", "priority"] },
+  { name: "errors.codes", minor: 1, flag: ["errors", "codes"] },
+  { name: "diffs.perFile", minor: 4 },
+  { name: "issues.context", minor: 5 },
+  { name: "issues.attachments", minor: 8, flag: ["issues", "attachments"] },
+  { name: "issues.watching", minor: 9, flag: ["issues", "watching"] },
+  { name: "conversations.settings", minor: 10 },
+  { name: "messages.context", offered: (greeting) => greeting.message_context?.version === 1 },
+  {
+    name: "threads.postOperations",
+    offered: (greeting) => greeting.thread_post_operations?.version === 1
+      && typeof greeting.thread_post_operations.status_method === "string",
+  },
+]);
+
+function legacyNames(greeting, version) {
+  const minor = Number(version.split(".")[1]);
+  return LEGACY_CAPABILITIES.filter(({ minor: floor, flag, offered }) => {
+    if (offered) return offered(greeting);
+    const stated = flag && greeting[flag[0]]?.[flag[1]];
+    return typeof stated === "boolean" ? stated : minor >= floor;
+  }).map(({ name }) => name);
+}
+
+/** An absent or malformed list on 1.22+ claims nothing. On older bridges only,
+ *  the historical booleans and minor supply names when there is no list. */
+function namesOf(greeting, version) {
+  if (!greeting?.api_version || !satisfies(version, ">=1.0.0 <2.0.0")) return new Set();
+  if (Object.hasOwn(greeting, "capabilities")) {
+    return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
+  }
+  return new Set(satisfies(version, ">=1.0.0 <1.22.0") ? legacyNames(greeting, version) : []);
+}
+
+/** The existing surface-facing flags, selected independently by name. Unknown
+ *  names never become flags. Subscription kinds and push event names continue
+ *  to come from their own advertised lists. */
+export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0.0") {
+  const names = namesOf(greeting, version);
+  const subscriptions = names.has("changes.subscriptions");
+  const kinds = greeting?.changes?.kinds;
   return {
-    changes: greeting.changes || {},
-    requests: greeting.requests || {},
-    errors: greeting.errors || {},
-    issues: greeting.issues || {},
-  };
-}
-
-/**
- * The subscription kinds a bridge says it carries.
- *
- * A greeting that names none is read as carrying none, and a caller asking
- * "does this bridge carry X" gets no for every X. That is the safe direction:
- * every kind in one `changes.subscribe` shares that call's fate, so asking for
- * one the bridge does not know risks the whole subscription — and with it the
- * kinds that would have worked. A caller may still ask for a kind unguarded;
- * this is for the ones worth checking first.
- */
-const kindsOf = (stated) =>
-  Array.isArray(stated.changes.kinds) ? stated.changes.kinds.filter((kind) => typeof kind === "string") : [];
-
-/** A boolean the greeting may state outright; otherwise the minor decides. */
-function capability(stated, minorFloor, minor) {
-  if (typeof stated === "boolean") return stated;
-  return minor >= minorFloor;
-}
-
-function minorOf(version) {
-  const parts = String(version || "").split(".");
-  return Number(parts[1]) || 0;
-}
-
-/**
- * What this bridge can do, from the greeting and the minor version only.
- * A pre-alpha bridge (no `api_version`, read as `0.0.0`) gets every flag off
- * whatever else it claims: nothing before 1.0 is a contract.
- */
-export function capabilitiesOf(greeting, version) {
-  const stated = statedGreeting(greeting);
-  if (!stated)
-    return {
-      changes: { subscriptions: false, kinds: [] },
-      requests: { priority: false },
-      errors: { codes: false },
-      diffs: { perFile: false },
-      issues: { attachments: false, watching: false },
-      conversations: { settings: false },
-    };
-  const minor = minorOf(version);
-  return {
-    changes: { subscriptions: capability(stated.changes.subscriptions, 1, minor), kinds: kindsOf(stated) },
-    requests: { priority: capability(stated.requests.priority, 1, minor) },
-    errors: { codes: capability(stated.errors.codes, 1, minor) },
-    // `git.changeset_diff`, and the per-file counts and keys a stack drawn
-    // without hunks needs (1.4). The greeting states nothing about it, so the
-    // minor is the whole of the answer — and a surface that asked a 1.3 bridge
-    // for hunks per file would draw a stack of files that never load.
-    diffs: { perFile: minor >= 4 },
-    // Files on an issue (1.8). A bridge that has them says so outright; the
-    // minor answers for one that predates the flag but not the verbs.
-    issues: {
-      attachments: capability(stated.issues.attachments, 8, minor),
-      // Watching, and the read marks that go with it (1.9). Stated outright for
-      // the same reason attachments are: a switch wired to a verb the bridge has
-      // never heard of can only refuse, and the read mark would produce one
-      // refusal per glance at an issue.
-      //
-      // It sits in the issues group and covers `conversation.watch` too, which
-      // is a naming stretch — the two verbs ship together in 1.9 and are one
-      // capability, so one flag answers for both.
-      watching: capability(stated.issues?.watching, 9, minor),
+    changes: {
+      subscriptions,
+      kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
     },
-    // `conversation.settings`, the threshold one conversation compacts at
-    // (1.10). The greeting states nothing about it, so the minor answers alone,
-    // as it does for hunks per file.
-    conversations: { settings: minor >= 10 },
+    requests: { priority: names.has("requests.priority") },
+    errors: { codes: names.has("errors.codes") },
+    diffs: { perFile: names.has("diffs.perFile") },
+    issues: {
+      context: names.has("issues.context"),
+      attachments: names.has("issues.attachments"),
+      watching: names.has("issues.watching"),
+    },
+    conversations: { settings: names.has("conversations.settings") },
+    messages: { context: names.has("messages.context") },
+    threads: { postOperations: names.has("threads.postOperations") },
   };
 }
 

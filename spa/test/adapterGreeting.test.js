@@ -12,8 +12,10 @@ const NONE = {
   requests: { priority: false },
   errors: { codes: false },
   diffs: { perFile: false },
-  issues: { attachments: false, watching: false },
+  issues: { attachments: false, watching: false, context: false },
   conversations: { settings: false },
+  messages: { context: false },
+  threads: { postOperations: false },
 };
 
 const greeting11 = () => ({
@@ -56,8 +58,10 @@ describe("the adapter a greeting selects", () => {
       diffs: { perFile: false },
       // Files on an issue arrived in 1.8; a 1.2 bridge carries none, and
       // watching (1.9) is the same story one minor later.
-      issues: { attachments: false, watching: false },
+      issues: { attachments: false, watching: false, context: false },
       conversations: { settings: false },
+      messages: { context: false },
+      threads: { postOperations: false },
     });
   });
 

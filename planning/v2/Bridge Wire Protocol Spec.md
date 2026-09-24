@@ -519,6 +519,9 @@ has been seen in `bridge.stats` for a month.
   field's meaning or type changed, an enum documented as closed extended.
   The `plan.*` aliases over `issue.*` (`app/rpc.rs`, `alias_param`) are the
   kind of thing a major retires.
+- **Release cadence**: one minor number covers all additive wire changes in
+  a release. Do not advance the minor separately for each new verb, field, or
+  capability. A breaking change advances the major.
 - The bridge serves the current major and the previous major until the
   later of 90 days after the new major ships or `bridge.stats` showing no
   session on the old one for 30 days.
@@ -593,6 +596,49 @@ the typed result byte-for-byte after canonical ordering; a method with no
 fixture fails the test; a fixture with no method fails the test.
 `API_VERSION` must equal `versions.json`'s `current`.
 
+Since 1.22.0, `session.hello` also returns a flat `capabilities` array of
+strings. Every served verb appears under its exact method name (for example,
+`issues.attach`); a QA-only verb appears only on a QA bridge. Cross-verb
+behavior or response shapes use feature names: `changes.subscriptions`,
+`requests.priority`, `errors.codes`, `diffs.perFile`,
+`issues.attachments`, `issues.context`, `issues.watching`, `conversations.settings`,
+`changes.bodies`, `requests.receipts`, `messages.context`,
+`threads.postOperations`, `settings.roleModels`, `settings.projectAgent`,
+`agents.names`, and `messages.fromAgent`. The method registry supplies typed
+verb names, and a small explicit list supplies legacy and session-scoped
+verbs. Contract tests require every method fixture to have an announced
+name and compare an actual `session.hello` reply with that registry. The
+existing `events` array and all earlier greeting fields remain present.
+
+For a greeting at 1.22.0 or newer, the array is authoritative: an absent
+name means the client must leave that feature or verb unavailable, even when
+the minor version would otherwise suggest it. For older 1.x greetings with
+no array, the v1 adapter keeps the historical feature mapping below. An
+explicit older nested boolean wins over the version default when present.
+Unknown names are ignored. A missing or malformed list on 1.22+ enables no
+features; a valid list on an older bridge also takes precedence over fallback.
+The older `messages.context` and `threads.postOperations` flags come from
+`message_context.version == 1` and `thread_post_operations.version == 1`
+(with a string `status_method`), respectively, rather than an inferred minor.
+Those historical checks live beside the minor mapping in the adapter's one
+legacy table; do not extend that table for new features.
+
+| Feature name | Historical first minor |
+| --- | --- |
+| `changes.subscriptions` | 1.1.0 |
+| `requests.priority` | 1.1.0 |
+| `errors.codes` | 1.1.0 |
+| `diffs.perFile` | 1.4.0 |
+| `issues.context` | 1.5.0 |
+| `issues.attachments` | 1.8.0 |
+| `issues.watching` | 1.9.0 |
+| `conversations.settings` | 1.10.0 |
+
+When adding a verb, register it in its typed family or the small explicit
+legacy list, add its method fixture, and let the greeting enumerate it. When
+adding a cross-verb feature, add its name to the feature list and greeting
+fixture. Update `API_VERSION` and `versions.json` once for the release.
+
 SPA test (`spa/test/apiContract.test.js`): the v1 adapter parses every
 fixture's `result` and every event example without throwing, and its
 declared range admits `versions.json`'s `current`. The same fixture, two
@@ -630,8 +676,9 @@ v1/index.js   { range: ">=1.0.0 <2.0.0", create(call, greeting) }
 ```
 
 `create` returns `{ call, capabilities, events }` where `capabilities` is
-derived from the greeting and the minor version, never from probing:
-`changes.subscriptions`, `requests.priority`, `errors.codes`. Surfaces and
+derived from the greeting's announced names. For older bridges without the
+array, the adapter uses the fixed historical minor mapping above and older
+nested flags, never method-refusal probing. Surfaces and
 repositories ask `capabilities`, never the version string. The adapter also
 owns error normalisation: a reply with `error_code` becomes an `ApiError`
 with that code; one without becomes `ApiError("unknown")` carrying the

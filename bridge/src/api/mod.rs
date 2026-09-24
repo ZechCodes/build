@@ -2,8 +2,8 @@
 //!
 //! One number for the whole wire: what `session.hello` and `ping` report, and
 //! what a client's declared `api_range` is measured against. Semver, per the
-//! wire spec (Part 2): a patch changes nothing on the wire, a minor only adds,
-//! a major is the only thing that removes or reshapes.
+//! wire spec (Part 2): a patch changes nothing on the wire, one minor covers
+//! all additive wire changes in a release, and a major removes or reshapes.
 //!
 //! [`v1`] owns the shape of every verb it serves; [`ApiError`] is the closed
 //! set of ways a verb refuses.
@@ -12,13 +12,71 @@ pub mod clients;
 pub mod v1;
 
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.21.0";
+pub const API_VERSION: &str = "1.22.0";
+
+/// Verbs served outside the typed v1 table. Keep this list beside the
+/// capability builder so the greeting cannot silently omit a legacy verb.
+pub const LEGACY_METHODS: &[&str] = &[
+    "agent.attach",
+    "agent.interrupt",
+    "agent.start",
+    "bridge.stats",
+    "ping",
+    "rtc.close",
+    "rtc.ice",
+    "rtc.offer",
+    "session.hello",
+    "term.ack",
+    "term.attach",
+    "term.close",
+    "term.create",
+    "term.input",
+    "term.list",
+    "term.resize",
+];
+
+/// Fixture-backed verbs served only by a bridge started in QA mode.
+pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state"];
+
+/// Cross-verb wire features whose availability cannot be expressed by a
+/// single method name. The SPA consumes a subset as shape and behavior gates.
+pub const FEATURE_CAPABILITIES: &[&str] = &[
+    "agents.names",
+    "changes.bodies",
+    "changes.subscriptions",
+    "conversations.settings",
+    "diffs.perFile",
+    "errors.codes",
+    "issues.attachments",
+    "issues.context",
+    "issues.watching",
+    "messages.context",
+    "messages.fromAgent",
+    "requests.priority",
+    "requests.receipts",
+    "settings.projectAgent",
+    "settings.roleModels",
+    "threads.postOperations",
+];
+
+/// Everything this bridge can serve on a session, as exact method names and
+/// explicit feature names. Sorting and deduplication make the greeting stable.
+pub fn capabilities(qa_agent: bool) -> Vec<&'static str> {
+    let mut names: BTreeSet<&'static str> = v1::methods().iter().map(|(name, _)| *name).collect();
+    names.extend(LEGACY_METHODS.iter().copied());
+    names.extend(FEATURE_CAPABILITIES.iter().copied());
+    if qa_agent {
+        names.extend(QA_METHODS.iter().copied());
+    }
+    names.into_iter().collect()
+}
 
 /// Why a verb refused, as the wire spells it (step 2.4). A closed enum: a new
-/// variant is a minor bump, and a client that meets a code it does not know
-/// treats it as `internal`.
+/// variant joins the next release's minor version, and a client that meets a
+/// code it does not know treats it as `internal`.
 ///
 /// `error` on the wire stays the message string in 1.x; the code, whether a
 /// retry could succeed, and any structured detail ride beside it.

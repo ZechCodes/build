@@ -12,7 +12,12 @@
 //! A handler signature never mentions `serde_json::Value` — the test at the
 //! bottom scans the family files for one. An implementation change that
 //! alters a shape is a change to a type here, which is a change to a fixture
-//! under `fixtures/api/v1/`, which is a version bump.
+//! under `fixtures/api/v1/` and, for an additive feature, its announced name.
+//! Additive features share a release's minor version: do not bump for each
+//! verb or field independently. Only a breaking removal or shape change
+//! requires a new major. `session.hello.capabilities` lists each registered
+//! verb by this table's exact name and names cross-verb wire features; the
+//! contract test prevents a fixture verb from lacking a capability.
 //!
 //! NOT here, by design: `session.hello`, `ping`, `bridge.stats`, `term.*`,
 //! `rtc.*`, `agent.attach`, `agent.start` and `agent.interrupt`. Each needs

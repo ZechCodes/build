@@ -25,7 +25,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
 use crate::harness::{AgentSession, AgentStatus, HarnessError, TerminalView, Turn};
-use crate::priority::{ChildKind, ChildPlacement};
+use crate::priority::{ChildKind, ChildPlacement, Launch};
 
 /// Resolve `binary` the way a shell would, against the daemon's PATH (or the
 /// spec's own override). We do this rather than leaving it to portable-pty:
@@ -297,42 +297,20 @@ pub struct PtySession {
     compaction_sidecar: Option<PathBuf>,
 }
 
-/// Why one attempt at starting the child did not produce a running child.
-enum SpawnRefused {
-    /// The PTY could not spawn the command at all.
-    Session(String),
-    /// `systemd-run` was the command, and it exited with this status before
-    /// the child could have done anything: the scope, not the child, failed.
-    ScopeDied(String),
-}
-
-impl SpawnRefused {
-    fn into_error(self) -> HarnessError {
-        match self {
-            SpawnRefused::Session(message) | SpawnRefused::ScopeDied(message) => {
-                HarnessError::Session(message)
-            }
-        }
-    }
-}
-
-/// How long a scoped spawn is watched for `systemd-run` dying at birth. A
-/// manager that refuses answers in a few milliseconds; a child that is still
-/// running after this is the child, not the wrapper.
-const SCOPE_BIRTH_WATCH: Duration = Duration::from_millis(200);
-
-/// Start `binary` with `spec`'s arguments and environment on `slave`, placed
-/// as `placement` says, and lowered as its kind says.
+/// Start `binary` with `spec`'s arguments and environment on `slave`, at a
+/// gate, and place it as `placement` says before it runs (`crate::priority`):
+/// the one spawn there is, whatever the placement comes to.
 fn spawn_child(
     slave: &dyn portable_pty::SlavePty,
     spec: &HarnessSpec,
     binary: &std::path::Path,
     cwd: Option<&std::path::Path>,
     placement: &ChildPlacement,
-) -> Result<Box<dyn Child + Send + Sync>, SpawnRefused> {
-    let (program, args) = placement.command(spec.kind, binary, &spec.args);
-    let mut cmd = CommandBuilder::new(program);
-    cmd.args(&args);
+) -> Result<Box<dyn Child + Send + Sync>, HarnessError> {
+    let launch = Launch::gated(binary, &spec.args)
+        .map_err(|error| HarnessError::Session(error.to_string()))?;
+    let mut cmd = CommandBuilder::new(&launch.program);
+    cmd.args(&launch.args);
     for key in &spec.unset {
         cmd.env_remove(key);
     }
@@ -344,31 +322,23 @@ fn spawn_child(
     }
     let mut child = slave
         .spawn_command(cmd)
-        .map_err(|e| SpawnRefused::Session(e.to_string()))?;
-    if let Some(pid) = child.process_id() {
-        placement.lower(spec.kind, pid);
-    }
-    if placement.is_scoped() {
-        if let Some(status) = died_at_birth(&mut *child) {
-            return Err(SpawnRefused::ScopeDied(status));
+        .map_err(|e| HarnessError::Session(e.to_string()))?;
+    let Some(pid) = child.process_id() else {
+        return Err(HarnessError::Session("the spawned child has no pid".into()));
+    };
+    let placed = placement.place(launch.gate, spec.kind, pid, &mut || {
+        matches!(child.try_wait(), Ok(None))
+    });
+    match placed.released {
+        Ok(()) => Ok(child),
+        Err(reason) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(HarnessError::Session(format!(
+                "the child never ran: {reason}"
+            )))
         }
     }
-    Ok(child)
-}
-
-/// Whether `child` exited unsuccessfully inside [`SCOPE_BIRTH_WATCH`]. A
-/// child that exits successfully that fast ran and finished; one still alive
-/// is the child itself.
-fn died_at_birth(child: &mut dyn Child) -> Option<String> {
-    let deadline = Instant::now() + SCOPE_BIRTH_WATCH;
-    while Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(status)) if !status.success() => return Some(status.to_string()),
-            Ok(Some(_)) | Err(_) => return None,
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-        }
-    }
-    None
 }
 
 impl PtySession {
@@ -417,25 +387,7 @@ impl PtySession {
             .map_err(|e| HarnessError::Session(e.to_string()))?;
 
         let binary = resolve_binary(spec)?;
-        let child = match spawn_child(&*pair.slave, spec, &binary, cwd.as_deref(), &placement) {
-            Ok(child) => child,
-            // The scope is a convenience the user's systemd extends; the spawn
-            // is the thing that must happen. A `systemd-run` that dies at
-            // birth is retired for the process and this child is started
-            // again as itself, niced.
-            Err(SpawnRefused::ScopeDied(status)) => {
-                ChildPlacement::demote(&format!("systemd-run exited {status} at a spawn"));
-                spawn_child(
-                    &*pair.slave,
-                    spec,
-                    &binary,
-                    cwd.as_deref(),
-                    &ChildPlacement::NiceOnly,
-                )
-                .map_err(SpawnRefused::into_error)?
-            }
-            Err(refused) => return Err(refused.into_error()),
-        };
+        let child = spawn_child(&*pair.slave, spec, &binary, cwd.as_deref(), &placement)?;
         // Close the slave in the parent so EOF propagates when the child exits.
         drop(pair.slave);
 
@@ -1730,13 +1682,12 @@ mod tests {
         );
     }
 
-    /// A spec that prints the nice it runs at, then waits to be reaped. It
-    /// reads its nice after a pause: the daemon lowers the child right after
-    /// the spawn returns, and a child that forks `nice` in its first
-    /// millisecond can beat that call on a loaded machine.
+    /// A spec that prints the nice it runs at the moment it starts, then
+    /// waits to be reaped. No pause first: the child is lowered at its gate,
+    /// before it runs a thing, so its first fork already sees the nice.
     fn nice_reporting_spec() -> HarnessSpec {
         let mut spec = HarnessSpec::new("sh");
-        spec.args = vec!["-c".into(), "sleep 0.3; echo NICE=$(nice); sleep 2".into()];
+        spec.args = vec!["-c".into(), "echo NICE=$(nice); sleep 2".into()];
         spec
     }
 
@@ -1747,13 +1698,25 @@ mod tests {
         after.chars().take_while(|c| c.is_ascii_digit()).collect()
     }
 
-    /// A stand-in for `systemd-run` that does what the real one does once the
-    /// scope exists: exec the command after the `--`.
-    fn fake_systemd_run(dir: &std::path::Path, body: &str) -> ChildPlacement {
-        let path = dir.join("systemd-run");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    /// A stand-in for `busctl` that refuses every scope, and a placement that
+    /// uses it with deadlines a test can wait out.
+    fn refusing_busctl(dir: &std::path::Path) -> ChildPlacement {
+        let path = dir.join("busctl");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho 'Failed to connect to bus: No such file or directory' >&2\nexit 1\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        ChildPlacement::TransientScope { systemd_run: path }
+        ChildPlacement::TransientScope {
+            busctl: path,
+            systemctl: None,
+            bound_to: None,
+            deadlines: crate::priority::ScopeDeadlines {
+                call: Duration::from_millis(500),
+                arrival: Duration::from_millis(200),
+            },
+        }
     }
 
     /// The one thing every agent child has in common, whatever else its
@@ -1791,30 +1754,25 @@ mod tests {
         );
     }
 
-    /// The scoped path, through a `systemd-run` that behaves: the command
-    /// after `--` runs, on the PTY, lowered.
+    /// The fallback, seen from the terminal: a manager that refuses the scope
+    /// costs the child nothing but the scope. It runs once, niced, and the
+    /// terminal shows the child's own output and not a word of the refusal,
+    /// which went to the daemon's log.
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn a_scoped_agent_runs_the_command_after_the_double_dash() {
+    async fn a_refused_scope_is_silent_on_the_terminal_and_the_child_runs_niced() {
         let dir = tempfile::tempdir().unwrap();
-        let placement = fake_systemd_run(
-            dir.path(),
-            "while [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\"",
+        let placement = refusing_busctl(dir.path());
+        let session =
+            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap();
+        let mut output = session.subscribe();
+        let seen = read_until(&mut output, "NICE=").await;
+        assert!(
+            !seen.contains("Failed") && !seen.contains("bus"),
+            "the refusal reached the terminal: {seen:?}"
         );
-        let session =
-            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap();
-        assert_eq!(reported_nice(&session).await, agent_nice());
-    }
-
-    /// The fallback: a `systemd-run` that dies at birth costs the child
-    /// nothing but its scope. It is started again as itself, niced.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn a_systemd_run_that_dies_at_birth_never_fails_the_spawn() {
-        let dir = tempfile::tempdir().unwrap();
-        let placement = fake_systemd_run(dir.path(), "echo 'Failed to connect to bus' >&2; exit 1");
-        let session =
-            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap();
-        assert_eq!(reported_nice(&session).await, agent_nice());
+        let after = seen.split("NICE=").nth(1).unwrap_or_default();
+        let nice: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert_eq!(nice, agent_nice());
     }
 }

@@ -2,12 +2,13 @@ use std::collections::VecDeque;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use super::limits::{ProcessLimits, StderrRetention};
 use crate::harness::HarnessError;
+use crate::priority::ChildPlacement;
 use crate::pty::HarnessSpec;
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -103,19 +104,25 @@ impl AppServerProcess {
         limits: ProcessLimits,
         events: TerminalEventSink,
     ) -> Result<(AppServerProcess, ConnectionPipes), HarnessError> {
-        let mut command = Command::new(crate::pty::resolve_binary(spec)?);
-        command.args(&spec.args).current_dir(root);
-        for key in &spec.unset {
-            command.env_remove(key);
-        }
-        for (key, value) in &spec.env {
-            command.env(key, value);
-        }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let binary = crate::pty::resolve_binary(spec)?;
+        // Placed the way every child of the daemon is (`crate::priority`):
+        // in a scope of its own behind the daemon and the user's apps where
+        // the user's systemd answers, niced everywhere, before it runs a
+        // thing — the same gate a terminal's child goes through.
+        let mut child =
+            ChildPlacement::current().spawn_command(spec.kind, &binary, &spec.args, |command| {
+                command.current_dir(&root);
+                for key in &spec.unset {
+                    command.env_remove(key);
+                }
+                for (key, value) in &spec.env {
+                    command.env(key, value);
+                }
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+            })?;
         let stdin = child
             .stdin
             .take()

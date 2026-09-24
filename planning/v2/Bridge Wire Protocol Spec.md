@@ -614,7 +614,9 @@ actual `session.hello` reply with that registry. The existing `events` array
 and all earlier greeting fields remain present.
 
 The latter six names describe additions to existing verbs, so the verb names
-alone cannot establish whether a bridge provides them:
+alone cannot establish whether a bridge provides them. These six names are
+announce-only for the current SPA: it does not gate any behavior on them yet.
+They describe bridge support for clients that choose to consume them:
 
 | Feature name | Shape or behavior announced | First available |
 | --- | --- | --- |
@@ -625,13 +627,16 @@ alone cannot establish whether a bridge provides them:
 | `issues.agentIdentities` | Durable `identities` map on issue views | 1.16.0 |
 | `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
 
-For a greeting at 1.22.0 or newer, the array is authoritative: an absent
-name means the client must leave that feature or verb unavailable, even when
-the minor version would otherwise suggest it. For older 1.x greetings with
-no array, the v1 adapter keeps the historical feature mapping below. An
+For a greeting at 1.22.0 or newer, the array is authoritative for the feature
+gates implemented by the current SPA adapter: an absent name leaves its
+corresponding capability flag off, even when the minor version would otherwise
+suggest it. Announcing other feature or verb names does not create new SPA
+gates; the six names above are announcements only. For older 1.x greetings
+with no array, the v1 adapter keeps the historical feature mapping below. An
 explicit older nested boolean wins over the version default when present.
-Unknown names are ignored. A missing or malformed list on 1.22+ enables no
-features; a valid list on an older bridge also takes precedence over fallback.
+Unknown names are ignored. A missing or malformed list on 1.22+ enables none
+of the adapter's feature flags; a valid list on an older bridge also takes
+precedence over fallback.
 The older `messages.context` and `threads.postOperations` flags come from
 `message_context.version == 1` and `thread_post_operations.version == 1`
 (with a string `status_method`), respectively, rather than an inferred minor.

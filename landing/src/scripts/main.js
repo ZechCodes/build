@@ -7,9 +7,9 @@
 // visitors film-boot.js chose. Phones, reduced motion, save-data and
 // machines without WebGL keep the document.
 
-// The document's cue to stop: an act's copy comes in as the act reaches the
-// upper part of the window, once (landing.css). Acts already there are
-// marked before the copy is hidden, so nothing on screen blinks.
+// The document's copy comes in as its act comes into view, once
+// (landing.css). Acts already in view are marked before the copy is hidden,
+// so nothing on screen blinks.
 function watchActArrivals() {
   const acts = [...document.querySelectorAll("[data-act]")];
   const arrive = (act) => { act.dataset.arrived = ""; };
@@ -17,7 +17,7 @@ function watchActArrivals() {
     acts.forEach(arrive);
     return;
   }
-  const line = innerHeight * 0.65;
+  const line = innerHeight * 0.9;
   const waiting = acts.filter((act) => {
     if (act.getBoundingClientRect().top >= line) return true;
     arrive(act);
@@ -29,7 +29,7 @@ function watchActArrivals() {
       arrive(entry.target);
       observer.unobserve(entry.target);
     }
-  }, { rootMargin: "0px 0px -35% 0px" });
+  }, { rootMargin: "0px 0px -10% 0px" });
   waiting.forEach((act) => observer.observe(act));
 }
 

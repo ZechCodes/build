@@ -57,38 +57,36 @@ function query(root, selector) {
   return element;
 }
 
-// An act's copy comes in as the playhead reaches its resting point and goes
-// as it leaves; both on the clock, both undone by scrolling back over them.
 function copyItems(act) {
   const copy = query(act, ".act__copy");
   return [...copy.children].filter((child) => !child.matches("[data-beat]"));
-}
-
-// One tween per act's copy at a time: the next move kills the last by its
-// handle, since a staggered tween does not go when asked by target.
-function showCopy(copy, instant, fromY = 28) {
-  copy.tween?.kill();
-  copy.tween = instant
-    ? gsap.set(copy.items, { autoAlpha: 1, y: 0 })
-    : gsap.fromTo(copy.items, { autoAlpha: 0, y: fromY }, { autoAlpha: 1, y: 0, duration: 0.7, stagger: 0.06, ease: "power2.out" });
-}
-
-function hideCopy(copy, instant, toY) {
-  copy.tween?.kill();
-  copy.tween = gsap.to(copy.items, { autoAlpha: 0, y: toY, duration: instant ? 0 : 0.35, ease: "power2.in" });
 }
 
 // Where an act is left: a little past its resting point, so the ease onto
 // the resting point never counts as leaving.
 const leaveAt = (actId) => between(actId, 0.03);
 
-function copyGates(gates, acts) {
+// An act's copy is on the scroll: it comes in over the last stretch of the
+// move into the act, so a visitor still scrolling sees it arrive and knows
+// to stop, and goes early in the move out. Between the two, mid-move, the
+// devices have the stage to themselves. Act 8's first copy beat comes in
+// with its copy; its beat brings the second.
+const COPY_IN = [0.6, 0.95];
+const COPY_OUT = [0.1, 0.35];
+
+function copyTimeline(tl, acts) {
   for (const act of ACTS) {
-    const copy = { items: copyItems(acts[act.id - 1]), tween: null };
-    // The hero's copy is on the page from the first paint; only leaving and
-    // coming back move it.
-    if (act.id !== 1) gates.add(arrivalAt(act.id), (instant) => showCopy(copy, instant), () => hideCopy(copy, false, 28));
-    if (act.id !== ACTS.length) gates.add(leaveAt(act.id), (instant) => hideCopy(copy, instant, -18), () => showCopy(copy, false, -18));
+    const element = acts[act.id - 1];
+    const items = copyItems(element);
+    if (act.id === ACTS.length) items.push(query(element, '[data-beat="a"]'));
+    if (act.id !== 1) {
+      const [from, to] = COPY_IN.map((fraction) => between(act.id - 1, fraction));
+      tl.fromTo(items, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: (to - from) * 0.8, stagger: { amount: (to - from) * 0.2 }, ease: "power2.out", immediateRender: false }, from);
+    }
+    if (act.id !== ACTS.length) {
+      const [from, to] = COPY_OUT.map((fraction) => between(act.id, fraction));
+      tl.fromTo(items, { autoAlpha: 1, y: 0 }, { autoAlpha: 0, y: -18, duration: to - from, ease: "power2.in", immediateRender: false }, from);
+    }
   }
 }
 
@@ -120,7 +118,7 @@ function createBeats({ scenes, heroPush, panels, act8 }) {
   const a = query(act8, '[data-beat="a"]');
   const b = query(act8, '[data-beat="b"]');
   const closing = gsap.timeline({ paused: true });
-  closing.fromTo(a, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 0.8, ease: "power2.out" }, 0);
+  // The first copy beat is the scroll's; the beat holds it, then gives way.
   closing.to(a, { autoAlpha: 0, y: -18, duration: 0.4, ease: "power2.in" }, 3.2);
   closing.fromTo(b, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 1.2, ease: "power2.out" }, 3.8);
   beats[8] = closing;
@@ -161,7 +159,7 @@ function createBeatPlayer(beats) {
   };
 }
 
-// Reaching an act's resting point plays its beat, the first time; after
+// Reaching an act's resting point, with its copy fully in, plays its beat, the first time; after
 // that, or on a page that opens there, the act is shown finished. Leaving,
 // either way, finishes a beat still playing, so an act is always finished
 // when the visitor comes back to it; leaving forward also plays the
@@ -308,7 +306,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   const heroPush = { t: 0 };
   const { beats, offsets } = createBeats({ scenes, heroPush, panels: overlays.panels, act8: acts[ACTS.length - 1] });
   const player = createBeatPlayer(beats);
-  copyGates(gates, acts);
+  copyTimeline(tl, acts);
   beatGates(gates, player, departures);
   // The scrub maps scroll onto the timeline's whole duration; the last beat
   // does not run to the end of act 8, so hold the clock open to it.

@@ -166,9 +166,8 @@ html:not([data-mode="film"]) body {
 
 /* The document's rhythm, the film's without the stage: the scroll eases onto
    an act's start when the visitor stops near it, and the act's copy comes
-   in as the act reaches the upper part of the window. That arrival is the
-   cue to stop. main.js marks each act as it arrives, once; without script
-   the copy is simply there. */
+   in as the act comes into view. main.js marks each act as it arrives,
+   once; without script the copy is simply there. */
 html:not([data-mode]) {
   scroll-snap-type: y proximity;
 }

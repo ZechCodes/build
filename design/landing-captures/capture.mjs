@@ -37,8 +37,11 @@ const requestedStates = process.env.CAPTURE_STATES
   : null;
 const captureResults = [];
 
+// Quality 80: the app's layout is denser than the storyboard's was, and at 80
+// the thirteen screens the film draws weigh what they did before, with the
+// text as sharp as at 88.
 const resizeWebp = (source, destination, width, height) => new Promise((resolvePromise, reject) => {
-  const imageMagick = spawn("magick", [source, "-resize", `${width}x${height}!`, "-quality", "88", destination], { stdio: "inherit" });
+  const imageMagick = spawn("magick", [source, "-resize", `${width}x${height}!`, "-quality", "80", destination], { stdio: "inherit" });
   imageMagick.once("error", reject);
   imageMagick.once("exit", (code) => code === 0 ? resolvePromise() : reject(new Error(`ImageMagick exited with ${code}`)));
 });

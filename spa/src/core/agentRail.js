@@ -132,7 +132,7 @@ import {
 import { createActivityRuns } from "./activityRuns.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
 import { wireExpansionReveal } from "./revealExpanded.js";
-import { runDigestToFetch } from "./activityDigest.js";
+import { digestCovering, runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
@@ -2358,11 +2358,18 @@ function mountRailOnContext(host, context, swap) {
   const drawDownTo = (sequence) => {
     const body = host.querySelector("#rail-body");
     const wanted = Number(sequence);
-    if (!body || !Number.isFinite(wanted)) return;
-    if (activityRunKeyAt(body, wanted) || body.querySelector(`.thread-items [data-sequence="${wanted}"]`)) return;
-    timelineSlice.reachDown(wanted);
+    if (!body || !Number.isFinite(wanted) || isDrawn(body, wanted)) return;
+    const heldFrom = threadCache.windowFloorSequence() ?? wanted;
+    // Older than anything held, it has no row to draw down to, unless it sits
+    // in the cut half of a run the window starts inside.
+    if (wanted < heldFrom && !digestCovering(paintedDigests, wanted)) return;
+    timelineSlice.reachDown(Math.max(wanted, heldFrom));
     paintChat({ olderItemsPrepended: true });
   };
+
+  /// Whether `sequence` has a row on the timeline, or a run drawn to fold it.
+  const isDrawn = (body, sequence) =>
+    !!activityRunKeyAt(body, sequence) || !!body.querySelector(`.thread-items [data-sequence="${sequence}"]`);
 
   const readOlderItems = async () => {
     const request = olderReadRequest();

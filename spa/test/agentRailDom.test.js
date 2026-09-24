@@ -5806,3 +5806,32 @@ describe("a long conversation held in the cache", () => {
     expect(floor).toBe(drawnSequences()[0]);
   });
 });
+
+describe("a deep link past everything the cache holds", () => {
+  const said = (sequence) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body: `said ${sequence}` } });
+
+  it("draws nothing more for a call the cache never held, and says so", async () => {
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] } })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: Array.from({ length: 300 }, (_, index) => said(index + 101)),
+          has_more: true,
+          thread_total: 400,
+          thread_last_sequence: 400,
+        },
+      },
+    });
+    await mount();
+    const drawn = railHost().querySelectorAll(".thread-items > [data-sequence]").length;
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(railHost().querySelectorAll(".thread-items > [data-sequence]")).toHaveLength(drawn);
+    expect(notifyError).toHaveBeenCalledWith("That call is not in the loaded conversation", expect.any(String));
+  });
+});

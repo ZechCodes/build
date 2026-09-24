@@ -604,11 +604,26 @@ behavior or response shapes use feature names: `changes.subscriptions`,
 `issues.attachments`, `issues.context`, `issues.watching`, `conversations.settings`,
 `changes.bodies`, `requests.receipts`, `messages.context`,
 `threads.postOperations`, `settings.roleModels`, `settings.projectAgent`,
-`agents.names`, and `messages.fromAgent`. The method registry supplies typed
-verb names, and a small explicit list supplies legacy and session-scoped
-verbs. Contract tests require every method fixture to have an announced
-name and compare an actual `session.hello` reply with that registry. The
-existing `events` array and all earlier greeting fields remain present.
+`agents.names`, `messages.fromAgent`, `messages.issueNotices`,
+`board.usageLimits`, `threads.newestDeltaPagination`,
+`issues.commentUserMentions`, `issues.agentIdentities`, and
+`issues.attachmentChunks`. The method registry supplies typed verb names,
+and a small explicit list supplies legacy and session-scoped verbs. Contract
+tests require every method fixture to have an announced name and compare an
+actual `session.hello` reply with that registry. The existing `events` array
+and all earlier greeting fields remain present.
+
+The latter six names describe additions to existing verbs, so the verb names
+alone cannot establish whether a bridge provides them:
+
+| Feature name | Shape or behavior announced | First available |
+| --- | --- | --- |
+| `messages.issueNotices` | Structured `issue_notice` on thread messages | 1.6.0 |
+| `board.usageLimits` | `usage_limits` rows in `board.list` | 1.11.0 |
+| `threads.newestDeltaPagination` | `thread.page` accepts `newest` with `after_sequence` to return the newest page of a delta | 1.12.0 |
+| `issues.commentUserMentions` | `mentions_user` on issue comments | 1.13.0 |
+| `issues.agentIdentities` | Durable `identities` map on issue views | 1.16.0 |
+| `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative: an absent
 name means the client must leave that feature or verb unavailable, even when

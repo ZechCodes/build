@@ -45,20 +45,26 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
     "agents.names",
+    "board.usageLimits",
     "changes.bodies",
     "changes.subscriptions",
     "conversations.settings",
     "diffs.perFile",
     "errors.codes",
+    "issues.agentIdentities",
+    "issues.attachmentChunks",
     "issues.attachments",
+    "issues.commentUserMentions",
     "issues.context",
     "issues.watching",
     "messages.context",
     "messages.fromAgent",
+    "messages.issueNotices",
     "requests.priority",
     "requests.receipts",
     "settings.projectAgent",
     "settings.roleModels",
+    "threads.newestDeltaPagination",
     "threads.postOperations",
 ];
 

@@ -150,7 +150,7 @@ function legacyNames(greeting, version) {
 /** An absent or malformed list on 1.22+ claims nothing. On older bridges only,
  *  the historical booleans and minor supply names when there is no list. */
 function namesOf(greeting, version) {
-  if (!greeting?.api_version || !satisfies(version, ">=1.0.0 <2.0.0")) return new Set();
+  if (typeof greeting?.api_version !== "string" || !satisfies(version, ">=1.0.0 <2.0.0")) return new Set();
   if (Object.hasOwn(greeting, "capabilities")) {
     return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
   }
@@ -197,7 +197,8 @@ function eventsOf(greeting) {
  * @param greeting the `session.hello` reply this adapter was selected for.
  */
 export function create(call, greeting) {
-  const version = String(greeting?.api_version || "0.0.0");
+  const reported = greeting?.api_version;
+  const version = typeof reported === "string" && reported ? reported : "0.0.0";
   // Forwarded verbatim, arity and all: the session's own `call` reads an
   // options argument only when one was passed.
   const wrapped = async (...args) => {

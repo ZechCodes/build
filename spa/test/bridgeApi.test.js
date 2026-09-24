@@ -236,6 +236,21 @@ describe("named capabilities", () => {
     issues: { attachments: true, watching: true },
   });
 
+  it("rejects non-string API versions before accepting legacy flags or names", () => {
+    const malformedVersions = [1.19, ["1.21.0"], ["1.22.0"], true, {}, { toString: () => "1.19.0" }];
+    for (const api_version of malformedVersions) {
+      for (const capabilities of [undefined, features]) {
+        const greeting = { ...namedGreeting(capabilities), api_version };
+        if (capabilities === undefined) delete greeting.capabilities;
+        const selected = selectAdapter(greeting);
+        expect(selected.version).toBe("0.0.0");
+        expect(selected.create(async () => ({})).version).toBe("0.0.0");
+        expect(flags(greeting)).toEqual([]);
+        expect(v1.capabilitiesOf(greeting)).toEqual(v1.capabilitiesOf(null));
+      }
+    }
+  });
+
   it("maps a 1.19 bridge without a list through the historical table", () => {
     expect(flags({ api_version: "1.19.0" })).toEqual(features.filter((name) => !["messages.context", "threads.postOperations"].includes(name)));
     expect(flags({

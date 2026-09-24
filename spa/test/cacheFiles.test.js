@@ -5,7 +5,7 @@
 // same — opened once, kept under the recent-files rule, and never re-read off
 // the wire while the cache holds it.
 
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -19,9 +19,9 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-// The `..` row above a listing is chrome, not an entry: it names neither.
-const treeNames = (host) =>
-  [...host.querySelectorAll(".fdir, .ffile")].map((row) => (row.dataset.dir || row.dataset.file || "").trim());
+// Every drawn row, by its path from the checkout's root.
+const treeNames = (host) => [...host.querySelectorAll(".fdir, .ffile")].map((row) => row.dataset.path);
+const rowFor = (host, path) => [...host.querySelectorAll(".frow[data-path]")].find((row) => row.dataset.path === path);
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
 
@@ -37,15 +37,24 @@ const fileAnswer = (over = {}) => ({
   ...over,
 });
 
+// Every mount of one checkout shares its tab record, so a mount a test left
+// standing would follow the next test's tabs and read with the wrong answers.
+const mounted = [];
+
 beforeEach(async () => {
   document.body.innerHTML = "";
   await wipeCache();
+});
+
+afterEach(() => {
+  mounted.splice(0).forEach((files) => files.dispose());
 });
 
 const mountFiles = (callRpc, { deviceId = "dev-1", ...rest } = {}) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const files = renderFilesTab(host, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeFor(deviceId), ...rest });
+  mounted.push(files);
   return { host, files };
 };
 
@@ -102,24 +111,39 @@ describe("the cached listing", () => {
     host.querySelector(".fdir").click();
     await settle();
 
-    expect(treeNames(host)).toEqual(["a.js"]);
+    expect(treeNames(host)).toEqual(["src", "src/a.js"]);
     expect(call.mock.calls.filter(([method]) => method === "fs.tree")).toHaveLength(1);
     const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" });
     expect(record.value.entries[0].name).toBe("a.js");
   });
 
-  it("asks once and no more: walking back into a directory reads what was written", async () => {
+  it("asks once and no more: expanding a directory again reads what was written", async () => {
     await seedTree("", [{ name: "src", kind: "dir" }]);
     const call = vi.fn(async (method, params) => ({ path: params.path, entries: [{ name: "a.js", kind: "file", size: 2 }] }));
     const { host } = mountFiles(call);
     await settle();
     host.querySelector(".fdir").click();
     await settle();
-    host.querySelector(".fup").click();
+    host.querySelector(".fdir").click();
+    await settle();
+    expect(treeNames(host)).toEqual(["src"]);
+    host.querySelector(".fdir").click();
+    await settle();
+    expect(treeNames(host)).toEqual(["src", "src/a.js"]);
+    expect(call.mock.calls.filter(([method]) => method === "fs.tree")).toHaveLength(1);
+  });
+
+  it("moves an expanded directory's rows when a push rewrites its record", async () => {
+    await seedTree("", [{ name: "src", kind: "dir" }]);
+    await seedTree("src", [{ name: "old.js", kind: "file", size: 1 }]);
+    const { host } = mountFiles(vi.fn(async () => ({ path: "", entries: [] })));
     await settle();
     host.querySelector(".fdir").click();
     await settle();
-    expect(call.mock.calls.filter(([method]) => method === "fs.tree")).toHaveLength(1);
+    expect(treeNames(host)).toEqual(["src", "src/old.js"]);
+    await seedTree("src", [{ name: "new.js", kind: "file", size: 1 }]);
+    await settle();
+    expect(treeNames(host)).toEqual(["src", "src/new.js"]);
   });
 
   it("says what went wrong when a directory nobody holds cannot be listed", async () => {
@@ -303,7 +327,7 @@ describe("a file body", () => {
     const { host } = mountFiles(call);
     await settle();
     for (const name of names) {
-      [...host.querySelectorAll(".ffile")].find((row) => row.dataset.file === `${name}.md`).click();
+      rowFor(host, `${name}.md`).click();
       await settle();
     }
     expect((await cachedSubKeys("dev-1", "run-1", "file")).sort()).toEqual(["c.md", "d.md", "e.md", "f.md", "g.md"]);

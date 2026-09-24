@@ -3,7 +3,6 @@ import {
   previewModeFor,
   previewHasSourceToggle,
   decodeBase64Text,
-  filesTreeHtml,
   sourcePreviewHtml,
   mediaPreviewHtml,
   previewPlaceholderHtml,
@@ -54,55 +53,8 @@ describe("previewHasSourceToggle", () => {
   });
 });
 
-// The tree pane interpolates untrusted repo file/dir names into row HTML —
-// this exercises the REAL row-building path (spec §9: an `<img src=x onerror>`
-// filename must render inert), not esc() in isolation.
-describe("filesTreeHtml", () => {
-  it("escapes hostile file/dir/symlink names in the rendered rows", () => {
-    const html = filesTreeHtml("", [
-      { kind: "dir", name: "<img src=x onerror=alert(1)>" },
-      { kind: "file", name: "<script>alert(2)</script>.txt", size: 3 },
-      { kind: "symlink", name: "<svg onload=alert(3)>" },
-    ]);
-    expect(html).not.toContain("<img");
-    expect(html).not.toContain("<script>");
-    expect(html).not.toContain("<svg");
-    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
-    expect(html).toContain("&lt;script&gt;alert(2)&lt;/script&gt;.txt");
-  });
-
-  it("a quoted filename cannot break out of the data-dir/data-file attributes", () => {
-    const html = filesTreeHtml("", [
-      { kind: "dir", name: 'd" onmouseover="alert(1)' },
-      { kind: "file", name: 'f" onfocus="alert(2)', size: 1 },
-    ]);
-    expect(html).not.toContain('onmouseover="alert(1)"');
-    expect(html).not.toContain('onfocus="alert(2)"');
-    expect(html).toContain("&quot;");
-  });
-
-  it("gives every name a box of its own to truncate inside", () => {
-    // The tree column is a fixed width that gives ground rather than growing,
-    // so a name with no break opportunity has to ellipsize — which needs an
-    // element, not a bare text node in the row's flex line.
-    const html = filesTreeHtml("src", [
-      { kind: "dir", name: "core" },
-      { kind: "file", name: "aVeryLongUnbrokenFileName.module.test.js", size: 12 },
-      { kind: "symlink", name: "link" },
-    ]);
-    expect(html.match(/class="fname"/g)).toHaveLength(3);
-    expect(html).toContain('<span class="fname">aVeryLongUnbrokenFileName.module.test.js</span>');
-  });
-
-  it("escapes the breadcrumb directory and renders the up-row only below the root", () => {
-    const nested = filesTreeHtml('<b>evil</b>/"sub', [{ kind: "file", name: "a.txt", size: 1 }]);
-    expect(nested).not.toContain("<b>evil</b>");
-    expect(nested).toContain("fup");
-    const root = filesTreeHtml("", []);
-    expect(root).not.toContain("fup");
-    expect(root).toContain("Empty directory.");
-  });
-});
+// The tree's own HTML (escaping, nesting, chevrons) is tested with its model
+// in fileTreeModel.test.js.
 
 describe("decodeBase64Text", () => {
   it("round-trips UTF-8 through base64", () => {

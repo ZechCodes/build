@@ -1,13 +1,19 @@
-// The Files tab — a worktree browser shared by all three surfaces (task,
-// external worktree, plain folder). Left pane: one-directory-at-a-time tree
-// with a breadcrumb and a `..` row below the root. Right pane: a per-type
-// preview of the selected file.
+// The Files tab — a worktree explorer shared by all three surfaces (task,
+// external worktree, plain folder). Left pane: the checkout's tree, with
+// directories expanding in place (core/fileTree.js). Right pane: a strip of
+// open-file tabs (core/fileTabs.js) over a per-type preview of the active one.
+// Which directories are expanded, which files are open and which one is active
+// are UI state, remembered per checkout.
 //
 // Both columns read the cache. A directory's listing is its `tree` record, and
 // a `files` push rewriting one moves the tree under the reader; a file's body
 // is its `file` record, and one the cache holds opens with no round trip. Two
 // reads are left on the wire and both write through: `fs.tree` for a directory
 // nothing has ever been written for, and `fs.read` for a file nothing holds.
+//
+// A tab keeps its unsaved edits while another tab is active: switching away
+// holds them in memory (not in any record), closing that tab asks first, and so
+// does leaving the tab with any tab holding them.
 //
 // Over a checkout the sync layer does not walk (a workspace source, a project's
 // own directory) nothing keeps those records true but this tab, so there they
@@ -20,17 +26,19 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { deleteCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
+import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody } from "../core/cacheLifetime.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 import { confirmAction } from "../core/confirm.js";
-import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes } from "../core/fileViewer.js";
+import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes, sameFile } from "../core/fileViewer.js";
 import { mountFileEditor } from "../core/fileEditor.js";
 import { captureFileSelection } from "../core/fileSelection.js";
 import { mountMeasuredHeight } from "../core/measuredInset.js";
+import { mountFileTree } from "../core/fileTree.js";
+import { mountFileTabs } from "../core/fileTabs.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
 
@@ -68,33 +76,6 @@ export function previewHasSourceToggle(mode) {
 export function decodeBase64Text(contentB64) {
   const bytes = Uint8Array.from(atob(contentB64 || ""), (c) => c.charCodeAt(0));
   return new TextDecoder().decode(bytes);
-}
-
-const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
-const parentPath = (dir) => dir.split("/").slice(0, -1).join("/");
-
-/** Pure: the tree pane's HTML for one directory listing — breadcrumb, an `..`
- *  row below the root, then dirs/files/symlinks. Repo file names are untrusted
- *  input (spec §9): every name is escaped, in row labels AND in the data-dir/
- *  data-file attributes the click wiring reads back. */
-export function filesTreeHtml(dir, entries) {
-  const crumb = `<div class="fcrumb mono">${dir ? esc(dir) : "/"}</div>`;
-  const up = dir ? `<div class="frow fup" data-up="1"><span class="fk">↰</span> ..</div>` : "";
-  // The name is its own element in every row: the tree is a fixed-width column
-  // that gives ground rather than growing, so a long unbroken name has to
-  // ellipsize inside it (.fname), and a bare text node in the row's flex line
-  // has no box to do that in.
-  const rows = entries
-    .map((entry) => {
-      const name = `<span class="fname">${esc(entry.name)}</span>`;
-      if (entry.kind === "dir")
-        return `<div class="frow fdir" data-dir="${esc(entry.name)}"><span class="fk">▸</span> ${name}</div>`;
-      if (entry.kind === "symlink")
-        return `<div class="frow fsym" title="symlink — not followed"><span class="fk">↳</span> ${name}</div>`;
-      return `<div class="frow ffile" data-file="${esc(entry.name)}"><span class="fk">·</span> ${name}<span class="fsize mono">${Number(entry.size) || 0}</span></div>`;
-    })
-    .join("");
-  return crumb + (up + rows || '<div class="empty">Empty directory.</div>');
 }
 
 /** Pure: the syntax-highlighted source view for a file. Code is highlighted by
@@ -166,13 +147,15 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
   // `#ftree` is the stable column (what the drawer slides, what the tab bar
-  // pins to the bottom of); `.ftree-list` is the part `loadTree` replaces —
-  // splitting them is what lets a directory change repaint the rows without
-  // taking the tab bar below them with it.
-  body.innerHTML = `<div class="files pane-split"><div class="ftree pane-list" id="ftree"><div class="ftree-list"></div></div><div class="fpreview idle" id="fpreview"></div>${paneDrawerHtml("files")}</div>`;
+  // pins to the bottom of); `.ftree-list` is the part the tree repaints —
+  // splitting them is what lets a listing repaint the rows without taking the
+  // tab bar below them with it. The preview column is the same split: the
+  // open-file tabs stand still over `.fpdoc`, the part a file repaints.
+  body.innerHTML = `<div class="files pane-split"><div class="ftree pane-list" id="ftree"><div class="ftree-list" role="tree" aria-label="Files"></div></div><div class="fpreview" id="fpreview"><div class="ftabs" role="tablist" aria-label="Open files" hidden></div><div class="fpdoc idle"></div></div>${paneDrawerHtml("files")}</div>`;
   const treeEl = body.querySelector("#ftree");
   const treeListEl = body.querySelector(".ftree-list");
-  const previewEl = body.querySelector("#fpreview");
+  const tabStripEl = body.querySelector(".ftabs");
+  const previewEl = body.querySelector(".fpdoc");
   let stopPreviewHeadMeasurement = () => {};
   const measurePreviewHead = () => {
     stopPreviewHeadMeasurement();
@@ -189,43 +172,59 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   // Below the stacking width the tree is behind the drawer's trigger row rather
   // than beside the preview, so the empty state names it instead of pointing at
   // it.
-  showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
+  const showIdle = () => showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
+  showIdle();
 
-  let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
   let requestedLine = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
   let sourceOverride = false; // per-selected-file "view source" toggle
   let viewerState = null;
   let editor = null;
   let selectedPath = null;
-  let savingState = null;
-  let pendingSave = null;
-  let fileRecordHeld = false;
   let fileRequest = 0;
+  // A background tab's path → its viewer state, while it holds edits or a save
+  // is out. The draft's own transitions live in createFileViewerState.
+  const drafts = new Map();
 
-  // On a narrow viewport the tree is a drawer over the preview. Only a file
-  // closes it: a directory row is still part of choosing one, and closing the
-  // drawer under a tap that changed nothing but the tree would put the choosing
-  // away mid-choice. Shut, the trigger over it names the file being read —
-  // which the preview's own header says, and the preview is behind the drawer.
+  // On a narrow viewport the tree is a drawer over the preview. Only opening a
+  // file closes it (the tree does that, below): a directory row, or a click
+  // that only selects, is still part of choosing one, and closing the drawer
+  // under it would put the choosing away mid-choice. Shut, the trigger over it
+  // names the file being read — which the preview's own header says, and the
+  // preview is behind the drawer.
   const drawer = initPaneDrawer(body.querySelector(".files"), {
     list: treeEl,
-    closeOnSelect: ".ffile",
     summary: () => selectedPath || pickAFileText,
   });
 
+  /** Every open file holding unsaved edits: the active one and any tab
+   *  switched away from with edits in it. */
+  const dirtyPaths = () => {
+    const dirty = new Set([...drafts].filter(([, state]) => state.snapshot().unsaved).map(([path]) => path));
+    if (selectedPath && viewerState?.snapshot().unsaved) dirty.add(selectedPath);
+    return dirty;
+  };
+
   const onBeforeUnload = (event) => {
-    if (!viewerState?.snapshot().dirty) return;
+    if (!dirtyPaths().size) return;
     event.preventDefault();
     event.returnValue = "";
   };
   window.addEventListener("beforeunload", onBeforeUnload);
 
-  const discardDirty = async () => !viewerState?.snapshot().dirty || confirmAction({
+  const confirmDiscard = (paths) => confirmAction({
     title: "Discard file edits?",
-    intro: `Your unsaved changes to ${selectedPath} will be lost.`,
+    intro: `Your unsaved changes to ${[...paths].join(", ")} will be lost.`,
     confirmLabel: "Discard edits",
     danger: true,
   });
+
+  const discardDirty = async () => {
+    const dirty = dirtyPaths();
+    return !dirty.size || confirmDiscard(dirty);
+  };
+
+  /** Reloading throws away only the shown file's edits, so only they are asked about. */
+  const discardShownEdits = async () => !viewerState?.snapshot().unsaved || confirmDiscard([selectedPath]);
 
   const publishFileContext = () => {
     if (!viewingContext || !selectedPath) return;
@@ -246,7 +245,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
         kind: "selection",
         path: selectedPath,
         text: snapshot.value.slice(snapshot.selection.start, snapshot.selection.end),
-        ...(snapshot.dirty ? { unsaved: true } : {}),
+        ...(snapshot.unsaved ? { unsaved: true } : {}),
       });
     }
     publishContextSelection(items);
@@ -269,13 +268,6 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
   document.addEventListener("selectionchange", onDocumentSelectionChange);
 
-  const renderTree = (entries) => {
-    treeListEl.innerHTML = filesTreeHtml(dir, entries);
-    if (dir) treeEl.querySelector(".fup").onclick = () => loadTree(parentPath(dir));
-    treeEl.querySelectorAll(".fdir").forEach((row) => (row.onclick = () => loadTree(joinPath(dir, row.dataset.dir))));
-    treeEl.querySelectorAll(".ffile").forEach((row) => (row.onclick = () => selectFile(joinPath(dir, row.dataset.file), row)));
-  };
-
   // The local cache's address for one directory's listing. A project-scoped
   // one names no entity and takes no part.
   const cacheEntityId = () => directoryCacheId(scope);
@@ -293,118 +285,29 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: FILE_RECORD_KIND, sub: path }) || null : null;
 
   const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
-  const heldValue = async (address) => (await heldRecord(address))?.value;
-
-  let treeRequest = 0; // which navigation the paints below still speak for
-  let unwatchTree = null; // the watch on the listing on screen
-
-  const paintListing = (listing) => {
-    dir = listing.path || "";
-    renderTree(listing.entries || []);
-  };
-
-  /** Hear this directory's record move: a `files` push rewrites the root
-   *  listing, and the sync layer re-lists whichever deeper ones the reader
-   *  walked into. Only the listing on screen is watched — the reader walking
-   *  away takes the watch with them. */
-  const watchListing = (path, request) => {
-    unwatchTree?.();
-    unwatchTree = null;
-    const address = treeAddress(path);
-    if (!address) return;
-    unwatchTree = subscribeCache(address, () => void rereadListing(path, request));
-  };
-
-  /** Whether the paints below still speak for where the reader is standing. */
-  const stillListing = (request) => !disposed && request === treeRequest;
-
-  const rereadListing = async (path, request) => {
-    if (!stillListing(request)) return;
-    const held = await heldValue(treeAddress(path));
-    if (stillListing(request) && held) paintListing(held);
-  };
-
-  const cannotListHtml = (error) => `<div class="empty">cannot list: ${esc((error && error.message) || "error")}</div>`;
-
-  /** The one on-demand listing: a directory nothing has ever been written
-   *  for. It is written through, so the sync layer keeps it fresh from here. */
-  const listTree = async (nextDir, request, previousAt) => {
-    let res;
-    try {
-      res = await callRpc("fs.tree", { ...scope, path: nextDir });
-    } catch (e) {
-      if (stillListing(request)) treeListEl.innerHTML = cannotListHtml(e);
-      return;
-    }
-    if (!stillListing(request)) return;
-    const listing = { path: res.path || "", entries: res.entries || [] };
-    const address = treeAddress(nextDir);
-    if (!address) {
-      paintListing(listing);
-      return;
-    }
-    const current = await heldRecord(address);
-    if (!stillListing(request) || current?.at !== previousAt) return;
-    await writeCached(address, listing);
-  };
-
-  const loadTree = async (nextDir) => {
-    const request = ++treeRequest;
-    watchListing(nextDir, request);
-    const address = treeAddress(nextDir);
-    const record = await heldRecord(address);
-    const held = record?.value;
-    if (!stillListing(request)) return;
-    if (held) {
-      paintListing(held);
-      if (!readsForItself()) return;
-    }
-    await listTree(nextDir, request, record?.at);
-  };
 
   let unwatchFile = null;
 
   const stillSelected = (request, path) =>
     !disposed && request === fileRequest && selectedPath === path;
 
-  const finishPendingSave = (file) => {
-    if (!pendingSave || savingState !== pendingSave.state) return false;
-    if (file.revision !== pendingSave.file.revision) return false;
-    finishSave(pendingSave.state, file, pendingSave.value);
-    return true;
-  };
-
-  const holdFileRecord = () => {
-    fileRecordHeld = true;
-    setText(previewEl.querySelector(".file-save-status"), "File changed on disk");
-    const reload = previewEl.querySelector(".file-reload");
-    if (reload) reload.hidden = false;
-  };
-
-  const viewerMatches = (snapshot, file) => {
-    if (!snapshot?.file) return false;
-    return snapshot.file.revision === file.revision && snapshot.file.content_b64 === file.content_b64;
-  };
-
-  const viewerBlocksFileRecord = (snapshot) =>
-    Boolean(snapshot?.dirty || (savingState && savingState === viewerState));
-
-  /** Take the selected file from its record. A record moving while somebody
-   *  is typing must not replace their draft; reload/save is the explicit
-   *  reconciliation path for that case. */
-  const takeSelectedFile = (path, request, file) => {
-    if (!file || !stillSelected(request, path)) return false;
-    if (finishPendingSave(file)) return true;
-    const snapshot = viewerState?.snapshot();
-    if (viewerBlocksFileRecord(snapshot)) {
-      holdFileRecord();
-      return false;
-    }
-    if (viewerMatches(snapshot, file)) return true;
-    fileRecordHeld = false;
+  const adoptFile = (path, file) => {
     editor?.dispose();
     editor = null;
     renderPreview(path, file);
+  };
+
+  /** A record of the selected file arrived: the draft decides whether it is
+   *  the same file, a change on disk its edits are kept over, or a fresh
+   *  read to show. */
+  const takeSelectedFile = (path, request, file) => {
+    if (!file || !stillSelected(request, path)) return false;
+    if (!viewerState) {
+      renderPreview(path, file);
+      return true;
+    }
+    if (viewerState.recordArrived(file) === "adopt") adoptFile(path, file);
+    else paintEditStatus();
     return true;
   };
 
@@ -462,46 +365,30 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (element) element.textContent = value;
   };
 
-  const beginSave = (submittedState) => {
-    savingState = submittedState;
-    previewEl.querySelector(".file-save").disabled = true;
-    setText(previewEl.querySelector(".file-save-status"), "");
-    const reload = previewEl.querySelector(".file-reload");
-    if (reload) reload.hidden = true;
-  };
-
-  const finishSave = (submittedState, written, submittedValue) => {
-    submittedState.saved(written, submittedValue);
-    savingState = null;
-    pendingSave = null;
-    fileRecordHeld = false;
-    if (disposed || viewerState !== submittedState) return;
-    setText(previewEl.querySelector(".fpsize"), `${Number(written.size) || 0} bytes`);
-    setText(treeEl.querySelector(".frow.sel .fsize"), String(Number(written.size) || 0));
+  /** A save came back, to whichever tab is shown by now: the tab strip
+   *  always hears of it; the preview only when it is this file's. A draft
+   *  left clean under a newer record reads that record. */
+  const afterSave = (path, state, written) => {
+    tabs.refresh();
+    if (disposed || viewerState !== state) return;
+    const stale = state.snapshot().stale;
+    if (stale) return adoptFile(path, stale);
+    if (written) {
+      setText(previewEl.querySelector(".fpsize"), `${Number(written.size) || 0} bytes`);
+      setText(treeListEl.querySelector(".frow.sel .fsize"), String(Number(written.size) || 0));
+    }
     paintEditStatus();
     publishEditorSelection();
   };
 
-  const failSave = (submittedState, error) => {
-    savingState = null;
-    pendingSave = null;
-    if (disposed || viewerState !== submittedState) return;
-    setText(previewEl.querySelector(".file-save-status"), error.message || "Save failed");
-    const reload = previewEl.querySelector(".file-reload");
-    if (reload) reload.hidden = !String(error.message).includes("revision conflict");
-    previewEl.querySelector(".file-save").disabled = false;
-  };
-
-  const beginFileSelection = (path, row) => {
+  const beginFileSelection = (path) => {
     if (requestedLine?.path !== path) requestedLine = null;
     onFileOpen?.(path);
-    treeEl.querySelectorAll(".frow.sel").forEach((selected) => selected.classList.remove("sel"));
-    row?.classList.add("sel");
+    tree.setOpenPath(path);
     sourceOverride = false;
     editor?.dispose();
     editor = null;
     viewerState = null;
-    fileRecordHeld = false;
     selectedPath = path;
     drawer.refresh();
     viewingContext?.clearSelection?.();
@@ -530,13 +417,11 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     return true;
   };
 
-  const selectFile = async (path, row) => {
-    if (disposed || path === selectedPath) return;
-    if (!await discardDirty()) return;
+  const selectFile = async (path) => {
     if (disposed || path === selectedPath) return;
     const request = ++fileRequest;
     // The tab names the file it is standing in, so the URL can say so too.
-    beginFileSelection(path, row);
+    beginFileSelection(path);
     watchFile(path, request);
     const address = fileAddress(path);
     const record = await heldRecord(address);
@@ -568,33 +453,43 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     }
   };
 
+  /** The draft takes the answer as soon as it comes, whichever tab is shown;
+   *  the record is written through after, and its push is the same file. */
   const saveEditor = async (path) => {
-    const submittedState = viewerState;
-    if (savingState === submittedState) return;
-    const snapshot = submittedState.snapshot();
-    const submittedValue = snapshot.value;
-    beginSave(submittedState);
+    const state = viewerState;
+    const baseline = state.snapshot().file;
+    const write = state.submit();
+    if (!write) return;
+    paintEditStatus();
+    const address = fileAddress(path);
+    // The record as the save leaves, read beside the write rather than before it.
+    const before = heldRecord(address);
+    let written;
     try {
-      const written = await callRpc("fs.write", {
+      written = await callRpc("fs.write", {
         ...scope,
         path,
-        content_b64: encodeBase64Text(snapshot.value),
-        expected_revision: snapshot.revision,
+        content_b64: encodeBase64Text(write.value),
+        expected_revision: write.revision,
       });
-      if (!editorIsCurrent(path, submittedState)) return;
-      pendingSave = { state: submittedState, file: written, value: submittedValue };
-      const address = fileAddress(path);
-      const kept = await storeWrittenFile(path, address, written);
-      if (!editorIsCurrent(path, submittedState) || savingState !== submittedState) return;
-      const savedFile = kept ? (await heldRecord(address))?.value?.file : written;
-      finishSave(submittedState, savedFile || written, submittedValue);
     } catch (error) {
-      failSave(submittedState, error);
+      state.saveFailed(error);
+      return afterSave(path, state, null);
     }
+    state.saveSucceeded(written);
+    afterSave(path, state, written);
+    await storeWrittenFile(path, address, written, baseline, (await before)?.at);
   };
 
-  const storeWrittenFile = async (path, address, written) => {
+  /** A cache access refresh changes the timestamp without changing the file.
+   *  Replace the submitted baseline, but keep a competing revision visible.
+   *  If the record disappeared while saving, preserve that invalidation too. */
+  const storeWrittenFile = async (path, address, written, baseline, previousAt) => {
     if (!address) return false;
+    const current = await heldRecord(address);
+    if (current?.value?.file) {
+      if (!sameFile(current.value.file, baseline)) return false;
+    } else if (current?.at !== previousAt) return false;
     const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: written });
     if (!kept) await deleteCached([address]);
     return kept;
@@ -610,13 +505,12 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     editor?.dispose();
     editor = null;
     if (!result.file) return;
-    fileRecordHeld = false;
     renderPreview(path, result.file);
   };
 
   const reloadEditor = async (path) => {
     const expectedState = viewerState;
-    if (!await discardDirty()) return;
+    if (!await discardShownEdits()) return;
     if (!editorIsCurrent(path, expectedState)) return;
     const reloadingState = viewerState;
     const reloadingValue = reloadingState.snapshot().value;
@@ -647,12 +541,21 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     paintEditStatus();
   };
 
+  const statusText = (snapshot) => (snapshot.disk ? "File changed on disk" : snapshot.error || "");
+
+  /** Paint the shown draft's state: Unsaved while it holds anything not on
+   *  disk, Save only when there are edits and no save is out, the disk change
+   *  or the refusal, and Reload whenever the file on disk is not the baseline. */
   const paintEditStatus = () => {
     const snapshot = viewerState.snapshot();
     const dirty = previewEl.querySelector(".file-dirty");
     const save = previewEl.querySelector(".file-save");
-    if (dirty) dirty.hidden = !snapshot.dirty;
-    if (save) save.disabled = !snapshot.dirty || savingState === viewerState;
+    const reload = previewEl.querySelector(".file-reload");
+    if (dirty) dirty.hidden = !snapshot.unsaved;
+    if (save) save.disabled = snapshot.status !== "dirty";
+    setText(previewEl.querySelector(".file-save-status"), statusText(snapshot));
+    if (reload) reload.hidden = !(snapshot.disk || snapshot.conflict);
+    tabs.refresh();
   };
 
   const previewFile = (snapshot) => snapshot.modes.length ? ({
@@ -728,20 +631,92 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     row.scrollIntoView({ block: "center" });
   };
 
-  loadTree(dir).then(() => {
-    if (disposed || !openAt) return;
-    const fileName = openAt.path.split("/").at(-1);
-    const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
-    selectFile(openAt.path, row || null);
+  /** Keep the active file's viewer while another tab is shown, when it holds
+   *  edits or has a save out — the editor's caret with it. */
+  const holdActiveDraft = () => {
+    if (!selectedPath || !viewerState?.snapshot().unsaved) return;
+    if (editor) viewerState.edit(viewerState.snapshot().value, editor.selection());
+    drafts.set(selectedPath, viewerState);
+  };
+
+  /** Show a held draft again, and read its file's record: a change on disk
+   *  from before the switch, or while it was away, is warned of again. */
+  const resumeDraft = (path, state) => {
+    drafts.delete(path);
+    const request = ++fileRequest;
+    beginFileSelection(path);
+    viewerState = state;
+    paintViewer(path);
+    watchFile(path, request);
+    void rereadSelectedFile(path, request);
+  };
+
+  const showNothing = () => {
+    fileRequest += 1;
+    unwatchFile?.();
+    unwatchFile = null;
+    editor?.dispose();
+    editor = null;
+    viewerState = null;
+    selectedPath = null;
+    onFileOpen?.(null);
+    tree.setOpenPath(null);
+    drawer.refresh();
+    viewingContext?.clear?.();
+    showIdle();
+  };
+
+  /** The active tab moved: show its file — its held edits if it has any, else
+   *  its record. */
+  const showFile = (path) => {
+    holdActiveDraft();
+    if (!path) return showNothing();
+    const draft = drafts.get(path);
+    if (draft) return resumeDraft(path, draft);
+    void selectFile(path);
+  };
+
+  /** A tab closed for good (its edits already confirmed away): nothing it
+   *  held may come back as a draft. */
+  const forgetFile = (path) => {
+    drafts.delete(path);
+    if (path === selectedPath) viewerState?.revert();
+  };
+
+  const uiStateAddress = (sub) =>
+    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "ui-files", sub }) || null : null;
+
+  const finePointer = () => window.matchMedia?.("(pointer: fine)").matches === true;
+
+  const tree = mountFileTree(treeListEl, {
+    listingAddress: treeAddress,
+    stateAddress: uiStateAddress("tree"),
+    readsForItself,
+    listDirectory: (path) => callRpc("fs.tree", { ...scope, path }),
+    finePointer,
+    onOpen: (path) => {
+      drawer.close();
+      void tabs.open(path);
+    },
   });
+
+  const tabs = mountFileTabs(tabStripEl, {
+    stateAddress: uiStateAddress("tabs"),
+    dirtyPaths,
+    confirmClose: (path) => confirmDiscard([path]),
+    onClose: forgetFile,
+    onShow: showFile,
+    initial: openAt?.path || null,
+  });
+
+  if (openAt) void tree.reveal(openAt.path);
 
   return {
     dispose() {
       disposed = true;
-      treeRequest += 1;
       fileRequest += 1;
-      unwatchTree?.();
-      unwatchTree = null;
+      tree.dispose();
+      tabs.dispose();
       unwatchFile?.();
       unwatchFile = null;
       stopPreviewHeadMeasurement();
@@ -752,14 +727,14 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
       drawer.dispose();
     },
     canLeave: discardDirty,
-    hasUnsavedChanges: () => Boolean(viewerState?.snapshot().dirty),
+    hasUnsavedChanges: () => dirtyPaths().size > 0,
     retargetScope: (nextScope) => {
       scope = nextScope;
-      void loadTree(dir);
+      tree.relist();
       if (selectedPath) {
         const request = ++fileRequest;
         watchFile(selectedPath, request);
-        if (!fileRecordHeld && !viewerState?.snapshot().dirty) void rereadSelectedFile(selectedPath, request);
+        void rereadSelectedFile(selectedPath, request);
       }
     },
   };

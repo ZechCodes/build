@@ -518,11 +518,11 @@ describe("a branch on another device", () => {
     await vi.waitFor(() => expect(document.querySelector("#tabbody .ffile")).toBeTruthy());
 
     document.querySelector("#tabbody .ffile").click();
-    await flush();
+    // Opening goes through the checkout's tab record, then the route follows.
+    await vi.waitFor(() => expect(location.hash).toContain("path=notes.txt"));
 
     expect(App.route.deviceId).toBe("dev-2");
     expect(location.hash).toContain("#/device/dev-2/project/p1/branch/main/files");
-    expect(location.hash).toContain("path=notes.txt");
   });
 
   it("a branch view for device B never reads or writes the cache under device A's key", async () => {

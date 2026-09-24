@@ -22,12 +22,72 @@ export function fileViewerModes(file) {
   return [...(rendered ? ["preview"] : []), ...(sourceAvailable(file, rendered) ? ["source"] : []), ...(editAvailable(file) ? ["edit"] : [])];
 }
 
+const REVISION_CONFLICT = "revision conflict";
+
+/** Whether a record is the very file a baseline was read as. */
+export const sameFile = (a, b) =>
+  a.revision === b.revision && a.content_b64 === b.content_b64 && Boolean(a.truncated) === Boolean(b.truncated);
+
+/**
+ * One open file's viewer and its draft. Every transition of the draft is here,
+ * in one place; the view feeds it the events and paints `snapshot()`.
+ *
+ * The draft is in one of four states (`snapshot().status`):
+ *
+ * - `clean`: the buffer is the baseline, and no save is out.
+ * - `dirty`: the buffer differs from the baseline, and no save is out.
+ * - `saving`: a save is out, and the buffer is what it sent.
+ * - `saving-edited`: a save is out, and the buffer has moved on since. That
+ *   includes moving back to the old baseline.
+ *
+ * Beside the state it keeps:
+ *
+ * - `baseRevision`: the revision the baseline was read at, which the next
+ *   save is sent against;
+ * - `submittedRevision`: the revision the save that is out was sent against;
+ * - `disk`: a record of the file at another revision than the baseline, when
+ *   the draft had to keep its edits over it (changed on disk);
+ * - `error`: the last save's refusal.
+ *
+ * The events:
+ *
+ * - `edit`: the buffer moves, and nothing else does.
+ * - `submit`: clean or dirty goes to saving. It answers the write to send,
+ *   or null when a save is already out.
+ * - `saveSucceeded(file)`: the acknowledged file becomes the baseline, at its
+ *   revision and with the text that was sent. It is never the record read back
+ *   afterwards, which another writer may already have replaced. The buffer is
+ *   kept, so saving goes to clean and saving-edited goes to dirty. A disk note
+ *   at the acknowledged revision is spent.
+ * - `saveFailed(error)`: back to clean or dirty against the old baseline,
+ *   keeping the refusal.
+ * - `recordArrived(file)`: a record of the file (a push, a re-read, a resume).
+ *   - The baseline's own file answers "same", and spends any disk note.
+ *   - Over a draft with edits or a save out it answers "held": the draft
+ *     keeps its edits and notes the record as a change on disk.
+ *   - Over a clean draft it answers "adopt", and the view reads the record
+ *     afresh.
+ * - `revert`: the buffer goes back to the baseline, and the draft lets go of
+ *   any save that is out and any note or refusal. A save still out lands on
+ *   disk and in the record, but no longer here. A closed tab's edits are
+ *   discarded this way, once the view has confirmed.
+ *
+ * A clean draft with a disk note left over (a save acknowledged under a newer
+ * record) answers `snapshot().stale`: the view adopts the note.
+ */
 export function createFileViewerState({ file, text }) {
   const modes = fileViewerModes(file);
   let mode = modes[0] || "preview";
   let value = text;
   let selection = { start: 0, end: 0 };
-  let revision = file.revision;
+  let submitted = null; // { value, revision } while a save is out
+  let disk = null;
+  let error = null;
+
+  const status = () => {
+    if (submitted) return value === submitted.value ? "saving" : "saving-edited";
+    return value === text ? "clean" : "dirty";
+  };
 
   return {
     choose(next) {
@@ -37,13 +97,50 @@ export function createFileViewerState({ file, text }) {
       value = next;
       selection = nextSelection;
     },
-    saved(nextFile, savedValue = value) {
-      file = nextFile;
-      revision = nextFile.revision;
-      text = savedValue;
+    revert() {
+      value = text;
+      submitted = null;
+      disk = null;
+      error = null;
+    },
+    submit() {
+      if (submitted) return null;
+      submitted = { value, revision: file.revision };
+      error = null;
+      return { ...submitted };
+    },
+    saveSucceeded(written) {
+      if (!submitted) return;
+      file = written;
+      text = submitted.value;
+      submitted = null;
+      error = null;
+      if (disk && sameFile(disk, written)) disk = null;
+    },
+    saveFailed(failure) {
+      submitted = null;
+      error = failure?.message || "Save failed";
+    },
+    recordArrived(record) {
+      if (sameFile(record, file)) {
+        disk = null;
+        return "same";
+      }
+      if (status() === "clean") return "adopt";
+      disk = record;
+      return "held";
     },
     snapshot() {
-      return { mode, modes, value, selection, revision, dirty: value !== text, file };
+      const current = status();
+      return {
+        mode, modes, value, selection, file, disk, error,
+        status: current,
+        unsaved: current !== "clean",
+        stale: current === "clean" && disk ? disk : null,
+        conflict: Boolean(error?.includes(REVISION_CONFLICT)),
+        baseRevision: file.revision,
+        submittedRevision: submitted?.revision ?? null,
+      };
     },
   };
 }

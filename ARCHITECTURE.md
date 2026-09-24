@@ -408,8 +408,13 @@ In practice:
 No timer polls the bridge for data. The data timers are the device presence
 poll against skriftapp and the served-version check. The transport has its own:
 the reconnect backoff (`spa/src/core/deviceRecovery.js`) and the peer's open
-timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). The rest are
-the boot retry and cosmetic clocks.
+timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). Two more
+touch data without polling for it: the persistence debounce in
+`spa/src/core/localUiState.js`, which holds a UI-state edit for `debounceMs`
+before writing it to IndexedDB, and the `run.adopt` re-asks in
+`spa/src/core/adoption.js`, which ask again every `ADOPT_REASK_MS` (2 s), at
+most `ADOPT_REASK_LIMIT` (30) times, while the bridge is still adopting a
+checkout. The rest are the boot retry and cosmetic clocks.
 
 **Current exceptions.** These describe today's code, not the rule. Don't copy
 them into new code; each is a candidate to bring under the rule.

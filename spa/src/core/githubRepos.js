@@ -82,7 +82,6 @@ const CONSECUTIVE = 1;
 const WORD_START = 0.9;
 const AFTER_SEPARATOR = 0.6;
 const GAP = -0.01;
-const LEADING_GAP = -0.005;
 
 /** What a match at `index` earns for where it lands: the start of the owner or
  *  the repository, then the start of a word inside either. */
@@ -99,7 +98,7 @@ function scoreRow(char, index, text, lower, previous) {
   let running = -Infinity;
   for (let at = 0; at < text.length; at += 1) {
     if (lower[at] === char) {
-      const fresh = index === 0 ? at * LEADING_GAP : (previous.best[at - 1] ?? -Infinity);
+      const fresh = index === 0 ? 0 : (previous.best[at - 1] ?? -Infinity);
       const chained = index === 0 ? -Infinity : (previous.match[at - 1] ?? -Infinity) + CONSECUTIVE;
       match[at] = Math.max(fresh + bonusAt(text, at), chained);
     }
@@ -121,7 +120,9 @@ export function fuzzyScore(query, text) {
   const lower = text.toLowerCase();
   let row = { match: [], best: [] };
   for (let index = 0; index < wanted.length; index += 1) row = scoreRow(wanted[index], index, text, lower, row);
-  const score = row.best[text.length - 1];
+  // Scored where the last character matched: what trails the match costs
+  // nothing, so equal hits fall to the most recent push, not the shortest name.
+  const score = Math.max(...row.match);
   return score === -Infinity ? null : score;
 }
 

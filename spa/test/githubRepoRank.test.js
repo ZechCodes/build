@@ -32,9 +32,11 @@ it("lists at most eight, and an empty query lists the most recently pushed first
   expect(rankRepos("  ", repos)).toHaveLength(8);
 });
 
-it("breaks a tie by the most recent push", () => {
+it("breaks a tie by the most recent push, whatever trails the match", () => {
   const repos = [repo("a/app", "2026-01-01T00:00:00Z"), repo("b/app", "2026-09-01T00:00:00Z")];
   expect(names(rankRepos("app", repos))).toEqual(["b/app", "a/app"]);
+  const trailing = [repo("8ly/buildkit", "2026-08-01T00:00:00Z"), repo("ZechCodes/build-web", "2026-09-01T00:00:00Z")];
+  expect(names(rankRepos("build", trailing))).toEqual(["ZechCodes/build-web", "8ly/buildkit"]);
 });
 
 it("finds nothing for a typed remote URL no repository is named like", () => {

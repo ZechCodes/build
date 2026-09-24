@@ -532,7 +532,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    and the words become the tooltip and the accessible name
    (core/directoryRail.js). Its cells sit at the TOP of the column: the phone's
    bubble strip is laid over the foot of this same column, so nothing tappable
-   may be parked down there. */
+   may be parked down there on a phone. The one control at the foot — the
+   sidebar toggle — is drawn only where the list column is a column, never where
+   it is a drawer (see .dirtoggle below). */
 #dir-rail:empty { display:none; }
 /* The seam between the rail and the work is a step in tone, not a line:
    a step BELOW --panel2, beside the work's --panel. The work's own leftmost
@@ -555,6 +557,14 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }
+/* The faces are the tablist; the rail is the tablist plus the toggle. */
+.dirtabs { display:flex; flex-direction:column; align-items:center; gap:4px; }
+/* The sidebar toggle: a cell of the same idiom, parked at the very foot of the
+   rail. It folds the list column beside the rail (styles.css, "the list
+   column, folded away"), so it stands only at the widths where that column is
+   a column: the drawer's own media query takes it away where the drawer is the
+   answer, which is also everywhere the phone's bubble strip lies over this foot. */
+.dirtoggle { margin-top:auto; flex:none; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in

@@ -7,14 +7,24 @@
 // Here is the markup and the behaviour; paneLayout.test.js holds the CSS half.
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
-import { DIRECTORY_TABS, directoryRailHtml, paintDirectoryRail } from "../src/core/directoryRail.js";
+import {
+  DIRECTORY_TABS,
+  SIDEBAR_COLLAPSED_KEY,
+  directoryRailHtml,
+  paintDirectoryRail,
+} from "../src/core/directoryRail.js";
 
 const mount = (options = {}) => {
   const host = document.createElement("nav");
   document.body.appendChild(host);
   const onSelect = vi.fn();
   paintDirectoryRail(host, { active: "changes", onSelect, ...options });
-  return { host, onSelect, tabs: () => [...host.querySelectorAll("[data-tab]")] };
+  return {
+    host,
+    onSelect,
+    tabs: () => [...host.querySelectorAll("[data-tab]")],
+    toggle: () => host.querySelector("[data-sidebar-toggle]"),
+  };
 };
 
 const press = (element, key) => element.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true }));
@@ -54,10 +64,13 @@ describe("the directory rail", () => {
     document.body.innerHTML = "";
   });
 
-  it("stands the host up as a vertical tablist", () => {
-    const { host } = mount();
-    expect(host.getAttribute("role")).toBe("tablist");
-    expect(host.getAttribute("aria-orientation")).toBe("vertical");
+  it("stands the faces up as a vertical tablist", () => {
+    const { host, tabs } = mount();
+    const list = host.querySelector("[role='tablist']");
+    expect(list.getAttribute("aria-orientation")).toBe("vertical");
+    // The tablist owns the tabs and nothing else: the sidebar toggle beside it
+    // is a button of the rail, not a cell of the list.
+    expect([...list.children]).toEqual(tabs());
   });
 
   it("reports the face that was pressed", () => {
@@ -118,5 +131,129 @@ describe("the directory rail", () => {
     expect(tabs.map((tab) => tab.dataset.tab)).toEqual(["files"]);
     tabs[0].click();
     expect(onSelect).toHaveBeenCalledWith("files");
+  });
+});
+
+// The list column beside the rail — the file tree, the commit rail — folds away
+// from one control at the rail's foot, so the detail can take the whole width.
+// One state for the rail, whichever face is showing, kept in this browser.
+describe("the sidebar toggle", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+
+  it("stands at the foot of the rail, a button outside the tablist, reachable by Tab", () => {
+    const { host, toggle } = mount();
+    const button = toggle();
+    expect(host.lastElementChild).toBe(button);
+    expect(button.tagName).toBe("BUTTON");
+    expect(button.getAttribute("type")).toBe("button");
+    expect(button.hasAttribute("role")).toBe(false);
+    expect(button.hasAttribute("tabindex")).toBe(false);
+    expect(button.closest("[role='tablist']")).toBeNull();
+    // Icon-only, like the faces above it: the words are its name and tooltip.
+    expect(button.textContent.trim()).toBe("");
+    expect(button.querySelector("svg")).toBeTruthy();
+  });
+
+  it("starts expanded, and says what pressing it does", () => {
+    const { host, toggle } = mount();
+    expect(host.dataset.sidebar).toBe("expanded");
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
+    expect(toggle().getAttribute("title")).toBe("Collapse sidebar");
+    expect(toggle().innerHTML).toContain("panel-left-close");
+  });
+
+  it("collapses and expands the sidebar, keeping the control's words in step", () => {
+    const { host, toggle } = mount();
+    toggle().click();
+    expect(host.dataset.sidebar).toBe("collapsed");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().getAttribute("aria-label")).toBe("Expand sidebar");
+    expect(toggle().getAttribute("title")).toBe("Expand sidebar");
+    expect(toggle().innerHTML).toContain("panel-left-open");
+    toggle().click();
+    expect(host.dataset.sidebar).toBe("expanded");
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
+  });
+
+  it("keeps the keyboard on the control it pressed", () => {
+    const { toggle } = mount();
+    toggle().focus();
+    toggle().click();
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  it("changes no face when it is pressed", () => {
+    const { onSelect, toggle } = mount();
+    toggle().click();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("is not in the arrow ring: the arrows walk the faces and never land on it", () => {
+    const { onSelect, tabs, toggle } = mount({ active: "files" });
+    tabs()[1].focus();
+    press(tabs()[1], "ArrowDown");
+    expect(onSelect).toHaveBeenLastCalledWith("changes");
+    expect(document.activeElement).toBe(tabs()[0]);
+    press(tabs()[0], "End");
+    expect(document.activeElement).toBe(tabs()[1]);
+    onSelect.mockClear();
+    toggle().focus();
+    press(toggle(), "ArrowUp");
+    press(toggle(), "Home");
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  it("remembers the choice in this browser, under one key", () => {
+    const { toggle } = mount();
+    toggle().click();
+    expect(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)).toBe("true");
+    toggle().click();
+    expect(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)).toBe("false");
+    expect(localStorage.length).toBe(1);
+  });
+
+  it("paints the remembered choice, on a new rail and on a repaint for the other face", () => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, "true");
+    const { host, onSelect, toggle } = mount();
+    expect(host.dataset.sidebar).toBe("collapsed");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    toggle().click();
+    // One state per rail, not per face: switching faces repaints the rail and
+    // the choice stands.
+    paintDirectoryRail(host, { active: "files", onSelect });
+    expect(host.dataset.sidebar).toBe("expanded");
+    expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
+    toggle().click();
+    paintDirectoryRail(host, { active: "changes", onSelect });
+    expect(host.dataset.sidebar).toBe("collapsed");
+    expect(toggle().getAttribute("aria-label")).toBe("Expand sidebar");
+  });
+
+  it("keeps the keyboard on the control across a repaint of the rail", () => {
+    const { host, onSelect, toggle } = mount();
+    toggle().focus();
+    paintDirectoryRail(host, { active: "files", onSelect });
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  it("works for the mount when this browser keeps nothing", () => {
+    const blocked = {
+      getItem: () => {
+        throw new Error("blocked");
+      },
+      setItem: () => {
+        throw new Error("blocked");
+      },
+    };
+    const { host, toggle } = mount({ storage: blocked });
+    expect(host.dataset.sidebar).toBe("expanded");
+    toggle().click();
+    expect(host.dataset.sidebar).toBe("collapsed");
   });
 });

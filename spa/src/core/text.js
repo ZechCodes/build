@@ -150,6 +150,11 @@ export const filesTabLabel = "Files";
  *  tracker, narrowed to the agents standing here. */
 export const issuesTabLabel = "Issues";
 
+/** The control at the foot of the same rail, which folds the checkout's list
+ *  column (the file tree, the commit rail) away and brings it back. Icon-only
+ *  too, so these are its tooltip and its name, and they say what a press does. */
+export const sidebarToggleLabel = (collapsed) => (collapsed ? "Expand sidebar" : "Collapse sidebar");
+
 /** What a two-column pane's drawer trigger offers while nothing is open — the
  *  gesture, not the state, because on a phone the list it names is behind the
  *  trigger itself. */

@@ -239,7 +239,7 @@ describe("render dispatch", () => {
     expect(tabs).toEqual(["changes", "files"]);
     // Icon-only at every width: the words are the tooltip and the accessible
     // name, and the rail is a tablist rather than a row of links.
-    expect(document.querySelector("#dir-rail").getAttribute("role")).toBe("tablist");
+    expect(document.querySelector("#dir-rail [role='tablist']").getAttribute("aria-orientation")).toBe("vertical");
     expect(document.querySelector('#dir-rail [data-tab="files"]').textContent.trim()).toBe("");
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();
     expect(root().classList.contains("surface")).toBe(true);

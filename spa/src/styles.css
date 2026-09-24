@@ -531,6 +531,28 @@ main#root.surface { max-width:none;
    columns, and both hand it the same .pane-list. Its chrome (the trigger row
    that drops it, the scrim it sits on) is in the markup at every width and
    paints at none of them but this. */
+/* ---- the list column, folded away ----
+   On a checkout the directory rail's foot carries a toggle that folds the list
+   column (the file tree, the commit rail) away so the detail takes the whole
+   width; the rail says which way it stands on itself (data-sidebar,
+   core/directoryRail.js), and this is the one rule that reads it, for both
+   faces. The column goes to no width at all, bleed included: the detail pays
+   its own gutter on that side, so it lands on the rail's edge the way it lands
+   on the column's. Hidden, so its rows leave the tab order with it. An emptied
+   rail (off a checkout) keeps the attribute and folds nothing.
+   It is stated at every width and weighs what the drawer's rule below weighs
+   (:where() hands the rail's half no weight), so where the list column is a
+   drawer that rule, coming later, puts back everything this one took, and the
+   breakpoint is stated once, by the drawer. */
+:where(#dir-rail[data-sidebar="collapsed"]:not(:empty) ~ #root) .pane-split .pane-list {
+  flex-basis:0; overflow:hidden; visibility:hidden; }
+/* The drawer's tempo, .18s; visibility waits out the fold and comes back at
+   once on the way out. Only after a press (data-sidebar-motion): a surface can
+   lay its pane out before it paints the rail, and arriving on a checkout left
+   folded must not fold it again in front of the reader. Reduced motion is the
+   drawer's rule too, below. */
+:where(#dir-rail[data-sidebar-motion]:not(:empty) ~ #root) .pane-split .pane-list {
+  transition:flex-basis .18s ease, visibility .18s; }
 .pane-scrim, .pane-handle { display:none; }
 @media (max-width: 900px) {
   /* One stack: the trigger row, then the detail. The list column is out of the
@@ -562,7 +584,7 @@ main#root.surface { max-width:none;
      past what is left of the pane, and it scrolls inside itself. */
   .pane-split .pane-list { position:absolute; top:var(--surface-head); bottom:auto;
     left:0; right:0; z-index:12;
-    margin-left:0; width:auto; flex:none;
+    margin-left:0; width:auto; flex:none; overflow:visible; visibility:visible;
     max-height:min(62vh, calc(100% - var(--surface-head)));
     background:var(--panel2); border:0;
     transform:translateY(-100%); transition:transform .18s ease; }
@@ -574,6 +596,11 @@ main#root.surface { max-width:none;
      because pressing it again is one of the three ways out. */
   .pane-split.drawer-open .pane-scrim { display:block; position:absolute; inset:0; z-index:11;
     background:var(--scrim); }
+  /* The drawer is this width's answer to the directory rail's sidebar toggle
+     (shell.css, .dirtoggle): the toggle is not drawn, and the fold it stored
+     is undone by the list column's rule above. Stated on the rail, to outweigh
+     the cell's own display (.dirtab, a later sheet). */
+  #dir-rail .dirtoggle { display:none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pane-split .pane-list, .pane-handle-caret { transition:none; }

@@ -56,6 +56,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   // Every context this suite hands out is a machine that has answered: it
   // carries a greeting's verdict or a catalog.
   awaitingFirstAnswer: () => false,
+  openedContext: (deviceId) => contextFor(deviceId),
   onDeviceStateChanged: () => () => {},
   routeContext: () => null,
 }));

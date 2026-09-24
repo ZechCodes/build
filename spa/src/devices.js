@@ -11,7 +11,7 @@
 
 import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
-import { awaitingFirstAnswer, canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
+import { canAnswer, knownContexts, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
@@ -350,13 +350,6 @@ function deviceLabel(device) {
  * machine. Update-only contexts remain available and retain their settings. */
 function deviceIsOffline(device) {
   return device.status !== "online" || Boolean(openedContext(device.id)?.offline);
-}
-
-/** The machine's context once this client has opened it — tried it, at least.
- *  One a page stood up over its records before it answered says nothing yet. */
-function openedContext(deviceId) {
-  const context = contextFor(deviceId);
-  return awaitingFirstAnswer(context) ? null : context;
 }
 
 let pickerMenuOpen = false;

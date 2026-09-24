@@ -54,7 +54,7 @@ vi.mock("../src/core/console.js", () => ({ mountConsole: () => ({ dispose() {} }
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 import { App } from "../src/app.js";
-import { adoptDeviceSession, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
+import { adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
 import { DEVICES_ADDRESS, wipeCache, writeCached } from "../src/core/localCache.js";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { entityIdOf } from "../src/core/entityId.js";
@@ -90,8 +90,14 @@ const adopt = () => {
  * answer. None of them is "connected"; each case paints as if it were.
  */
 const CONNECTION_STATES = {
-  // A cold reload: the account lists the machine, nothing has answered in this
-  // tab yet, and the supervisor is dialling it.
+  // The first frame of a cold reload: the device list is the cache's, which
+  // calls every machine offline until the account answers (views/gate.js
+  // asTheCacheKnowsIt), and nothing has been dialled yet.
+  booting: () => {
+    App.devices = devicesListing("offline");
+  },
+  // A cold reload once the account has answered: it lists the machine, nothing
+  // has answered in this tab yet, and the supervisor is dialling it.
   connecting: () => {
     App.devices = devicesListing("online");
     recovery.set(DEVICE, { deviceId: DEVICE, status: "attempting", failedAttempts: 0, nextAttemptAt: null });
@@ -118,7 +124,11 @@ const workspace = {
   project_id: "p1",
   directories: [{ source_id: "assets", name: "Assets", is_git: false }],
 };
-const branchRow = { kind: "branch", project_id: "p1", project: "notes", branch: "build/login", worktree_id: "wt-1", agents: [] };
+const branchRow = {
+  kind: "branch", project_id: "p1", project: "notes", branch: "build/login", worktree_id: "wt-1", agents: [],
+  state: "review", can_finish: true, finish: { warnings: [] }, primary: false, issue_id: null,
+  stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
+};
 
 /** The board as the last session's pass left it on disk, read by the feed. */
 async function cacheBoard() {
@@ -143,7 +153,8 @@ const SURFACES = {
   branch: {
     route: { name: "branch", deviceId: DEVICE, projectId: "p1", branch: "build/login", tab: "changes" },
     render: renderBranch,
-    painted: () => document.querySelector("#tabbody .gitpane"),
+    // The Done the cached row offers, in the surface's bar.
+    painted: () => document.querySelector("#tabbody .gitpane") && document.querySelector("#tb-verb")?.textContent.includes("Done"),
   },
   issue: {
     route: { name: "issue", deviceId: DEVICE, projectId: "p1", id: "issue-1" },
@@ -178,7 +189,9 @@ const SURFACES = {
   workspace: {
     route: { name: "workspace", deviceId: DEVICE, projectId: "p1", workspaceId: "ws-1", sourceId: "assets", tab: "files" },
     render: renderWorkspace,
-    painted: () => renderFilesTab.mock.calls.length > 0 && document.querySelector("#tabbody .file-editor"),
+    // The cached checkout's one directory, its tab, and the pane over it.
+    painted: () => document.querySelector('#dir-rail [data-tab="files"]') && renderFilesTab.mock.calls.length > 0
+      && document.querySelector("#tabbody .file-editor"),
   },
 };
 
@@ -227,8 +240,10 @@ describe.each(Object.entries(SURFACES))("the %s surface paints from the cache", 
     // surface says otherwise. Only one nothing is dialling is named.
     expect(Boolean(document.querySelector("#root > .device-strip"))).toBe(state === "disconnected");
     // The rail beside it pages its conversation out of the same records, so it
-    // stands too.
+    // stands too, on the repository the machine's session will take over.
     expect(mountAgentRail).toHaveBeenCalledOnce();
+    expect(mountAgentRail.mock.calls[0][1].chatRepository).toBe(contextFor(DEVICE).chatRepository);
+    expect(contextFor(DEVICE).chatRepository).toBeTruthy();
     // Nothing a surface painted came off the wire: no session was answering.
     if (bridge) expect(bridge.call).not.toHaveBeenCalled();
   });

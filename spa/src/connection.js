@@ -48,6 +48,7 @@ import {
   loseDeviceConnection,
   markDevicePresenceAway,
   onDeviceStateChanged,
+  openedContext,
   refuseDeviceConnection,
   releaseGreeting,
   retryDeviceConnection,
@@ -974,10 +975,10 @@ function worthGuessingAt(device) {
 }
 
 /** A machine nothing here has asked for yet: it has never answered and has
- *  never been blocked (no context either way), has no dial on it now, and is
- *  not barred. */
+ *  never been blocked (no context either way — a page standing on its records
+ *  is not an ask), has no dial on it now, and is not barred. */
 function neverAsked(device) {
-  if (existingDeviceLifecycle(device.id)?.snapshot().securityStop || contextFor(device.id)) return false;
+  if (existingDeviceLifecycle(device.id)?.snapshot().securityStop || openedContext(device.id)) return false;
   return !connectionAttempts.isConnecting(device.id);
 }
 

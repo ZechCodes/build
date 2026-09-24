@@ -103,6 +103,11 @@ function createDeviceContext(deviceId) {
    *  whichever session the device is on when the call is made; a call already
    *  in flight settles on the session that accepted it. */
   context.rpc = asking(context, () => context.call);
+  // The conversations exist before any session does: a page can stand the rail
+  // up over this machine's records before it answers (core/surfaceContext.js),
+  // and the session that lands retargets this repository rather than minting
+  // one the rail never hears of.
+  bindRepository(context, context.rpc);
   // What this bridge offers to start work with, held here rather than on the
   // app: the machine is what the answer is about (core/modelCatalog.js).
   Object.assign(context, createModelCatalog(context));
@@ -214,6 +219,14 @@ export const canAnswer = (context) =>
  */
 export const awaitingFirstAnswer = (context) =>
   Boolean(context) && !context.session && !context.offlineSince && !context.unsupported;
+
+/** This machine's context once this client has opened it — tried it, at
+ *  least — or null. One a page stood up over its records before it answered
+ *  says nothing about the machine yet. */
+export function openedContext(deviceId) {
+  const context = contextFor(deviceId);
+  return awaitingFirstAnswer(context) ? null : context;
+}
 
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */

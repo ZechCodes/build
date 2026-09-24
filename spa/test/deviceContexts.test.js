@@ -365,6 +365,22 @@ describe("the device context registry", () => {
     expect(homeContext()).toBe(contextFor("dev-b"));
   });
 
+  // The rail a page stands up over a machine's records takes that machine's
+  // chat repository from its context. The session that lands later configures
+  // and repairs that repository (connection.js greetLiveBridge), so it must be
+  // the same object the rail was handed, not one the rail minted for itself.
+  it("gives a stand-in context the repository its session will retarget", () => {
+    App.devices = [online("dev-a")];
+    const standIn = knownDeviceContext("dev-a");
+    const repository = standIn.chatRepository;
+
+    expect(repository).toBeTruthy();
+
+    adoptDeviceSession(fakeSession("dev-a"));
+
+    expect(contextFor("dev-a").chatRepository).toBe(repository);
+  });
+
   // A machine that never answered still has something to say about itself: the
   // connect sequence can fail before any session lands, and rule 3 says that
   // machine is blocked rather than silent. So it is given a context of its own

@@ -8,7 +8,7 @@ import { App, render } from "../app.js";
 import { deviceFrozenText, esc } from "./text.js";
 import { deviceAwayText } from "./deviceAway.js";
 import { deviceNameOf } from "./devicePolicy.js";
-import { canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
+import { awaitingFirstAnswer, canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
 import { surfaceContext } from "./surfaceContext.js";
 import { connectDevice, deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
 
@@ -89,7 +89,7 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
   const paint = () =>
     nameTheMachine(
       host,
-      canAnswer(context) || recovering(context.deviceId) ? null : awayWords(context.deviceId, hasContent),
+      unnamed(context) ? null : awayWords(context.deviceId, hasContent),
       context.deviceId,
     );
   paint();
@@ -99,6 +99,12 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
     nameTheMachine(host, null);
   };
 }
+
+/** Nothing to name: the machine answers, is being dialled, or has not been
+ *  tried yet at all — a cold reload paints from the records before the account
+ *  has even said which machines are up, and that is connecting, not gone. */
+const unnamed = (context) =>
+  canAnswer(context) || recovering(context.deviceId) || awaitingFirstAnswer(context);
 
 /** One strip or none: the host carries at most one, whatever the account says
  *  and however often it says it. */

@@ -13,7 +13,7 @@ const SECTIONS = [
 /** Done on a bridge that knows when the user was last here. */
 const DONE_SINCE_LEFT = {
   id: "done",
-  title: "Done since you left",
+  title: "Done",
   empty: "Nothing has moved to Done since you left.",
 };
 const sectionsFor = (context) =>

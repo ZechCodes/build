@@ -119,7 +119,7 @@ it("shows work finished while the user was away, across their return on another 
   expect(finished.status).toBe("done");
   await mountWith(greeting);
   expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(true);
-  expect(doneTab().textContent).toContain("Done since you left");
+  expect(doneTab().querySelector("span").textContent).toBe("Done");
   await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
 
   // The user came back on the phone: the push brings the new session here.

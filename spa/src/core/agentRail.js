@@ -753,6 +753,11 @@ export function mountAgentRail(host, context) {
   // where pressing a bubble below the line leaves it — out.
   // A swap is a press on the other side's bubble, so it names what it selects;
   // the first stand opens on whatever the reader left this rail on.
+  // Which kind of thing is selected — an agent or the overview — is the
+  // page's too (#148): both sides remember it under the page's key, so an
+  // overview opened on the project's side is the overview a fresh mount of
+  // this page comes back to.
+  const pageKey = createAgentRailContext(context).key;
   const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
@@ -761,6 +766,7 @@ export function mountAgentRail(host, context) {
       // still a workspace. Overview breadth belongs to the page, not the
       // conversation selected on its strip.
       overviewPageKind: context.kind,
+      pageKey,
       payload: payloads.get(standing.kind) || null,
       alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
       panelOpen,
@@ -876,12 +882,12 @@ const openingAgentId = (context, railView, agents) => {
 };
 
 /** Which of the rail's one selection this mount opens on (#148): what a swap
- *  pressed, the `+` or the agent a URL named, else the one this rail was left
+ *  pressed, the `+` or the agent a URL named, else the one this page was left
  *  on — an open overview included, so a remount never trades it for a chat. */
-const openingKind = (context, railView) => {
+const openingKind = (context, pageView) => {
   if (context.selectedKind) return context.selectedKind;
   if (context.addingAgent === true) return "add";
-  return context.openAgentId ? "agent" : railView.selectedKind();
+  return context.openAgentId ? "agent" : pageView.selectedKind();
 };
 
 /** Whether the panel comes up on screen.
@@ -929,6 +935,9 @@ function mountRailOnContext(host, context, swap) {
     subscribeOptimistic,
   } = chatRepository.optimisticStore();
   const railView = chatRepository.railView(key);
+  // Where the kind of selection is kept: the page's view, which is this rail's
+  // own unless it stands on the project's side of a workspace page.
+  const pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
   const selection = context.selection || createAgentSelection();
   // What the side this mount stands on was last read to be, where a swap put
   // this rail here holding it. The strip paints its agents — their unread,
@@ -1027,7 +1036,10 @@ function mountRailOnContext(host, context, swap) {
   // this says whether the panel shows it, the `+`'s chooser (left by the send
   // that creates the agent), or the chat overview. Every bubble on the strip
   // selects and toggles the same way (`pressBubble`).
-  let selectedKind = openingKind(context, railView);
+  // What this mount opens on is remembered as it opens: a swap's press
+  // selects as surely as a press below the line does.
+  let selectedKind = openingKind(context, pageView);
+  pageView.chooseKind(selectedKind);
   const addingAgent = () => selectedKind === "add";
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
@@ -1171,7 +1183,7 @@ function mountRailOnContext(host, context, swap) {
    *  so a remount comes back to it (#148). */
   const selectKind = (kind) => {
     selectedKind = kind;
-    railView.chooseKind(kind);
+    pageView.chooseKind(kind);
   };
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
@@ -3173,7 +3185,8 @@ function mountRailOnContext(host, context, swap) {
 
   const repaintComposerFromDraft = () => {
     const panel = host.querySelector("#rail-panel");
-    if (!panel) return;
+    // The overview has no composer; the draft waits for the next `+`.
+    if (!panel || selectedKind === "overview") return;
     panel.dataset.body = "";
     paintPanel();
   };
@@ -3269,17 +3282,25 @@ function mountRailOnContext(host, context, swap) {
       await wakeAgent(addressedSubmission);
     };
 
+    // The agent that failed to exist leaves the id under the selection, and
+    // takes the panel back only where the panel still shows it. A reader who
+    // selected something else meanwhile keeps it — the overview included, which
+    // kept the provisional id underneath (#148). Says whether it was shown.
+    const leaveProvisional = () => {
+      const shown = selectedKind === "agent" && selectedId === provisionalAgentId;
+      if (selectedId === provisionalAgentId) chooseAgent(selectedBeforeCreate);
+      return shown;
+    };
     const onRevert = (error) => {
       if (operationIsUncertain(error)) {
         controller.recordOperationFailure(submission, error);
-        if (selectedId === provisionalAgentId) {
-          chooseAgent(selectedBeforeCreate);
+        if (leaveProvisional()) {
           selectKind("add");
           paint();
         }
         return;
       }
-      if (isProvisionalKey(selectedId)) {
+      if (leaveProvisional()) {
         selectKind(kindBeforeCreate);
         openConversation(selectedBeforeCreate);
       }

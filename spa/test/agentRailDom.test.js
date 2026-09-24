@@ -4592,6 +4592,46 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room");
   });
 
+  it("leaves the overview a reader opened while the agent was being made when making it fails (#148)", async () => {
+    payload = agentless();
+    await mount();
+    let refuse = null;
+    const answer = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "agent.add") return answer(method, params);
+      calls.push({ method, params });
+      return new Promise((resolve, reject) => {
+        refuse = reject;
+      });
+    });
+    const overviewControl = () => railHost().querySelector('[data-bubble="overview"]');
+    const active = () => [...railHost().querySelectorAll(".rail-strip > .active")].map((one) => one.dataset.bubble);
+
+    await press("start here");
+    overviewControl().click();
+    await flush();
+    expect(active()).toEqual(["overview"]);
+    expect(panel().dataset.body).toBe("overview");
+
+    refuse(new Error("no room"));
+    await flush();
+
+    // The failure reports itself, and takes nothing the reader chose since.
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room");
+    expect(active()).toEqual(["overview"]);
+    expect(panel().dataset.body).toBe("overview");
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(railHost().querySelector(".rail-newagent")).toBeNull();
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]);
+
+    // The draft is where the send left it: back in the chooser's box.
+    railHost().querySelector('[data-bubble="ghost"]').click();
+    await flush();
+    expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
+    expect(composer().value).toBe("start here");
+  });
+
   it("keeps the agent when only the message was refused", async () => {
     payload = agentless();
     await mount();

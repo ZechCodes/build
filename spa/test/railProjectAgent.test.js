@@ -297,6 +297,50 @@ describe("the chat overview beside the project's agent", () => {
     expect(active()).toEqual(["project"]);
     expect(headWho()).toBe("Sort the workspaces");
     expect(panelIsOpen()).toBe(true);
+
+    // The press below the line selected a chat, and the page remembers that:
+    // a fresh mount comes back on a conversation, not the overview left
+    // before the presses.
+    agentBubble("wa-1").click();
+    await flush();
+    rail.dispose();
+    await mountWorkspaceRail();
+    expect(active()).toEqual(["agent"]);
+    expect(panel().dataset.body).not.toBe("overview");
+  });
+
+  it("comes back on a fresh mount of the workspace's page after opening on the project's side", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+    overviewControl().click();
+    await flush();
+    expect(active()).toEqual(["overview"]);
+
+    rail.dispose();
+    await mountWorkspaceRail();
+
+    expect(active()).toEqual(["overview"]);
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(panel().dataset.body).toBe("overview");
+  });
+
+  it("is not brought back once a swap across the line selected a chat", async () => {
+    await mountWorkspaceRail();
+    overviewControl().click();
+    await flush();
+    projectBubble().click();
+    await flush();
+    expect(active()).toEqual(["project"]);
+    agentBubble("wa-1").click();
+    await flush();
+    expect(active()).toEqual(["agent"]);
+
+    rail.dispose();
+    await mountWorkspaceRail();
+
+    expect(active()).toEqual(["agent"]);
+    expect(panel().dataset.body).not.toBe("overview");
   });
 });
 

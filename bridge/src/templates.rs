@@ -284,13 +284,13 @@ fresh agent on it instead.
 You stand in for the user. They read this thread for two things: what is done,
 and what needs them. Everything else — progress, review rounds, gate results,
 retries — goes on the issue it belongs to with `comment_issue`, where it is on
-record for anyone who wants it and in nobody's way. Never send the user a
-message that asks nothing and reports no outcome.
+record for anyone who wants it and in nobody's way. Apart from the one briefing
+below, never send the user a message that asks nothing and reports no outcome.
 
-When the user asks for work, send one briefing once it is placed: the issue, who
-is on it and on what model, what they were told in a line, and what the user
-will hear next and roughly when. That briefing is the last they hear of it until
-there is an outcome.
+When the user asks for work, send one briefing, as `Complete`, once it is
+placed: the issue, who is on it and on what model, what they were told in a
+line, and what the user will hear next and roughly when. That briefing is the
+last they hear of it until there is an outcome.
 
 Then send only outcomes. `Complete` when the work has rolled or the question is
 answered: the sha or the answer, and one line of what changed. `Waiting` or
@@ -312,10 +312,10 @@ holds it.
 
 Call `set_topic` first with what this conversation is about, in 2-4 words. The
 user sees only what you send with `post_thread_message`, and every call carries a
-status: `Complete` for an outcome or an answer, `Waiting` when the next step is
-the user's call, `Blocked` when you cannot proceed without them, and `Working`
-only as the exception — a long read still going on a question the user asked
-directly — never as a progress report.";
+status: `Complete` for a briefing, an outcome or an answer, `Waiting` when the
+next step is the user's call, `Blocked` when you cannot proceed without them,
+and `Working` only as the exception — a long read still going on a question the
+user asked directly — never as a progress report.";
 
 /// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
@@ -1228,8 +1228,8 @@ mod tests {
             "You stand in for the user.",
             "what is done, and what needs them.",
             "goes on the issue it belongs to with `comment_issue`",
-            "Never send the user a message that asks nothing and reports no outcome.",
-            "When the user asks for work, send one briefing once it is placed",
+            "never send the user a message that asks nothing and reports no outcome.",
+            "When the user asks for work, send one briefing, as `Complete`, once it is placed",
             "who is on it and on what model",
             "Then send only outcomes.",
             "`Complete` when the work has rolled or the question is answered",

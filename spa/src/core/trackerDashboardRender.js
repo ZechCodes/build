@@ -38,13 +38,27 @@ const dashboardRowHtml = (entry, context, section) => {
   </li>`;
 };
 
-const DONE_GROUP_KEY = "done-group:";
+/** One age group of Done: its title above and outside its own panel, and a
+ *  keyed list of its rows inside. The list is patched by `paintDoneGroups`, so
+ *  the block's markup leaves it empty. */
+const doneGroupHtml = (group) => `<div class="issue-dashboard-group" data-done-group="${esc(group.id)}">
+    <h3 class="issue-dashboard-group-title">${esc(group.title)}</h3>
+    <div class="issue-dashboard-group-panel"><ul class="issue-dashboard-list" ${KEYED_LIST_ATTRIBUTE}></ul></div>
+  </div>`;
 
-/** Done's rows under a plain title for each age group, in one keyed list so a
- *  row that moves to the next group keeps its element. */
-const doneItems = (groups) => groups.flatMap((group) => [{ group }, ...group.entries]);
-const itemKey = (item) => (item.group ? `${DONE_GROUP_KEY}${item.group.id}` : item.issue.id);
-const doneGroupHtml = (group) => `<li class="issue-dashboard-group-title">${esc(group.title)}</li>`;
+/** Done grouped by time: one block per group, keyed by group id, each holding
+ *  its own keyed list, so a row keeps its element while it stays in its group. */
+function paintDoneGroups(container, groups, context) {
+  patchList(container, groups, { keyOf: (group) => group.id, render: doneGroupHtml });
+  const blocks = [...container.children];
+  for (const group of groups) {
+    const block = blocks.find((element) => element.dataset.doneGroup === group.id);
+    patchList(block.querySelector(".issue-dashboard-list"), group.entries, {
+      keyOf: (entry) => entry.issue.id,
+      render: (entry) => dashboardRowHtml(entry, context, "done"),
+    });
+  }
+}
 
 /** One selected section, from cached records only. The Dashboard's links are
  *  the same issue routes as List and Board, including inside a workspace. */
@@ -52,15 +66,16 @@ export function paintIssueDashboard(body, sections, context) {
   const shown = sectionsFor(context);
   const selected = shown.find((section) => section.id === context.dashboardTab) || shown[0];
   const entries = sections[selected.id] || [];
+  const grouped = selected.id === "done" && Array.isArray(sections.doneGroups) && entries.length > 0;
   const tabs = shown.map((section) => `<button type="button" class="issue-dashboard-tab" role="tab"
     id="issue-dashboard-tab-${section.id}" data-dashboard-tab="${section.id}"
     aria-controls="issue-dashboard-panel" aria-selected="${section.id === selected.id}"
     tabindex="${section.id === selected.id ? 0 : -1}"><span>${section.title}</span><span class="issue-dashboard-count">${(sections[section.id] || []).length}</span></button>`).join("");
   const frame = `<div class="issue-dashboard">
     <div class="issue-dashboard-tabs" role="tablist" aria-label="Issue dashboard sections">${tabs}</div>
-    <section class="issue-dashboard-section" id="issue-dashboard-panel" role="tabpanel"
+    <section class="issue-dashboard-section${grouped ? " is-grouped" : ""}" id="issue-dashboard-panel" role="tabpanel"
       data-dashboard-section="${selected.id}" aria-labelledby="issue-dashboard-tab-${selected.id}">
-      <ul class="issue-dashboard-list" ${KEYED_LIST_ATTRIBUTE}></ul>
+      ${grouped ? `<div class="issue-dashboard-groups" ${KEYED_LIST_ATTRIBUTE}></div>` : `<ul class="issue-dashboard-list" ${KEYED_LIST_ATTRIBUTE}></ul>`}
       ${entries.length ? "" : `<p class="issue-dashboard-empty">${selected.empty}</p>`}
     </section>
   </div>`;
@@ -77,9 +92,12 @@ export function paintIssueDashboard(body, sections, context) {
       body.querySelector(`[data-dashboard-tab="${next}"]`)?.focus();
     };
   });
-  const grouped = selected.id === "done" && Array.isArray(sections.doneGroups);
-  patchList(body.querySelector(".issue-dashboard-list"), grouped ? doneItems(sections.doneGroups) : entries, {
-    keyOf: itemKey,
-    render: (item) => (item.group ? doneGroupHtml(item.group) : dashboardRowHtml(item, context, selected.id)),
+  if (grouped) {
+    paintDoneGroups(body.querySelector(".issue-dashboard-groups"), sections.doneGroups, context);
+    return;
+  }
+  patchList(body.querySelector(".issue-dashboard-list"), entries, {
+    keyOf: (entry) => entry.issue.id,
+    render: (entry) => dashboardRowHtml(entry, context, selected.id),
   });
 }

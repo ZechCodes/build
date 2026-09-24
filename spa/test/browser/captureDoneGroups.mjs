@@ -1,12 +1,14 @@
 // Capture the review image for #157: the mounted Dashboard's Done tab grouped
 // by time, on a bridge that carries the user's session.
-// Run from spa/: node test/browser/captureDoneGroups.mjs [output.png]
+// Run from spa/: node test/browser/captureDoneGroups.mjs [output.png] [width] [height]
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 import { deviceShim } from "./issueIdentityHarness.mjs";
 
 const output = process.argv[2] || "/tmp/done-groups.png";
+const width = Number(process.argv[3]) || 1440;
+const height = Number(process.argv[4]) || 900;
 const fixture = (name) => readFile(fileURLToPath(new URL(`../../../fixtures/api/v1/${name}.json`, import.meta.url)), "utf8")
   .then(JSON.parse);
 const hello = (await fixture("session.hello")).result;
@@ -59,4 +61,4 @@ await withLayoutPage(async ({ page, basePath }) => {
   const titles = await page.locator(".issue-dashboard-group-title").allTextContents();
   console.log(titles.join(" | "));
   await page.screenshot({ path: output });
-}, { width: 1440, height: 900, plugins: [deviceShim] });
+}, { width, height, plugins: [deviceShim] });

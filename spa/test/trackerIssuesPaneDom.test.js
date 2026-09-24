@@ -319,10 +319,21 @@ describe("the Dashboard", () => {
     await chooseTab("done");
     await vi.waitFor(() => expect(dashboardRows("done")).toHaveLength(4));
 
-    const list = host.querySelector('[data-dashboard-section="done"] .issue-dashboard-list');
-    expect([...list.children].map((child) => child.classList.contains("issue-dashboard-group-title")
-      ? `# ${child.textContent}` : child.dataset.issue))
-      .toEqual(["# Last 15 minutes", "fresh", "recent", "# 30 minutes ago", "half", "# 2 hours ago", "older"]);
+    const panel = host.querySelector('[data-dashboard-section="done"]');
+    expect(panel.classList.contains("is-grouped")).toBe(true);
+    const blocks = [...panel.querySelectorAll(".issue-dashboard-group")];
+    // Each group: its title above and outside its own panel, then the panel
+    // holding that group's own list of rows.
+    expect(blocks.map((block) => [
+      block.children[0].tagName, block.children[0].textContent,
+      block.children[1].className,
+      [...block.querySelectorAll(".issue-dashboard-group-panel > .issue-dashboard-list > li")].map((row) => row.dataset.issue),
+    ])).toEqual([
+      ["H3", "Last 15 minutes", "issue-dashboard-group-panel", ["fresh", "recent"]],
+      ["H3", "30 minutes ago", "issue-dashboard-group-panel", ["half"]],
+      ["H3", "2 hours ago", "issue-dashboard-group-panel", ["older"]],
+    ]);
+    expect(panel.querySelectorAll(".issue-dashboard-group-panel .issue-dashboard-group-title")).toHaveLength(0);
     expect(host.querySelector(".issue-dashboard-group-title").children).toHaveLength(0);
     expect(host.querySelector('[data-dashboard-tab="done"] .issue-dashboard-count').textContent).toBe("4");
     const row = host.querySelector('[data-dashboard-section="done"] [data-issue="recent"]');
@@ -330,6 +341,13 @@ describe("the Dashboard", () => {
     expect([...row.querySelector(".issue-dashboard-link").children].map((part) => [part.className, part.textContent]))
       .toEqual([["issue-dashboard-number", "#3"], ["issue-dashboard-title", "Recent fix"], ["issue-dashboard-detail", "Moved to Done"]]);
     expect(row.querySelector(".issue-dashboard-link").getAttribute("href")).toContain("recent");
+
+    // A repaint keeps each row's element while it stays in its group.
+    const renamed = finished.map(([done]) => (done.id === "older" ? { ...done, title: "Older fix, renamed" } : done));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: renamed, columns: columns() });
+    await vi.waitFor(() => expect(host.querySelector('[data-issue="older"] .issue-dashboard-title').textContent)
+      .toBe("Older fix, renamed"));
+    expect(host.querySelector('[data-dashboard-section="done"] [data-issue="recent"]')).toBe(row);
   });
 
   it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {

@@ -337,7 +337,12 @@ async function checkMergeUncovered(page, label) {
 // move back toward act 7 takes both; a return, or quick crossings, end on
 // the second alone.
 async function checkClosingBeats(page, label) {
-  const beats = () => page.evaluate(() => ["a", "b"].map((beat) => Number(getComputedStyle(document.querySelector(`[data-beat="${beat}"]`)).opacity)));
+  // What a visitor sees of each beat: the element's opacity times its
+  // headline's, since the scroll fades one and the beat the other.
+  const beats = () => page.evaluate(() => ["a", "b"].map((beat) => {
+    const element = document.querySelector(`[data-beat="${beat}"]`);
+    return Number(getComputedStyle(element).opacity) * Number(getComputedStyle(element.querySelector("h2")).opacity);
+  }));
   await rest(page, 2);
   await rest(page, 8);
   await beatFinished(page, 8);
@@ -349,6 +354,18 @@ async function checkClosingBeats(page, label) {
   await rest(page, 8);
   await page.waitForTimeout(300);
   assert.deepEqual(await beats(), [0, 1], `${label}: a return shows the second beat`);
+  // A jump back that the playhead crosses in one slow frame, as a software
+  // renderer does: the scroll's fade and the beat's rewind must not leave a
+  // beat on. The frame is held just under GSAP's lag-smoothing threshold,
+  // so the scrub covers most of the jump in one tick.
+  await page.evaluate(() => {
+    window.BuildFilm.rest(7);
+    const started = performance.now();
+    while (performance.now() - started < 450);
+  });
+  await page.waitForTimeout(500);
+  assert.deepEqual(await beats(), [0, 0], `${label}: a one-frame jump back to act 7 shows neither beat`);
+  await rest(page, 8);
   await rest(page, 7);
   await rest(page, 8);
   await rest(page, 6);

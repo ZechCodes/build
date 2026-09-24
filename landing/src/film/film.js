@@ -118,8 +118,10 @@ function createBeats({ scenes, heroPush, panels, act8 }) {
   const a = query(act8, '[data-beat="a"]');
   const b = query(act8, '[data-beat="b"]');
   const closing = gsap.timeline({ paused: true });
-  // The first copy beat is the scroll's; the beat holds it, then gives way.
-  closing.to(a, { autoAlpha: 0, y: -18, duration: 0.4, ease: "power2.in" }, 3.2);
+  // The first copy beat is the scroll's to bring in; the beat holds it, then
+  // takes its lines away. The beat fades the lines, never the element the
+  // scroll fades, so a rewind cannot undo the scroll.
+  closing.to([...a.children], { autoAlpha: 0, y: -18, duration: 0.4, ease: "power2.in" }, 3.2);
   closing.fromTo(b, { autoAlpha: 0, y: 28 }, { autoAlpha: 1, y: 0, duration: 1.2, ease: "power2.out" }, 3.8);
   beats[8] = closing;
   return { beats, offsets };
@@ -365,7 +367,7 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     tl.kill();
     player.kill();
     for (const departure of Object.values(departures)) departure.kill();
-    gsap.set(acts.flatMap((act) => [...copyItems(act), ...act.querySelectorAll("[data-beat], .captions li")]), { clearProps: "all" });
+    gsap.set(acts.flatMap((act) => [...copyItems(act), ...act.querySelectorAll("[data-beat], [data-beat] > *, .captions li")]), { clearProps: "all" });
     overlays.dispose();
     stage.dispose();
     delete root.dataset.mode;

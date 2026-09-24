@@ -275,3 +275,66 @@ describe("mountMenuIfChanged", () => {
     expect(document.activeElement).toBe(elsewhere);
   });
 });
+
+describe("keeping the row the keys land on in sight", () => {
+  // jsdom lays nothing out, so the menu's geometry is stood in: four rows of
+  // 40px in a menu that shows 100px of them and scrolls the rest, the second
+  // group's heading standing 10px above its first row. The real browser
+  // check is test/browser/chatMenuKeyboardLayout.test.js.
+  const ROW_HEIGHT = 40;
+  let caret;
+  let menu;
+  const stand = (element, properties) => {
+    for (const [name, value] of Object.entries(properties)) {
+      Object.defineProperty(element, name, { value, writable: true, configurable: true });
+    }
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    const container = document.createElement("div");
+    container.innerHTML = groupedMenuButtonMarkup("⋮", GROUPS, { title: "Conversation menu", icon: true });
+    document.body.appendChild(container);
+    mountSplitMenu(container, { onChoose: vi.fn() });
+    caret = container.querySelector(".caret");
+    menu = container.querySelector(".splitmenu");
+    stand(menu, { clientHeight: 100, scrollTop: 0 });
+    menu.querySelectorAll(".mi").forEach((row, index) => {
+      stand(row, { offsetParent: menu, offsetTop: index * ROW_HEIGHT, offsetHeight: ROW_HEIGHT });
+    });
+    const [show, detail] = menu.querySelectorAll(".menu-group");
+    stand(show, { offsetParent: menu, offsetTop: 0 });
+    stand(detail, { offsetParent: menu, offsetTop: 2 * ROW_HEIGHT - 10 });
+    caret.focus();
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("scrolls the menu down to a row past its bottom edge, and back up to one above its top", () => {
+    keydown(caret, "ArrowUp"); // opens on the last row: 120–160, past a 100px window
+    expect(menu.scrollTop).toBe(60);
+    keydown(menu, "Home");
+    expect(menu.scrollTop).toBe(0);
+    keydown(menu, "End");
+    expect(menu.scrollTop).toBe(60);
+  });
+
+  it("leaves the menu where it is for a row already in sight", () => {
+    keydown(caret, "ArrowDown");
+    keydown(menu, "ArrowDown"); // 40–80, inside 0–100
+    expect(menu.scrollTop).toBe(0);
+    keydown(menu, "ArrowDown"); // 80–120: 20px past the bottom
+    expect(menu.scrollTop).toBe(20);
+    keydown(menu, "ArrowUp"); // 40–80, inside 20–120
+    expect(menu.scrollTop).toBe(20);
+  });
+
+  it("brings a group's heading in with its first row", () => {
+    keydown(caret, "ArrowUp"); // the last row, at the bottom: scrolled to 60
+    menu.scrollTop = 75; // the reader scrolled the Detail heading (70–80) out of the top
+    keydown(menu, "ArrowUp"); // Detail's first row, 80–120: in sight, its heading not
+    expect(menu.scrollTop).toBe(70);
+  });
+});

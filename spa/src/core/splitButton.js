@@ -3,7 +3,7 @@
 // once inlined in views/task.js. Pure markup + thin wiring; every user-supplied
 // string is escaped.
 
-import { hide, reveal } from "./motion.js";
+import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
 
 const MENU_MOVE = { axis: "height" };
@@ -278,17 +278,60 @@ function watchFocusLeaving(container, onLeft) {
   focusWatchers.set(container, onLeft);
 }
 
+/** A row's top, measured from the menu's scrolling origin: its offsets summed
+ *  up to the menu, whichever of its ancestors are positioned. */
+function rowTopWithin(menu, row) {
+  let top = 0;
+  for (let each = row; each && each !== menu && menu.contains(each); each = each.offsetParent) top += each.offsetTop;
+  return top;
+}
+
+/** Where a row's sight starts: at the row, or at its group's heading when
+ *  it is the group's first row (`menuGroupsHtml`) — a value without the name
+ *  of its setting above it is a bare word. */
+function sightTopOf(menu, row) {
+  const opensGroup = row.parentElement !== menu && !row.previousElementSibling?.matches(MENU_ITEM_SELECTOR);
+  return rowTopWithin(menu, opensGroup ? row.parentElement : row);
+}
+
+/** Scroll the menu, and only the menu, until the row is inside its visible
+ *  area. A row takes focus with `preventScroll` so the page under a lifted
+ *  menu stays where it is — but a menu taller than its bound scrolls inside
+ *  itself (`liftMenuOutOfScroll`), and a row past its edge would otherwise
+ *  take focus out of sight, where Enter chooses what the reader cannot see.
+ *  Measured in layout units: the reveal animates the menu's height, so a
+ *  scroll made while it plays can land wrong, and `focusRow` measures again
+ *  once motion has settled. */
+function scrollRowIntoMenu(menu, row) {
+  const above = sightTopOf(menu, row) - menu.scrollTop;
+  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - menu.clientHeight;
+  if (above < 0) menu.scrollTop += above;
+  else if (below > 0) menu.scrollTop += below;
+}
+
 /** The keys a menu answers. On its opener, the arrows open it with a row
  *  focused — ArrowDown the first, ArrowUp the last — and Escape shuts it. In
  *  the menu, the arrows walk the rows and wrap, Home and End jump, Enter and
  *  Space choose the focused row, and Escape shuts without choosing. Focus goes
  *  back to the opener whenever the menu shuts from the keyboard. Tab is left
- *  alone: focus leaving the menu shuts it (`mountSplitMenu`'s focusout). */
+ *  alone: focus leaving the menu shuts it (`mountSplitMenu`'s focusout).
+ *
+ *  Every row the keys land on is scrolled into sight (`scrollRowIntoMenu`):
+ *  at once, and again once the menu's motion has settled, for a key pressed
+ *  while the reveal is still playing. */
 function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
   const rows = () => [...menu.querySelectorAll(MENU_ITEM_SELECTOR)];
+  const focusedRow = () => rows().find((each) => each === document.activeElement);
+  const showFocusedRow = () => {
+    const row = focusedRow();
+    if (row) scrollRowIntoMenu(menu, row);
+  };
   const focusRow = (index) => {
     const all = rows();
-    if (all.length) all[((index % all.length) + all.length) % all.length].focus({ preventScroll: true });
+    if (!all.length) return;
+    all[((index % all.length) + all.length) % all.length].focus({ preventScroll: true });
+    showFocusedRow();
+    motionSettled().then(showFocusedRow);
   };
   // Shown at once, so the row can take focus; the reveal still plays over
   // the top of that, from nothing to its height.
@@ -302,7 +345,7 @@ function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
     caret.focus({ preventScroll: true });
   };
   const chooseFocused = () => {
-    const row = rows().find((each) => each === document.activeElement);
+    const row = focusedRow();
     if (row) choose(row);
   };
   const focusedIndex = () => rows().indexOf(document.activeElement);

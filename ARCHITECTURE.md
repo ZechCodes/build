@@ -311,6 +311,36 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   both carriers behind one `FrameIntake`/`SessionSender` boundary, so handlers
   never know which one a frame came in on.
 
+**The browser↔relay contract.** The relay is authentication and rendezvous and
+nothing else
+([`planning/v2/Strict P2P Transport Spec.md`](<planning/v2/Strict P2P Transport Spec.md>)).
+
+1. `POST /api/gateway-token` (Skrift-session authed) returns `{token}` with a
+   5-minute TTL (`GATEWAY_TOKEN_TTL` in `skriftapp/buildapp/devices_controller.py`).
+2. `GET /api/devices` returns `[{device_id, approved, status,
+   transport_public_key_b64, …}]`. Presence and transport keys come from here
+   and only here; the relay reports neither. `status` is `online` iff the
+   bridge's heartbeat landed within 90 s (`ONLINE_WINDOW` in
+   `skriftapp/buildapp/presence.py`).
+3. The browser opens `/ws/client` and sends `{"type":"authenticate","token":…}`
+   first; the relay validates the token with the app and replies
+   `{"type":"authenticated"}` or closes.
+4. The client seals a fresh session key to the app-pinned device transport key
+   and sends `session_init` with `route_to: "device:<id>"`; the device answers
+   `session_accept`. One socket per device mints every session that device
+   needs.
+5. That socket then carries only E2EE envelopes whose inner method is `rtc.*`
+   (offer, answer, trickled candidates). A bridge answers anything else with
+   `error_code: "unavailable"`, `details: {reason: "relay_is_not_a_data_plane"}`
+   and never dispatches it. The client closes the socket once both
+   DataChannels are open and reopens it for an ICE restart or another mint.
+6. Envelopes are opaque to the relay, which never holds a session key. A relay
+   frame is capped at 64 KiB (`MAX_WS_MESSAGE_BYTES` in
+   `bridge/src/relay_server.rs`).
+7. Relay→app calls to `/internal/*` carry `X-Internal-Secret:
+   $INTERNAL_API_SECRET`.
+8. The bridge posts a device-signed `POST /api/devices/heartbeat` every 30 s.
+
 ### Update and install
 
 - `bridge/src/update/`: `UpdateService` (`service.rs`) checks the public releases

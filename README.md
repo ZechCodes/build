@@ -17,7 +17,7 @@ authenticated on the machine running `build-bridge`.
 Task intake is **goal-form + batched plan/diff comments** — there is deliberately no chat UI.
 
 See [`planning/v2/`](planning/v2/) for the full scope, UI design brief, and roadmap, and
-[`HANDOFF.md`](HANDOFF.md) for the current state and how to run everything.
+[`deploy/README.md`](deploy/README.md) for how to run the whole stack.
 
 Contributing? Start at [Getting started](#getting-started), then
 [Testing](#testing) and [Contributing](#contributing).

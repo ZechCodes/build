@@ -51,6 +51,7 @@ import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
 import { directoryTab, standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
+import { fieldTraits } from "./fieldTraits.js";
 
 const SCOPE_ADDRESS = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
 const MENU_ADDRESS = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
@@ -678,7 +679,7 @@ function projectMenuEntries() {
 function projectMenuShellHtml() {
   return `
     <input class="tb-filter" type="text" placeholder="Jump to a project" value="${esc(open.query)}"
-      aria-label="Filter projects" autocomplete="off" />
+      aria-label="Filter projects" ${fieldTraits("search", "go")} />
     <div class="tbmenu-list"></div>`;
 }
 
@@ -712,7 +713,7 @@ const scopedName = () => nameOf(scopedProject()) || "This project";
 function workspaceMenuShellHtml() {
   return `
     <input class="tb-filter" type="text" placeholder="Jump to a workspace" value="${esc(open.query)}"
-      aria-label="Filter workspaces" autocomplete="off" />
+      aria-label="Filter workspaces" ${fieldTraits("search", "go")} />
     <div class="tb-group tb-scope">
       <span>${esc(scopedName())}</span>
       <button class="tb-scope-switch" data-projects type="button">Switch project</button>

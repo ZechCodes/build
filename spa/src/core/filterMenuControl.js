@@ -30,6 +30,7 @@ import {
   searchLabel,
   toggleChoice,
 } from "./filterMenu.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 let mounted = 0;
 
@@ -41,7 +42,7 @@ const frameHtml = (id, name, multi) => `<div class="fmenu" data-filter-menu="${e
       <span class="fmenu-press-label"></span>${ICON_CHEVRON}
     </button>
     <div class="fmenu-pop" id="${id}-pop" hidden role="group" aria-labelledby="${id}-press">
-      <input class="fmenu-search" id="${id}-search" type="text" autocomplete="off" spellcheck="false"
+      <input class="fmenu-search" id="${id}-search" type="text" ${fieldTraits("search")}
         role="combobox" aria-expanded="true" aria-controls="${id}-rows" aria-autocomplete="list">
       <ul class="fmenu-rows" id="${id}-rows" role="listbox"${multi ? ' aria-multiselectable="true"' : ""}></ul>
       <p class="fmenu-none" hidden>Nothing matches that.</p>

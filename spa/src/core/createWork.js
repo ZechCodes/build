@@ -15,6 +15,7 @@ import { workspaceRoute } from "./projectModel.js";
 import { stampWorkspace } from "./feedMerge.js";
 import { upsertSessionRow } from "./sessionListCache.js";
 import { esc } from "./text.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 export const CREATE_KINDS = ["workspace"];
 
@@ -51,8 +52,8 @@ export async function cacheCreatedWorkspace(deviceId, answer) {
 export function createWorkBodyHtml(state) {
   return `<h3>New workspace in ${esc(state.projectName)}</h3>
     <p class="sub create-hint">Copies every source in this project into one durable workspace.</p>
-    <label class="create-label" for="create-work-input">Name</label>
-    <input id="create-work-input" type="text" placeholder="Workspace" autocomplete="off" value="${esc(state.name)}"${state.busy ? " disabled" : ""} />
+    <label class="create-label" for="create-work-input">Workspace label</label>
+    <input id="create-work-input" type="text" placeholder="Workspace" ${fieldTraits("identifier", "go")} value="${esc(state.name)}"${state.busy ? " disabled" : ""} />
     <label class="create-label" for="create-work-isolation">Isolation</label>
     <select id="create-work-isolation"${state.busy ? " disabled" : ""}>
       ${isolationOptionsHtml(state.isolation, null, { inheritLabel: "Inherit project setting" })}

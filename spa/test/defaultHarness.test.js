@@ -326,7 +326,7 @@ describe("the device's settings page", () => {
 
     const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
     const at = (word) => headings.findIndex((heading) => heading.includes(word));
-    expect(at("Device name")).toBe(0);
+    expect(at("Device label")).toBe(0);
     expect(at("Projects")).toBe(1);
     expect(at("Bridge updates")).toBe(at("Projects folder") + 1);
     expect(at("Agent modes")).toBe(at("Bridge updates") + 1);

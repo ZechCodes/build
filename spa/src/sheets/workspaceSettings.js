@@ -25,6 +25,7 @@ import { settingsSheetHtml } from "./settingsSheet.js";
 import { deviceModelsAddress, projectSettingsAddress, watchSettingsRecord, workspaceSettingsAddress } from "../core/settingsRecords.js";
 import { deleteCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -35,8 +36,8 @@ const DEFAULTS_BLURB =
 
 const nameFieldHtml = (name) => `
     <div class="field">
-      <label for="wsname">Name</label>
-      <input id="wsname" style="width:100%" value="${esc(name || "")}" autocomplete="off" />
+      <label for="wslabel">Workspace label</label>
+      <input id="wslabel" style="width:100%" value="${esc(name || "")}" ${fieldTraits("identifier")} />
       <div class="dim">What this workspace is called in Build. The folder on disk and the branches inside it keep the names they were cut with.</div>
     </div>
     <div class="row">
@@ -74,12 +75,14 @@ const addDirectoryHtml = (offered) => `<div class="field">
       <div class="row"><button class="btn primary" id="wsdiraddgo" type="button" style="margin-left:auto" disabled>Add directory</button></div>
     </div>`;
 
+const directoryLabelHtml = `<label for="wsdirlabel">Folder label</label><input id="wsdirlabel" style="width:100%" ${fieldTraits("identifier")}>`;
+
 const directoryFieldsHtml = (kind) => {
   if (kind === "path") {
-    return '<label for="wsdirpath">Folder</label><input id="wsdirpath" style="width:100%" placeholder="/home/you/code/docs" autocomplete="off"><label for="wsdirname">Name</label><input id="wsdirname" style="width:100%" autocomplete="off">';
+    return `<label for="wsdirpath">Folder</label><input id="wsdirpath" style="width:100%" placeholder="/home/you/code/docs" ${fieldTraits("identifier", "next")}>${directoryLabelHtml}`;
   }
   if (kind === "remote") {
-    return '<label for="wsdirremote">Clone url</label><input id="wsdirremote" style="width:100%" placeholder="git@github.com:org/repo.git" autocomplete="off"><label for="wsdirname">Name</label><input id="wsdirname" style="width:100%" autocomplete="off">';
+    return `<label for="wsdirremote">Clone url</label><input id="wsdirremote" style="width:100%" placeholder="git@github.com:org/repo.git" ${fieldTraits("identifier", "next")}>${directoryLabelHtml}`;
   }
   return "";
 };
@@ -101,11 +104,11 @@ const dangerZoneHtml = () => `
     </section>`;
 
 const emptyDirectoryDraft = () => ({ kind: "", path: "", remote: "", name: "" });
+/** Each directory draft field and the input that holds it. */
+const DIRECTORY_INPUTS = { path: "#wsdirpath", remote: "#wsdirremote", name: "#wsdirlabel" };
 const directoryDraftOf = (host) => ({
   kind: host.querySelector("#wsdiradd")?.value || "",
-  path: host.querySelector("#wsdirpath")?.value || "",
-  remote: host.querySelector("#wsdirremote")?.value || "",
-  name: host.querySelector("#wsdirname")?.value || "",
+  ...Object.fromEntries(Object.entries(DIRECTORY_INPUTS).map(([field, selector]) => [field, host.querySelector(selector)?.value || ""])),
 });
 
 function restoreDirectoryDraft(host, draft) {
@@ -114,8 +117,8 @@ function restoreDirectoryDraft(host, draft) {
   choice.value = draft.kind || "";
   host.querySelector("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
   host.querySelector("#wsdiraddgo").disabled = !choice.value;
-  for (const field of ["path", "remote", "name"]) {
-    const control = host.querySelector(`#wsdir${field}`);
+  for (const [field, selector] of Object.entries(DIRECTORY_INPUTS)) {
+    const control = host.querySelector(selector);
     if (control) control.value = draft[field] || "";
   }
 }
@@ -164,7 +167,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     if (JSON.stringify(saved) === JSON.stringify(draft)) return;
     draft.name = typeof saved.name === "string" ? saved.name : null;
     draft.directory = saved.directory || emptyDirectoryDraft();
-    if (draft.name !== null) $("#wsname").value = draft.name;
+    if (draft.name !== null) $("#wslabel").value = draft.name;
     nameChanged();
     restoreDirectoryDraft(sheet, draft.directory);
   }, { debounceMs: 180 });
@@ -300,7 +303,7 @@ function wireDirectories(workspace, { callRpc, record, current, draft, saveDraft
 
 /** What the chosen row asks for, or `null` when it is not filled in yet. */
 function addDirectoryParams(kind) {
-  const name = $("#wsdirname")?.value.trim();
+  const name = $("#wsdirlabel")?.value.trim();
   const named = name ? { name } : {};
   if (kind === "path") {
     const path = $("#wsdirpath").value.trim();
@@ -317,7 +320,7 @@ function addDirectoryParams(kind) {
  *  call to a machine and a repaint of every surface that names this workspace,
  *  for no news at all. A blank name is no name, so it never enables either. */
 function wireName(workspace, { callRpc, close, onRenamed, draft, saveDraft, clearDraft }) {
-  const input = $("#wsname");
+  const input = $("#wslabel");
   const save = $("#wssave");
   const changed = () => {
     const value = input.value.trim();

@@ -12,6 +12,7 @@
 
 import { esc } from "./text.js";
 import { captureStatusText } from "./inbox.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const trimmed = (value) => String(value ?? "").trim();
 
@@ -167,7 +168,7 @@ function manualHtml(model, ui) {
     }</select>
     <div class="compose-kinds"><button class="btn mini primary" type="button" data-capture-kind="branch"${busy}>Branch</button></div>
     <label for="capture-branch">Branch</label>
-           <input id="capture-branch" type="text" class="path" list="capture-branches" autocomplete="off"
+           <input id="capture-branch" type="text" class="path" list="capture-branches" ${fieldTraits("identifier")}
              placeholder="a new branch, named after what you said" value="${esc(ui.branch || "")}"${busy} />
            <datalist id="capture-branches">${branches}</datalist>
     <button class="btn mini primary compose-manual" id="capture-route" type="button"${
@@ -183,7 +184,7 @@ function freeFormHtml(model, ui) {
   const shut = !model.awaitingAnswer || ui.busy;
   return `<div class="panel capture-freeform">
     <h3>${model.question ? "Or answer in your own words" : "Answer the router"}</h3>
-    <textarea id="capture-answer" rows="3" placeholder="Tell the router what you want"
+    <textarea id="capture-answer" rows="3" ${fieldTraits("prose")} placeholder="Tell the router what you want"
       aria-label="Answer the router"${ui.busy ? " disabled" : ""}>${esc(ui.answer || "")}</textarea>
     <button class="btn primary" id="capture-answer-send" type="button"${shut ? " disabled" : ""}>Send</button>
     ${model.awaitingAnswer ? "" : '<div class="compose-note dim">The router has not asked anything about this one.</div>'}

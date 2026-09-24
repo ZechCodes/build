@@ -15,6 +15,7 @@
 import { esc } from "./text.js";
 import { autoGrow } from "./composer.js";
 import { mountSplitButton } from "./splitButton.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** The comment verb's name: what it will do with what is in the box, counting
  *  the anchored comments riding along with it. */
@@ -71,7 +72,7 @@ export function changesComposerHtml(placeholder) {
   return `<div class="csbox">
     <span class="hint githint"></span>
     <div class="csbox-row">
-      <textarea class="csinput" rows="1" placeholder="${esc(placeholder)}"></textarea>
+      <textarea class="csinput" rows="1" ${fieldTraits("prose")} placeholder="${esc(placeholder)}"></textarea>
       <div class="csbox-actions"></div>
     </div>
   </div>`;

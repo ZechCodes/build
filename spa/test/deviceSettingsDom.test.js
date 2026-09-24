@@ -345,7 +345,7 @@ describe("device settings", () => {
     await writeCached(DEVICES_ADDRESS, [{ id: "other", name: "Cached workshop", status: "online" }]);
 
     await vi.waitFor(() => expect(document.querySelector("h1").textContent).toBe("Cached workshop settings"));
-    expect(document.querySelector("#device-name").value).toBe("Cached workshop");
+    expect(document.querySelector("#device-label").value).toBe("Cached workshop");
     expect(renameDevice).not.toHaveBeenCalled();
   });
 
@@ -354,10 +354,10 @@ describe("device settings", () => {
     renameDevice.mockReturnValue(new Promise((resolve) => { finishRename = resolve; }));
     await renderDeviceSettings();
 
-    const name = document.querySelector("#device-name");
+    const name = document.querySelector("#device-label");
     expect(document.querySelector("h1").textContent).toBe("Other machine settings");
     name.value = "  Workshop  ";
-    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector("#device-label-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(renameDevice).toHaveBeenCalledWith("other", "Workshop"));
 
     expect(renameDevice).toHaveBeenCalledWith("other", "Workshop");
@@ -368,28 +368,28 @@ describe("device settings", () => {
 
     expect(App.devices[0].name).toBe("Workshop");
     expect((await readCached(DEVICES_ADDRESS)).value[0].name).toBe("Workshop");
-    expect(document.querySelector("#device-name-status").textContent).toBe("Saved.");
+    expect(document.querySelector("#device-label-status").textContent).toBe("Saved.");
   });
 
   it("keeps the confirmed device name when a rename is refused", async () => {
     renameDevice.mockRejectedValue(new Error("Name could not be saved"));
     await renderDeviceSettings();
-    const name = document.querySelector("#device-name");
+    const name = document.querySelector("#device-label");
     name.value = "Workshop";
-    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await vi.waitFor(() => expect(document.querySelector("#device-name-status").textContent).toBe("Name could not be saved"));
+    document.querySelector("#device-label-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector("#device-label-status").textContent).toBe("Name could not be saved"));
 
     expect(App.devices[0].name).toBe("Other machine");
     expect(name.value).toBe("Other machine");
-    expect(document.querySelector("#device-name-status").textContent).toBe("Name could not be saved");
+    expect(document.querySelector("#device-label-status").textContent).toBe("Name could not be saved");
   });
 
   it("writes the rename against a newer cached presence record", async () => {
     let finishRename;
     renameDevice.mockReturnValue(new Promise((resolve) => { finishRename = resolve; }));
     await renderDeviceSettings();
-    document.querySelector("#device-name").value = "Workshop";
-    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector("#device-label").value = "Workshop";
+    document.querySelector("#device-label-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await writeCached(DEVICES_ADDRESS, [{ id: "other", name: "Other machine", status: "offline" }]);
     finishRename({ device_id: "other", name: "Workshop" });
     await vi.waitFor(() => expect(App.devices[0].name).toBe("Workshop"));
@@ -401,8 +401,8 @@ describe("device settings", () => {
     let finishRename;
     renameDevice.mockReturnValue(new Promise((resolve) => { finishRename = resolve; }));
     await renderDeviceSettings();
-    document.querySelector("#device-name").value = "Workshop";
-    document.querySelector("#device-name-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    document.querySelector("#device-label").value = "Workshop";
+    document.querySelector("#device-label-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     App.viewDispose();
     finishRename({ device_id: "other", name: "Workshop" });
     await vi.waitFor(() => expect(App.devices[0].name).toBe("Workshop"));

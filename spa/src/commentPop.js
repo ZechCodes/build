@@ -7,6 +7,7 @@
 // with text in it survives the first tap outside and warns.
 
 import { esc } from "./core/text.js";
+import { fieldTraits } from "./core/fieldTraits.js";
 
 let activePop = null;
 
@@ -34,7 +35,7 @@ export function outsideTapAction(hasText, armed) {
 /** Markup for the composer stage: a two-line textarea plus its confirm button.
  *  The arm hint (cp-keep) is appended/removed imperatively as the draft arms. */
 export function commentComposerHtml(placeholder = "Comment on this passage…", confirmLabel = "Add") {
-  return `<textarea class="cp-input" rows="2" placeholder="${esc(placeholder)}"></textarea><button class="cp-save">${esc(confirmLabel)}</button>`;
+  return `<textarea class="cp-input" rows="2" ${fieldTraits("prose", "send")} placeholder="${esc(placeholder)}"></textarea><button class="cp-save">${esc(confirmLabel)}</button>`;
 }
 
 /** The empty popover, placed under `rect` and clamped inside the viewport:

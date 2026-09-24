@@ -2,6 +2,7 @@ import { esc } from "./text.js";
 import { refLabel } from "./workspaceModel.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const kindLabel = (kind) => kind === "tag" ? "Tags" : "Branches";
 
@@ -30,7 +31,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
         <button type="button" role="tab" data-ref-kind="branch" aria-selected="true">Branches</button>
         <button type="button" role="tab" data-ref-kind="tag" aria-selected="false">Tags</button>
       </div>
-      <input class="workspace-refsearch" type="search" aria-label="Search branches and tags" placeholder="Search branches…" autocomplete="off">
+      <input class="workspace-refsearch" type="search" aria-label="Search branches and tags" placeholder="Search branches…" ${fieldTraits("search")}>
       <div class="workspace-refrows" role="listbox"></div>
     </div>
     <div class="error workspace-referror" role="status"></div>

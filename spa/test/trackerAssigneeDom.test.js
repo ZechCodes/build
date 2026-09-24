@@ -101,13 +101,13 @@ describe("the picker", () => {
     expect(document.querySelector(".agent-choice")).toBeNull();
     await choose("new_agent:ws-1");
     expect(document.querySelector(".agent-choice")).not.toBeNull();
-    expect(document.querySelector("#issue-assign-name")).toBeNull();
+    expect(document.querySelector("#issue-assign-workspace")).toBeNull();
   });
 
   it("asks a new workspace for its name and isolation, and nothing else for it", async () => {
     open();
     await choose("new_workspace");
-    expect(document.querySelector("#issue-assign-name")).not.toBeNull();
+    expect(document.querySelector("#issue-assign-workspace")).not.toBeNull();
     expect(document.querySelector("#issue-assign-isolation")).not.toBeNull();
   });
 
@@ -212,7 +212,7 @@ describe("the inline issue composer", () => {
 
   it("asks for a title, a body, a column, a priority, labels and an assignee", () => {
     open();
-    expect(document.querySelector("#issue-new-title")).not.toBeNull();
+    expect(document.querySelector("#issue-new-summary")).not.toBeNull();
     expect(document.querySelector("#issue-new-body")).not.toBeNull();
     for (const name of ["status", "priority", "labels"]) expect(menu(name)).not.toBeNull();
     expect(document.querySelector("[data-assignee-select]")).not.toBeNull();
@@ -236,13 +236,13 @@ describe("the inline issue composer", () => {
     expect(document.querySelector(".issue-compose .composer.attachable")).toBeNull();
     // And the rest of the form is untouched — this is one affordance gone,
     // not a degraded composer.
-    expect(document.querySelector("#issue-new-title")).not.toBeNull();
+    expect(document.querySelector("#issue-new-summary")).not.toBeNull();
     expect(document.querySelector("#issue-new-body")).not.toBeNull();
   });
 
   it("still files, and carries no attachments, without the tray", async () => {
     open({ attachable: false });
-    type("#issue-new-title", "Kanban drag");
+    type("#issue-new-summary", "Kanban drag");
     press("[data-compose-file]");
     await flush();
     expect(call.mock.calls[0][1]).toEqual({ project_id: "proj-1", title: "Kanban drag" });
@@ -269,7 +269,7 @@ describe("the inline issue composer", () => {
   // record's defaults, and an empty string would store one.
   it("sends only what was filled in", async () => {
     open();
-    type("#issue-new-title", " Kanban drag does not persist ");
+    type("#issue-new-summary", " Kanban drag does not persist ");
     press("[data-compose-file]");
     await flush();
     expect(call).toHaveBeenCalledWith("issues.create", {
@@ -279,7 +279,7 @@ describe("the inline issue composer", () => {
 
   it("sends the body, the labels, the priority and the column when they were", async () => {
     open();
-    type("#issue-new-title", "Kanban drag");
+    type("#issue-new-summary", "Kanban drag");
     type("#issue-new-body", "Dragging a card…");
     await pickInMenu("labels", "bug");
     await pickInMenu("labels", "ui");
@@ -297,7 +297,7 @@ describe("the inline issue composer", () => {
   // nobody has used yet, which is most of what labelling a new issue is.
   it("invents a label that is not on the list yet", async () => {
     open();
-    type("#issue-new-title", "Kanban drag");
+    type("#issue-new-summary", "Kanban drag");
     menu("labels").querySelector(".fmenu-press").click();
     const search = menu("labels").querySelector(".fmenu-search");
     search.value = "kanban";
@@ -315,7 +315,7 @@ describe("the inline issue composer", () => {
   // transaction, so filing and dispatching is one press.
   it("files and dispatches in one press", async () => {
     open();
-    type("#issue-new-title", "Kanban drag");
+    type("#issue-new-summary", "Kanban drag");
     await choose("project_agent");
     press("[data-compose-file]");
     await flush();
@@ -335,12 +335,12 @@ describe("the inline issue composer", () => {
   it("keeps the workspace-name field while it is being typed in", async () => {
     open();
     await choose("new_workspace");
-    const name = document.querySelector("#issue-new-name");
+    const name = document.querySelector("#issue-new-workspace");
     name.focus();
     name.value = "kanban-fix";
     name.dispatchEvent(new Event("input"));
     await flush();
-    expect(document.querySelector("#issue-new-name")).toBe(name);
+    expect(document.querySelector("#issue-new-workspace")).toBe(name);
     expect(document.activeElement).toBe(name);
   });
 
@@ -348,8 +348,8 @@ describe("the inline issue composer", () => {
   // next line is the description — a title is rarely the whole issue.
   it("moves from the title to the body on enter, and does not file", async () => {
     open();
-    type("#issue-new-title", "Kanban drag");
-    const title = document.querySelector("#issue-new-title");
+    type("#issue-new-summary", "Kanban drag");
+    const title = document.querySelector("#issue-new-summary");
     title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await flush();
     expect(document.activeElement).toBe(document.querySelector("#issue-new-body"));
@@ -357,10 +357,10 @@ describe("the inline issue composer", () => {
   });
 
   it("files on cmd/ctrl+enter, from either field", async () => {
-    for (const [field, modifier] of [["#issue-new-title", "metaKey"], ["#issue-new-body", "ctrlKey"]]) {
+    for (const [field, modifier] of [["#issue-new-summary", "metaKey"], ["#issue-new-body", "ctrlKey"]]) {
       call = vi.fn(async () => ({ issue: issue({ id: "issue-1" }) }));
       open({ callRpc: call });
-      type("#issue-new-title", "Kanban drag");
+      type("#issue-new-summary", "Kanban drag");
       document.querySelector(field).dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", [modifier]: true, bubbles: true, cancelable: true }),
       );
@@ -381,7 +381,7 @@ describe("the inline issue composer", () => {
     expect(slot.querySelector(".issue-compose")).toBeNull();
 
     open();
-    type("#issue-new-title", "Kanban drag");
+    type("#issue-new-summary", "Kanban drag");
     slot.querySelector(".issue-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
@@ -403,7 +403,7 @@ describe("the inline issue composer", () => {
       const onFiled = vi.fn();
       call = vi.fn(async () => answer);
       open({ callRpc: call, onFiled });
-      type("#issue-new-title", "Kanban drag");
+      type("#issue-new-summary", "Kanban drag");
       press("[data-compose-file]");
       await flush();
       expect(onFiled.mock.calls[0][0].issue.id).toBe("issue-1");
@@ -579,7 +579,7 @@ describe("what a bridge dropped on the floor", () => {
       projectId: "proj-1", projectName: "Build", columns: null, labels: [],
       options: options(), catalog: CATALOG, callRpc: call, onFiled, ...over,
     });
-    const title = document.querySelector("#issue-new-title");
+    const title = document.querySelector("#issue-new-summary");
     title.value = "Kanban drag";
     title.dispatchEvent(new Event("input"));
     await choose("project_agent");

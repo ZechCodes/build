@@ -363,6 +363,14 @@ async function checkClosingBeats(page, label) {
 // document grid first. A film that never starts gives the page back.
 async function inspectStartup(width, height) {
   const label = `${width}x${height}-startup`;
+  await checkFirstPaint(width, height, label);
+  await checkSlowModule(width, height, label);
+  await checkBlockedModule(width, height, label);
+  await checkFailedHardware(width, height, label);
+  findings.push({ label, viewport: [width, height], mode: "film" });
+}
+
+async function checkFirstPaint(width, height, label) {
   const context = await browser.newContext({ viewport: { width, height } });
   const page = await context.newPage();
   const errors = watchErrors(page);
@@ -391,11 +399,13 @@ async function inspectStartup(width, height) {
   }
   assert.deepEqual(errors, [], `${label}: browser errors`);
   await context.close();
+}
 
-  // The film's module slow to arrive: nothing of the film's covers the hero
-  // while it waits, and a link to an act pressed meanwhile (the hero's call
-  // to action, the bar's, "See how it works") is honoured once the film
-  // starts.
+// The film's module slow to arrive: nothing of the film's covers the hero
+// while it waits, and a link to an act pressed meanwhile (the hero's call
+// to action, the bar's, "See how it works") is honoured once the film
+// starts.
+async function checkSlowModule(width, height, label) {
   for (const [name, selector, act] of [["hero-cta", "#act-1 .actions .cta", 8], ["nav-cta", ".site-nav .cta", 8], ["see-how", '#act-1 .actions a[href="#act-2"]', 2]]) {
     const slow = await browser.newContext({ viewport: { width, height } });
     const slowPage = await slow.newPage();
@@ -432,8 +442,10 @@ async function inspectStartup(width, height) {
     assert.deepEqual(slowErrors, [], `${label} ${name}: browser errors with a slow module`);
     await slow.close();
   }
+}
 
-  // The film's module blocked: the boot's deadline hands the page back.
+// The film's module blocked: the boot's deadline hands the page back.
+async function checkBlockedModule(width, height, label) {
   const blocked = await browser.newContext({ viewport: { width, height } });
   const blockedPage = await blocked.newPage();
   await blockedPage.route(/\/_astro\/.*\.js$/, (route) => route.abort());
@@ -452,9 +464,11 @@ async function inspectStartup(width, height) {
   await blockedPage.locator("#act-4-title").scrollIntoViewIfNeeded();
   assert.ok(await blockedPage.locator("#act-4-title").isVisible(), `${label}: a later act is readable after a blocked film`);
   await blocked.close();
+}
 
-  // The module in and starting, the hardware still loading: a call to action
-  // pressed now, then a failed load, still lands on the form in the document.
+// The module in and starting, the hardware still loading: a call to action
+// pressed now, then a failed load, still lands on the form in the document.
+async function checkFailedHardware(width, height, label) {
   const held = await browser.newContext({ viewport: { width, height } });
   const heldPage = await held.newPage();
   let release;
@@ -475,7 +489,6 @@ async function inspectStartup(width, height) {
   });
   assert.ok(formInView, `${label}: a call to action pressed while the hardware loads lands on the form after a failed load`);
   await held.close();
-  findings.push({ label, viewport: [width, height], mode: "film" });
 }
 
 // The bar: on screen through the film, the story laid out below it, and its

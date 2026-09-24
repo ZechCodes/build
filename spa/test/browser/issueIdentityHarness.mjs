@@ -13,6 +13,7 @@ export const deviceShim = {
       export const deviceIsReconnecting=()=>false;
       export const deviceIsAway=()=>false;
       export const onDeviceReachable=()=>()=>{};
+      export const deviceSession=()=>null;
       export const deviceWatch=()=>({away:()=>false,reconnecting:()=>false,moved:()=>()=>{}});`;
   },
 };

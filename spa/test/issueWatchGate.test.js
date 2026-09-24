@@ -31,6 +31,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, issue } from "./trackerWireFixture.js";
 
 vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
 

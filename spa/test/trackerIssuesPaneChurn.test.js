@@ -17,6 +17,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   },
 }));
 vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
 

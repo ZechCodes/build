@@ -30,6 +30,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
 vi.mock("../src/core/trackerAssigneePicker.js", () => ({ openAssigneePicker: vi.fn(() => ({ close: vi.fn(), setCatalog: vi.fn() })) }));
 vi.mock("../src/core/notify.js", () => ({ notifyError: vi.fn() }));
 vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
 

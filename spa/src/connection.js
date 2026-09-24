@@ -63,6 +63,7 @@ import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { refreshBridgeUpdateStatus } from "./core/bridgeUpdates.js";
 import { deliverFeed, joinFeed } from "./core/taskFeed.js";
+import { syncRestoredDevice } from "./core/cacheSync.js";
 
 // ---- one rendezvous per device (spec rules 4, 5 and 7) -----------------------
 
@@ -782,10 +783,12 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   // session's id and key, and holds nothing else — no greeting, so no
   // subscriptions and no pushes (#123). The channel it rides has not changed,
   // so no carrier change greets it; this does, and reads everything again.
-  link.onRestored(() => greetLiveBridge(context, {
-    isAuthoritative: () => lifetime.current(),
-    lifetime,
-  }));
+  link.onRestored(() => {
+    void greetLiveBridge(context, {
+      isAuthoritative: () => lifetime.current(),
+      lifetime,
+    }).then(() => syncRestoredDevice(session.deviceId, session));
+  });
   // Bind the app channel before releasing signaling. The carrier callback is
   // the acknowledged session.hello, so the relay cannot disappear in the gap
   // between WebRTC opening and the application session becoming usable.

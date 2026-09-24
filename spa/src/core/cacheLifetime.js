@@ -50,15 +50,18 @@ const drop = async (addresses) => {
  *  the reader a cold read of something just synced, which the next sync pass
  *  refills — the other way round, holding a readwrite transaction open over
  *  the whole sweep, would block the writers this cache exists to serve. */
-export async function expireWorkspaceData(deviceId, entityId, now = Date.now()) {
+export async function expireWorkspaceData(deviceId, entityId, now = Date.now(), active = () => true) {
   const stale = await cachedAddressesWrittenBefore({ deviceId, entityId }, now - WORKSPACE_DATA_TTL_MS);
+  if (!active()) return [];
   return drop(workspaceData(stale));
 }
 
 /** Let go of one workspace's data at once — it is done, or deleted. The feed
  *  row stays: the board is what removes a row. */
-export async function evictWorkspaceData(deviceId, entityId) {
-  return drop(workspaceData(await cachedAddresses({ deviceId, entityId })));
+export async function evictWorkspaceData(deviceId, entityId, active = () => true) {
+  const addresses = await cachedAddresses({ deviceId, entityId });
+  if (!active()) return [];
+  return drop(workspaceData(addresses));
 }
 
 /** When a file body was last opened — the writer stamps it; a record written

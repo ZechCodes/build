@@ -1,12 +1,11 @@
-// The local cache: one IndexedDB store holding what each surface last saw, so
-// a revisit paints from disk while the bridge is still being asked. It is an
-// optimization, never a source of truth — every cached paint is followed by the
-// live fetch the surface already makes, and anything here can be dropped.
+// The local cache: one IndexedDB store holding what each surface last saw.
+// Surfaces paint from it while the sync layer asks the bridge for newer data.
+// A suspended browser can close its connection without losing those records;
+// the next operation reopens it instead of making the records disappear.
 //
 // Plaintext by decision (2026-08-31): E2EE protects the wire; the browser
-// profile is trusted. A browser without IndexedDB, a private window that
-// refuses it, or a corrupted database all degrade to "no cache" silently —
-// the app works exactly as it did before this module existed.
+// profile is trusted. An unavailable or persistently failing database answers
+// no records and announces no writes. Transient connection failures retry once.
 //
 // One record per (device, entity, kind, sub-key). The device leads the key so
 // two paired devices never read each other's world; the entity comes second so
@@ -45,41 +44,75 @@ const nextWriteOrder = () => {
  *  of megabytes onto the main thread and discard every byte. */
 const AT_INDEX = "at";
 
-/** After the first failure the cache stands down for the session: a cache that
- *  errors on every call is worse than none, and nothing above this module is
- *  allowed to notice either way. */
+/** A persistently failing cache stands down for the session. */
 let disabled = false;
 
 let dbPromise = null;
+const RECOVERY_RETRIES = 1;
+const intentionalAborts = new WeakMap();
+
+function invalidateDb(db, promise) {
+  if (dbPromise !== promise) return false;
+  dbPromise = null;
+  try { db.close(); } catch { /* already closed by the browser */ }
+  return true;
+}
 
 function openDb() {
   if (disabled || typeof indexedDB === "undefined") return Promise.resolve(null);
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve) => {
-    let request;
-    try {
-      request = indexedDB.open(DB_NAME, DB_VERSION);
-    } catch (error) {
-      standDown(error);
-      resolve(null);
-      return;
-    }
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
-      db.createObjectStore(STORE).createIndex(AT_INDEX, "at");
+  const opening = new Promise((resolve) => {
+    const startOpen = (attempt) => {
+      let request;
+      try {
+        request = indexedDB.open(DB_NAME, DB_VERSION);
+      } catch (error) {
+        if (connectionError(error) && attempt < RECOVERY_RETRIES) {
+          startOpen(attempt + 1);
+          return;
+        }
+        standDown(error);
+        resolve(null);
+        return;
+      }
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (db.objectStoreNames.contains(STORE)) db.deleteObjectStore(STORE);
+        db.createObjectStore(STORE).createIndex(AT_INDEX, "at");
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        if (disabled || dbPromise !== opening) {
+          db.close();
+          resolve(null);
+          return;
+        }
+        db.onclose = () => {
+          if (dbPromise === opening) dbPromise = null;
+        };
+        resolve(db);
+      };
+      request.onerror = () => {
+        if (dbPromise !== opening) {
+          resolve(null);
+          return;
+        }
+        if (connectionError(request.error) && attempt < RECOVERY_RETRIES) {
+          startOpen(attempt + 1);
+          return;
+        }
+        standDown(request.error);
+        resolve(null);
+      };
+      request.onblocked = () => {
+        standDown(new Error("cache database blocked by another tab"));
+        resolve(null);
+      };
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => {
-      standDown(request.error);
-      resolve(null);
-    };
-    request.onblocked = () => {
-      standDown(new Error("cache database blocked by another tab"));
-      resolve(null);
-    };
+    startOpen(0);
   });
-  return dbPromise;
+  if (!disabled) dbPromise = opening;
+  return opening;
 }
 
 function standDown(error) {
@@ -88,34 +121,63 @@ function standDown(error) {
   dbPromise = null;
 }
 
+/** Record why our callback aborted. A storage call can fail when its connection
+ *  closes; a caller's update/merge error must never be retried as a cache fault. */
+function abortForError(store, error, recoverable = false) {
+  intentionalAborts.set(store.transaction, { error, recoverable });
+  store.transaction.abort();
+}
+
+const connectionError = (error) => error?.name === "InvalidStateError" || error?.name === "AbortError" ||
+  (error?.name === "UnknownError" && /connection to indexed database server lost/i.test(error.message));
+
+function putOrAbort(store, record, key) {
+  try {
+    store.put(record, key);
+    return true;
+  } catch (error) {
+    abortForError(store, error, connectionError(error));
+    return false;
+  }
+}
+
 /** One transaction, one operation, resolved when the transaction settles with
  *  what it did: whether it committed, and the result of the request `run`
  *  returned. `run` gets the store and returns an IDBRequest (or null for
  *  delete-ranges, where the transaction's own completion is the answer). */
-function transact(mode, run) {
-  return openDb().then(
-    (db) =>
-      new Promise((resolve) => {
-        if (!db) {
-          resolve({ committed: false });
-          return;
-        }
-        let request;
-        try {
-          const transaction = db.transaction(STORE, mode);
-          request = run(transaction.objectStore(STORE));
-          transaction.onabort = () => {
-            standDown(transaction.error);
-            resolve({ committed: false });
-          };
-          transaction.oncomplete = () =>
-            resolve({ committed: true, result: request ? request.result : undefined });
-        } catch (error) {
-          standDown(error);
-          resolve({ committed: false });
-        }
-      }),
-  );
+async function transact(mode, run) {
+  for (let attempt = 0; attempt <= RECOVERY_RETRIES; attempt += 1) {
+    const opening = dbPromise || openDb();
+    const db = await opening;
+    if (!db) return { committed: false };
+    const outcome = await new Promise((resolve) => {
+      let request;
+      try {
+        const transaction = db.transaction(STORE, mode);
+        request = run(transaction.objectStore(STORE));
+        transaction.onabort = () => {
+          const marked = intentionalAborts.get(transaction);
+          const error = marked?.error || transaction.error;
+          const recoverable = marked ? marked.recoverable : (!error || connectionError(error));
+          resolve({ committed: false, error, recoverable });
+        };
+        transaction.oncomplete = () =>
+          resolve({ committed: true, result: request ? request.result : undefined });
+      } catch (error) {
+        resolve({ committed: false, error, recoverable: connectionError(error) });
+      }
+    });
+    if (outcome.committed) return outcome;
+    if (!outcome.recoverable) {
+      standDown(outcome.error);
+      return outcome;
+    }
+    const wasCurrent = invalidateDb(db, opening);
+    if (attempt === RECOVERY_RETRIES) {
+      if (wasCurrent) standDown(outcome.error || new Error("cache transaction repeatedly aborted"));
+      return outcome;
+    }
+  }
 }
 
 /** A read: what was read, or undefined when there was nothing to read from. */
@@ -250,6 +312,7 @@ export function readCachedMany(addresses) {
   if (!keys.length) return Promise.resolve([]);
   const records = new Array(keys.length);
   return inStore("readonly", (store) => {
+    records.fill(undefined);
     keys.forEach((key, index) => {
       const request = store.get(key);
       request.onsuccess = () => {
@@ -267,6 +330,7 @@ function writeFeed(address, update, observedFeedRows = false) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
+    changed = false;
     // Read and put in the same transaction: another tab can write between a
     // separate read and write, and its newer row observation must survive.
     const request = store.get(key);
@@ -277,10 +341,10 @@ function writeFeed(address, update, observedFeedRows = false) {
         if (next == null) return;
         const at = Date.now();
         const order = nextWriteOrder();
-        store.put({ at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) }, key);
-        changed = true;
-      } catch {
-        store.transaction.abort();
+        const record = { at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) };
+        changed = putOrAbort(store, record, key);
+      } catch (error) {
+        abortForError(store, error);
       }
     };
     return null;
@@ -320,6 +384,7 @@ export function captureCachedGeneration(address) {
   const key = recordKey(address);
   let generation = -1;
   return wroteStore((store) => {
+    generation = -1;
     const request = store.get(key);
     request.onsuccess = () => {
       try {
@@ -328,9 +393,9 @@ export function captureCachedGeneration(address) {
           return;
         }
         generation = newCacheGeneration();
-        store.put({ at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
-      } catch {
-        store.transaction.abort();
+        putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
+      } catch (error) {
+        abortForError(store, error);
       }
     };
     return null;
@@ -341,18 +406,18 @@ function writeBridgeUpdate(address, value, expectedGeneration) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
+    changed = false;
     const request = store.get(key);
     request.onsuccess = () => {
       try {
         const current = request.result;
         if (expectedGeneration !== undefined && cachedGeneration(current) !== expectedGeneration) return;
-        store.put({
+        changed = putOrAbort(store, {
           at: Date.now(), order: nextWriteOrder(), value,
           generation: newCacheGeneration(),
         }, key);
-        changed = true;
-      } catch {
-        store.transaction.abort();
+      } catch (error) {
+        abortForError(store, error);
       }
     };
     return null;
@@ -383,6 +448,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
   const key = recordKey(address);
   let applied = false;
   return wroteStore((store) => {
+    applied = false;
     const request = store.get(key);
     request.onsuccess = () => {
       const current = request.result;
@@ -391,10 +457,10 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence }), key);
-        applied = true;
-      } catch {
-        store.transaction.abort();
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence });
+        applied = putOrAbort(store, record, key);
+      } catch (error) {
+        abortForError(store, error);
       }
     };
     return null;
@@ -441,15 +507,16 @@ export function mergeCachedAtomically(address, merge) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
+    changed = false;
     const request = store.get(key);
     request.onsuccess = () => {
       try {
         const next = merge(request.result?.value);
         if (next == null) return;
-        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next }), key);
-        changed = true;
-      } catch {
-        store.transaction.abort();
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next });
+        changed = putOrAbort(store, record, key);
+      } catch (error) {
+        abortForError(store, error);
       }
     };
     return null;
@@ -508,6 +575,7 @@ export async function cachedAddressesWrittenBefore(prefixAddress, writtenBefore)
   const prefix = `${keyOfParts(addressParts(prefixAddress))}|`;
   const stale = [];
   await inStore("readonly", (store) => {
+    stale.length = 0;
     const walk = store.index(AT_INDEX).openKeyCursor(IDBKeyRange.upperBound(writtenBefore, true));
     walk.onsuccess = () => {
       const cursor = walk.result;
@@ -532,6 +600,8 @@ export async function cachedRecords(prefixAddress) {
   // with no `IDBKeyRange` would otherwise throw out of this module rather than
   // standing the cache down, and nothing above here is allowed to notice.
   await inStore("readonly", (store) => {
+    keys = [];
+    records = [];
     const range = prefixRange(prefix);
     const keyRequest = store.getAllKeys(range);
     const recordRequest = store.getAll(range);

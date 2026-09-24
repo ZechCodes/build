@@ -98,6 +98,7 @@ export const LOCK_WAIT_MS = 4000;
  *  hold this device's turn for the life of the tab. Past the wait the pass
  *  stands down; the greeting landing announces the device, which asks again. */
 export const GREETING_WAIT_MS = 15000;
+const RESTORE_DRAIN_MS = 1000;
 
 // The thresholds this layer is written against live in core/cacheThresholds.js
 // — a module that imports nothing, so the surfaces can read the same bounds
@@ -122,6 +123,7 @@ let stopDeviceWatch = null;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
+const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -132,13 +134,25 @@ const NOTHING = () => {};
  *  `superseded` is how a newer session's pass tells this one to stop, and it
  *  rides `active()` so every step that already asks "is this still worth
  *  doing" asks this too. */
-const syncContext = (context, turn = null) =>
-  context && {
+const requestScopeOf = (context) => {
+  const restored = restoredScopes.get(context.deviceId);
+  if (restored?.session === context.session) return restored.scope;
+  if (restored) restoredScopes.delete(context.deviceId);
+  return context.cacheScope;
+};
+
+const syncContext = (context, turn = null) => {
+  if (!context) return null;
+  const session = context.session;
+  const requestScope = requestScopeOf(context);
+  return {
     deviceId: context.deviceId,
     call: context.rpc,
-    requestScope: context.cacheScope,
-    active: () => context.active() && !turn?.superseded,
+    requestScope,
+    active: () => context.active() && context.session === session
+      && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
+};
 
 const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.deviceId, entityId, kind, sub });
 
@@ -218,6 +232,36 @@ export async function syncDevice(deviceId) {
     if (passes.has(deviceId)) return false; // another ask got in first; it owns this turn
   }
   return startPass(deviceId);
+}
+
+/** A recovered path can re-greet the bridge without replacing its session.
+ * Its earlier pass may have read the old process, so stand it down and give
+ * its writes a bounded chance to drain before reading the recovered bridge.
+ * Ordinary device-state changes are covered by the per-session pass. */
+export async function syncRestoredDevice(deviceId, session) {
+  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  // A carried session has the same caller and cache scope as before its ICE
+  // restart. The bridge behind it may be new, so reads from the old path may
+  // neither answer nor be shared with this path's baseline.
+  restoredScopes.set(deviceId, { session, scope: {} });
+  const previous = passes.get(deviceId);
+  if (previous) {
+    previous.superseded = true;
+    let timeout;
+    try {
+      await Promise.race([
+        previous.done,
+        new Promise((resolve) => { timeout = setTimeout(resolve, RESTORE_DRAIN_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    // A read sent before the restart may never answer. Its captured turn is
+    // already fenced off, so it must not hold the restored bridge's first pass.
+    if (passes.get(deviceId) === previous) passes.delete(deviceId);
+  }
+  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  return syncDevice(deviceId);
 }
 
 /** The session this device is on right now, which is what a pass belongs to. */
@@ -308,10 +352,14 @@ async function readLists(context) {
 }
 
 async function writeLists(context, view) {
+  if (!context.active()) return;
   await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
+  if (!context.active()) return;
   await writeSessionList(context, "projects", view.projects);
+  if (!context.active()) return;
   await writeSessionList(context, "workspaces", view.workspaces);
   for (const row of view.items || []) {
+    if (!context.active()) return;
     const entityId = entityIdOf(row);
     if (!entityId) continue;
     await writeCached(addressOf(context, entityId, "row"), row);
@@ -360,7 +408,7 @@ async function writeAgentSurfaces(context, entityId, agent) {
   if (!seen?.fingerprint) return;
   const address = surfacesCacheAddress({ deviceId: context.deviceId, entityId, agentId: agent.id });
   const held = (await readCached(address))?.value;
-  if (seen.fingerprint === heldSurfaces(held)) return;
+  if (!context.active() || seen.fingerprint === heldSurfaces(held)) return;
   await writeCached(address, surfacesRecord(seen.observed, seen.generation));
 }
 
@@ -429,14 +477,29 @@ async function readIssuesNow(context, projectId) {
 /** One project's list read at a time on a session (#119). A push heard while
  *  it is out is read once after it, under the newest context that asked. */
 const latestIssueReads = new Map();
+const issueReadGenerations = new Map();
+function issueReadGeneration(deviceId) {
+  const session = sessionOf(deviceId);
+  const requestScope = restoredScopes.get(deviceId)?.session === session
+    ? restoredScopes.get(deviceId).scope : null;
+  const held = issueReadGenerations.get(deviceId);
+  if (held?.session === session && held?.requestScope === requestScope) return held;
+  const generation = { session, requestScope };
+  issueReadGenerations.set(deviceId, generation);
+  return generation;
+}
 const issueReads = trailingRead((key) => {
   const { context, projectId } = latestIssueReads.get(key);
   return readIssuesNow(context, projectId);
-}, { generationOf: (key) => sessionOf(latestIssueReads.get(key).context.deviceId) });
+}, { generationOf: (key) => issueReadGeneration(latestIssueReads.get(key).context.deviceId) });
 
 function readIssues(context, projectId) {
   const key = JSON.stringify([context.deviceId, projectId]);
-  latestIssueReads.set(key, { context, projectId });
+  const generation = issueReadGeneration(context.deviceId);
+  latestIssueReads.set(key, {
+    context: { ...context, active: () => context.active() && issueReadGeneration(context.deviceId) === generation },
+    projectId,
+  });
   return issueReads(key);
 }
 
@@ -479,7 +542,7 @@ async function recentStillHoldingData(context, items, seen) {
     const entityId = entry.entityId;
     if (!entityId || seen.has(entityId) || !context.active()) continue;
     seen.add(entityId);
-    await expireWorkspaceData(context.deviceId, entityId);
+    await expireWorkspaceData(context.deviceId, entityId, Date.now(), context.active);
     const left = await cachedAddresses({ deviceId: context.deviceId, entityId });
     if (left.some((address) => isWorkspaceDataKind(address.kind))) kept.push(entityId);
   }
@@ -494,7 +557,7 @@ async function evictRowsThatAreOver(context, view) {
   for (const row of view.items || []) {
     if (!context.active()) return;
     const entityId = entityIdOf(row);
-    if (entityId && isFinishedState(row.state)) await evictWorkspaceData(context.deviceId, entityId);
+    if (entityId && isFinishedState(row.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
   }
 }
 
@@ -517,6 +580,7 @@ async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt) {
       // after this pass began owns a newer row and must not be erased.
       const address = addressOf(context, cachedId, "row");
       const row = await readCached(address);
+      if (!context.active()) return;
       if (row && row.at < passStartedAt) await deleteCached([address]);
     }
   }
@@ -552,11 +616,13 @@ const entitiesTheBoardNames = (view) => {
  */
 async function dropUnnamedEntity(context, entityId) {
   const issueRecords = await cachedSubKeys(context.deviceId, entityId, ISSUE_RECORD_KIND);
+  if (!context.active()) return;
   if (!issueRecords.length) {
     await evictEntity(context.deviceId, entityId);
     return;
   }
   const held = await cachedAddresses({ deviceId: context.deviceId, entityId });
+  if (!context.active()) return;
   await deleteCached(held.filter((address) => address.kind !== ISSUE_RECORD_KIND));
 }
 
@@ -644,7 +710,8 @@ async function syncLog(context, entityId, scope, priority) {
   const params = held?.newest ? { ...scope, since: held.newest } : { ...scope, limit: LATEST_COMMITS };
   const answer = await ask(context, "git.log", params, priority);
   if (!answer || !context.active()) return;
-  await mergeCached(addressOf(context, entityId, "log"), (current) => mergedLog(current, answer));
+  await mergeCached(addressOf(context, entityId, "log"), (current) =>
+    context.active() ? mergedLog(current, answer) : null);
 }
 
 /**
@@ -755,6 +822,7 @@ async function syncPatches(context, entityId, scope, commits, priority) {
     .filter(Boolean)
     .slice(0, UNPUSHED_COMMITS_MAX);
   const held = await cachedSubKeys(context.deviceId, entityId, PATCH_RECORD_KIND);
+  if (!context.active()) return;
   await dropStalePatches(context, entityId, held, new Set(hashes));
   for (const hash of hashes) {
     if (held.includes(hash) || !context.active()) continue;
@@ -767,6 +835,7 @@ async function syncPatches(context, entityId, scope, commits, priority) {
 /** A patch for a commit that is no longer unpushed has been published: it is
  *  in the log like every other commit, and nobody is reviewing it here. */
 async function dropStalePatches(context, entityId, held, wanted) {
+  if (!context.active()) return;
   const stale = held.filter((hash) => !wanted.has(hash));
   if (stale.length) await deleteCached(stale.map((hash) => addressOf(context, entityId, PATCH_RECORD_KIND, hash)));
 }
@@ -826,7 +895,7 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
     load: (envelope) => context.call(method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await mergeCached(address, (current) => diffRecord(current, diff, row));
+  await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
 }
 
 /** The diff record after a new body, wherever the body came from. The body
@@ -1006,17 +1075,21 @@ async function applyBoard(context, state) {
   // The harnesses out of usage there (#58): the pushed reading replaces the
   // device's record, and mounted surfaces repaint from its cache announcement.
   await writeUsageLimits(context.deviceId, state.usage_limits);
+  if (!context.active()) return;
   const removed = (state.removed || []).map((entityId) => String(entityId)).filter(Boolean);
   if (removed.length) await dropRemovedRows(context, removed);
+  if (!context.active()) return;
   if (state.projects) {
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
+  if (!context.active()) return;
   if (state.workspaces) {
     // A row that names its own verdict — a list a git flush re-sent, with the
     // summary that flush re-read — is the fresh word. A row that names none
     // (a list that moved because a workspace came or went) keeps the verdict
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
+    if (!context.active()) return;
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
   }
@@ -1045,6 +1118,7 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
 async function dropRemovedRows(context, removed) {
   const gone = new Set(removed);
   const record = await readCached(addressOf(context, "", "feed"));
+  if (!context.active()) return;
   if (record) await writeCached(addressOf(context, "", "feed"), withoutEntities(record.value, gone));
   for (const entityId of removed) {
     if (!context.active()) return;
@@ -1076,8 +1150,10 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
 async function applyState(context, entityId, state) {
   if (!isFeedRow(state)) return;
   await writeCached(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
+  if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
-  if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId);
+  if (!context.active()) return;
+  if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
 }
 
 /** `thread`: one tip per conversation, carrying the items since this
@@ -1112,6 +1188,7 @@ async function applySessionTip(context, tip) {
     ["workspaces", tip.workspace_id, tip.workspace_session],
     ["projects", tip.project_id, tip.project_session],
   ]) {
+    if (!context.active()) return;
     if (!id || !validSession(session)) continue;
     await updateSessionSummary(addressOf(context, "", kind), kind, id, session);
   }
@@ -1121,9 +1198,10 @@ async function applyThreadTip(context, entityId, tip) {
   const sub = tipKey(tip);
   if (!sub) return;
   await applySessionTip(context, tip);
+  if (!context.active()) return;
   const address = addressOf(context, entityId, THREAD_RECORD_KIND, sub);
   const held = (await readCached(address))?.value;
-  if (!tipIsNews(tip, held)) return;
+  if (!context.active() || !tipIsNews(tip, held)) return;
   // A burst past the push cap arrives as a tip with no items, a conversation
   // nothing is held for has nothing to append to, and a tip that starts past
   // the cursor would append over a gap. All three are one cursored page, which
@@ -1133,9 +1211,9 @@ async function applyThreadTip(context, entityId, tip) {
     await syncThread(context, entityId, { id: tip.agent_id, conversation_id: tip.conversation_id }, "background");
     return;
   }
-  await mergeCached(address, (current) => threadWindow(current, {
+  await mergeCached(address, (current) => context.active() ? threadWindow(current, {
     items, thread_total: tip.thread_total,
-  }));
+  }) : null);
 }
 
 /** `git`: the shapes ride the push, so nothing is asked for them. Two things
@@ -1143,26 +1221,35 @@ async function applyThreadTip(context, entityId, tip) {
  *  to send — and those are pulled here. */
 async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
+  if (!context.active()) return;
   if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
+  if (!context.active()) return;
   if (git.log) {
-    await mergeCached(addressOf(context, entityId, "log"), (current) => windowedLog(current, git.log));
+    await mergeCached(addressOf(context, entityId, "log"), (current) =>
+      context.active() ? windowedLog(current, git.log) : null);
   }
+  if (!context.active()) return;
   if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
+  if (!context.active()) return;
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
+  if (!context.active()) return;
   await pullWhatTheGitItemCouldNotCarry(context, entityId, git, row);
 }
 
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
-  await mergeCached(address, (current) => diffRecord(current, diff, row));
+  await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
 }
 
 async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   const scope = gitScopeOf(row);
   if (!scope) return;
   if (git.log) {
-    await syncPatches(context, entityId, scope, unpushedCommits(await heldValue(context, entityId, "log")), "background");
+    const log = await heldValue(context, entityId, "log");
+    if (!context.active()) return;
+    await syncPatches(context, entityId, scope, unpushedCommits(log), "background");
   }
+  if (!context.active()) return;
   if (git.diff !== null) return;
   // A null diff is one the bridge had and could not send. It is only worth a
   // round trip for the workspace on screen; the rest are marked, and read it
@@ -1171,7 +1258,8 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
     await pullWorkingDiff(context, entityId, row, "foreground");
     return;
   }
-  await mergeCached(addressOf(context, entityId, "diff"), staleDiffRecord);
+  await mergeCached(addressOf(context, entityId, "diff"), (current) =>
+    context.active() ? staleDiffRecord(current) : null);
 }
 
 /** `files`: the root listing rides the push. The deeper ones the reader walked
@@ -1185,8 +1273,9 @@ async function applyFiles(context, entityId, files) {
       { path: files.root.path || "", entries: files.root.entries || [] },
     );
   }
+  if (!context.active()) return;
   const scope = gitScopeOf(await heldValue(context, entityId, "row"));
-  if (!scope) return;
+  if (!context.active() || !scope) return;
   const walked = await cachedSubKeys(context.deviceId, entityId, "tree");
   const stale = files.truncated ? walked : dirsOf(files.paths).filter((dir) => walked.includes(dir));
   await listTrees(context, entityId, scope, new Set(files.root ? stale : ["", ...stale]), "background");
@@ -1339,6 +1428,8 @@ export function stopCacheSync() {
   }
   subscriptions.clear();
   syncedSessions.clear();
+  restoredScopes.clear();
+  issueReadGenerations.clear();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.
   for (const turn of passes.values()) turn.superseded = true;

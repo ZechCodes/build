@@ -5,6 +5,7 @@ import {
   ACESFilmicToneMapping,
   CanvasTexture,
   Color,
+  DoubleSide,
   DirectionalLight,
   Group,
   HemisphereLight,
@@ -44,19 +45,27 @@ const MAX_ANISOTROPY = 8;
 const LETTERBOX_COLOR = "#07110f";
 
 // Reflected studio strips shape the aluminium, with dark space between them.
+// Metal has no colour of its own, only what it reflects: a deck seen at a low
+// angle mirrors the room behind the devices, so strips of uneven width stand
+// there and the deck carries a gradient instead of one flat grey. The
+// overhead card sits off to one side so the lid's edge fades along its length.
 // This scene is baked once; the light cards never appear on the page.
+const STUDIO_CARDS = [
+  { size: [3.5, 5], position: [-4, 3, 5], color: 0xfffcf6, intensity: 4.0 },
+  { size: [0.85, 5], position: [4, 1, 3], color: 0xf1f4fa, intensity: 1.7 },
+  { size: [2.2, 1], position: [-1.8, 5, 1], color: 0xffffff, intensity: 2.2 },
+  { size: [6, 2], position: [-1, 0.1, 5], color: 0xf0f3f7, intensity: 0.9 },
+  { size: [1.6, 3], position: [-3.2, 1.2, -5], color: 0xffffff, intensity: 2.2 },
+  { size: [0.6, 3], position: [-0.8, 1.2, -5], color: 0xffffff, intensity: 1.4 },
+  { size: [2.4, 3], position: [2.2, 1.2, -5], color: 0xffffff, intensity: 1.0 },
+  { size: [0.4, 3], position: [4.6, 1.2, -5], color: 0xffffff, intensity: 3.0 },
+];
+
 function createDeviceEnvironment(renderer) {
   const studio = new Scene();
-  studio.background = new Color(0x111316);
-  const cards = [
-    { size: [3.5, 5], position: [-4, 3, 5], color: 0xfffcf6, intensity: 4.0 },
-    { size: [0.85, 5], position: [4, 1, 3], color: 0xf1f4fa, intensity: 1.7 },
-    { size: [5, 1.1], position: [0, 5, 1], color: 0xffffff, intensity: 3.2 },
-    { size: [6, 2], position: [-1, 0.1, 5], color: 0xf0f3f7, intensity: 0.9 },
-    { size: [1.2, 4], position: [-3, 1, -4], color: 0xffffff, intensity: 2.0 },
-  ];
-  for (const { size, position, color, intensity } of cards) {
-    const material = new MeshBasicMaterial({ color: new Color(color).multiplyScalar(intensity) });
+  studio.background = new Color(0x0b0c0e);
+  for (const { size, position, color, intensity } of STUDIO_CARDS) {
+    const material = new MeshBasicMaterial({ color: new Color(color).multiplyScalar(intensity), side: DoubleSide });
     const card = new Mesh(new PlaneGeometry(...size), material);
     card.position.set(...position);
     card.lookAt(0, 0, 0);
@@ -78,9 +87,20 @@ export function createDeviceScreenMaterial() {
   return material;
 }
 
+// Bead-blasted aluminium: fully metallic and smooth enough to carry the
+// studio's strips as soft gradients. Rougher, it averages them into one flat
+// grey, which is what reads as plastic.
+function dressAluminium(material) {
+  material.color.setRGB(0.7, 0.71, 0.73);
+  material.metalness = 1;
+  material.roughness = 0.22;
+  material.clearcoat = 0;
+}
+
 export function cloneDeviceSurfaceMaterial(material, maximumAnisotropy) {
   const clone = material.clone();
   if (clone.map) clone.map.anisotropy = Math.min(MAX_ANISOTROPY, maximumAnisotropy);
+  if (/Aluminum$/.test(clone.name)) dressAluminium(clone);
   if (clone.name === "FrontGlass") {
     clone.metalness = 0;
     clone.roughness = 0.3;
@@ -129,9 +149,9 @@ function createCamera() {
 
 function addStudioLights(scene) {
   const sky = new HemisphereLight(0xf1f3f2, 0x121820, 0.12);
-  const key = new DirectionalLight(0xfffcf6, 1.8);
+  const key = new DirectionalLight(0xfffcf6, 0.9);
   const fill = new DirectionalLight(0xe8edf5, 0.35);
-  const edge = new DirectionalLight(0xf2f4f3, 1.1);
+  const edge = new DirectionalLight(0xf2f4f3, 0.5);
   key.position.set(-4, 5, 6);
   fill.position.set(5, 1, 4);
   edge.position.set(2, 4, -5);

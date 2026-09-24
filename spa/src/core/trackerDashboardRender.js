@@ -38,6 +38,14 @@ const dashboardRowHtml = (entry, context, section) => {
   </li>`;
 };
 
+const DONE_GROUP_KEY = "done-group:";
+
+/** Done's rows under a plain title for each age group, in one keyed list so a
+ *  row that moves to the next group keeps its element. */
+const doneItems = (groups) => groups.flatMap((group) => [{ group }, ...group.entries]);
+const itemKey = (item) => (item.group ? `${DONE_GROUP_KEY}${item.group.id}` : item.issue.id);
+const doneGroupHtml = (group) => `<li class="issue-dashboard-group-title">${esc(group.title)}</li>`;
+
 /** One selected section, from cached records only. The Dashboard's links are
  *  the same issue routes as List and Board, including inside a workspace. */
 export function paintIssueDashboard(body, sections, context) {
@@ -69,8 +77,9 @@ export function paintIssueDashboard(body, sections, context) {
       body.querySelector(`[data-dashboard-tab="${next}"]`)?.focus();
     };
   });
-  patchList(body.querySelector(".issue-dashboard-list"), entries, {
-    keyOf: (entry) => entry.issue.id,
-    render: (entry) => dashboardRowHtml(entry, context, selected.id),
+  const grouped = selected.id === "done" && Array.isArray(sections.doneGroups);
+  patchList(body.querySelector(".issue-dashboard-list"), grouped ? doneItems(sections.doneGroups) : entries, {
+    keyOf: itemKey,
+    render: (item) => (item.group ? doneGroupHtml(item.group) : dashboardRowHtml(item, context, selected.id)),
   });
 }

@@ -46,7 +46,7 @@ import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceA
 import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
-import { dashboardSections, doneSinceCutoff } from "./trackerDashboardModel.js";
+import { dashboardSections, doneSessionStart, doneSinceCutoff } from "./trackerDashboardModel.js";
 import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
@@ -247,6 +247,7 @@ export function mountIssuesPane(host, options) {
         feed: state.feed(), projectKey: state.projectKey, detailById: details.read(),
         activityByAgent: activity?.read(),
         doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession) : null,
+        sessionStartedMs: carriesDoneSinceLeft() ? doneSessionStart(state.userSession) : null,
       }),
     },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },

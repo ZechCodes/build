@@ -7,7 +7,8 @@ import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js"
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
 
-const HOUR_MS = 60 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
 /** How long an absence "since you left" reaches back over. Past it the user
  *  starts from a blank slate: 96 hours holds a three-day weekend, and a week
@@ -119,6 +120,45 @@ export function doneSince(issue, cutoffMs) {
   return movedMs >= cutoffMs ? issue.done_at : null;
 }
 
+/** Where the current session started, for grouping Done. A user the bridge
+ *  saw away, or long gone, has no session yet: everything in Done finished
+ *  while they were away. */
+export function doneSessionStart(session) {
+  return sessionAt(session).started ?? Infinity;
+}
+
+const QUARTER_MS = 15 * MINUTE_MS;
+const AWAY_GROUP = { id: "away", title: "While you were away", rank: Infinity };
+
+/** The group one move into Done falls in: quarter hours for the first hour,
+ *  whole hours after, and anything before this session apart. */
+function doneGroupOf(movedMs, nowMs, sessionStartedMs) {
+  if (sessionStartedMs !== null && movedMs < sessionStartedMs) return AWAY_GROUP;
+  const age = Math.max(0, nowMs - movedMs);
+  if (age < HOUR_MS) {
+    const quarter = Math.floor(age / QUARTER_MS);
+    const title = quarter === 0 ? "Last 15 minutes" : `${quarter * 15} minutes ago`;
+    return { id: `minutes-${quarter * 15}`, title, rank: quarter };
+  }
+  const hours = Math.floor(age / HOUR_MS);
+  return { id: `hours-${hours}`, title: hours === 1 ? "1 hour ago" : `${hours} hours ago`, rank: 3 + hours };
+}
+
+/** Done's entries split by how long ago they moved, newest group first and
+ *  each group in the entries' own order. Only groups with entries are given.
+ *  `sessionStartedMs` is null on a bridge without the user's session, which
+ *  has no "While you were away". */
+export function doneGroups(entries, { nowMs, sessionStartedMs = null }) {
+  const groups = new Map();
+  for (const entry of entries || []) {
+    const group = doneGroupOf(Date.parse(entry.movedAt), nowMs, sessionStartedMs);
+    if (!groups.has(group.id)) groups.set(group.id, { ...group, entries: [] });
+    groups.get(group.id).entries.push(entry);
+  }
+  return [...groups.values()].sort((a, b) => a.rank - b.rank)
+    .map(({ id, title, entries: grouped }) => ({ id, title, entries: grouped }));
+}
+
 const cachedActivity = (activityByAgent, agentId) => {
   const snippet = activityByAgent instanceof Map
     ? activityByAgent.get(agentId)
@@ -132,7 +172,8 @@ const cachedActivity = (activityByAgent, agentId) => {
  *
  * `doneCutoffMs` is given for a bridge that carries `done_at` and the user's
  * session: Done is then everything finished since the user left. Without it
- * Done falls back to the cached timelines' last 24 hours. */
+ * Done falls back to the cached timelines' last 24 hours. `sessionStartedMs`
+ * comes with it, and sets apart what finished before this session. */
 export function dashboardSections(issues, {
   feed = null,
   projectKey = "",
@@ -140,6 +181,7 @@ export function dashboardSections(issues, {
   nowMs = Date.now(),
   activityByAgent = new Map(),
   doneCutoffMs = null,
+  sessionStartedMs = null,
 } = {}) {
   const grouped = attentionGroups(issues, { feed, projectKey, detailById });
   const reading = {
@@ -159,7 +201,7 @@ export function dashboardSections(issues, {
     return reasons.length ? [{ issue, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
   });
   const done = doneEntries(issues, { detailById, nowMs, doneCutoffMs });
-  return { inProgress, needsYou, done };
+  return { inProgress, needsYou, done, doneGroups: doneGroups(done, { nowMs, sessionStartedMs }) };
 }
 
 function doneEntries(issues, { detailById, nowMs, doneCutoffMs }) {

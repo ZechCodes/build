@@ -300,6 +300,38 @@ describe("the Dashboard", () => {
       .toContain("abc123def456");
   });
 
+  it("splits Done under plain age titles, newest first, with each row drawn as before", async () => {
+    const minutes = (count) => new Date(Date.now() - count * 60_000).toISOString();
+    const finished = [
+      ["older", 2, "Older fix", minutes(130)],
+      ["recent", 3, "Recent fix", minutes(1)],
+      ["half", 4, "Half hour fix", minutes(35)],
+      ["fresh", 5, "Fresh fix", minutes(5)],
+    ].map(([id, number, title, movedAt]) => [issue({ id, number, title, status: "done", state: "closed" }), movedAt]);
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: finished.map(([done]) => done), columns: columns() });
+    for (const [done, movedAt] of finished) {
+      await trackerCache.writeIssueRecord("dev-1", "proj-1", done.id, trackerCache.issueRecord(done, [
+        { type: "event", kind: "moved", at: movedAt, payload: { to: "done" } },
+      ]));
+    }
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ defaultView: undefined });
+    await chooseTab("done");
+    await vi.waitFor(() => expect(dashboardRows("done")).toHaveLength(4));
+
+    const list = host.querySelector('[data-dashboard-section="done"] .issue-dashboard-list');
+    expect([...list.children].map((child) => child.classList.contains("issue-dashboard-group-title")
+      ? `# ${child.textContent}` : child.dataset.issue))
+      .toEqual(["# Last 15 minutes", "fresh", "recent", "# 30 minutes ago", "half", "# 2 hours ago", "older"]);
+    expect(host.querySelector(".issue-dashboard-group-title").children).toHaveLength(0);
+    expect(host.querySelector('[data-dashboard-tab="done"] .issue-dashboard-count').textContent).toBe("4");
+    const row = host.querySelector('[data-dashboard-section="done"] [data-issue="recent"]');
+    expect(row.className).toBe("issue-dashboard-row");
+    expect([...row.querySelector(".issue-dashboard-link").children].map((part) => [part.className, part.textContent]))
+      .toEqual([["issue-dashboard-number", "#3"], ["issue-dashboard-title", "Recent fix"], ["issue-dashboard-detail", "Moved to Done"]]);
+    expect(row.querySelector(".issue-dashboard-link").getAttribute("href")).toContain("recent");
+  });
+
   it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {
     const working = issue({ id: "working", number: 4, title: "Work", assignee: { kind: "agent", agent_id: "agent-1" } });
     const done = issue({ id: "done", number: 3, title: "Done", status: "done", state: "closed" });

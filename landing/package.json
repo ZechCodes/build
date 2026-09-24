@@ -1,6 +1,7 @@
 {
   "name": "build-landing",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "The getbuild.ing landing page: a static Astro build served by skriftapp.",
   "scripts": {

@@ -1,5 +1,8 @@
 // Screenshots the pages render-list.mjs wrote. See README.md beside it.
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
+// Playwright comes from web/ (run `npm install` there first).
+const require = createRequire(new URL("../../web/package.json", import.meta.url));
+const { chromium } = require("playwright");
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium" });
 const shots = [];

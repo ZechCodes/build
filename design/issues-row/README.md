@@ -26,6 +26,6 @@ node design/issues-row/render-list.mjs /tmp/old-spa/spa before
 node design/issues-row/shoot.mjs
 ```
 
-`shoot.mjs` drives the mise Playwright against the system Chromium — the
-bundled browser build is not cached on this machine. Both scripts write into
+`shoot.mjs` uses web/'s Playwright (run `npm install` in `web/` first) against
+the system Chromium at `/usr/bin/chromium`. Both scripts write into
 `/tmp/rowshot/`.

@@ -1,4 +1,7 @@
-import { chromium } from "playwright";
+import { createRequire } from "node:module";
+// Playwright comes from web/ (run `npm install` there first).
+const require = createRequire(new URL("../../web/package.json", import.meta.url));
+const { chromium } = require("playwright");
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium" });
 const shot = async (file, width, height, openMenu, search) => {
   const p = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });

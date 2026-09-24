@@ -31,5 +31,5 @@ node ../design/issues-filters/shoot.mjs        # writes /tmp/rowshot/menu-*.png
 ```
 
 Delete the `spa/__menu-*.html` pages afterwards; they are scaffolding, not
-fixtures. `shoot.mjs` drives the mise Playwright against the system Chromium —
-the bundled browser build is not cached on this machine.
+fixtures. `shoot.mjs` uses web/'s Playwright (run `npm install` in `web/`
+first) against the system Chromium at `/usr/bin/chromium`.

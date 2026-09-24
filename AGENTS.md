@@ -52,7 +52,7 @@ Design rules:
 
 - Always use TDD: write the test first, watch it fail, make it pass.
 - Always commit your changes as you make them.
-- Run semgrep and gitleaks before every commit (commands below).
+- Run gitleaks before every push and semgrep before you post ready (commands below). The roll gate runs both again on every merge.
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
 - One issue per branch, branched from `main`. Nothing merges without a review.
@@ -133,7 +133,7 @@ includes the Chromium browser tests (`spa/test/browser/`), which need Chromium
 on `PATH` or `CHROMIUM_PATH`. Run `npx vitest` only from inside `spa/`, so the
 repo's own vitest runs.
 
-Before committing:
+The scans (gitleaks before each push, semgrep before you post ready):
 
 ```bash
 nice -n 10 semgrep scan --config p/security-audit --config p/secrets --error --metrics off <changed files>

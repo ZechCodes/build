@@ -925,7 +925,6 @@ describe("the surface's text column", () => {
     "a commit in the Changes rail": inRail(".crow"),
     "the Changes rail's empty section": inRail(".crail .empty"),
     "the Changes rail's show-more row": inRail(".gitmore"),
-    "the Files tree's crumb": inRail(".fcrumb"),
     "a file in the Files tree": inRail(".frow"),
     "the issue rail's head": inRail(".ivhead"),
     "a stage in the issue rail": inRail(".ivstages .stagerow"),

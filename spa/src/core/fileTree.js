@@ -99,21 +99,24 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     if (stillListing(dir, request) && held) takeListing(dir, held);
   };
 
+  const askMachine = async (dir) => {
+    try {
+      const answer = await listDirectory(dir);
+      return { path: answer?.path || dir, entries: answer?.entries || [] };
+    } catch (error) {
+      return { error: error?.message || "error" };
+    }
+  };
+
   /** A directory nothing holds a listing for (or nothing else keeps true):
    *  ask the machine, and write the answer through so the paint comes from the
    *  record — unless a newer write landed while the question was out. */
   const listFromMachine = async (dir, request, previousAt) => {
-    let answer;
-    try {
-      answer = await listDirectory(dir);
-    } catch (error) {
-      if (stillListing(dir, request)) takeListing(dir, { error: error?.message || "error" });
-      return;
-    }
+    const listing = await askMachine(dir);
     if (!stillListing(dir, request)) return;
-    const listing = { path: answer?.path || dir, entries: answer?.entries || [] };
     const address = listingAddress(dir);
-    if (!address) return takeListing(dir, listing);
+    // An error is this mount's news, not the directory's: it never replaces a record.
+    if (!address || listing.error) return takeListing(dir, listing);
     const current = await heldRecord(address);
     if (!stillListing(dir, request) || current?.at !== previousAt) return;
     await writeCached(address, listing);

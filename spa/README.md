@@ -30,12 +30,12 @@ next to this repo (same convention as `web/` and CI).
 ## Commands
 
 ```bash
-npm install
-npm run lint       # eslint: one rule — no function over complexity 10
-npm test           # vitest: session core, diff, markdown, notes, router, terminal
-npm run test:browser # Chromium layout regressions, also included in npm test
-npm run build      # emits skriftapp/buildapp/static/ (served by BuildController)
-npm run dev        # Vite dev server (proxy /api to a running skriftapp yourself)
+nice -n 10 npm install
+nice -n 10 npm run lint       # eslint: one rule — no function over complexity 10
+nice -n 10 npm test           # vitest: session core, diff, markdown, notes, router, terminal
+nice -n 10 npm run test:browser # Chromium layout regressions, also included in npm test
+nice -n 10 npm run build      # emits skriftapp/buildapp/static/ (served by BuildController)
+nice -n 10 npm run dev        # Vite dev server (proxy /api to a running skriftapp yourself)
 ```
 
 Browser tests use the `playwright-core` dev dependency and require Chromium or

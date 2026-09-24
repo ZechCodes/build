@@ -29,9 +29,13 @@ Every tier caps how complex one function may be, and CI runs the cap:
 | tier | rule | gate |
 | --- | --- | --- |
 | `skriftapp/` | ruff `C901`, max-complexity 10 | `uv run --frozen ruff check buildapp` |
-| `bridge/` | clippy `cognitive_complexity`, threshold 15 (`bridge/clippy.toml`) | `cargo clippy --all-targets -- -D warnings` |
-| `spa/` | eslint `complexity`, max 10 (`spa/eslint.config.js`) | `npm run lint` |
+| `bridge/` | clippy `cognitive_complexity`, threshold 15 (`bridge/clippy.toml`) | `nice -n 10 cargo clippy --all-targets -- -D warnings` |
+| `spa/` | eslint `complexity`, max 10 (`spa/eslint.config.js`) | `nice -n 10 npm run lint` |
 | `*.sh` | shellcheck | `git ls-files '*.sh' \| xargs shellcheck` |
+
+Gates run under `nice -n 10` because they run on the same machine as the
+user's bridge and the user's apps, and under `nice -n 10` (or in the agents'
+slice) they lose to both.
 
 The functions that were already over the cap when the gates landed carry a
 one-line ratchet annotation — `# noqa: C901`, `#[allow(clippy::cognitive_complexity)]`,
@@ -44,7 +48,7 @@ commit. A new function over the cap is split, not annotated.
 ## bridge/ (Rust)
 
 ```
-cargo test        # TDD: write the test first, watch it fail, make it pass
-cargo clippy --all-targets -- -D warnings
-cargo fmt
+nice -n 10 cargo test        # TDD: write the test first, watch it fail, make it pass
+nice -n 10 cargo clippy --all-targets -- -D warnings
+nice -n 10 cargo fmt
 ```

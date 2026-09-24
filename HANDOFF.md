@@ -127,9 +127,9 @@ via the qa one-shot or in the SPA under Settings → Devices. Details:
 Dev loops without containers:
 
 ```bash
-cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cd bridge && nice -n 10 cargo test && nice -n 10 cargo clippy --all-targets -- -D warnings && nice -n 10 cargo fmt --check
 cd skriftapp && uv run --frozen ruff check buildapp && uv run --frozen pytest buildapp
-cd spa && npm run lint && npm test && npm run build     # emits skriftapp/buildapp/static/
+cd spa && nice -n 10 npm run lint && nice -n 10 npm test && nice -n 10 npm run build     # emits skriftapp/buildapp/static/
 ```
 
 `spa/` expects a sibling checkout of `build-secure-transport` next to this repo
@@ -299,8 +299,8 @@ where the `pem` crate compiles its own doc-example RSA key into an rmeta.
 ### How to try it
 
 ```bash
-cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-cd spa && npm run lint && npm test
+cd bridge && nice -n 10 cargo test && nice -n 10 cargo clippy --all-targets -- -D warnings && nice -n 10 cargo fmt --check
+cd spa && nice -n 10 npm run lint && nice -n 10 npm test
 ```
 
 `spa/` lints for one thing only — function complexity over 10 (CLAUDE.md
@@ -382,7 +382,7 @@ to ask about.
 ### Running the suites
 
 ```bash
-cd spa && npm run lint && npm test && npm run build
+cd spa && nice -n 10 npm run lint && nice -n 10 npm test && nice -n 10 npm run build
 ```
 
 Node 25 shipped an experimental Web Storage implementation, and it is a trap

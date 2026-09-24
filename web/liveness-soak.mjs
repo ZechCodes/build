@@ -56,8 +56,13 @@
 //   RELAY_BOTH_ENDS=1  ICE_TRANSPORT_POLICY=relay   levers 3 and 1, for experiments
 //   LOAD_TERM_THREADS=N    a second session (`term` channel) opens a terminal in the
 //                          first workspace (created if none) and starts N busy
-//                          loops in it. Terminals and agents share PtySession::spawn,
-//                          so this is load spawned the way an agent's is.
+//                          loops in it: load spawned the way a terminal agent's is.
+//   LOAD_AGENT_THREADS=N   dispatches a HEADLESS agent (`branch.dispatch`, provider
+//                          claude_adk) on the first project; the `claude` the bridge
+//                          finds on its PATH must be the fake from the #128 proof
+//                          (it spins BRIDGE_LOAD_THREADS busy loops as its tool
+//                          children), so this is load spawned the way a real
+//                          headless agent's is, in that agent's scope.
 //   HAMMER_ISSUES=1        seed SEED_ISSUES (150) issues with a comment each in the
 //                          first project, then issues.list back to back from a third
 //                          session (foreground priority, the `app` channel) for the
@@ -91,6 +96,7 @@ const TURN = { host: process.env.TURN_HOST || "liveness128-turn", port: num("TUR
 const RELAY_BOTH_ENDS = process.env.RELAY_BOTH_ENDS !== "0";
 const POLICY = process.env.ICE_TRANSPORT_POLICY || "relay";
 const TERM_THREADS = num("LOAD_TERM_THREADS", 0);
+const AGENT_THREADS = num("LOAD_AGENT_THREADS", 0);
 const HAMMER = process.env.HAMMER_ISSUES === "1";
 const SEED_ISSUES = num("SEED_ISSUES", 150);
 
@@ -269,6 +275,22 @@ async function startBusyLoops(app, term) {
   };
 }
 
+/** A headless agent, dispatched the way the app does it; the fake `claude` on
+ * the bridge's PATH does the spinning. */
+async function startAgentLoad(session, project) {
+  const branch = `liveness-load-${Date.now().toString(36)}`;
+  const dispatched = await session.call("branch.dispatch", {
+    project_id: project.project_id, instruction: `liveness load: spin ${AGENT_THREADS} busy loops`, branch,
+    provider: "claude_adk", model: "claude-fable-5-1",
+  });
+  const runId = dispatched.run_id || dispatched.run?.run_id || dispatched.agent?.run_id || null;
+  log(`headless agent dispatched on ${branch}: ${JSON.stringify(dispatched).slice(0, 200)}`);
+  return async () => {
+    if (!runId) return log("no run id to abandon; the bridge's stop ends the agent's scope");
+    await session.call("run.abandon", { run_id: runId }).then(() => log(`run ${runId} abandoned`), (error) => log(`run.abandon refused: ${error.message}`));
+  };
+}
+
 async function seedIssues(session, projectId) {
   const have = ((await session.call("issues.list", { project_id: projectId })).issues || []).length;
   const body = "Seeded by liveness-soak.mjs. ".repeat(12);
@@ -347,7 +369,7 @@ function summary(link) {
   const max = maxOf(rtts);
   const over = rtts.filter((rtt) => rtt >= RTT_CEILING_MS).length;
   console.log("\n──────── liveness summary ────────");
-  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
+  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_AGENT_THREADS=${AGENT_THREADS} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
   console.log(`path         ${pair.text}${pair.relayed ? "" : "   !! NOT relay/relay"}`);
   console.log(`pings        samples=${run.sent} answered=${rtts.length} p50=${ms(pct(rtts, 50))} p95=${ms(pct(rtts, 95))} max=${ms(max)}`);
   console.log(`             over ${RTT_CEILING_MS} ms=${over}  timeouts(>${PING_DEADLINE_MS} ms)=${run.timeouts}  never answered=${run.sent - rtts.length - run.refusals}  refused=${run.refusals}`);
@@ -393,6 +415,7 @@ async function main() {
   const [project] = (await session.call("project.list")).projects || [];
   if (HAMMER) await seedIssues(reader, project.project_id);
   const stopLoops = term ? await startBusyLoops(session, term) : null;
+  const stopAgent = AGENT_THREADS > 0 ? await startAgentLoad(session, project) : null;
   for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => ((stopping = true), log(`${signal}: ending the soak`)));
 
   loopDelay.reset();
@@ -401,6 +424,7 @@ async function main() {
   stopping = true;
   await reading;
   if (stopLoops) await stopLoops();
+  if (stopAgent) await stopAgent();
   const code = summary(link);
   link.peer.close();
   process.exit(code);

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
   previewModeFor,
@@ -152,5 +154,16 @@ describe("previewPlaceholderHtml", () => {
 
   it("renders loading as a throbber", () => {
     expect(previewPlaceholderHtml("loading")).toContain('class="throbber"');
+  });
+});
+
+// The source preview's line numbers sit on the panel, inset only by the body's
+// gutter: no fill of their own, no left padding.
+describe("source line-number column", () => {
+  it("has no background and no left padding", () => {
+    const styles = readFileSync(fileURLToPath(new URL("../src/styles.css", import.meta.url)), "utf8");
+    const rule = styles.match(/\.fsrc-ln \{([^}]*)\}/)[1];
+    expect(rule).toContain("padding:0 10px 0 0;");
+    expect(rule).not.toContain("background");
   });
 });

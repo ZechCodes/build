@@ -20,8 +20,9 @@ import { issue as trackerIssue } from "./trackerWireFixture.js";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { recovery, renderFilesTab } = vi.hoisted(() => ({
+const { recovery, renderFilesTab, mountAgentRail } = vi.hoisted(() => ({
   recovery: new Map(), // deviceId → the recovery record the supervisor would hold
+  mountAgentRail: vi.fn(() => ({ dispose() {} })),
   renderFilesTab: vi.fn((host) => {
     host.innerHTML = '<main class="file-editor"></main>';
     return { dispose: vi.fn(), canLeave: vi.fn(async () => true) };
@@ -44,8 +45,9 @@ vi.mock("../src/core/deviceRecovery.js", () => ({
     stop() {},
   }),
 }));
-// The rail and the console are the shell's, not these surfaces'.
-vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: () => ({ dispose() {} }) }));
+// The rail and the console are the shell's, not these surfaces': they are
+// counted, not run.
+vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
 vi.mock("../src/core/console.js", () => ({ mountConsole: () => ({ dispose() {} }) }));
 // The Files tab reads the directory on demand (a documented exception); the
 // workspace surface's own content is the checkout it mounts that tab over.
@@ -122,7 +124,7 @@ const branchRow = { kind: "branch", project_id: "p1", project: "notes", branch: 
 async function cacheBoard() {
   const view = liveFeedSnapshot(
     { items: [branchRow], runs: [] },
-    { projects: [{ project_id: "p1", name: "notes", is_git: true }] },
+    { projects: [{ project_id: "p1", name: "notes", is_git: true, entity_id: "run-project" }] },
     { workspaces: [workspace] },
     DEVICE,
   );
@@ -185,6 +187,7 @@ beforeEach(async () => {
   document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   await wipeCache();
   renderFilesTab.mockClear();
+  mountAgentRail.mockClear();
   recovery.clear();
   bridge = null;
   App.viewDispose = null;
@@ -223,6 +226,9 @@ describe.each(Object.entries(SURFACES))("the %s surface paints from the cache", 
     // A machine being dialled is painted as if it answered: nothing over the
     // surface says otherwise. Only one nothing is dialling is named.
     expect(Boolean(document.querySelector("#root > .device-strip"))).toBe(state === "disconnected");
+    // The rail beside it pages its conversation out of the same records, so it
+    // stands too.
+    expect(mountAgentRail).toHaveBeenCalledOnce();
     // Nothing a surface painted came off the wire: no session was answering.
     if (bridge) expect(bridge.call).not.toHaveBeenCalled();
   });

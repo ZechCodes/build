@@ -90,9 +90,14 @@ const paneKey = (tab, scope) => `${tab}:${reviewKeyOf(scope) || (scope ? "folder
  *  file and a reload keeps the reader's place. Pure. */
 const openPlaceOf = (route) => (route.file ? { path: route.file, line: route.line || null } : null);
 
-function mountPlainChanges(host, onInitialize) {
+/** A folder with no git: its Changes face is the offer to initialize beside an
+ *  empty list column. It is the same list column as the commit rail's
+ *  (.pane-list), so the directory rail's sidebar toggle folds it too and, where
+ *  the list column is a drawer, it is parked like one. Exported for the layout
+ *  test. */
+export function mountPlainChanges(host, onInitialize) {
   App.routeLeaveGuard = null;
-  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host"></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
+  host.innerHTML = `<div class="pane-split changes2"><aside class="crail crail-host pane-list"></aside><main class="empty folder-git-empty"><h2>Initialize Git</h2><p>Track changes and create branches in this folder.</p><button class="btn primary" id="init-git" type="button">Initialize Git</button><p class="error" id="init-git-status" role="status"></p></main></div>`;
   host.querySelector("#init-git").onclick = onInitialize;
 }
 

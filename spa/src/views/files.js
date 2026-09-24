@@ -33,7 +33,7 @@ import { highlightCode, langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 import { confirmAction } from "../core/confirm.js";
-import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes } from "../core/fileViewer.js";
+import { createFileViewerState, encodeBase64Text, fileModeTrayHtml, fileViewerModes, sameFile } from "../core/fileViewer.js";
 import { mountFileEditor } from "../core/fileEditor.js";
 import { captureFileSelection } from "../core/fileSelection.js";
 import { mountMeasuredHeight } from "../core/measuredInset.js";
@@ -457,6 +457,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
    *  the record is written through after, and its push is the same file. */
   const saveEditor = async (path) => {
     const state = viewerState;
+    const baseline = state.snapshot().file;
     const write = state.submit();
     if (!write) return;
     paintEditStatus();
@@ -477,14 +478,18 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     }
     state.saveSucceeded(written);
     afterSave(path, state, written);
-    await storeWrittenFile(path, address, written, (await before)?.at);
+    await storeWrittenFile(path, address, written, baseline, (await before)?.at);
   };
 
-  /** Write the saved file through — unless the record moved while the save was
-   *  out: that is a later change on disk, and the drafts must go on seeing it. */
-  const storeWrittenFile = async (path, address, written, previousAt) => {
+  /** A cache access refresh changes the timestamp without changing the file.
+   *  Replace the submitted baseline, but keep a competing revision visible.
+   *  If the record disappeared while saving, preserve that invalidation too. */
+  const storeWrittenFile = async (path, address, written, baseline, previousAt) => {
     if (!address) return false;
-    if ((await heldRecord(address))?.at !== previousAt) return false;
+    const current = await heldRecord(address);
+    if (current?.value?.file) {
+      if (!sameFile(current.value.file, baseline)) return false;
+    } else if (current?.at !== previousAt) return false;
     const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: written });
     if (!kept) await deleteCached([address]);
     return kept;

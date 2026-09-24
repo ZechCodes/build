@@ -25,7 +25,7 @@ export function fileViewerModes(file) {
 const REVISION_CONFLICT = "revision conflict";
 
 /** Whether a record is the very file a baseline was read as. */
-const sameFile = (a, b) =>
+export const sameFile = (a, b) =>
   a.revision === b.revision && a.content_b64 === b.content_b64 && Boolean(a.truncated) === Boolean(b.truncated);
 
 /**

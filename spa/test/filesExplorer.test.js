@@ -11,7 +11,8 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 const { scopeFor } = await import("../src/core/cacheScope.js");
-const { wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { readCached, wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { cacheFileBody } = await import("../src/core/cacheLifetime.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
@@ -391,6 +392,7 @@ describe("a tab's draft, state by event", () => {
   const README = "# Title\n";
   const DISK = "File changed on disk";
   const CONFLICT = "revision conflict: README.md changed";
+  const readmeAddress = { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" };
   let writes;
 
   beforeEach(() => {
@@ -414,6 +416,18 @@ describe("a tab's draft, state by event", () => {
       { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
       { file: { path: "README.md", mime: "text/plain", size: 6, truncated: false, editable: true, encoding: "utf-8", revision: "README.md@ext", content_b64: b64("moved\n") }, openedAt: Date.now() },
     );
+    await settle();
+  };
+  const refreshReadme = async (competing = false) => {
+    const before = await readCached(readmeAddress);
+    // A second opener refreshes access time without changing the baseline.
+    // A competing revision can even have the same bytes; its revision wins.
+    const file = { ...before.value.file, ...(competing ? { revision: "README.md@3" } : {}) };
+    await settle();
+    await cacheFileBody({ ...readmeAddress, path: "README.md", file });
+    const after = await readCached(readmeAddress);
+    expect(after.at).toBeGreaterThan(before.at);
+    expect(after.value.file).toEqual(file);
     await settle();
   };
   const show = async (host, path) => {
@@ -451,6 +465,20 @@ describe("a tab's draft, state by event", () => {
     ok?.click();
     await settle();
     return Boolean(ok);
+  };
+  const remountPendingSave = async (host) => {
+    const before = await readCached(readmeAddress);
+    const reads = answer.mock.calls.filter(([method]) => method === "fs.read").length;
+    await settle();
+    unmount(host);
+    const next = mountFiles();
+    await vi.waitFor(() => expect(shownPath(next.host)).toBe("README.md"));
+    await settle();
+    const refreshed = await readCached(readmeAddress);
+    expect(refreshed.at).toBeGreaterThan(before.at);
+    expect(refreshed.value.file).toEqual(before.value.file);
+    expect(answer.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(reads);
+    return next.host;
   };
 
   const STATES = {
@@ -499,14 +527,39 @@ describe("a tab's draft, state by event", () => {
       await saveOut(host);
       return { dotAway: await away(host, async () => { await pushExternal(); await land(); }) };
     },
+    "same-body refresh, then save ok, while away": async (host) => ({
+      dotAway: await away(host, async () => { await refreshReadme(); await land(); }),
+    }),
+    "r3 with baseline bytes, then save ok, while away": async (host) => ({
+      dotAway: await away(host, async () => { await refreshReadme(true); await land(); }),
+    }),
+    "remount, then save ok": async (host) => {
+      const nextHost = await remountPendingSave(host);
+      await land();
+      return { host: nextHost };
+    },
+    "remount, type, then save ok": async (host) => {
+      const nextHost = await remountPendingSave(host);
+      typeInto(nextHost, "remounted draft\n");
+      await land();
+      return { host: nextHost };
+    },
+    "remount, type, r3, then save ok": async (host) => {
+      const nextHost = await remountPendingSave(host);
+      typeInto(nextHost, "remounted draft\n");
+      await refreshReadme(true);
+      await land();
+      return { host: nextHost };
+    },
     reload: async (host) => {
       host.querySelector(".file-reload").click();
       return { asked: await confirmShown() };
     },
   };
 
-  const row = (state, event, seen, base) => ({ state, event, seen, base });
+  const row = (state, event, seen, base, cached) => ({ state, event, seen, base, cached });
   const shows = (value, dot, save, status, reload, extra = {}) => ({ value, dot, save, status, reload, ...extra });
+  const cachedFile = (revision, text) => ({ revision, content_b64: b64(text) });
 
   const ROWS = [
     row("clean", "push", shows("moved\n", false, false, "", false), "README.md@ext"),
@@ -528,6 +581,10 @@ describe("a tab's draft, state by event", () => {
     row("saving", "save ok while away", shows("draft\n", false, false, "", false, { dotAway: false }), "README.md@2"),
     row("saving", "push while away", shows("draft\n", true, false, DISK, true, { dotAway: true }), null),
     row("saving", "push, then save ok, while away", shows("moved\n", false, false, "", false, { dotAway: false }), "README.md@ext"),
+    row("saving", "same-body refresh, then save ok, while away", shows("draft\n", false, false, "", false, { dotAway: false }), "README.md@2", cachedFile("README.md@2", "draft\n")),
+    row("saving", "remount, then save ok", shows("draft\n", false, false, "", false), "README.md@2", cachedFile("README.md@2", "draft\n")),
+    row("saving", "remount, type, then save ok", shows("remounted draft\n", true, true, DISK, true), "README.md@1", cachedFile("README.md@2", "draft\n")),
+    row("saving", "remount, type, r3, then save ok", shows("remounted draft\n", true, true, DISK, true), "README.md@1", cachedFile("README.md@3", README)),
 
     row("saving-edited", "save ok", shows(README, true, true, "", false), "README.md@2"),
     row("saving-edited", "save refused", shows(README, false, false, CONFLICT, true), "README.md@1"),
@@ -536,6 +593,8 @@ describe("a tab's draft, state by event", () => {
     row("saving-edited", "switch away and back", shows(README, true, false, "", false, { dotAway: true }), null),
     row("saving-edited", "save ok while away", shows(README, true, true, "", false, { dotAway: true }), "README.md@2"),
     row("saving-edited", "push, then save ok, while away", shows(README, true, true, DISK, true, { dotAway: true }), "README.md@2"),
+    row("saving-edited", "same-body refresh, then save ok, while away", shows(README, true, true, "", false, { dotAway: true }), "README.md@2", cachedFile("README.md@2", "draft\n")),
+    row("saving-edited", "r3 with baseline bytes, then save ok, while away", shows(README, true, true, DISK, true, { dotAway: true }), "README.md@2", cachedFile("README.md@3", README)),
 
     row("changed-on-disk", "save refused", shows("draft\n", true, true, DISK, true), "README.md@1"),
     row("changed-on-disk", "switch away and back", shows("draft\n", true, true, DISK, true, { dotAway: true }), "README.md@1"),
@@ -561,16 +620,18 @@ describe("a tab's draft, state by event", () => {
     };
   };
 
-  it.each(ROWS)("$state × $event", async ({ state, event, seen, base }) => {
-    const { host } = await mountOnReadme();
+  it.each(ROWS)("$state × $event", async ({ state, event, seen, base, cached }) => {
+    let { host } = await mountOnReadme();
     await STATES[state](host);
     const saw = (await EVENTS[event](host)) || {};
+    host = saw.host || host;
 
     const { dotAway, asked, ...painted } = seen;
     await vi.waitFor(() => expect(observe(host)).toEqual(painted));
     if (dotAway !== undefined) expect(saw.dotAway).toBe(dotAway);
     if (asked !== undefined) expect(saw.asked).toBe(asked);
     expect(host.querySelector(".file-editor").value).toBe(seen.value);
+    if (cached) expect((await readCached(readmeAddress)).value.file).toMatchObject(cached);
 
     // The revision the next save goes out against.
     if (base === null) return expect(writes.some((write) => write.open)).toBe(true);

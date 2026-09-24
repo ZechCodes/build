@@ -50,6 +50,12 @@ pub const AGENTS_SLICE_CPU_WEIGHT: u32 = 20;
 /// niced already still keeps its agents behind it (as far as 19 allows).
 pub const CHILD_NICE: i32 = 10;
 
+/// How far below the daemon the user's own terminal runs where there is no
+/// scope to rank it in: half an agent's step, so the order bridge, then the
+/// user's shell, then the agents holds by nice alone. Under a scope the
+/// terminal is not niced at all; its scope beside the user's apps is its rank.
+pub const TERMINAL_NICE_WITHOUT_SCOPE: i32 = 5;
+
 /// The highest nice Linux and macOS have.
 const MAX_NICE: i32 = 19;
 
@@ -85,8 +91,14 @@ impl ChildKind {
         }
     }
 
-    fn niced(self) -> bool {
-        matches!(self, ChildKind::Agent)
+    /// How far below the daemon a child of this kind runs, given whether a
+    /// scope already ranks it. `None` is not lowered.
+    fn nice_step(self, scoped: bool) -> Option<i32> {
+        match (self, scoped) {
+            (ChildKind::Agent, _) => Some(CHILD_NICE),
+            (ChildKind::Terminal, true) => None,
+            (ChildKind::Terminal, false) => Some(TERMINAL_NICE_WITHOUT_SCOPE),
+        }
     }
 }
 
@@ -178,11 +190,12 @@ impl ChildPlacement {
     /// its process group, which covers anything it forked before this ran. A
     /// child already gone is not an error worth a word.
     pub fn lower(&self, kind: ChildKind, pid: u32) {
-        if !kind.niced() {
+        let Some(step) = kind.nice_step(self.is_scoped()) else {
             return;
-        }
-        lower_process(pid);
-        lower_process_group(pid);
+        };
+        let nice = child_nice_for(own_nice(), step);
+        lower_process(pid, nice);
+        lower_process_group(pid, nice);
     }
 
     /// Whether children leave the daemon's cgroup.
@@ -217,32 +230,24 @@ pub fn own_nice() -> i32 {
     }
 }
 
-/// The nice an agent child gets under a daemon at `daemon_nice`.
-pub fn child_nice_for(daemon_nice: i32) -> i32 {
-    (daemon_nice + CHILD_NICE).min(MAX_NICE)
+/// The nice a child `step` below a daemon at `daemon_nice` gets.
+pub fn child_nice_for(daemon_nice: i32, step: i32) -> i32 {
+    (daemon_nice + step).min(MAX_NICE)
 }
 
-fn lower_process(pid: u32) {
+fn lower_process(pid: u32, nice: i32) {
     // SAFETY: setpriority reads no memory and writes none; a pid that no
     // longer exists is answered with ESRCH, which is ignored.
     unsafe {
-        libc::setpriority(
-            libc::PRIO_PROCESS,
-            pid as libc::id_t,
-            child_nice_for(own_nice()),
-        );
+        libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, nice);
     }
 }
 
-fn lower_process_group(pid: u32) {
+fn lower_process_group(pid: u32, nice: i32) {
     // SAFETY: as above, for the group the PTY child leads once it has called
     // setsid; before that the group does not exist and the call is a no-op.
     unsafe {
-        libc::setpriority(
-            libc::PRIO_PGRP,
-            pid as libc::id_t,
-            child_nice_for(own_nice()),
-        );
+        libc::setpriority(libc::PRIO_PGRP, pid as libc::id_t, nice);
     }
 }
 
@@ -511,19 +516,60 @@ mod tests {
         let _ = child.wait();
         // Relative to this very process, which the test runner may itself run
         // niced (the gates run under `nice -n 10`).
-        assert_eq!(nice, child_nice_for(own_nice()));
+        assert_eq!(nice, child_nice_for(own_nice(), CHILD_NICE));
     }
 
     #[test]
-    fn the_child_nice_is_ten_below_the_daemon_and_never_past_nineteen() {
-        assert_eq!(child_nice_for(0), 10);
-        assert_eq!(child_nice_for(10), 19);
-        assert_eq!(child_nice_for(-5), 5);
+    fn the_child_nice_is_a_step_below_the_daemon_and_never_past_nineteen() {
+        assert_eq!(child_nice_for(0, CHILD_NICE), 10);
+        assert_eq!(child_nice_for(10, CHILD_NICE), 19);
+        assert_eq!(child_nice_for(-5, CHILD_NICE), 5);
+        assert_eq!(child_nice_for(0, TERMINAL_NICE_WITHOUT_SCOPE), 5);
+    }
+
+    /// Without a scope the order is kept by nice alone: bridge, then the
+    /// user's shell, then the agents.
+    #[test]
+    fn without_a_scope_a_terminal_is_half_a_step_down_and_an_agent_a_whole_one() {
+        assert_eq!(
+            ChildKind::Terminal.nice_step(false),
+            Some(TERMINAL_NICE_WITHOUT_SCOPE)
+        );
+        assert_eq!(ChildKind::Agent.nice_step(false), Some(CHILD_NICE));
+        assert_eq!(
+            ChildKind::Terminal.nice_step(true),
+            None,
+            "its scope is its rank"
+        );
+        assert_eq!(ChildKind::Agent.nice_step(true), Some(CHILD_NICE));
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_terminal_is_never_lowered() {
+    fn a_terminal_under_a_scope_is_never_lowered() {
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 3"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("sh spawns");
+        let scoped = ChildPlacement::TransientScope {
+            systemd_run: PathBuf::from("/usr/bin/systemd-run"),
+        };
+        scoped.lower(ChildKind::Terminal, child.id());
+        let nice = nice_of(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(
+            nice,
+            own_nice(),
+            "a scoped terminal inherits the daemon's own nice"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_terminal_without_a_scope_is_half_a_step_down() {
         let mut child = Command::new("sh")
             .args(["-c", "sleep 3"])
             .stdin(Stdio::null())
@@ -536,8 +582,7 @@ mod tests {
         let _ = child.wait();
         assert_eq!(
             nice,
-            own_nice(),
-            "a terminal inherits the daemon's own nice"
+            child_nice_for(own_nice(), TERMINAL_NICE_WITHOUT_SCOPE)
         );
     }
 

@@ -1762,7 +1762,8 @@ mod tests {
     /// What an agent child should report: ten below this process, which the
     /// test runner may itself run niced (the gates run under `nice -n 10`).
     fn agent_nice() -> String {
-        crate::priority::child_nice_for(crate::priority::own_nice()).to_string()
+        crate::priority::child_nice_for(crate::priority::own_nice(), crate::priority::CHILD_NICE)
+            .to_string()
     }
 
     #[cfg(target_os = "linux")]
@@ -1774,12 +1775,19 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn the_user_s_shell_is_not_lowered() {
+    async fn the_user_s_shell_without_a_scope_is_half_a_step_down() {
+        // With no scope to rank it in (the tests never install one), the
+        // user's shell runs half a step down: below the daemon, above the
+        // agents.
         let spec = nice_reporting_spec().as_terminal();
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         assert_eq!(
             reported_nice(&session).await,
-            crate::priority::own_nice().to_string()
+            crate::priority::child_nice_for(
+                crate::priority::own_nice(),
+                crate::priority::TERMINAL_NICE_WITHOUT_SCOPE
+            )
+            .to_string()
         );
     }
 

@@ -236,8 +236,9 @@ fn place_children() {
     placement.install();
     if !scoped {
         eprintln!(
-            "children: nice {} only ({reason})",
-            build_bridge::priority::CHILD_NICE
+            "children: no scope ({reason}); agents nice +{}, terminals nice +{}",
+            build_bridge::priority::CHILD_NICE,
+            build_bridge::priority::TERMINAL_NICE_WITHOUT_SCOPE
         );
         return;
     }

@@ -83,7 +83,7 @@ kernel slows the agents' allocations and reclaims their memory, page cache
 first, before it touches the bridge or the user's apps.
 
 Where there is no user systemd (macOS, containers), the bridge falls back to
-`nice 10` on each child's process group. On macOS the LaunchAgent is
+`nice +10` on each agent's process group and `nice +5` on each terminal's, so the order bridge, then the user's shell, then the agents still holds. On macOS the LaunchAgent is
 `ProcessType=Interactive`. `Background` is launchd's throttled class, with CPU
 and I/O deprioritised behind everything the user does. The bridge relays the
 user's live session, so it gets the class launchd gives an app with a UI.

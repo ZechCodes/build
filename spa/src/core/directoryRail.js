@@ -44,9 +44,14 @@ const KEY_ENDS = { Home: 0, End: -1 };
  *  checkout, "true" for collapsed. Absent means expanded. */
 export const SIDEBAR_COLLAPSED_KEY = "build.sidebarCollapsed";
 
+/** The store is reached for inside the guards, never in a default argument: a
+ *  denied origin throws on reading `localStorage` itself, and that has to land
+ *  in the fallback rather than abort the paint. */
+const storeOf = (storage) => (storage === undefined ? globalThis.localStorage : storage);
+
 function readSidebarCollapsed(storage) {
   try {
-    return storage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    return storeOf(storage).getItem(SIDEBAR_COLLAPSED_KEY) === "true";
   } catch {
     return false; // a store that refuses to be read: the default, expanded
   }
@@ -54,7 +59,7 @@ function readSidebarCollapsed(storage) {
 
 function writeSidebarCollapsed(collapsed, storage) {
   try {
-    storage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+    storeOf(storage).setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
   } catch {
     /* a blocked or full store: the choice lasts until the rail repaints */
   }
@@ -102,12 +107,13 @@ function keyboardCellIn(host) {
  * into the shell's column and wire it. Idempotent: every paint rewrites the row
  * and its handlers, so a surface repaints by calling it again and there is
  * nothing to dispose. A directory with no git has one face, and passes the one
- * tab. The sidebar toggle is painted from `storage` (localStorage) each time.
+ * tab. The sidebar toggle is painted from `storage` (localStorage when absent)
+ * each time.
  *
  * Automatic activation, the way a tablist of two behaves: an arrow both moves
  * the focus and opens what it lands on.
  */
-export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, storage = globalThis.localStorage }) {
+export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, storage }) {
   // A paint answering a press rewrites the cell the keyboard stands on; the
   // keyboard is handed the cell that replaces it, or it lands on nothing.
   const keyboardCell = keyboardCellIn(host);

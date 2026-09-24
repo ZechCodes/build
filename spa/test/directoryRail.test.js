@@ -242,6 +242,29 @@ describe("the sidebar toggle", () => {
     expect(document.activeElement).toBe(toggle());
   });
 
+  it("paints both faces and an expanded toggle when the browser denies the store itself", () => {
+    // A denied origin throws on READING localStorage, before there is an
+    // object whose getItem could be guarded (SecurityError).
+    const own = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("The operation is insecure.", "SecurityError");
+      },
+    });
+    try {
+      const { host, tabs, toggle } = mount();
+      expect(tabs().map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+      expect(host.dataset.sidebar).toBe("expanded");
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      toggle().click();
+      expect(host.dataset.sidebar).toBe("collapsed");
+    } finally {
+      if (own) Object.defineProperty(globalThis, "localStorage", own);
+      else delete globalThis.localStorage;
+    }
+  });
+
   it("works for the mount when this browser keeps nothing", () => {
     const blocked = {
       getItem: () => {

@@ -57,9 +57,9 @@ const geometry = (page) => page.evaluate(() => {
 });
 
 /** Wait out the width transition: the list column stops changing size. */
-const settle = (page) => page.evaluate(() => Promise.all(
-  document.querySelector("#ftree").getAnimations().map((animation) => animation.finished.catch(() => {})),
-));
+const settle = (page, column = "#ftree") => page.evaluate((selector) => Promise.all(
+  document.querySelector(selector).getAnimations().map((animation) => animation.finished.catch(() => {})),
+), column);
 
 it("folds the list column away from the rail's foot and brings it back at its width", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
@@ -94,6 +94,58 @@ it("folds the list column away from the rail's foot and brings it back at its wi
     await settle(page);
     expect(await geometry(page)).toEqual(expanded);
   }, { width: 1280, height: 820 });
+}, 30_000);
+
+// A folder with no git: the legacy branch view's Changes face is an empty list
+// column beside the offer to initialize (branchView.js, mountPlainChanges). It
+// is the same list column, and the toggle folds it like the other two.
+it("folds the list column of a folder with no git", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountCheckout(page, basePath);
+    // The loader answers from window.__layoutModules once it is set.
+    await page.evaluate(() => { delete window.__layoutModules; });
+    await loadBrowserModules(page, { branch: "src/views/branchView.js" }, basePath);
+    await page.evaluate(() => {
+      window.__layoutModules.branch.mountPlainChanges(document.querySelector("#tabbody"), () => {});
+    });
+    const column = () => page.evaluate(() => {
+      const aside = document.querySelector(".crail-host");
+      const main = document.querySelector(".folder-git-empty").getBoundingClientRect();
+      return { width: aside.getBoundingClientRect().width, visibility: getComputedStyle(aside).visibility,
+        offerCentre: main.x + main.width / 2, splitRight: document.querySelector(".pane-split").getBoundingClientRect().right,
+        railRight: document.querySelector("#dir-rail").getBoundingClientRect().right };
+    });
+    const expanded = await column();
+    expect(expanded.width).toBeGreaterThan(100);
+    await page.click("[data-sidebar-toggle]");
+    await settle(page, ".crail-host");
+    const collapsed = await column();
+    expect(collapsed.width).toBe(0);
+    expect(collapsed.visibility).toBe("hidden");
+    // The offer centres itself in what the column leaves: the whole width.
+    expect(collapsed.offerCentre).toBeCloseTo((collapsed.railRight + collapsed.splitRight) / 2, 0);
+  }, { width: 1280, height: 820 });
+}, 30_000);
+
+it("takes a folder's empty column out of the flow where the list column is a drawer", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountCheckout(page, basePath, { collapsed: true });
+    await page.evaluate(() => { delete window.__layoutModules; });
+    await loadBrowserModules(page, { branch: "src/views/branchView.js" }, basePath);
+    const layout = await page.evaluate(() => {
+      window.__layoutModules.branch.mountPlainChanges(document.querySelector("#tabbody"), () => {});
+      const split = document.querySelector(".pane-split").getBoundingClientRect();
+      const aside = document.querySelector(".crail-host").getBoundingClientRect();
+      const offer = document.querySelector(".folder-git-empty").getBoundingClientRect();
+      const gutter = parseFloat(getComputedStyle(document.querySelector(".pane-split")).paddingLeft);
+      return { splitX: split.x + gutter, splitRight: split.right, asideHeight: aside.height,
+        offerCentre: offer.x + offer.width / 2 };
+    });
+    // Out of the flow like any drawer column, and with nothing in it there is
+    // nothing to paint: the offer has the pane to itself.
+    expect(layout.asideHeight).toBe(0);
+    expect(layout.offerCentre).toBeCloseTo((layout.splitX + layout.splitRight) / 2, 0);
+  }, { width: 800, height: 820 });
 }, 30_000);
 
 it("moves nothing under reduced motion", async () => {

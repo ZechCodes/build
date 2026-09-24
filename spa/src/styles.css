@@ -543,9 +543,10 @@ main#root.surface { max-width:none;
    It is stated at every width and weighs what the drawer's rule below weighs
    (:where() hands the rail's half no weight), so where the list column is a
    drawer that rule, coming later, puts back everything this one took, and the
-   breakpoint is stated once, by the drawer. */
+   breakpoint is stated once, by the drawer. No grow either: a folder with no
+   git has an empty column that is also a .crail, which grows (branchView.js). */
 :where(#dir-rail[data-sidebar="collapsed"]:not(:empty) ~ #root) .pane-split .pane-list {
-  flex-basis:0; overflow:hidden; visibility:hidden; }
+  flex-grow:0; flex-basis:0; overflow:hidden; visibility:hidden; }
 /* The drawer's tempo, .18s; visibility waits out the fold and comes back at
    once on the way out. Only after a press (data-sidebar-motion): a surface can
    lay its pane out before it paints the rail, and arriving on a checkout left

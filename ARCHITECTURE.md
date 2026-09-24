@@ -425,6 +425,17 @@ In practice:
   of them. It holds three change subscriptions per device: `s-inbox`
   (realtime), `s-background` (git, files and shells on a 30 s cooldown) and
   `s-active` (the routed workspace, realtime).
+- **Reconnect catch-up.** The bridge starts a subscription empty and records a
+  change only for the subscriptions it holds when the change happens. So a pass
+  takes its subscriptions out and waits for the bridge to answer them before it
+  reads anything. A change after a read is then pushed, and a read never writes
+  over a record a push wrote after the read was asked
+  (`spa/src/core/pushFence.js`). A conversation's forward read
+  (`syncThreadWindow` in `spa/src/core/threadSync.js`) only carries items made
+  past the cursor. When its page shows the conversation's counter moved on a
+  value none of its items wears, an item under the cursor changed in place, and
+  the newest `REPAIRED_THREAD_ITEMS` (50) held items are read again so the
+  changed copies replace the stale ones.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

@@ -94,7 +94,7 @@ function macbookShell(appHtml) {
       <div class="mac-menu-right">${batteryIcon(86)}${wifiIcon}${searchIcon}${controlCenterIcon}<span>Sat Sep 19</span><strong>9:41 AM</strong></div>
     </header>
     <section class="mac-window system-window">
-      <div class="mac-titlebar"><span class="traffic-lights"><i></i><i></i><i></i></span><span class="window-title">Build — Launch</span></div>
+      <div class="mac-titlebar"><span class="traffic-lights"><i></i><i></i><i></i></span><span class="window-title">Build</span></div>
       <div class="system-app-host">${appHtml}</div>
     </section>
     <nav class="system-dock mac-dock" aria-label="Dock">${macDockContents()}</nav>
@@ -106,7 +106,7 @@ function ipadShell(appHtml) {
     <div class="tablet-wallpaper" aria-hidden="true"><i></i><i></i></div>
     <header class="ipad-status-bar"><strong>9:41</strong>${statusRight({ percentage: 82 })}</header>
     <section class="ipad-window system-window">
-      <div class="ipad-windowbar"><span class="ipad-window-controls"><i></i><i></i><i></i></span><span class="ipad-window-title">Build — Launch</span></div>
+      <div class="ipad-windowbar"><span class="ipad-window-controls"><i></i><i></i><i></i></span><span class="ipad-window-title">Build</span></div>
       <div class="system-app-host">${appHtml}</div>
     </section>
     <nav class="system-dock ipad-dock" aria-label="Dock">${ipadDockContents()}</nav>

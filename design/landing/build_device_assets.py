@@ -36,7 +36,8 @@ BLEND_PATH = SOURCE_DIR / "build-devices.blend"
 SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export are meters
 
 
-SILVER = (0.60, 0.61, 0.63, 1.0)
+SILVER = (0.65, 0.66, 0.68, 1.0)
+SATIN_DARK = (0.12, 0.13, 0.14, 1.0)
 SILVER_EDGE = (0.72, 0.73, 0.75, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
 KEY_COLOR = (0.0035, 0.0038, 0.0045, 1.0)
@@ -268,6 +269,19 @@ def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, 
         # bevel faces interpolate their normals instead of showing segments.
         polygon.use_smooth = abs(polygon.normal[cap_axis]) < 0.999
     return obj
+
+
+def assign_front_band(body, material):
+    """Match the runtime's glTF normal.z > 0.5 band on the finished shell."""
+    body.data.materials.append(material)
+    band_count = 0
+    for polygon in body.data.polygons:
+        # glTF +Z is Blender -Y after export_yup; the bevel is already applied.
+        if polygon.normal.y < -0.5:
+            polygon.material_index = 1
+            band_count += 1
+    if not band_count or band_count == len(body.data.polygons):
+        raise AssertionError(f"{body.name}: missing front band or chassis faces")
 
 
 def profiled_rounded_shell(
@@ -757,7 +771,7 @@ def build_laptop(mats):
         cylinder("hinge_right", (1.03, -0.004, 0.096), 0.0175, 0.42, mats["graphite"], c, rotation=(0, math.radians(90), 0), vertices=24),
     ]
     join_meshes(hardware, "laptop_hardware")
-    lid_shell = rounded_prism("laptop_lid_shell", (0, 0.00875, 1.160), (3.126, 2.110, 0.0385), 0.060, 0.006, mats["graphite"], c, plane="XZ")
+    lid_shell = rounded_prism("laptop_lid_shell", (0, 0.00875, 1.160), (3.126, 2.110, 0.0385), 0.060, 0.006, mats["lid"], c, plane="XZ")
     front_glass = rounded_prism("laptop_front_glass", (0, -0.0112, 1.160), (3.086, 2.070, 0.0015), 0.052, 0, mats["glass"], c, plane="XZ")
     screen = rounded_screen("laptop_screen", (0, LAPTOP_SCREEN_Y, 1.160), 3.024, 1.964, 0.045, mats["desktop_screen"], c)
     screen["replaceable_texture"] = True
@@ -790,7 +804,8 @@ def build_laptop(mats):
 
 def build_tablet(mats):
     c = add_collection("Tablet")
-    rounded_prism("tablet_body", (0, 0, 0), (2.497, 1.775, 0.053), 0.1505, 0.0055, mats["graphite"], c, plane="XZ")
+    tablet_body = rounded_prism("tablet_body", (0, 0, 0), (2.497, 1.775, 0.053), 0.1505, 0.0055, mats["graphite"], c, plane="XZ")
+    assign_front_band(tablet_body, mats["front_band"])
     controls = [
         rounded_box("tablet_power", (1.247, 0, 0.55), (0.014, 0.043, 0.22), mats["edge"], 0.006, c),
         rounded_box("tablet_volume", (0.72, 0, 0.886), (0.28, 0.043, 0.014), mats["edge"], 0.006, c),
@@ -817,7 +832,8 @@ def build_tablet(mats):
 
 def build_phone(mats):
     c = add_collection("Phone")
-    rounded_prism("phone_body", (0, 0, 0), (0.780, 1.634, 0.0875), 0.154, 0.0080, mats["phone_aluminum"], c, plane="XZ")
+    phone_body = rounded_prism("phone_body", (0, 0, 0), (0.780, 1.634, 0.0875), 0.154, 0.0080, mats["phone_aluminum"], c, plane="XZ")
+    assign_front_band(phone_body, mats["front_band"])
     controls = [
         rounded_box("phone_action", (-0.388, 0, 0.42), (0.013, 0.069, 0.13), mats["phone_edge"], 0.005, c),
         rounded_box("phone_volume_up", (-0.388, 0, 0.17), (0.013, 0.069, 0.18), mats["phone_edge"], 0.005, c),
@@ -1020,33 +1036,106 @@ def fit_device_framing(camera, margin=0.05):
         camera.data.lens /= factor
 
 
+def linear_rgb(hex_color):
+    """Decode the runtime's sRGB light colours for Blender's linear inputs."""
+    values = [(hex_color >> shift & 255) / 255 for shift in (16, 8, 0)]
+    return tuple(value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4 for value in values)
+
+
+def satin_environment():
+    """Bake the film's eight emissive cards into a linear environment image."""
+    image = bpy.data.images.get("render_satin_environment")
+    if image:
+        return image
+    cards = (
+        ((3.5, 5), (-4, 3, 5), 0xfffcf6, 4.0),
+        ((0.85, 5), (4, 1, 3), 0xf1f4fa, 1.7),
+        ((2.2, 1), (-1.8, 5, 1), 0xffffff, 2.2),
+        ((6, 2), (-1, 0.1, 5), 0xf0f3f7, 0.9),
+        ((1.6, 3), (-3.2, 1.2, -5), 0xffffff, 1.65),
+        ((0.6, 3), (-0.8, 1.2, -5), 0xffffff, 1.05),
+        ((2.4, 3), (2.2, 1.2, -5), 0xffffff, 0.75),
+        ((0.4, 3), (4.6, 1.2, -5), 0xffffff, 2.25),
+    )
+    width, height = 2048, 1024
+    longitude = ((np.arange(width) + 0.5) / width - 0.5) * 2 * math.pi
+    latitude = ((np.arange(height) + 0.5) / height - 0.5) * math.pi
+    horizontal = np.cos(latitude)[:, None]
+    # Equirectangular Blender rays converted from Z-up to the film's Y-up.
+    x = horizontal * np.cos(longitude)[None, :]
+    y = -horizontal * np.sin(longitude)[None, :]
+    z = np.broadcast_to(np.sin(latitude)[:, None], (height, width))
+    rays = np.stack((x, z, -y), axis=-1)
+    pixels = np.empty((height, width, 4), dtype=np.float32)
+    pixels[:, :, :3] = linear_rgb(0x0b0c0e)
+    pixels[:, :, 3] = 1
+    nearest = np.full((height, width), np.inf)
+    for (card_width, card_height), position, color, intensity in cards:
+        center = np.array(position, dtype=float)
+        normal = -center / np.linalg.norm(center)
+        right = np.cross((0, 1, 0), normal)
+        right /= np.linalg.norm(right)
+        up = np.cross(normal, right)
+        denominator = rays @ normal
+        distance = np.full_like(nearest, np.inf)
+        np.divide(center @ normal, denominator, out=distance, where=np.abs(denominator) > 1e-9)
+        points = rays * distance[:, :, None] - center
+        inside = (
+            (distance > 0) & (distance < nearest)
+            & (np.abs(points @ right) <= card_width / 2)
+            & (np.abs(points @ up) <= card_height / 2)
+        )
+        pixels[inside, :3] = np.array(linear_rgb(color)) * intensity
+        nearest[inside] = distance[inside]
+    image = bpy.data.images.new("render_satin_environment", width=width, height=height, float_buffer=True)
+    image.pixels.foreach_set(pixels.ravel())
+    image.update()
+    return image
+
+
+def add_satin_studio():
+    """Use the film's reflected studio and direct lights with Blender Z-up."""
+    world = bpy.context.scene.world
+    nodes, links = world.node_tree.nodes, world.node_tree.links
+    nodes.clear()
+    environment = nodes.new("ShaderNodeTexEnvironment")
+    environment.image = satin_environment()
+    reflected = nodes.new("ShaderNodeBackground")
+    links.new(environment.outputs["Color"], reflected.inputs["Color"])
+    background = nodes.new("ShaderNodeBackground")
+    background.name = "Background"
+    background.inputs["Color"].default_value = (0.0056, 0.0065, 0.0080, 1)
+    background.inputs["Strength"].default_value = 0.12
+    path = nodes.new("ShaderNodeLightPath")
+    mix = nodes.new("ShaderNodeMixShader")
+    links.new(path.outputs["Is Camera Ray"], mix.inputs[0])
+    links.new(reflected.outputs[0], mix.inputs[1])
+    links.new(background.outputs[0], mix.inputs[2])
+    output = nodes.new("ShaderNodeOutputWorld")
+    links.new(mix.outputs[0], output.inputs["Surface"])
+    for name, (x, y, z), color, energy in (
+        ("key", (-4, 5, 6), 0xfffcf6, 0.9),
+        ("fill", (5, 1, 4), 0xe8edf5, 0.35),
+        ("edge", (2, 4, -5), 0xf2f4f3, 0.5),
+    ):
+        data = bpy.data.lights.new(f"render_{name}", "SUN")
+        data.energy = energy
+        data.use_shadow = name == "key"
+        data.shadow_maximum_resolution = 0.0001
+        data.color = linear_rgb(color)
+        obj = bpy.data.objects.new(data.name, data)
+        bpy.context.scene.collection.objects.link(obj)
+        obj.location = (x, -z, y)
+        aim_camera(obj, (0, 0, 0))
+
+
 def render(path, width, height, camera_location, target, lens, transparent, floor=False, ortho_scale=None):
     clear_render_rig()
     setup_render(width, height, transparent)
     bpy.context.scene.render.image_settings.file_format = "PNG" if path.suffix.lower() == ".png" else "WEBP"
     camera = add_camera("render_camera", camera_location, target, lens, ortho_scale=ortho_scale)
     fit_device_framing(camera)
-    view_side = 1 if camera_location[1] > target[1] else -1
-    add_area(
-        "render_left_strip", (-4.0, view_side * 5.0, 3.0), 240, 3.5,
-        (0.96, 0.98, 1.0), target, shape="RECTANGLE", size_y=5.0,
-    )
-    add_area(
-        "render_right_strip", (4.0, view_side * 3.0, 1.0), 150, 0.85,
-        (0.78, 0.84, 0.94), target, shape="RECTANGLE", size_y=5.0,
-    )
-    add_area(
-        "render_top_strip", (0.0, view_side * 1.0, 5.0), 240, 5.0,
-        (1.0, 0.98, 0.94), target, shape="RECTANGLE", size_y=1.1,
-    )
-    add_area(
-        "render_front_card", (-1.0, view_side * 5.0, 0.1), 55, 6.0,
-        (0.86, 0.90, 0.96), target, shape="RECTANGLE", size_y=2.0,
-    )
-    add_area(
-        "render_low_front", (-1.0, view_side * 5.0, -2.0), 20, 4.0,
-        (0.72, 0.79, 0.90), target, shape="RECTANGLE", size_y=0.6,
-    )
+    add_satin_studio()
     if floor:
         add_floor(14, -0.075, black=True)
     bpy.context.scene.render.filepath = str(path)
@@ -1569,7 +1658,9 @@ def main():
     }
     reset_scene()
     mats = {
-        "graphite": material("SpaceBlackAluminum", SILVER, metallic=1.0, roughness=0.34, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "graphite": material("SpaceBlackAluminum", SILVER, metallic=1.0, roughness=0.45, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "lid": material("SatinLidAluminum", SATIN_DARK, metallic=1.0, roughness=0.60, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "front_band": material("SatinFrontBand", SATIN_DARK, metallic=1.0, roughness=0.60, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
         "edge": material("MachinedSpaceBlackEdge", SILVER_EDGE, metallic=1.0, roughness=0.20, coat=0.0, coat_roughness=0.121, anisotropic=0.42),
         "black": material("BlackInset", (0.001, 0.001, 0.0015, 1.0), metallic=0.0, roughness=0.92, specular=0.0),
         "glass": material(
@@ -1578,14 +1669,14 @@ def main():
         ),
         "key": material("KeyGraphite", KEY_COLOR, metallic=0.0, roughness=0.38, coat=0.0, specular=0.18),
         "legend": material("KeyLegend", (0.42, 0.45, 0.49, 1.0), metallic=0.0, roughness=0.42),
-        "trackpad": material("TrackpadSpaceBlack", (0.52, 0.53, 0.55, 1.0), metallic=0.9, roughness=0.26, coat=0.62, coat_roughness=0.11),
+        "trackpad": material("TrackpadSpaceBlack", (0.50, 0.51, 0.53, 1.0), metallic=1.0, roughness=0.32, coat=0.0, coat_roughness=0.11),
         "port": material("PortInterior", (0.002, 0.003, 0.004, 1.0), metallic=0.12, roughness=0.37),
         "connector": material("ConnectorMetal", (0.28, 0.22, 0.10, 1.0), metallic=0.84, roughness=0.20),
         "lens": material("OpticalGlass", (0.002, 0.007, 0.014, 1.0), metallic=0.02, roughness=0.055, coat=1.0),
         "sensor": material("SensorBlack", (0.0007, 0.0010, 0.0014, 1.0), metallic=0.0, roughness=0.55, specular=0.05),
         "camera_ring": material("CameraRing", (0.70, 0.71, 0.73, 1.0), metallic=1.0, roughness=0.16, coat=0.16),
         "flash": material("FlashGlass", (0.78, 0.74, 0.58, 1.0), metallic=0.0, roughness=0.17, coat=0.75),
-        "phone_aluminum": material("DeepBlueAluminum", SILVER, metallic=1.0, roughness=0.34, coat=0.0, coat_roughness=0.165, anisotropic=0.38),
+        "phone_aluminum": material("DeepBlueAluminum", SILVER, metallic=1.0, roughness=0.45, coat=0.0, coat_roughness=0.165, anisotropic=0.38),
         "phone_edge": material("DeepBlueMachinedEdge", SILVER_EDGE, metallic=1.0, roughness=0.20, coat=0.0, coat_roughness=0.121, anisotropic=0.42),
         "phone_back": material("DeepBlueCeramicShield", (0.70, 0.71, 0.72, 1.0), metallic=0.15, roughness=0.38, coat=0.62, coat_roughness=0.1375),
         "desktop_screen": screen_material("ScreenDesktop", default_screens["laptop"]),

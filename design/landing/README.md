@@ -71,23 +71,40 @@ Scene 1 uses a low front camera to show the keyboard depth and fully open displa
 
 The generated set depicts a 2025 14-inch MacBook Pro M5, 11-inch iPad Pro M5, and iPhone 17 Pro Max. Enclosure shells use outward-facing geometry. The iPad body and screen use concentric 15.05 mm and 6.6 mm corner contours across the roughly 8.5 mm bezel. Aluminum body materials use metallic 1.0 with no clearcoat, leaving the dark-strip studio environment to describe their shape. The proportions, black glass, camera details, controls, and ports follow the reference study in `device-references.md`. The geometry is original, with no third-party models or Apple marks.
 
-## Silver finish
+## Satin silver finish
 
-The September 23 #77 fixture update replaces the original space-black/deep-blue finish with
-the film's silver aluminum. Material names remain stable for existing consumers. These are
+The #77 fixture uses satin silver aluminum, a darker satin laptop lid shell, dark
+screen-facing bands on the tablet and phone bodies, and a matching satin trackpad.
+The existing material names remain stable; the lid shell and front bands have their
+own materials. These are
 **linear RGB** values in both the saved Blender Principled materials and exported glTF PBR
 materials; do not apply an sRGB conversion.
 
 | Material | Base color | Metallic | Roughness |
 |---|---|---|---|
-| SpaceBlackAluminum | 0.60, 0.61, 0.63 | 1.0 | 0.34 |
+| SpaceBlackAluminum | 0.65, 0.66, 0.68 | 1.0 | 0.45 |
+| SatinLidAluminum (laptop lid shell only) | 0.12, 0.13, 0.14 | 1.0 | 0.60 |
+| SatinFrontBand (tablet and phone front triangles only) | 0.12, 0.13, 0.14 | 1.0 | 0.60 |
 | MachinedSpaceBlackEdge | 0.72, 0.73, 0.75 | 1.0 | 0.20 |
-| TrackpadSpaceBlack | 0.52, 0.53, 0.55 | 0.9 | 0.26 |
-| DeepBlueAluminum | 0.60, 0.61, 0.63 | 1.0 | 0.34 |
+| TrackpadSpaceBlack | 0.50, 0.51, 0.53 | 1.0 | 0.32 |
+| DeepBlueAluminum | 0.65, 0.66, 0.68 | 1.0 | 0.45 |
 | DeepBlueMachinedEdge | 0.72, 0.73, 0.75 | 1.0 | 0.20 |
 | DeepBlueCeramicShield | 0.70, 0.71, 0.72 | 0.15 | 0.38 |
 | CameraRing | 0.70, 0.71, 0.73 | 1.0 | 0.16 |
 
-Coat, anisotropy, glass, keys, sensors, ports, and screens retain their existing values.
-The Blender studio lighting and compositions are unchanged. The runtime finish override
-is redundant once these GLBs are integrated; removing it belongs to the film implementation.
+The five satin materials have coat weight 0. The front band uses the runtime's
+`normal.z > 0.5` triangle split after Blender's Z-up to glTF Y-up conversion;
+the bodies' sides and backs keep their existing aluminum. Other material settings
+retain their existing values. `tablet_body` and `phone_body` each export two material
+primitives. GLTFLoader keeps each body name on a group: `tablet_body_mesh` and
+`phone_body_mesh` are the silver chassis; `tablet_body_mesh_1` and `phone_body_mesh_1`
+use `SatinFrontBand`. That material deliberately has no `Aluminum` suffix, so the
+runtime's generic chassis dressing preserves the native dark finish.
+The render rig reconstructs the film's eight emissive studio cards as a generated linear
+2048×1024 environment, so rough metal reflects the whole studio rather than only direct
+lights. It also uses the film's key, fill and edge directions and strengths; only the key
+casts shadows. The black camera background, AgX output transform and document compositions
+stay unchanged. Blender and the film's ACES/PMREM renderer are visually matched, not
+pixel-identical. The environment is generated in memory during rendering and is not an
+additional shipped asset. Runtime finish overrides are redundant once these GLBs are
+integrated; removing them belongs to the film implementation.

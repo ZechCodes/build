@@ -5,6 +5,7 @@ import {
   ACESFilmicToneMapping,
   CanvasTexture,
   Color,
+  DoubleSide,
   DirectionalLight,
   Group,
   HemisphereLight,
@@ -44,19 +45,27 @@ const MAX_ANISOTROPY = 8;
 const LETTERBOX_COLOR = "#07110f";
 
 // Reflected studio strips shape the aluminium, with dark space between them.
+// Metal has no colour of its own, only what it reflects: a deck seen at a low
+// angle mirrors the room behind the devices, so strips of uneven width stand
+// there and the deck carries a gradient instead of one flat grey. The
+// overhead card sits off to one side so the lid's edge fades along its length.
 // This scene is baked once; the light cards never appear on the page.
+const STUDIO_CARDS = [
+  { size: [3.5, 5], position: [-4, 3, 5], color: 0xfffcf6, intensity: 4.0 },
+  { size: [0.85, 5], position: [4, 1, 3], color: 0xf1f4fa, intensity: 1.7 },
+  { size: [2.2, 1], position: [-1.8, 5, 1], color: 0xffffff, intensity: 2.2 },
+  { size: [6, 2], position: [-1, 0.1, 5], color: 0xf0f3f7, intensity: 0.9 },
+  { size: [1.6, 3], position: [-3.2, 1.2, -5], color: 0xffffff, intensity: 1.65 },
+  { size: [0.6, 3], position: [-0.8, 1.2, -5], color: 0xffffff, intensity: 1.05 },
+  { size: [2.4, 3], position: [2.2, 1.2, -5], color: 0xffffff, intensity: 0.75 },
+  { size: [0.4, 3], position: [4.6, 1.2, -5], color: 0xffffff, intensity: 2.25 },
+];
+
 function createDeviceEnvironment(renderer) {
   const studio = new Scene();
-  studio.background = new Color(0x111316);
-  const cards = [
-    { size: [3.5, 5], position: [-4, 3, 5], color: 0xfffcf6, intensity: 4.0 },
-    { size: [0.85, 5], position: [4, 1, 3], color: 0xf1f4fa, intensity: 1.7 },
-    { size: [5, 1.1], position: [0, 5, 1], color: 0xffffff, intensity: 3.2 },
-    { size: [6, 2], position: [-1, 0.1, 5], color: 0xf0f3f7, intensity: 0.9 },
-    { size: [1.2, 4], position: [-3, 1, -4], color: 0xffffff, intensity: 2.0 },
-  ];
-  for (const { size, position, color, intensity } of cards) {
-    const material = new MeshBasicMaterial({ color: new Color(color).multiplyScalar(intensity) });
+  studio.background = new Color(0x0b0c0e);
+  for (const { size, position, color, intensity } of STUDIO_CARDS) {
+    const material = new MeshBasicMaterial({ color: new Color(color).multiplyScalar(intensity), side: DoubleSide });
     const card = new Mesh(new PlaneGeometry(...size), material);
     card.position.set(...position);
     card.lookAt(0, 0, 0);
@@ -78,9 +87,39 @@ export function createDeviceScreenMaterial() {
   return material;
 }
 
+// Anodized aluminium: fully metallic, with a satin roughness that spreads the
+// studio's strips into soft gradients. Smoother reads as polished silver;
+// much rougher averages the strips into one flat grey, which reads as plastic.
+function dressAluminium(material) {
+  material.color.setRGB(0.65, 0.66, 0.68);
+  material.metalness = 1;
+  material.roughness = 0.45;
+  material.clearcoat = 0;
+}
+
+// The lid's rim frames the display and faces the key light, so at the
+// chassis finish it draws a white outline that pulls the eye off the screen.
+// It stays metal, much darker and rougher, so it reads as a quiet dark edge.
+const LID_SHELL_NODE = "laptop_lid_shell";
+
+export function dressLidShell(material) {
+  material.color.setRGB(0.12, 0.13, 0.14);
+  material.roughness = 0.6;
+}
+
+// The trackpad is the same satin metal a shade darker, not a lacquered pad.
+function dressTrackpad(material) {
+  material.color.setRGB(0.5, 0.51, 0.53);
+  material.metalness = 1;
+  material.roughness = 0.32;
+  material.clearcoat = 0;
+}
+
 export function cloneDeviceSurfaceMaterial(material, maximumAnisotropy) {
   const clone = material.clone();
   if (clone.map) clone.map.anisotropy = Math.min(MAX_ANISOTROPY, maximumAnisotropy);
+  if (/Aluminum$/.test(clone.name)) dressAluminium(clone);
+  if (/^Trackpad/.test(clone.name)) dressTrackpad(clone);
   if (clone.name === "FrontGlass") {
     clone.metalness = 0;
     clone.roughness = 0.3;
@@ -129,9 +168,9 @@ function createCamera() {
 
 function addStudioLights(scene) {
   const sky = new HemisphereLight(0xf1f3f2, 0x121820, 0.12);
-  const key = new DirectionalLight(0xfffcf6, 1.8);
+  const key = new DirectionalLight(0xfffcf6, 0.9);
   const fill = new DirectionalLight(0xe8edf5, 0.35);
-  const edge = new DirectionalLight(0xf2f4f3, 1.1);
+  const edge = new DirectionalLight(0xf2f4f3, 0.5);
   key.position.set(-4, 5, 6);
   fill.position.set(5, 1, 4);
   edge.position.set(2, 4, -5);
@@ -186,6 +225,7 @@ function prepareModel(name, source, maximumAnisotropy) {
     }
     const materials = Array.isArray(node.material) ? node.material : [node.material];
     const clones = materials.map((material) => cloneDeviceSurfaceMaterial(material, maximumAnisotropy));
+    if (node.name === LID_SHELL_NODE) clones.forEach(dressLidShell);
     node.material = Array.isArray(node.material) ? clones : clones[0];
   });
   if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);

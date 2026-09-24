@@ -22,21 +22,28 @@ async function loadDevice(file) {
   return gltf.scene;
 }
 
-test("all exported devices carry the silver finish without a runtime override", async () => {
+test("all exported devices carry the satin silver finish without a runtime override", async () => {
   // Linear glTF values agreed for the #77 Blender fixture, independent of the
   // temporary runtime override so that override can be removed safely.
   const finish = {
-    SpaceBlackAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    SpaceBlackAluminum: [[0.65, 0.66, 0.68], 1, 0.45],
+    SatinLidAluminum: [[0.12, 0.13, 0.14], 1, 0.60],
+    SatinFrontBand: [[0.12, 0.13, 0.14], 1, 0.60],
     MachinedSpaceBlackEdge: [[0.72, 0.73, 0.75], 1, 0.20],
-    TrackpadSpaceBlack: [[0.52, 0.53, 0.55], 0.9, 0.26],
-    DeepBlueAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    TrackpadSpaceBlack: [[0.50, 0.51, 0.53], 1, 0.32],
+    DeepBlueAluminum: [[0.65, 0.66, 0.68], 1, 0.45],
     DeepBlueMachinedEdge: [[0.72, 0.73, 0.75], 1, 0.20],
     DeepBlueCeramicShield: [[0.70, 0.71, 0.72], 0.15, 0.38],
     CameraRing: [[0.70, 0.71, 0.73], 1, 0.16],
   };
+  const satinMaterials = new Set(["SpaceBlackAluminum", "SatinLidAluminum", "SatinFrontBand", "TrackpadSpaceBlack", "DeepBlueAluminum"]);
   const seen = new Set();
   for (const file of ["laptop.glb", "laptop-low.glb", "tablet.glb", "phone.glb"]) {
     const scene = await loadDevice(file);
+    if (file.startsWith("laptop")) {
+      assert.equal(meshNamed(scene, "laptop_lid_shell").material.name, "SatinLidAluminum");
+      assert.equal(meshNamed(scene, "laptop_hardware").material.name, "SpaceBlackAluminum");
+    }
     let matched = 0;
     scene.traverse((node) => {
       if (!node.isMesh) return;
@@ -46,28 +53,70 @@ test("all exported devices carry the silver finish without a runtime override", 
         const actual = [...material.color.toArray(), material.metalness, material.roughness];
         const values = [...expected[0], expected[1], expected[2]];
         actual.forEach((value, index) => assert(Math.abs(value - values[index]) < 1e-6,
-          `${file}: ${material.name} silver component ${index}`));
+          `${file}: ${material.name} finish component ${index}`));
+        if (satinMaterials.has(material.name)) {
+          assert.equal(material.clearcoat ?? 0, 0, `${file}: ${material.name} coat weight`);
+        }
         seen.add(material.name);
         matched += 1;
       }
     });
-    assert(matched > 0, `${file}: silver materials were exported`);
+    assert(matched > 0, `${file}: finish materials were exported`);
   }
   assert.deepEqual([...seen].sort(), Object.keys(finish).sort());
 });
 
+test("tablet and phone front triangles use the dark native band", async () => {
+  for (const [file, name, chassis] of [
+    ["tablet.glb", "tablet_body", "SpaceBlackAluminum"],
+    ["phone.glb", "phone_body", "DeepBlueAluminum"],
+  ]) {
+    const scene = await loadDevice(file);
+    const body = meshNamed(scene, name);
+    assert(body.isGroup && body.children.length === 2, `${file}: expected two body primitives`);
+    const counts = { front: 0, chassis: 0 };
+    for (const mesh of body.children) {
+      const material = mesh.material.name;
+      assert([chassis, "SatinFrontBand"].includes(material), `${file}: unexpected ${material}`);
+      const positions = mesh.geometry.getAttribute("position");
+      const indices = mesh.geometry.index;
+      const a = new Vector3();
+      const b = new Vector3();
+      const c = new Vector3();
+      const vertexIndex = (index) => indices ? indices.getX(index) : index;
+      const count = indices ? indices.count : positions.count;
+      for (let index = 0; index < count; index += 3) {
+        a.fromBufferAttribute(positions, vertexIndex(index));
+        b.fromBufferAttribute(positions, vertexIndex(index + 1));
+        c.fromBufferAttribute(positions, vertexIndex(index + 2));
+        const front = c.sub(b).cross(a.sub(b)).normalize().z > 0.5;
+        assert.equal(material, front ? "SatinFrontBand" : chassis,
+          `${file}: triangle ${index / 3} has wrong native material`);
+        counts[front ? "front" : "chassis"]++;
+      }
+    }
+    assert(counts.front > 0 && counts.chassis > 0, `${file}: missing front or chassis triangles`);
+  }
+});
+
 function meshNamed(scene, name) {
   const mesh = scene.getObjectByName(name);
-  assert(mesh?.isMesh, `missing exported mesh ${name}`);
+  assert(mesh?.isMesh || (mesh?.isGroup && mesh.children.every((child) => child.isMesh)),
+    `missing exported mesh ${name}`);
   return mesh;
 }
 
-function worldVertices(mesh) {
-  const position = mesh.geometry.attributes.position;
+function worldVertices(object) {
   const point = new Vector3();
-  return Array.from({ length: position.count }, (_, index) => (
-    point.fromBufferAttribute(position, index).clone().applyMatrix4(mesh.matrixWorld)
-  ));
+  const vertices = [];
+  object.traverse((mesh) => {
+    if (!mesh.isMesh) return;
+    const position = mesh.geometry.attributes.position;
+    for (let index = 0; index < position.count; index++) {
+      vertices.push(point.fromBufferAttribute(position, index).clone().applyMatrix4(mesh.matrixWorld));
+    }
+  });
+  return vertices;
 }
 
 function topIntersection(object, x, z) {
@@ -136,7 +185,10 @@ test("exported enclosure sides face out toward the viewer", async () => {
     const shell = meshNamed(scene, spec.mesh);
     const bounds = new Box3().setFromObject(shell);
     const center = bounds.getCenter(new Vector3());
-    const materials = Array.isArray(shell.material) ? shell.material : [shell.material];
+    const materials = [];
+    shell.traverse((mesh) => {
+      if (mesh.isMesh) materials.push(...[].concat(mesh.material));
+    });
     const originalSides = materials.map(({ side }) => side);
     materials.forEach((material) => { material.side = FrontSide; });
 
@@ -149,7 +201,7 @@ test("exported enclosure sides face out toward the viewer", async () => {
           const farEdge = sign < 0 ? bounds.max[axis] : bounds.min[axis];
           origin[axis] = nearEdge + sign * 0.01;
           direction[axis] = -sign;
-          const hit = new Raycaster(origin, direction, 0, 0.5).intersectObject(shell, false)[0];
+          const hit = new Raycaster(origin, direction, 0, 0.5).intersectObject(shell, true)[0];
           assert(hit, `${spec.mesh} has no front-facing ${axis}${sign < 0 ? "-" : "+"} side`);
           assert(
             Math.abs(hit.point[axis] - nearEdge) < Math.abs(hit.point[axis] - farEdge),

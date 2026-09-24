@@ -35,3 +35,44 @@ test("a canvas without WebGL is refused, not half started", () => {
   assert.throws(() => stage.createDeviceStage({}), /canvas/i);
   assert.throws(() => stage.createDeviceStage({ canvas: fakeCanvas(null) }), /WebGL/i);
 });
+
+test("the chassis is anodized aluminium: fully metallic, satin, no lacquer", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  for (const name of ["SpaceBlackAluminum", "DeepBlueAluminum"]) {
+    const source = new MeshPhysicalMaterial({ name, metalness: 0.4, roughness: 0.34, clearcoat: 0.5 });
+    const chassis = stage.cloneDeviceSurfaceMaterial(source, 8);
+    assert.equal(chassis.metalness, 1);
+    // Satin: rough enough not to read as polished silver, smooth enough to
+    // carry the studio's strips as gradients instead of one flat grey.
+    assert.ok(chassis.roughness >= 0.4 && chassis.roughness <= 0.5, `${name} roughness ${chassis.roughness}`);
+    assert.equal(chassis.clearcoat, 0);
+    assert.equal(source.metalness, 0.4, "the loaded material is left alone");
+  }
+});
+
+test("the trackpad is satin metal, not a lacquered pad", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  const source = new MeshPhysicalMaterial({ name: "TrackpadSpaceBlack", metalness: 0.9, roughness: 0.26, clearcoat: 0.62 });
+  const pad = stage.cloneDeviceSurfaceMaterial(source, 8);
+  assert.equal(pad.metalness, 1);
+  assert.equal(pad.clearcoat, 0);
+});
+
+test("the lid rim is darker than the chassis, so it frames the screen quietly", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  const chassis = stage.cloneDeviceSurfaceMaterial(new MeshPhysicalMaterial({ name: "SpaceBlackAluminum" }), 8);
+  const rim = chassis.clone();
+  stage.dressLidShell(rim);
+  assert.equal(rim.metalness, 1);
+  assert.ok(rim.color.r <= chassis.color.r * 0.25, `rim ${rim.color.r} vs chassis ${chassis.color.r}`);
+});
+
+test("the phone and tablet front band keeps its baked dark finish", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  const source = new MeshPhysicalMaterial({ name: "SatinFrontBand", metalness: 1, roughness: 0.6 });
+  source.color.setRGB(0.12, 0.13, 0.14);
+  const band = stage.cloneDeviceSurfaceMaterial(source, 8);
+  const chassis = stage.cloneDeviceSurfaceMaterial(new MeshPhysicalMaterial({ name: "DeepBlueAluminum" }), 8);
+  assert.ok(band.color.r <= chassis.color.r * 0.25, `band ${band.color.r} vs chassis ${chassis.color.r}`);
+  assert.equal(band.roughness, 0.6);
+});

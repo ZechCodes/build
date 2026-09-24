@@ -17,7 +17,7 @@ await mkdir(derivatives, { recursive: true });
 const launchOptions = { headless: true };
 if (process.env.CHROMIUM_PATH) launchOptions.executablePath = process.env.CHROMIUM_PATH;
 const browser = await chromium.launch(launchOptions);
-const allScenes = ["ui01", "ui02", "ui03", "ui04", "ui05", "ui10-editor", "ui12-issues", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
+const allScenes = ["ui03", "ui05", "ui10-editor", "ui12-issues", "ui13-team", "ui14-git", "ui15-triage", "ui16-builder"];
 const allProfiles = [
   { name: "macbook", width: 1512, height: 982, scale: 2, native: [3024, 1964] },
   { name: "ipad", width: 1210, height: 834, scale: 2, native: [2420, 1668] },
@@ -37,8 +37,11 @@ const requestedStates = process.env.CAPTURE_STATES
   : null;
 const captureResults = [];
 
+// Quality 80: the app's layout is denser than the storyboard's was, and at 80
+// the thirteen screens the film draws weigh what they did before, with the
+// text as sharp as at 88.
 const resizeWebp = (source, destination, width, height) => new Promise((resolvePromise, reject) => {
-  const imageMagick = spawn("magick", [source, "-resize", `${width}x${height}!`, "-quality", "88", destination], { stdio: "inherit" });
+  const imageMagick = spawn("magick", [source, "-resize", `${width}x${height}!`, "-quality", "80", destination], { stdio: "inherit" });
   imageMagick.once("error", reject);
   imageMagick.once("exit", (code) => code === 0 ? resolvePromise() : reject(new Error(`ImageMagick exited with ${code}`)));
 });

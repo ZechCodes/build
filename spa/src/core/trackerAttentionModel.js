@@ -5,6 +5,7 @@
 
 import { entityIdOf } from "./entityId.js";
 import { isFinished } from "./trackerAgentIssues.js";
+import { latestIssueMark } from "./trackerUnread.js";
 
 export const WORKING_GROUP = "working";
 export const NEEDS_YOU_GROUP = "needsYou";
@@ -34,15 +35,23 @@ const afterMark = (id, mark) => !mark || orderedId(id) > orderedId(mark);
 
 const isAgentComment = (entry) => entry?.type === "comment" && entry.author?.kind === "agent";
 
+/** The agent comments the user has not read, from the cached timeline. The
+ *  read mark is the newer of the detail's and the list's: a read on another
+ *  tab reaches the pushed list before the detail is read again. None until a
+ *  timeline is cached. */
+export function unreadAgentComments(issue, detail) {
+  if (!Array.isArray(detail?.timeline)) return [];
+  const mark = latestIssueMark(detail.issue?.read_through, issue?.read_through) || "";
+  return detail.timeline.filter((entry) => isAgentComment(entry) && afterMark(entry.id, mark));
+}
+
 /** A cached inbox row is proof the user is watching the issue. Its unread
  *  count alone may be an event such as a move, so prefer the cached timeline
  *  when there is one and require an unread agent comment there. The bridge
  *  does not persist `notify_user` on comments; it turns on issue.watched. */
 export function hasUnreadInboxComment(issue, detail, inboxRow) {
   if (!inboxRow || inboxRow.done_until_next === true || !(Number(inboxRow.unread) > 0)) return false;
-  if (!Array.isArray(detail?.timeline)) return false;
-  const mark = detail.issue?.read_through || issue?.read_through || "";
-  return detail.timeline.some((entry) => isAgentComment(entry) && afterMark(entry.id, mark));
+  return unreadAgentComments(issue, detail).length > 0;
 }
 
 /** An agent's digest on a project-scoped feed row. The map is keyed by agent
@@ -80,14 +89,23 @@ const workingAgentOf = (assignee, workingAgents, projectAgent) => {
   return assignee?.kind === "agent" ? workingAgents.get(assignee.agent_id) || null : null;
 };
 
-const attentionReasonsOf = (issue, detail, inboxRow) => {
+const reasonsOf = (issue, hasUnreadComment) => {
   if (isFinished(issue)) return [];
   const reasons = [];
   if (issue?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
-  if (hasUnreadInboxComment(issue, detail, inboxRow)) reasons.push(ATTENTION_REASONS.inbox);
+  if (hasUnreadComment) reasons.push(ATTENTION_REASONS.inbox);
   if (issue?.assignee?.kind === "user") reasons.push(ATTENTION_REASONS.assigned);
   return reasons;
 };
+
+const attentionReasonsOf = (issue, detail, inboxRow) =>
+  reasonsOf(issue, hasUnreadInboxComment(issue, detail, inboxRow));
+
+/** Why a watched issue is in the inbox (#125): the same reasons as Needs you,
+ *  read from the cached issue records alone. The issue's own `watched` is the
+ *  watch, so no feed row is consulted. None for an issue nobody watches. */
+export const watchedIssueReasons = (issue, detail) =>
+  issue?.watched === true ? reasonsOf(issue, unreadAgentComments(issue, detail).length > 0) : [];
 
 /** One issue's attention, with every reason available to a Dashboard row.
  *  Working wins for list placement, but the reasons are retained so the

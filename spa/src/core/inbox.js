@@ -750,6 +750,9 @@ const STANDS_ON = {
     entry.branch === route.branch,
   // An issue id is a uuid, so it names one row wherever it is.
   issue: (route) => (entry) => entry.kind !== "capture" && entry.issueId === route.id,
+  // A watched issue's row (#125), on the machine the route names.
+  trackerIssue: (route) => (entry) =>
+    entry.kind === TRACKER_ISSUE && entry.deviceId === route.deviceId && entry.issueId === route.issueId,
   // A workspace is named by its machine too: a workspace id is one bridge's.
   workspace: (route) => (entry) =>
     entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
@@ -837,6 +840,7 @@ function menuHtml(entry, open) {
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
   if (entry.pending) return "";
+  if (entry.kind === TRACKER_ISSUE) return menuButtonHtml(entry, open, [unwatchItemHtml(entry)]);
   const items = [];
   if (entry.canFinish) {
     items.push(
@@ -855,6 +859,17 @@ function menuHtml(entry, open) {
       }</span></div>`,
     );
   }
+  return menuButtonHtml(entry, open, items);
+}
+
+/** A watched issue's row (#125) leaves by itself once nothing in it needs the
+ *  user, so it has nothing to clear or finish. Its one verb is its mute: stop
+ *  watching, which is what Mute means to the bridge for an issue. */
+const unwatchItemHtml = (entry) =>
+  `<div class="mi" data-unwatch="${esc(entry.key)}"><span class="mt">Stop watching</span><span class="md">Keeps the issue, but leaves it out of your inbox</span></div>`;
+
+/** The ⋯ and, while it is open, the menu behind it. */
+function menuButtonHtml(entry, open, items) {
   // The menu is in the markup only while it is open: the DOM patcher leaves a
   // split menu's `hidden` alone (a poll must not shut what the reader opened),
   // so a menu that closes has to leave rather than hide.

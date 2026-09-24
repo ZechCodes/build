@@ -5,6 +5,7 @@ import {
   attentionReasonLabel,
   hasUnreadInboxComment,
   issueAttention,
+  watchedIssueReasons,
 } from "../src/core/trackerAttentionModel.js";
 
 const PROJECT = "device-1/proj-1";
@@ -12,6 +13,40 @@ const issue = (id, fields = {}) => ({ id, state: "open", status: "backlog", assi
 const comment = (id, kind, body) => ({ type: "comment", id, author: { kind }, body });
 const detail = (one, timeline) => ({ issue: one, timeline });
 const inbox = (id, fields = {}) => ({ kind: "tracker_issue", projectKey: PROJECT, issue_id: id, unread: 1, ...fields });
+
+describe("a watched issue's inbox reasons (#125)", () => {
+  it("are the Needs you reasons, for an issue the user watches", () => {
+    const one = issue("review", { watched: true, status: "in_review", assignee: { kind: "user" }, read_through: "ie-01" });
+    const cached = detail(one, [comment("ic-02", "agent", "Ready for you")]);
+    expect(watchedIssueReasons(one, cached)).toEqual([
+      ATTENTION_REASONS.inReview, ATTENTION_REASONS.inbox, ATTENTION_REASONS.assigned,
+    ]);
+  });
+
+  it("are none for an issue nobody watches, or one that is Done or closed", () => {
+    expect(watchedIssueReasons(issue("unwatched", { status: "in_review" }), null)).toEqual([]);
+    for (const fields of [{ status: "done" }, { state: "closed", status: "in_review" }]) {
+      const one = issue("finished", { ...fields, watched: true, assignee: { kind: "user" } });
+      expect(watchedIssueReasons(one, detail(one, [comment("ic-02", "agent", "Look")]))).toEqual([]);
+    }
+  });
+
+  it("count a comment as new only while it is an agent's and past the newer read mark", () => {
+    const one = issue("commented", { watched: true, read_through: "ie-01" });
+    const timeline = [comment("ic-02", "agent", "A question")];
+    expect(watchedIssueReasons(one, detail(one, timeline))).toEqual([ATTENTION_REASONS.inbox]);
+    expect(watchedIssueReasons(one, detail(one, [comment("ic-02", "user", "Mine")]))).toEqual([]);
+    // Read on another tab: the pushed list carries the newer mark before the
+    // detail record has been read again.
+    expect(watchedIssueReasons({ ...one, read_through: "ie-03" }, detail(one, timeline))).toEqual([]);
+    // And the detail's own mark wins when it is the newer one.
+    expect(watchedIssueReasons(one, detail({ ...one, read_through: "ic-02" }, timeline))).toEqual([]);
+  });
+
+  it("wait for a cached timeline before calling anything a new comment", () => {
+    expect(watchedIssueReasons(issue("cold", { watched: true }), null)).toEqual([]);
+  });
+});
 
 describe("Needs you", () => {
   it("recognizes In review and a user assignee without a timeline", () => {

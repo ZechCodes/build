@@ -1,0 +1,87 @@
+// Watched issues as inbox rows (#125): a row only while the issue needs the
+// user, saying why, and gone the moment the reason is.
+import { describe, expect, it } from "vitest";
+import { watchedIssueEntries } from "../src/core/watchedIssueRows.js";
+import { TRACKER_ISSUE, activeEntryKey, inboxRowHtml } from "../src/core/inbox.js";
+import { comment, issue, issueDetail } from "./trackerWireFixture.js";
+
+const project = { id: "p1", deviceId: "dev-1", projectKey: "dev-1|p1", name: "Build" };
+const watched = (over = {}) => issue({ watched: true, ...over });
+const source = (issues, details = new Map()) => ({ project, issues, details });
+const rows = (issues, details) => watchedIssueEntries([source(issues, details)]);
+
+describe("which watched issues are rows", () => {
+  it("lists one in review, assigned to the user, or with an unread agent comment", () => {
+    const review = watched({ id: "i-review", number: 1, status: "in_review" });
+    const mine = watched({ id: "i-mine", number: 2, assignee: { kind: "user" } });
+    const asked = watched({ id: "i-asked", number: 3, read_through: "ie-01" });
+    const details = new Map([[asked.id, issueDetail(asked, [comment({ id: "ic-02", author: { kind: "agent", agent_id: "a1" } })])]]);
+    expect(rows([review, mine, asked], details).map((row) => row.issueId)).toEqual(["i-review", "i-mine", "i-asked"]);
+  });
+
+  it("lists nothing that is only watched, not watched at all, Done, or closed", () => {
+    expect(rows([
+      watched({ id: "i-quiet" }),
+      issue({ id: "i-unwatched", status: "in_review" }),
+      watched({ id: "i-done", status: "done", assignee: { kind: "user" } }),
+      watched({ id: "i-closed", state: "closed", status: "in_review" }),
+    ])).toEqual([]);
+  });
+
+  it("drops the row once the comment is read", () => {
+    const asked = watched({ id: "i-asked", read_through: "ie-01" });
+    const timeline = [comment({ id: "ic-02", author: { kind: "agent", agent_id: "a1" } })];
+    expect(rows([asked], new Map([[asked.id, issueDetail(asked, timeline)]]))).toHaveLength(1);
+    const read = { ...asked, read_through: "ic-02" };
+    expect(rows([read], new Map([[asked.id, issueDetail(read, timeline)]]))).toEqual([]);
+  });
+});
+
+describe("what a row says", () => {
+  it("is named by number and title, says every reason, and opens the issue", () => {
+    const one = watched({ id: "i-7", number: 7, title: "Wire 1.22", status: "in_review", assignee: { kind: "user" } });
+    const [row] = rows([one]);
+    expect(row).toMatchObject({
+      kind: TRACKER_ISSUE,
+      key: "tracker_issue:i-7",
+      name: "#7 Wire 1.22",
+      project: "Build",
+      projectKey: "dev-1|p1",
+      deviceId: "dev-1",
+      facts: "In review · Assigned to you",
+      state: "unread",
+      route: { name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "i-7" },
+    });
+  });
+
+  it("counts its unread agent comments and names them as a new comment", () => {
+    const one = watched({ id: "i-8", number: 8, read_through: "ie-01" });
+    const agent = { kind: "agent", agent_id: "a1" };
+    const details = new Map([[one.id, issueDetail(one, [comment({ id: "ic-02", author: agent }), comment({ id: "ic-03", author: agent })])]]);
+    const [row] = rows([one], details);
+    expect(row.facts).toBe("New comment");
+    expect(row.unreadCount).toBe(2);
+    expect(inboxRowHtml(row)).toContain("New comment");
+  });
+
+  it("offers Stop watching and nothing else on its menu", () => {
+    const [row] = rows([watched({ id: "i-9", number: 9, status: "in_review" })]);
+    const menu = inboxRowHtml(row, { openMenuKey: row.key });
+    expect(menu).toContain(`data-unwatch="${row.key}"`);
+    expect(menu).not.toContain("data-dismiss");
+    expect(menu).not.toContain("data-done=");
+    expect(menu).not.toContain("data-mute");
+  });
+
+  it("is the active row while its issue is open", () => {
+    const [row] = rows([watched({ id: "i-9", number: 9, status: "in_review" })]);
+    expect(activeEntryKey({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "i-9" }, [row])).toBe(row.key);
+    expect(activeEntryKey({ name: "trackerIssue", deviceId: "dev-2", projectId: "p1", issueId: "i-9" }, [row])).toBe(null);
+  });
+
+  it("sorts oldest change first, the inbox's own order", () => {
+    const older = watched({ id: "i-old", status: "in_review", updated_at: "2026-09-23T10:00:00Z" });
+    const newer = watched({ id: "i-new", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
+    expect(rows([newer, older]).map((row) => row.issueId)).toEqual(["i-old", "i-new"]);
+  });
+});

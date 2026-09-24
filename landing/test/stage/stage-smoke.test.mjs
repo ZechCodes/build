@@ -64,5 +64,5 @@ test("the lid rim is darker than the chassis, so it frames the screen quietly", 
   const rim = chassis.clone();
   stage.dressLidShell(rim);
   assert.equal(rim.metalness, 1);
-  assert.ok(rim.color.r <= chassis.color.r * 0.5, `rim ${rim.color.r} vs chassis ${chassis.color.r}`);
+  assert.ok(rim.color.r <= chassis.color.r * 0.25, `rim ${rim.color.r} vs chassis ${chassis.color.r}`);
 });

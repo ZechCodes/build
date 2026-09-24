@@ -99,12 +99,12 @@ function dressAluminium(material) {
 
 // The lid's rim frames the display and faces the key light, so at the
 // chassis finish it draws a white outline that pulls the eye off the screen.
-// It stays metal, darker and a touch rougher, so it reads as an edge.
+// It stays metal, much darker and rougher, so it reads as a quiet dark edge.
 const LID_SHELL_NODE = "laptop_lid_shell";
 
 export function dressLidShell(material) {
-  material.color.setRGB(0.3, 0.31, 0.33);
-  material.roughness = 0.5;
+  material.color.setRGB(0.12, 0.13, 0.14);
+  material.roughness = 0.6;
 }
 
 // The trackpad is the same satin metal a shade darker, not a lacquered pad.

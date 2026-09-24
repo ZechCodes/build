@@ -49,7 +49,9 @@ const paintSummary = (handle, words) => {
  * so does a click on a row inside `list` matching the `closeOnSelect` selector,
  * because picking one is what the drawer was opened for and what it picks is
  * behind it. A row that only moves the list (a directory) is not in that
- * selector and leaves the drawer where it is.
+ * selector and leaves the drawer where it is. A pane whose rows open only on
+ * some clicks (the Files tree, where a click on a fine pointer only selects)
+ * passes no selector and calls `close()` itself when a row opens.
  *
  * `summary()` returns the words for what the detail column is showing. The pane
  * owns that selection, so the PANE says when it moved, by calling `refresh()`
@@ -82,7 +84,7 @@ export function initPaneDrawer(split, { list, closeOnSelect, summary }) {
   handle.addEventListener("click", () => setOpen(!isOpen()));
   scrim.addEventListener("click", close);
   list.addEventListener("click", (event) => {
-    if (event.target.closest(closeOnSelect)) close();
+    if (closeOnSelect && event.target.closest(closeOnSelect)) close();
   });
   // Escape is the whole-page gesture for "put this overlay away", so it is
   // heard wherever focus happens to be — the same reach the project rail's

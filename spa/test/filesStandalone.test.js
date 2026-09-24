@@ -18,6 +18,9 @@ const FILES = {
   "src/a.js": { mime: "text/plain", size: 20, truncated: false, editable: true, encoding: "utf-8", revision: "a-1", content_b64: base64("const a = 1;\n") },
 };
 
+const rowFor = (host, path) => [...host.querySelectorAll(".frow[data-path]")].find((row) => row.dataset.path === path);
+const drawnPaths = (host) => [...host.querySelectorAll(".frow[data-path]")].map((row) => row.dataset.path);
+
 function mountFiles({ scope = { project_id: "p1", worktree_id: "w1" }, openAt = null, read = null, write = null, viewingContext = null } = {}) {
   const calls = [];
   const host = document.createElement("div");
@@ -56,23 +59,26 @@ describe("the Files browser on its own", () => {
     files.dispose();
   });
 
-  it("walks into a directory and back out again", async () => {
+  it("expands a directory in place and collapses it again", async () => {
     const { host, files } = mountFiles();
     await vi.waitFor(() => expect(host.querySelector(".fdir")).toBeTruthy());
+    expect(host.querySelector(".fcrumb, .fup")).toBeNull();
     host.querySelector(".fdir").click();
-    await vi.waitFor(() => expect(host.querySelector(".fcrumb").textContent).toBe("src"));
-    expect(host.querySelector(".ffile").textContent).toContain("a.js");
+    await vi.waitFor(() => expect(drawnPaths(host)).toEqual(["src", "src/a.js", "README.md"]));
+    expect(rowFor(host, "src").getAttribute("aria-expanded")).toBe("true");
 
-    host.querySelector(".fup").click();
-    await vi.waitFor(() => expect(host.querySelector(".fcrumb").textContent).toBe("/"));
+    rowFor(host, "src").click();
+    await vi.waitFor(() => expect(drawnPaths(host)).toEqual(["src", "README.md"]));
+    expect(rowFor(host, "src").getAttribute("aria-expanded")).toBe("false");
     files.dispose();
   });
 
-  it("opens the file a deep link named, without anything else pointing it there", async () => {
+  it("opens the file a deep link named, with the tree expanded down to it and its row highlighted", async () => {
     const { host, files } = mountFiles({ openAt: { path: "src/a.js" } });
     await vi.waitFor(() => expect(host.querySelector(".fppath")).toBeTruthy());
     expect(host.querySelector(".fppath").textContent).toBe("src/a.js");
-    expect(host.querySelector(".fcrumb").textContent).toBe("src");
+    await vi.waitFor(() => expect(rowFor(host, "src/a.js")?.classList.contains("sel")).toBe(true));
+    expect(rowFor(host, "src/a.js").getAttribute("aria-current")).toBe("true");
     files.dispose();
   });
 
@@ -147,7 +153,7 @@ describe("the Files browser on its own", () => {
     expect(calls.filter(({ method }) => method === "fs.read")).toHaveLength(reads);
     expect(host.querySelector(".file-editor")).toBe(editor);
     host.querySelector(".fdir").click();
-    await vi.waitFor(() => expect(host.querySelector(".fcrumb").textContent).toBe("src"));
+    await vi.waitFor(() => expect(rowFor(host, "src/a.js")).toBeTruthy());
     expect(host.querySelector(".file-editor")).toBe(editor);
     expect(editor.value).toBe("draft stays here");
     expect(document.getElementById("confirm-scrim")).toBeNull();
@@ -181,8 +187,8 @@ describe("the Files browser on its own", () => {
     await vi.waitFor(() => expect(host.querySelector(".ffile")).toBeTruthy());
     host.querySelector(".ffile").click();
     host.querySelector(".fdir").click();
-    await vi.waitFor(() => expect(host.querySelector(".fcrumb").textContent).toBe("src"));
-    host.querySelector(".ffile").click();
+    await vi.waitFor(() => expect(rowFor(host, "src/a.js")).toBeTruthy());
+    rowFor(host, "src/a.js").click();
     await vi.waitFor(() => expect(host.querySelector(".fppath").textContent).toBe("src/a.js"));
 
     finishReadme();

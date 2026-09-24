@@ -37,6 +37,10 @@ export function createFileViewerState({ file, text }) {
       value = next;
       selection = nextSelection;
     },
+    /** Throw the unsaved edits away: the value goes back to the file's. */
+    revert() {
+      value = text;
+    },
     saved(nextFile, savedValue = value) {
       file = nextFile;
       revision = nextFile.revision;

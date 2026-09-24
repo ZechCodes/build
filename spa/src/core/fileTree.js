@@ -1,131 +1,256 @@
-// The Files tab's explorer, as data. The tree is the checkout's root listing
-// with every expanded directory's listing nested under its row, the way an
-// IDE's explorer draws it: no breadcrumb, no `..` row, a chevron on each
-// directory. Listings are the per-directory `tree` records the tab already
-// reads; this module only arranges what they hold and says what a key means.
+// The Files tab's explorer: the checkout's tree, with directories expanding in
+// place under their rows the way an IDE draws it.
 //
-// Two row states are drawn, and they are different things: `.sel` is the file
-// open in the preview (aria-current), `.cursor` is the keyboard selection
-// (aria-selected, the one row Tab lands on).
+// Each directory's listing is its own `tree` record in the cache, the same one
+// the sync layer re-lists when the checkout moves. Expanding a directory lists
+// it — from the record when the cache holds one, and through `fs.tree`, written
+// back to the record, when it does not (or when nobody else keeps this
+// checkout's records true). Collapsing drops the watch and keeps the record.
+// Which directories are expanded is UI state, remembered per checkout in its
+// own record and painted from that record's readback like every other view.
+//
+// Pointer and key: on a fine pointer a click selects a file row (the keyboard
+// selection) and a double-click opens it; on a coarse pointer a tap opens it.
+// A click on a directory toggles it on both. Arrow keys move the selection and
+// expand/collapse, Enter opens. The open file's row carries `.sel` on every
+// paint; the keyboard selection is `.cursor` — two states, drawn differently.
 
-import { esc } from "./text.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { watchUiState } from "./localUiState.js";
+import { ancestorsOf, fileTreeHtml, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
 
-export const joinPath = (dir, name) => (dir ? `${dir}/${name}` : name);
-export const parentPath = (path) => path.split("/").slice(0, -1).join("/");
+const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
-/** Pure: every directory above `path`, outermost first — what has to be
- *  expanded for its row to be visible. */
-export function ancestorsOf(path) {
-  const parts = path.split("/").slice(0, -1);
-  return parts.map((_, index) => parts.slice(0, index + 1).join("/"));
-}
+const readExpanded = (value) =>
+  new Set((Array.isArray(value?.expanded) ? value.expanded : []).filter((dir) => typeof dir === "string" && dir));
 
-const entryRow = (dir, depth, expanded) => (entry) => {
-  const path = joinPath(dir, entry.name);
-  const row = { path, name: entry.name, kind: entry.kind, size: Number(entry.size) || 0, depth };
-  if (entry.kind === "dir") row.expanded = expanded.has(path);
-  return row;
-};
+/** Whether every directory above `dir` is expanded, so its own listing shows. */
+const reachable = (expanded, dir) => ancestorsOf(dir).every((above) => expanded.has(above));
 
-/** Pure: the rows the tree shows, in order. `listings` maps a directory path
- *  to its listing ({entries}) or to {error}; `expanded` is the set of expanded
- *  directory paths. A directory's children show only while it and every
- *  directory above it are expanded; one expanded with no listing yet shows
- *  as expanded and childless until its listing lands. */
-export function visibleTreeRows(listings, expanded, dir = "", depth = 0) {
-  const listing = listings.get(dir);
-  if (!listing) return [];
-  if (listing.error) return [{ kind: "error", path: dir, depth, message: listing.error }];
-  return (listing.entries || []).flatMap((entry) => {
-    const row = entryRow(dir, depth, expanded)(entry);
-    return row.expanded ? [row, ...visibleTreeRows(listings, expanded, row.path, depth + 1)] : [row];
+const rowsIn = (listEl) => [...listEl.querySelectorAll(".frow[data-path]")];
+
+/** Mark the open file and the keyboard selection on the rows already drawn.
+ *  In place rather than a repaint: a double-click's two clicks must land on the
+ *  same element, and a repaint between them would swap it. */
+const markRows = (listEl, openPath, cursorPath) => {
+  const rows = rowsIn(listEl);
+  const focusRow = rows.find((row) => row.dataset.path === cursorPath) || rows[0];
+  rows.forEach((row) => {
+    const open = row.dataset.path === openPath;
+    const cursor = row.dataset.path === cursorPath;
+    row.classList.toggle("sel", open);
+    row.classList.toggle("cursor", cursor);
+    if (open) row.setAttribute("aria-current", "true");
+    else row.removeAttribute("aria-current");
+    row.setAttribute("aria-selected", String(cursor));
+    row.tabIndex = row === focusRow ? 0 : -1;
   });
-}
-
-const ROW_MARK = {
-  dir: '<span class="fk fchev" aria-hidden="true">▸</span>',
-  file: '<span class="fk" aria-hidden="true">·</span>',
-  symlink: '<span class="fk" aria-hidden="true">↳</span>',
 };
 
-const ROW_CLASS = { dir: "fdir", file: "ffile", symlink: "fsym" };
+/**
+ * mountFileTree(listEl, options) — draw the explorer into `listEl`.
+ *
+ * - `listingAddress(dir)`: the cache address of a directory's listing, or null
+ *   for a mount that saves nothing;
+ * - `stateAddress`: the UI-state address for the expanded set, or null;
+ * - `readsForItself()`: whether a held listing is only a seed (nobody else
+ *   keeps this checkout's records true), so it is painted and read anyway;
+ * - `listDirectory(dir)`: the `fs.tree` read;
+ * - `finePointer()`: whether a click selects rather than opens;
+ * - `onOpen(path)`: open a file.
+ *
+ * Returns { ready, setOpenPath, reveal, relist, dispose }.
+ */
+export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen }) {
+  let disposed = false;
+  const listings = new Map();
+  let expanded = new Set();
+  let openPath = null;
+  let cursorPath = null;
+  let rows = [];
+  const watches = new Map(); // shown directory → unwatch
+  const requests = new Map(); // shown directory → the read its paints still speak for
 
-const rowStates = (row, { openPath, cursorPath }, focusable) => {
-  const open = row.path === openPath;
-  const cursor = row.path === cursorPath;
-  const classes = [`frow ${ROW_CLASS[row.kind] || "ffile"}`, open ? "sel" : "", cursor ? "cursor" : ""].filter(Boolean).join(" ");
-  const expanded = row.kind === "dir" ? ` aria-expanded="${row.expanded}"` : "";
-  const current = open ? ' aria-current="true"' : "";
-  return `class="${classes}"${expanded}${current} aria-selected="${cursor}" tabindex="${focusable ? 0 : -1}"`;
-};
+  const focusCursor = () => rowsIn(listEl).find((row) => row.dataset.path === cursorPath)?.focus();
 
-const rowTail = (row) =>
-  row.kind === "file" ? `<span class="fsize mono">${row.size}</span>` : "";
+  const paint = () => {
+    if (disposed) return;
+    if (!listings.has("")) {
+      listEl.innerHTML = "";
+      return;
+    }
+    const hadFocus = listEl.contains(document.activeElement);
+    rows = visibleTreeRows(listings, expanded);
+    listEl.innerHTML = fileTreeHtml(rows, { openPath, cursorPath });
+    if (hadFocus) focusCursor();
+  };
 
-const rowTitle = (row) => (row.kind === "symlink" ? ' title="symlink — not followed"' : "");
+  const shown = (dir) => !dir || (expanded.has(dir) && reachable(expanded, dir));
+  const stillListing = (dir, request) => !disposed && requests.get(dir) === request && shown(dir);
 
-// The name is its own element in every row: the tree is a fixed-width column
-// that gives ground rather than growing, so a long unbroken name has to
-// ellipsize inside it (.fname), and a bare text node in the row's flex line has
-// no box to do that in.
-const rowHtml = (marks, focusPath) => (row) => {
-  if (row.kind === "error")
-    return `<div class="frow ferr" style="--depth:${row.depth}" role="none">cannot list: ${esc(row.message)}</div>`;
-  const states = rowStates(row, marks, row.path === focusPath);
-  return `<div ${states} role="treeitem" aria-level="${row.depth + 1}" data-path="${esc(row.path)}" data-kind="${esc(row.kind)}" style="--depth:${row.depth}"${rowTitle(row)}>${ROW_MARK[row.kind] || ROW_MARK.file}<span class="fname">${esc(row.name)}</span>${rowTail(row)}</div>`;
-};
+  const takeListing = (dir, listing) => {
+    listings.set(dir, listing);
+    paint();
+  };
 
-/** Pure: the tree's HTML. `marks.openPath` is the file in the preview,
- *  `marks.cursorPath` the keyboard selection. Repo file names are untrusted
- *  input (spec §9): every name and path is escaped, in the row label AND in the
- *  data-path attribute the wiring reads back. */
-export function fileTreeHtml(rows, marks) {
-  if (!rows.length) return '<div class="empty">Empty directory.</div>';
-  const navigable = rows.filter((row) => row.kind !== "error");
-  const focusPath = navigable.some((row) => row.path === marks.cursorPath) ? marks.cursorPath : navigable[0]?.path;
-  return rows.map(rowHtml(marks, focusPath)).join("");
-}
+  const reread = async (dir, request) => {
+    if (!stillListing(dir, request)) return;
+    const held = (await heldRecord(listingAddress(dir)))?.value;
+    if (stillListing(dir, request) && held) takeListing(dir, held);
+  };
 
-const stepFrom = (rows, index, step) => ({ cursor: rows[Math.min(rows.length - 1, Math.max(0, index + step))].path });
+  /** A directory nothing holds a listing for (or nothing else keeps true):
+   *  ask the machine, and write the answer through so the paint comes from the
+   *  record — unless a newer write landed while the question was out. */
+  const listFromMachine = async (dir, request, previousAt) => {
+    let answer;
+    try {
+      answer = await listDirectory(dir);
+    } catch (error) {
+      if (stillListing(dir, request)) takeListing(dir, { error: error?.message || "error" });
+      return;
+    }
+    if (!stillListing(dir, request)) return;
+    const listing = { path: answer?.path || dir, entries: answer?.entries || [] };
+    const address = listingAddress(dir);
+    if (!address) return takeListing(dir, listing);
+    const current = await heldRecord(address);
+    if (!stillListing(dir, request) || current?.at !== previousAt) return;
+    await writeCached(address, listing);
+  };
 
-const intoDirectory = (rows, index) => {
-  const row = rows[index];
-  if (!row.expanded) return { expand: row.path };
-  const child = rows[index + 1];
-  return child && child.depth > row.depth ? { cursor: child.path } : null;
-};
+  const watch = (dir, request) => {
+    watches.get(dir)?.();
+    const address = listingAddress(dir);
+    watches.set(dir, address ? subscribeCache(address, () => void reread(dir, request)) : () => {});
+  };
 
-const outOfRow = (rows, index) => {
-  const row = rows[index];
-  if (row.expanded) return { collapse: row.path };
-  const parent = parentPath(row.path);
-  return rows.some((candidate) => candidate.path === parent) && parent ? { cursor: parent } : null;
-};
+  const load = async (dir) => {
+    const request = (requests.get(dir) || 0) + 1;
+    requests.set(dir, request);
+    watch(dir, request);
+    const record = await heldRecord(listingAddress(dir));
+    if (!stillListing(dir, request)) return;
+    if (record?.value) {
+      takeListing(dir, record.value);
+      if (!readsForItself()) return;
+    }
+    await listFromMachine(dir, request, record?.at);
+  };
 
-const toggleOrOpen = (row) => {
-  if (row.kind === "file") return { open: row.path };
-  if (row.kind === "dir") return row.expanded ? { collapse: row.path } : { expand: row.path };
-  return null;
-};
+  const stop = (dir) => {
+    watches.get(dir)?.();
+    watches.delete(dir);
+    requests.set(dir, (requests.get(dir) || 0) + 1);
+  };
 
-const KEY_MOVES = {
-  ArrowDown: (rows, index) => stepFrom(rows, index, 1),
-  ArrowUp: (rows, index) => stepFrom(rows, index, -1),
-  ArrowRight: (rows, index) => (rows[index].kind === "dir" ? intoDirectory(rows, index) : null),
-  ArrowLeft: outOfRow,
-  Enter: (rows, index) => toggleOrOpen(rows[index]),
-};
+  /** Paint an expanded set: watch and list every directory it shows, drop the
+   *  watch on every one it no longer shows (its record stays). */
+  const applyExpanded = (next) => {
+    expanded = next;
+    [...watches.keys()].filter((dir) => !shown(dir)).forEach(stop);
+    [...expanded].filter((dir) => shown(dir) && !watches.has(dir)).forEach((dir) => void load(dir));
+    paint();
+  };
 
-/** Pure: what a key does on the tree with the keyboard selection at
- *  `cursorPath` — {cursor}, {expand}, {collapse}, {open}, or null when the key
- *  is not the tree's. Up/Down move the selection; Right expands a directory
- *  (or steps into an expanded one), Left collapses one (or steps out to the
- *  parent); Enter opens a file and toggles a directory. */
-export function treeKeyMove(rows, cursorPath, key) {
-  const move = KEY_MOVES[key];
-  const navigable = rows.filter((row) => row.kind !== "error");
-  if (!move || !navigable.length) return null;
-  const index = navigable.findIndex((row) => row.path === cursorPath);
-  if (index < 0) return { cursor: navigable[0].path };
-  return move(navigable, index);
+  const record = stateAddress ? watchUiState(stateAddress, (value) => applyExpanded(readExpanded(value))) : null;
+  const ready = Promise.resolve(record?.ready).catch(() => undefined);
+  const commitExpanded = (next) =>
+    record ? record.write({ expanded: [...next] }) : applyExpanded(next);
+
+  const setExpanded = (dir, open) => {
+    const next = new Set(expanded);
+    if (open) next.add(dir);
+    else next.delete(dir);
+    return commitExpanded(next);
+  };
+
+  const setCursor = (path, { focus = false } = {}) => {
+    cursorPath = path;
+    markRows(listEl, openPath, cursorPath);
+    if (focus) focusCursor();
+  };
+
+  const KEY_MOVES = {
+    cursor: (path) => setCursor(path, { focus: true }),
+    expand: (dir) => void setExpanded(dir, true),
+    collapse: (dir) => void setExpanded(dir, false),
+    open: (path) => onOpen(path),
+  };
+
+  const CLICKS = {
+    // The second click of a double-click is not a second toggle: a folder
+    // double-clicked open stays open.
+    dir: (path, event) => {
+      if (event.detail > 1 && finePointer()) return;
+      void setExpanded(path, !expanded.has(path));
+    },
+    file: (path) => {
+      if (!finePointer()) onOpen(path);
+    },
+  };
+
+  const rowOf = (event) => event.target.closest?.(".frow[data-path]");
+
+  const onClick = (event) => {
+    const row = rowOf(event);
+    if (!row) return;
+    setCursor(row.dataset.path);
+    CLICKS[row.dataset.kind]?.(row.dataset.path, event);
+  };
+
+  const onDoubleClick = (event) => {
+    const row = rowOf(event);
+    if (row?.dataset.kind === "file" && finePointer()) onOpen(row.dataset.path);
+  };
+
+  const onKeyDown = (event) => {
+    const move = treeKeyMove(rows, cursorPath, event.key);
+    if (!move) return;
+    event.preventDefault();
+    Object.entries(move).forEach(([kind, path]) => KEY_MOVES[kind](path));
+  };
+
+  // Tab landing on a row makes it the selection the arrows move from.
+  const onFocusIn = (event) => {
+    const row = rowOf(event);
+    if (row && row.dataset.path !== cursorPath) setCursor(row.dataset.path);
+  };
+
+  listEl.addEventListener("click", onClick);
+  listEl.addEventListener("dblclick", onDoubleClick);
+  listEl.addEventListener("keydown", onKeyDown);
+  listEl.addEventListener("focusin", onFocusIn);
+  void load("");
+
+  return {
+    ready,
+    /** The file in the preview: highlighted wherever its row is drawn, and
+     *  where the keyboard selection moves to. */
+    setOpenPath(path) {
+      openPath = path;
+      if (path) cursorPath = path;
+      markRows(listEl, openPath, cursorPath);
+    },
+    /** Expand every directory above `path`, so its row is drawn. */
+    async reveal(path) {
+      await ready;
+      if (disposed) return;
+      const missing = ancestorsOf(path).filter((dir) => !expanded.has(dir));
+      if (missing.length) await commitExpanded(new Set([...expanded, ...missing]));
+    },
+    /** Read every shown directory again — the scope under the tree moved. */
+    relist() {
+      ["", ...expanded].filter(shown).forEach((dir) => void load(dir));
+    },
+    dispose() {
+      disposed = true;
+      [...watches.keys()].forEach(stop);
+      record?.dispose();
+      listEl.removeEventListener("click", onClick);
+      listEl.removeEventListener("dblclick", onDoubleClick);
+      listEl.removeEventListener("keydown", onKeyDown);
+      listEl.removeEventListener("focusin", onFocusIn);
+    },
+  };
 }

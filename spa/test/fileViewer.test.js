@@ -27,6 +27,13 @@ describe("file viewer modes", () => {
     state.choose("edit");
     expect(state.snapshot()).toMatchObject({ mode: "edit", value: "two\n", dirty: true, selection: { start: 2, end: 2 } });
   });
+
+  it("throws the edit buffer away on revert", () => {
+    const state = createFileViewerState({ file: file(), text: "one\n" });
+    state.edit("two\n");
+    state.revert();
+    expect(state.snapshot()).toMatchObject({ value: "one\n", dirty: false });
+  });
 });
 
 describe("the native file editor", () => {

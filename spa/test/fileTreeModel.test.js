@@ -5,7 +5,7 @@ import {
   fileTreeHtml,
   treeKeyMove,
   visibleTreeRows,
-} from "../src/core/fileTree.js";
+} from "../src/core/fileTreeModel.js";
 
 const listings = (map) => new Map(Object.entries(map));
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout } from "../src/core/fileTabs.js";
+import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout } from "../src/core/fileTabsModel.js";
 
 const layout = (tabs, active) => ({ tabs, active });
 

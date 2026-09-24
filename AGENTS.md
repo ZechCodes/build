@@ -45,8 +45,8 @@ Design rules:
 5. The bridge is RPC + push events. Product logic lives in the SPA; logic that
    must run while no client is connected stays in the bridge as a service,
    isolated from the RPC and event layer.
-6. Every SPA view paints from the cache. Pulls and pushes write to the cache,
-   then the view redraws.
+6. Every SPA view paints from the cache and never from connection state. Pulls
+   and pushes write to the cache, then the view redraws (see Working rules).
 
 ## Working rules
 
@@ -56,6 +56,17 @@ Design rules:
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
 - One issue per branch, branched from `main`. Nothing merges without a review.
+- **SPA rendering draws from the cache, never from connection state.** Zech's
+  rule (2026-09-24): "Everything should be drawing from cache. A corollary to
+  this is that nothing should draw based on the status of a connection. All
+  rendering should assume the local cache is up to date and never be aware of
+  the connection state machine's status unless it's deemed necessary to have a
+  render state showing the status (generally never). If the device is
+  connecting, everything should render from local cache as if it is
+  connected." New code follows the rule. The places today's code departs from
+  it are listed under "Current exceptions" in
+  [Render from cache](ARCHITECTURE.md#render-from-cache). They are not
+  precedent.
 - Never run `npm ci` in `spa/`: `spa/package-lock.json` is gitignored because
   `@build/secure-transport` is a `file:` dependency with a machine-specific
   path. Use `npm install --legacy-peer-deps`, and never commit that lockfile.

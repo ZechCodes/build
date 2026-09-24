@@ -363,19 +363,23 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 ### Render from cache
 
-**Every view paints from the cache.** Pulls and pushes write to the cache, and
-the views holding those records redraw. No view waits on the wire to show what
-is already known. That is the rule for anything the cache holds, and new
-surfaces follow it.
+**The rule** (Zech, 2026-09-24). All new SPA code follows it:
 
-A few surfaces still read on demand, for data the sync pass does not hold:
+> "Everything should be drawing from cache. A corollary to this is that nothing
+> should draw based on the status of a connection. All rendering should assume
+> the local cache is up to date and never be aware of the connection state
+> machine's status unless it's deemed necessary to have a render state showing
+> the status (generally never). If the device is connecting, everything should
+> render from local cache as if it is connected."
 
-- the Files tab lists a directory the reader opens with `fs.tree`
-  (`spa/src/views/files.js`);
-- the archive reads `archived.list` (`spa/src/views/archive.js`);
-- the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
+In practice:
 
-Check whether data is synced before adding another read like these.
+- Pulls and pushes write to the cache, and the views holding those records
+  redraw.
+- No view waits on the wire to show what is already known.
+- No view branches on whether a device is connected, connecting or away.
+
+**How it is built:**
 
 - **The cache** is `spa/src/core/localCache.js`: one IndexedDB database
   (`build-cache`) whose record keys are addresses of the form
@@ -388,21 +392,14 @@ Check whether data is synced before adding another read like these.
   wire. On a greeting, a reconnect or a tab return, `syncDevice()` makes one
   ordered pass per device: the lists, then the workspace being viewed, then the
   rest. Tabs share the Web Lock `build.cacheSync`, and the holder syncs for all
-  of them. The rest wait for it, but not for ever: a tab that has not been
-  granted the lock after `LOCK_WAIT_MS` (4 s) syncs anyway, in case the holder
-  is frozen. A browser without the Locks API syncs every tab. Two tabs syncing
-  only costs duplicate reads. The sync layer holds three change subscriptions per device:
-  `s-inbox` (realtime), `s-background` (git, files and shells on a 30 s
-  cooldown) and `s-active` (the routed workspace, realtime).
+  of them. It holds three change subscriptions per device: `s-inbox`
+  (realtime), `s-background` (git, files and shells on a 30 s cooldown) and
+  `s-active` (the routed workspace, realtime).
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
   straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
-  `diff`, the files root listing, and `terminals`. Some only invalidate, and the
-  applier reads again. `issues` carries only ids, so the project's issue list
-  is read again. Changed `files` paths re-list the directories the reader opened
-  and re-read open file bodies with `fs.read`. A git item that could not carry
-  its diff pulls it for the routed workspace, or marks it stale.
+  `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
@@ -413,6 +410,30 @@ poll against skriftapp and the served-version check. The transport has its own:
 the reconnect backoff (`spa/src/core/deviceRecovery.js`) and the peer's open
 timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). The rest are
 the boot retry and cosmetic clocks.
+
+**Current exceptions.** These describe today's code, not the rule. Don't copy
+them into new code; each is a candidate to bring under the rule.
+
+- **Surface-owned reads.** A few surfaces read on demand, for data the sync
+  pass does not hold:
+  - the Files tab lists a directory the reader opens with `fs.tree`
+    (`spa/src/views/files.js`);
+  - the archive reads `archived.list` (`spa/src/views/archive.js`);
+  - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
+- **Invalidation pushes.** Some push fields only say what moved, and the
+  applier reads again:
+  - `issues` carries only ids, so the project's issue list is re-read;
+  - changed `files` paths re-list the directories the reader opened and
+    re-read open file bodies with `fs.read`;
+  - a git item that could not carry its diff pulls it for the routed
+    workspace, or marks it stale.
+- **Cross-tab fallback.** A tab not granted the sync lock within
+  `LOCK_WAIT_MS` (4 s) syncs anyway, in case the holder is frozen, and a
+  browser without the Locks API syncs every tab. The cost is duplicate reads.
+- **Connection-aware rendering.** Some surfaces still show device state:
+  - greyed "offline" rows and the strip over a surface whose machine is away,
+    worded by `spa/src/core/deviceAway.js`;
+  - the connection icon (`spa/src/connectionStatus.js`).
 
 ### Connection state machine
 

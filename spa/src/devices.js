@@ -11,7 +11,7 @@
 
 import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
-import { canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
+import { awaitingFirstAnswer, canAnswer, contextFor, knownContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
@@ -340,7 +340,7 @@ function choiceHtml(deviceId, label, pressed) {
  *  says WHY it cannot (core/deviceNotice.js). A machine this client has not
  *  opened yet has nothing of its own to say, so the account list speaks for it. */
 function deviceLabel(device) {
-  const context = contextFor(device.id);
+  const context = openedContext(device.id);
   if (deviceIsOffline(device)) return device.name;
   return context && !canAnswer(context) ? `${device.name} (${deviceAwayWord(context)})` : device.name;
 }
@@ -349,7 +349,14 @@ function deviceLabel(device) {
  * the picker from offering settings against either signal of an unavailable
  * machine. Update-only contexts remain available and retain their settings. */
 function deviceIsOffline(device) {
-  return device.status !== "online" || Boolean(contextFor(device.id)?.offline);
+  return device.status !== "online" || Boolean(openedContext(device.id)?.offline);
+}
+
+/** The machine's context once this client has opened it — tried it, at least.
+ *  One a page stood up over its records before it answered says nothing yet. */
+function openedContext(deviceId) {
+  const context = contextFor(deviceId);
+  return awaitingFirstAnswer(context) ? null : context;
 }
 
 let pickerMenuOpen = false;

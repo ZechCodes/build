@@ -205,6 +205,15 @@ export function releaseGreeting(context, token) {
 export const canAnswer = (context) =>
   Boolean(context && context.call && !context.offline && !context.unsupported);
 
+/**
+ * A context stood up over a machine's records before that machine has ever
+ * answered (core/surfaceContext.js): no session, and no mark saying why not —
+ * every stand-down stamps `offlineSince`. Nothing has been tried and failed,
+ * so whatever speaks for the machine's reachability treats it as a machine
+ * this client has not opened yet.
+ */
+export const awaitingFirstAnswer = (context) => Boolean(context) && !context.session && !context.offlineSince;
+
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */
 export function knownContexts() {
@@ -363,11 +372,13 @@ export function homeContext() {
  * cannot answer — blocked, away, speaking an API nothing here reads. A machine
  * with no context at all has not failed, it has not answered YET (a dial in
  * flight, a boot that has not reached it), and taking home off it would hand
- * every account's home to whichever bridge shook hands quickest.
+ * every account's home to whichever bridge shook hands quickest. Nor has one
+ * whose context a page stood up over its records before it answered
+ * (core/surfaceContext.js): that context wears no mark.
  */
 const stillWorthAsking = (deviceId) => {
   const context = contexts.get(deviceId);
-  return !context || canAnswer(context);
+  return !context || canAnswer(context) || awaitingFirstAnswer(context);
 };
 
 /**

@@ -13,6 +13,7 @@ import {
   adoptDeviceSession,
   canAnswer,
   contextFor,
+  creationDevice,
   homeContext,
   deviceFeedView,
   knownContexts,
@@ -341,6 +342,27 @@ describe("the device context registry", () => {
 
     expect(homeContext()).toBe(null);
     expect(contextFor("dev-b")).toBe(second);
+  });
+
+  // A cold reload paints a page off the records before any machine has
+  // answered, standing it on a session-less context (core/surfaceContext.js).
+  // That context has not failed — nothing has been tried yet — so it keeps its
+  // machine's claim to home exactly as having no context at all would. Only a
+  // mark this client stood the machine down with gives the claim up.
+  it("keeps home on a machine whose records a page stands on before it answers", () => {
+    App.devices = [online("dev-a"), online("dev-b")];
+    const standIn = knownDeviceContext("dev-a");
+    adoptDeviceSession(fakeSession("dev-b"));
+
+    expect(homeContext()).toBe(standIn);
+    expect(creationDevice()).toBe("dev-a");
+
+    expect(adoptDeviceSession(fakeSession("dev-a"))).toBe(standIn);
+    expect(homeContext()).toBe(standIn);
+
+    setContextOffline("dev-a");
+
+    expect(homeContext()).toBe(contextFor("dev-b"));
   });
 
   // A machine that never answered still has something to say about itself: the

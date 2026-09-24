@@ -1220,7 +1220,7 @@
 }
 
 .review-body {
-  min-height: 520px;
+  min-height: 490px;
   padding: 16px 18px;
   box-sizing: border-box;
   background: var(--app-panel);
@@ -1380,12 +1380,12 @@
   border-radius: 11px;
   background: var(--app-panel2);
   overflow: hidden;
-  font-size: calc(12px + 4px * var(--lift));
+  font-size: calc(12px + 3px * var(--lift));
 }
 
 .panel .finding .diff-code > div {
-  height: calc(20px + 6px * var(--lift));
-  line-height: calc(20px + 6px * var(--lift));
+  height: calc(20px + 4px * var(--lift));
+  line-height: calc(20px + 4px * var(--lift));
 }
 
 .approval {

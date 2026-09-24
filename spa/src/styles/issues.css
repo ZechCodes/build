@@ -388,6 +388,16 @@
 }
 .issue-page { display:grid; grid-template-columns:minmax(0,1fr) 260px; gap:24px; align-items:start; }
 .issue-page-main { min-width:0; }
+/* The head floats over the timeline as it scrolls, glassed like the other
+   floating bars. It bleeds through the surface's top and left padding (and the
+   right one once the rail stacks below) so the glass meets the pane's edges,
+   paying the bleed back as padding so nothing in it moves. Sticky measures
+   from inside the surface's padding, hence the negative top. */
+.issue-page-head { position:sticky; z-index:4; top:calc(0px - var(--pane-top));
+  margin:calc(0px - var(--pane-top)) 0 0 calc(0px - var(--pane-gutter));
+  padding:var(--pane-top) 0 0 var(--pane-gutter);
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
 
 .issue-page-marks { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 /* The watch switch (#65) sits among the marks and not in the rail of controls:
@@ -572,6 +582,7 @@
 
 @media (max-width: 760px) {
   .issue-page { grid-template-columns:minmax(0,1fr); gap:18px; }
+  .issue-page-head { margin-right:calc(0px - var(--pane-gutter)); padding-right:var(--pane-gutter); }
   .issue-rail { flex-direction:row; flex-wrap:wrap; gap:14px 20px; }
   .issue-rail-section { flex:1 1 150px; }
   .issue-board {

@@ -41,8 +41,16 @@ export const UNASKED_CATALOG = Object.freeze({ default_provider: "", providers: 
  * it from disk, and the machine is asked only once it can be (`canAsk`) —
  * which, for one that could not when a surface first wanted it, is when its
  * bridge greets (`answering`). Listeners hear the answer land.
+ *
+ * The ask itself waits for the greeting of the session it goes out on
+ * (`answersOnceGreeted`), and an answer is kept only if the machine can still
+ * be read on that same session when it lands: a bridge this tab cannot read
+ * never has its catalog written over what the disk held.
  */
-export function createModelCatalog(context, canAsk = () => true) {
+export function createModelCatalog(context, {
+  canAsk = () => true,
+  answersOnceGreeted = async () => canAsk(),
+} = {}) {
   let held = null;
   let asking = null;
   let asked = false;
@@ -58,10 +66,13 @@ export function createModelCatalog(context, canAsk = () => true) {
   });
 
   const read = async () => {
-    asked = true;
     await record.pull(async () => {
+      if (!(await answersOnceGreeted())) throw new Error("the machine cannot be asked for its catalog");
+      const session = context.session;
+      asked = true;
       const answer = await context.rpc("models.list");
       if (!context.active()) throw new Error("device retired during models.list");
+      if (context.session !== session || !canAsk()) throw new Error("the bridge that answered models.list cannot be read");
       return answer;
     });
     return held || EMPTY_CATALOG;

@@ -369,7 +369,7 @@ describe("the account page's creation defaults", () => {
     document.body.innerHTML = bodyHtml;
     globalThis.fetch = vi.fn(async () => { throw new Error("no network in tests"); });
     const { App } = await import("../src/app.js");
-    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    const { adoptBridgeSelection, adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
     const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
     const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
@@ -378,7 +378,7 @@ describe("the account page's creation defaults", () => {
     await writeCached(deviceModelsAddress("dev-1"), CATALOG);
     App.selectedDeviceId = "dev-1";
     bridge.call = vi.fn(() => new Promise(() => {}));
-    adoptDeviceSession(sessionAnswering(bridge));
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
 
     await renderSettings();
     await vi.waitFor(() => expect([...document.querySelector("#defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));
@@ -394,14 +394,14 @@ describe("the account page's creation defaults", () => {
       throw new Error("no network in tests");
     });
     const { App } = await import("../src/app.js");
-    const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+    const { adoptBridgeSelection, adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     const { renderSettings } = await import("../src/views/settings.js");
     bridge.call = vi.fn(async (method) => (method === "models.list" ? CATALOG : {}));
     const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online", fingerprint: "dev-1-fingerprint" }];
     await writeCached(DEVICES_ADDRESS, App.devices);
     App.selectedDeviceId = "dev-1";
-    adoptDeviceSession(sessionAnswering(bridge));
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
 
     await renderSettings();
     await vi.waitFor(() => expect([...document.getElementById("defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));

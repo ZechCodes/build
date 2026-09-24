@@ -27,7 +27,7 @@ import { chatOverlaysPage } from "./railLayout.js";
 import { mountConsole } from "./console.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { surfaceContext } from "./surfaceContext.js";
-import { canAnswer, onDeviceStateChanged } from "./deviceContexts.js";
+import { answersOnceGreeted, canAnswer, onDeviceStateChanged } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
 import { hashFromRoute } from "./router.js";
 import { notifyError } from "./notify.js";
@@ -235,20 +235,6 @@ async function standProjectRail(parts, context, mine) {
   const named = { ...parts, rail: { ...parts.rail, projectName: row?.name || "" } };
   if (ownerOf(row)) live.rail = mountRail({ ...named.rail, entityId: ownerOf(row) }, context);
   else live.rail = standWhenAsked(named, context, mine);
-}
-
-/** Whether this machine can be asked, once the greeting of the session it is on
- *  has settled. A session is adopted before it is greeted, and the greeting is
- *  what says whether this tab can read the bridge at all: a bridge speaking an
- *  API nothing here claims is not asked to mint anything. A reconnect landing
- *  under the wait arms a greeting of its own, which is waited on in turn. */
-async function answersOnceGreeted(context) {
-  let greeting;
-  do {
-    greeting = context.greeted;
-    await greeting;
-  } while (greeting !== context.greeted);
-  return canAnswer(context);
 }
 
 /** The rail over a project whose list names no owner: whichever comes first,

@@ -111,7 +111,10 @@ function createDeviceContext(deviceId) {
   bindRepository(context, context.rpc);
   // What this bridge offers to start work with, held here rather than on the
   // app: the machine is what the answer is about (core/modelCatalog.js).
-  Object.assign(context, createModelCatalog(context, () => canAnswer(context)));
+  Object.assign(context, createModelCatalog(context, {
+    canAsk: () => canAnswer(context),
+    answersOnceGreeted: () => answersOnceGreeted(context),
+  }));
   contexts.set(deviceId, context);
   return context;
 }
@@ -211,6 +214,26 @@ export function releaseGreeting(context, token) {
  */
 export const canAnswer = (context) =>
   Boolean(context && context.call && !context.offline && !context.unsupported);
+
+/**
+ * Whether this machine can be asked, once the greeting of the session it is on
+ * has settled.
+ *
+ * A session is adopted before it is greeted — `canAnswer` is true from the
+ * adoption — and the greeting is what says whether this tab can read the bridge
+ * at all. So what asks a machine something it will keep (a conversation minted
+ * for a project, the catalog written to disk) waits here first: a bridge
+ * speaking an API nothing here claims is never asked. A reconnect landing under
+ * the wait arms a greeting of its own, which is waited on in turn.
+ */
+export async function answersOnceGreeted(context) {
+  let greeting;
+  do {
+    greeting = context.greeted;
+    await greeting;
+  } while (greeting !== context.greeted);
+  return canAnswer(context);
+}
 
 /**
  * A context stood up over a machine's records before that machine has ever

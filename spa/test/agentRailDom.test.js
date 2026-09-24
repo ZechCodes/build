@@ -270,8 +270,8 @@ beforeEach(async () => {
   });
   chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
-  // comes from.
-  adoptDeviceSession(sessionAnswering(bridge));
+  // comes from, once it has greeted.
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
 });
 
 afterEach(async () => {

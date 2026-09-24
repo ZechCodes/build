@@ -43,7 +43,7 @@ let adoptCaptureRecord;
 let forgetCaptureRecord;
 let subscribePendingCaptures;
 let CAPTURE_QUEUE_KEY;
-let adoptDeviceSession;
+let adoptDeviceSession, adoptBridgeSelection;
 let resetDeviceContexts;
 let setContextOffline;
 let modelCatalog;
@@ -96,7 +96,7 @@ beforeEach(async () => {
   ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord, forgetCaptureRecord, subscribePendingCaptures } =
     await import("../src/core/composeView.js"));
   ({ CAPTURE_QUEUE_KEY } = await import("../src/core/compose.js"));
-  ({ adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
+  ({ adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts, setContextOffline } = await import("../src/core/deviceContexts.js"));
   App.route = { name: "inbox" };
   App.gated = false;
   // The harnesses the composer offers are the creation device's, so the one
@@ -117,7 +117,8 @@ beforeEach(async () => {
   });
   App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
   App.selectedDeviceId = "dev-1";
-  adoptDeviceSession(sessionAnswering(bridge)); // the device creation goes to
+  // the device creation goes to, landed and greeted
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
   initCompose();
 });
 

@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { SUPPORTED_API, UNSUPPORTED_API, asked, landSession } from "./landingSessionFixture.js";
 
 const spies = vi.hoisted(() => ({ mountRail: vi.fn(() => ({ dispose: vi.fn() })), notify: vi.fn() }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: spies.mountRail }));
@@ -24,64 +25,22 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
-// An in-memory transport: the envelope carries the frame as it is.
-const transport = {
-  encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
-  decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
-};
-
-/** A carrier that records every request sent over it and answers on cue. */
-function carrier() {
-  const readers = new Set();
-  return {
-    sent: [],
-    onClose: () => () => {},
-    onEnvelope: (fn) => {
-      readers.add(fn);
-      return () => readers.delete(fn);
-    },
-    close() {},
-    send(envelope) {
-      this.sent.push(envelope.frameFields.payload);
-    },
-    answer(method, result) {
-      const asked = this.sent.find((request) => request.method === method);
-      for (const fn of readers) fn({ frameFields: { payload: { id: asked.id, ok: true, result } } });
-    },
-  };
-}
-
-/** What this tab was asked over the carrier, in the order it asked. */
-const asked = (peer) => peer.sent.map((request) => request.method);
-
-/** An API version this tab has an adapter for (core/bridgeApi). */
-const SUPPORTED_API = "1.22.0";
-
 const route = { name: "project", deviceId: "dev-a", projectId: "proj-1" };
 
 /** The machine's cached project list, as the last session left it. */
 const listProjects = (context, rows) =>
   cache.writeCached(context.cacheScope.address({ entityId: "", kind: "projects" }), rows);
 
-/** The machine's session landing the way connection.js lands one: adopted
- *  first, its greeting armed on the carrier, then the peer attached. */
-async function landSession(context) {
-  const { openSession } = await import("../src/core/session.js");
-  const { greetLiveBridge } = await import("../src/connection.js");
-  const signal = carrier();
-  const peer = carrier();
-  session = await openSession({
-    deviceId: "dev-a",
-    transport,
-    rendezvous: {
-      mint: async () => ({ sessionId: "s", deviceId: "dev-a", sessionKeyB64: "key" }),
-      signalCarrier: () => signal,
-    },
-  });
-  contexts.adoptDeviceConnection(session);
-  session.onCarrier(() => greetLiveBridge(context));
-  const landed = session.peer(peer);
-  return { peer, landed };
+/** The machine's session landing, on this suite's own module registry. */
+async function landOn(context) {
+  const modules = {
+    ...(await import("../src/core/session.js")),
+    ...(await import("../src/connection.js")),
+    adoptDeviceConnection: contexts.adoptDeviceConnection,
+  };
+  const landing = await landSession("dev-a", context, modules);
+  session = landing.session;
+  return landing;
 }
 
 beforeEach(async () => {
@@ -113,7 +72,7 @@ it("asks a landing machine for the project's owner only after its greeting", asy
   await flush();
   expect(spies.mountRail).not.toHaveBeenCalled();
 
-  const { peer, landed } = await landSession(standIn);
+  const { peer, landed } = await landOn(standIn);
   await flush();
   expect(asked(peer)).toEqual(["session.hello"]);
 
@@ -133,9 +92,9 @@ it("mints nothing on a landing machine whose bridge speaks an API this tab canno
   shell.standShell(App.route);
   await flush();
 
-  const { peer, landed } = await landSession(standIn);
+  const { peer, landed } = await landOn(standIn);
   await flush();
-  peer.answer("session.hello", { api_version: "99.0.0" });
+  peer.answer("session.hello", { api_version: UNSUPPORTED_API });
   await landed;
   await flush();
 

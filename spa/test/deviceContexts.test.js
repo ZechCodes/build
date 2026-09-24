@@ -472,11 +472,18 @@ describe("one device's model catalog", () => {
   });
 
   const offering = (id) => ({ providers: [{ id, label: id, models: [], efforts: [] }] });
+  /** A machine's session, landed and greeted: the catalog is asked of a bridge
+   *  only once it has said which API it speaks. */
+  const landGreeted = (session) => {
+    const context = adoptDeviceSession(session);
+    adoptBridgeSelection(context, { version: "1.22.0" }, null);
+    return context;
+  };
   const listsCalled = (context) => context.session.call.mock.calls.filter(([method]) => method === "models.list").length;
 
   it("answers one models.list per device and hands the same catalog back after", async () => {
-    const first = adoptDeviceSession(bridgeOffering("dev-a", offering("claude")));
-    const second = adoptDeviceSession(bridgeOffering("dev-b", offering("codex")));
+    const first = landGreeted(bridgeOffering("dev-a", offering("claude")));
+    const second = landGreeted(bridgeOffering("dev-b", offering("codex")));
 
     const held = await first.modelCatalog();
 
@@ -496,7 +503,7 @@ describe("one device's model catalog", () => {
       throw new Error("unknown method: models.list");
     });
 
-    const catalog = await adoptDeviceSession(session).modelCatalog();
+    const catalog = await landGreeted(session).modelCatalog();
 
     expect(catalog.providers).toHaveLength(1);
     expect(catalog.providers[0].models).toEqual([]);
@@ -507,7 +514,7 @@ describe("one device's model catalog", () => {
     let offered = offering("claude");
     const session = fakeSession("dev-a");
     session.call = vi.fn(async () => offered);
-    const context = adoptDeviceSession(session);
+    const context = landGreeted(session);
 
     expect((await context.modelCatalog()).providers[0].id).toBe("claude");
 
@@ -524,9 +531,9 @@ describe("one device's model catalog", () => {
   // offers the empty catalog, which is the harness's own default and nothing to
   // choose between.
   it("answers the empty catalog without asking a machine that cannot answer", async () => {
-    const behind = adoptDeviceSession(bridgeOffering("dev-a", offering("claude")));
+    const behind = landGreeted(bridgeOffering("dev-a", offering("claude")));
     adoptBridgeSelection(behind, { unsupported: "bridge", version: "0.9.0" });
-    const away = adoptDeviceSession(bridgeOffering("dev-b", offering("codex")));
+    const away = landGreeted(bridgeOffering("dev-b", offering("codex")));
     setContextOffline("dev-b");
 
     expect((await behind.modelCatalog()).providers[0].models).toEqual([]);
@@ -541,7 +548,7 @@ describe("one device's model catalog", () => {
     let release;
     const session = fakeSession("dev-a");
     session.call = vi.fn(() => new Promise((resolve) => { release = resolve; }));
-    const retiring = adoptDeviceSession(session);
+    const retiring = landGreeted(session);
     const late = retiring.modelCatalog();
 
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
@@ -551,7 +558,7 @@ describe("one device's model catalog", () => {
 
     expect(await late).toBeDefined();
 
-    const readopted = adoptDeviceSession(bridgeOffering("dev-a", offering("landed-again")));
+    const readopted = landGreeted(bridgeOffering("dev-a", offering("landed-again")));
 
     expect(readopted).not.toBe(retiring);
     expect((await readopted.modelCatalog()).providers[0].id).toBe("landed-again");

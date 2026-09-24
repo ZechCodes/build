@@ -395,9 +395,11 @@
    from inside the surface's padding, hence the negative top. */
 .issue-page-head { position:sticky; z-index:4; top:calc(0px - var(--pane-top));
   margin:calc(0px - var(--pane-top)) 0 0 calc(0px - var(--pane-gutter));
-  padding:var(--pane-top) 0 0 var(--pane-gutter);
+  padding:var(--pane-top) 0 10px var(--pane-gutter);
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
+/* The head's own bottom padding is its edge, so its last line drops the margin. */
+.issue-page-head > :last-child { margin-bottom:0; }
 
 .issue-page-marks { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
 /* The watch switch (#65) sits among the marks and not in the rail of controls:

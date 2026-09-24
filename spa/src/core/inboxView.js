@@ -98,6 +98,11 @@ const MENU_ZONES = ".inbox-actions, .inbox-project-head .inbox-more, .inbox-proj
 const onOutsideMenu = (event) => {
   if (!event.target.closest(MENU_ZONES)) closeMenu();
 };
+// Where focus goes once the menu is painted: onto the first item of one that
+// has just opened, or back onto the ⋯ of one the keyboard has just shut.
+// `{ key, into }`, kept until the paint that carries it lands — a menu opens
+// and shuts through its UI record, so the paint comes after the press.
+let menuFocus = null;
 const syncMenuDismissal = () => {
   document.removeEventListener("pointerdown", onOutsideMenu);
   if (openMenuKey !== null) document.addEventListener("pointerdown", onOutsideMenu);
@@ -199,7 +204,7 @@ function draw() {
     ...watchedWorkspaceEntries(workspaces, projects, rows, runs),
   ]);
   list.onclick = onListClick;
-  list.onkeydown = onCaptureKeydown;
+  list.onkeydown = onListKeydown;
   // A different face is a different list: the one is emptied for the other,
   // and every paint after that reconciles in place.
   if (list.dataset.view !== view) {
@@ -212,6 +217,7 @@ function draw() {
   list.scrollTop = scroll;
   paintErrors(list);
   paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
+  placeMenuFocus(list);
 }
 
 /** Which machine each row is to say it is on: only where two machines use the
@@ -496,15 +502,83 @@ function onListClick(event) {
 }
 
 /** The row's menu, one step behind the row: it opens, and the next press
- *  anywhere outside it shuts it again. */
+ *  anywhere outside it shuts it again. Opening puts focus on its first item,
+ *  where the keyboard walks it from. */
 function openMenu(key) {
   const next = openMenuKey === key ? null : key;
+  menuFocus = next === null ? null : { key: next, into: true };
   if (menuRecord) void menuRecord.write({ key: next });
   else {
     openMenuKey = next;
     syncMenuDismissal();
     draw();
   }
+}
+
+/** The ⋯ a menu is opened by, and the menu it opens: a row's sits beside it in
+ *  the row's actions, a block's hangs off the block's head. */
+const moreButtonOf = (list, key) => [...list.querySelectorAll("[data-menu]")].find((button) => button.dataset.menu === key);
+const menuOf = (more) => more?.closest(".inbox-actions, .inbox-project-head")?.querySelector(".inbox-menu") || null;
+const menuItems = (menu) => [...menu.querySelectorAll(".mi")];
+
+/** Once the paint carrying the menu's new state has landed, focus goes where
+ *  `menuFocus` said: into the open menu, or back onto its ⋯. */
+function placeMenuFocus(list) {
+  if (!menuFocus || menuFocus.into !== (openMenuKey === menuFocus.key)) return;
+  const more = moreButtonOf(list, menuFocus.key);
+  const target = menuFocus.into ? menuOf(more)?.querySelector(".mi") : more;
+  menuFocus = null;
+  target?.focus({ preventScroll: true });
+}
+
+/** Shut the open menu from the keyboard, with focus back on its ⋯. */
+function shutMenuToOpener() {
+  menuFocus = { key: openMenuKey, into: false };
+  closeMenu();
+}
+
+/** Move focus to the item `step` along from the focused one, wrapping; `step`
+ *  null is Home, and -Infinity End. */
+function walkMenu(menu, step) {
+  const items = menuItems(menu);
+  if (!items.length) return;
+  const at = items.indexOf(document.activeElement);
+  const next = step === null ? 0 : step === -Infinity ? items.length - 1 : at + step;
+  items[((next % items.length) + items.length) % items.length].focus({ preventScroll: true });
+}
+
+/** The keys an open rail menu answers, from inside it: the arrows walk its
+ *  items and wrap, Home and End jump, Escape shuts it with focus back on its
+ *  ⋯, and Tab shuts it as focus leaves. Enter and Space are the focused item's
+ *  own, since each is a button. */
+const MENU_KEYS = {
+  ArrowDown: (menu) => walkMenu(menu, 1),
+  ArrowUp: (menu) => walkMenu(menu, -1),
+  Home: (menu) => walkMenu(menu, null),
+  End: (menu) => walkMenu(menu, -Infinity),
+  Escape: () => shutMenuToOpener(),
+};
+
+/** A key pressed in an open menu, or Escape on the ⋯ of one: true when the
+ *  menu answered it. */
+function menuKey(event) {
+  if (openMenuKey === null) return false;
+  const menu = event.target.closest(".inbox-menu");
+  if (!menu) {
+    if (event.key !== "Escape" || !event.target.closest("[data-menu]")) return false;
+    shutMenuToOpener();
+    return true;
+  }
+  if (event.key === "Tab") closeMenu();
+  const act = MENU_KEYS[event.key];
+  if (act) act(menu);
+  return Boolean(act);
+}
+
+function onListKeydown(event) {
+  if (!menuKey(event)) return onCaptureKeydown(event);
+  event.preventDefault();
+  event.stopPropagation();
 }
 
 // ---- project blocks -----------------------------------------------------------

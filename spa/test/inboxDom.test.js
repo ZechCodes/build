@@ -644,6 +644,63 @@ describe("an account with more than one device", () => {
     expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1"]);
   });
 
+  // The keyboard reaches Hide as the pointer does: the ⋯ opens the menu with
+  // focus on its first item, the arrows walk it, Escape shuts it with focus
+  // back on the ⋯, and the item is a button, so Enter and Space press it.
+  it("drives a block's menu from the keyboard, and hides the block from it", async () => {
+    twoDevices();
+    setInboxView("projects");
+    setContextOffline("dev-2", { offline: true });
+    const head = () => document.querySelector('[data-project="dev-2/project-1"] .inbox-project-head');
+    const more = () => head().querySelector("[data-menu]");
+    const key = (name) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+    const hideItem = () => head().querySelector("[data-project-hide]");
+
+    expect(more().getAttribute("aria-haspopup")).toBe("menu");
+    expect(more().getAttribute("aria-expanded")).toBe("false");
+    more().focus();
+    more().click(); // what Enter or Space on the ⋯ does
+    await vi.waitFor(() => expect(document.activeElement).toBe(hideItem()));
+    expect(more().getAttribute("aria-expanded")).toBe("true");
+    expect(head().querySelector(".inbox-menu").getAttribute("role")).toBe("menu");
+    expect(hideItem().tagName).toBe("BUTTON");
+    expect(hideItem().getAttribute("role")).toBe("menuitem");
+
+    for (const name of ["ArrowDown", "ArrowUp", "End", "Home"]) {
+      expect(key(name)).toBe(false); // answered, so the page does not scroll
+      expect(document.activeElement).toBe(hideItem());
+    }
+
+    expect(key("Escape")).toBe(false);
+    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
+    await vi.waitFor(() => expect(document.activeElement).toBe(more()));
+    expect(more().getAttribute("aria-expanded")).toBe("false");
+
+    more().click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(hideItem()));
+    document.activeElement.click(); // what Enter or Space on the focused item does
+    expect(hidden).toEqual([{ deviceId: "dev-2", projectKey: "dev-2/project-1" }]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
+  });
+
+  it("shuts a menu when Tab takes focus out of it, and on Escape from its ⋯", async () => {
+    twoDevices();
+    setInboxView("projects");
+    const head = () => document.querySelector('[data-project="dev-1/project-1"] .inbox-project-head');
+    const press = (name) => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }));
+    head().querySelector("[data-menu]").click();
+    await vi.waitFor(() => expect(document.activeElement).toBe(head().querySelector("[data-project-hide]")));
+    expect(press("Tab")).toBe(true); // left to the browser, which moves focus on
+    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
+
+    head().querySelector("[data-menu]").click();
+    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).not.toBeNull());
+    head().querySelector("[data-menu]").focus();
+    expect(press("Escape")).toBe(false);
+    await vi.waitFor(() => expect(head().querySelector(".inbox-menu")).toBeNull());
+    expect(document.activeElement).toBe(head().querySelector("[data-menu]"));
+  });
+
   it("narrows the list to one machine without touching the route", async () => {
     twoDevices();
     const standing = App.route;

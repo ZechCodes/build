@@ -408,6 +408,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */
 .inbox-menu { top:calc(100% + 4px); bottom:auto; right:0; left:auto; min-width:200px; }
+/* A rail menu's items are buttons, so the keyboard presses them; they wear the
+   split-button menu's rows, not a button's chrome. */
+.inbox-menu .mi { font:inherit; width:100%; text-align:left; background:none; border:0; color:inherit; }
 .inbox-clear { font-size:12.5px; margin:14px 8px; }
 
 /* Recent: everything that has gone quiet for a day, behind one disclosure at

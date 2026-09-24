@@ -19,7 +19,15 @@
 
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
-import { RECENT_AFTER_MS, clashingNames, dimDeviceHtml, workspaceIsRecent } from "./inbox.js";
+import {
+  RECENT_AFTER_MS,
+  clashingNames,
+  dimDeviceHtml,
+  menuItemHtml,
+  moreButtonHtml,
+  railMenuHtml,
+  workspaceIsRecent,
+} from "./inbox.js";
 import { sessionTimes } from "./sessionSpans.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
@@ -194,8 +202,7 @@ function foldButtonHtml(block, folded) {
 
 /** The block's ⋯: one quiet control beside Settings and the +, named the way a
  *  row's is, because it opens the block's menu the way a row's opens the row's. */
-const blockMoreHtml = (block) =>
-  `<button class="iconbtn inbox-more" type="button" data-menu="${esc(block.key)}" title="More" aria-label="More actions for ${esc(block.name)}">⋯</button>`;
+const blockMoreHtml = (block, open) => moreButtonHtml(block.key, block.name, open);
 
 /**
  * The block's menu, in the markup only while it is open — the rows' rule, for
@@ -213,10 +220,9 @@ const blockMoreHtml = (block) =>
  * block has is what the cache holds, never whether a session has landed yet. On
  * a machine that is answering it simply comes back on the next pass.
  */
-const blockMenuHtml = (block, open) =>
-  open
-    ? `<div class="splitmenu inbox-menu"><div class="mi" data-project-hide="${esc(block.projectKey)}"><span class="mt">Hide project</span><span class="md">Takes it off the rail until its machine lists it again</span></div></div>`
-    : "";
+const blockMenuHtml = (block, open) => railMenuHtml(open, `Actions for ${block.name}`, [
+  menuItemHtml(`data-project-hide="${esc(block.projectKey)}"`, "Hide project", "Takes it off the rail until its machine lists it again"),
+]);
 
 /** The block's head: the fold, the name that opens the project's own page,
  *  how much inside is waiting, the project's settings, the + that starts
@@ -228,6 +234,7 @@ const blockMenuHtml = (block, open) =>
  *  it (styles/shell.css). */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
+  const menuOpen = ui.openMenuKey === block.key;
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const title = `Open ${block.name}`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
@@ -235,8 +242,8 @@ export function projectHeadHtml(block, ui = {}) {
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
     <button class="inbox-project-name" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
-    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockMoreHtml(block)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
-    ${unread}${blockMenuHtml(block, ui.openMenuKey === block.key)}
+    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockMoreHtml(block, menuOpen)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
+    ${unread}${blockMenuHtml(block, menuOpen)}
   </div>`;
 }
 

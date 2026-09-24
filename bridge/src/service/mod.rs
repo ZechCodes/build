@@ -115,12 +115,15 @@ pub struct ServiceContext {
 
 /// One command a manager wants run around the unit file. `tolerate_failure`
 /// marks the ones whose failure is normal (booting out a service that was never
-/// loaded); the rest must succeed or the install failed.
+/// loaded); the rest must succeed or the install failed. `failure_note` marks a
+/// tolerated command whose failure the operator should still hear about.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellCommand {
     pub program: &'static str,
     pub args: Vec<String>,
     pub tolerate_failure: bool,
+    /// What a failure leaves the operator with, said after the command.
+    pub failure_note: Option<&'static str>,
 }
 
 impl ShellCommand {
@@ -129,6 +132,7 @@ impl ShellCommand {
             program,
             args: args.iter().map(|arg| (*arg).to_string()).collect(),
             tolerate_failure,
+            failure_note: None,
         }
     }
 
@@ -140,6 +144,15 @@ impl ShellCommand {
     /// A command that is allowed to fail (nothing was loaded to unload).
     pub fn tolerated(program: &'static str, args: &[&str]) -> Self {
         Self::new(program, args, true)
+    }
+
+    /// A command worth running whose failure still leaves a working install;
+    /// the failure is reported with `note` and the install carries on.
+    pub fn best_effort(program: &'static str, args: &[&str], note: &'static str) -> Self {
+        Self {
+            failure_note: Some(note),
+            ..Self::new(program, args, true)
+        }
     }
 }
 
@@ -289,6 +302,9 @@ fn run_command(
 ) -> Result<(), ServiceError> {
     let outcome = run(command);
     if command.tolerate_failure {
+        if let Some(report) = failure_report(command, &outcome) {
+            eprintln!("{report}");
+        }
         return Ok(());
     }
     match outcome {
@@ -299,6 +315,21 @@ fn run_command(
         }),
         Err(error) => Err(ServiceError::Io(error)),
     }
+}
+
+/// The stderr line for a best-effort command that did not take: the command as
+/// it ran, then its note. `None` for a success, and for a plain tolerated
+/// command, whose failure is routine.
+fn failure_report(command: &ShellCommand, outcome: &io::Result<bool>) -> Option<String> {
+    let note = command.failure_note?;
+    if matches!(outcome, Ok(true)) {
+        return None;
+    }
+    Some(format!(
+        "`{} {}` failed; {note}",
+        command.program,
+        command.args.join(" ")
+    ))
 }
 
 /// Pin the installing shell's PATH into the daemon environment. Both launchd
@@ -564,6 +595,66 @@ mod tests {
         );
 
         assert!(result.is_ok(), "a tolerated failure is not a failure");
+    }
+
+    #[test]
+    fn install_survives_a_best_effort_command_that_fails() {
+        let home = tempfile::tempdir().expect("temp home");
+        let ctx = fixtures::context(home.path(), "1000");
+        let manager = FakeManager {
+            activate: vec![
+                ShellCommand::best_effort("set-property", &["slice"], "left at the default"),
+                ShellCommand::required("enable", &["--now"]),
+            ],
+            deactivate: vec![],
+        };
+        let mut ran = vec![];
+
+        let result = install(
+            &manager,
+            &ctx,
+            &fixtures::sample_config("/home/dev"),
+            &mut |command| {
+                ran.push(command.program);
+                Ok(command.program != "set-property")
+            },
+        );
+
+        assert!(result.is_ok(), "a best-effort failure is not a failure");
+        assert_eq!(
+            ran,
+            vec!["set-property", "enable"],
+            "the install carried on"
+        );
+    }
+
+    /// The operator hears about a best-effort command that did not take — the
+    /// command as it ran, then what that leaves them with.
+    #[test]
+    fn a_failed_best_effort_command_is_reported_with_its_note() {
+        let command = ShellCommand::best_effort(
+            "systemctl",
+            &["--user", "set-property", "x.slice", "CPUWeight=20"],
+            "the agents keep the default priority.",
+        );
+
+        assert_eq!(
+            failure_report(&command, &Ok(false)).as_deref(),
+            Some(
+                "`systemctl --user set-property x.slice CPUWeight=20` failed; \
+                 the agents keep the default priority."
+            )
+        );
+        assert!(failure_report(&command, &Err(io::Error::other("no systemctl"))).is_some());
+        assert_eq!(failure_report(&command, &Ok(true)), None);
+    }
+
+    /// A plain tolerated command fails as a matter of course (booting out what
+    /// was never loaded), so its failure is not news.
+    #[test]
+    fn a_failed_tolerated_command_is_not_reported() {
+        let command = ShellCommand::tolerated("launchctl", &["bootout", "gui/501/x"]);
+        assert_eq!(failure_report(&command, &Ok(false)), None);
     }
 
     /// Both platforms start a user service with a bare PATH, and a bare PATH

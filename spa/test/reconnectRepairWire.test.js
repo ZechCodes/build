@@ -11,11 +11,10 @@
 // cache over fake-indexeddb. Only the device registry and the route are held
 // here — which session this device is on is what a reconnect changes.
 
-import { spawn } from "node:child_process";
 import { resolve } from "node:path";
-import readline from "node:readline";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { startLineProcess } from "./lineProcess.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -41,47 +40,26 @@ const sync = await import("../src/core/cacheSync.js");
 const DEVICE = "dev-1";
 const bridgeRoot = resolve(process.cwd(), "../bridge");
 
-/** The bridge process and the one JSON line protocol it speaks. */
+/** The bridge process and the one JSON line protocol it speaks. The first
+ *  run builds it, which is what the long wait for `ready` is for. */
 function startBridge() {
-  const child = spawn("cargo", ["run", "-q", "--example", "session_bridge"], {
+  const running = startLineProcess("cargo", ["run", "-q", "--example", "session_bridge"], {
     cwd: bridgeRoot,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  // What cargo and the bridge said, kept for the failure message only: the
-  // bridge logs every lifecycle event, and a passing run has no use for them.
-  let said = "";
-  child.stderr.on("data", (chunk) => { said = `${said}${chunk}`.slice(-4000); });
-  const heard = [];
-  const waiters = new Set();
-  readline.createInterface({ input: child.stdout }).on("line", (text) => {
-    const line = JSON.parse(text);
-    if (line.session && line.frame?.type === "changes") {
+    onLine: (line) => {
+      if (!(line.session && line.frame?.type === "changes")) return false;
       // A push, at whichever session is this device's now.
       if (contexts.get(DEVICE)?.session.id === line.session) changeEvents.dispatchChangeEvent(line.frame, DEVICE);
-      return;
-    }
-    const waiter = [...waiters].find((candidate) => candidate.match(line));
-    if (!waiter) return void heard.push(line);
-    waiters.delete(waiter);
-    waiter.resolve(line);
+      return true;
+    },
   });
-  const next = (match, waitMs = 20000) => {
-    const early = heard.findIndex(match);
-    if (early >= 0) return Promise.resolve(heard.splice(early, 1)[0]);
-    return new Promise((done, fail) => {
-      const waiter = { match, resolve: done };
-      waiters.add(waiter);
-      setTimeout(() => waiters.delete(waiter) && fail(new Error(`the bridge did not answer:\n${said}`)), waitMs).unref();
-    });
-  };
-  const send = (line) => child.stdin.write(`${JSON.stringify(line)}\n`);
+  const { next, send } = running;
   let ids = 0;
   const answered = (reply, method) => {
     if (!reply.ok) throw new Error(`${method}: ${reply.error}`);
     return reply.result;
   };
   return {
-    child,
+    stop: running.stop,
     next,
     /** A call from no connected client: another device, or the agent's world. */
     direct: async (method, params) => {
@@ -117,8 +95,7 @@ beforeAll(async () => {
 afterAll(async () => {
   sync.stopCacheSync();
   changeEvents.resetChangeEvents();
-  bridge?.child.stdin.end();
-  bridge?.child.kill();
+  await bridge?.stop();
 });
 
 /** This device on one session: registered, greeted over it, and announced. */

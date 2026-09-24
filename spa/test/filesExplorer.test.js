@@ -286,6 +286,24 @@ describe("the open files' tabs", () => {
     expect(files.hasUnsavedChanges()).toBe(false);
   });
 
+  it("asks about the shown file's edits alone when it is reloaded", async () => {
+    const { host } = mountFiles();
+    await openByTap(host, "README.md");
+    typeInto(host, "background draft");
+    await openByTap(host, "notes.txt");
+    typeInto(host, "shown draft");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "notes.txt" },
+      { file: { path: "notes.txt", mime: "text/plain", size: 7, truncated: false, editable: true, encoding: "utf-8", revision: "notes.txt@2", content_b64: b64("moved\n") }, openedAt: Date.now() },
+    );
+    await vi.waitFor(() => expect(host.querySelector(".file-reload").hidden).toBe(false));
+    host.querySelector(".file-reload").click();
+    await vi.waitFor(() => expect(document.querySelector("#confirm-scrim")).toBeTruthy());
+    expect(document.querySelector("#confirm-scrim").textContent).toContain("notes.txt");
+    expect(document.querySelector("#confirm-scrim").textContent).not.toContain("README.md");
+    document.querySelector("#confirm-scrim [data-confirm-cancel]").click();
+  });
+
   it("counts a background tab's unsaved edits when the view is left", async () => {
     const { host, files } = mountFiles();
     await openByTap(host, "README.md");

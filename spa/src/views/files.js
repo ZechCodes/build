@@ -224,6 +224,9 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     return !dirty.size || confirmDiscard(dirty);
   };
 
+  /** Reloading throws away only the shown file's edits, so only they are asked about. */
+  const discardShownEdits = async () => !viewerState?.snapshot().dirty || confirmDiscard([selectedPath]);
+
   const publishFileContext = () => {
     if (!viewingContext || !selectedPath) return;
     viewingContext.set({ version: 1, items: [{ kind: "file", path: selectedPath }] });
@@ -535,7 +538,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const reloadEditor = async (path) => {
     const expectedState = viewerState;
-    if (!await discardDirty()) return;
+    if (!await discardShownEdits()) return;
     if (!editorIsCurrent(path, expectedState)) return;
     const reloadingState = viewerState;
     const reloadingValue = reloadingState.snapshot().value;

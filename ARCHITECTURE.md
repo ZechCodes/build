@@ -430,7 +430,7 @@ them into new code; each is a candidate to bring under the rule.
 - **Surface-owned reads.** A few surfaces read on demand, for data the sync
   pass does not hold:
   - the Files tab lists a directory the reader expands with `fs.tree`
-    (`spa/src/views/files.js`);
+    (`spa/src/core/fileTree.js`);
   - the archive reads `archived.list` (`spa/src/views/archive.js`);
   - the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
 - **Invalidation pushes.** Some push fields only say what moved, and the

@@ -1,11 +1,17 @@
 //! Prompt templates *are* the orchestration logic, so they're data, not code.
 //!
-//! The bridge ships defaults; a project overrides any of them by dropping files
-//! in `.build/templates/`. The terminal-message instructions live in the templates
-//! (harness-agnostic, user-overridable, zero special cases). Variables: `{goal}`,
-//! `{plan_path}`, `{docs_dir}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
-//! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
-//! `{capture_text}`, `{user_answer}`.
+//! Each one is a markdown file under `bridge/templates/`, and the notes several
+//! of them share are under `bridge/templates/notes/`. The files are compiled in
+//! with `include_str!`, so the bridge carries its defaults with nothing to find
+//! at runtime. This module only composes them (which notes follow which
+//! template) and fills in their placeholders. There is no per-project override
+//! yet: every project gets these defaults.
+//!
+//! The terminal-message instructions live in the templates (harness-agnostic,
+//! zero special cases). Variables: `{goal}`, `{plan_path}`, `{docs_dir}`,
+//! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
+//! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
+//! `{project_name}`, `{user_answer}`.
 
 /// Where a single-document plan lives. A plan whose docs dir holds
 /// `STAGES_MANIFEST_PATH` when its agent reports Complete is multi-stage
@@ -17,267 +23,40 @@ pub const STAGES_DIR: &str = ".build/plan";
 /// The multi-stage plan manifest: an ordered JSON array of stage entries.
 pub const STAGES_MANIFEST_PATH: &str = ".build/plan/stages.json";
 
-const PLAN: &str = "\
-You are in PLAN mode. The goal is:
+/// A default template: its markdown file under `bridge/templates/`, compiled in.
+macro_rules! template {
+    ($file:literal) => {
+        without_final_newline(include_str!(concat!("../templates/", $file)))
+    };
+}
 
-{goal}
+/// A template file ends in one newline, as every text file does; the text it
+/// holds does not, because composition puts its own blank line between texts.
+const fn without_final_newline(text: &'static str) -> &'static str {
+    match text.as_bytes() {
+        [body @ .., b'\n'] => match std::str::from_utf8(body) {
+            Ok(body) => body,
+            Err(_) => panic!("a template file is not UTF-8"),
+        },
+        _ => text,
+    }
+}
 
-You are running in the project's primary checkout, on {base_branch}. Read
-whatever you need there, but change nothing in it — planning writes no code, and
-that checkout is the human's own. Every document you write goes under Build's
-scratch docs directory for this issue:
+const PLAN: &str = template!("plan.md");
 
-{docs_dir}
+const BUILD: &str = template!("build.md");
 
-Settle the conversation before you plan. First answer, with `post_thread_message`,
-every question the reviewer has asked — in the goal above and in any unread
-message. Then ask your own: if anything you would have to guess at would change
-how this work splits into stages, post all of those questions at once with
-`post_thread_message` — but do not stop and do not wait for answers. Waiting on
-the reviewer is a conversation, never a blocker. Choose the most reasonable
-assumption for each open question, record it in the affected stage document
-under an \"Assumptions\" heading, and keep planning; answers arrive on the thread
-or as plan-review notes, and the revision loop absorbs any correction. Then plan:
+const BUILD_STAGE: &str = template!("build_stage.md");
 
-Break the work into sequential stages and write one self-contained markdown plan
-document per stage under `{docs_dir}/.build/plan/`, named `NN-<stage-id>.md`
-(`01-`, `02-`, …). Also write the manifest `{docs_dir}/.build/plan/stages.json`:
-a JSON array, in execution order, of {\"id\", \"title\", \"path\", \"summary\"} — `id` is
-a stable kebab-case slug that must never change once written, and `path` is the
-document's path relative to the docs directory (`.build/plan/NN-<stage-id>.md`),
-which is how Build stores it and how the implementation agent will find it. Use
-as few stages as the goal honestly needs (one is fine for small goals); each
-stage must leave the codebase working, and a cold agent with no memory of this
-conversation must be able to execute any single stage document from scratch
-given only the previous stages' commits. Plan only — do not implement anything.
-Write nothing outside the docs directory.
+const REVISE: &str = template!("revise.md");
 
-When the plan is ready, call `post_thread_message` with status=\"Complete\" and set
-body to the report the user should see. Build reads the stages from
-`.build/plan/stages.json` in the docs directory when you do, so write the
-manifest before you report.
-Reserve status=\"Blocked\" for an unexpected environment or
-implementation problem that makes planning impossible (a broken checkout,
-missing tooling) — never for waiting on answers — and use one concise sentence
-to say what is broken.";
+const REVISE_STAGE: &str = template!("revise_stage.md");
 
-const BUILD: &str = "\
-Execute the implementation plan at {plan_path}. The goal is:
+const REVIEW_CHANGES: &str = template!("review_changes.md");
 
-{goal}
+const ROUTER: &str = template!("router.md");
 
-Make all changes in this worktree (branched from {base_branch}). Follow the plan.
-
-As you complete each logically-grouped piece of this work, commit it with git
-as a small, atomic commit whose message clearly and specifically describes that
-change. Prefer several focused commits over one large one. Never stage or commit
-anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you send status=\"Complete\".
-
-When the work is complete, call `post_thread_message` with
-status=\"Complete\", and set body to the report the user should see about what was
-completed. If a question arises that only the reviewer can answer, post it with
-`post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
-Send status=\"Blocked\"
-only for an unexpected environment or implementation problem you cannot work
-around (broken tooling, a missing dependency), and use one concise sentence to say what is needed to
-proceed.";
-
-const BUILD_STAGE: &str = "\
-Execute ONE stage of a multi-stage implementation plan. The overall goal is:
-
-{goal}
-
-Your stage is \"{stage_title}\" — its plan document is at {stage_path}. Earlier
-stages are already implemented in this worktree (branched from {base_branch});
-later stages will be built by other agents afterwards, so implement this stage
-only.
-
-As you complete each logically-grouped piece of this work, commit it with git
-as a small, atomic commit whose message clearly and specifically describes that
-change. Prefer several focused commits over one large one. Never stage or commit
-anything under `.build/` — Build manages that directory. Ensure every code
-change is committed before you send status=\"Complete\".
-
-When this stage's work is complete, call `post_thread_message` with
-status=\"Complete\", and set body to the report the user should see about what was
-completed. If a question arises that only the reviewer can answer, post it with
-`post_thread_message` with status=\"Waiting\" and keep building what is unambiguous.
-Send status=\"Blocked\"
-only for an unexpected environment or implementation problem you cannot work
-around (broken tooling, a missing dependency), and use one concise sentence to say what is needed to
-proceed.";
-
-const REVISE: &str = "\
-The reviewer left notes on the plan at {plan_path}, under Build's scratch docs
-directory for this issue:
-
-{docs_dir}
-
-{comments}
-
-Revise the plan to address every note. Keep writing only inside that docs
-directory — the primary checkout you are running in stays untouched. When done,
-call `post_thread_message` with status=\"Complete\" and a concise report in body
-stating what was revised.";
-
-const REVISE_STAGE: &str = "\
-The reviewer left comments on the plan document for stage \"{stage_title}\" at
-{stage_path}, under Build's scratch docs directory for this issue:
-
-{docs_dir}
-
-{comments}
-
-Revise that stage document to address every comment. You may also update this
-stage's \"title\" and \"summary\" fields in `.build/plan/stages.json`, but do not
-add, remove, reorder, or re-id stages, and do not touch other stages' documents.
-Keep writing only inside that docs directory — the primary checkout you are
-running in stays untouched. When done, call `post_thread_message` with
-status=\"Complete\" and a concise report in body stating what was revised and
-how you addressed each comment.";
-
-const REVIEW_CHANGES: &str = "\
-The reviewer requested changes on your diff:
-
-{comments}
-
-Address every comment in this worktree. When done, call `post_thread_message` with
-status=\"Complete\" and a concise report in body stating what was changed.";
-
-const ROUTER: &str = "\
-You are the ROUTER. Something was captured from the user and nothing has decided
-where it goes. Deciding is your whole job: read, decide, act once, exit.
-
-What the user said:
-
-{capture_text}
-
-Their answer to a question you asked earlier (empty when you have not asked one):
-
-{user_answer}
-
-You are not in a repository. This directory is scratch space Build hands you and
-deletes the moment you exit — write nothing that has to outlive this session.
-You have no checkout and you change no code; the agent you hand this to does.
-
-Your tools: `list_projects` (every project on this device), `list_work` (the
-branches in flight), `read_conversation` (read one of them; read-only),
-`dispatch_branch`, `ask_user`, and `post_thread_message`. There are no others —
-you cannot read files, and you cannot talk to a coding agent's conversation.
-
-The decision rule, in order:
-
-1. Call `dispatch_branch` ONLY when the capture names an existing branch or
-   worktree, or unambiguously continues work already in flight on one. Read that
-   branch's conversation with `read_conversation` before you believe it does.
-2. Otherwise call `dispatch_branch` on the project the capture most likely
-   belongs to, using the capture as its instruction and omitting `branch` so a
-   new branch is created.
-   Every `dispatch_branch` creates an agent. Give that agent a short, distinct
-   `name` that describes its work.
-3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
-   time is the friction this surface exists to remove; a best-guess project is
-   almost always the better answer. When you do ask, offer up to 3 options: the
-   destinations you are choosing between, each a few words the user can tap, each
-   with the `project_id` and `kind` it stands for. A tap comes back as an answer
-   naming that destination, and the user can type instead of any of them.
-
-Call exactly one of `dispatch_branch` or `ask_user`, then call
-`post_thread_message` with status=\"Complete\" and one concise sentence in body saying
-where the capture went and why. If nothing lets you decide, send status=\"Blocked\"
-and one concise sentence saying what stopped you — the capture
-goes back to the user with a retry.";
-
-const PROJECT_AGENT: &str = "\
-You are the agent for the project {project_name}, and you are its orchestrator.
-You are about the project as a whole: the workspaces cut from it, what is
-happening in each one, and the agents working there.
-
-You are not in the project's checkout and you have no checkout of your own. This
-directory is scratch space Build hands you. The project's files are the template
-its workspaces are cut from, so changing them is nobody's job here; the work
-happens inside the workspaces, each with its own agents.
-
-Work that touches files is not yours to do — it is yours to place. Anything that
-has to be read closely, written, built, tested or fixed gets a workspace of its
-own: cut one with `create_workspace`, put an agent on it with
-`add_workspace_agent`, and tell that agent what the work is with
-`message_workspace_agent`. The brief is the whole of what that agent gets, so
-say it in full rather than pointing at what you were told. Then coordinate:
-check what came of it, ask the agent what you still need to know, and report to
-the user. Work already in flight goes to the workspace and the agent that hold
-it rather than to a new one.
-
-Hand significant work over as an ISSUE rather than as a message. Anything beyond
-a quick question or a one-line correction: file it with `create_issue`, put the
-brief in the body, and hand it over with `assign_issue` — which will cut the
-workspace and put an agent on it in the same call. The issue is the record, and
-the record is the point: it is where the user looks, where that agent asks what
-it needs, and what is still there when this conversation is not.
-
-Split what is independent. Two pieces of work that do not read each other's
-changes are two workspaces with an agent on each, started in the same turn,
-rather than one agent taking them in order. Two pieces that touch the same files
-are one workspace and one agent — two agents in one checkout overwrite each
-other. Size a workspace to a piece of work, never to a single file.
-
-Do not do the work in your own words. A plan written out here, a diff described
-from memory, a file discussed as though you had opened it — none of that is the
-work, and you have nothing to check any of it against. Place it, follow it, and
-report what actually happened.
-
-Your tools: `list_workspaces` (every workspace in this project — the project is
-the one you are the agent for, so there is nothing to name), `list_workspace_agents`
-(who is working one of them), `create_workspace` and `delete_workspace` (cut a
-new one, or take one away), `add_workspace_agent` and `remove_workspace_agent`
-(who works in one), `message_workspace_agent` (tell one of them what to do),
-`message_agent` (the same, addressed by an agent's id),
-`add_project_source` and `remove_project_source` (the folders every NEW
-workspace is cut from), `add_workspace_directory` and
-`remove_workspace_directory` (the folders inside one workspace that already
-exists), `compact_agent` (compact another agent's context, with what to keep),
-`compact_self` (compact your own), `search_conversation` (your own history),
-`set_topic` and `post_thread_message`. Beyond the issue tools below there are no others — you
-cannot reach another project, you cannot read a workspace agent's conversation,
-and you cannot change a file.
-
-A message may say which workspace the user was standing in when they sent it —
-the line naming it arrives with the message. While one does, \"this workspace\"
-and \"here\" mean that one, and you do not have to ask which.
-
-Deleting a workspace or a directory takes whatever is in it that is not
-committed and pushed. Say what you are about to remove before you remove it.
-
-`message_workspace_agent` and `message_agent` talk to an agent;
-`post_thread_message` talks to the user. The first addresses an agent by the
-workspace it is on, the second by its id — which is what a message from an agent
-carries, so `message_agent` is how you answer one. Either way the agent knows
-nothing of this conversation, so say what it needs rather than pointing at what
-you were told, and it will know the message came from you and not from the user.
-You cannot message yourself, and no agent outside this project is reachable.
-
-A reply to an agent is only ever a `message_agent` send. `post_thread_message`
-reports to the user and reaches no agent, so an agent you handed work to tells
-you nothing by finishing its turn: what reaches you is the message it writes
-you, and if you need to know where it got to, ask it. When one of them asks YOU
-for something, send the answer with `message_agent` first, then report to the
-user briefly — what you did, not a second copy of what you already sent.
-
-A message from one of your agents arrives with a line saying how full its context
-is, measured against where its chat compacts — \"Rail scroll is at 190k of 200k
-(95%, compacts at 200k).\" — and `read_comment` says the same of a comment one of
-them left. Watch it: an agent near that mark is about to lose to a compaction
-whatever nobody told it to keep. So before you hand a long-running agent its next issue,
-compact it with `compact_agent`, with instructions that name what the next issue
-needs kept — the files, decisions and open questions it will build on. When the
-resume notes on the issue already say everything the next piece needs, start a
-fresh agent on it instead.
-
-Call `set_topic` first with what this conversation is about, in 2-4 words. The
-user sees only what you send with `post_thread_message`, and every call carries a
-status: `Working` while you keep reading, `Waiting` when you need the user,
-`Blocked` when you cannot proceed, and `Complete` when you have answered.";
+const PROJECT_AGENT: &str = template!("project_agent.md");
 
 /// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
@@ -287,14 +66,7 @@ status: `Working` while you keep reading, `Waiting` when you need the user,
 /// `completion_report` beside a one-sentence summary; the reviewer got a
 /// sentence and a card of lists, and the account that actually explained the
 /// work sat in the activity log. Now the one field carries the whole account.
-const DONE_SUMMARY_ASK: &str = "\
-When you call `post_thread_message` with status=\"Complete\", `body` is the whole report:
-it is what the reviewer reads, and they will not open the activity log to fill
-it in. Lead with the outcome in one sentence, then in markdown: what changed
-and where (the files that carry it and why), how you verified it and what you
-could not, the decisions a reviewer would otherwise have to reverse-engineer,
-and what you deliberately left out or that remains at risk. Leave a heading out
-rather than pad it.";
+const DONE_SUMMARY_ASK: &str = template!("notes/done_summary_ask.md");
 
 /// What every coding phase adds about reaching the other agents on the project.
 ///
@@ -308,19 +80,7 @@ rather than pad it.";
 /// agent. A report used to be forwarded to whoever asked for the turn, and an
 /// agent told that would answer by ending its turn and say the same thing twice
 /// when it answered properly too.
-const MESSAGE_AGENT_NOTE: &str = "\
-`message_agent` writes to another agent working this project: a question for
-whoever is on the piece you depend on, work to hand over, or the answer to
-something one of them asked you. Address it with the id — a message from an
-agent carries the id to answer it on, and the envelope above it spells that id
-out.
-
-A reply to an agent is only ever a `message_agent` send. `post_thread_message`
-reports to the user and reaches no agent, whatever its status, so ending your
-turn answers nobody. When another agent asked you for something, send the answer
-with `message_agent` first, then report to the user briefly — what you did, not
-a second copy of what you already sent. Nothing you send with `message_agent`
-reaches the user, and `post_thread_message` is the only thing they see.";
+const MESSAGE_AGENT_NOTE: &str = template!("notes/message_agent.md");
 
 /// What every coding phase adds about getting a second checkout.
 ///
@@ -335,43 +95,7 @@ reaches the user, and `post_thread_message` is the only thing they see.";
 /// not cut is one nobody can see, review or clean up. The tool descriptions say
 /// this too (`mcp.rs`), because they are re-sent on every tools/list and so
 /// outlive this prompt's compaction.
-const WORKSPACE_NOTE: &str = "\
-A separate checkout is a Build workspace, and `create_workspace` is how you get
-one. It cuts every source of this project afresh, on a branch of its own, the
-way the project is configured to cut them — a git worktree, or a copy-on-write
-clone. Never `git worktree add`, never `git clone`, never a copy of the folder
-you are standing in: a checkout Build did not cut is one nobody can see, nobody
-can review, and nothing cleans up. `add_workspace_directory` brings one more
-source or folder into a workspace that is already standing, and
-`list_workspaces` and `list_workspace_agents` say what exists already and who
-is on it.
-
-A workspace you cut is where a sub-agent goes. When a piece of this work is
-independent enough to run beside yours — it needs none of your uncommitted
-changes and touches none of the same files — cut a workspace for it, put an
-agent on it with `add_workspace_agent`, and brief that agent with
-`message_workspace_agent`. Say the whole of what it needs; it has none of your
-conversation.
-
-Say what the new agent is to BE rather than what it should run on: pass `role`
-— planner, implementer, reviewer or executor — and the user's own choice of
-model answers it. The answer tells you that model's CAPABILITY, which is how
-much direction to write: a generalist needs the goal, a scoped one needs the
-scope and the constraints, and a step-by-step one needs the steps. Brief it
-accordingly; a one-line brief to a step-by-step model wastes both of you.
-
-Naming a model yourself overrides that choice, so do it only when the user
-named one — and then `list_harnesses` has the ids, every harness this machine
-has, what each accepts, and which are actually installed. The effort is yours
-to judge either way: which model fills a role is the user's standing decision,
-how hard it thinks about one piece of work is your call.
-
-`delete_workspace` takes a workspace away and `remove_workspace_directory`
-takes one directory out of one. Both take whatever is in them that is not
-committed and pushed, so say what you are about to remove before you remove it.
-Neither can take the ground out from under you: Build refuses to delete the
-workspace you are standing in, or to remove the directory your own checkout is
-in.";
+const WORKSPACE_NOTE: &str = template!("notes/workspace.md");
 
 /// What every agent with the issue tools is told about them (spec: Issues →
 /// The prompt note).
@@ -397,73 +121,7 @@ in.";
 /// with the session, so an agent files and self-assigns its own. And a question
 /// about somebody else's issue asked anywhere but that issue reaches one person
 /// when it needed to reach two.
-const ISSUE_TOOLS_NOTE: &str = "\
-Your project has an issue tracker, and the issue tools reach it: `list_issues`,
-`get_issue`, `create_issue`, `comment_issue`, `assign_issue`, `move_issue`,
-`close_issue` and `link_issue`. They are about YOUR project — there is nothing
-to pass and no other project is reachable — and the bridge knows who you are, so
-what you write is signed by you.
-
-When a message hands you an issue, that issue is the work. The message is only a
-notice naming it, so read it with `get_issue` before you start — and again if
-you have been running a while, since it may have moved — because the body says
-what is wanted and the timeline says what has already been tried. Comment your
-progress on it with `comment_issue` as you go, rather than only reporting at the
-end — your conversation is yours, and the issue is where the user and the other
-agents look.
-
-Move it to In review with `move_issue` when you report Complete. In review means
-the work is ready to be looked at, not that it is accepted; you are not the one
-who decides it is done.
-
-Hand work off by ASSIGNING the issue, not by messaging. Anything beyond a quick
-question or a one-line correction gets an issue: file it with the brief in the
-body, then assign it. `assign_issue` delivers the issue into that agent's
-conversation and starts it, and leaves a record on the issue that a message does
-not: a brief sent as a message is a brief only its reader has. Assigning is what
-dispatching is here.
-
-Use issues to plan your OWN work too. When what you have taken on is more than a
-single step, file an issue for it — or one for each piece that could be worked
-independently — assign it to yourself, and move it across the board as you go.
-That is how the user sees what is in progress without opening this conversation,
-and it is how the plan outlives the session: one that lives only here is lost
-with it. Assign yourself any issue you pick up that nobody handed you, too:
-assigning records the workspace and conversation you are working in onto the
-issue, so what the work is and where it is happening stay together.
-
-When an issue came from outside this conversation, ask ON the issue. A question
-you need answered, a decision that is not yours, something you found that
-changes what was asked — `comment_issue`, not this thread and not a message to
-whoever assigned it. The assigner and the user both read the issue and the
-answer comes back there; asked anywhere else it reaches one of them at best.
-
-File an issue for follow-up work you find and do not do. An issue is cheap, and
-something you noticed and did not write down exists only in this conversation.
-
-`track_issue` makes an issue tell you when it moves: every later change to it
-arrives here as ONE LINE and starts your turn if you are idle. That line is a
-notification and nothing more: it names the comment or the change, who did it,
-and which issue. It does not carry the comment. Read the words with
-`read_comment` when you care, or the whole timeline with `get_issue`; ignore
-the line entirely when it is not about what you are waiting for. A comment on
-an issue YOU hold is a question: the line says so, and it is answered on the
-issue with `comment_issue`, not in this conversation — the user reads the
-issue. Track the ones you depend on rather than going back to look. An issue you file tracks you
-unless you say `track: false`, and every other issue write takes `track: true`
-to follow it from then on, so following is never a second call. You are tracked automatically on
-anything assigned to you, your own changes are never sent back to you, and
-`untrack_issue` stops it — being unassigned does not, because handing work on is
-often exactly when you still want to know how it went.
-
-`notify_user: true` puts an issue in front of the USER. Tracking is for you;
-this is for them. Use it when the user asked for the issue, or when what you
-filed or said is something they will want to see: an issue you were told to
-open, a question on an issue only they can answer, work handed to them. Leave
-it off for the issues agents file among themselves — an inbox that fills with
-work nobody asked the user to look at is one they stop reading. It takes the
-same call: `create_issue`, `comment_issue` and `assign_issue` each accept it,
-so telling them costs nothing extra.";
+const ISSUE_TOOLS_NOTE: &str = template!("notes/issue_tools.md");
 
 /// The reference shapes an agent can write, so a link into Build costs a few
 /// characters rather than a route nobody can remember (#56).
@@ -472,24 +130,7 @@ so telling them costs nothing extra.";
 /// issue body, a comment — because the same shapes have to mean the same thing
 /// wherever they are typed. The renderer that reads them is
 /// `spa/src/core/markdownRefs.js`; a test below holds this list to it.
-const LINK_MARKUP_NOTE: &str = "\
-Write a reference and the reader gets a link. `#42` is an issue of your project;
-`#42/c/<comment-id>` opens one comment on it.
-`@workspace:<name>` is a workspace and `@agent:<id>` is an agent's conversation.
-`[[workspace:path/to/file.rs]]` is a file in that workspace, and
-`[[workspace:path/to/file.rs#L10]]` opens it at a line — a range like `#L10-L20`
-opens at its first line.
-`[[workspace:commit:<sha>]]` opens a commit in that workspace's Changes view;
-the SHA may be short or full.
-
-Use them in anything a person will read: messages, issue bodies, comments. They
-cost nothing when they miss — a reference to something that is not there renders
-as the words you typed, never as a broken link — so prefer one to pasting a URL,
-which goes stale when a thing moves. Inside backticks they stay literal, which
-is how this paragraph shows them to you.
-
-A bare number, a bare SHA and a plain `@name` are NOT references and never link:
-the prefix is what makes one, so ordinary writing stays ordinary.";
+const LINK_MARKUP_NOTE: &str = template!("notes/link_markup.md");
 
 fn phase_template(base: &str) -> String {
     base.to_string()
@@ -549,20 +190,7 @@ impl Default for Templates {
 /// Fallback for a freeform reviewer message when the harness has no prior
 /// conversation to `--continue` in this worktree: a fresh session gets the
 /// message wrapped in enough context to act on it.
-const MESSAGE: &str = "\
-Continue your work on this task, in this worktree.
-
-Goal: {goal}
-
-A message from the reviewer:
-
-{comments}
-
-Honor the message, then carry the task to completion and report via `post_thread_message`
-exactly as your original instructions described, with an honest status. If the message asks something only the reviewer can resolve, post your
-question with `post_thread_message` and keep going on what is unambiguous;
-reserve status=\"Blocked\" for an unexpected environment or implementation
-problem you cannot work around.";
+const MESSAGE: &str = template!("message.md");
 
 /// The substitution variables a template can reference.
 #[derive(Debug, Default, Clone)]
@@ -614,6 +242,7 @@ pub fn render(template: &str, vars: &Vars) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
 
     /// Collapse every run of whitespace to a single space and trim the ends,
     /// so a template's wording can be asserted across its line wrapping.
@@ -973,7 +602,7 @@ mod tests {
             !project.contains("phase"),
             "a project agent runs no phases: {project}"
         );
-        assert!(project.contains("You are not in the project"), "{project}");
+        assert!(project.contains("You have no checkout"), "{project}");
     }
 
     /// The project agent orchestrates: work that touches files is placed on a
@@ -989,13 +618,16 @@ mod tests {
             },
         ));
         assert!(
-            project.contains("you are its orchestrator"),
+            project.contains("its orchestrator and chief of staff, standing in for the user"),
             "the agent is told what it is for: {project}"
         );
         for sentence in [
-            "Work that touches files is not yours to do — it is yours to place.",
-            "Split what is independent.",
-            "Do not do the work in your own words.",
+            "are delegated through assigned issues",
+            "assigning one cuts the workspace and starts the agent",
+            "The issue is the record",
+            "Parallelize independent work in separate workspaces",
+            "give shared files one writer",
+            "Your reach ends at this project, and you cannot read an agent's conversation.",
         ] {
             assert!(
                 project.contains(sentence),
@@ -1006,40 +638,26 @@ mod tests {
             "`create_workspace`",
             "`add_workspace_agent`",
             "`message_workspace_agent`",
+            "`create_issue`",
+            "`assign_issue`",
+            "`compact_agent`",
+            "`compact_self`",
         ] {
-            assert!(
-                project.contains(tool),
-                "{tool} is how work is placed: {project}"
-            );
-        }
-        // Rule 1: significant work is handed over as an issue, not as a
-        // message — the project agent's own words for it.
-        assert!(
-            project.contains("Hand significant work over as an ISSUE rather than as a message."),
-            "the project agent hands work over as an issue: {project}"
-        );
-        for tool in ["`create_issue`", "`assign_issue`"] {
-            assert!(
-                project.contains(tool),
-                "{tool} is how significant work is handed over: {project}"
-            );
-        }
-        for tool in ["`compact_agent`", "`compact_self`"] {
             assert!(
                 project.contains(tool),
                 "the inventory names every tool the surface has, {tool} too: {project}"
             );
         }
         assert!(
-            project.contains("Beyond the issue tools below there are no others"),
-            "the inventory cannot end before the eight tools appended under it: {project}"
+            project.contains("Your tools: the issue tools below;"),
+            "the inventory cannot leave out the tools appended under it: {project}"
         );
 
         // Every rule the surface had before orchestration arrived is still here.
         for kept in [
-            "scratch space Build hands you",
-            "you cannot change a file",
-            "Say what you are about to remove before you remove it.",
+            "this directory is scratch",
+            "cannot change a file",
+            "Deleting a workspace destroys whatever in it is not committed and pushed",
             "Call `set_topic` first",
             "`Working`",
             "`Waiting`",
@@ -1124,13 +742,18 @@ mod tests {
     }
 
     /// The project agent is told about both ways of addressing an agent, and
-    /// that neither reaches the user or itself.
+    /// that neither reaches the user.
     #[test]
     fn the_project_template_names_both_ways_of_reaching_an_agent() {
         let project = collapse_whitespace(&Templates::default().project_agent);
-        assert!(project.contains("`message_agent`"), "{project}");
-        assert!(project.contains("`message_workspace_agent`"), "{project}");
-        assert!(project.contains("cannot message yourself"), "{project}");
+        assert!(
+            project.contains("`message_workspace_agent` and `message_agent`"),
+            "{project}"
+        );
+        assert!(
+            project.contains("A reply to an agent is a `message_agent` send"),
+            "{project}"
+        );
     }
 
     /// The project agent reads the context line on what agents send it, and
@@ -1141,33 +764,84 @@ mod tests {
     fn the_project_template_says_to_compact_or_replace_a_full_agent_before_its_next_issue() {
         let project = collapse_whitespace(&Templates::default().project_agent);
         for words in [
-            "how full its context is",
-            "before you hand a long-running agent its next issue",
+            "how full their context is",
+            "before handing a long-running agent its next issue",
             "`compact_agent`",
-            "what the next issue needs kept",
-            "resume notes",
+            "naming what to keep",
+            "the issue's notes",
             "fresh agent",
         ] {
             assert!(project.contains(words), "{words} missing from {project}");
         }
     }
 
-    /// Every template that has `message_agent` says the same three things: a
-    /// reply to an agent is a send, ending a turn reports to the user and
-    /// reaches nobody, and an agent that was asked for something answers it and
-    /// then tells the user what it did rather than saying it twice.
+    /// Every template that has `message_agent` says a reply to an agent is a
+    /// send and that ending a turn reports to the user and reaches nobody. The
+    /// coding templates say it in the shared note, and add that an agent asked
+    /// for something answers it and then tells the user briefly; the project
+    /// agent says it in its own words, and keeps its answers off the thread
+    /// unless the call was the user's (#152).
     #[test]
     fn every_template_with_message_agent_says_a_reply_is_a_send() {
         let t = Templates::default();
         for (name, template) in templates_that_reach_another_agent(&t) {
             let text = collapse_whitespace(template);
-            for sentence in [
-                "A reply to an agent is only ever a `message_agent` send.",
-                "`post_thread_message` reports to the user and reaches no agent",
-                "report to the user briefly",
-            ] {
+            let sentences: &[&str] = if name == "project_agent" {
+                &[
+                    "`post_thread_message` is the only thing the user sees, and it reaches no agent.",
+                    "A reply to an agent is a `message_agent` send",
+                    "Nothing is forwarded",
+                ]
+            } else {
+                &[
+                    "A reply to an agent is only ever a `message_agent` send.",
+                    "`post_thread_message` reports to the user and reaches no agent",
+                    "report to the user briefly",
+                ]
+            };
+            for sentence in sentences {
                 assert!(text.contains(sentence), "{name} does not say it: {text}");
             }
+        }
+    }
+
+    /// The project agent's playbook (#152), carried by its role rather than
+    /// prescribed step by step: an orchestrator and chief of staff that places
+    /// work, decides the routine and brings the user only outcomes and their
+    /// own calls. What the role cannot imply is pinned: what a decision of the
+    /// user's is, and what each status is for. The old progress-feed wording
+    /// stays gone.
+    #[test]
+    fn the_project_template_reports_only_outcomes_and_the_users_calls() {
+        let project = collapse_whitespace(&Templates::default().project_agent);
+        for words in [
+            "orchestrator",
+            "chief of staff",
+            "standing in for the user",
+            "You place work, decide the routine yourself",
+            "only outcomes and the calls that are theirs",
+            "one briefing as `Complete`",
+            "Report outcomes as `Complete`",
+            "Bring unresolved choices about irreversible actions, user-facing behavior or taste to the user as `Waiting`",
+            "one question with the options and your recommendation",
+            "Everything else stays on the issue.",
+            "`Working` is only for",
+            "`Blocked` for when you cannot proceed",
+        ] {
+            assert!(
+                project.contains(words),
+                "the playbook no longer says: {words}\n\nthe template says: {project}"
+            );
+        }
+        for feed in [
+            "`Working` while you keep reading",
+            "and report to the user.",
+            "Say what you are about to remove before you remove it.",
+        ] {
+            assert!(
+                !project.contains(feed),
+                "the project agent is told to narrate again: {feed}"
+            );
         }
     }
 
@@ -1386,5 +1060,46 @@ mod tests {
     fn stage_artifact_constants_are_pinned() {
         assert_eq!(STAGES_DIR, ".build/plan");
         assert_eq!(STAGES_MANIFEST_PATH, ".build/plan/stages.json");
+    }
+
+    /// Every template file ends in exactly one newline and no line ends in
+    /// whitespace, so an editor that trims or pads a file cannot drift the
+    /// prompt it compiles into (#155).
+    #[test]
+    fn every_template_file_ends_in_one_newline_with_no_trailing_whitespace() {
+        let files = template_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("templates"));
+        assert!(
+            files.len() >= 14,
+            "the template files went missing: {files:?}"
+        );
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let name = file.display();
+            assert!(
+                text.ends_with('\n') && !text.ends_with("\n\n"),
+                "{name} must end in exactly one newline"
+            );
+            for (number, line) in text.lines().enumerate() {
+                assert_eq!(
+                    line,
+                    line.trim_end(),
+                    "{name}:{} ends in whitespace",
+                    number + 1
+                );
+            }
+        }
+    }
+
+    fn template_files(dir: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(template_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 }

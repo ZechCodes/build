@@ -1297,7 +1297,7 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
-                "body": { "type": "string", "description": "What you have to say, in the user's terms. Complete when the question is answered, Waiting when you need them, Working for a progress update while you keep reading." }
+                "body": { "type": "string", "description": "What you have to say, in the user's terms. Complete for an outcome or an answer, Waiting when the next step is their call, Working only while a long read on their question is still going, never as a progress report." }
             },
             "required": ["status", "body"]
         })
@@ -1467,7 +1467,7 @@ impl DoneServer {
             }
         }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
-            "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete when you have answered, Blocked when you cannot, Waiting when you need the user, or Working for a progress update while you keep reading.",
+            "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
             "inputSchema": Self::project_message_input_schema()
         }), json!({
             "name": "message_agent",

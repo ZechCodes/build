@@ -390,6 +390,11 @@ export function mountComposerModelMenu(root, { ids, onChoose, cacheKey = null })
 /// `writeAttachments` are the view's draft: without them the tray is emptied by
 /// the next repaint, which on a polling surface is about a second away.
 ///
+/// `accepting()` says whether paste and drop take files right now. A surface
+/// that takes its paperclip off a box it keeps (the issue page, when a bridge
+/// stops carrying files) answers false until it hangs it back on, and the box
+/// takes a paste or a drop the way a plain one would.
+///
 /// Returns a controller: `attachments()` for the descriptors a send should
 /// carry, `busy()` for whether an upload is still in flight, and `clear()` for
 /// after a send lands.
@@ -401,6 +406,7 @@ export function mountComposerAttachments(root, {
   onChange = () => {},
   readAttachments = null,
   writeAttachments = null,
+  accepting = () => true,
 }) {
   const parts = composerPartIds(ids.input);
   const composer = root.querySelector(".composer");
@@ -498,6 +504,7 @@ export function mountComposerAttachments(root, {
   }
 
   input.addEventListener("paste", (event) => {
+    if (!accepting()) return;
     const intent = pasteIntent(event.clipboardData);
     if (intent.files.length) {
       event.preventDefault();
@@ -514,6 +521,7 @@ export function mountComposerAttachments(root, {
   // dragenter/dragover must both be cancelled or the browser navigates to the
   // dropped file instead of handing it over.
   const showDrop = (event) => {
+    if (!accepting()) return;
     event.preventDefault();
     composer.classList.add("is-dropping");
   };
@@ -526,6 +534,7 @@ export function mountComposerAttachments(root, {
     composer.classList.remove("is-dropping");
   });
   root.addEventListener("drop", (event) => {
+    if (!accepting()) return;
     event.preventDefault();
     composer.classList.remove("is-dropping");
     const transfer = event.dataTransfer;

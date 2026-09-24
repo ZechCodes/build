@@ -976,3 +976,338 @@ describe("a read that fails because the session dropped", () => {
     expect(notifyError).toHaveBeenCalledWith("Could not read this issue", WENT);
   });
 });
+
+// #153: typing into the comment box made the page's scroll jump. Each
+// keystroke's draft write came back through the cache and repainted the whole
+// page, which stood up a new textarea under the reader's fingers. The box is
+// made once per mount and updated in place; nothing the reader typed moves the
+// scroller.
+describe("typing in the comment box", () => {
+  const settle = async () => {
+    await new Promise((done) => setTimeout(done, 250)); // past the draft's debounce
+    await flush();
+  };
+
+  /** Every write to the scroller's position, and every scrollTo on it. */
+  const watchScroller = () => {
+    const writes = [];
+    let top = 0;
+    Object.defineProperty(host, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value) => { writes.push(value); top = value; },
+    });
+    host.scrollTo = vi.fn();
+    const windowScroll = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    return { writes, scrollTo: host.scrollTo, windowScroll };
+  };
+
+  const typeKey = (field, key) => {
+    const at = field.selectionStart;
+    field.value = field.value.slice(0, at) + key + field.value.slice(field.selectionEnd);
+    field.setSelectionRange(at + 1, at + 1);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  it("keeps one textarea, its focus and its caret, and never moves the scroller", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    const scroller = watchScroller();
+
+    for (const key of "abc") {
+      typeKey(field, key);
+      await settle();
+      expect(host.querySelector("#issue-comment")).toBe(field);
+      expect(document.activeElement).toBe(field);
+    }
+
+    expect(field.value).toBe("abc");
+    expect(field.selectionStart).toBe(3);
+    expect(field.selectionEnd).toBe(3);
+    expect(scroller.writes).toEqual([]);
+    expect(scroller.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.windowScroll).not.toHaveBeenCalled();
+    scroller.windowScroll.mockRestore();
+  });
+
+  it("turns the send press on with the first character, without a repaint", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    const send = host.querySelector('.issue-composer button[type="submit"]');
+    expect(send.disabled).toBe(true);
+    typeKey(field, "a");
+    expect(send.disabled).toBe(false);
+    await settle();
+    expect(host.querySelector('.issue-composer button[type="submit"]')).toBe(send);
+  });
+
+  it("keeps the node, the draft and the caret when a comment is pushed mid-sentence", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    for (const key of "Half a") typeKey(field, key);
+    field.setSelectionRange(4, 4);
+    const scroller = watchScroller();
+
+    const pushed = [...TIMELINE, comment({ id: "ic-3", created_at: "2026-08-21T10:04:00Z", body: "Pushed while typing." })];
+    call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({}, pushed) : {}));
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await settle();
+
+    expect(host.textContent).toContain("Pushed while typing.");
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("Half a");
+    expect(field.selectionStart).toBe(4);
+    expect(scroller.writes).toEqual([]);
+    scroller.windowScroll.mockRestore();
+  });
+
+  it("keeps the rows already on screen when a comment is pushed", async () => {
+    await mount();
+    await settle();
+    const rows = [...host.querySelectorAll(".issue-entry")];
+    const pushed = [...TIMELINE, comment({ id: "ic-3", created_at: "2026-08-21T10:04:00Z", body: "Pushed." })];
+    call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({}, pushed) : {}));
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await settle();
+    const after = [...host.querySelectorAll(".issue-entry")];
+    expect(after).toHaveLength(rows.length + 1);
+    rows.forEach((row, at) => expect(after[at]).toBe(row));
+    expect(after.at(-1).textContent).toContain("Pushed.");
+  });
+
+  it("clears the box after a send, and restores a saved draft on remount", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    typeKey(field, "x");
+    await settle();
+    page.dispose();
+    await mount();
+    await settle();
+    expect(host.querySelector("#issue-comment").value).toBe("x");
+    const kept = host.querySelector("#issue-comment");
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(listed("issues.comment")[0][1].body).toBe("x");
+    expect(host.querySelector("#issue-comment")).toBe(kept);
+    expect(kept.value).toBe("");
+    expect(kept.disabled).toBe(false);
+    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(true);
+  });
+
+  it("keeps the timeline's nodes when only the draft changed", async () => {
+    await mount();
+    await settle();
+    const timeline = host.querySelector(".issue-timeline");
+    const head = host.querySelector(".issue-page-head");
+    typeKey(host.querySelector("#issue-comment"), "x");
+    await settle();
+    expect(host.querySelector(".issue-timeline")).toBe(timeline);
+    expect(host.querySelector(".issue-page-head")).toBe(head);
+  });
+});
+
+// #153 review round 1: the three ways the box or the page still moved.
+describe("the comment box across what arrives while typing", () => {
+  const settle = async () => {
+    await new Promise((done) => setTimeout(done, 250));
+    await flush();
+  };
+  const typeText = (field, text) => {
+    for (const key of text) {
+      const at = field.selectionStart;
+      field.value = field.value.slice(0, at) + key + field.value.slice(field.selectionEnd);
+      field.setSelectionRange(at + 1, at + 1);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  };
+
+  it("hangs the paperclip around the textarea already on screen when a late greeting says files travel", async () => {
+    carriesAttachments = false;
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    typeText(field, "typed before the greeting");
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(field.isConnected).toBe(true);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("typed before the greeting");
+    expect(field.closest(".composer.attachable.issue-comment-box")).not.toBeNull();
+    expect(host.querySelector(".issue-composer .composer-attach")).not.toBeNull();
+    const tray = host.querySelector(".issue-composer .composer-tray");
+    expect(tray).not.toBeNull();
+
+    // The controls hung on late are wired: a dropped file goes up and rides
+    // the comment.
+    call.mockImplementation(async (method) => {
+      if (method === "issues.attach") return { name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 };
+      return method === "issues.get" ? answerFor() : {};
+    });
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { files: [new File(["png"], "shot.png", { type: "image/png" })] } });
+    host.querySelector("[data-issue-composer]").dispatchEvent(drop);
+    await vi.waitFor(() => expect(host.querySelector(".issue-composer .composer-chip.ready")).not.toBeNull());
+
+    // And a bridge that stops carrying files takes them off the same box, and
+    // puts the same tray back if it carries them again.
+    carriesAttachments = false;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+    expect(host.querySelector(".issue-composer .composer-tray")).toBeNull();
+    expect(field.closest(".composer")).toBeNull();
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(host.querySelector(".issue-composer .composer-tray")).toBe(tray);
+    expect(host.querySelectorAll(".issue-composer .composer-attach")).toHaveLength(1);
+
+    call.mockClear();
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1]).toEqual({
+      issue_id: "issue-1",
+      body: "typed before the greeting",
+      attachments: [{ name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 }],
+    });
+  });
+
+  /** A paste, and what the browser does with it when nobody cancels it: the
+   *  text goes in at the caret. jsdom does no default actions, so the test
+   *  does this one. Answers whether the paste was cancelled. */
+  const paste = (field, text) => {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { files: [], items: [], getData: (type) => (type === "text/plain" ? text : "") } });
+    field.dispatchEvent(event);
+    if (event.defaultPrevented) return true;
+    typeText(field, text);
+    return false;
+  };
+  const dropFile = (form) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { files: [new File(["png"], "shot.png", { type: "image/png" })] } });
+    form.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const attachAnswers = () => call.mockImplementation(async (method) => {
+    if (method === "issues.attach") return { name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 };
+    return method === "issues.get" ? answerFor() : {};
+  });
+
+  it("takes a long paste as text and a drop as nothing while the paperclip is off", async () => {
+    await mount();
+    await settle();
+    attachAnswers();
+    const field = host.querySelector("#issue-comment");
+    const form = host.querySelector("[data-issue-composer]");
+    field.focus();
+    carriesAttachments = false;
+    page.feedMoved();
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+
+    const long = "x".repeat(1300);
+    expect(paste(field, long), "the paste was cancelled").toBe(false);
+    expect(dropFile(form), "the drop was cancelled").toBe(false);
+    const dragOver = new Event("dragover", { bubbles: true, cancelable: true });
+    form.dispatchEvent(dragOver);
+    expect(dragOver.defaultPrevented).toBe(false);
+    await settle();
+    expect(listed("issues.attach")).toEqual([]);
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(field.value).toBe(long);
+    expect(form.querySelector('button[type="submit"]').disabled).toBe(false);
+
+    call.mockClear();
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1]).toEqual({ issue_id: "issue-1", body: long });
+  });
+
+  it("takes pastes and drops as files again once the paperclip is back", async () => {
+    await mount();
+    await settle();
+    attachAnswers();
+    const field = host.querySelector("#issue-comment");
+    const form = host.querySelector("[data-issue-composer]");
+    field.focus();
+    carriesAttachments = false;
+    page.feedMoved();
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector(".issue-composer .composer-attach")).not.toBeNull();
+
+    expect(paste(field, "y".repeat(1300)), "the long paste went in as text").toBe(true);
+    expect(dropFile(form)).toBe(true);
+    await vi.waitFor(() => expect(host.querySelectorAll(".issue-composer .composer-chip.ready")).toHaveLength(2));
+    expect(listed("issues.attach").map(([, params]) => params.filename)).toEqual(["pasted-text-1.txt", "shot.png"]);
+    expect(field.value).toBe("");
+    expect(host.querySelector("#issue-comment")).toBe(field);
+  });
+
+  it("keeps the selection and the field's scroll when another tab writes a different draft", async () => {
+    const { writeCached } = await import("../src/core/localCache.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const address = uiAddress({ deviceId: "dev-1", entityId: "issue-1", view: "tracker-issue", kind: "draft", sub: "proj-1" });
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    let fieldScroll = 0;
+    Object.defineProperty(field, "scrollTop", { configurable: true, get: () => fieldScroll, set: (value) => { fieldScroll = value; } });
+    field.focus();
+    typeText(field, "abcdef");
+    await settle(); // persisted, and its own echo painted
+    field.setSelectionRange(2, 4);
+    fieldScroll = 40;
+
+    await writeCached(address, { body: "abcdefgh" }, { source: "another-tab", sequence: 1 });
+    await settle();
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("abcdefgh");
+    expect([field.selectionStart, field.selectionEnd]).toEqual([2, 4]);
+    expect(fieldScroll).toBe(40);
+
+    // A shorter draft clamps the selection to what it holds.
+    field.setSelectionRange(5, 7);
+    await writeCached(address, { body: "abc" }, { source: "another-tab", sequence: 2 });
+    await settle();
+    expect(field.value).toBe("abc");
+    expect([field.selectionStart, field.selectionEnd]).toEqual([3, 3]);
+  });
+
+  it("takes the New messages pill away when the unread row goes away through the cache", async () => {
+    carriesWatching = true;
+    const users = Array.from({ length: 20 }, (_, at) =>
+      comment({ id: `ic-01M37FGQD48628P29BG1A4B${String(at).padStart(3, "0")}`, author: { kind: "user" } }));
+    const agent = comment({ id: "ic-01M37FGQD48628P29BG1A4BZZZ", author: { kind: "agent", agent_id: "agent-1" } });
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: users.at(-1).id }),
+      timeline: [...users, agent],
+    });
+    call = vi.fn((method) => method === "issues.get" ? new Promise(() => {}) : Promise.resolve({}));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).not.toBeNull());
+    expect(host.querySelector(".new-messages-pill")).not.toBeNull();
+    const rows = [...host.querySelectorAll(".issue-entry")];
+
+    await trackerCache.writeIssueRecord("dev-1", "proj-1", "issue-1", {
+      issue: issue({ id: "issue-1", read_through: users.at(-1).id }),
+      timeline: users,
+    });
+    await vi.waitFor(() => expect(host.querySelector(".issue-unread-line")).toBeNull());
+    expect(host.querySelector(".new-messages-pill")).toBeNull();
+    expect(host.querySelectorAll(".new-messages-dock")).toHaveLength(0);
+    expect([...host.querySelectorAll(".issue-entry")]).toEqual(rows.slice(0, 20));
+  });
+});

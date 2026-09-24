@@ -2219,6 +2219,14 @@ export function wireThreadAttachments(root, load, threadState = createThreadStat
     // not coming back on this render.
     if (!path || element.getAttribute("src") || threadState.attachment(path) === null) return;
     if (threadState.attachmentDeferred(path)) return;
+    // Bytes already held are set now, not a promise later: a tile repainted
+    // with an empty source has no height for a frame, and the scroller it sits
+    // in clamps and jumps (#153).
+    const held = threadState.attachment(path);
+    if (held) {
+      element.setAttribute("src", held);
+      return;
+    }
     dataUrlFor(path).then(
       (dataUrl) => {
         element.setAttribute("src", dataUrl);

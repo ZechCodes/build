@@ -492,6 +492,12 @@
 }
 .issue-composer textarea:focus-visible { outline:2px solid var(--accent); outline-offset:-1px; }
 .issue-composer-row { display:flex; justify-content:flex-end; }
+/* While the reader is typing, the box they are typing into is what the scroll
+   holds still (#153). A comment pushed above it, and the screenshot in it
+   that loads a moment later, would otherwise slide the box down under their
+   fingers: the browser anchors the scroll on the first row in view, so
+   everything else in the column steps out of the running. */
+.issue-page-main:has(.issue-composer :focus) > :not(.issue-composer) { overflow-anchor:none; }
 
 /* The comment box that takes files (#57): the conversation's own composer,
    which wears its frame on the FIELD and hangs the paperclip on a bar beneath

@@ -88,6 +88,7 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
         pane.addEventListener("scroll", () => window.__scrolled.push(pane.scrollTop));
       });
       const before = await scrollerTops(page);
+      await captureLayout(page, `issue-comment-typing-${label}-1-before.png`);
       expect(before.pane, "the pane has to be scrolled for the check to mean anything").toBeGreaterThan(200);
 
       for (const key of "abc") {
@@ -99,7 +100,7 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
         expect(await node.evaluate((element) => element.isConnected && document.activeElement === element)).toBe(true);
       }
       expect(await node.evaluate((element) => [element.value, element.selectionStart])).toEqual(["abc", 3]);
-      await captureLayout(page, `issue-comment-typing-${label}.png`);
+      await captureLayout(page, `issue-comment-typing-${label}-2-typed.png`);
 
       // An agent comments while the reader is mid-sentence. The row lands
       // above the box; the box stays where it is on screen, with its caret.
@@ -116,6 +117,7 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await page.waitForFunction(() => document.querySelector("#comment-ic-pushed img")?.naturalHeight > 0);
       await page.waitForTimeout(200);
       expect(await boxTop(), "the box moved under the reader").toBeCloseTo(top, 0);
+      await captureLayout(page, `issue-comment-typing-${label}-3-pushed.png`);
       expect(await node.evaluate((element) => [element.isConnected, document.activeElement === element,
         element.value, element.selectionStart])).toEqual([true, true, "abc", 3]);
       expect(errors).toEqual([]);

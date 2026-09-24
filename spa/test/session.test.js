@@ -595,6 +595,19 @@ describe("confirming a restarted path carries this session", () => {
     });
   });
 
+  // A path that has just come back can lose the first question into an
+  // association still being made; the answer to a later one is as good.
+  it("asks again when a ping goes unanswered, and is carried by a later answer", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+      const pings = peer.sent.filter((sent) => sent.frameFields.payload.method === "ping");
+      expect(pings).toHaveLength(2);
+      answer(peer, {});
+      expect(await confirmed).toBe(true);
+    });
+  });
+
   it("is not carried when nothing comes back, however connected ICE says it is", async () => {
     await onFakeTime(async ({ session, peer, events }) => {
       peer.frames.connected = true;
@@ -605,7 +618,18 @@ describe("confirming a restarted path carries this session", () => {
       expect(await confirmed).toBe(false);
       // The verdict is the caller's to act on: asking severs nothing.
       expect(events.lost).toBe(0);
+      // It kept asking for the whole window, and stopped at its end.
+      const pings = () => peer.sent.filter((sent) => sent.frameFields.payload.method === "ping").length;
+      expect(pings()).toBe(Math.ceil(CARRY_CONFIRM_MS / PING_TIMEOUT_MS));
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(pings()).toBe(Math.ceil(CARRY_CONFIRM_MS / PING_TIMEOUT_MS));
     });
+  });
+
+  it("is not carried when the channel refuses the question outright", async () => {
+    const stood = await opened();
+    await stood.session.peer(fakeCarrier({ sendFails: "the channel closed" }));
+    expect(await stood.session.confirmCarried()).toBe(false);
   });
 
   it("is not carried when the session has no channel to ask on", async () => {

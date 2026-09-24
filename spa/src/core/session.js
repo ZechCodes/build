@@ -275,21 +275,28 @@ export async function openSession({
      * the browser's channels still read `open` from the association the old
      * process took with it. Nothing crosses them.
      *
-     * `true` once the ping is answered or any frame arrives after asking;
-     * `false` when neither happens inside `timeoutMs`, or there is no channel.
-     * Severs nothing and never rejects: what a dead restart costs is the link's
-     * call, and the path probe's own verdict stays latched for real deadlines.
+     * Asks again each time a ping goes unanswered: a path that has just come
+     * back can lose the first question into an association still being made.
+     * `true` once a ping is answered or any frame arrives after asking;
+     * `false` when neither happens inside `timeoutMs`, when the channel
+     * refuses the question outright, or when there is no channel. Severs
+     * nothing and never rejects: what a dead restart costs is the link's call,
+     * and the path probe's own verdict stays latched for real deadlines.
      */
     confirmCarried: async (timeoutMs = CARRY_CONFIRM_MS) => {
       const riding = carrierSwitch.active();
-      if (!riding || severed) return false;
       const asked = Date.now();
-      try {
-        await rpc.call("ping", {}, { timeoutMs, carrier: riding });
-        return true;
-      } catch {
-        return peerFrameAt(rpc, riding) > asked;
+      const left = () => timeoutMs - (Date.now() - asked);
+      while (riding && !severed && left() > 0) {
+        try {
+          await rpc.call("ping", {}, { timeoutMs: Math.min(PING_TIMEOUT_MS, left()), carrier: riding });
+          return true;
+        } catch (error) {
+          if (peerFrameAt(rpc, riding) > asked) return true;
+          if (!error?.timedOut) return false;
+        }
       }
+      return false;
     },
 
     /**

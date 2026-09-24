@@ -3822,7 +3822,7 @@ describe("the agent's surfaces, carried by the status row", () => {
   it("mounts the pills in the scroller between the lead and the git facts", async () => {
     await openPanelWithSurfaces();
 
-    const block = railHost().querySelector(".rail-composer");
+    const block = railHost().querySelector(".rail-footer");
     expect([...block.children].map((child) => child.id)).toEqual([
       "rail-surfaces-viewer",
       "rail-observation",
@@ -3831,10 +3831,11 @@ describe("the agent's surfaces, carried by the status row", () => {
       // kind rather than as a block of its own above it.
       "rail-status",
       "rail-chat-recovery",
-      "",
+      "rail-composer",
+      "railinputgauge",
     ]);
     expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
-    expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
+    expect(block.querySelector(":scope > #rail-composer #railinput")).not.toBe(null);
   });
 
   it("opens a viewer with no row menu, leaving the draft and the focus alone", async () => {
@@ -4818,7 +4819,7 @@ describe("the one status row", () => {
 });
 
 describe("the viewer above the conversation footer", () => {
-  it("is anchored inside the composer block so opening it cannot reflow the transcript", async () => {
+  it("is anchored inside the footer so opening it cannot reflow the transcript", async () => {
     payload = branchRow({
       agents: [agent({ surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: [] }] } })],
     });
@@ -4827,16 +4828,16 @@ describe("the viewer above the conversation footer", () => {
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-composer",
+      "rail-footer",
     ]);
-    expect(panel().querySelector(".rail-composer > .rail-surfaces-viewer")).not.toBeNull();
+    expect(panel().querySelector(".rail-footer > .rail-surfaces-viewer")).not.toBeNull();
     expect(railHost().querySelector("#rail-surfaces-viewer").hidden).toBe(true);
   });
 
   it("is an independently scrolling popover anchored above the footer", () => {
     const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
-    const composerRule = shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
-    expect(composerRule).toMatch(/position:absolute/);
+    const footerRule = shellCss.match(/\.rail-footer \{[^}]*\}/)[0];
+    expect(footerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/position:absolute/);
     expect(viewerRule).toMatch(/bottom:100%/);
     expect(viewerRule).toMatch(/max-height:min\(46vh, 420px\)/);

@@ -5,12 +5,12 @@ const COMPOSER_CLEARANCE_PROPERTY = "--rail-composer-clearance";
 /** Reserve a floating composer's height without moving someone reading back. */
 export function mountComposerClearance(panel) {
   const scroller = panel?.querySelector("#rail-body");
-  const composer = panel?.querySelector("#rail-composer");
-  if (!scroller || !composer) return () => {};
+  const footer = panel?.querySelector("#rail-footer");
+  if (!scroller || !footer) return () => {};
 
   const sync = () => {
     const wasAtBottom = isAtBottom(scroller);
-    const height = composer.getBoundingClientRect().height;
+    const height = footer.getBoundingClientRect().height;
     scroller.style.setProperty(COMPOSER_CLEARANCE_PROPERTY, `${height}px`);
     // A reader in history is left exactly where they are: the clearance grows
     // under the list, not above their place. One at the bottom follows it —
@@ -19,7 +19,7 @@ export function mountComposerClearance(panel) {
   };
   const observer = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
   sync();
-  observer?.observe(composer);
+  observer?.observe(footer);
   return () => {
     observer?.disconnect();
     scroller.style.removeProperty(COMPOSER_CLEARANCE_PROPERTY);

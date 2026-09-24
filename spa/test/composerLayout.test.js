@@ -50,12 +50,13 @@ describe("the composer action row", () => {
   });
 
   it("lets the rail footer overlay the transcript and reserves its measured height in the scroller", () => {
-    expect(styles).toMatch(/\.rail-composer\s*\{[^}]*position:absolute/);
+    expect(styles).toMatch(/\.rail-footer\s*\{[^}]*position:absolute/);
     expect(styles).toMatch(/\.rail-body\s*\{[^}]*--rail-composer-clearance/);
   });
 
   it("keeps the toolbar reachable when a short viewport constrains the floating footer", () => {
-    expect(styles).toMatch(/\.rail-composer\s*\{[^}]*display:flex[^}]*flex-direction:column/);
+    expect(styles).toMatch(/\.rail-footer\s*\{[^}]*display:flex[^}]*flex-direction:column/);
+    expect(styles).toMatch(/\.rail-composer\s*\{[^}]*min-height:0[^}]*display:flex[^}]*flex-direction:column/);
     expect(styles).toMatch(/\.rail-composer \.thread-composer\s*\{[^}]*min-height:0[^}]*display:flex/);
     expect(styles).toMatch(/\.rail-composer \.composer\s*\{[^}]*min-height:0[^}]*display:flex/);
     expect(styles).toMatch(/\.rail-composer \.composer-bar\s*\{[^}]*flex:none/);

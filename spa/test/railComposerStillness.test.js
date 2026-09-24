@@ -8,9 +8,9 @@
 // second, two of them on the panel the textarea sits in, plus two style writes
 // on the textarea and a new send button for every key.
 //
-// So a push that changed nothing the box shows writes nothing near it, a push
-// that changed the gauge writes the gauge and nothing else, and no attribute
-// anywhere in the rail is set to the value it already holds.
+// So nothing an agent does writes into the composer row: its Working clock and
+// its context gauge tick in the footer beside the row, never inside it. And no
+// attribute anywhere in the rail is set to the value it already holds.
 
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -49,8 +49,9 @@ const flush = async () => {
 const said = (role, body, sequence) => ({ type: "message", data: { role, body, sequence } });
 
 /** The branch's row as a push leaves it: one agent, how far into its window
- *  its last turn went, whether it is working, and the conversation so far. */
-const branchRow = ({ tokens = 100000, working = false, items = [] } = {}) => ({
+ *  its last turn went, whether it is working and since when, and the
+ *  conversation so far. */
+const branchRow = ({ tokens = 100000, working = false, since = null, items = [] } = {}) => ({
   kind: "branch",
   project_id: "p1",
   branch: "build/login",
@@ -63,6 +64,7 @@ const branchRow = ({ tokens = 100000, working = false, items = [] } = {}) => ({
     state: "live",
     unread_count: 0,
     working,
+    working_time: working && since ? { since } : null,
     topic: "Fix login redirect",
     last_context_tokens: tokens,
   }],
@@ -150,18 +152,35 @@ describe("the rail composer while an agent works", () => {
     return input;
   };
 
+  const clock = () => document.querySelector(".rail-status-text")?.textContent ?? "";
+
+  /** Seconds passing on the rail's own clock. */
+  const tick = async (ms) => {
+    vi.advanceTimersByTime(ms);
+    await flush();
+  };
+
   /** Everything that moves while an agent works and the reader types: its
-   *  turns starting and ending, the gauge climbing, its words arriving, the
-   *  reader's own arrival recorded, and the conversation scrolled. */
+   *  turn starting, its Working clock running, the gauge climbing, its words
+   *  arriving, the reader's own arrival recorded, the conversation scrolled,
+   *  and the turn ending. Says what the clock read as the turn began and
+   *  after it had run. */
   const workAround = async () => {
-    await push(branchRow({ items: conversation, working: true }));
-    await push(branchRow({ items: conversation, working: true, tokens: 120000 }));
-    await push(branchRow({ items: [...conversation, said("agent", "found it", 4)], working: true, tokens: 120000 }));
+    const since = new Date(Date.now() - 5000).toISOString();
+    const working = { working: true, since };
+    await push(branchRow({ items: conversation, ...working }));
+    const began = clock();
+    await tick(3000);
+    await push(branchRow({ items: conversation, ...working, tokens: 120000 }));
+    await push(branchRow({ items: [...conversation, said("agent", "found it", 4)], ...working, tokens: 120000 }));
+    await tick(2000);
+    const ran = clock();
     await writeUserSession("dev-1", { user_session: { gap_ms: 0, session_started_ms: Date.now(), now_ms: Date.now() } });
     await flush();
     document.getElementById("rail-body").dispatchEvent(new Event("scroll"));
     await flush();
     await push(branchRow({ items: [...conversation, said("agent", "found it", 4)], working: false, tokens: 140000 }));
+    return { began, ran };
   };
 
   beforeEach(async () => {
@@ -169,7 +188,7 @@ describe("the rail composer while an agent works", () => {
     localStorage.clear();
     await wipeCache();
     resetAgentRailMemory();
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
   });
 
   afterEach(() => {
@@ -177,6 +196,7 @@ describe("the rail composer while an agent works", () => {
     rail = null;
     atWidth(1024, 768);
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("keeps the same box, its words, its caret and its focus", async () => {
@@ -191,19 +211,47 @@ describe("the rail composer while an agent works", () => {
     expect([input.selectionStart, input.selectionEnd]).toEqual([5, 5]);
   });
 
-  it("writes nothing in the composer row but the gauge's new reading", async () => {
+  it("writes nothing in the composer row while the clock runs and the gauge climbs", async () => {
     await mountOnAPhone();
     typeInto();
     const composer = document.getElementById("rail-composer");
     const gauge = document.getElementById("railinputgauge");
     const watch = watchRail(document.getElementById("agent-rail"));
 
-    await workAround();
+    const { began, ran } = await workAround();
 
     const records = watch.take();
-    const inComposer = records.filter((record) => composer.contains(record.target) && !gauge.contains(record.target));
+    const inComposer = records.filter((record) => composer.contains(record.target));
     expect(inComposer.map(describeTarget)).toEqual([]);
+    // Both did move, beside the row rather than in it.
+    expect(began).not.toBe("");
+    expect(ran).not.toBe(began);
     expect(gauge.textContent).toBe("14%");
+    expect(composer.contains(gauge)).toBe(false);
+    expect(composer.contains(document.querySelector(".rail-status-text"))).toBe(false);
+  });
+
+  it("leaves the clock's text alone on a tick that reads the same", async () => {
+    // The rail's clock ticks every second; with the time standing still each
+    // tick reads what the last one did.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    await mountOnAPhone();
+    typeInto();
+    await push(branchRow({ items: conversation, working: true, since: new Date(Date.now() - 5000).toISOString() }));
+    const text = document.querySelector(".rail-status-text");
+    expect(text.textContent).not.toBe("");
+    const writes = [];
+    const observer = new MutationObserver((batch) => writes.push(...batch));
+    observer.observe(text, { childList: true, characterData: true, subtree: true });
+
+    vi.advanceTimersByTime(10_000);
+    await flush();
+    writes.push(...observer.takeRecords());
+    observer.disconnect();
+
+    expect(writes.map(describeTarget)).toEqual([]);
   });
 
   it("sets no attribute in the rail to the value it already had", async () => {

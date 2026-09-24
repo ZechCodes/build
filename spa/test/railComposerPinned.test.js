@@ -72,6 +72,7 @@ const flush = async () => {
 const panel = () => document.getElementById("rail-panel");
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const scroller = () => document.getElementById("rail-body");
+const footer = () => document.getElementById("rail-footer");
 const composerRow = () => document.getElementById("rail-composer");
 
 const mount = async () => {
@@ -110,19 +111,20 @@ describe("the conversation panel's column", () => {
     await mount();
     expect(composerRow()).toBeTruthy();
     expect(scroller().contains(composerRow())).toBe(false);
-    expect(composerRow().parentElement).toBe(panel());
+    expect(composerRow().parentElement).toBe(footer());
+    expect(footer().parentElement).toBe(panel());
     expect(scroller().parentElement).toBe(panel());
   });
 
-  it("keeps the out-of-flow surface viewer inside the pinned composer", async () => {
+  it("keeps the out-of-flow surface viewer inside the pinned footer", async () => {
     await mount();
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
-      "rail-composer",
+      "rail-footer",
     ]);
-    expect(composerRow().querySelector(":scope > .rail-surfaces-viewer")).toBeTruthy();
-    expect(scroller().contains(composerRow().querySelector(".rail-surfaces-viewer"))).toBe(false);
+    expect(footer().querySelector(":scope > .rail-surfaces-viewer")).toBeTruthy();
+    expect(scroller().contains(footer().querySelector(".rail-surfaces-viewer"))).toBe(false);
   });
 
   it("leaves the scroller holding the conversation and nothing else", async () => {
@@ -208,7 +210,7 @@ describe("the panel's stylesheet", () => {
   const panelRule = () => shellCss.match(/^\.rail-panel \{[^}]*\}/m)[0];
   const headRule = () => shellCss.match(/\.rail-head \{[^}]*\}/)[0];
   const bodyRule = () => shellCss.match(/\.rail-body \{[^}]*\}/)[0];
-  const composerRule = () => shellCss.match(/\.rail-composer \{[^}]*\}/)[0];
+  const footerRule = () => shellCss.match(/\.rail-footer \{[^}]*\}/)[0];
   const composerTextRule = () => shellCss.match(/\.rail-composer \.composer textarea \{[^}]*\}/)[0];
 
   it("makes the panel a column whose middle row is the only scroller", () => {
@@ -221,7 +223,7 @@ describe("the panel's stylesheet", () => {
 
   it("holds the glass header and composer over the scrolling conversation", () => {
     expect(headRule()).toMatch(/position:absolute/);
-    expect(composerRule()).toMatch(/position:absolute/);
+    expect(footerRule()).toMatch(/position:absolute/);
   });
 
   // Growth has to stop somewhere: a pasted paragraph that kept growing would

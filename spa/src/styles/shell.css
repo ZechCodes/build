@@ -1075,9 +1075,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 
 /* The footer floats over the conversation. Its measured height is reserved in
    the scroller, so the last message can still move wholly above it. */
-.rail-composer { position:absolute; z-index:4; right:0; bottom:0; left:0; flex:none;
+.rail-footer { position:absolute; z-index:4; right:0; bottom:0; left:0; flex:none;
   max-height:calc(100% - var(--surface-head)); display:flex; flex-direction:column;
   padding:4px 14px 13px; background:transparent; }
+/* The row that holds only the box. What ticks while an agent works stands
+   beside it in the footer, never inside it (#138). */
+.rail-composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
 /* Neither this box nor the composer inside it hides its overflow. The model and
    reasoning menus hang off the bottom row of a box three rows tall, so they
    open upward and — a model name being wider than the button that states it —
@@ -1087,7 +1090,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    clipper, which the composer's own glass makes it on iOS. The rows that could
    overgrow — the text, the tray, the context — scroll themselves below. */
 .rail-composer .thread-composer { flex:1 1 auto; min-height:0; margin-left:0; display:flex; flex-direction:column; }
-.rail-composer .chat-recovery { flex:0 1 auto; min-height:0; max-height:80px; overflow-y:auto; }
+.rail-footer .chat-recovery { flex:0 1 auto; min-height:0; max-height:80px; overflow-y:auto; }
 .rail-composer .composer { flex:1 1 auto; min-height:0; display:flex; flex-direction:column;
   border:1px solid var(--line); border-radius:12px; background:transparent; }
 .rail-composer .composer::before { content:""; position:absolute; z-index:0; inset:0; border-radius:inherit;
@@ -1102,6 +1105,21 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-composer .composer textarea:focus { border-color:transparent; box-shadow:none; }
 .rail-composer .composer-bar { flex:none; padding:2px 5px 5px; }
 .rail-composer .composer-send,.rail-composer .composer-attach { width:30px; height:30px; }
+/* The context gauge ticks as the agent works, so it lives in the footer, out of
+   the box being typed in, and reads out over the room the bar keeps for it
+   beside the paperclip. The room is as wide as the widest figure and the
+   gauge keeps to its right edge, where the figure stood in the bar. The
+   offsets are the rows around it: from the right, the footer's padding (14),
+   the box's border (1), the bar's padding (5), the send (30), a gap (6), the
+   paperclip (30) and a gap (6); from the bottom, the footer's padding (13),
+   the border (1) and the bar's padding (5), then the 30px of the buttons it
+   is centred on. */
+.composer-gauge-room { flex:0 0 auto; font-size:11px; line-height:1; font-variant-numeric:tabular-nums; visibility:hidden; }
+.composer-gauge-room::before { content:"100%"; }
+.rail-footer:has(> .composer-gauge[hidden]) .composer-gauge-room { display:none; }
+.rail-footer > .composer-gauge { position:absolute; z-index:1; right:92px; bottom:19px; height:30px;
+  display:flex; align-items:center; }
+.rail-footer > .composer-gauge[hidden] { display:none; }
 /* Growing upward has to stop somewhere, or a pasted paragraph would swallow
    the conversation it is a reply to. Past this the box scrolls its own text.
    The panel is the height of the view column, so 40vh is about 40% of it.

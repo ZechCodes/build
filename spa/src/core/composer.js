@@ -226,8 +226,9 @@ export function sendControlHtml({ sendId, canInterrupt = false, hasDraft = false
 /// surface with no upload path renders the plain box. `modelMenu` opens the
 /// slot on the row's left for the model menu (`mountComposerModelMenu` fills
 /// it); a surface that passes neither renders the row it always did.
-/// A conversation's composer (`modelMenu`) also carries the context gauge
-/// beside the paperclip, empty and hidden until `mountContextGauge` writes it.
+/// A conversation's composer (`modelMenu`) also keeps the room beside the
+/// paperclip that its context gauge reads out over; the gauge itself is
+/// `composerGaugeHtml`, placed by the caller outside the box (#138).
 /// `canInterrupt` is what the send control is showing right now — a poll moves
 /// it in place rather than rebuilding the box around it.
 export function composerHtml({
@@ -256,7 +257,7 @@ export function composerHtml({
         </div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
         <div class="composer-actions">
-          ${modelMenu ? `<span class="composer-gauge" id="${esc(parts.gauge)}" role="note" hidden></span>` : ""}
+          ${modelMenu ? '<span class="composer-gauge-room" aria-hidden="true"></span>' : ""}
           ${attachControls}
           <div class="composer-send-control" id="${esc(parts.sendControl)}">${sendControlHtml({ sendId, canInterrupt })}</div>
         </div>
@@ -265,6 +266,15 @@ export function composerHtml({
     </div>
   </div>`;
 }
+
+/// The context gauge, empty and hidden until `mountContextGauge` writes it.
+/// It ticks as the agent works, so it stands outside the box being typed in
+/// rather than in the bar: a phone's keyboard lost swipes and taps while the
+/// rail rewrote things around the text, and the room the bar keeps for it
+/// (`.composer-gauge-room`) is never written. The stylesheet lays it over that
+/// room.
+export const composerGaugeHtml = (inputId) =>
+  `<span class="composer-gauge" id="${esc(composerPartIds(inputId).gauge)}" role="note" hidden></span>`;
 
 // ---- the model menu -------------------------------------------------------
 

@@ -73,7 +73,7 @@ import {
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
 import { mountUsageLimitBanner } from "./usageLimits.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
-import { composerHtml, mountComposerModelMenu } from "./composer.js";
+import { composerGaugeHtml, composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
 import { catalogForProvider, creatableCatalog, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -537,7 +537,8 @@ function paintStatusLead(lead, status) {
   if (shape === QUIET_SHAPE) hide(lead, { axis: "width" });
   else reveal(lead, { axis: "width" });
   const text = lead.querySelector(STATUS_TEXT_SELECTOR);
-  if (text) text.textContent = status.working || status.starting;
+  const words = status.working || status.starting || "";
+  if (text && text.textContent !== words) text.textContent = words;
 }
 
 /// One ticker per git line, kept with the element it paints so a rail that is
@@ -2041,7 +2042,7 @@ function mountRailOnContext(host, context, swap) {
    *  timeline above them. Drafts, uploads and surface state belong to the
    *  controller; the thread frame belongs to the one shared painter. */
   const rebindConversationChrome = (panel) => {
-    const standing = panel.querySelector("#rail-composer");
+    const standing = panel.querySelector("#rail-footer");
     if (!standing) return;
     releaseConversationChrome();
     standing.outerHTML = composerRowHtml();
@@ -2144,7 +2145,7 @@ function mountRailOnContext(host, context, swap) {
       && conversationChanged
       && panel.dataset.conversation !== wantedConversation
       && wantedConversation) {
-      if (panel.querySelector("#rail-composer")) rebindConversationChrome(panel);
+      if (panel.querySelector("#rail-footer")) rebindConversationChrome(panel);
       else {
         panel.insertAdjacentHTML("beforeend", composerRowHtml());
         wireComposer(panel);
@@ -2663,13 +2664,20 @@ function mountRailOnContext(host, context, swap) {
   /// long thread never takes the box off screen, and the growth of a box being
   /// typed into comes out of the thread above rather than pushing its own
   /// bottom edge past the panel.
+  ///
+  /// The footer carries what moves while an agent works — the Working clock,
+  /// the git line, what it is observing, its context gauge — and the composer
+  /// row inside it carries only the box, which nothing an agent does writes
+  /// into. A phone's keyboard dropped swipes and taps while the rail rewrote
+  /// things around the text (#138). The gauge reads out over the room the box
+  /// keeps for it beside the paperclip.
   const composerRowHtml = () =>
-    `<div class="rail-composer" id="rail-composer">
+    `<div class="rail-footer" id="rail-footer">
       ${railViewerHostHtml()}
       ${railObservationHostHtml()}
       ${railStatusRowHtml()}
       <div class="chat-recovery" id="rail-chat-recovery"></div>
-      ${composerHtml({
+      <div class="rail-composer" id="rail-composer">${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
         hintId: COMPOSER_IDS.hint,
@@ -2677,7 +2685,9 @@ function mountRailOnContext(host, context, swap) {
         attachable: true,
         modelMenu: true,
         canInterrupt: agentCanInterrupt(agentOf(selectedId)),
-      })}</div>`;
+      })}</div>
+      ${composerGaugeHtml(COMPOSER_IDS.input)}
+    </div>`;
 
   /// The one thing on the composer a poll can change: whether the send offers
   /// to stop the turn in flight, which moves every time an agent starts or

@@ -10,16 +10,16 @@ globalThis.ResizeObserver = class {
 };
 
 const mount = ({ scrollTop, scrollHeight = 1000, clientHeight = 400 }) => {
-  document.body.innerHTML = '<div id="panel"><div id="rail-body"></div><div id="rail-composer"></div></div>';
+  document.body.innerHTML = '<div id="panel"><div id="rail-body"></div><div id="rail-footer"></div></div>';
   const panel = document.querySelector("#panel");
   const body = panel.querySelector("#rail-body");
-  const composer = panel.querySelector("#rail-composer");
+  const footer = panel.querySelector("#rail-footer");
   Object.defineProperties(body, {
     scrollHeight: { configurable: true, get: () => scrollHeight },
     clientHeight: { configurable: true, get: () => clientHeight },
   });
   body.scrollTop = scrollTop;
-  composer.getBoundingClientRect = () => ({ height: 120 });
+  footer.getBoundingClientRect = () => ({ height: 120 });
   const dispose = mountComposerClearance(panel);
   return { body, dispose };
 };

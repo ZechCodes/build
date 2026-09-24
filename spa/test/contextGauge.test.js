@@ -8,7 +8,7 @@
 // touched, so a push of the agent record mid-sentence keeps the caret.
 
 import { describe, it, expect, beforeEach } from "vitest";
-import { composerHtml, composerPartIds } from "../src/core/composer.js";
+import { composerGaugeHtml, composerHtml, composerPartIds } from "../src/core/composer.js";
 import { contextGauge, contextWindowOf, mountContextGauge } from "../src/core/contextGauge.js";
 
 const IDS = { input: "ti", send: "ts", hint: "th" };
@@ -87,20 +87,21 @@ describe("contextGauge", () => {
 describe("the gauge on the composer", () => {
   let gauge;
   beforeEach(() => {
-    document.body.innerHTML = composerHtml({
+    document.body.innerHTML = `<div class="rail-footer">${composerHtml({
       inputId: IDS.input,
       sendId: IDS.send,
       hintId: IDS.hint,
       placeholder: "Say",
       attachable: true,
       modelMenu: true,
-    });
+    })}${composerGaugeHtml(IDS.input)}</div>`;
     gauge = mountContextGauge(document.body, { ids: IDS });
   });
 
-  it("stands beside the paperclip, hidden until there is a figure", () => {
+  it("stands outside the box, over a room kept beside the paperclip, hidden until there is a figure", () => {
     // The file input between them is hidden and takes no space.
-    expect(document.querySelector(".composer-actions > .composer-gauge + .composer-file + .composer-attach")).not.toBeNull();
+    expect(document.querySelector(".composer-actions > .composer-gauge-room + .composer-file + .composer-attach")).not.toBeNull();
+    expect(document.querySelector(".composer").contains(gaugeNode())).toBe(false);
     expect(gaugeNode().hidden).toBe(true);
   });
 

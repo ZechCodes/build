@@ -68,6 +68,29 @@ function delimiterAlignments(line) {
  */
 export const CODE_BLOCK_CLASS = "md-code";
 
+/** The paragraph being read. Consecutive text lines are one paragraph joined by
+ *  a space (a soft break), the way CommonMark reads prose wrapped at a line
+ *  width; a line ending in two spaces or a backslash breaks it with a `<br>`.
+ *  A blank line ends it, and so does any block: `flush` hands back the `<p>`
+ *  and empties it. */
+function paragraphReader(inline) {
+  let parts = [];
+  return {
+    add(line) {
+      if (!line.trim()) return false;
+      const hard = /( {2,}|\\)$/.test(line);
+      const text = inline(line.trim().replace(/\\$/, ""));
+      parts.push(hard ? `${text}<br>` : text);
+      return true;
+    },
+    flush() {
+      const html = parts.length ? `<p>${parts.join(" ").replace(/<br> /g, "<br>")}</p>` : "";
+      parts = [];
+      return html;
+    },
+  };
+}
+
 /**
  * Markdown, and the references an agent can write in it (#56).
  *
@@ -91,6 +114,11 @@ export function renderMarkdown(markdown, { links = null } = {}) {
         .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>"),
       links,
     );
+  // Every block closes the paragraph before it, so each goes out through here.
+  const paragraph = paragraphReader(inline);
+  const emit = (block) => {
+    html += paragraph.flush() + block;
+  };
   // Heading ids are computed from the raw heading text (before inline rendering)
   // and de-duplicated within a single render so the stages view can scroll a
   // comment's breadcrumb to `#<slug>`. Empty slug → omit the id attribute.
@@ -133,7 +161,7 @@ export function renderMarkdown(markdown, { links = null } = {}) {
     const line = lines[lineIndex];
     if (line.startsWith("```")) {
       inCode = !inCode;
-      html += inCode ? `<pre class="${CODE_BLOCK_CLASS}"><code>` : "</code></pre>";
+      emit(inCode ? `<pre class="${CODE_BLOCK_CLASS}"><code>` : "</code></pre>");
       continue;
     }
     if (inCode) {
@@ -143,14 +171,14 @@ export function renderMarkdown(markdown, { links = null } = {}) {
     const listItem = line.match(/^\s*[-*]\s+(.*)/) || line.match(/^\s*\d+\.\s+(.*)/);
     if (listItem) {
       if (!inList) {
-        html += "<ul>";
+        emit("<ul>");
         inList = true;
       }
-      html += `<li>${inline(listItem[1])}</li>`;
+      emit(`<li>${inline(listItem[1])}</li>`);
       continue;
     }
     if (inList) {
-      html += "</ul>";
+      emit("</ul>");
       inList = false;
     }
     // A row of pipes is a table only when the line under it is a delimiter row.
@@ -159,21 +187,22 @@ export function renderMarkdown(markdown, { links = null } = {}) {
     const alignments = tableCells(line) ? delimiterAlignments(lines[lineIndex + 1]) : null;
     if (alignments) {
       const table = tableFrom(lineIndex, alignments);
-      html += table.html;
+      emit(table.html);
       lineIndex = table.end;
       continue;
     }
     if (line.startsWith("### ")) {
       const raw = line.slice(4);
-      html += `<h3${idAttr(raw)}>${inline(raw)}</h3>`;
+      emit(`<h3${idAttr(raw)}>${inline(raw)}</h3>`);
     } else if (line.startsWith("## ")) {
       const raw = line.slice(3);
-      html += `<h2${idAttr(raw)}>${inline(raw)}</h2>`;
+      emit(`<h2${idAttr(raw)}>${inline(raw)}</h2>`);
     } else if (line.startsWith("# ")) {
       const raw = line.slice(2);
-      html += `<h1${idAttr(raw)}>${inline(raw)}</h1>`;
-    } else if (line.trim()) html += `<p>${inline(line)}</p>`;
+      emit(`<h1${idAttr(raw)}>${inline(raw)}</h1>`);
+    } else if (!paragraph.add(line)) emit("");
   }
+  emit("");
   if (inList) html += "</ul>";
   if (inCode) html += "</code></pre>";
   return html;

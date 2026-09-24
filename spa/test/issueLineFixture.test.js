@@ -64,7 +64,7 @@ export const ISSUE_LINE_ITEMS = [
     data: {
       id: "m-a", sequence: 3, role: "user",
       from_agent: { id: "project-01M2SCB", owner: { kind: "project", id: "proj-1", name: "Build" }, topic: "Verify per-file roll" },
-      body: Array.from({ length: 12 }, (_, line) => `line ${line + 1} of the project agent's brief`).join("\n"),
+      body: Array.from({ length: 12 }, (_, line) => `line ${line + 1} of the project agent's brief`).join("\n\n"),
     },
   },
   {

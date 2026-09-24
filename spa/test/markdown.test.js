@@ -139,7 +139,7 @@ describe("renderMarkdown pipe tables", () => {
   it("leaves a pipe line with no delimiter row as a paragraph", () => {
     const html = renderMarkdown("| not | a table |\nplain text");
     expect(html).not.toContain("<table>");
-    expect(html).toContain("<p>| not | a table |</p>");
+    expect(html).toBe("<p>| not | a table | plain text</p>");
   });
 
   it("leaves pipes inside a code fence alone", () => {
@@ -214,5 +214,40 @@ describe("references an agent writes", () => {
 
   it("renders an unknown target as plain words", () => {
     expect(renderMarkdown("see #999", { links })).toBe("<p>see #999</p>");
+  });
+});
+
+describe("renderMarkdown paragraphs", () => {
+  it("joins wrapped lines into one paragraph with a space", () => {
+    expect(renderMarkdown("one line\n  wrapped here  \nand here")).toBe("<p>one line wrapped here<br>and here</p>");
+    expect(renderMarkdown("one line\nwrapped here")).toBe("<p>one line wrapped here</p>");
+  });
+
+  it("splits paragraphs on a blank line", () => {
+    expect(renderMarkdown("first\n\nsecond\n  \nthird")).toBe("<p>first</p><p>second</p><p>third</p>");
+  });
+
+  it("breaks the line on two trailing spaces or a backslash", () => {
+    expect(renderMarkdown("roses  \nviolets\\\nsugar")).toBe("<p>roses<br>violets<br>sugar</p>");
+  });
+
+  it("closes the paragraph before a heading", () => {
+    expect(renderMarkdown("text\n# Heading\nmore")).toBe('<p>text</p><h1 id="heading">Heading</h1><p>more</p>');
+  });
+
+  it("closes the paragraph before a list item", () => {
+    expect(renderMarkdown("text\n- item")).toBe("<p>text</p><ul><li>item</li></ul>");
+  });
+
+  it("closes the paragraph before a table", () => {
+    expect(renderMarkdown("text\n| a |\n| - |\n| 1 |")).toBe(
+      '<p>text</p><div class="mdtable"><table><thead><tr><th>a</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table></div>',
+    );
+  });
+
+  it("closes the paragraph around a code fence", () => {
+    expect(renderMarkdown("before\n```\ncode  \n```\nafter")).toBe(
+      '<p>before</p><pre class="md-code"><code>code  \n</code></pre><p>after</p>',
+    );
   });
 });

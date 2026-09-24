@@ -547,6 +547,10 @@ async function inspectResize([fromWidth, fromHeight], [toWidth, toHeight]) {
   await page.setViewportSize({ width: toWidth, height: toHeight });
   // ScrollTrigger refreshes on a debounce; give it that and a few frames.
   await page.waitForTimeout(600);
+  // The re-measured pin keeps the visitor in the act they were reading.
+  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "7", null, { timeout: gpu ? 5000 : 60_000 })
+    .catch(() => {});
+  assert.equal(await page.evaluate(() => document.querySelector("[data-film]").dataset.act), "7", `${label}: a resize keeps the film in act 7`);
   for (const [act, local] of [[7, 0.55], [6, 0.8], [5, 0.75], [3, 0.6]]) {
     await checkAct(page, label, act, local, toHeight);
     await assertAligned(page, `${label} act ${act}`, toWidth, toHeight);

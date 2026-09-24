@@ -351,6 +351,20 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   };
   const boxWatcher = typeof ResizeObserver === "function" ? new ResizeObserver(sync) : null;
   boxWatcher?.observe(canvas);
+  // A resize re-measures the pin, and the same pixel offset would then be
+  // somewhere else in the film; keep the visitor where they were instead.
+  let heldTime = null;
+  // Only once the film is running: before its first frame a restored or
+  // pending position is still the page's to set.
+  const holdPlace = () => { heldTime = firstFrameShown ? tl.scrollTrigger.progress * TOTAL_TRAVEL : null; };
+  const keepPlace = () => {
+    if (heldTime === null || stopped) return;
+    const time = heldTime;
+    heldTime = null;
+    goTo(time, "instant");
+  };
+  ScrollTrigger.addEventListener("refreshInit", holdPlace);
+  ScrollTrigger.addEventListener("refresh", keepPlace);
   ScrollTrigger.addEventListener("refresh", sync);
 
   function stop(reason) {
@@ -363,6 +377,8 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     gsap.ticker.remove(frame);
     boxWatcher?.disconnect();
     ScrollTrigger.removeEventListener("refresh", sync);
+    ScrollTrigger.removeEventListener("refreshInit", holdPlace);
+    ScrollTrigger.removeEventListener("refresh", keepPlace);
     tl.scrollTrigger.kill();
     tl.kill();
     player.kill();
@@ -420,9 +436,17 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
     const trigger = tl.scrollTrigger;
     return trigger.start + (time / TOTAL_TRAVEL) * (trigger.end - trigger.start);
   };
+  // Somewhere in the film, deliberately: a snap still easing toward the last
+  // resting point would otherwise carry the page back there.
+  function goTo(time, behavior) {
+    // ScrollTrigger leaves 0 here once a snap is done.
+    const snap = tl.scrollTrigger.getTween(true);
+    if (snap) snap.kill();
+    scrollTo({ top: scrollFor(time), behavior });
+  }
   const goToAct = (actId, behavior) => {
     player.started.add(actId);
-    scrollTo({ top: scrollFor(restAt(actId)), behavior });
+    goTo(restAt(actId), behavior);
   };
   document.addEventListener("click", (event) => {
     const anchor = event.target.closest('a[href^="#act-"]');
@@ -479,11 +503,11 @@ export function startFilm({ ignoreFrameBudget = false } = {}) {
   const film_ = {
     get progress() { return tl.scrollTrigger.progress; },
     seek(actId, local) {
-      scrollTo({ top: scrollFor(at(actId, local)), behavior: "instant" });
+      goTo(at(actId, local), "instant");
     },
     // The resting point of an act, where its copy and beat are.
     rest(actId) {
-      scrollTo({ top: scrollFor(restAt(actId)), behavior: "instant" });
+      goTo(restAt(actId), "instant");
     },
     time: () => tl.scrollTrigger.progress * TOTAL_TRAVEL,
     sync,

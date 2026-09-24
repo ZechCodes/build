@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  DONE_SINCE_CAP_MS, dashboardSections, doneMoveToday, doneSince, doneSinceCutoff, latestCachedAgentActivity, standingOf,
+  DONE_SINCE_CAP_MS, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
+  latestCachedAgentActivity, standingOf,
 } from "../src/core/trackerDashboardModel.js";
 
 const PROJECT = "device-1/proj-1";
@@ -214,5 +215,72 @@ describe("Done since you left", () => {
     // No timeline was needed: the details map is empty.
     expect(dashboardSections([finished("x", "2026-09-22T09:00:00Z")], { doneCutoffMs: from }).done)
       .toEqual([{ issue: finished("x", "2026-09-22T09:00:00Z"), movedAt: "2026-09-22T09:00:00Z", sha: null }]);
+  });
+});
+
+describe("Done grouped by time", () => {
+  const MINUTE = 60 * 1000;
+  const HOUR = 60 * MINUTE;
+  /** One Done entry that moved `ageMs` before NOW. */
+  const moved = (id, ageMs) => ({ issue: issue(id, { status: "done" }), movedAt: new Date(NOW - ageMs).toISOString(), sha: null });
+  const titled = (groups) => groups.map((group) => [group.title, group.entries.map((entry) => entry.issue.id)]);
+  const groupsOf = (entries, sessionStartedMs = null) => titled(doneGroups(entries, { nowMs: NOW, sessionStartedMs }));
+
+  it("steps by 15 minutes for the first hour, then by the hour, newest first", () => {
+    expect(groupsOf([
+      moved("3h20", 3 * HOUR + 20 * MINUTE),
+      moved("14m59", 14 * MINUTE + 59_000),
+      moved("60m", 60 * MINUTE),
+      moved("15m", 15 * MINUTE),
+      moved("59m", 59 * MINUTE),
+      moved("30m", 30 * MINUTE),
+      moved("2h", 2 * HOUR),
+    ])).toEqual([
+      ["Last 15 minutes", ["14m59"]],
+      ["15 minutes ago", ["15m"]],
+      ["30 minutes ago", ["30m"]],
+      ["45 minutes ago", ["59m"]],
+      ["1 hour ago", ["60m"]],
+      ["2 hours ago", ["2h"]],
+      ["3 hours ago", ["3h20"]],
+    ]);
+  });
+
+  it("keeps the entries' own order inside a group and draws no empty group", () => {
+    expect(groupsOf([moved("b", 16 * MINUTE), moved("a", 2 * HOUR), moved("c", 29 * MINUTE)])).toEqual([
+      ["15 minutes ago", ["b", "c"]],
+      ["2 hours ago", ["a"]],
+    ]);
+    expect(groupsOf([])).toEqual([]);
+  });
+
+  it("puts anything from before this session last under While you were away, however recent", () => {
+    const started = NOW - 10 * MINUTE;
+    expect(groupsOf([moved("before", 12 * MINUTE), moved("old", 30 * HOUR), moved("now", 2 * MINUTE)], started)).toEqual([
+      ["Last 15 minutes", ["now"]],
+      ["While you were away", ["before", "old"]],
+    ]);
+    // The session's first instant belongs to it.
+    expect(groupsOf([moved("start", 10 * MINUTE)], started)).toEqual([["Last 15 minutes", ["start"]]]);
+  });
+
+  it("has no While you were away without the session", () => {
+    expect(groupsOf([moved("old", 30 * HOUR)])).toEqual([["30 hours ago", ["old"]]]);
+  });
+
+  it("takes the session's start from the bridge, and has none while the user is away", () => {
+    const summary = (started, last, bridgeNow = last) => ({
+      session_started_ms: started, last_activity_ms: last, previous_session_ended_ms: null, gap_ms: 6 * HOUR, now_ms: bridgeNow,
+    });
+    expect(doneSessionStart(summary(NOW - HOUR, NOW))).toBe(NOW - HOUR);
+    expect(doneSessionStart(summary(NOW - 20 * HOUR, NOW - 8 * HOUR, NOW))).toBe(Infinity);
+    expect(doneSessionStart(null)).toBe(Infinity);
+  });
+
+  it("is what dashboardSections gives the Done tab to draw", () => {
+    const issues = [issue("done", { status: "done", done_at: new Date(NOW - 20 * MINUTE).toISOString() })];
+    const sections = dashboardSections(issues, { nowMs: NOW, doneCutoffMs: NOW - HOUR, sessionStartedMs: NOW - 30 * MINUTE });
+    expect(titled(sections.doneGroups)).toEqual([["15 minutes ago", ["done"]]]);
+    expect(sections.doneGroups[0].entries).toEqual(sections.done);
   });
 });

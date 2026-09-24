@@ -78,6 +78,8 @@ afterEach(() => {
 const doneTab = () => host.querySelector('[data-dashboard-tab="done"]');
 const doneRows = () => [...host.querySelectorAll('[data-dashboard-section="done"] .issue-dashboard-row')]
   .map((row) => row.dataset.issue);
+const doneTitles = () => [...host.querySelectorAll('[data-dashboard-section="done"] .issue-dashboard-group-title')]
+  .map((title) => title.textContent);
 
 async function mountWith(hello) {
   const call = async (method) => {
@@ -121,12 +123,15 @@ it("shows work finished while the user was away, across their return on another 
   expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(true);
   expect(doneTab().querySelector("span").textContent).toBe("Done");
   await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
+  expect(doneTitles()).toEqual(["While you were away"]);
 
   // The user came back on the phone: the push brings the new session here.
   listed = answers.back;
   expect(pushed()).toBe(true);
   await vi.waitFor(async () => expect(await heldStart()).toBe(answers.back.user_session.session_started_ms));
   expect(doneRows()).toEqual([finished.id]);
+  // Finished before the session the phone started, however the clocks read.
+  expect(doneTitles()).toEqual(["While you were away"]);
 
   // The user works on the phone for the next six hours, which moves nothing
   // the laptop holds, and the laptop repaints from its cache before the bridge

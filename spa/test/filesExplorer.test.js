@@ -381,6 +381,216 @@ describe("the open files' tabs", () => {
   });
 });
 
+// Every state a tab's draft can be in, crossed with every event that moves it,
+// through the whole view: the edit buffer, the tab's dirty dot, Save, the
+// status line and Reload, and the revision the next save is sent against
+// (“base”; null while a save is still out). README.md is read at
+// README.md@1; an acknowledged save answers README.md@2; another writer's
+// change lands in the cache as README.md@ext.
+describe("a tab's draft, state by event", () => {
+  const README = "# Title\n";
+  const DISK = "File changed on disk";
+  const CONFLICT = "revision conflict: README.md changed";
+  let writes;
+
+  beforeEach(() => {
+    writes = [];
+    writeAnswer = (params) => new Promise((resolve, reject) => {
+      const write = { params, open: true };
+      write.land = () => {
+        write.open = false;
+        resolve({ path: params.path, mime: "text/plain", size: 9, truncated: false, editable: true, encoding: "utf-8", revision: "README.md@2", content_b64: params.content_b64 });
+      };
+      write.refuse = () => {
+        write.open = false;
+        reject(new Error(CONFLICT));
+      };
+      writes.push(write);
+    });
+  });
+
+  const pushExternal = async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" },
+      { file: { path: "README.md", mime: "text/plain", size: 6, truncated: false, editable: true, encoding: "utf-8", revision: "README.md@ext", content_b64: b64("moved\n") }, openedAt: Date.now() },
+    );
+    await settle();
+  };
+  const show = async (host, path) => {
+    host.querySelector(`[data-tab-path="${path}"]`).click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe(path));
+    await settle();
+  };
+  const save = async (host) => {
+    const sent = writes.length;
+    host.querySelector(".file-save").click();
+    await vi.waitFor(() => expect(writes).toHaveLength(sent + 1));
+  };
+  const saveOut = async (host) => {
+    if (!writes.some((write) => write.open)) await save(host);
+  };
+  const land = async () => {
+    writes.find((write) => write.open).land();
+    await settle();
+  };
+  const refuse = async () => {
+    writes.find((write) => write.open).refuse();
+    await settle();
+  };
+  const dot = (host) => Boolean(host.querySelector('.ftab.dirty [data-tab-path="README.md"]'));
+  const away = async (host, meanwhile) => {
+    await show(host, "notes.txt");
+    await meanwhile();
+    const dotAway = dot(host);
+    await show(host, "README.md");
+    return dotAway;
+  };
+  const confirmShown = async () => {
+    await settle();
+    const ok = document.querySelector("#confirm-scrim [data-confirm-ok]");
+    ok?.click();
+    await settle();
+    return Boolean(ok);
+  };
+
+  const STATES = {
+    clean: async () => {},
+    dirty: async (host) => typeInto(host, "draft\n"),
+    saving: async (host) => {
+      typeInto(host, "draft\n");
+      await save(host);
+    },
+    // Typed back to the very text the file had before the save went out.
+    "saving-edited": async (host) => {
+      typeInto(host, "draft\n");
+      await save(host);
+      typeInto(host, README);
+    },
+    "changed-on-disk": async (host) => {
+      typeInto(host, "draft\n");
+      await pushExternal();
+      await vi.waitFor(() => expect(host.querySelector(".file-save-status").textContent).toBe(DISK));
+    },
+  };
+
+  // Each event answers what it saw on the way: whether the tab's dot was on
+  // while another tab was shown, and whether it asked before discarding.
+  const EVENTS = {
+    "save ok": async (host) => {
+      await saveOut(host);
+      await land();
+    },
+    "save refused": async (host) => {
+      await saveOut(host);
+      await refuse();
+    },
+    push: pushExternal,
+    "push, then save ok": async () => {
+      await pushExternal();
+      await land();
+    },
+    "switch away and back": async (host) => ({ dotAway: await away(host, async () => {}) }),
+    "save ok while away": async (host) => {
+      await saveOut(host);
+      return { dotAway: await away(host, land) };
+    },
+    "push while away": async (host) => ({ dotAway: await away(host, pushExternal) }),
+    "push, then save ok, while away": async (host) => {
+      await saveOut(host);
+      return { dotAway: await away(host, async () => { await pushExternal(); await land(); }) };
+    },
+    reload: async (host) => {
+      host.querySelector(".file-reload").click();
+      return { asked: await confirmShown() };
+    },
+  };
+
+  const row = (state, event, seen, base) => ({ state, event, seen, base });
+  const shows = (value, dot, save, status, reload, extra = {}) => ({ value, dot, save, status, reload, ...extra });
+
+  const ROWS = [
+    row("clean", "push", shows("moved\n", false, false, "", false), "README.md@ext"),
+    row("clean", "switch away and back", shows(README, false, false, "", false, { dotAway: false }), "README.md@1"),
+    row("clean", "push while away", shows("moved\n", false, false, "", false, { dotAway: false }), "README.md@ext"),
+
+    row("dirty", "save ok", shows("draft\n", false, false, "", false), "README.md@2"),
+    row("dirty", "save refused", shows("draft\n", true, true, CONFLICT, true), "README.md@1"),
+    row("dirty", "push", shows("draft\n", true, true, DISK, true), "README.md@1"),
+    row("dirty", "switch away and back", shows("draft\n", true, true, "", false, { dotAway: true }), "README.md@1"),
+    row("dirty", "save ok while away", shows("draft\n", false, false, "", false, { dotAway: false }), "README.md@2"),
+    row("dirty", "push while away", shows("draft\n", true, true, DISK, true, { dotAway: true }), "README.md@1"),
+
+    row("saving", "save ok", shows("draft\n", false, false, "", false), "README.md@2"),
+    row("saving", "save refused", shows("draft\n", true, true, CONFLICT, true), "README.md@1"),
+    row("saving", "push", shows("draft\n", true, false, DISK, true), null),
+    row("saving", "push, then save ok", shows("moved\n", false, false, "", false), "README.md@ext"),
+    row("saving", "switch away and back", shows("draft\n", true, false, "", false, { dotAway: true }), null),
+    row("saving", "save ok while away", shows("draft\n", false, false, "", false, { dotAway: false }), "README.md@2"),
+    row("saving", "push while away", shows("draft\n", true, false, DISK, true, { dotAway: true }), null),
+    row("saving", "push, then save ok, while away", shows("moved\n", false, false, "", false, { dotAway: false }), "README.md@ext"),
+
+    row("saving-edited", "save ok", shows(README, true, true, "", false), "README.md@2"),
+    row("saving-edited", "save refused", shows(README, false, false, CONFLICT, true), "README.md@1"),
+    row("saving-edited", "push", shows(README, true, false, DISK, true), null),
+    row("saving-edited", "push, then save ok", shows(README, true, true, DISK, true), "README.md@2"),
+    row("saving-edited", "switch away and back", shows(README, true, false, "", false, { dotAway: true }), null),
+    row("saving-edited", "save ok while away", shows(README, true, true, "", false, { dotAway: true }), "README.md@2"),
+    row("saving-edited", "push, then save ok, while away", shows(README, true, true, DISK, true, { dotAway: true }), "README.md@2"),
+
+    row("changed-on-disk", "save refused", shows("draft\n", true, true, DISK, true), "README.md@1"),
+    row("changed-on-disk", "switch away and back", shows("draft\n", true, true, DISK, true, { dotAway: true }), "README.md@1"),
+    row("changed-on-disk", "reload", shows(README, false, false, "", false, { asked: true }), "README.md@1"),
+  ];
+
+  const mountOnReadme = async () => {
+    const { host, files } = mountFiles();
+    await openByTap(host, "README.md");
+    await openByTap(host, "notes.txt");
+    await show(host, "README.md");
+    return { host, files };
+  };
+
+  const observe = (host) => {
+    host.querySelector('[data-file-mode="edit"]').click();
+    return {
+      value: host.querySelector(".file-editor").value,
+      dot: dot(host),
+      save: !host.querySelector(".file-save").disabled,
+      status: host.querySelector(".file-save-status").textContent,
+      reload: !host.querySelector(".file-reload").hidden,
+    };
+  };
+
+  it.each(ROWS)("$state × $event", async ({ state, event, seen, base }) => {
+    const { host } = await mountOnReadme();
+    await STATES[state](host);
+    const saw = (await EVENTS[event](host)) || {};
+
+    const { dotAway, asked, ...painted } = seen;
+    await vi.waitFor(() => expect(observe(host)).toEqual(painted));
+    if (dotAway !== undefined) expect(saw.dotAway).toBe(dotAway);
+    if (asked !== undefined) expect(saw.asked).toBe(asked);
+    expect(host.querySelector(".file-editor").value).toBe(seen.value);
+
+    // The revision the next save goes out against.
+    if (base === null) return expect(writes.some((write) => write.open)).toBe(true);
+    typeInto(host, `${seen.value}probe\n`);
+    await save(host);
+    expect(writes.at(-1).params.expected_revision).toBe(base);
+  });
+
+  it.each(Object.keys(STATES))("%s × close asks exactly when something is not on disk, and a save landing after leaves nothing behind", async (state) => {
+    const { host, files } = await mountOnReadme();
+    await STATES[state](host);
+    host.querySelector('[data-tab-close="README.md"]').click();
+    expect(await confirmShown()).toBe(state !== "clean");
+    await vi.waitFor(() => expect(tabNames(host)).toEqual(["notes.txt"]));
+    if (writes.some((write) => write.open)) await land();
+    expect(tabNames(host)).toEqual(["notes.txt"]);
+    expect(files.hasUnsavedChanges()).toBe(false);
+  });
+});
+
 describe("the next mount of the same checkout", () => {
   it("comes back with the same directories expanded and the same tabs open, the active one shown", async () => {
     const first = mountFiles();

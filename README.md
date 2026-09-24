@@ -319,8 +319,133 @@ web client you are editing served by them.
 - [uv](https://docs.astral.sh/uv/) for `skriftapp/` (Python 3.13 or newer,
   `skriftapp/pyproject.toml`).
 - Docker or Podman with compose, for the local stack.
-- Chromium or Chrome, for the web client's browser tests and the landing
-  check (on `PATH`, or `CHROMIUM_PATH` set to its executable).
+- Chromium or Chrome, for the web client's browser tests (on `PATH`, or
+  `CHROMIUM_PATH` set to its executable). The landing check needs
+  `CHROMIUM_PATH` or Playwright's own browser (see [Testing](#testing)).
+- To run real agents: Claude Code or Codex CLI, installed and signed in.
+
+### 1. Clone, with the transport beside it
+
+The web client imports the E2EE binding from a checkout of
+[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
+**next to** this repository (`spa/package.json` resolves
+`file:../../build-secure-transport/js`). Clone both into one folder:
+
+```sh
+mkdir build-dev && cd build-dev
+git clone git@github.com:ZechCodes/build-web.git
+git clone https://github.com/ZechCodes/build-secure-transport.git
+npm install --no-audit --no-fund --prefix build-secure-transport/js
+cd build-web
+```
+
+### 2. Run the local stack
+
+[`deploy/compose.real.yml`](deploy/compose.real.yml) runs the production
+topology on your machine: skriftapp with dummy sign-in, the Rust relay, and a
+bridge on a sample repository with a scripted QA agent. The `qa` one-shot pairs
+that bridge to the `qa@localhost` account and runs the end-to-end checks over
+the DataChannels.
+
+```sh
+docker compose -f deploy/compose.real.yml up -d --build
+docker compose -f deploy/compose.real.yml --profile qa run --rm qa
+```
+
+`podman compose` takes the same arguments. The qa run ends with
+`QA PASS`. Then open <http://localhost:8090/app/> and sign in as
+`qa@localhost` to see the paired bridge. `docker compose -f
+deploy/compose.real.yml down` resets everything. There is one stack per
+machine, and there are two-bridge and ICE variants: see
+[`deploy/README.md`](deploy/README.md).
+
+### 3. Work on the web client against the stack
+
+```sh
+cd spa
+npm install --legacy-peer-deps
+VITE_RELAY_URL=ws://localhost:18090 npm run build
+cd ..
+docker cp skriftapp/buildapp/static/. deploy-app-1:/app/buildapp/static/
+```
+
+Reload the page to get your build. Copying the build into the running app
+container keeps its database, so the pairing survives. Rebuilding the `app`
+image instead resets that database, and after that the stack needs `down` and
+the two commands in step 2 again. In `spa/`, always use
+`npm install --legacy-peer-deps`, never `npm ci`: the lockfile is gitignored
+because the `file:` path to the transport differs per machine.
+
+### 4. Build a bridge and pair it with your account
+
+```sh
+./scripts/build-bridge.sh
+BRIDGE="$PWD/bridge/target/$(rustc -vV | sed -n 's/^host: //p')/release/build-bridge"
+"$BRIDGE" --version
+"$BRIDGE" pair
+"$BRIDGE" install-service
+```
+
+`scripts/build-bridge.sh` only builds. It installs nothing and puts nothing on
+your `PATH`, so the remaining commands use the path it printed (`$BRIDGE`).
+
+- `"$BRIDGE" pair` prints a pairing code and waits. Enter the code in Build: on
+  the welcome screen if no device is paired yet, or later under **Settings →
+  Devices & keys → Add a device…**. Check that the fingerprint matches what the
+  bridge printed, then approve.
+- `"$BRIDGE" install-service` runs that binary in the background, as a
+  `systemd --user` unit on Linux or a LaunchAgent on macOS. The service runs the
+  file at that path, so a rebuild replaces what it runs at its next restart.
+  To keep a stable copy instead, copy the binary somewhere first and run `pair`
+  and `install-service` from the copy.
+
+This is the same sequence `scripts/install.sh` runs for a released bridge, after
+placing it in `~/.local/bin`. A locally built bridge does not update itself.
+Pairing goes to getbuild.ing by default, which is invite-only.
+
+The desktop app loads the hosted web client and requires a
+separately installed bridge; no SPA or backend build is needed.
+
+### Electron releases
+
+The `Release the desktop app` GitHub workflow runs on `desktop-vX.Y.Z` tags.
+The tag must match `desktop/package.json` and its lockfile. It builds native
+macOS ARM64/Intel and Linux ARM64/x86_64 apps. Mac apps are Developer ID signed
+and notarized; Linux apps are unsigned. Releases include DMG/ZIP (macOS),
+AppImage/DEB (Linux), installer archives, SHA-256 checksums, and a Sigstore
+signature over the checksums. Assets publish to `RELEASES_REPO` (default
+`ZechCodes/build-releases`), followed by the `desktop-latest/version.txt` pointer.
+Desktop releases never replace the bridge's latest release.
+
+Configure the same repository secrets used for bridge releases:
+`APPLE_CERTIFICATE_P12` (base64-encoded Developer ID Application certificate),
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_PASSWORD` (app-specific
+password), `APPLE_TEAM_ID`, and `RELEASES_TOKEN` (write access to the releases
+repository). Missing signing credentials fail the desktop release rather than
+publishing unsigned assets. Local builds need none of these secrets.
+Set the website's `RELEASES_REPO` environment variable to the same repository
+if you override the workflow variable. Website-served installers use that
+repository by default; `BUILD_RELEASES_REPO` overrides it for a single install.
+
+## Getting started
+
+This takes you from a fresh clone to the whole system running on your
+machine: the app server, the relay and a paired bridge in containers, and the
+web client you are editing served by them.
+
+### Prerequisites
+
+- Git.
+- Rust stable (via rustup), plus the native libraries listed under
+  [Build locally](#bridge-linux-or-macos): a C/C++ compiler, CMake, pkg-config
+  and OpenSSL development headers.
+- Node.js 22 (`spa/.nvmrc`; the desktop app needs 22.12 or newer) with npm.
+- [uv](https://docs.astral.sh/uv/) for `skriftapp/` (Python 3.13 or newer,
+  `skriftapp/pyproject.toml`).
+- Docker or Podman with compose, for the local stack.
+- Chromium or Chrome, for the web client's browser tests (on `PATH`, or
+  `CHROMIUM_PATH` set to its executable). The landing check needs
+  `CHROMIUM_PATH` or Playwright's own browser (see [Testing](#testing)).
 - To run real agents: Claude Code or Codex CLI, installed and signed in.
 
 ### 1. Clone, with the transport beside it
@@ -407,7 +532,7 @@ line: a suite can print "passed" and still exit non-zero. CI
 | Web client | `spa/` | `nice -n 10 npm install --legacy-peer-deps`<br>`nice -n 10 npm run lint`<br>`nice -n 10 npm test`<br>`nice -n 10 npm run build` |
 | App server | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp`<br>`nice -n 10 uv run --frozen pytest buildapp -q` |
 | Landing page | `landing/` | `nice -n 10 npm ci`<br>`nice -n 10 npm test` |
-| Landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then in another shell `nice -n 10 node web/landing-check.mjs` |
+| Landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then in another shell `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
 | Desktop app | `desktop/` | `nice -n 10 npm ci`<br>`nice -n 10 npm test` |
 | Shell scripts | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 | Whole system | repo root | the compose stack and `qa` run from [Getting started](#2-run-the-local-stack) |
@@ -420,14 +545,25 @@ Notes:
   the jsdom unit suite and the Chromium layout suite (`spa/test/browser/`);
   `npm run test:browser` runs only the latter. Run vitest from inside `spa/`,
   so that the repo's own vitest runs. `npm run lint` is the complexity gate.
-- **Bridge.** `cargo test --test interop_python` checks the Rust transport
-  against the Python reference and needs the `build-secure-transport` checkout.
-  See CI's `interop` job.
+- **Bridge.** The E2EE interop test checks the Rust transport against the
+  Python reference in the `build-secure-transport` checkout. It only runs when
+  `BUILD_SECURE_TRANSPORT_PY` points at that checkout's `python/` directory, and
+  it skips (still exiting 0) when the variable is unset. From `bridge/`, as CI's
+  `interop` job does:
+
+  ```sh
+  BUILD_SECURE_TRANSPORT_PY=../../build-secure-transport/python nice -n 10 cargo test --test interop_python -- --nocapture
+  ```
 - **Landing page.** `landing/` commits its lockfile, so `npm ci` is right there.
   `npm test` builds the Astro page, then reads it back. The preview needs that
   build and skriftapp's virtualenv (`uv sync` in `skriftapp/`).
-  `web/landing-check.mjs` imports `playwright`; install `web/`'s dependencies
-  first with `npm install` in `web/`.
+  `web/landing-check.mjs` imports `playwright`, so install `web/`'s
+  dependencies first with `npm install` in `web/`. It launches the browser named
+  by `CHROMIUM_PATH` (for example `/usr/bin/chromium`). Unset, it expects
+  Playwright's own download: run `npx playwright install chromium` in `web/`
+  first. A browser on `PATH` alone is not enough. The preview listens on port
+  4173. If that port is taken, start it with `--port <n>` and set
+  `LANDING_URL=http://127.0.0.1:<n>`.
 - **App server.** `uv run` creates `skriftapp/.venv` on first use.
 
 ## Contributing

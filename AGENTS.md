@@ -19,9 +19,14 @@ It describes the code as it is on main. Per area:
 | colours or theme | [Theming](ARCHITECTURE.md#theming) |
 | "where does X go?" | [Where to look](ARCHITECTURE.md#where-to-look) |
 
-Specs and plans live in [`planning/v2/`](planning/v2/). They record intent and
-can lag the code: **where a spec and the code disagree, the code is the source
-of truth.** Build what was asked, then amend the spec to match.
+Keep the full project in mind by reading, for intent,
+[`planning/v2/E2EE Platform Scope.md`](<planning/v2/E2EE Platform Scope.md>)
+(architecture, task lifecycle) and
+[`planning/v2/UI Design Brief for E2EE Platform.md`](<planning/v2/UI Design Brief for E2EE Platform.md>)
+(web client UX). The other specs and plans live beside them in
+[`planning/v2/`](planning/v2/). They record intent and can lag behind: **where a
+spec disagrees with the code or `ARCHITECTURE.md`, the code and
+`ARCHITECTURE.md` win.** Build what was asked, then amend the spec to match.
 
 ## About this project
 
@@ -104,7 +109,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | SPA | `spa/` | `nice -n 10 npm install --legacy-peer-deps` (when `package.json` changed) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |
-| landing in a browser | repo root | `python scripts/preview-landing.py`, then `nice -n 10 node web/landing-check.mjs` |
+| landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
 | desktop | `desktop/` | `nice -n 10 npm test` |
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 

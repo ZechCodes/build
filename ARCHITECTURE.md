@@ -48,7 +48,10 @@ A session goes like this:
 
 The browser gets its ICE server list from skriftapp (`POST /api/rtc/ice-servers`,
 `skriftapp/buildapp/ice_servers.py`) and hands it to the bridge inside the sealed
-`rtc.offer`, so the bridge holds no TURN credentials.
+`rtc.offer`. The bridge does use the short-lived, per-user TURN username and
+credential in that list: `offered_server` in `bridge/src/rtc.rs` copies them into
+its ICE configuration. The long-lived Cloudflare TURN key they are minted from
+stays on skriftapp and never reaches a browser or a bridge.
 
 ---
 
@@ -72,8 +75,13 @@ the relay binary `bridge/src/bin/relay.rs`.
 | `provision`, `backup` | print an identity bundle; online SQLite backup |
 | `--version` | prints the version |
 
-Every `BRIDGE_*` environment variable is read in `bridge/src/main.rs` and
-`bridge/src/config.rs`.
+The daemon's configuration comes from environment variables. Most are read at
+startup in `bridge/src/main.rs` and `bridge/src/config.rs` (`BridgeConfig`). A
+few are owned by the module they tune and read there instead. Examples:
+`BRIDGE_TERM_SHELL` in `bridge/src/terminal_environment.rs`,
+`BRIDGE_CHILD_SCOPE` (child placement) in `bridge/src/priority.rs`, and the
+`BRIDGE_ICE_*` policy in `bridge/src/rtc/policy.rs`. To find a variable, grep
+for it.
 
 ### Module layout
 
@@ -93,20 +101,42 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 
 ### RPC and push events
 
-The bridge is RPC plus push events. It keeps no product logic behind the RPC
-layer beyond what must run while no client is connected (agents, watchers,
-presence, updates). Those run as services that the RPC handlers read from and
-signal, not inside the request path.
+**The design rule** is that the bridge is RPC plus push events. Product logic
+belongs in the SPA. Logic that must run while no client is connected (agents,
+watchers, presence, updates) belongs in the bridge as services isolated from
+the RPC and event layer. New work should move toward that.
+
+**Today the code does not fully follow the rule.** Some verbs still carry domain
+logic in the request path. For example, `issues.assign`
+(`bridge/src/api/v1/issues.rs`) calls `AppState::issues_assign`, and
+`bridge/src/app/tracker/dispatch.rs` then applies the assignment policy: it
+watches an issue assigned to the user, tracks the receiving agent, and links
+the dispatch result, all inside the call. Read the handler before assuming a
+verb is a thin read or write.
 
 **Frames.** A request is `{id, method, params}`; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
-A push is a frame with a `type` and no `id`. Contract fixtures for every verb live
-in `fixtures/api/v1/` and are checked by `bridge/tests/api_contract.rs` and
-`spa/test/apiContract.test.js`.
+A push is a frame with a `type` that answers no pending request. Pushes can carry
+an `id`: the legacy `entity.changed` push is `{type: "entity.changed", id}`
+(`ChangeKey::payload` in `bridge/src/changes.rs`). So the SPA's
+`spa/src/core/sessionRpc.js` first matches `id` against its pending calls, and
+treats a frame with a `type` that matches none as a push. Contract fixtures for
+every verb live in `fixtures/api/v1/` and are checked by
+`bridge/tests/api_contract.rs` and `spa/test/apiContract.test.js`.
 
-**Dispatch.** `bridge/src/carrier/dispatch.rs` runs frame handlers on blocking worker
-threads. Each frame goes to `dispatch_frame` in `bridge/src/app/rpc.rs`, which
-tries in order:
+**Admission.** `FrameIntake` in `bridge/src/carrier.rs` sees every frame first:
+
+- It refuses non-signaling frames that arrive over the relay.
+- It answers `ping` itself.
+- It sends a receipt as soon as it admits a request.
+- It answers signaling (`rtc.*`) and attachment writes at once, without
+  queueing, so a negotiation never waits behind other work.
+
+Everything else is queued to the worker pool in
+`bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
+
+**Dispatch.** Each handled frame goes to `dispatch_frame` in
+`bridge/src/app/rpc.rs`, which tries these in order:
 
 1. `signaling()`: `rtc.offer`, `rtc.ice`, `rtc.close`, answered without the app
    lock (`bridge/src/app/rtc.rs`).
@@ -124,8 +154,10 @@ names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
 is deferred and runs with the lock released.
 
-**Push events.** `ChangeBus` in `bridge/src/changes.rs` collects changes and
-flushes them after a 250 ms coalescing window (`DEFAULT_COALESCE_WINDOW`). A
+**Push events.** `ChangeBus` in `bridge/src/changes.rs` collects changes.
+`ChangeBus::run` flushes the first change on an idle bus at once, then holds a
+250 ms window (`DEFAULT_COALESCE_WINDOW`) open before the next flush. Changes
+noted inside the window go out together when it closes. A
 session that greeted with `changes: "subscriptions"` gets `changes` frames only
 for what it subscribed to with `changes.subscribe`. The events the bridge
 announces are `ANNOUNCED_EVENTS` in the same file (`board.changed`,
@@ -182,9 +214,15 @@ cannot starve the relay connection, the heartbeat or negotiation.
 
 - **SQLite**: `bridge/src/store.rs` opens `build.db` in WAL mode in the tasks dir
   (`BRIDGE_TASKS_DIR`, default `~/.build/tasks`). Tables are defined in
-  `bridge/src/store/schema.rs`, migrations are in `bridge/src/store/migrations.rs`,
-  and each area has its own module under `bridge/src/store/`. The store refuses
-  to open a newer schema.
+  `bridge/src/store/schema.rs`, and each area has its own module under
+  `bridge/src/store/`. The upgrade sequence runs when the store opens, in
+  `bridge/src/store.rs`: it adds hoisted columns, applies the schema,
+  reclassifies stored items, and stamps `schema_version`.
+  `bridge/src/store/migrations.rs` holds the column helper
+  (`add_hoisted_column`) and the tests' old-version fixtures. The substantive steps live beside
+  their tables: `migrate_agents_to_v6` in `bridge/src/store/entities.rs` and
+  `ensure_operation_receipt_columns` in `bridge/src/store/operations.rs`. The
+  store refuses to open a newer schema.
 - **JSON files**: projects and settings in `~/.build/config.json`
   (`bridge/src/app/config/`), the device identity in `~/.build/identity.json`
   (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
@@ -193,13 +231,20 @@ cannot starve the relay connection, the heartbeat or negotiation.
 
 ### Workspaces and worktrees
 
-`WorktreeManager` (`bridge/src/worktree/manager.rs`) is the single entry point
-for checkouts. It hands out isolation backends from `bridge/src/isolation/`:
+`WorktreeManager` (`bridge/src/worktree/manager.rs`) is the entry point for
+**git** checkouts. Its two isolation backends (`backends()`) live in
+`bridge/src/isolation/`:
 
 - `worktree.rs`: a git worktree created through libgit2 (`git2`), not the
   `git worktree` CLI.
 - `rift.rs`: a copy-on-write checkout through the Rift CLI.
-- `directory.rs`: a plain copy, for sources with no git repository.
+
+Sources with no git repository bypass the manager. The workspace code in
+`bridge/src/app/workspaces/mod.rs` calls `copy_directory_with_rift_root` in
+`bridge/src/isolation/directory.rs` directly. That function makes a plain copy
+under worktree isolation. Under Rift isolation it makes a Rift snapshot, and it
+falls back to a plain copy, recorded as a downgrade, when Rift is unavailable
+or fails before writing anything.
 
 A workspace brings together one checkout per project source. Its manifest is
 `.build-workspace.json`, and they are indexed by `WorkspaceRegistry`
@@ -221,8 +266,14 @@ and those feed git and files changes into the `ChangeBus`.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
-Every child the bridge spawns goes through `bridge/src/priority.rs`. On systemd,
-agents are placed in `app-build_agents.slice` (`AGENTS_SLICE`, CPU weight 20)
+Agent harnesses and the user's terminals are placed through
+`bridge/src/priority.rs` as a `ChildKind` (`Agent` or `Terminal`). That covers
+PTY children in `bridge/src/pty.rs` and the piped headless harnesses
+(`bridge/src/harness/adk/session.rs`,
+`bridge/src/harness/codex_app_server/process.rs`), all through
+`ChildPlacement`. Short-lived git and isolation utility processes do not
+go through it: `bridge/src/git_process.rs` spawns them directly, with a deadline.
+On systemd, agents are placed in `app-build_agents.slice` (`AGENTS_SLICE`, CPU weight 20)
 and the user's terminals in `app.slice`, through a transient unit started over
 `busctl`. Where that is unavailable, it falls back to `nice`. `install-service`
 sets the slice's weight (`bridge/src/service/systemd.rs`). The result is that
@@ -300,7 +351,7 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 | `spa/src/main.js` | entry: fonts, CSS, theme, router, device picker, then `boot()` from `spa/src/views/gate.js` |
 | `spa/src/app.js` | the `App` object, route handling (`go`, `initRouter`), the `VIEWS` table, `render` |
 | `spa/src/connection.js` | per-device session lifecycle |
-| `spa/src/api.js` | the only plain-HTTP calls, all to skriftapp (`/api/devices`, `/api/gateway-token`, `/api/rtc/ice-servers`, push) |
+| `spa/src/api.js` | the product API calls to skriftapp (`/api/devices`, `/api/gateway-token`, `/api/rtc/ice-servers`, push); the served-version check in `spa/src/core/version.js` is the other plain-HTTP read |
 | `spa/src/devices.js` | device list, presence poll, device picker |
 | `spa/src/core/` | the logic and renderers. Pure logic lives in `*Model.js`, painting in `*Render.js`, next to their mount controllers |
 | `spa/src/core/bridgeApi/` | adapter selection and the v1 adapter |
@@ -314,7 +365,17 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 **Every view paints from the cache.** Pulls and pushes write to the cache, and
 the views holding those records redraw. No view waits on the wire to show what
-is already known, and none calls the bridge for a read.
+is already known. That is the rule for anything the cache holds, and new
+surfaces follow it.
+
+A few surfaces still read on demand, for data the sync pass does not hold:
+
+- the Files tab lists a directory the reader opens with `fs.tree`
+  (`spa/src/views/files.js`);
+- the archive reads `archived.list` (`spa/src/views/archive.js`);
+- the agent rail reads `settings.get` (`spa/src/core/agentRail.js`).
+
+Check whether data is synced before adding another read like these.
 
 - **The cache** is `spa/src/core/localCache.js`: one IndexedDB database
   (`build-cache`) whose record keys are addresses of the form
@@ -323,27 +384,42 @@ is already known, and none calls the bridge for a read.
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
-- **The one reader of the wire** is `spa/src/core/cacheSync.js`. On a greeting,
-  a reconnect or a tab return, `syncDevice()` makes one ordered pass per device:
-  the lists, then the workspace being viewed, then the rest. Only one tab syncs
-  (Web Lock `build.cacheSync`). It holds three change subscriptions per device:
+- **The sync layer** is `spa/src/core/cacheSync.js`, the main reader of the
+  wire. On a greeting, a reconnect or a tab return, `syncDevice()` makes one
+  ordered pass per device: the lists, then the workspace being viewed, then the
+  rest. Tabs share the Web Lock `build.cacheSync`, and the holder syncs for all
+  of them. The rest wait for it, but not for ever: a tab that has not been
+  granted the lock after `LOCK_WAIT_MS` (4 s) syncs anyway, in case the holder
+  is frozen. A browser without the Locks API syncs every tab. Two tabs syncing
+  only costs duplicate reads. The sync layer holds three change subscriptions per device:
   `s-inbox` (realtime), `s-background` (git, files and shells on a 30 s
   cooldown) and `s-active` (the routed workspace, realtime).
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
-  subscriptions and routes each `changes` flush. Flushes carry record bodies, so
-  they are written straight into the cache.
+  subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
+  `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
+  straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
+  `diff`, the files root listing, and `terminals`. Some only invalidate, and the
+  applier reads again. `issues` carries only ids, so the project's issue list
+  is read again. Changed `files` paths re-list the directories the reader opened
+  and re-read open file bodies with `fs.read`. A git item that could not carry
+  its diff pulls it for the routed workspace, or marks it stale.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
 
-The only timers are the device presence poll against skriftapp, the served
-version check, the boot retry and cosmetic clocks.
+No timer polls the bridge for data. The data timers are the device presence
+poll against skriftapp and the served-version check. The transport has its own:
+the reconnect backoff (`spa/src/core/deviceRecovery.js`) and the peer's open
+timeout and TURN-to-direct upgrade (`spa/src/core/peerLink.js`). The rest are
+the boot retry and cosmetic clocks.
 
 ### Connection state machine
 
-`spa/src/connection.js` runs one session per device, carried only over that
-device's DataChannels:
+`spa/src/connection.js` runs one **application** session per device, carried
+only over that device's DataChannels. Terminals mint their own E2EE session
+through the same device's rendezvous (`mintTerminalSession`), and it rides the
+`term` channel.
 
 - **Rendezvous**: `createRelayRendezvous` (`spa/src/core/rendezvous.js`) opens
   the relay socket, mints the session (`session_init` / `session_accept`) and
@@ -354,8 +430,8 @@ device's DataChannels:
   classifies the path.
 - **Session**: `openSession` (`spa/src/core/session.js`) combines
   `spa/src/core/sessionRpc.js` (encryption, pending calls, receipts, pushes)
-  with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous and everything else
-  over the peer.
+  with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous
+  and everything else over the peer.
 - **States**: a device's lifetime is `spa/src/core/deviceLifecycle.js` (`new` →
   `available`; unavailable as `away` / `blocked` / `refused`; `retired`). Each
   attempt is `spa/src/core/deviceConnectionAttempts.js` (`idle`, `connecting`,
@@ -374,9 +450,12 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=1.2.0 <2.0.0`). When it falls
-  outside, it returns `{unsupported: "bridge" | "app"}`, and
-  `spa/src/views/versionGate.js` says which side needs updating.
+  `api_version` against `SPA_API_RANGE` (`>=1.2.0 <2.0.0`). A greeting with
+  no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
+  (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
+  rather than rejected. Any other version outside the range returns
+  `{unsupported: "bridge" | "app"}`, and `spa/src/views/versionGate.js` says
+  which side needs updating.
 - `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting
   into feature flags. A greeting with a `capabilities` array (1.22.0 and later)
   is taken as-is. For older bridges (`>=1.0.0 <1.22.0`), the frozen

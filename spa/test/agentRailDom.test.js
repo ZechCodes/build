@@ -89,10 +89,11 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 
 const { App } = await import("../src/app.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
-const { adoptDeviceSession, contextFor, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceSession, contextFor, knownDeviceContext, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { evictEntity, mergeCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
+const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 const pinnedValue = async () => (await readCached(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
@@ -5365,5 +5366,56 @@ describe("a new agent on a project's rail", () => {
     expect(callsTo("agent.add")[0].params).toMatchObject({
       provider: "claude_adk", model: "claude-haiku-4-5",
     });
+  });
+});
+
+// A rail can stand over a machine's records before that machine has answered
+// in this tab (core/surfaceContext.js). What the machine offers to start work
+// with is one of those records: the rail offers it from disk while the machine
+// is being dialled, and takes the machine's own answer once it has greeted.
+describe("the models a machine that has not answered yet offers", () => {
+  const offeredModels = () => {
+    modelMenuButton().click();
+    const models = [...railHost().querySelectorAll(".composer-model .mi")].map((item) => item.dataset.action);
+    modelMenuButton().click();
+    return models;
+  };
+
+  /** A cold reload: nothing has answered in this tab, and the page stood a
+   *  session-less context up over the machine's records. */
+  const mountOverStandIn = async () => {
+    resetDeviceContexts();
+    const standIn = knownDeviceContext("dev-1");
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
+    await mount({ call: standIn.rpc, chatRepository: standIn.chatRepository });
+    return standIn;
+  };
+
+  /** The machine's session lands, and its bridge greets. */
+  const land = async (standIn) => {
+    adoptDeviceSession(sessionAnswering(bridge));
+    adoptBridgeSelection(standIn, { version: "1.22.0" }, null);
+    await flush();
+  };
+
+  it("offers the models the last session left on disk, asking the machine nothing", async () => {
+    await writeCached(deviceModelsAddress("dev-1"), CATALOG);
+    const standIn = await mountOverStandIn();
+
+    expect(offeredModels()).toContain("model:claude-opus-5");
+    expect(callsTo("models.list")).toEqual([]);
+
+    await land(standIn);
+    expect(offeredModels()).toContain("model:claude-opus-5");
+  });
+
+  it("offers what the machine answers once it has greeted, when nothing was on disk", async () => {
+    const standIn = await mountOverStandIn();
+    expect(offeredModels()).not.toContain("model:claude-opus-5");
+    expect(callsTo("models.list")).toEqual([]);
+
+    await land(standIn);
+    expect(callsTo("models.list")).toHaveLength(1);
+    expect(offeredModels()).toContain("model:claude-opus-5");
   });
 });

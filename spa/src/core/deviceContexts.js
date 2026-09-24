@@ -110,7 +110,7 @@ function createDeviceContext(deviceId) {
   bindRepository(context, context.rpc);
   // What this bridge offers to start work with, held here rather than on the
   // app: the machine is what the answer is about (core/modelCatalog.js).
-  Object.assign(context, createModelCatalog(context));
+  Object.assign(context, createModelCatalog(context, () => canAnswer(context)));
   contexts.set(deviceId, context);
   return context;
 }
@@ -146,6 +146,7 @@ export function adoptBridgeSelection(context, selection, adapter) {
   context.unsupported = selection?.unsupported || null;
   releaseGreeting(context); // this bridge has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
+  context.answering?.(); // what a surface wanted while it could not be asked
   return context;
 }
 

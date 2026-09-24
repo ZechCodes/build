@@ -79,7 +79,7 @@ import { markSeen } from "./inboxView.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
-import { deviceCatalog } from "./inboxDevices.js";
+import { deviceCatalog, followDeviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
 import { syncThreadWindow } from "./threadSync.js";
 import {
@@ -3656,12 +3656,26 @@ function mountRailOnContext(host, context, swap) {
   // that bridge's default, which is this answer's to give, so a paint that
   // lands before it holds the client's own first harness and moves when the
   // answer does.
-  Promise.all([deviceCatalog(context.deviceId), readProjectAgentSetting()]).then(([offered, setting]) => {
-    if (disposed) return;
+  // A machine that has not answered yet offers what it last offered, off disk,
+  // and its own answer replaces that when it lands: the rail follows it, and
+  // one heard before the first read settled is the one that stands.
+  let catalogSettled = false;
+  let catalogHeard = null;
+  const takeCatalog = (offered) => {
     catalog = offered;
-    projectAgentSetting = setting;
     seedNewAgentDefaults();
     paint();
+  };
+  const stopFollowingCatalog = followDeviceCatalog(context.deviceId, (held) => {
+    if (disposed || !held) return;
+    if (catalogSettled) takeCatalog(held);
+    else catalogHeard = held;
+  });
+  Promise.all([deviceCatalog(context.deviceId), readProjectAgentSetting()]).then(([offered, setting]) => {
+    if (disposed) return;
+    projectAgentSetting = setting;
+    catalogSettled = true;
+    takeCatalog(catalogHeard || offered);
   });
   // The elapsed-time clock: the one timer left on the rail, and it says nothing
   // about the wire — it is the "working for 4m" line counting.
@@ -3711,6 +3725,7 @@ function mountRailOnContext(host, context, swap) {
       clearInterval(statusTicker);
       statusTicker = null;
       usageLimitBanner.dispose();
+      stopFollowingCatalog();
       unsubscribePending();
       unsubscribeFeed();
       disposeTitleMotion();

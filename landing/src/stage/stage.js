@@ -97,6 +97,16 @@ function dressAluminium(material) {
   material.clearcoat = 0;
 }
 
+// The lid's rim frames the display and faces the key light, so at the
+// chassis finish it draws a white outline that pulls the eye off the screen.
+// It stays metal, darker and a touch rougher, so it reads as an edge.
+const LID_SHELL_NODE = "laptop_lid_shell";
+
+export function dressLidShell(material) {
+  material.color.setRGB(0.3, 0.31, 0.33);
+  material.roughness = 0.5;
+}
+
 // The trackpad is the same satin metal a shade darker, not a lacquered pad.
 function dressTrackpad(material) {
   material.color.setRGB(0.5, 0.51, 0.53);
@@ -215,6 +225,7 @@ function prepareModel(name, source, maximumAnisotropy) {
     }
     const materials = Array.isArray(node.material) ? node.material : [node.material];
     const clones = materials.map((material) => cloneDeviceSurfaceMaterial(material, maximumAnisotropy));
+    if (node.name === LID_SHELL_NODE) clones.forEach(dressLidShell);
     node.material = Array.isArray(node.material) ? clones : clones[0];
   });
   if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);

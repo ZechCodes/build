@@ -57,3 +57,12 @@ test("the trackpad is satin metal, not a lacquered pad", async () => {
   assert.equal(pad.metalness, 1);
   assert.equal(pad.clearcoat, 0);
 });
+
+test("the lid rim is darker than the chassis, so it frames the screen quietly", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  const chassis = stage.cloneDeviceSurfaceMaterial(new MeshPhysicalMaterial({ name: "SpaceBlackAluminum" }), 8);
+  const rim = chassis.clone();
+  stage.dressLidShell(rim);
+  assert.equal(rim.metalness, 1);
+  assert.ok(rim.color.r <= chassis.color.r * 0.5, `rim ${rim.color.r} vs chassis ${chassis.color.r}`);
+});

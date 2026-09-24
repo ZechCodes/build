@@ -72,6 +72,7 @@ import {
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
 import { mountUsageLimitBanner } from "./usageLimits.js";
+import { createTimelineSlice } from "./timelineSlice.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
 import { composerGaugeHtml, composerHtml, mountComposerModelMenu } from "./composer.js";
 import { mountContextGauge } from "./contextGauge.js";
@@ -103,10 +104,11 @@ import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
-  activityRunKeyAt,
+  activityRunDrawn,
   activityRunThroughAt,
   chatPaintFingerprint,
   createThreadCache,
+  cutRunKeyAt,
   digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
@@ -131,7 +133,7 @@ import {
 import { createActivityRuns } from "./activityRuns.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
 import { wireExpansionReveal } from "./revealExpanded.js";
-import { runDigestToFetch } from "./activityDigest.js";
+import { digestCovering, runDigestToFetch } from "./activityDigest.js";
 import { timedPaint } from "./paintTiming.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { mountAgentIssues } from "./trackerAgentIssuesEntry.js";
@@ -1056,7 +1058,13 @@ function mountRailOnContext(host, context, swap) {
   let reportedRead = 0; // how far this panel has told the daemon it read
   let reportedFloor = null; // and how much of the conversation it held saying so
   let paintedChat = null; // what the timeline in the panel was drawn from
+  let paintedChatContent = null; // drawn rows, including same-cursor edits
+  let paintedChatItemCount = 0;
   let paintedDigests = []; // the run totals that timeline was drawn with
+  let paintedEntryKeyOf = () => null; // which of its entries draws a sequence
+  // How much of the held conversation the timeline draws (#158): the newest
+  // entries, and more as the reader asks for them.
+  const timelineSlice = createTimelineSlice();
   let seededSurfaces = null;
   const chatOwnership = createRailChatOwnership(chatRepository, key, () => entity);
   // An optimistic agent is the provisional controller gaining a visible card,
@@ -1089,6 +1097,10 @@ function mountRailOnContext(host, context, swap) {
     onThreadSeeded: (seededFor) => {
       if (disposed) return;
       threadAgentId = seededFor;
+      // Edits and local delivery changes can keep the same cursor/count.
+      // Compare only the drawn tail, preserving the unchanged-record fast path.
+      if (paintedChat !== null && loadedConversationItems().length === paintedChatItemCount
+        && paintedChatContent !== drawnChatContent()) paintedChat = null;
       paintChat();
       // The line above the composer is drawn from the conversation too — what
       // the agent is doing, and what started it — so a window arriving moves
@@ -2337,6 +2349,54 @@ function mountRailOnContext(host, context, swap) {
     }
   };
 
+  /// Show the reader the conversation above what the timeline draws: the next
+  /// entries the cache holds, drawn at once, and once it holds no more, the
+  /// page above it from the bridge.
+  const showEarlierEntries = () => {
+    if (!timelineSlice.hasHiddenEntries()) {
+      readOlderItems();
+      return;
+    }
+    timelineSlice.showEarlier();
+    paintChat({ olderItemsPrepended: true });
+  };
+
+  /// Draw the timeline down to `sequence` if it stops short of it, so what is
+  /// about to be gone to — a deep link's row, a tick's message — is there.
+  ///
+  /// Whether it is drawn is whether the entry that owns it is: its own row, or
+  /// the run the held items say it is folded into. Never whether some drawn
+  /// run's numbers cover it, since a subagent's calls fold under the call that
+  /// spawned them wherever they land and one run's span can reach across
+  /// another's (#158).
+  const drawDownTo = (sequence) => {
+    const body = host.querySelector("#rail-body");
+    const wanted = Number(sequence);
+    if (!body || !Number.isFinite(wanted)) return;
+    const key = paintedEntryKeyOf(wanted);
+    if (key === null) {
+      drawDownToUnheld(body, wanted);
+      return;
+    }
+    if (!body.querySelector(`.thread-items > [data-key="${key}"]`)) reachDownTo(Number(key));
+  };
+
+  /// A sequence the window does not hold has no owner in hand to go by. It is a
+  /// row an open run fetched, or it sits in the cut half of a run whose digest
+  /// reaches back over it, or it is older than anything held and has no row to
+  /// draw down to.
+  const drawDownToUnheld = (body, wanted) => {
+    if (cutRunKeyAt(body, wanted) || body.querySelector(`.thread-items [data-sequence="${wanted}"]`)) return;
+    const heldFrom = threadCache.windowFloorSequence() ?? wanted;
+    if (wanted < heldFrom && !digestCovering(paintedDigests, wanted)) return;
+    reachDownTo(Math.max(wanted, heldFrom));
+  };
+
+  const reachDownTo = (sequence) => {
+    timelineSlice.reachDown(sequence);
+    paintChat({ olderItemsPrepended: true });
+  };
+
   const readOlderItems = async () => {
     const request = olderReadRequest();
     if (!request) return;
@@ -2347,6 +2407,9 @@ function mountRailOnContext(host, context, swap) {
     // The record is what the page went into; this is the paint that keeps the
     // reader's place as the history arrives above them.
     olderItemsAwaitingPaint = true;
+    // The page is above the floor of what is drawn, so it is shown as the next
+    // entries would have been from the cache.
+    timelineSlice.showEarlier();
     await bindConversationCache().reread();
     if (!disposed) paintChat({ olderItemsPrepended: true });
   };
@@ -2466,6 +2529,7 @@ function mountRailOnContext(host, context, swap) {
       unreadMarker = unreadMarkers.get(runsFor);
       reportedRead = 0;
       reportedFloor = null;
+      timelineSlice.reset();
     }
     return activityRuns;
   };
@@ -2507,6 +2571,15 @@ function mountRailOnContext(host, context, swap) {
   const deliveredSequenceOf = () => lastSequenceOf();
 
   const threadItems = (thread) => (thread && thread.items) || [];
+
+  const drawnChatContent = () => {
+    const floor = timelineSlice.drawnFloor();
+    const drawn = loadedConversationItems().filter((item) => {
+      const sequence = Number(item.data?.sequence ?? NaN);
+      return floor === null || !Number.isFinite(sequence) || sequence >= floor;
+    });
+    return JSON.stringify(drawn);
+  };
 
   /** Where this rail is standing, for the links a message from another agent
    *  carries: the machine the conversation is held on, and the project whose
@@ -2581,6 +2654,7 @@ function mountRailOnContext(host, context, swap) {
       detailLevel: detailLevel(),
       agentLabels: agentLabelsSignature(),
       refLinks: refLinksSignature(),
+      slice: `${timelineSlice.signature()}:${threadCache.hasOlderItems()}`,
       ...threadOfferState(threadState),
     });
   };
@@ -2597,9 +2671,12 @@ function mountRailOnContext(host, context, swap) {
     const runs = conversationRuns();
     // Keep the visit marker stable as daemon read cursors catch up.
     unreadFrom = unreadLineFor(thread);
+    // Every open is a first paint: whatever the reader showed last time, the
+    // panel opens on the newest entries, so the animation never carries more.
+    const opening = !body.querySelector(".thread-items");
+    if (opening) timelineSlice.reset();
     const fingerprint = chatFingerprintOf(thread, agentLabel);
-    if (fingerprint === paintedChat && body.querySelector(".thread-items")) return;
-    paintedChat = fingerprint;
+    if (fingerprint === paintedChat && !opening) return;
     paintedDigests = digestsOf(thread);
     // The conversation an option reply is keyed under: the controller's, since
     // the record holds the window and not the name of the thread it is over.
@@ -2620,7 +2697,16 @@ function mountRailOnContext(host, context, swap) {
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,
+      slice: timelineSlice.request(),
+      olderOnBridge: threadCache.hasOlderItems(),
     });
+    timelineSlice.settle(built.sliced);
+    paintedEntryKeyOf = built.entryKeyOf;
+    // Taken after the slice settles, so the floor it settled on is not news to
+    // the next tick.
+    paintedChat = chatFingerprintOf(thread, agentLabel);
+    paintedChatItemCount = held.length;
+    paintedChatContent = drawnChatContent();
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
     timedPaint("chat", () => {
@@ -2656,7 +2742,7 @@ function mountRailOnContext(host, context, swap) {
     wireReaderMotion(body);
     body.onscroll = () => {
       if (!panelVisible) return;
-      if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
+      if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) showEarlierEntries();
       scheduleUserMessageTickSync(body);
       reportRead(body);
     };
@@ -2855,7 +2941,11 @@ function mountRailOnContext(host, context, swap) {
     // wrote, and a run that opens onto rows it has to fetch cannot be a fold
     // two writers share.
     body.onclick = (event) => {
-      if (jumpToUserMessage(event)) return;
+      if (jumpToUserMessage(event, { reveal: drawDownTo })) return;
+      if (event.target.closest?.(".thread-earlier")) {
+        showEarlierEntries();
+        return;
+      }
       const runKey = pressedActivityRunKey(event.target);
       if (!runKey) return;
       event.preventDefault();
@@ -2922,15 +3012,25 @@ function mountRailOnContext(host, context, swap) {
   /// waited for: the half of a cut run the window never held is a fetch away,
   /// and reaching for the row before it lands finds nothing.
   const openRunHolding = async (body, sequence) => {
-    const runKey = activityRunKeyAt(body, sequence);
+    const runKey = runKeyHolding(body, sequence);
     if (!runKey || conversationRuns().isOpen(runKey)) return;
     await pressActivityRun(runKey);
+  };
+
+  /// The run a sequence is folded into: the one the held items say owns it,
+  /// or, for a sequence they do not hold, the run whose cut half reaches over
+  /// it. Nothing for a sequence that is a row of its own.
+  const runKeyHolding = (body, sequence) => {
+    const key = paintedEntryKeyOf(Number(sequence));
+    if (key === null) return cutRunKeyAt(body, sequence);
+    return activityRunDrawn(body, key) ? key : null;
   };
 
   const surfaceViewerCallbacks = () => ({
     modelLabel: surfaceModelLabel,
     onOpenThreadItem: async (sequence) => {
       const body = host.querySelector("#rail-body");
+      drawDownTo(sequence);
       await openRunHolding(body, sequence);
       if (revealThreadSequence(body, sequence)) return;
       notifyError(
@@ -3139,7 +3239,9 @@ function mountRailOnContext(host, context, swap) {
     if (!agent || !agent.unread_count) return;
     const controller = controllerForAgent(agent);
     if (!controller.identity.entityId || !controller.identity.agentId) return;
-    const floor = threadCache.windowFloorSequence();
+    // The floor is where what the reader was shown starts: the top of the drawn
+    // slice when it cuts the window, else the window's own.
+    const floor = timelineSlice.drawnFloor() ?? threadCache.windowFloorSequence();
     if (!readingIsNews(read, floor)) return;
     reportedRead = read;
     reportedFloor = floor;

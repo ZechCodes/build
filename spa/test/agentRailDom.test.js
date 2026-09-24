@@ -2520,6 +2520,11 @@ describe("the conversation panel", () => {
         calls.push({ method, params });
         return new Promise(() => {});
       }
+      if (method === "thread.post") {
+        calls.push({ method, params });
+        // Each accepted send has its own sequence, as on the real bridge.
+        return { posted_sequence: 6 + callsTo("thread.post").length };
+      }
       return answering(method, params);
     });
 
@@ -5647,5 +5652,420 @@ describe("the models a machine that has not answered yet offers", () => {
     await land(standIn);
     expect(callsTo("models.list")).toHaveLength(1);
     expect(offeredModels()).toContain("model:claude-opus-5");
+  });
+});
+
+// A conversation the reader has read far back into is held whole in the cache,
+// and the panel used to draw every entry of it on open, inside the opening
+// animation (#158). It draws the newest entries now, and more as asked.
+describe("a long conversation held in the cache", () => {
+  const HELD = 500;
+  const said = (sequence, role = "agent") => ({
+    type: "message",
+    data: { sequence, id: `m-${sequence}`, role, body: `said ${sequence}` },
+  });
+  /** Every tenth message is the reader's, so there are ticks above the slice. */
+  const held = (count = HELD) => Array.from({ length: count }, (_, index) =>
+    said(index + 1, index % 10 === 0 ? "user" : "agent"));
+  const heldConversation = (hasMore = false, agents = [agent()]) => {
+    payload = branchRow({
+      agents,
+      run: {
+        run_id: "run-3",
+        thread: { sessions: [], items: held(), has_more: hasMore, thread_total: HELD, thread_last_sequence: HELD },
+      },
+    });
+  };
+  const railBody = () => railHost().querySelector("#rail-body");
+  const timelineRows = () => [...railHost().querySelectorAll(".thread-items > [data-key]")];
+  const drawnSequences = () => [...railHost().querySelectorAll(".thread-items > [data-sequence]")]
+    .map((row) => Number(row.dataset.sequence));
+  const earlierRow = () => railHost().querySelector(".thread-items .thread-earlier");
+
+  it("paints the newest entries and a row above them, not everything it holds", async () => {
+    heldConversation();
+    await mount();
+
+    // Sixty entries and the one chrome row above them.
+    expect(timelineRows().length).toBeLessThanOrEqual(61);
+    expect(drawnSequences().at(-1)).toBe(HELD);
+    expect(drawnSequences()[0]).toBe(HELD - 59);
+    expect(earlierRow().textContent).toBe("Show earlier messages");
+  });
+
+  it("appends what a push brings without dropping the top of what is drawn", async () => {
+    heldConversation();
+    await mount();
+    const top = drawnSequences()[0];
+
+    await pushRailThreadItems("run-3", "ag-1", [said(HELD + 1), said(HELD + 2)]);
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(top);
+    expect(drawnSequences().at(-1)).toBe(HELD + 2);
+    expect(drawnSequences()).toHaveLength(62);
+  });
+
+  it("keeps the expanded slice while a pending send settles and its echo arrives", async () => {
+    heldConversation();
+    await mount();
+    earlierRow().click();
+    await flush();
+    const first = timelineRows()[1];
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const { writeProvisionalMessage, acknowledgeProvisionalMessage } = await import("../src/core/conversationCache.js");
+    await writeProvisionalMessage(address, "settling-send", { body: "pending send" });
+    await flush();
+    await pushRailThreadItems("run-3", "ag-1", [said(502)]);
+    await flush();
+    await acknowledgeProvisionalMessage(address, "settling-send", 501, "sent");
+    await flush();
+    expect(drawnSequences()).toEqual(Array.from({ length: 122 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+    const echo = said(501, "user");
+    Object.assign(echo.data, { operation_id: "settling-send", body: "confirmed send", delivery_status: "seen" });
+    await pushRailThreadItems("run-3", "ag-1", [echo]);
+    await flush();
+    expect(drawnSequences()).toEqual(Array.from({ length: 122 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+    expect(railBody().textContent).toContain("confirmed send");
+    expect(railBody().textContent).not.toContain("pending send");
+  });
+
+  it("repaints edits and delivery changes without losing revealed rows", async () => {
+    heldConversation();
+    await mount();
+    earlierRow().click();
+    await flush();
+    const first = timelineRows()[1];
+    const edit = said(490);
+    edit.data.body = "edited drawn message";
+    await pushRailThreadItems("run-3", "ag-1", [edit]);
+    await flush();
+    expect(railBody().textContent).toContain("edited drawn message");
+    const delivery = said(491, "user");
+    delivery.data.delivery_status = "queued";
+    await pushRailThreadItems("run-3", "ag-1", [delivery]);
+    await flush();
+    expect(railBody().querySelector('[data-sequence="491"] [data-delivery-status="queued"]')).not.toBeNull();
+    delivery.data.delivery_status = "seen";
+    await pushRailThreadItems("run-3", "ag-1", [delivery]);
+    await flush();
+    expect(railBody().querySelector('[data-sequence="491"] [data-delivery-status="seen"]')).not.toBeNull();
+    expect(drawnSequences()).toEqual(Array.from({ length: 120 }, (_, i) => i + 381));
+    expect(timelineRows()[1]).toBe(first);
+  });
+
+  it("opens synchronously from held cache without reading connection state or waiting for the bridge", async () => {
+    heldConversation();
+    await mount();
+    // The pinned panel can be shut and reopened while its conversation stays
+    // in memory. The bubble's click must paint before returning to the caller.
+    bubbles()[0].click();
+    await flush();
+    // Discard the previous frame so the assertion requires a fresh paint.
+    railBody().replaceChildren();
+    expect(drawnSequences()).toHaveLength(0);
+    const reads = vi.fn(() => { throw new Error("paint read connection state"); });
+    const { existingDeviceLifecycle } = await import("../src/core/deviceContexts.js");
+    const snapshot = vi.spyOn(existingDeviceLifecycle("dev-1"), "snapshot").mockImplementation(reads);
+    bridge.call = vi.fn(() => new Promise(() => {}));
+    try {
+      bubbles()[0].click();
+      expect(drawnSequences()).toHaveLength(60);
+      expect(drawnSequences()[0]).toBe(441);
+      expect(reads).not.toHaveBeenCalled();
+      expect(callsTo("thread.page")).toEqual([]);
+    } finally {
+      snapshot.mockRestore();
+    }
+  });
+
+  it("shows the next entries from the cache when pressed, asking the bridge nothing", async () => {
+    heldConversation(true);
+    await mount();
+
+    earlierRow().click();
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(HELD - 119);
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("shows the next entries from the cache when the reader scrolls to the top", async () => {
+    heldConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(HELD - 119);
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("falls through to the page above once the cache is drawn to its start", async () => {
+    heldConversation(true);
+    await mount();
+
+    for (let press = 0; press < 10 && drawnSequences()[0] !== 1; press += 1) {
+      earlierRow().click();
+      await flush();
+    }
+    expect(drawnSequences()).toHaveLength(HELD);
+    expect(callsTo("thread.page")).toEqual([]);
+
+    earlierRow().click();
+    await flush();
+
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", before_sequence: 1 },
+    ]);
+  });
+
+  it("draws no row above a conversation it holds from its start", async () => {
+    payload = branchRow({
+      run: { run_id: "run-3", thread: { sessions: [], items: held(40), has_more: false, thread_total: 40 } },
+    });
+    await mount();
+
+    expect(drawnSequences()).toHaveLength(40);
+    expect(earlierRow()).toBeNull();
+  });
+
+  it("draws down to a call a surface points at above the slice, then goes to it", async () => {
+    heldConversation(false, [agent({
+      surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] },
+    })]);
+    await mount();
+    expect(railHost().querySelector('[data-sequence="12"]')).toBeNull();
+    const scrollTo = railBody().scrollTo;
+    scrollTo.mockClear();
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items [data-sequence="12"]')).not.toBeNull();
+    expect(drawnSequences().at(-1)).toBe(HELD);
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it("maps every message of the reader's in the tick column, and a tick above the slice draws down to it", async () => {
+    heldConversation();
+    await mount();
+    const ticks = railHost().querySelector(".thread-user-nav-source").content.children;
+    expect(ticks).toHaveLength(HELD / 10);
+
+    // The first tick is the reader's first message, far above the slice.
+    const list = railHost().querySelector(".thread-user-nav-list");
+    list.dataset.windowStart = "";
+    railHost().querySelector(".thread-user-nav-list").replaceChildren(ticks[0].cloneNode(true));
+    list.querySelector(".thread-user-tick").click();
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(1);
+  });
+
+  it("rules the unread line in, however far above the slice it falls", async () => {
+    heldConversation(false, [agent({ unread_count: 450, read_through_sequence: 50 })]);
+    await mount();
+
+    // The line stands above the first agent message past the cursor, which is
+    // hundreds of entries above where the slice would otherwise stop.
+    const line = railHost().querySelector(".thread-unread-line");
+    expect(line).not.toBeNull();
+    expect(Number(line.closest("[data-key]").nextElementSibling.dataset.sequence)).toBe(52);
+    expect(drawnSequences()[0]).toBeLessThanOrEqual(52);
+  });
+
+  it("reports read from the top of what it drew, not the top of what it holds", async () => {
+    heldConversation(false, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: HELD - 1 })]);
+    await mount();
+
+    const [[, , floor]] = markSeen.mock.calls;
+    expect(floor).toBe(drawnSequences()[0]);
+  });
+});
+
+// A subagent's calls fold under the call that spawned it wherever they land,
+// so one run's span can reach across another's. Which run a call is in is what
+// the held items say owns it, never which drawn run's numbers cover it (#158).
+describe("a deep link to a call another run reaches across", () => {
+  const said = (sequence) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body: `said ${sequence}` } });
+  const call = (sequence, parent_sequence) => ({ type: "event", data: { sequence, parent_sequence, event: "tool_use", summary: `call ${sequence}` } });
+  const saidFrom = (from, through) => Array.from({ length: through - from + 1 }, (_, index) => said(from + index));
+  const pointingAt = (callSequence, items) => {
+    const last = items[items.length - 1].data.sequence;
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "child call", state: "running", call_sequence: callSequence }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: items.length, thread_last_sequence: last } },
+    });
+  };
+  const pressSurface = async () => {
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+  };
+
+  // Astra's reproduction from the #158 review: the slice draws run 90, whose
+  // span reaches 110, and hides run 1, which owns 100.
+  it("draws down to the hidden run that owns a call, past a drawn run whose span covers it", async () => {
+    pointingAt(100, [call(1), ...saidFrom(2, 89), call(90), ...saidFrom(91, 99), call(100, 1), ...saidFrom(101, 109), call(110, 90), ...saidFrom(111, 150)]);
+    await mount();
+    expect(railHost().querySelector('.thread-items > [data-key="90"]')).not.toBeNull();
+    expect(railHost().querySelector('.thread-items > [data-key="1"]')).toBeNull();
+
+    await pressSurface();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items > [data-key="1"][open] [data-sequence="100"]')).not.toBeNull();
+  });
+
+  it("opens the run that owns a call, not an older drawn run whose span covers it", async () => {
+    pointingAt(110, [call(1), said(2), call(90), said(91), call(110, 90), said(111), call(120, 1), said(121)]);
+    await mount();
+
+    await pressSurface();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items > [data-key="90"][open] [data-sequence="110"]')).not.toBeNull();
+    expect(railHost().querySelector('.thread-items > [data-key="1"]').open).toBe(false);
+  });
+
+  it("opens no run for a call the window never held, whatever drawn run's span covers it", async () => {
+    pointingAt(95, [call(1), said(2), call(90), said(91), call(110, 90), said(111)]);
+    await mount();
+
+    await pressSurface();
+
+    expect(railHost().querySelector('.thread-items > [data-key="90"]').open).toBe(false);
+    expect(notifyError).toHaveBeenCalledWith("That call is not in the loaded conversation", expect.any(String));
+  });
+});
+
+describe("a deep link past everything the cache holds", () => {
+  const said = (sequence) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body: `said ${sequence}` } });
+
+  it("draws nothing more for a call the cache never held, and says so", async () => {
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] } })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: Array.from({ length: 300 }, (_, index) => said(index + 101)),
+          has_more: true,
+          thread_total: 400,
+          thread_last_sequence: 400,
+        },
+      },
+    });
+    await mount();
+    const drawn = railHost().querySelectorAll(".thread-items > [data-sequence]").length;
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(railHost().querySelectorAll(".thread-items > [data-sequence]")).toHaveLength(drawn);
+    expect(notifyError).toHaveBeenCalledWith("That call is not in the loaded conversation", expect.any(String));
+  });
+
+  // Astra's reproduction from the #158 review: the call a subagent's row points
+  // at is folded under the call that spawned it, and that call's run sits above
+  // the slice. The slice reaches the run, which is the entry that draws it.
+  it("reaches a call folded under a run above the slice, and opens the run on it", async () => {
+    const items = [
+      { type: "event", data: { sequence: 1, event: "tool_use", summary: "Task(parent)" } },
+      { type: "event", data: { sequence: 2, parent_sequence: 1, event: "tool_use", summary: "Read child.js" } },
+      ...Array.from({ length: 100 }, (_, index) => said(index + 3)),
+    ];
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "child call", state: "running", call_sequence: 2 }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 102, thread_last_sequence: 102 } },
+    });
+    await mount();
+    expect(railHost().querySelector('.thread-items [data-sequence="1"]')).toBeNull();
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items [data-sequence="2"]')).not.toBeNull();
+  });
+});
+
+// Astra's round-three reproduction: the actual provisional cache write must
+// append to the 120 rows the reader revealed, preserving their first element.
+describe("review158 provisional append", () => {
+  it("keeps the expanded slice while a just-sent message awaits its sequence", async () => {
+    const items = Array.from({ length: 500 }, (_, i) => ({
+      type: "message", data: { sequence: i + 1, id: `provisional-review-${i + 1}`, role: "agent", body: `said ${i + 1}` },
+    }));
+    payload = branchRow({ run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 500, thread_last_sequence: 500 } } });
+    await mount();
+    railHost().querySelector(".thread-earlier").click();
+    await flush();
+    const rows = () => [...railHost().querySelectorAll(".thread-items > .thread-message")];
+    const before = rows();
+    const first = before[0].dataset.sequence;
+    expect(before).toHaveLength(120);
+    expect(first).toBe("381");
+    const { writeProvisionalMessage } = await import("../src/core/conversationCache.js");
+    await writeProvisionalMessage({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" }, "review-pending-send", { body: "pending send" });
+    await flush();
+    expect(rows().some((row) => row.textContent.includes("pending send"))).toBe(true);
+    expect(rows()[0].dataset.sequence).toBe(first);
+    expect(rows()).toHaveLength(before.length + 1);
+    expect(rows()[0]).toBe(before[0]);
+  });
+});
+
+// The additional ownership cases from Astra's third-round review harness.
+describe("review158 independent ownership cases", () => {
+  const msg = (sequence) => ({ type: "message", data: { sequence, id: `nested-${sequence}`, role: "agent", body: `said ${sequence}` } });
+  const call = (sequence, parent_sequence) => ({ type: "event", data: { sequence, parent_sequence, event: "tool_use", summary: `call ${sequence}` } });
+  const range = (from, through) => Array.from({ length: through - from + 1 }, (_, i) => msg(from + i));
+  const pointing = (target, items, digests = []) => {
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "nested call", state: "running", call_sequence: target }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, activity_digests: digests, thread_total: items.length, thread_last_sequence: items.at(-1).data.sequence } },
+    });
+  };
+  const press = async () => {
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+  };
+
+  it("resolves a hidden nested owner whose top-level call is not first in its run", async () => {
+    pointing(120, [call(1), call(2), ...range(3, 89), call(90), ...range(91, 99), call(100, 2), ...range(101, 109), call(110, 90), ...range(111, 119), call(120, 100), ...range(121, 160)]);
+    await mount();
+    await press();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="120"]')).not.toBeNull();
+  });
+
+  it("resolves a top-level call within a hidden multievent run", async () => {
+    pointing(2, [call(1), call(2), ...range(3, 130)]);
+    await mount();
+    await press();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('[data-key="1"][open] [data-sequence="2"]')).not.toBeNull();
+  });
+
+  it("reveals a hidden cut run then fetches its omitted prefix", async () => {
+    pointing(12, [msg(1), call(50), ...range(51, 160)], [{ from_sequence: 10, through_sequence: 50, tool_calls: 41, rows: 41, last_tool_call: null }]);
+    const previous = bridge.call.getMockImplementation();
+    bridge.call.mockImplementation(async (method, params) => method === "thread.activity"
+      ? { items: [call(12), call(50)], oldest_sequence: 12, has_more: false } : previous(method, params));
+    await mount();
+    await press();
+    // Opening this run reads another cache record after the bridge replies.
+    // Wait for that observable result, rather than a fixed number of turns.
+    await vi.waitFor(() => expect(railHost().querySelector('[data-key="50"][open] [data-sequence="12"]')).not.toBeNull());
+    expect(notifyError).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,7 @@ import { followConversation, paintKeepingPlace } from "./paintKeepingPlace.js";
 import { paintRunsShowingLatest } from "./activityRunScroll.js";
 import { EVENT_META, eventLabel, isStartupEvent } from "./threadEvents.js";
 import { activityRunSummary, digestCovering, firstLine, mergeActivityDigests } from "./activityDigest.js";
+import { EARLIER_ENTRY, sliceTimeline } from "./timelineSlice.js";
 import {
   autoGrow,
   composerHtml,
@@ -1067,22 +1068,21 @@ function messageHtml(message, agentLabel, context) {
   </article>`;
 }
 
+/** One formatter for every tick: `toLocaleString` stands a new one up per
+ *  call, which on a conversation with a thousand of the reader's messages was
+ *  most of what a paint cost. */
+const TICK_TIME = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" });
+
 function userMessageTickHtml({ key, message, index }) {
   const date = new Date(message.created_at || "");
-  const when = Number.isNaN(date.getTime()) ? "an earlier time" : date.toLocaleString("en-US", {
-    dateStyle: "medium", timeStyle: "short",
-  });
+  const when = Number.isNaN(date.getTime()) ? "an earlier time" : TICK_TIME.format(date);
   return `<button type="button" class="thread-user-tick" data-key="${esc(key)}" data-user-tick-index="${index}" aria-label="Jump to your message from ${esc(when)}"><span aria-hidden="true"></span></button>`;
 }
 
 const USER_TICK_WINDOW = 12;
 
-const userMessageTicks = (built) => built.entries
-  .filter(({ item }) => item?.type === "message" && isReaderMessage(item.data))
-  .map(({ key, item }, index) => ({ key, message: item.data, index }));
-
 const userMessageNavHtml = (built) => {
-  const ticks = userMessageTicks(built);
+  const ticks = built.userTicks;
   // The template is the cache-backed source for windows reached by scrolling.
   // Its contents are inert: only the first twelve buttons are painted.
   return `<nav class="thread-user-nav" aria-label="Your messages"><template class="thread-user-nav-source">${ticks
@@ -1142,10 +1142,19 @@ export function syncUserMessageTicks(scroller) {
   const scrollPadding = Number.parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
   const boundary = scroller.getBoundingClientRect().top + scrollPadding;
   const rows = timeline.querySelectorAll(":scope > .thread-message.user");
-  const previous = nearestUserMessageIndex(rows, boundary);
-  paintUserTickWindow(list, source, userTickWindowStart(rows.length, previous));
+  // The ticks map every message the conversation holds and the rows are the
+  // drawn slice of them, whose top is cut (core/timelineSlice.js): the first
+  // row drawn is tick `above`, and above the first row is the tick before it.
+  const above = ticksAboveTheSlice(source, rows);
+  const previous = above + nearestUserMessageIndex(rows, boundary);
+  paintUserTickWindow(list, source, userTickWindowStart(source.childElementCount, previous));
   markNearestUserTick(list, previous);
 }
+
+/// How many of the reader's messages sit above the drawn slice: the ticks there
+/// are no rows for. They are all above it, because a slice only ever cuts the
+/// top of a conversation.
+const ticksAboveTheSlice = (source, rows) => Math.max(0, source.childElementCount - rows.length);
 
 const pendingTickSyncs = new WeakSet();
 
@@ -1164,17 +1173,39 @@ export function scheduleUserMessageTickSync(scroller) {
   });
 }
 
+/// The drawn row of the reader's message a tick stands for, if it is drawn.
+function userMessageRowOf(thread, index) {
+  const rows = thread.querySelectorAll(".thread-items > .thread-message.user");
+  const source = thread.querySelector(".thread-user-nav-source")?.content;
+  const above = source ? ticksAboveTheSlice(source, rows) : 0;
+  return rows[index - above] || null;
+}
+
 /** Called by the rail's delegated click handler so a repainted tick needs no
- * per-node listener. The button remains keyboard-operable by the browser. */
-export function jumpToUserMessage(event) {
+ * per-node listener. The button remains keyboard-operable by the browser.
+ *
+ * A tick for a message above the drawn slice has no row yet: `reveal(key)` is
+ * the caller drawing the slice down to that message, after which the row is
+ * there to go to. */
+export function jumpToUserMessage(event, { reveal = null } = {}) {
   const tick = event.target.closest?.(".thread-user-tick");
-  if (!tick) return false;
-  const index = Number(tick.dataset.userTickIndex);
-  const row = tick.closest(".review-thread")?.querySelectorAll(".thread-items > .thread-message.user")[index];
+  const thread = tick?.closest(".review-thread");
+  if (!thread) return false;
+  const row = userMessageRowDrawn(thread, tick, reveal);
   if (!row) return false;
-  const scroller = tick.closest(".rail-body, #tabbody") || tick.closest(".review-thread")?.parentElement;
+  const scroller = tick.closest(".rail-body, #tabbody") || thread.parentElement;
   if (scroller) scrollWithin(scroller, row);
   return true;
+}
+
+/// A tick's row, drawn down to first when it is above the slice and the caller
+/// can draw it.
+function userMessageRowDrawn(thread, tick, reveal) {
+  const index = Number(tick.dataset.userTickIndex);
+  const row = userMessageRowOf(thread, index);
+  if (row || !reveal) return row;
+  reveal(tick.dataset.key);
+  return userMessageRowOf(thread, index);
 }
 
 
@@ -1289,27 +1320,37 @@ export function pressedActivityRunKey(target) {
   return run && run.hasAttribute(ACTIVITY_RUN_ATTRIBUTE) ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
 }
 
-const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
+const runSpanAttribute = (run, name) => Number(run.getAttribute(name) ?? NaN);
 
-/// The run a sequence is folded into, or nothing when the row stands on its
-/// own. A reference from elsewhere in the app (a subagent row naming the call
-/// that spawned it) points at a sequence, and a shut run holds no row to point
-/// at — so the run is opened first, and this is what says which one.
+/// The run whose cut half reaches over a sequence the window never held, or
+/// nothing.
 ///
-/// The span it matches on is the DIGEST's, which reaches back over the half of
-/// a run the page cut away; the key it answers with is the run's, which is the
-/// oldest sequence the window holds. Matching on the key instead would miss
-/// every call that never travelled — exactly the ones a press has to fetch.
-export function activityRunKeyAt(scroller, sequence) {
-  const wanted = Number(sequence);
+/// A reference from elsewhere in the app (a subagent row naming the call that
+/// spawned it) can point into the half of a run a page cut away, and no item in
+/// hand says what owns it: the parent link is on the item that never travelled.
+/// The run's DIGEST is the only word on it, and its span reaches back from the
+/// run's key, the oldest sequence the window holds, to where the run started.
+/// That stretch is all this matches. The bridge cuts runs from consecutive
+/// sequences, so no two runs' cut halves overlap.
+///
+/// A sequence the window does hold is found by what owns it (`entryKeyOf` on
+/// `timelineEntries`), never by which run's numbers cover it: a subagent's calls
+/// fold under the call that spawned them wherever they land, so one run's span
+/// can reach across another's (#158).
+export function cutRunKeyAt(scroller, sequence) {
+  const wanted = Number(sequence ?? NaN);
   if (!scroller || !Number.isFinite(wanted)) return null;
   const run = [...scroller.querySelectorAll(`[${ACTIVITY_RUN_ATTRIBUTE}]`)].find(
     (element) =>
       runSpanAttribute(element, ACTIVITY_RUN_FROM_ATTRIBUTE) <= wanted &&
-      runSpanAttribute(element, ACTIVITY_RUN_THROUGH_ATTRIBUTE) >= wanted,
+      wanted < runSpanAttribute(element, ACTIVITY_RUN_ATTRIBUTE),
   );
   return run ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
 }
+
+/// Whether the run keyed `runKey` has a box on the timeline.
+export const activityRunDrawn = (scroller, runKey) =>
+  !!(scroller && scroller.querySelector(`[${ACTIVITY_RUN_ATTRIBUTE}="${runKey}"]`));
 
 /// The newest sequence a run's box stands for — its own rows and the calls they
 /// fold — read back off the document, and 0 for a run that is not drawn.
@@ -1382,8 +1423,8 @@ function rowReachesSequence(row) {
 /// keeps its identity — and with it, the scroll position inside the box they
 /// opened. It carries the whole span it stands for as well — the digest's, so
 /// the half a page cut away is inside it — which is how a reference from
-/// somewhere else in the app finds the run a call is folded into without
-/// opening every one of them (`activityRunKeyAt`).
+/// somewhere else in the app finds the run a call the window never held is cut
+/// into, without opening every one of them (`cutRunKeyAt`).
 ///
 /// The fold is the render's to write: `RENDERED_FOLD_ATTRIBUTE` tells the patch
 /// so, and the pane cancels the press's own activation, so `open` says what the
@@ -1440,10 +1481,14 @@ function runSpan(run, digests) {
   return { key, from: digest ? digest.from_sequence : key, through: runThroughSequence(run) };
 }
 
+/// A run as one entry. A shut run is its head and nothing else: the rows it
+/// folds are built when it opens, not before (#158).
 function runEntry(run, digests, view) {
   const key = run[0].key;
-  const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
-  return { key, html: activityRunHtml(runSpan(run, digests), activityRunSummary(digests, run), children) };
+  return withLazyHtml({ key }, () => {
+    const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
+    return activityRunHtml(runSpan(run, digests), activityRunSummary(digests, run), children);
+  });
 }
 
 /// Fold every maximal run of consecutive activity into one entry apiece, and
@@ -1462,7 +1507,7 @@ function foldActivityRuns(rows, digests, view) {
       continue;
     }
     closeRun();
-    entries.push({ key: row.key, html: row.html, item: row.item });
+    entries.push(row);
   }
   closeRun();
   return entries;
@@ -1542,11 +1587,25 @@ function threadFolding(items, agentLabel) {
     standingFor(item, new Set())
       .filter((held) => (held.data || {}).event === TOOL_CALL_KIND)
       .map(callOf);
-  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder };
+  const parentBySequence = new Map(foldingChildren
+    .filter((item) => Number.isFinite(sequenceOf(item)))
+    .map((item) => [sequenceOf(item), parentSequenceOf(item)]));
+  /// The sequence of the row a sequence is drawn under: its own, unless it is
+  /// folded under a call, and then that call's row, at whatever depth.
+  const ownerSequenceOf = (sequence) => {
+    const walked = new Set();
+    let at = sequence;
+    while (parentBySequence.has(at) && !walked.has(at)) {
+      walked.add(at);
+      at = parentBySequence.get(at);
+    }
+    return at;
+  };
+  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder, ownerSequenceOf };
 }
 
 export function revealThreadSequence(scroller, sequence) {
-  const wanted = Number(sequence);
+  const wanted = Number(sequence ?? NaN);
   if (!scroller || !Number.isFinite(wanted)) return false;
   const row = scroller.querySelector(`[data-sequence="${wanted}"]`);
   if (!row) return false;
@@ -1566,17 +1625,29 @@ export function revealThreadSequence(scroller, sequence) {
 /// row) falls back to where the item sits.
 const rowKey = (data, index) => String(data.sequence ?? `at-${index}`);
 
+/// A row whose html is written the first time something reads it.
+///
+/// A long conversation is thousands of rows and the panel draws the newest few
+/// dozen of them (core/timelineSlice.js), and a shut run draws none of the rows
+/// it folds — so the markup, which is most of what a row costs, is only built
+/// for the rows a paint actually shows (#158). Read once, it is kept.
+function withLazyHtml(row, build) {
+  let html = null;
+  return Object.defineProperty(row, "html", {
+    enumerable: true,
+    get: () => (html ??= build()),
+  });
+}
+
 function activityRow(item, index, agentLabel, folding) {
   const event = item.data || {};
   const meta = activityMetaOf(event);
-  const row = {
-    key: rowKey(event, index),
-    item,
-    html: eventHtml(event, agentLabel, folding.foldedChildrenHtmlOf(event.sequence)),
-  };
+  const row = withLazyHtml(
+    { key: rowKey(event, index), item },
+    () => eventHtml(event, agentLabel, folding.foldedChildrenHtmlOf(event.sequence)),
+  );
   if (!meta) return row;
-  return {
-    ...row,
+  return Object.assign(row, {
     activity: {
       icon: meta.icon,
       sequence: event.sequence,
@@ -1589,24 +1660,28 @@ function activityRow(item, index, agentLabel, folding) {
       rows: folding.rowsUnder(item),
       toolCalls: folding.toolCallsUnder(item),
     },
-  };
+  });
 }
 
 /// A message's row, or no row at all for the two the timeline does not draw.
 ///
 /// `spoken` is whether this is the last thing said, which is the whole of
 /// whether its offer can still be answered.
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, refLinks }) {
-  const message = item.data || {};
+/// The two messages the timeline does not draw.
+const drawsNoRow = (message) =>
   // Old bridges persisted the noisy structured handoff as a chat message.
-  if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
+  (message.source === "completion" && String(message.body || "").includes("Completion report"))
   // A choice is drawn on the chips that offered it, so the message it sent
   // would be the same words a second time.
-  if (message.answers_options_of) return [];
+  || !!message.answers_options_of;
+
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, refLinks }) {
+  const message = item.data || {};
+  if (drawsNoRow(message)) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
   const context = { live, offer, threadState, place, agentLabels, refLinks };
-  return [{ key: rowKey(message, index), item, html: messageHtml(message, agentLabel, context) }];
+  return [withLazyHtml({ key: rowKey(message, index), item }, () => messageHtml(message, agentLabel, context))];
 }
 
 /// Every top-level row a set of items draws, in order.
@@ -1616,7 +1691,14 @@ function messageRow(item, index, agentLabel, { threadId, spoken, threadState, pl
 /// message are drawn on other rows instead. Used for the conversation itself
 /// and for the children of an open run, so a fetched run's rows are the rows
 /// the window would have drawn for the same items.
-function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place, agentLabels, refLinks }) {
+function timelineRowsOf(sourceItems, agentLabel, threadId, view) {
+  return rowsOfTimeline(timelineOf(sourceItems, agentLabel), 0, threadId, view);
+}
+
+/// The items that stand as rows of their own, read without drawing any: what
+/// is left once startup noise is dropped and the rows folded under the call
+/// that spawned them are taken out.
+function timelineOf(sourceItems, agentLabel) {
   const items = sourceItems.filter((item) => !isStartupEvent(item));
   const folding = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !folding.foldedItems.has(item));
@@ -1624,12 +1706,83 @@ function timelineRowsOf(sourceItems, agentLabel, threadId, { threadState, place,
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
   const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
-  return topLevelItems.flatMap((item, index) =>
-    item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, refLinks })
-      : [activityRow(item, index, agentLabel, folding)],
-  );
+  return { agentLabel, folding, topLevelItems, lastSpoken };
 }
+
+/// The rows of a timeline from its top-level item `from` on. Keyed by where
+/// each item sits in the whole timeline, so a row drawn from a slice is the row
+/// the whole would have drawn.
+function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from, threadId, view) {
+  const { threadState, place, agentLabels, refLinks } = view;
+  return topLevelItems.slice(from).flatMap((item, offset) => {
+    const index = from + offset;
+    return item.type === "message"
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, refLinks })
+      : [activityRow(item, index, agentLabel, folding)];
+  });
+}
+
+/// A pending row's paint identity survives its acknowledgement and real echo.
+const sliceAnchor = (data, index) => {
+  if (data.operation_id) return `operation:${data.operation_id}`;
+  if (data.id) return `message:${data.id}`;
+  return rowKey(data, index);
+};
+
+/// Where each entry of a timeline starts, and the span of the conversation it
+/// stands for, read off the items without drawing any of them — the same
+/// entries `foldActivityRuns` makes of the rows: a message or a lifecycle event
+/// is one, and a run of activity is one however long. Also how many rows the
+/// whole of it draws, which is what the title counts.
+function entrySpansOf(topLevelItems) {
+  const spans = [];
+  let rows = 0;
+  let run = null;
+  topLevelItems.forEach((item, index) => {
+    const data = item.data || {};
+    const message = item.type === "message";
+    if (message && drawsNoRow(data)) return;
+    rows += 1;
+    const sequence = Number(data.sequence ?? NaN);
+    const activity = !message && !!activityMetaOf(data);
+    if (activity && run) {
+      if (Number.isFinite(sequence)) run.through = sequence;
+      return;
+    }
+    const span = { start: index, from: sequence, through: sequence, anchor: sliceAnchor(data, index) };
+    spans.push(span);
+    run = activity ? span : null;
+  });
+  return { spans, rows };
+}
+
+/// Which entry draws a sequence: the key of its own row, or of the run it is
+/// folded into. Found by what the held items say owns it (`ownerSequenceOf`),
+/// then the top-level entry that owner stands in, whose spans never overlap.
+/// Never by the numbers a run's box covers, which do (#158). Null for a
+/// sequence the items do not hold, or one no row draws.
+function entryKeyOfTimeline({ folding, topLevelItems }, spans) {
+  let held = null;
+  return (sequence) => {
+    held ??= new Set(
+      topLevelItems
+        .filter((item) => !(item.type === "message" && drawsNoRow(item.data || {})))
+        .map((item) => Number(item.data?.sequence ?? NaN)).filter(Number.isFinite),
+    );
+    const owner = folding.ownerSequenceOf(Number(sequence ?? NaN));
+    if (!held.has(owner)) return null;
+    const span = spans.find((entry) => entry.from <= owner && owner <= entry.through);
+    return span ? String(span.from) : null;
+  };
+}
+
+/// Every message of the reader's the timeline holds, as ticks for the column
+/// that maps them — drawn or not, so a tick above the slice is a way down to it.
+const userMessageTicksOf = (topLevelItems) =>
+  topLevelItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.type === "message" && !drawsNoRow(item.data || {}) && isReaderMessage(item.data))
+    .map(({ item, index }, tickIndex) => ({ key: rowKey(item.data, index), message: item.data, index: tickIndex }));
 
 /// The timeline: what was said, and what happened, as keyed entries.
 ///
@@ -1669,6 +1822,12 @@ export function timelineEntries(
     // message open the thing they name. None, and they stay prose (#63).
     refLinks = null,
     hiddenByLevel = 0,
+    // How much of the conversation to draw (core/timelineSlice.js): none draws
+    // all of it, which is what every surface but the agent panel asks for.
+    slice,
+    // Whether the bridge holds conversation above everything passed in, which
+    // keeps the row that shows more standing once the held entries run out.
+    olderOnBridge,
   } = {},
 ) {
   const view = {
@@ -1682,16 +1841,45 @@ export function timelineEntries(
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
   };
-  const rows = timelineRowsOf(sourceItems, agentLabel, threadId, view);
-  const entries = foldActivityRuns(rows, digests, view);
+  const timeline = timelineOf(sourceItems, agentLabel);
+  const { spans, rows } = entrySpansOf(timeline.topLevelItems);
+  // The slice is cut before anything is drawn, so the rows above it cost
+  // nothing: no markup, and no reading of what each one says (#158).
+  const sliced = slicedSpans(spans, slice, unreadFrom, timeline.folding);
+  const entries = foldActivityRuns(rowsOfTimeline(timeline, firstItemOf(sliced), threadId, view), digests, view);
   return {
-    entries: withUnreadLine(entries, unreadFrom, sourceItems),
-    itemCount: rows.length,
+    entries: [...earlierRow(slice, sliced, olderOnBridge), ...withUnreadLine(entries, unreadFrom, sourceItems)],
+    userTicks: userMessageTicksOf(timeline.topLevelItems),
+    sliced: { hidden: sliced.hidden, floor: sliced.floor, anchors: sliced.anchors, tail: sliced.tail },
+    entryKeyOf: entryKeyOfTimeline(timeline, spans),
+    itemCount: rows,
     // How many items the caller's detail level kept OUT of `sourceItems` —
     // which is the whole of whether an empty timeline means nothing was said.
     hiddenByLevel,
   };
 }
+
+/// The entries of a timeline a paint draws: every one, unless a slice was
+/// asked for, and then down to the unread line wherever the slice would stop.
+///
+/// A sequence reached for may be folded under a call (a subagent's row), and
+/// the slice reaches the call's row, which is the entry that draws it.
+function slicedSpans(spans, slice, unreadFrom, folding) {
+  if (!slice) return { entries: spans, hidden: 0, floor: null };
+  const reach = Number.isFinite(slice.reach) ? folding.ownerSequenceOf(slice.reach) : slice.reach;
+  return sliceTimeline(spans, { ...slice, reach: minFinite(reach, unreadFrom) });
+}
+
+/// Where in the timeline's items the drawn entries start.
+const firstItemOf = (sliced) => sliced.entries[0]?.start ?? 0;
+
+/// The row that shows more, over a slice that has more above it to show.
+const earlierRow = (slice, sliced, olderOnBridge) => (slice && (sliced.hidden || olderOnBridge) ? [EARLIER_ENTRY] : []);
+
+const minFinite = (...values) => {
+  const finite = values.filter((value) => value != null).map(Number).filter(Number.isFinite);
+  return finite.length ? Math.min(...finite) : null;
+};
 
 /** The class the unread line is drawn with, and how the scroll finds it. */
 export const UNREAD_LINE_SELECTOR = ".thread-unread-line";
@@ -1848,6 +2036,7 @@ export function chatPaintFingerprint({
   detailLevel,
   agentLabels,
   refLinks,
+  slice,
 }) {
   return [
     deliveredSequence,
@@ -1867,6 +2056,9 @@ export function chatPaintFingerprint({
     // What the reference resolver can answer for (#63). The list lands after
     // the first paint, and when it does, prose becomes links.
     refLinks || "",
+    // How much of the conversation the panel draws (core/timelineSlice.js): a
+    // reader asking for more changes nothing else here.
+    slice || "",
   ].join("|");
 }
 
@@ -1929,7 +2121,7 @@ export function paintThreadEntries(container, built, options = {}) {
     render: (row) => row.html,
   });
   const source = section.querySelector(".thread-user-nav-source");
-  const ticks = userMessageTicks(built).map(userMessageTickHtml).join("");
+  const ticks = built.userTicks.map(userMessageTickHtml).join("");
   if (paintedTicks.get(source) !== ticks) {
     source.innerHTML = ticks;
     paintedTicks.set(source, ticks);

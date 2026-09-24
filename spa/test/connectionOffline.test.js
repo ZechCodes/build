@@ -61,8 +61,9 @@ const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
-const { canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, resetDeviceContexts } =
-  await import("../src/core/deviceContexts.js");
+const {
+  canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, knownDeviceContext, liveContexts, resetDeviceContexts,
+} = await import("../src/core/deviceContexts.js");
 const {
   chooseCreationDevice,
   connectDevice,
@@ -924,6 +925,25 @@ describe("per-device connections", () => {
     expect(routes.renderInbox).toHaveBeenCalledTimes(1); // the route is rendered once, not once per device state
 
     expect(document.getElementById("devpick").hidden).toBe(false);
+    expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
+  });
+
+  // A shell entered while its machines are still being dialled paints the
+  // route off the records, and that page stands on a session-less context
+  // (core/surfaceContext.js). The context is not the machine landing: the
+  // shell's one hand-back — feed, sync, route — is still owed to the first
+  // machine that answers.
+  it("still hands the app back when a page stood on a machine's records before it answered", async () => {
+    initDevicePicker();
+    knownDeviceContext("dev-a");
+    holdAppWhileNoDeviceAnswers();
+    await flush();
+    routes.renderInbox.mockClear();
+
+    await connectDevice("dev-a");
+    await flush();
+
+    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });
 

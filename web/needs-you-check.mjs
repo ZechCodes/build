@@ -1,16 +1,29 @@
 // #119's browser pass: an issue moved to Done must leave both "Needs you"
-// surfaces — the Issues list's group and the Dashboard's tab — in the two
-// ways a move can go unheard:
+// surfaces — the Issues list's group and the Dashboard's tab — in the ways a
+// move can go unheard:
 //
 //   churn      the project keeps pushing (comments every 100 ms) while every
 //              `issues.list` round trip is slower than the bridge's 250 ms
 //              flush. Before #119 each push started a read that the next one
 //              overtook, so no answer landed until the churn stopped.
 //   reconnect  the SPA is offline while the bridge restarts and the move is
-//              made; the greeting's refetch must bring it in.
+//              made; the greeting's refetch must bring it in. Run after
+//              churn, this is #123's churn → offline → restart → online.
+//   killed     the bridge is SIGKILLed while the page is online and comes
+//              straight back (#123). No close reaches the page, so its ICE
+//              restart reaches the NEW process, which answers it: the restart
+//              must prove it carries the session (or be torn down for a fresh
+//              one) and must greet it again. Also checks the status ring
+//              stopped saying connected, and screenshots it when it did.
 //
 //   ISSUES_REPO=<a build-web checkout> COMPOSE_PROJECT=needsyou119 \
-//     APP_URL=http://localhost:8090 [SCENARIOS=churn,reconnect] node web/needs-you-check.mjs
+//     APP_URL=http://localhost:8090 [SCENARIOS=churn,reconnect,killed] [RUNS=5] \
+//     node web/needs-you-check.mjs
+//
+// RUNS repeats the scenario list in the same browser, so each round starts
+// from wherever the last one left the page. A failed check writes each page's
+// connection diagnostics next to the screenshots (DUMP_ALWAYS=1: every round);
+// CONSOLE=1 echoes the pages' consoles.
 //
 // Real bridge, real SPA: nothing is stubbed. Moves are made by a second
 // client (`issues.update`), the same tracker write and `issues` push note an
@@ -72,7 +85,9 @@ async function until(what, test, ms = 60000) {
 }
 
 
-const SCENARIOS = (process.env.SCENARIOS || "churn,reconnect").split(",");
+const SCENARIOS = (process.env.SCENARIOS || "churn,reconnect,killed").split(",");
+const RUNS = Number(process.env.RUNS || 1);
+let round = 1;
 const run = Date.now().toString(36);
 
 /** One qa script over one device link, run in the background. */
@@ -109,9 +124,32 @@ const list = await context.newPage();
 await list.goto(tab("list"), { waitUntil: "load" });
 const dash = await context.newPage();
 await dash.goto(tab("dashboard"), { waitUntil: "load" });
+const t0 = Date.now();
+for (const [name, page] of [["list", list], ["dash", dash]]) {
+  page.on("console", (message) => {
+    if (process.env.CONSOLE) console.log(`[${name} ${((Date.now() - t0) / 1000).toFixed(1)}] ${message.text()}`);
+  });
+}
+
+/** Each page's connection record, written out when a scenario fails: what
+ *  it dialled, when, and why — the evidence a stalled reconnect leaves. */
+async function dumpDiagnostics(label) {
+  for (const [name, page] of [["list", list], ["dash", dash]]) {
+    const report = await page.evaluate(() => globalThis.buildConnectionDiagnostics?.()).catch((error) => ({ error: error.message }));
+    writeFileSync(`${SHOTS}/${LABEL}-r${round}-${label}-${name}-diagnostics.json`, JSON.stringify(report, null, 1));
+  }
+}
 
 const listNeedsYou = (title) => list.evaluate((wanted) => [...document.querySelectorAll('[data-issue-group="needsYou"] .issue-title')]
   .some((one) => one.textContent.includes(wanted)), title);
+/** Whether the list's Needs you group is a whole paint: its header count
+ *  matches the rows under it. "Dropped" then means the group repainted
+ *  without the issue — not a list caught empty mid-repaint. */
+const listNeedsYouSettled = () => list.evaluate(() => {
+  const group = document.querySelector('[data-issue-group="needsYou"]');
+  const count = Number(group?.querySelector(".issue-group-count")?.textContent ?? NaN);
+  return count === group?.querySelectorAll(".issue-title").length;
+});
 const dashNeedsYou = (title) => dash.evaluate((wanted) => ({
   count: Number(document.querySelector('[data-dashboard-tab="needsYou"] .issue-dashboard-count')?.textContent ?? NaN),
   listed: [...document.querySelectorAll('[role="tabpanel"] .issue-dashboard-title')].some((one) => one.textContent.includes(wanted)),
@@ -137,7 +175,8 @@ async function inReview(label) {
  *  timed from the same moment, not one after the other. */
 async function bothDrop(scenario, target, ms) {
   const dropped = await Promise.all([
-    ["the Issues list's Needs you group drops it", async () => !(await listNeedsYou(target.title))],
+    ["the Issues list's Needs you group drops it", async () =>
+      !(await listNeedsYou(target.title)) && (await listNeedsYouSettled())],
     ["the Dashboard's Needs you drops it and its count falls by one", async () => {
       const now = await dashNeedsYou(target.title);
       return !now.listed && now.count === target.countBefore - 1;
@@ -210,17 +249,83 @@ async function reconnect() {
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
   await context.setOffline(false);
+  console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] ONLINE`);
   // The SPA's own reconnect backs off while it was offline, so the deadline
   // covers that backoff too; the time is from going back online.
-  await bothDrop("reconnect", target, 180000);
+  if (!(await bothDrop("reconnect", target, 180000))) await dumpDiagnostics("reconnect");
   await list.screenshot({ path: `${SHOTS}/${LABEL}-reconnect-list.png` });
 }
 
-for (const scenario of SCENARIOS) {
-  try {
-    await { churn, reconnect }[scenario]();
-  } catch (error) {
-    report(false, scenario, error.message);
+/** The bridge dies without a word — SIGKILL, so no SCTP abort or DTLS close
+ *  reaches the page — and comes straight back while the page is online. The
+ *  page's ICE restart then reaches the NEW process, which answers it; before
+ *  #123 the channels still read `open` from the dead association, so the
+ *  restart "landed" every six seconds for ever and no session was minted. */
+async function killed() {
+  const target = await inReview("killed");
+  // What the status ring says from here on: an app that has no session must
+  // say so while it has none, not keep showing connected.
+  // Read every 100 ms rather than observed: the ring's button can be
+  // rebuilt, and an observer on the old one hears nothing after that.
+  await list.evaluate(() => {
+    const started = Date.now();
+    const read = () => document.querySelector(".connection-status")?.dataset.state;
+    clearInterval(globalThis.__ringWatch);
+    globalThis.__ring = [[0, read()]];
+    globalThis.__ringWatch = setInterval(() => {
+      const state = read();
+      if (state !== globalThis.__ring.at(-1)[1]) globalThis.__ring.push([Date.now() - started, state]);
+    }, 100);
+  });
+  let shotAway = false;
+  const watchRing = setInterval(async () => {
+    if (shotAway) return;
+    const state = await list.evaluate(() => document.querySelector(".connection-status")?.dataset.state).catch(() => null);
+    if (state && state !== "connected") {
+      shotAway = true;
+      // Once the ring has finished turning amber: a shot mid-transition shows
+      // the colour it is leaving.
+      await list.waitForFunction(() => {
+        const ring = document.querySelector(".connection-status");
+        const probe = document.body.appendChild(Object.assign(document.createElement("i"), { style: "color:var(--amber)" }));
+        const amber = getComputedStyle(probe).color;
+        probe.remove();
+        return ring && getComputedStyle(ring, "::before").borderTopColor === amber;
+      }, null, { timeout: 3000 }).catch(() => {});
+      await list.screenshot({ path: `${SHOTS}/${LABEL}-r${round}-killed-ring-${state}.png` }).catch(() => {});
+    }
+  }, 250);
+  const killedAt = Date.now();
+  docker(`${compose} kill -s KILL bridge`);
+  docker(`${compose} up -d --no-deps bridge`);
+  await until("the restarted bridge to answer", async () => {
+    try {
+      call("issues.get", { issue_id: target.id });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 90000);
+  call("issues.update", { issue_id: target.id, status: "done" });
+  console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] MOVED ${((Date.now() - killedAt) / 1000).toFixed(1)} s after the kill`);
+  const dropped = await bothDrop("killed", target, 60000);
+  clearInterval(watchRing);
+  const ring = await list.evaluate(() => globalThis.__ring);
+  console.log(`      ring after the kill: ${ring.map(([at, state]) => `${(at / 1000).toFixed(1)}s ${state}`).join(" → ")}`);
+  report(ring.some(([, state]) => state !== "connected"), "killed: the ring stopped saying connected while there was no session");
+  if (!dropped || process.env.DUMP_ALWAYS) await dumpDiagnostics("killed");
+  await list.screenshot({ path: `${SHOTS}/${LABEL}-killed-list.png` });
+}
+
+for (round = 1; round <= RUNS; round++) {
+  if (RUNS > 1) console.log(`== round ${round} of ${RUNS}`);
+  for (const scenario of SCENARIOS) {
+    try {
+      await { churn, reconnect, killed }[scenario]();
+    } catch (error) {
+      report(false, scenario, error.message);
+      await dumpDiagnostics(scenario);
+    }
   }
 }
 await browser.close();

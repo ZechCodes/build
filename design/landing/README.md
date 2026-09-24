@@ -73,16 +73,18 @@ The generated set depicts a 2025 14-inch MacBook Pro M5, 11-inch iPad Pro M5, an
 
 ## Satin silver finish
 
-The #77 fixture uses satin silver aluminum, a darker satin laptop lid shell, and a
-matching satin trackpad. The existing material names remain stable for consumers;
-the lid shell has its own material. These are
+The #77 fixture uses satin silver aluminum, a darker satin laptop lid shell, dark
+screen-facing bands on the tablet and phone bodies, and a matching satin trackpad.
+The existing material names remain stable; the lid shell and front bands have their
+own materials. These are
 **linear RGB** values in both the saved Blender Principled materials and exported glTF PBR
 materials; do not apply an sRGB conversion.
 
 | Material | Base color | Metallic | Roughness |
 |---|---|---|---|
 | SpaceBlackAluminum | 0.65, 0.66, 0.68 | 1.0 | 0.45 |
-| SatinLidAluminum (laptop lid shell only) | 0.30, 0.31, 0.33 | 1.0 | 0.50 |
+| SatinLidAluminum (laptop lid shell only) | 0.12, 0.13, 0.14 | 1.0 | 0.60 |
+| SatinFrontBand (tablet and phone front triangles only) | 0.12, 0.13, 0.14 | 1.0 | 0.60 |
 | MachinedSpaceBlackEdge | 0.72, 0.73, 0.75 | 1.0 | 0.20 |
 | TrackpadSpaceBlack | 0.50, 0.51, 0.53 | 1.0 | 0.32 |
 | DeepBlueAluminum | 0.65, 0.66, 0.68 | 1.0 | 0.45 |
@@ -90,7 +92,14 @@ materials; do not apply an sRGB conversion.
 | DeepBlueCeramicShield | 0.70, 0.71, 0.72 | 0.15 | 0.38 |
 | CameraRing | 0.70, 0.71, 0.73 | 1.0 | 0.16 |
 
-The four satin materials have coat weight 0. Other material settings retain their existing values.
+The five satin materials have coat weight 0. The front band uses the runtime's
+`normal.z > 0.5` triangle split after Blender's Z-up to glTF Y-up conversion;
+the bodies' sides and backs keep their existing aluminum. Other material settings
+retain their existing values. `tablet_body` and `phone_body` each export two material
+primitives. GLTFLoader keeps each body name on a group: `tablet_body_mesh` and
+`phone_body_mesh` are the silver chassis; `tablet_body_mesh_1` and `phone_body_mesh_1`
+use `SatinFrontBand`. That material deliberately has no `Aluminum` suffix, so the
+runtime's generic chassis dressing preserves the native dark finish.
 The render rig reconstructs the film's eight emissive studio cards as a generated linear
 2048×1024 environment, so rough metal reflects the whole studio rather than only direct
 lights. It also uses the film's key, fill and edge directions and strengths; only the key

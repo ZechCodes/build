@@ -37,7 +37,7 @@ SCALE = 0.1  # authored dimensions below are decimeters; Blender/source/export a
 
 
 SILVER = (0.65, 0.66, 0.68, 1.0)
-SATIN_LID = (0.30, 0.31, 0.33, 1.0)
+SATIN_DARK = (0.12, 0.13, 0.14, 1.0)
 SILVER_EDGE = (0.72, 0.73, 0.75, 1.0)
 BLACK = (0.008, 0.010, 0.014, 1.0)
 KEY_COLOR = (0.0035, 0.0038, 0.0045, 1.0)
@@ -269,6 +269,19 @@ def rounded_prism(name, location, dimensions, radius, chamfer, mat, collection, 
         # bevel faces interpolate their normals instead of showing segments.
         polygon.use_smooth = abs(polygon.normal[cap_axis]) < 0.999
     return obj
+
+
+def assign_front_band(body, material):
+    """Match the runtime's glTF normal.z > 0.5 band on the finished shell."""
+    body.data.materials.append(material)
+    band_count = 0
+    for polygon in body.data.polygons:
+        # glTF +Z is Blender -Y after export_yup; the bevel is already applied.
+        if polygon.normal.y < -0.5:
+            polygon.material_index = 1
+            band_count += 1
+    if not band_count or band_count == len(body.data.polygons):
+        raise AssertionError(f"{body.name}: missing front band or chassis faces")
 
 
 def profiled_rounded_shell(
@@ -791,7 +804,8 @@ def build_laptop(mats):
 
 def build_tablet(mats):
     c = add_collection("Tablet")
-    rounded_prism("tablet_body", (0, 0, 0), (2.497, 1.775, 0.053), 0.1505, 0.0055, mats["graphite"], c, plane="XZ")
+    tablet_body = rounded_prism("tablet_body", (0, 0, 0), (2.497, 1.775, 0.053), 0.1505, 0.0055, mats["graphite"], c, plane="XZ")
+    assign_front_band(tablet_body, mats["front_band"])
     controls = [
         rounded_box("tablet_power", (1.247, 0, 0.55), (0.014, 0.043, 0.22), mats["edge"], 0.006, c),
         rounded_box("tablet_volume", (0.72, 0, 0.886), (0.28, 0.043, 0.014), mats["edge"], 0.006, c),
@@ -818,7 +832,8 @@ def build_tablet(mats):
 
 def build_phone(mats):
     c = add_collection("Phone")
-    rounded_prism("phone_body", (0, 0, 0), (0.780, 1.634, 0.0875), 0.154, 0.0080, mats["phone_aluminum"], c, plane="XZ")
+    phone_body = rounded_prism("phone_body", (0, 0, 0), (0.780, 1.634, 0.0875), 0.154, 0.0080, mats["phone_aluminum"], c, plane="XZ")
+    assign_front_band(phone_body, mats["front_band"])
     controls = [
         rounded_box("phone_action", (-0.388, 0, 0.42), (0.013, 0.069, 0.13), mats["phone_edge"], 0.005, c),
         rounded_box("phone_volume_up", (-0.388, 0, 0.17), (0.013, 0.069, 0.18), mats["phone_edge"], 0.005, c),
@@ -1644,7 +1659,8 @@ def main():
     reset_scene()
     mats = {
         "graphite": material("SpaceBlackAluminum", SILVER, metallic=1.0, roughness=0.45, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
-        "lid": material("SatinLidAluminum", SATIN_LID, metallic=1.0, roughness=0.50, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "lid": material("SatinLidAluminum", SATIN_DARK, metallic=1.0, roughness=0.60, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
+        "front_band": material("SatinFrontBand", SATIN_DARK, metallic=1.0, roughness=0.60, coat=0.0, coat_roughness=0.165, anisotropic=0.34),
         "edge": material("MachinedSpaceBlackEdge", SILVER_EDGE, metallic=1.0, roughness=0.20, coat=0.0, coat_roughness=0.121, anisotropic=0.42),
         "black": material("BlackInset", (0.001, 0.001, 0.0015, 1.0), metallic=0.0, roughness=0.92, specular=0.0),
         "glass": material(

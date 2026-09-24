@@ -8,12 +8,14 @@
 // one only when the list says the issue has moved since. A read's answer
 // only writes the cache; the rail repaints on the cache's announcement.
 //
-// Only machines whose bridge carries watching are followed: the watch, and
-// the unwatch a row's menu offers, are theirs.
+// Every project the rail lists is followed, whether or not its machine has
+// greeted this tab yet: what makes a row is the cached records, and a cold
+// reload paints them before any machine answers. The watch is proof enough of
+// the bridge — only one that carries watching ever marks an issue `watched`,
+// and only watched issues are rows or have their details read.
 
 import { subscribeCache } from "./localCache.js";
 import { contextFor } from "./deviceContexts.js";
-import { carriesWatching } from "./trackerWatch.js";
 import { isFinished } from "./trackerAgentIssues.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
@@ -81,8 +83,7 @@ export function followWatchedIssues({ onChange = () => {} } = {}) {
   }
 
   function follow(projects = []) {
-    const wanted = new Map(projects.filter((project) => carriesWatching(project.deviceId))
-      .map((project) => [projectKeyOf(project), project]));
+    const wanted = new Map(projects.map((project) => [projectKeyOf(project), project]));
     for (const key of followed.keys()) if (!wanted.has(key)) drop(key);
     for (const [key, project] of wanted) {
       const standing = followed.get(key);

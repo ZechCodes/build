@@ -131,10 +131,14 @@ beforeEach(async () => {
   ({ boot, holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js"));
 });
 
-afterEach(() => {
+afterEach(async () => {
   clearInterval(App._watch);
   App._watch = null;
   stopFeed();
+  // The rail a boot mounted outlives vi.resetModules, and still hears the next
+  // test's cache writes the way another tab would; unmounted, it paints nothing
+  // into that test's page.
+  (await import("../src/core/inboxView.js")).unmountInboxList();
 });
 
 describe("booting from the cache", () => {

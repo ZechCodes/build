@@ -2,7 +2,8 @@
 // #125: a watched issue's inbox row paints from the cache on a reload, before
 // the bridge answers anything, and Stop watching takes it away at once and
 // puts it back if the bridge refuses. Real cache, feed, device registry and
-// rail; the session's `call` is the only stand-in.
+// rail; the session's `call` is the only stand-in. And (#144) a cold reload
+// with no session at all still paints the row from what the cache holds.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -29,7 +30,9 @@ const call = vi.fn((method, params) => {
   return answer ? answer(params) : new Promise(() => {});
 });
 
-beforeEach(async () => {
+/** A reload: the feed and the issue records are already on disk. `greet`
+ *  lands a session before the rail mounts; without it no machine answers. */
+async function boot({ greet = true, issues = [review], rule = null } = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
@@ -46,23 +49,26 @@ beforeEach(async () => {
     inboxView: await import("../src/core/inboxView.js"),
     deviceContexts: await import("../src/core/deviceContexts.js"),
     connection: await import("../src/connection.js"),
+    needsYouRule: await import("../src/core/needsYouRule.js"),
   };
-  // A reload: the feed and the issue records are already on disk.
   const address = (kind) => ({ deviceId: DEVICE, entityId: "", kind });
   await modules.cache.writeCached(address("feed"), { items: [], runs: [], projects: [project], workspaces: [] });
   await modules.cache.writeCached(address("projects"), [project]);
   await modules.cache.writeCached(address("workspaces"), []);
-  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([review], []));
-  await modules.tracker.writeIssueRecord(DEVICE, PROJECT, review.id, issueDetail(review, []));
-  const context = modules.deviceContexts.adoptDeviceSession({
-    deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
-    installAdapter: (selection) => selection.create(call),
-  });
-  await modules.connection.greetLiveBridge(context);
+  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord(issues, []));
+  for (const one of issues) await modules.tracker.writeIssueRecord(DEVICE, PROJECT, one.id, issueDetail(one, []));
+  if (rule) await modules.needsYouRule.rememberNeedsYouRule(DEVICE, rule);
+  if (greet) {
+    const context = modules.deviceContexts.adoptDeviceSession({
+      deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
+      installAdapter: (selection) => selection.create(call),
+    });
+    await modules.connection.greetLiveBridge(context);
+  }
   modules.inboxView.setInboxView("inbox");
   modules.inboxView.mountInboxList();
   await modules.taskFeed.startFeed();
-});
+}
 
 afterEach(() => {
   modules.inboxView.unmountInboxList();
@@ -77,6 +83,8 @@ const unwatch = async () => {
 };
 
 describe("a watched issue's inbox row", () => {
+  beforeEach(() => boot());
+
   it("paints from the cache on a reload, on both faces, and opens the issue", async () => {
     await vi.waitFor(() => expect(rowFor(review.id)?.querySelector(".inbox-facts")?.textContent).toBe("In review"), WAIT);
     expect(call.mock.calls.some(([method]) => method === "issues.list" || method === "issues.get")).toBe(false);
@@ -139,5 +147,20 @@ describe("a watched issue's inbox row", () => {
     await vi.waitFor(() => expect(rowFor(review.id)).not.toBe(null), WAIT);
     const held = await modules.tracker.readIssuesRecord(DEVICE, PROJECT);
     expect(held.issues[0].watched).toBe(true);
+  });
+});
+
+describe("a watched issue's inbox row before any machine answers (#144)", () => {
+  const mine = issue({ id: "issue-9", number: 9, title: "Pick the fix", watched: true, status: "in_progress",
+    assignee: { kind: "user" }, updated_at: "2026-09-24T01:00:00Z" });
+
+  beforeEach(() => boot({ greet: false, issues: [review, mine], rule: { issues: { commentUserNotifies: true } } }));
+
+  it("paints what the cache says needs the user, by the cached rule, with no greeting", async () => {
+    await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-facts")?.textContent).toBe("Assigned to you"), WAIT);
+    // In review between agents is not the user's business by the cached rule.
+    expect(rowFor(review.id)).toBe(null);
+    expect(call).not.toHaveBeenCalled();
+    expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
   });
 });

@@ -457,6 +457,11 @@ them into new code; each is a candidate to bring under the rule.
     `paintDeviceState`, `spa/src/core/inboxProjects.js` `hideButtonHtml`). A
     disabled action control is a render guard, not a status display; #140
     removes it.
+  - **pending, not accepted:** the account's offline mark
+    (`accountSaysAway`, written by `markWhatTheAccountNoLongerLists` in
+    `spa/src/devices.js`) lands only on contexts that exist at the presence
+    read. A surface stood up on a machine's records after that read shows no
+    strip until the next one.
 
 ### Connection state machine
 
@@ -507,6 +512,15 @@ refuses when that device cannot answer.
   greeting flags. New features get a name, never a legacy row.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- A session is adopted before it is greeted, so `canAnswer` is true before the
+  greeting's verdict. Each greeting, including a re-greeting on a new carrier
+  or a restored path (`greetLiveBridge` in `spa/src/connection.js`), arms
+  `context.greeted` until it settles. A request whose answer is kept (the
+  model catalog, the project owner minted by `project.ensure_conversation`)
+  goes through `whenGreeted()` in `spa/src/core/deviceContexts.js`. It sends
+  in the same turn it reads the verdict, and its `stands()` says whether that
+  session and greeting still hold when the answer lands. The catalog keeps
+  only a standing answer and asks again otherwise.
 
 ### Surfaces
 

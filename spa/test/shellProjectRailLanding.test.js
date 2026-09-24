@@ -13,13 +13,20 @@
 
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { SUPPORTED_API, UNSUPPORTED_API, asked, landSession } from "./landingSessionFixture.js";
+import {
+  SUPPORTED_API,
+  UNSUPPORTED_API,
+  asked,
+  attachSession,
+  landSession,
+  openLandingSession,
+} from "./landingSessionFixture.js";
 
 const spies = vi.hoisted(() => ({ mountRail: vi.fn(() => ({ dispose: vi.fn() })), notify: vi.fn() }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: spies.mountRail }));
 vi.mock("../src/core/notify.js", () => ({ notifyError: spies.notify }));
 
-let contexts, shell, cache, App, session;
+let contexts, shell, cache, App, sessions;
 
 const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
@@ -31,15 +38,17 @@ const route = { name: "project", deviceId: "dev-a", projectId: "proj-1" };
 const listProjects = (context, rows) =>
   cache.writeCached(context.cacheScope.address({ entityId: "", kind: "projects" }), rows);
 
-/** The machine's session landing, on this suite's own module registry. */
+/** The session modules, on this suite's own module registry. */
+const sessionModules = async () => ({
+  ...(await import("../src/core/session.js")),
+  ...(await import("../src/connection.js")),
+  adoptDeviceConnection: contexts.adoptDeviceConnection,
+});
+
+/** The machine's session landing. */
 async function landOn(context) {
-  const modules = {
-    ...(await import("../src/core/session.js")),
-    ...(await import("../src/connection.js")),
-    adoptDeviceConnection: contexts.adoptDeviceConnection,
-  };
-  const landing = await landSession("dev-a", context, modules);
-  session = landing.session;
+  const landing = await landSession("dev-a", context, await sessionModules());
+  sessions.push(landing.session);
   return landing;
 }
 
@@ -56,12 +65,12 @@ beforeEach(async () => {
   ({ App } = await import("../src/app.js"));
   App.devices = [{ id: "dev-a", name: "Laptop", status: "online" }];
   App.route = { ...route };
+  sessions = [];
 });
 
 afterEach(() => {
   shell.stopShell();
-  session?.close();
-  session = null;
+  for (const session of sessions) session.close();
   contexts.resetDeviceContexts();
 });
 
@@ -102,6 +111,34 @@ it("mints nothing on a landing machine whose bridge speaks an API this tab canno
   expect(asked(peer)).not.toContain("project.ensure_conversation");
   expect(spies.mountRail).not.toHaveBeenCalled();
   expect(spies.notify).not.toHaveBeenCalled();
+});
+
+it("mints nothing on a session on the greeting of the session it replaced", async () => {
+  const standIn = contexts.knownDeviceContext("dev-a");
+  await listProjects(standIn, [{ project_id: "proj-1", name: "Project" }]);
+  shell.standShell(App.route);
+  await flush();
+  const first = await landOn(standIn);
+  await flush();
+  // The replacement is adopted by a continuation of the first session's
+  // greeting, queued behind the shell's own wait on it.
+  const modules = await sessionModules();
+  const prepared = await openLandingSession("dev-a", modules);
+  sessions.push(prepared.session);
+  let second = null;
+  standIn.greeted.then(() => { second = attachSession(prepared, standIn, modules); });
+
+  first.peer.answer("session.hello", { api_version: SUPPORTED_API });
+  await first.landed;
+  await flush();
+  expect(second).not.toBeNull();
+  const before = asked(second.peer);
+  second.peer.answer("session.hello", { api_version: UNSUPPORTED_API });
+  await second.landed;
+  await flush();
+
+  expect(before).toEqual(["session.hello"]);
+  expect(standIn.unsupported).toBe("app");
 });
 
 it("stands one rail when the list names the owner as the machine lands", async () => {

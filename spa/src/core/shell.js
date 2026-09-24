@@ -27,7 +27,7 @@ import { chatOverlaysPage } from "./railLayout.js";
 import { mountConsole } from "./console.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { surfaceContext } from "./surfaceContext.js";
-import { answersOnceGreeted, canAnswer, onDeviceStateChanged } from "./deviceContexts.js";
+import { canAnswer, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
 import { hashFromRoute } from "./router.js";
 import { notifyError } from "./notify.js";
@@ -249,15 +249,17 @@ function standWhenAsked(parts, context, mine) {
     waiting = false;
     stopListening();
   };
+  // Asked on the verdict of the greeting it goes out on, in the same turn: a
+  // session adopted under the wait has a greeting of its own to wait for.
   const ask = async () => {
     if (!waiting || !canAnswer(context)) return;
-    const answering = await answersOnceGreeted(context);
-    if (!waiting) return;
-    if (listed?.mounted() || generation !== mine) return stop();
-    if (!answering) return;
-    stop();
-    listed?.dispose();
-    await standOnAnswer(parts, context, mine);
+    await whenGreeted(context, () => {
+      if (!waiting) return null;
+      stop();
+      if (listed?.mounted() || generation !== mine) return null;
+      listed?.dispose();
+      return standOnAnswer(parts, context, mine);
+    });
   };
   stopListening = onDeviceStateChanged(() => void ask());
   void ask();

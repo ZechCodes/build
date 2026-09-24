@@ -42,14 +42,16 @@ export const UNASKED_CATALOG = Object.freeze({ default_provider: "", providers: 
  * which, for one that could not when a surface first wanted it, is when its
  * bridge greets (`answering`). Listeners hear the answer land.
  *
- * The ask itself waits for the greeting of the session it goes out on
- * (`answersOnceGreeted`), and an answer is kept only if the machine can still
- * be read on that same session when it lands: a bridge this tab cannot read
- * never has its catalog written over what the disk held.
+ * The ask itself goes out on the verdict of the greeting of the session it is
+ * sent on (`whenGreeted`), and an answer is kept only if that session and that
+ * greeting still stand when it lands: a bridge this tab cannot read never has
+ * its catalog written over what the disk held. An answer that no longer stands
+ * is asked for again of whichever session does; a machine that went away
+ * before answering is asked again when it greets.
  */
 export function createModelCatalog(context, {
   canAsk = () => true,
-  answersOnceGreeted = async () => canAsk(),
+  whenGreeted = async (dispatch) => (canAsk() ? { sent: dispatch(), stands: canAsk } : null),
 } = {}) {
   let held = null;
   let asking = null;
@@ -65,16 +67,32 @@ export function createModelCatalog(context, {
     for (const listener of [...listeners]) listener(held);
   });
 
+  /** models.list, answered by a session whose greeting still stands. */
+  const askGreeted = async () => {
+    for (;;) {
+      const asking = await whenGreeted(() => {
+        asked = true;
+        return context.rpc("models.list");
+      });
+      if (!asking) throw new Error("the machine cannot be asked for its catalog");
+      const answer = await asking.sent.catch((error) => {
+        if (asking.stands()) throw error;
+      });
+      if (asking.stands()) return answer;
+    }
+  };
+
   const read = async () => {
-    await record.pull(async () => {
-      if (!(await answersOnceGreeted())) throw new Error("the machine cannot be asked for its catalog");
-      const session = context.session;
-      asked = true;
-      const answer = await context.rpc("models.list");
-      if (!context.active()) throw new Error("device retired during models.list");
-      if (context.session !== session || !canAsk()) throw new Error("the bridge that answered models.list cannot be read");
-      return answer;
-    });
+    try {
+      await record.pull(async () => {
+        const answer = await askGreeted();
+        if (!context.active()) throw new Error("device retired during models.list");
+        return answer;
+      });
+    } catch (error) {
+      if (!canAsk()) asked = false; // nothing answered: its next greeting asks
+      throw error;
+    }
     return held || EMPTY_CATALOG;
   };
 

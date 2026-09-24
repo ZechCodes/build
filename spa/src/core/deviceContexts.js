@@ -113,7 +113,7 @@ function createDeviceContext(deviceId) {
   // app: the machine is what the answer is about (core/modelCatalog.js).
   Object.assign(context, createModelCatalog(context, {
     canAsk: () => canAnswer(context),
-    answersOnceGreeted: () => answersOnceGreeted(context),
+    whenGreeted: (dispatch) => whenGreeted(context, dispatch),
   }));
   contexts.set(deviceId, context);
   return context;
@@ -187,7 +187,15 @@ function armGreeting(context) {
   context.greeted = promise;
 }
 
-export const greetingToken = (context) => greetingReleases.get(context) || null;
+/** The greeting this device's session is about to send is one a reader must
+ *  wait on: the one already armed when it is still pending (the adoption armed
+ *  it), or a fresh one when the last has settled — a session greeted again
+ *  answers for a bridge that may have restarted as another release. Hands back
+ *  the token its failure releases. */
+export function greetingInFlight(context) {
+  if (!greetingReleases.has(context)) armGreeting(context);
+  return greetingReleases.get(context);
+}
 
 /** This device's greeting has settled, however it settled: an adapter was
  *  selected, a side was named behind, or the session died with nothing said.
@@ -216,23 +224,32 @@ export const canAnswer = (context) =>
   Boolean(context && context.call && !context.offline && !context.unsupported);
 
 /**
- * Whether this machine can be asked, once the greeting of the session it is on
- * has settled.
+ * Send this machine something it will keep, once the greeting of the session it
+ * is on has settled: `dispatch()` is called with the verdict in hand, and what it
+ * sends is handed back as `sent` beside `stands()`, which says whether that
+ * session and that greeting still stand, compatible. Null, sending nothing, when
+ * the verdict is that this machine cannot be asked.
  *
  * A session is adopted before it is greeted — `canAnswer` is true from the
  * adoption — and the greeting is what says whether this tab can read the bridge
  * at all. So what asks a machine something it will keep (a conversation minted
- * for a project, the catalog written to disk) waits here first: a bridge
- * speaking an API nothing here claims is never asked. A reconnect landing under
- * the wait arms a greeting of its own, which is waited on in turn.
+ * for a project, the catalog written to disk) goes through here: a bridge
+ * speaking an API nothing here claims is never asked. The verdict is read and
+ * the request sent in one turn, since a session adopted in between would be
+ * asked on a greeting that was not its own; and the answer is kept only if
+ * `stands()` when it lands, since a session greeted again (a new carrier, a
+ * restored path) or replaced under the wait may be speaking another release.
  */
-export async function answersOnceGreeted(context) {
+export async function whenGreeted(context, dispatch) {
   let greeting;
   do {
     greeting = context.greeted;
     await greeting;
   } while (greeting !== context.greeted);
-  return canAnswer(context);
+  if (!canAnswer(context)) return null;
+  const session = context.session;
+  const stands = () => context.session === session && context.greeted === greeting && canAnswer(context);
+  return { sent: dispatch(), stands };
 }
 
 /**

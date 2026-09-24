@@ -40,7 +40,7 @@ import {
   deviceContextIdentity,
   deviceSecurityStopText,
   existingDeviceLifecycle,
-  greetingToken,
+  greetingInFlight,
   homeContext,
   knownContexts,
   knownDeviceContext,
@@ -660,8 +660,10 @@ export async function openDeviceSettingsSession(deviceId, { onLost = () => {} } 
  *  its callers — a slow greeting must not hold up the app, and a surface mounted
  *  before it lands is re-timed the moment it does.
  *
- *  Adopting the session armed this device's greeting (core/deviceContexts.js),
- *  and the selection this one settles is what releases it. A greeting that
+ *  Adopting the session armed this device's greeting (core/deviceContexts.js);
+ *  a session greeted again — a new carrier, a restored path — arms one here,
+ *  since the bridge answering may have restarted as another release. The
+ *  selection this one settles is what releases it. A greeting that
  *  settles nothing — the session died before it said anything — is released
  *  here instead: the feed waits on that promise, and a machine whose greeting
  *  went missing must not be left unread for ever. */
@@ -673,7 +675,7 @@ export function greetLiveBridge(context, {
   if (!isAuthoritative()) return Promise.resolve(false);
   const session = context?.session;
   if (!session) return Promise.resolve(false);
-  const greetingAuthority = greetingToken(context);
+  const greetingAuthority = greetingInFlight(context);
   const repository = context.chatRepository;
   const greeting = greetBridge(session.call, {
     strict: !suppressFailure,

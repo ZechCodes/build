@@ -402,6 +402,12 @@ In practice:
   `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
+- **Route surfaces** (branch, issue, tracker issue, project, workspace) and the
+  shell's rail and console stand on `surfaceContext(route)`
+  (`spa/src/core/surfaceContext.js`): the device's context, or a session-less
+  one when only its records are on disk (a cold reload). They never ask whether
+  the machine can answer. `mountDeviceNotice` (`spa/src/core/deviceNotice.js`)
+  stands in only for a machine nothing here has ever held.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
 
@@ -438,9 +444,13 @@ them into new code; each is a candidate to bring under the rule.
   `LOCK_WAIT_MS` (4 s) syncs anyway, in case the holder is frozen, and a
   browser without the Locks API syncs every tab. The cost is duplicate reads.
 - **Connection-aware rendering.** Some surfaces still show device state:
-  - greyed "offline" rows and the strip over a surface whose machine is away,
-    worded by `spa/src/core/deviceAway.js`;
-  - the connection icon (`spa/src/connectionStatus.js`).
+  - greyed "offline" rows and the strip over a surface whose machine is away
+    and not being dialled, worded by `spa/src/core/deviceAway.js`;
+  - the notice a link to a machine with no records here shows ("Connecting
+    to …" or away), `spa/src/core/deviceNotice.js`;
+  - the connection icon (`spa/src/connectionStatus.js`);
+  - the compose box's "… is away" note, painted before anything is queued
+    (`spa/src/core/composeView.js`, #137).
 
 ### Connection state machine
 

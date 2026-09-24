@@ -180,8 +180,10 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   let viewerState = null;
   let editor = null;
   let selectedPath = null;
-  let savingState = null;
-  let pendingSave = null;
+  // Saves are per file: a tab switched away from mid-save still finishes its
+  // own. A viewer state → the write it has out; → the answer, until stored.
+  const saving = new Set();
+  const pendingSaves = new Map();
   let fileRecordHeld = false;
   let fileRequest = 0;
   const drafts = new Map(); // a background tab's path → its viewer state, while it holds unsaved edits
@@ -293,9 +295,9 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     !disposed && request === fileRequest && selectedPath === path;
 
   const finishPendingSave = (file) => {
-    if (!pendingSave || savingState !== pendingSave.state) return false;
-    if (file.revision !== pendingSave.file.revision) return false;
-    finishSave(pendingSave.state, file, pendingSave.value);
+    const pending = pendingSaves.get(viewerState);
+    if (!pending || file.revision !== pending.file.revision) return false;
+    finishSave(viewerState, file, pending.value);
     return true;
   };
 
@@ -312,7 +314,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
 
   const viewerBlocksFileRecord = (snapshot) =>
-    Boolean(snapshot?.dirty || (savingState && savingState === viewerState));
+    Boolean(snapshot?.dirty || saving.has(viewerState));
 
   /** Take the selected file from its record. A record moving while somebody
    *  is typing must not replace their draft; reload/save is the explicit
@@ -322,7 +324,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (finishPendingSave(file)) return true;
     const snapshot = viewerState?.snapshot();
     if (viewerBlocksFileRecord(snapshot)) {
-      holdFileRecord();
+      // The revision the draft was made from is no change on disk.
+      if (file.revision !== snapshot.revision) holdFileRecord();
       return false;
     }
     if (viewerMatches(snapshot, file)) return true;
@@ -388,7 +391,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
 
   const beginSave = (submittedState) => {
-    savingState = submittedState;
+    saving.add(submittedState);
     previewEl.querySelector(".file-save").disabled = true;
     setText(previewEl.querySelector(".file-save-status"), "");
     const reload = previewEl.querySelector(".file-reload");
@@ -397,10 +400,10 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const finishSave = (submittedState, written, submittedValue) => {
     submittedState.saved(written, submittedValue);
-    savingState = null;
-    pendingSave = null;
-    fileRecordHeld = false;
+    saving.delete(submittedState);
+    pendingSaves.delete(submittedState);
     if (disposed || viewerState !== submittedState) return;
+    fileRecordHeld = false;
     setText(previewEl.querySelector(".fpsize"), `${Number(written.size) || 0} bytes`);
     setText(treeListEl.querySelector(".frow.sel .fsize"), String(Number(written.size) || 0));
     paintEditStatus();
@@ -408,8 +411,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
 
   const failSave = (submittedState, error) => {
-    savingState = null;
-    pendingSave = null;
+    saving.delete(submittedState);
+    pendingSaves.delete(submittedState);
     if (disposed || viewerState !== submittedState) return;
     setText(previewEl.querySelector(".file-save-status"), error.message || "Save failed");
     const reload = previewEl.querySelector(".file-reload");
@@ -490,9 +493,11 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     }
   };
 
+  /** The write, the record and the viewer state's saved revision finish
+   *  whichever tab is shown by then; only the preview waits for its own. */
   const saveEditor = async (path) => {
     const submittedState = viewerState;
-    if (savingState === submittedState) return;
+    if (saving.has(submittedState)) return;
     const snapshot = submittedState.snapshot();
     const submittedValue = snapshot.value;
     beginSave(submittedState);
@@ -503,11 +508,11 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
         content_b64: encodeBase64Text(snapshot.value),
         expected_revision: snapshot.revision,
       });
-      if (!editorIsCurrent(path, submittedState)) return;
-      pendingSave = { state: submittedState, file: written, value: submittedValue };
+      pendingSaves.set(submittedState, { file: written, value: submittedValue });
       const address = fileAddress(path);
       const kept = await storeWrittenFile(path, address, written);
-      if (!editorIsCurrent(path, submittedState) || savingState !== submittedState) return;
+      // The record's own push may have finished it already.
+      if (!pendingSaves.has(submittedState)) return;
       const savedFile = kept ? (await heldRecord(address))?.value?.file : written;
       finishSave(submittedState, savedFile || written, submittedValue);
     } catch (error) {
@@ -574,7 +579,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const dirty = previewEl.querySelector(".file-dirty");
     const save = previewEl.querySelector(".file-save");
     if (dirty) dirty.hidden = !snapshot.dirty;
-    if (save) save.disabled = !snapshot.dirty || savingState === viewerState;
+    if (save) save.disabled = !snapshot.dirty || saving.has(viewerState);
     tabs.refresh();
   };
 
@@ -659,6 +664,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     drafts.set(selectedPath, viewerState);
   };
 
+  /** Show a held draft again, and read its file's record: a change on disk
+   *  from before the switch, or while it was away, is warned of again. */
   const resumeDraft = (path, state) => {
     drafts.delete(path);
     const request = ++fileRequest;
@@ -666,6 +673,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     viewerState = state;
     paintViewer(path);
     watchFile(path, request);
+    void rereadSelectedFile(path, request);
   };
 
   const showNothing = () => {

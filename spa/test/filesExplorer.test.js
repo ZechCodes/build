@@ -35,8 +35,12 @@ const answer = vi.fn(async (method, params) => {
     const text = BODIES[params.path];
     return { path: params.path, mime: "text/plain", size: text.length, truncated: false, editable: true, encoding: "utf-8", revision: `${params.path}@1`, content_b64: b64(text) };
   }
+  if (method === "fs.write") return writeAnswer(params);
   throw new Error(`unexpected ${method}`);
 });
+
+// fs.write answers whatever the test holds out; by default it never answers.
+let writeAnswer = () => new Promise(() => {});
 
 /** Stand the page on one kind of pointer: `fine` answers (pointer: fine). */
 const pointer = (kind) => {
@@ -94,6 +98,7 @@ const typeInto = (host, text) => {
 beforeEach(async () => {
   document.body.innerHTML = "";
   answer.mockClear();
+  writeAnswer = () => new Promise(() => {});
   pointer("coarse");
   await wipeCache();
 });
@@ -302,6 +307,69 @@ describe("the open files' tabs", () => {
     expect(document.querySelector("#confirm-scrim").textContent).toContain("notes.txt");
     expect(document.querySelector("#confirm-scrim").textContent).not.toContain("README.md");
     document.querySelector("#confirm-scrim [data-confirm-cancel]").click();
+  });
+
+  it("finishes a save that lands while another tab is shown, and saves that file's next edits", async () => {
+    let land;
+    writeAnswer = (params) => new Promise((resolve) => {
+      land = () => resolve({ path: params.path, size: 5, revision: `${params.path}@2`, content_b64: params.content_b64 });
+    });
+    const { host, files } = mountFiles();
+    await openByTap(host, "README.md");
+    typeInto(host, "one\n");
+    host.querySelector(".file-save").click();
+    await vi.waitFor(() => expect(land).toBeTruthy());
+
+    await openByTap(host, "notes.txt");
+    land();
+    await settle();
+    expect(files.hasUnsavedChanges()).toBe(false);
+
+    host.querySelector('[data-tab-path="README.md"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    await settle();
+    expect(host.querySelector(".file-editor").value).toBe("one\n");
+    expect(host.querySelector(".file-save-status").textContent).toBe("");
+    typeInto(host, "two\n");
+    expect(host.querySelector(".file-save").disabled).toBe(false);
+    host.querySelector(".file-save").click();
+    await vi.waitFor(() => expect(answer.mock.calls.filter(([method]) => method === "fs.write")).toHaveLength(2));
+    expect(answer.mock.calls.at(-1)[1]).toMatchObject({ path: "README.md", expected_revision: "README.md@2" });
+  });
+
+  it("brings a dirty tab back with its disk-change warning, whether the change came before or while it was away", async () => {
+    const moved = (path, text) => writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: path },
+      { file: { path, mime: "text/plain", size: text.length, truncated: false, editable: true, encoding: "utf-8", revision: `${path}@${text.length}`, content_b64: b64(text) }, openedAt: Date.now() },
+    );
+    const warned = (host) => host.querySelector(".file-save-status").textContent === "File changed on disk" && !host.querySelector(".file-reload").hidden;
+    const { host } = mountFiles();
+    await openByTap(host, "README.md");
+    await openByTap(host, "notes.txt");
+    host.querySelector('[data-tab-path="README.md"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    typeInto(host, "draft\n");
+    await moved("README.md", "moved\n");
+    await vi.waitFor(() => expect(warned(host)).toBe(true));
+
+    host.querySelector('[data-tab-path="notes.txt"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("notes.txt"));
+    host.querySelector('[data-tab-path="README.md"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    await vi.waitFor(() => expect(warned(host)).toBe(true));
+    expect(host.querySelector(".file-editor").value).toBe("draft\n");
+
+    host.querySelector('[data-tab-path="notes.txt"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("notes.txt"));
+    typeInto(host, "notes draft\n");
+    host.querySelector('[data-tab-path="README.md"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("README.md"));
+    await vi.waitFor(() => expect(warned(host)).toBe(true));
+    await moved("notes.txt", "moved on disk\n");
+    host.querySelector('[data-tab-path="notes.txt"]').click();
+    await vi.waitFor(() => expect(shownPath(host)).toBe("notes.txt"));
+    await vi.waitFor(() => expect(warned(host)).toBe(true));
+    expect(host.querySelector(".file-editor").value).toBe("notes draft\n");
   });
 
   it("counts a background tab's unsaved edits when the view is left", async () => {

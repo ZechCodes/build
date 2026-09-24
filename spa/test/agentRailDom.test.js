@@ -5648,3 +5648,161 @@ describe("the models a machine that has not answered yet offers", () => {
     expect(offeredModels()).toContain("model:claude-opus-5");
   });
 });
+
+// A conversation the reader has read far back into is held whole in the cache,
+// and the panel used to draw every entry of it on open, inside the opening
+// animation (#158). It draws the newest entries now, and more as asked.
+describe("a long conversation held in the cache", () => {
+  const HELD = 500;
+  const said = (sequence, role = "agent") => ({
+    type: "message",
+    data: { sequence, id: `m-${sequence}`, role, body: `said ${sequence}` },
+  });
+  /** Every tenth message is the reader's, so there are ticks above the slice. */
+  const held = (count = HELD) => Array.from({ length: count }, (_, index) =>
+    said(index + 1, index % 10 === 0 ? "user" : "agent"));
+  const heldConversation = (hasMore = false, agents = [agent()]) => {
+    payload = branchRow({
+      agents,
+      run: {
+        run_id: "run-3",
+        thread: { sessions: [], items: held(), has_more: hasMore, thread_total: HELD, thread_last_sequence: HELD },
+      },
+    });
+  };
+  const railBody = () => railHost().querySelector("#rail-body");
+  const timelineRows = () => [...railHost().querySelectorAll(".thread-items > [data-key]")];
+  const drawnSequences = () => [...railHost().querySelectorAll(".thread-items > [data-sequence]")]
+    .map((row) => Number(row.dataset.sequence));
+  const earlierRow = () => railHost().querySelector(".thread-items .thread-earlier");
+
+  it("paints the newest entries and a row above them, not everything it holds", async () => {
+    heldConversation();
+    await mount();
+
+    // Sixty entries and the one chrome row above them.
+    expect(timelineRows().length).toBeLessThanOrEqual(61);
+    expect(drawnSequences().at(-1)).toBe(HELD);
+    expect(drawnSequences()[0]).toBe(HELD - 59);
+    expect(earlierRow().textContent).toBe("Show earlier messages");
+  });
+
+  it("appends what a push brings without dropping the top of what is drawn", async () => {
+    heldConversation();
+    await mount();
+    const top = drawnSequences()[0];
+
+    await pushRailThreadItems("run-3", "ag-1", [said(HELD + 1), said(HELD + 2)]);
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(top);
+    expect(drawnSequences().at(-1)).toBe(HELD + 2);
+    expect(drawnSequences()).toHaveLength(62);
+  });
+
+  it("shows the next entries from the cache when pressed, asking the bridge nothing", async () => {
+    heldConversation(true);
+    await mount();
+
+    earlierRow().click();
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(HELD - 119);
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("shows the next entries from the cache when the reader scrolls to the top", async () => {
+    heldConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(HELD - 119);
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("falls through to the page above once the cache is drawn to its start", async () => {
+    heldConversation(true);
+    await mount();
+
+    for (let press = 0; press < 10 && drawnSequences()[0] !== 1; press += 1) {
+      earlierRow().click();
+      await flush();
+    }
+    expect(drawnSequences()).toHaveLength(HELD);
+    expect(callsTo("thread.page")).toEqual([]);
+
+    earlierRow().click();
+    await flush();
+
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", before_sequence: 1 },
+    ]);
+  });
+
+  it("draws no row above a conversation it holds from its start", async () => {
+    payload = branchRow({
+      run: { run_id: "run-3", thread: { sessions: [], items: held(40), has_more: false, thread_total: 40 } },
+    });
+    await mount();
+
+    expect(drawnSequences()).toHaveLength(40);
+    expect(earlierRow()).toBeNull();
+  });
+
+  it("draws down to a call a surface points at above the slice, then goes to it", async () => {
+    heldConversation(false, [agent({
+      surfaces: { subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 12 }] },
+    })]);
+    await mount();
+    expect(railHost().querySelector('[data-sequence="12"]')).toBeNull();
+    const scrollTo = railBody().scrollTo;
+    scrollTo.mockClear();
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items [data-sequence="12"]')).not.toBeNull();
+    expect(drawnSequences().at(-1)).toBe(HELD);
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it("maps every message of the reader's in the tick column, and a tick above the slice draws down to it", async () => {
+    heldConversation();
+    await mount();
+    const ticks = railHost().querySelector(".thread-user-nav-source").content.children;
+    expect(ticks).toHaveLength(HELD / 10);
+
+    // The first tick is the reader's first message, far above the slice.
+    const list = railHost().querySelector(".thread-user-nav-list");
+    list.dataset.windowStart = "";
+    railHost().querySelector(".thread-user-nav-list").replaceChildren(ticks[0].cloneNode(true));
+    list.querySelector(".thread-user-tick").click();
+    await flush();
+
+    expect(drawnSequences()[0]).toBe(1);
+  });
+
+  it("rules the unread line in, however far above the slice it falls", async () => {
+    heldConversation(false, [agent({ unread_count: 450, read_through_sequence: 50 })]);
+    await mount();
+
+    // The line stands above the first agent message past the cursor, which is
+    // hundreds of entries above where the slice would otherwise stop.
+    const line = railHost().querySelector(".thread-unread-line");
+    expect(line).not.toBeNull();
+    expect(Number(line.closest("[data-key]").nextElementSibling.dataset.sequence)).toBe(52);
+    expect(drawnSequences()[0]).toBeLessThanOrEqual(52);
+  });
+
+  it("reports read from the top of what it drew, not the top of what it holds", async () => {
+    heldConversation(false, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: HELD - 1 })]);
+    await mount();
+
+    const [[, , floor]] = markSeen.mock.calls;
+    expect(floor).toBe(drawnSequences()[0]);
+  });
+});

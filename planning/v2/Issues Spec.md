@@ -806,6 +806,12 @@ without the name, a client keeps the earlier rule — In review, or any unread
 agent comment on a watched issue — because such a bridge does not record which
 comments asked.
 
+The inbox and the Issues tab's Needs you read this from the same cached
+records: the issue (its `watched`, `assignee` and `read_through`) and its
+timeline. Neither waits on the board's `tracker_issue` feed row, whose unread
+count is re-read only with the board and can lag a comment an `issues` push has
+already cached.
+
 ### The verbs
 
 | Verb | Params | Result |

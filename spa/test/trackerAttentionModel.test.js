@@ -164,7 +164,7 @@ describe("Needs you by the narrow rule (#144)", () => {
     const one = issue("watched", { watched: true, read_through: "ie-01" });
     const chatter = detail(one, [comment("ic-02", "agent", "Rebased on main.")]);
     expect(watchedIssueReasons(one, chatter, true)).toEqual([]);
-    expect(hasUnreadInboxComment(one, chatter, inbox(one.id), true)).toBe(false);
+    expect(issueAttention(one, { detail: chatter, inboxRow: inbox(one.id), askedOnly: true }).reasons).toEqual([]);
     for (const flag of [{ mentions_user: true }, { notifies_user: true }]) {
       const asked = detail(one, [comment("ic-02", "agent", "Rebased."), asks("ic-03", flag)]);
       expect(watchedIssueReasons(one, asked, true)).toEqual([ATTENTION_REASONS.inbox]);
@@ -172,6 +172,25 @@ describe("Needs you by the narrow rule (#144)", () => {
         .toEqual([ATTENTION_REASONS.inbox]);
       expect(unreadAsks(one, asked, true)).toHaveLength(1);
     }
+  });
+
+  it("reads a question from the cached issue, whatever the board's feed row still says", () => {
+    // An `issues` push caches the comment and re-reads the list; the board's
+    // feed row is only re-read with the board, so it can be missing or say
+    // nothing unread while the question is already in the cache.
+    const one = issue("asked", {
+      watched: true, status: "in_review", read_through: "ie-01", assignee: { kind: "agent", agent_id: "agent-astra" },
+    });
+    const asked = detail(one, [asks("ic-02", { notifies_user: true })]);
+    for (const inboxRow of [null, inbox(one.id, { unread: 0 })]) {
+      expect(issueAttention(one, { detail: asked, inboxRow, askedOnly: true }).reasons).toEqual([ATTENTION_REASONS.inbox]);
+    }
+    const feed = { items: [inbox(one.id, { unread: 0 })] };
+    expect(attentionGroups([one], { feed, projectKey: PROJECT, detailById: new Map([[one.id, asked]]), askedOnly: true })
+      .needsYou).toEqual([one]);
+    // Not watched, and no feed row to say it is: not the user's business.
+    const unwatched = { ...one, watched: false };
+    expect(issueAttention(unwatched, { detail: detail(unwatched, asked.timeline), askedOnly: true }).reasons).toEqual([]);
   });
 
   it("stops counting a question once it is read", () => {

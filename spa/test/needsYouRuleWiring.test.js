@@ -18,7 +18,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { mountIssuesPane } = await import("../src/core/trackerIssuesPane.js");
 const { readNeedsYouRule } = await import("../src/core/needsYouRule.js");
-const { columns, issue } = await import("./trackerWireFixture.js");
+const { columns, comment, issue } = await import("./trackerWireFixture.js");
 
 const greeting = JSON.parse(readFileSync(resolve(process.cwd(), "../fixtures/api/v1/session.hello.json"), "utf8")).result;
 const PROJECT = "p1";
@@ -50,7 +50,7 @@ const call = (hello) => async (method) => {
   return {};
 };
 
-function mount(rpc) {
+function mount(rpc, feed = () => ({ workspaces: [], items: [], projects: [] })) {
   pane = mountIssuesPane(host, {
     projectId: PROJECT,
     projectName: "Build",
@@ -59,7 +59,7 @@ function mount(rpc) {
     callRpc: rpc,
     catalog: () => ({ providers: [] }),
     refreshCatalog: async () => ({ providers: [] }),
-    feed: () => ({ workspaces: [], items: [], projects: [] }),
+    feed,
     defaultView: "dashboard",
     navigate: () => {},
   });
@@ -92,4 +92,28 @@ it("keeps In review in Needs you for a bridge that does not name the rule", asyn
   mount(call(older));
   await vi.waitFor(() => expect(needsYou().sort()).toEqual([withTheUser.id, betweenAgents.id]));
   expect(await readNeedsYouRule("dev-1")).toBe(false);
+});
+
+it("holds a question an agent asked, while the board's feed row still says nothing is unread", async () => {
+  // The question reached the cache through an `issues` push; the board's feed
+  // row is re-read only with the board, and still counts nothing unread.
+  const asked = { ...betweenAgents, read_through: "ie-01K5Z1", updated_at: "2026-08-21T11:00:00Z" };
+  const question = comment({
+    id: "ic-01K5Z3", issue_id: asked.id, author: { kind: "agent", agent_id: "agent-astra" },
+    body: "Which of the two fixes do you want?", notifies_user: true,
+  });
+  const rpc = async (method, params) => {
+    if (method === "issues.get" && params?.issue_id === asked.id) return { issue: asked, timeline: [question] };
+    if (method === "issues.list") return { issues: [asked, withTheUser] };
+    return call(greeting)(method);
+  };
+  const staleRow = { kind: "tracker_issue", projectKey: `dev-1|${PROJECT}`, issue_id: asked.id, unread: 0 };
+  await greetBridge(rpc, { deviceId: "dev-1", strict: true });
+  mount(rpc, () => ({ workspaces: [], items: [staleRow], projects: [] }));
+  await vi.waitFor(() => expect(needsYou().sort()).toEqual([asked.id, withTheUser.id].sort()));
+  // And with no feed row for it at all.
+  pane.dispose();
+  host.innerHTML = "";
+  mount(rpc);
+  await vi.waitFor(() => expect(needsYou().sort()).toEqual([asked.id, withTheUser.id].sort()));
 });

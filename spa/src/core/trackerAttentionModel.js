@@ -61,12 +61,13 @@ export const unreadAsks = (issue, detail, askedOnly = false) => {
   return askedOnly ? unread.filter(asksTheUser) : unread;
 };
 
-/** A cached inbox row is proof the user is watching the issue. Its unread
- *  count alone may be an event such as a move, so prefer the cached timeline
- *  when there is one and require an unread agent comment there. */
-export function hasUnreadInboxComment(issue, detail, inboxRow, askedOnly = false) {
+/** The earlier rule's unread comment. A cached inbox row is proof the user is
+ *  watching the issue. Its unread count alone may be an event such as a move,
+ *  so prefer the cached timeline when there is one and require an unread agent
+ *  comment there. */
+export function hasUnreadInboxComment(issue, detail, inboxRow) {
   if (!inboxRow || inboxRow.done_until_next === true || !(Number(inboxRow.unread) > 0)) return false;
-  return unreadAsks(issue, detail, askedOnly).length > 0;
+  return unreadAgentComments(issue, detail).length > 0;
 }
 
 /** An agent's digest on a project-scoped feed row. The map is keyed by agent
@@ -113,8 +114,17 @@ const reasonsOf = (issue, hasUnreadComment, askedOnly) => {
   return reasons;
 };
 
+/** Whether an unread comment puts the issue in Needs you. The narrow rule reads
+ *  the cached issue and timeline alone, as the inbox does: the board's feed row
+ *  is only re-read with the board, so its unread count can still say nothing
+ *  new long after an `issues` push has cached the comment that asked. The
+ *  watch is the issue's own, or the feed row's proof of one. */
+const hasUnreadAsk = (issue, detail, inboxRow, askedOnly) => (askedOnly
+  ? (issue?.watched === true || Boolean(inboxRow)) && unreadAsks(issue, detail, true).length > 0
+  : hasUnreadInboxComment(issue, detail, inboxRow));
+
 const attentionReasonsOf = (issue, detail, inboxRow, askedOnly) =>
-  reasonsOf(issue, hasUnreadInboxComment(issue, detail, inboxRow, askedOnly), askedOnly);
+  reasonsOf(issue, hasUnreadAsk(issue, detail, inboxRow, askedOnly), askedOnly);
 
 /** Why a watched issue is in the inbox (#125): the same reasons as Needs you,
  *  read from the cached issue records alone. The issue's own `watched` is the

@@ -27,7 +27,8 @@ import {
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
-import { deviceWatch } from "./deviceReconnect.js";
+import { deviceSession, deviceWatch } from "./deviceReconnect.js";
+import { trailingRead } from "./trailingRead.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
@@ -77,7 +78,6 @@ export function mountIssuePage(host, options) {
     issues: [],
     disposed: false,
     picker: null,
-    readSerial: 0,
     // The tray's entries are the VIEW's draft, not the DOM's: this page
     // rewrites itself whole on a repaint, and an upload started before one
     // has to settle into the tray after it.
@@ -340,12 +340,21 @@ export function mountIssuePage(host, options) {
     paint();
   });
 
-  async function refresh() {
+  /** Read the issue again. Agents commenting push every flush, so a read
+   *  asked for while one is out waits for it and runs once after it (#126, as
+   *  #119 for the list): every answer lands, and a push is never answered by a
+   *  read begun before it. */
+  let issueReads = null;
+  function refresh() {
+    issueReads ||= trailingRead(readIssue, { generationOf: () => deviceSession(state.deviceId) });
+    return issueReads();
+  }
+
+  async function readIssue() {
     if (state.disposed) return;
-    const serial = ++state.readSerial;
     try {
       const answer = await state.callRpc("issues.get", { issue_id: state.issueId });
-      if (state.disposed || serial !== state.readSerial) return;
+      if (state.disposed) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeIssueRecord(state.deviceId, state.projectId, state.issueId, issueRecord(answer.issue, answer.timeline));
     } catch (error) {

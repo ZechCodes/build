@@ -38,7 +38,7 @@ const sourcesHtml = (project) => `<fieldset style="border:0;padding:0;margin:0">
 const addSourceHtml = () => `<div class="field">
     <label for="psremoteurl">Clone url</label>
     <input id="psremoteurl" placeholder="git@github.com:org/repo.git" style="width:100%" ${fieldTraits("identifier")}>
-    <label for="pssourcelabel">Name</label>
+    <label for="pssourcelabel">Folder label</label>
     <input id="pssourcelabel" style="width:100%" ${fieldTraits("identifier")} placeholder="What to call it">
     <div class="row"><button class="btn" id="pssourcecancel" type="button">Cancel</button>
       <button class="btn primary" id="pssourceadd" type="button" style="margin-left:auto">Add folder</button></div>
@@ -140,7 +140,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       title: "Project settings",
       subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
       bodyHtml: `
-      ${field("Name", "psname", project.name)}
+      ${field("Project label", "psproject", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
       ${sourcesHtml(project)}
@@ -205,7 +205,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!project) throw new Error("This project is no longer registered on this device.");
     return project;
   }).catch((error) => {
-    if (!$("#psname")) paintMissing(`Project settings are unavailable: ${error.message}`);
+    if (!$("#psproject")) paintMissing(`Project settings are unavailable: ${error.message}`);
   });
   return { whenCachePainted: record.whenPainted };
 }

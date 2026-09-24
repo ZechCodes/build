@@ -2324,7 +2324,7 @@ function mountRailOnContext(host, context, swap) {
       <p>Start a new conversation</p>
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
       <label class="rail-newagent-name">
-        <span>Name <em>optional</em></span>
+        <span>Label <em>optional</em></span>
         <input type="text" data-new-agent-name maxlength="24" ${fieldTraits("line")}
           placeholder="Rail scroll" aria-label="What to call this agent" value="${esc(newAgentName())}">
       </label>

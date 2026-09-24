@@ -90,10 +90,12 @@ describe("the workspace settings sheet", () => {
     open({ callRpc: pending });
     await vi.waitFor(() => expect($("#wslabel").value).toBe("cached rename"));
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:team/repo.git"));
+    expect($("#wsdirlabel").value).toBe("repo");
     expect(pending).toHaveBeenCalledWith("workspace.get", { workspace_id: WORKSPACE.id });
     await writeCached(address, { name: "external rename", directory: { kind: "remote", remote: "git@example.com:team/other.git", name: "other", path: "" } });
     await vi.waitFor(() => expect($("#wslabel").value).toBe("external rename"));
     expect($("#wsdirremote").value).toBe("git@example.com:team/other.git");
+    expect($("#wsdirlabel").value).toBe("other");
     type("my unsent rename");
     await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("my unsent rename"));
   });
@@ -110,6 +112,7 @@ describe("the workspace settings sheet", () => {
     $("#wscancel").click();
     open({ callRpc: vi.fn(() => new Promise(() => {})) });
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:new.git"));
+    expect($("#wsdirlabel").value).toBe("old");
   });
   it("updates its open picker on a catalog cache write without losing the workspace name draft", async () => {
     await writeCached(deviceModelsAddress("dev-1"), CATALOG);

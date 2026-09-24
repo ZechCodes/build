@@ -31,9 +31,9 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     ${embedded ? "" : '<a class="btn mini" href="#/account/settings">Local settings</a>'}
     <div class="board-head"><div><h1 id="device-settings-title">${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
     <div class="panel">
-      <h3>Device name</h3>
+      <h3>Device label</h3>
       <form id="device-label-form">
-        <div class="field"><label for="device-label">Name</label>
+        <div class="field"><label for="device-label">Label</label>
         <div class="projfolder"><input id="device-label" ${fieldTraits("line")} value="${esc(device.name)}" maxlength="255" required>
           <button class="btn" type="submit">Save</button></div>
         </div>

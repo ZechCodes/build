@@ -75,21 +75,21 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const sourceHtml = (source, index) => `<fieldset data-source-row="${source.id}" style="border:1px solid var(--line);border-radius:8px;margin:10px 0;padding:10px"><legend>Folder ${index + 1}</legend>
     ${source.kind === "remote" ? `<div class="field"><label for="nrsource-${source.id}">Git remote URL</label><input id="nrsource-${source.id}" data-source-value="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.remote)}" placeholder="git@github.com:org/repo.git"></div>` : `<div class="field"><span id="nrsource-label-${source.id}">Selected folder</span><div class="browse-path" aria-labelledby="nrsource-label-${source.id}">${source.path ? esc(source.path) : "No folder selected"}</div><button class="btn" type="button" data-choose-source="${source.id}">Choose folder…</button></div>`}
-    <div class="field"><label for="nrmount-${source.id}">Folder name</label><input id="nrmount-${source.id}" data-source-name="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.name)}"></div>
+    <div class="field"><label for="nrmount-${source.id}">Folder label</label><input id="nrmount-${source.id}" data-source-name="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.name)}"></div>
     <div class="field"><label for="nrbranch-${source.id}">Base branch (optional)</label><input id="nrbranch-${source.id}" data-source-branch="${source.id}" ${fieldTraits("identifier")} value="${esc(source.base_branch)}" placeholder="main"></div>
     <button class="btn" type="button" data-remove-source="${source.id}" aria-label="Remove folder ${index + 1}">Remove</button></fieldset>`;
   const sourceError = (source, names) => {
     if (!source[source.kind].trim()) return [source.kind === "remote" ? "Enter a Git remote URL." : "Choose a folder.", source.kind === "remote" ? `#nrsource-${source.id}` : `[data-choose-source="${source.id}"]`];
     const name = source.name.trim();
-    if (!name) return ["Enter a folder name.", `#nrmount-${source.id}`];
+    if (!name) return ["Enter a folder label.", `#nrmount-${source.id}`];
     if (/[\\/]/.test(name) || name === "." || name === "..") return ["Use a single folder name without / or \\.", `#nrmount-${source.id}`];
-    if (names.has(name.toLowerCase())) return [`Folder names must be unique. “${name}” is used more than once.`, `#nrmount-${source.id}`];
+    if (names.has(name.toLowerCase())) return [`Folder labels must be unique. “${name}” is used more than once.`, `#nrmount-${source.id}`];
     names.add(name.toLowerCase());
     return null;
   };
   const invalidSource = () => {
     if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
-    if (!draft.name.trim()) return ["Enter a project name.", "#nrproject"];
+    if (!draft.name.trim()) return ["Enter a project label.", "#nrproject"];
     const names = new Set();
     for (const source of draft.sources) {
       const error = sourceError(source, names);
@@ -158,10 +158,10 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const focused = sheet.contains(sheet.ownerDocument.activeElement) ? sheet.ownerDocument.activeElement.id : "";
     const target = selectedDevice();
     const selector = selectable ? `<div class="field"><label for="nrdevice">Device</label><select id="nrdevice"><option value="">Choose a device</option>${choices.map((device) => `<option value="${esc(device.id)}"${device.id === selectedDeviceId ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select></div>` : "";
-    const subtitle = target ? `Enter a name to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
+    const subtitle = target ? `Enter a label to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
       ${selector}
-      <div class="field"><label for="nrproject">Project name</label><input id="nrproject" ${fieldTraits("line", "go")} required value="${esc(draft.name)}"></div>
+      <div class="field"><label for="nrproject">Project label</label><input id="nrproject" ${fieldTraits("line", "go")} required value="${esc(draft.name)}"></div>
       <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders (optional)</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
     $("#nrcancel").onclick = close;

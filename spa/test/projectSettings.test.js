@@ -54,7 +54,7 @@ describe("openProjectSettings", () => {
     remote.focus();
     remote.setSelectionRange(3, 3);
     answerList({ projects: [{ ...PROJECT, name: "from bridge" }] });
-    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("from bridge"));
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("from bridge"));
     expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
     expect(document.activeElement).toBe(document.querySelector("#psremote"));
     expect(document.querySelector("#psremote").selectionStart).toBe(3);
@@ -70,7 +70,7 @@ describe("openProjectSettings", () => {
     remote.focus();
     await writeCached(address, { ...PROJECT, name: "renamed" });
     await sheet.whenCachePainted();
-    expect(document.querySelector("#psname").value).toBe("renamed");
+    expect(document.querySelector("#psproject").value).toBe("renamed");
     expect(document.querySelector("#psremote").value).toBe("my unsaved remote");
     expect(document.activeElement).toBe(document.querySelector("#psremote"));
   });
@@ -84,7 +84,7 @@ describe("openProjectSettings", () => {
     document.querySelector("#pssourcelabel").value = "draft";
     document.querySelector("#pssourcelabel").focus();
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
-    await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("renamed"));
+    await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("renamed"));
     expect(document.querySelector("#psremoteurl").value).toBe("git@github.com:8ly/draft.git");
     expect(document.querySelector("#pssourcelabel").value).toBe("draft");
     expect(document.activeElement).toBe(document.querySelector("#pssourcelabel"));
@@ -106,29 +106,29 @@ describe("openProjectSettings", () => {
     await sheet.whenCachePainted();
     expect(document.querySelector("#psbrowseback")).toBe(back);
     back.click();
-    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("renamed"));
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("renamed"));
   });
   it("paints the cached project while project.list has no answer", async () => {
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), PROJECT);
     const callRpc = vi.fn(() => new Promise(() => {}));
     openProjectSettings(PROJECT.project_id, { callRpc, deviceId: "dev-1" });
-    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
     expect(callRpc).toHaveBeenCalledWith("project.list");
   });
 
   it("shows the project's identity read-only and its remote as the one editable field", async () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe("build"));
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe("build"));
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector(":scope > .settings-sheet-frame > .settings-sheet-header h3").textContent).toBe("Project settings");
-    expect(sheet.querySelector(".settings-sheet-body #psname")).not.toBeNull();
-    expect(sheet.querySelector("#psname").value).toBe("build");
+    expect(sheet.querySelector(".settings-sheet-body #psproject")).not.toBeNull();
+    expect(sheet.querySelector("#psproject").value).toBe("build");
     expect(sheet.querySelector("#pspath").value).toBe("/Users/z/Projects/build");
     expect(sheet.querySelector("#psbranch").value).toBe("main");
     expect(sheet.querySelector("#psremote").value).toBe("git@github.com:8ly/build.git");
-    expect(sheet.querySelector("#psname").readOnly).toBe(true);
+    expect(sheet.querySelector("#psproject").readOnly).toBe(true);
     expect(sheet.querySelector("#pspath").readOnly).toBe(true);
     expect(sheet.querySelector("#psbranch").readOnly).toBe(true);
   });
@@ -233,9 +233,15 @@ describe("openProjectSettings", () => {
     refreshed.value = "";
     refreshed.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null }));
-    await vi.waitFor(() => expect(document.querySelector("#sheet [data-isolation=select]")).not.toBe(refreshed));
+    // The repaint draws a disabled "loading…" placeholder before the mount
+    // fills it in, so wait for the filled select, not just a new node.
+    await vi.waitFor(() => {
+      const current = document.querySelector("#sheet [data-isolation=select]");
+      expect(current).not.toBe(refreshed);
+      expect(current.disabled).toBe(false);
+      expect(current.value).toBe("");
+    });
     expect(callRpc).toHaveBeenCalledWith("project.set_isolation", { project_id: "proj-1", isolation: null });
-    expect(document.querySelector("#sheet [data-isolation=select]").value).toBe("");
   });
 
   it("shows why Rift is unavailable and does not offer it", async () => {
@@ -290,11 +296,11 @@ describe("openProjectSettings", () => {
       projects: [{ ...PROJECT, name: '"><img src=x>', path: "<b>p</b>" }],
     });
     openProjectSettings("proj-1", { callRpc });
-    await vi.waitFor(() => expect(document.querySelector("#psname")?.value).toBe('"><img src=x>'));
+    await vi.waitFor(() => expect(document.querySelector("#psproject")?.value).toBe('"><img src=x>'));
     const sheet = document.getElementById("sheet");
     expect(sheet.querySelector("img")).toBeNull();
     expect(sheet.querySelector("b")).toBeNull();
-    expect(sheet.querySelector("#psname").value).toBe('"><img src=x>');
+    expect(sheet.querySelector("#psproject").value).toBe('"><img src=x>');
   });
 });
 

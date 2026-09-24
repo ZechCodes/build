@@ -36,7 +36,7 @@ const DEFAULTS_BLURB =
 
 const nameFieldHtml = (name) => `
     <div class="field">
-      <label for="wslabel">Name</label>
+      <label for="wslabel">Workspace label</label>
       <input id="wslabel" style="width:100%" value="${esc(name || "")}" ${fieldTraits("identifier")} />
       <div class="dim">What this workspace is called in Build. The folder on disk and the branches inside it keep the names they were cut with.</div>
     </div>
@@ -75,7 +75,7 @@ const addDirectoryHtml = (offered) => `<div class="field">
       <div class="row"><button class="btn primary" id="wsdiraddgo" type="button" style="margin-left:auto" disabled>Add directory</button></div>
     </div>`;
 
-const directoryLabelHtml = `<label for="wsdirlabel">Name</label><input id="wsdirlabel" style="width:100%" ${fieldTraits("identifier")}>`;
+const directoryLabelHtml = `<label for="wsdirlabel">Folder label</label><input id="wsdirlabel" style="width:100%" ${fieldTraits("identifier")}>`;
 
 const directoryFieldsHtml = (kind) => {
   if (kind === "path") {
@@ -104,11 +104,11 @@ const dangerZoneHtml = () => `
     </section>`;
 
 const emptyDirectoryDraft = () => ({ kind: "", path: "", remote: "", name: "" });
+/** Each directory draft field and the input that holds it. */
+const DIRECTORY_INPUTS = { path: "#wsdirpath", remote: "#wsdirremote", name: "#wsdirlabel" };
 const directoryDraftOf = (host) => ({
   kind: host.querySelector("#wsdiradd")?.value || "",
-  path: host.querySelector("#wsdirpath")?.value || "",
-  remote: host.querySelector("#wsdirremote")?.value || "",
-  name: host.querySelector("#wsdirlabel")?.value || "",
+  ...Object.fromEntries(Object.entries(DIRECTORY_INPUTS).map(([field, selector]) => [field, host.querySelector(selector)?.value || ""])),
 });
 
 function restoreDirectoryDraft(host, draft) {
@@ -117,8 +117,8 @@ function restoreDirectoryDraft(host, draft) {
   choice.value = draft.kind || "";
   host.querySelector("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
   host.querySelector("#wsdiraddgo").disabled = !choice.value;
-  for (const field of ["path", "remote", "name"]) {
-    const control = host.querySelector(`#wsdir${field}`);
+  for (const [field, selector] of Object.entries(DIRECTORY_INPUTS)) {
+    const control = host.querySelector(selector);
     if (control) control.value = draft[field] || "";
   }
 }

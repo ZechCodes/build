@@ -37,7 +37,7 @@ function bindCancel(container, cancel) {
 
 function createDirectoryHtml(enabled) {
   return enabled
-    ? `<form id="bmkdirform" class="row browse-create"><label class="sr-only" for="bdirnew">New folder name</label><input id="bdirnew" placeholder="New folder name" ${fieldTraits("identifier", "go")}><button class="btn" id="bmkdir" type="submit">Create folder</button></form>`
+    ? `<form id="bmkdirform" class="row browse-create"><label class="sr-only" for="bdirnew">New folder</label><input id="bdirnew" placeholder="New folder" ${fieldTraits("identifier", "go")}><button class="btn" id="bmkdir" type="submit">Create folder</button></form>`
     : "";
 }
 

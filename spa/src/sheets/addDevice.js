@@ -35,7 +35,7 @@ export function openAddDevice(onDone) {
   scrim.classList.add("show");
   input.focus();
   sheet.querySelector("#pcancel").onclick = dispose;
-  sheet.querySelector("#plookup").onclick = async () => {
+  const lookup = async () => {
     if (!current()) return;
     const code = input.value.trim().toUpperCase();
     if (!code) return;
@@ -75,5 +75,9 @@ export function openAddDevice(onDone) {
       }
     };
   };
+  sheet.querySelector("#plookup").onclick = lookup;
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.isComposing) lookup();
+  });
   return dispose;
 }

@@ -21,6 +21,7 @@ import {
   withRole,
   withoutRow,
 } from "./agentRoles.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** The panel, empty. The bridge fills it. */
 export function agentRolesPanelHtml() {
@@ -34,7 +35,7 @@ export function agentRolesPanelHtml() {
         <th scope="col"><span class="visually-hidden">Order</span></th>
       </tr></thead><tbody data-aroles-rows></tbody></table>
       <form class="aroles-add" data-aroles-add>
-        <input type="text" name="model" placeholder="claude-opus-5" aria-label="Model id" required>
+        <input type="text" name="model" ${fieldTraits("identifier", "go")} placeholder="claude-opus-5" aria-label="Model id" required>
         <button class="btn mini" type="submit">Add model</button>
       </form>
       <div class="dim" id="arolessaved" style="font-size:12px;min-height:16px"></div>

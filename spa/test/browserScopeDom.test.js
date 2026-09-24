@@ -56,7 +56,7 @@ it("creates a directory in the current folder and opens it", async () => {
     .mockResolvedValueOnce({ path: "/projects/new source" })
     .mockResolvedValueOnce(listing("/projects/new source"));
   await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, onChoose: vi.fn() });
-  document.querySelector("#bdirname").value = " new source ";
+  document.querySelector("#bdirnew").value = " new source ";
   document.querySelector("#bmkdir").click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(callRpc).toHaveBeenNthCalledWith(2, "fs.mkdir", { parent: "/projects", name: "new source" });
@@ -66,11 +66,11 @@ it("creates a directory in the current folder and opens it", async () => {
 it("validates directory names before calling the device", async () => {
   const callRpc = vi.fn().mockResolvedValue(listing("/projects"));
   await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, onChoose: vi.fn() });
-  document.querySelector("#bdirname").value = "../escape";
+  document.querySelector("#bdirnew").value = "../escape";
   document.querySelector("#bmkdir").click();
   expect(document.querySelector("#berr").textContent).toContain("single folder name");
   expect(callRpc).toHaveBeenCalledTimes(1);
-  expect(document.activeElement).toBe(document.querySelector("#bdirname"));
+  expect(document.activeElement).toBe(document.querySelector("#bdirnew"));
 });
 it("ignores a directory created after the embedded picker is replaced", async () => {
   document.querySelector("#sheet").innerHTML = '<div id="browser-host"></div>';
@@ -80,7 +80,7 @@ it("ignores a directory created after the embedded picker is replaced", async ()
     .mockResolvedValueOnce(listing("/projects"))
     .mockImplementationOnce(() => new Promise((resolve) => { finishCreate = resolve; }));
   await openBrowser({ title: "Projects", callRpc, allowCreateDirectory: true, container: host, onChoose: vi.fn() });
-  host.querySelector("#bdirname").value = "later";
+  host.querySelector("#bdirnew").value = "later";
   host.querySelector("#bmkdir").click();
   host.innerHTML = "Project form restored";
   finishCreate({ path: "/projects/later" });

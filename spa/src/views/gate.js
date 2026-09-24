@@ -32,6 +32,7 @@ import { startCacheSync } from "../core/cacheSync.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 /** Whether the cache's two readers are up. They are started once, before any
  *  session answers, and stood down when a gate screen takes the page (which is
@@ -381,7 +382,7 @@ function onboardingStepsHtml() {
         ${stepHtml(
           2,
           `<b>Enter its pairing code</b> — the bridge prints it when it starts, and again while it waits for you.
-          <div class="addproj" style="margin-top:6px"><input id="ocode" placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" autofocus />
+          <div class="addproj" style="margin-top:6px"><input id="ocode" ${fieldTraits("code")} placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" autofocus />
             <button class="btn primary" id="olookup">Add device</button></div>`,
         )}
         ${stepHtml(3, "<b>Compare the fingerprint</b> with what the bridge printed, then approve.")}

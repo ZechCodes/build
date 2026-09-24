@@ -47,7 +47,7 @@ it("restores an unsent project draft from cache without asking a device", async 
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
   await writeCached(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
   const calls = openSelectableSheet(undefined);
-  await vi.waitFor(() => expect(document.querySelector("#nrname").value).toBe("cached project"));
+  await vi.waitFor(() => expect(document.querySelector("#nrproject").value).toBe("cached project"));
   expect(document.querySelector("#nrdevice").value).toBe("lap");
   expect(calls.lap).not.toHaveBeenCalled();
 });
@@ -59,7 +59,7 @@ it("drops another device's local folder when its saved device is gone", async ()
     sources: [{ id: 1, kind: "path", path: "/removed/private", name: "private", base_branch: "", automaticName: false }],
   });
   const calls = openSelectableSheet(undefined, "lap");
-  await vi.waitFor(() => expect(document.querySelector("#nrname")?.value).toBe("moved project"));
+  await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("moved project"));
   await vi.waitFor(() => expect(document.querySelector("[data-source-row]")?.textContent).toContain("No folder selected"));
   expect(document.querySelector("#nrdevice").value).toBe("lap");
   await vi.waitFor(async () => expect((await readCached(address))?.value.sources[0].path).toBe(""));
@@ -75,7 +75,7 @@ it("keeps the current device when restoring a draft made on another paired devic
     sources: [{ id: 1, kind: "path", path: "/lap/private", pathDeviceId: "lap", name: "private", base_branch: "", automaticName: false }],
   });
   const calls = openSelectableSheet(undefined, "desk");
-  await vi.waitFor(() => expect(document.querySelector("#nrname")?.value).toBe("from laptop"));
+  await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("from laptop"));
   expect(document.querySelector("#nrdevice").value).toBe("desk");
   await vi.waitFor(() => expect(document.querySelector("[data-source-row]")?.textContent).toContain("No folder selected"));
   document.querySelector("#nrdo").click();
@@ -87,7 +87,7 @@ it("writes the project draft after typing and clears it when creation succeeds",
   const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
   const done = vi.fn();
   openSheet(done);
-  const name = document.querySelector("#nrname");
+  const name = document.querySelector("#nrproject");
   name.value = "new project";
   name.dispatchEvent(new Event("input"));
   await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("new project"));
@@ -118,7 +118,7 @@ it("opens the picker after a real settings cache announcement while the pull is 
 
 it("creates a named empty project in the device projects folder", async () => {
   const done = vi.fn(); openSheet(done);
-  document.querySelector("#nrname").value = " docs ";
+  document.querySelector("#nrproject").value = " docs ";
   document.querySelector("#nrdo").click(); await flush();
   expect(callRpc).toHaveBeenCalledWith("project.create", { name: "docs" });
   await vi.waitFor(() => expect(done).toHaveBeenCalledWith({ project_id: "p1" }));
@@ -129,7 +129,7 @@ it("creates a name-only project on the currently selected device without loading
   const calls = openSelectableSheet(done, "desk");
   const selector = document.querySelector("#nrdevice");
   selector.value = "lap"; selector.dispatchEvent(new Event("change"));
-  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nrproject").value = "docs";
   document.querySelector("#nrdo").click(); await flush();
   expect(calls.desk).not.toHaveBeenCalled();
   expect(calls.lap).toHaveBeenCalledOnce();
@@ -138,7 +138,7 @@ it("creates a name-only project on the currently selected device without loading
 });
 
 it("creates one project from mixed local and remote sources", async () => {
-  const done = vi.fn(); openSheet(done); document.querySelector("#nrname").value = " platform ";
+  const done = vi.fn(); openSheet(done); document.querySelector("#nrproject").value = " platform ";
   document.querySelector("#nraddfolder").click(); await waitForBrowserCall(0); openBrowser.mock.calls[0][0].onChoose("/projects/api");
   document.querySelector("#nraddremote").click(); const remote = document.querySelector("[data-source-value]");
   remote.value = " https://github.com/acme/web.git "; remote.dispatchEvent(new Event("input"));
@@ -151,7 +151,7 @@ it("creates one project from mixed local and remote sources", async () => {
 });
 
 it("generates stable unique mount names and omits a removed source", async () => {
-  openSheet(); document.querySelector("#nrname").value = "suite";
+  openSheet(); document.querySelector("#nrproject").value = "suite";
   for (let i = 0; i < 2; i += 1) { document.querySelector("#nraddfolder").click(); await waitForBrowserCall(i); openBrowser.mock.calls[i][0].onChoose(`/where${i}/api`); }
   expect([...document.querySelectorAll("[data-source-name]")].map((node) => node.value)).toEqual(["api", "api-2"]);
   document.querySelector("[data-remove-source]").click(); document.querySelector("#nrdo").click(); await flush();
@@ -159,7 +159,7 @@ it("generates stable unique mount names and omits a removed source", async () =>
 });
 
 it("rejects duplicate mount names and focuses the duplicate", () => {
-  openSheet(); document.querySelector("#nrname").value = "suite";
+  openSheet(); document.querySelector("#nrproject").value = "suite";
   document.querySelector("#nraddremote").click(); document.querySelector("#nraddremote").click();
   [...document.querySelectorAll("[data-source-value]")].forEach((node, index) => { node.value = `https://host/repo-${index}.git`; node.dispatchEvent(new Event("input")); });
   [...document.querySelectorAll("[data-source-name]")].forEach((node) => { node.value = " API "; node.dispatchEvent(new Event("input")); });
@@ -169,7 +169,7 @@ it("rejects duplicate mount names and focuses the duplicate", () => {
 });
 
 it("ignores a stale browser choice and enables directory creation in the picker", async () => {
-  openSheet(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddfolder").click(); await waitForBrowserCall(0);
+  openSheet(); document.querySelector("#nrproject").value = "docs"; document.querySelector("#nraddfolder").click(); await waitForBrowserCall(0);
   expect(openBrowser.mock.calls[0][0].allowCreateDirectory).toBe(true);
   expect(openBrowser.mock.calls[0][0].fallbackFromMissingStart).toBe(true);
   const choose = openBrowser.mock.calls[0][0].onChoose; document.querySelector("#nrback").click(); choose("/stale");
@@ -179,7 +179,7 @@ it("ignores a stale browser choice and enables directory creation in the picker"
 // The caller's own rpc refuses when its machine goes: the sheet has no device
 // question of its own, so it shows whatever that refusal says.
 it("shows the message its machine's caller refuses with", async () => {
-  openSheet(); document.querySelector("#nrname").value = "docs"; document.querySelector("#nraddremote").click();
+  openSheet(); document.querySelector("#nrproject").value = "docs"; document.querySelector("#nraddremote").click();
   document.querySelector("[data-source-value]").value = "https://example.com/docs.git";
   document.querySelector("[data-source-value]").dispatchEvent(new Event("input"));
   callRpc.mockRejectedValueOnce(new Error("Device offline"));
@@ -191,7 +191,7 @@ it("requires an explicit device when the rail shows all devices", () => {
   openSelectableSheet();
   expect(document.querySelector("#nrdevice").value).toBe("");
   expect(document.querySelector("#nrdevice option").textContent).toBe("Choose a device");
-  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nrproject").value = "docs";
   document.querySelector("#nraddremote").click();
   const remote = document.querySelector("[data-source-value]");
   remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
@@ -203,7 +203,7 @@ it("requires an explicit device when the rail shows all devices", () => {
 it("switches every local operation to the chosen device and clears only machine-local paths", async () => {
   const done = vi.fn();
   const calls = openSelectableSheet(done, "desk");
-  document.querySelector("#nrname").value = "suite";
+  document.querySelector("#nrproject").value = "suite";
   document.querySelector("#nraddfolder").click(); await waitForBrowserCall(0);
   expect(calls.desk).toHaveBeenCalledWith("settings.get");
   openBrowser.mock.calls[0][0].onChoose("/desk-projects/api");
@@ -213,7 +213,7 @@ it("switches every local operation to the chosen device and clears only machine-
 
   const selector = document.querySelector("#nrdevice");
   selector.value = "lap"; selector.dispatchEvent(new Event("change"));
-  expect(document.querySelector("#nrname").value).toBe("suite");
+  expect(document.querySelector("#nrproject").value).toBe("suite");
   expect(document.querySelector("[data-source-value]").value).toBe("https://example.com/web.git");
   expect(document.querySelector("[data-source-row]").textContent).toContain("No folder selected");
   expect(document.querySelector("#nrerr").textContent).toContain("Choose local folders again");
@@ -257,7 +257,7 @@ it("disables device selection while project creation is in flight", async () => 
     ? new Promise((resolve) => { finishCreate = resolve; })
     : Promise.resolve({ projects_dir: "/lap-projects" }));
   openNewRepo(undefined, { devices, defaultDeviceId: "lap", callRpcFor: () => lap });
-  document.querySelector("#nrname").value = "docs";
+  document.querySelector("#nrproject").value = "docs";
   document.querySelector("#nraddremote").click();
   const remote = document.querySelector("[data-source-value]");
   remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));

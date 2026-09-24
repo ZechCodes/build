@@ -2175,8 +2175,8 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 :is(.settings-content, .device-settings) .projrow .ppath { flex:1 1 240px; }
 :is(.settings-content, .device-settings) .projrow .setremote { margin-left:0; }
 .settings-content .projfolder { flex-wrap:wrap; }
-.device-settings #device-name { flex:1 1 180px; min-width:0; width:auto; }
-.device-settings #device-name-form .projfolder { max-width:480px; }
+.device-settings #device-label { flex:1 1 180px; min-width:0; width:auto; }
+.device-settings #device-label-form .projfolder { max-width:480px; }
 .settings-content code { white-space:normal; overflow-wrap:anywhere; }
 .settings-sidebar .settings-archive { margin-top:22px; }
 @media (max-width:600px) {

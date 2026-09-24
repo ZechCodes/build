@@ -8,6 +8,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 export const browserListingAddress = (deviceId, path) => ({ deviceId, entityId: "fs-browser", kind: "listing", sub: path || "" });
 
@@ -36,7 +37,7 @@ function bindCancel(container, cancel) {
 
 function createDirectoryHtml(enabled) {
   return enabled
-    ? `<form id="bmkdirform" class="row browse-create"><label class="sr-only" for="bdirname">New folder name</label><input id="bdirname" placeholder="New folder name" autocomplete="off"><button class="btn" id="bmkdir" type="submit">Create folder</button></form>`
+    ? `<form id="bmkdirform" class="row browse-create"><label class="sr-only" for="bdirnew">New folder</label><input id="bdirnew" placeholder="New folder" ${fieldTraits("identifier", "go")}><button class="btn" id="bmkdir" type="submit">Create folder</button></form>`
     : "";
 }
 
@@ -119,7 +120,7 @@ export async function openBrowser(opts) {
   };
   const createDirectory = async () => {
     if (creating) return;
-    const input = container.querySelector("#bdirname");
+    const input = container.querySelector("#bdirnew");
     const name = input.value.trim();
     if (!/^(?!\.{1,2}$)[^\\/]+$/.test(name)) {
       container.querySelector("#berr").textContent = "Use a single folder name without / or \\.";
@@ -147,7 +148,7 @@ export async function openBrowser(opts) {
       }
     } finally {
       creating = false;
-      const currentInput = container.querySelector("#bdirname");
+      const currentInput = container.querySelector("#bdirnew");
       if (currentInput) currentInput.disabled = false;
       const currentButton = container.querySelector("#bmkdir");
       if (currentButton) currentButton.disabled = false;

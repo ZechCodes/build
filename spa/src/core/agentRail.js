@@ -171,6 +171,7 @@ import { workspaceDisplayName } from "./workspaceModel.js";
 import { ICON_CHAT_OVERVIEW } from "./icons.js";
 import { scopeLinkHtml } from "./scopeLink.js";
 import "../styles/shell.css";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** How close to the top of the conversation counts as asking for the page
  *  above it. Not zero: a reader flicking upwards should have the history on
@@ -2333,8 +2334,8 @@ function mountRailOnContext(host, context, swap) {
       <p>Start a new conversation</p>
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
       <label class="rail-newagent-name">
-        <span>Name <em>optional</em></span>
-        <input type="text" data-new-agent-name maxlength="24" autocomplete="off"
+        <span>Label <em>optional</em></span>
+        <input type="text" data-new-agent-name maxlength="24" ${fieldTraits("line")}
           placeholder="Rail scroll" aria-label="What to call this agent" value="${esc(newAgentName())}">
       </label>
       <div class="rail-newagent-work">

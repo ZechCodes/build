@@ -38,6 +38,7 @@ import {
   reasoningSelectorLabel,
   reasoningSelectorOptions,
 } from "./agentChoice.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -249,7 +250,7 @@ export function composerHtml({
     <div class="composer-context" id="${esc(parts.context)}" hidden></div>
     ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
     <div class="composer${attachable ? " attachable" : ""}">
-      <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
+      <textarea id="${esc(inputId)}" rows="1" ${fieldTraits("prose")} placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
         ${modelMenu ? `<div class="composer-choice-controls">
           <div class="composer-model" id="${esc(parts.modelMenu)}"></div>

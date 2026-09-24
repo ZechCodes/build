@@ -54,7 +54,7 @@ const typeInto = (selector, value) => {
   field.value = value;
   field.dispatchEvent(new Event("input"));
 };
-typeInto("#issue-new-title", "Kanban drag does not persist after a reload");
+typeInto("#issue-new-summary", "Kanban drag does not persist after a reload");
 typeInto("#issue-new-body", ["Dragging a card to In review leaves it where it was after a reload.", "", "Screenshot and the trace attached."].join(String.fromCharCode(10)));
 // Real files through the real tray, so the chips are the code's and not a
 // drawing of them.

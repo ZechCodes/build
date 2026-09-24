@@ -25,6 +25,7 @@ import {
 } from "./issueModel.js";
 import { catalogForProvider, creatableCatalog, effortOptionsHtml, modelOptionsHtml, providerOptionsHtml, normalizeModelCatalog } from "./modelPicker.js";
 import { chosenProviderId } from "./agentChoice.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** The honest empty-state copy for a doc pane whose canonical contents are gone
  *  (a migrated issue predating canonical storage, its worktree pruned). */
@@ -119,7 +120,7 @@ export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }
             )
             .join("")}
         </select></label>`
-      : `<label class="ivfield"><span>Base branch</span><input id="assignbase" value="${esc(assignment.base || "")}" placeholder="the Issue base branch"></label>`;
+      : `<label class="ivfield"><span>Base branch</span><input id="assignbase" ${fieldTraits("identifier")} value="${esc(assignment.base || "")}" placeholder="the Issue base branch"></label>`;
   return `<div class="assign-pop-head"><span class="ivsec">Assignment</span>
       <button class="btn mini" id="assignclose" data-assign-close>Done</button></div>
     <div class="assign-fields">

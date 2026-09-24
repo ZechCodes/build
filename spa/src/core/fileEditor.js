@@ -1,12 +1,10 @@
 import "../styles/fileEditor.css";
+import { applyFieldTraits } from "./fieldTraits.js";
 
 export function mountFileEditor(host, { value, selection, onEdit, onSelection } = {}) {
   const input = document.createElement("textarea");
   input.className = "file-editor";
-  input.spellcheck = false;
-  input.autocapitalize = "off";
-  input.autocomplete = "off";
-  input.setAttribute("autocorrect", "off");
+  applyFieldTraits(input, "identifier", "enter");
   input.value = value || "";
   host.replaceChildren(input);
   const reportSelection = () => onSelection?.({ start: input.selectionStart, end: input.selectionEnd });

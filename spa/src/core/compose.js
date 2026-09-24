@@ -11,6 +11,7 @@
 // and the markup. The wiring is core/composeView.js.
 
 import { esc } from "./text.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** Where captures wait out an offline device. Browser-scoped, like every other
  *  thing this client keeps for itself. */
@@ -210,7 +211,7 @@ export function composePromptHtml() {
 // eslint-disable-next-line complexity -- ratchet: composeBoxHtml is at 13, cap 10 — reduce it, then drop this line
 export function composeBoxHtml({ value = "", placeholder, note = "", error = "", busy = false, advanced = "" } = {}) {
   return `<div class="compose-box">
-    <textarea id="compose-text" rows="3" placeholder="${esc(placeholder)}"
+    <textarea id="compose-text" rows="3" ${fieldTraits("prose")} placeholder="${esc(placeholder)}"
       aria-label="${esc(placeholder)}">${esc(value)}</textarea>
     <div class="compose-row">
       <button class="compose-disclose" id="compose-advanced" type="button" aria-expanded="${advanced ? "true" : "false"}">

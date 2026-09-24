@@ -32,6 +32,7 @@ import { workspaceRoute } from "./projectModel.js";
 import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -1059,7 +1060,7 @@ function rerouteBranchHtml(projectId, branches) {
   const options = (branches || []).map((branch) => `<option value="${esc(branch)}"></option>`).join("");
   return `<div class="reroute-branch">
     <input type="text" class="path" data-reroute-branch="${esc(projectId)}" list="reroute-branches"
-      placeholder="a new branch, named after what you said" aria-label="Branch" autocomplete="off" />
+      placeholder="a new branch, named after what you said" aria-label="Branch" ${fieldTraits("identifier", "go")} />
     <datalist id="reroute-branches">${options}</datalist>
     <button class="btn mini primary" type="button" data-reroute-project="${esc(projectId)}" data-reroute-kind="branch">Dispatch</button>
   </div>`;

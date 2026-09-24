@@ -50,3 +50,14 @@ it("completed pairing still notifies its caller without closing a replacement sh
   expect(document.querySelector("#scrim").classList.contains("show")).toBe(true);
   expect(document.querySelector("#perr").textContent).toBe("");
 });
+
+it("looks the code up on Enter, the key the field labels Go", async () => {
+  lookupDevice.mockResolvedValue({ name: "Machine", fingerprint: "key" });
+  openAddDevice(vi.fn());
+  const code = document.querySelector("#paircode");
+  expect(code.getAttribute("enterkeyhint")).toBe("go");
+  code.value = "wxyz-4f2k";
+  code.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(document.querySelector("#papprove")).not.toBeNull());
+  expect(lookupDevice).toHaveBeenCalledWith("WXYZ-4F2K");
+});

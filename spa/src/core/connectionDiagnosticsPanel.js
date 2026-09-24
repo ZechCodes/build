@@ -11,6 +11,7 @@
 
 import { esc } from "./text.js";
 import { diagnosticRows, diagnosticsJson, diagnosticsSummary } from "./connectionDiagnosticsModel.js";
+import { applyFieldTraits } from "./fieldTraits.js";
 
 /// How often the open section re-reads the history.
 ///
@@ -81,6 +82,7 @@ function copyThroughTextarea(text, page) {
   const holder = page.createElement("textarea");
   holder.value = text;
   holder.setAttribute("readonly", "");
+  applyFieldTraits(holder, "identifier");
   holder.style.position = "fixed";
   holder.style.opacity = "0";
   page.body.appendChild(holder);

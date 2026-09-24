@@ -8,16 +8,17 @@ import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
 import { deleteCached, readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
-    <input id="${id}" style="width:100%" value="${esc(value || "")}" readonly /></div>`;
+    <input id="${id}" style="width:100%" ${fieldTraits("identifier")} value="${esc(value || "")}" readonly /></div>`;
 
 const sourceKind = (source) =>
   source.is_git === false ? "Folder" : `Git repository${source.base_branch ? ` · ${esc(source.base_branch)}` : ""}`;
 
 const sourceHtml = (source, index) => `<div class="field"><label for="pssource-${index}">${esc(source.mount || source.name || `Folder ${index + 1}`)}</label>
-    <input id="pssource-${index}" style="width:100%" value="${esc(source.path || source.remote || "")}" readonly>
+    <input id="pssource-${index}" style="width:100%" ${fieldTraits("identifier")} value="${esc(source.path || source.remote || "")}" readonly>
     <div class="row"><div class="dim">${sourceKind(source)}</div>
       <button class="btn danger mini" type="button" style="margin-left:auto" data-remove-source="${esc(source.id)}">Remove</button></div></div>`;
 
@@ -36,9 +37,9 @@ const sourcesHtml = (project) => `<fieldset style="border:0;padding:0;margin:0">
  *  folder already on the device is picked in the browser instead. */
 const addSourceHtml = () => `<div class="field">
     <label for="psremoteurl">Clone url</label>
-    <input id="psremoteurl" placeholder="git@github.com:org/repo.git" style="width:100%" autocomplete="off">
-    <label for="pssourcename">Name</label>
-    <input id="pssourcename" style="width:100%" autocomplete="off" placeholder="What to call it">
+    <input id="psremoteurl" placeholder="git@github.com:org/repo.git" style="width:100%" ${fieldTraits("identifier")}>
+    <label for="pssourcelabel">Folder label</label>
+    <input id="pssourcelabel" style="width:100%" ${fieldTraits("identifier")} placeholder="What to call it">
     <div class="row"><button class="btn" id="pssourcecancel" type="button">Cancel</button>
       <button class="btn primary" id="pssourceadd" type="button" style="margin-left:auto">Add folder</button></div>
   </div>`;
@@ -55,7 +56,7 @@ function focusedDraft(sheet) {
 
 function sourceDraft(sheet) {
   const sourceUrl = sheet.querySelector("#psremoteurl");
-  return sourceUrl ? { url: sourceUrl.value, name: sheet.querySelector("#pssourcename").value } : null;
+  return sourceUrl ? { url: sourceUrl.value, name: sheet.querySelector("#pssourcelabel").value } : null;
 }
 
 function captureDraft(sheet, paintedRemote) {
@@ -85,7 +86,7 @@ function restoreDraft(sheet, draft) {
   if (draft.source) {
     if (!sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddremote").click();
     sheet.querySelector("#psremoteurl").value = draft.source.url;
-    sheet.querySelector("#pssourcename").value = draft.source.name;
+    sheet.querySelector("#pssourcelabel").value = draft.source.name;
   } else if (sheet.querySelector("#psremoteurl")) sheet.querySelector("#psaddsource").innerHTML = "";
   sheet.querySelector("#pserr").textContent = draft.remoteError;
   sheet.querySelector("#pssrcerr").textContent = draft.sourceError;
@@ -139,13 +140,13 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
       title: "Project settings",
       subtitleHtml: "Name, location and base branch come from the repository Build was pointed at.",
       bodyHtml: `
-      ${field("Name", "psname", project.name)}
+      ${field("Project label", "psproject", project.name)}
       ${field("Repository path", "pspath", project.path)}
       ${field("Base branch", "psbranch", project.base_branch)}
       ${sourcesHtml(project)}
       ${isolationFieldHtml()}
       <div class="field"><label>Origin remote</label>
-        <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" value="${esc(project.remote || "")}" /></div>
+        <input id="psremote" placeholder="git@github.com:org/repo.git" style="width:100%" ${fieldTraits("identifier")} value="${esc(project.remote || "")}" /></div>
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button>
         <button class="btn primary" id="pssave">Save remote</button></div>
       <div class="adderr" id="pserr"></div>
@@ -204,7 +205,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!project) throw new Error("This project is no longer registered on this device.");
     return project;
   }).catch((error) => {
-    if (!$("#psname")) paintMissing(`Project settings are unavailable: ${error.message}`);
+    if (!$("#psproject")) paintMissing(`Project settings are unavailable: ${error.message}`);
   });
   return { whenCachePainted: record.whenPainted };
 }
@@ -246,9 +247,9 @@ function openAddRemote(project, write, saveDraft) {
   host.innerHTML = addSourceHtml();
   $("#pssourcecancel").onclick = () => { host.innerHTML = ""; saveDraft(); $("#psaddremote").focus(); };
   $("#psremoteurl").oninput = () => saveDraft(true);
-  $("#pssourcename").oninput = () => saveDraft(true);
+  $("#pssourcelabel").oninput = () => saveDraft(true);
   $("#pssourceadd").onclick = () => {
-    const name = $("#pssourcename").value.trim();
+    const name = $("#pssourcelabel").value.trim();
     const remote = $("#psremoteurl").value.trim();
     if (!remote) {
       $("#pssrcerr").textContent = "A Git remote needs a clone url.";

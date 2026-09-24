@@ -51,6 +51,7 @@ import {
   emptyAssigneeDraft,
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const PREFIX = "issue-new";
 const INPUT_ID = `${PREFIX}-body`;
@@ -156,7 +157,7 @@ const savedDraftFields = (saved) => ({
 /// never offered (core/issueAttachments.js).
 const bodyBoxHtml = (attachable) => `${attachable ? `<div class="composer-tray" id="${ids.tray}" hidden></div>` : ""}
   <div class="composer${attachable ? " attachable" : ""} issue-compose-body">
-    <textarea id="${INPUT_ID}" rows="3" placeholder="Anything the title leaves out (markdown)"></textarea>
+    <textarea id="${INPUT_ID}" rows="3" ${fieldTraits("prose")} placeholder="Anything the title leaves out (markdown)"></textarea>
     <div class="composer-bar">
       <span class="hint issue-compose-hint"></span>
       <div class="composer-actions">
@@ -168,7 +169,7 @@ const bodyBoxHtml = (attachable) => `${attachable ? `<div class="composer-tray" 
   </div>`;
 
 const frameHtml = (projectName, attachable) => `<section class="issue-compose" aria-label="File an issue in ${esc(projectName)}">
-    <input class="issue-compose-title" id="${PREFIX}-title" type="text" autocomplete="off"
+    <input class="issue-compose-title" id="${PREFIX}-summary" type="text" ${fieldTraits("line", "next")}
       placeholder="What should be done" aria-label="Title">
     ${bodyBoxHtml(attachable)}
     <div class="issue-compose-facets"></div>
@@ -212,7 +213,7 @@ export function openIssueComposer(host, {
 }) {
   host.innerHTML = frameHtml(projectName || projectId || "this project", attachable);
   const root = host.querySelector(".issue-compose");
-  const title = root.querySelector(`#${PREFIX}-title`);
+  const title = root.querySelector(`#${PREFIX}-summary`);
   const body = root.querySelector(`#${INPUT_ID}`);
   const facets = root.querySelector(".issue-compose-facets");
   const assigneeHost = root.querySelector(".issue-compose-assignee");

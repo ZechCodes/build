@@ -14,6 +14,7 @@
 //! out only while it is raised (`bridge/src/reachability.rs`). These tests are
 //! about the tie, not about either half.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -21,10 +22,11 @@ use std::time::Duration;
 use build_bridge::carrier::{testing, FrameHandler, FrameIntake};
 use build_bridge::reachability::Reachability;
 use build_bridge::relay;
+use build_bridge::timing::FrameClock;
 use build_bridge::transport;
-use common::{bind_relay, device_identity, greet_device, request_message, session_init_message};
+use common::{bind_relay, device_identity, greet_device};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
@@ -48,26 +50,42 @@ fn idle_intake() -> Arc<FrameIntake> {
 
 /// An intake whose one worker never finishes a frame and whose queue holds one
 /// more — a stand-in for the handler pool being full, which is the state the
-/// daemon's own pool reaches under load.
-fn wedged_intake() -> (Arc<FrameIntake>, std::sync::mpsc::Sender<()>) {
+/// daemon's own pool reaches under load. `entered` counts the frames a handler
+/// started on, and the clock reports the queue, so a test can say the pool IS
+/// full rather than assume it. The worker holds its frame until the returned
+/// sender is dropped.
+fn wedged_intake(
+    clock: Arc<FrameClock>,
+    entered: Arc<AtomicUsize>,
+) -> (Arc<FrameIntake>, std::sync::mpsc::Sender<()>) {
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     let blocked = Mutex::new(blocked);
     let intake = FrameIntake::with_pool(
-        FrameHandler::new(
-            build_bridge::timing::FrameClock::new(),
-            move |_sender, _frame, _timer| {
-                // The worker runs handlers on a blocking thread, so blocking one
-                // is what taking a worker out of the pool looks like. Dropping
-                // `release` unblocks it, including when the test panics.
-                let _ = blocked.lock().unwrap().recv();
-                json!({ "ok": true })
-            },
-        ),
+        FrameHandler::new(clock, move |_sender, _frame, _timer| {
+            entered.fetch_add(1, Ordering::SeqCst);
+            // The worker runs handlers on a blocking thread, so blocking one
+            // is what taking a worker out of the pool looks like. Dropping
+            // `release` unblocks it, including when the test panics.
+            let _ = blocked.lock().unwrap().recv();
+            json!({ "ok": true })
+        }),
         transport::generate_transport_keypair(),
         1,
         1,
     );
     (intake, release)
+}
+
+/// Wait for `condition`, or give up.
+async fn settles(mut condition: impl FnMut() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + testing::PATIENCE;
+    while tokio::time::Instant::now() < deadline {
+        if condition() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
 }
 
 /// Wait for the device to read `want`, or give up. Polled rather than awaited
@@ -186,62 +204,105 @@ async fn a_device_whose_relay_socket_drops_stops_being_reachable() {
 
 /// The read loop hands frames to a queue of the wire's own and never waits on
 /// the handler pool, so a pool that is full — the state the daemon's own pool
-/// reaches under load — costs the socket nothing: the heartbeat is answered,
-/// the device stays reachable, and the socket is held rather than given up.
-/// (A read loop that waited on the pool sent no pongs, the relay logged
+/// reaches under load — costs the socket nothing: the heartbeat goes on, the
+/// device stays reachable, and the socket is held rather than given up. (A
+/// read loop that waited on the pool sent no heartbeat, the relay logged
 /// `pings unanswered (read loop dead) for 90s; severing`, and the socket was
 /// given up after one heartbeat interval to be redialled — a redial the phone
-/// had to wait out.) The frames the pool cannot take wait on the wire's queue,
+/// had to wait out.)
+///
+/// The pool is filled the way a browser fills it: over a DataChannel. A
+/// request over the relay is refused before the dispatcher (the relay is not
+/// a data plane), so `term.list` over the socket would leave the pool idle
+/// and the test checking nothing — the round-2 review of issue #128 caught
+/// exactly that. The frames the pool cannot take wait on the wire's queue,
 /// and past its depth are refused as busy (`carrier`'s tests).
 #[tokio::test]
 async fn a_bridge_whose_pool_is_full_keeps_its_socket_and_stays_reachable() {
     let (listener, url) = bind_relay().await;
-    let (intake, release_worker) = wedged_intake();
-    let transport_public_key = intake.transport_public_key().to_string();
-    let session_key = transport::generate_session_key();
+    let clock = FrameClock::new();
+    let entered = Arc::new(AtomicUsize::new(0));
+    let (intake, release_worker) = wedged_intake(Arc::clone(&clock), Arc::clone(&entered));
     let reachable = Reachability::unreachable();
+    let heartbeats = Arc::new(AtomicUsize::new(0));
 
-    let socket = tokio::spawn(async move {
-        let mut ws = greet_device(listener, HEARTBEAT_INTERVAL_S).await;
-        ws.send(Message::Text(
-            session_init_message("sess-wedge", &transport_public_key, &session_key).to_string(),
-        ))
-        .await
-        .unwrap();
-        // One frame for the worker, one for the queue, one with nowhere to go
-        // but the wire's own queue: the pool is full for the rest of the test.
-        for n in 0..3 {
-            ws.send(Message::Text(
-                request_message(
-                    &session_key,
-                    "sess-wedge",
-                    json!({ "method": "term.list", "n": n }),
-                )
-                .to_string(),
-            ))
-            .await
-            .unwrap();
-        }
-        while let Some(Ok(_)) = ws.next().await {}
-    });
-
+    let socket = {
+        let heartbeats = Arc::clone(&heartbeats);
+        tokio::spawn(async move {
+            let mut ws = greet_device(listener, HEARTBEAT_INTERVAL_S).await;
+            while let Some(Ok(message)) = ws.next().await {
+                if let Message::Text(text) = message {
+                    let heard: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                    if heard["type"] == "heartbeat" {
+                        heartbeats.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+            }
+        })
+    };
     let running = {
-        let reachable = reachable.clone();
+        let (intake, reachable) = (Arc::clone(&intake), reachable.clone());
         tokio::spawn(async move { relay::run(&url, &device_identity(), intake, &reachable).await })
     };
     assert!(reads_as(&reachable, true).await, "the device connected");
 
+    // A browser's session over a DataChannel: one frame for the worker, one
+    // for the queue, one with nowhere to go but the wire's own queue.
+    let wire = testing::ChannelWire::open();
+    let session_key = transport::generate_session_key();
+    wire.open_session(
+        &intake,
+        "sess-wedge",
+        &testing::session_init("sess-wedge", intake.transport_public_key(), &session_key),
+    )
+    .expect("the session opened over the channel");
+    for id in 0..3 {
+        wire.accept(
+            &intake,
+            testing::client_request(
+                &session_key,
+                "sess-wedge",
+                "data",
+                json!({ "id": id, "method": "term.list" }),
+            ),
+        )
+        .await
+        .expect("the frame was admitted");
+    }
+    let pool_is_full = || entered.load(Ordering::SeqCst) == 1 && clock.stats()["queue_depth"] == 2;
+    assert!(
+        settles(pool_is_full).await,
+        "the worker is on a frame, the queue holds the second, and the wire's \
+         admitter holds the third at the queue's door: entered={} depth={}",
+        entered.load(Ordering::SeqCst),
+        clock.stats()["queue_depth"]
+    );
+
     // Well past the one interval a socket the reader could not drain used to
-    // be given up at.
+    // be given up at — and the handler holds its worker until it is released.
+    let heard_before = heartbeats.load(Ordering::SeqCst);
     tokio::time::sleep(Duration::from_secs(3 * HEARTBEAT_INTERVAL_S)).await;
+    assert!(
+        pool_is_full(),
+        "the pool stayed full for the whole wait: entered={} depth={}",
+        entered.load(Ordering::SeqCst),
+        clock.stats()["queue_depth"]
+    );
     assert!(
         !running.is_finished(),
         "the socket is held while the pool is full, not given up"
     );
     assert!(
+        heartbeats.load(Ordering::SeqCst) >= heard_before + 2,
+        "the heartbeat went on over a full pool: {} before, {} after",
+        heard_before,
+        heartbeats.load(Ordering::SeqCst)
+    );
+    assert!(
         reachable.is_reachable(),
         "a bridge whose pool is full still answers on its socket, and says so"
     );
+    wire.close(&intake);
     running.abort();
     drop(release_worker);
     socket.abort();

@@ -12,7 +12,9 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
-use super::{FrameHandler, SessionSender};
+use super::{
+    CarrierError, CarrierHandle, FrameHandler, FrameIntake, OutboundEnvelope, SessionSender,
+};
 use crate::transport::{self, Envelope, Frame, FrameFields, OuterFields, SessionInit};
 
 /// The device a test's browser is talking to. Nothing checks it — the session
@@ -106,4 +108,49 @@ async fn settled<T>(next: impl Future<Output = Option<T>>) -> Option<T> {
     tokio::time::timeout(PATIENCE, next)
         .await
         .expect("the code under test answered in time")
+}
+
+/// A DataChannel wire as a test drives it: the carrier the peer transport
+/// opens for a negotiated channel (`rtc::DataChannelCarrier`), with the test
+/// at the browser's end. The relay is not a data plane — a request over it is
+/// refused before the dispatcher (`FrameIntake::accept`) — so a test that
+/// needs the device's handler pool to be doing something puts the work in
+/// through one of these, the way a browser's requests actually arrive.
+pub struct ChannelWire {
+    carrier: CarrierHandle,
+    /// What the device pushed to this wire, as the channel's writer would
+    /// take it: every reply and push for the sessions riding the wire.
+    pub outbound: mpsc::UnboundedReceiver<OutboundEnvelope>,
+}
+
+impl ChannelWire {
+    pub fn open() -> Self {
+        let (carrier, outbound) = CarrierHandle::open_channel();
+        ChannelWire { carrier, outbound }
+    }
+
+    /// A session opened over this wire, as a `session_init` arriving on a
+    /// channel is.
+    pub fn open_session(
+        &self,
+        intake: &FrameIntake,
+        session_id: &str,
+        init: &SessionInit,
+    ) -> Result<(), CarrierError> {
+        intake.open(session_id, init, &self.carrier)
+    }
+
+    /// One envelope arrived on this wire.
+    pub async fn accept(
+        &self,
+        intake: &FrameIntake,
+        envelope: Envelope,
+    ) -> Result<(), CarrierError> {
+        intake.accept(envelope, &self.carrier).await
+    }
+
+    /// The wire closed under whatever it was carrying.
+    pub fn close(self, intake: &FrameIntake) {
+        intake.close_carrier(&self.carrier);
+    }
 }

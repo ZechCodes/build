@@ -66,7 +66,7 @@ def parse_args():
     parser.add_argument("--phone-screen", type=Path, default=DEFAULT_PHONE_SCREEN)
     parser.add_argument("--preview-dir", type=Path)
     parser.add_argument(
-        "--render-only", choices=("posters", "cutouts", "social", "all"),
+        "--render-only", choices=("posters", "closing", "cutouts", "social", "all"),
         help="render from the checked-in Blender source without rebuilding or exporting geometry",
     )
     parser.add_argument(
@@ -1242,6 +1242,16 @@ def render_only(group):
         "tablet": SCREENS_DIR / "ui05-merged-ipad.webp",
         "phone": SCREENS_DIR / "ui03-answer-iphone.webp",
     }
+    if group == "closing":
+        paths = render_closing_posters(collections, mats)
+        fixtures = {
+            "laptop": SCREENS_DIR / "ui05-merged-macbook.webp",
+            "tablet": SCREENS_DIR / "ui05-merged-ipad.webp",
+            "phone": SCREENS_DIR / "ui05-merged-iphone.webp",
+        }
+        update_render_metadata(paths, {path.stem: fixtures for path in paths})
+        print(f"Rendered closing assets from {BLEND_PATH}")
+        return
     groups = ("posters", "cutouts", "social") if group == "all" else (group,)
     paths = []
     fixture_map = {}
@@ -1373,6 +1383,39 @@ def image_info(path):
     return info
 
 
+def render_closing_posters(collections, mats):
+    """Render the physically scaled Act 8 lineup for both aspect ratios."""
+    laptop, tablet, phone = (collections[name] for name in ("laptop", "tablet", "phone"))
+    for material, fixture in (
+        ("desktop_screen", "ui05-merged-macbook.webp"),
+        ("tablet_screen", "ui05-merged-ipad.webp"),
+        ("phone_screen", "ui05-merged-iphone.webp"),
+    ):
+        set_screen_texture(mats[material], SCREENS_DIR / fixture)
+    states = (
+        (laptop, transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.25, 0, -0.20), scale=0.62,
+                                      rotation=(math.radians(8), 0, math.radians(4)))),
+        (tablet, transform_collection(tablet, (0, 0, 0), offset=(0.73, 0.05, 0.50), scale=0.62,
+                                      rotation=(math.radians(3), 0, math.radians(-8)))),
+        (phone, transform_collection(phone, (0, 0, 0), offset=(2.00, -0.14, 0.50), scale=0.62,
+                                    rotation=(math.radians(2), 0, math.radians(-10)))),
+    )
+    set_visible_collections(laptop, tablet, phone)
+    desktop = OUTPUT_DIR / "scene-08-desktop.webp"
+    mobile = OUTPUT_DIR / "scene-08-mobile.webp"
+    try:
+        render(desktop, 1440, 900, (0.70, -7.0, 1.65), (0, -0.45, 0.76), 60, False, ortho_scale=5.0)
+        render(mobile, 720, 960, (1.0, -7.2, 2.12), (0.1, -0.45, 0.87), 60, False, ortho_scale=5.1)
+    finally:
+        for collection, state in states:
+            restore_matrices(collection, state)
+    desktop_alias = OUTPUT_DIR / "desktop-poster.webp"
+    mobile_alias = OUTPUT_DIR / "mobile-poster.webp"
+    shutil.copyfile(desktop, desktop_alias)
+    shutil.copyfile(mobile, mobile_alias)
+    return [desktop, mobile, desktop_alias, mobile_alias]
+
+
 def render_scene_posters(collections, mats, default_screens):
     laptop, tablet, phone = collections["laptop"], collections["tablet"], collections["phone"]
     scenes = [
@@ -1437,32 +1480,14 @@ def render_scene_posters(collections, mats, default_screens):
             restore_matrices(laptop, laptop_state)
             restore_matrices(tablet, tablet_state)
         else:
-            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-1.15, 0, 0), scale=0.62)
-            tablet_state = transform_collection(tablet, (0, 0, 0), offset=(0.72, 0.05, 0.36), scale=0.62)
-            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.98, -0.14, -0.34), scale=0.62)
-            set_visible_collections(laptop, tablet, phone)
-            render(desktop_path, 1440, 900, (1.05, -7.0, 1.65), (0.35, -0.45, 0.76), 60, False, ortho_scale=5.0)
-            restore_matrices(laptop, laptop_state)
-            restore_matrices(tablet, tablet_state)
-            restore_matrices(phone, phone_state)
-            # Keep the same physical scale and all three devices on mobile.
-            laptop_state = transform_collection(laptop, (0, -1.0, 1.12), offset=(-0.72, 0, 0.15), scale=0.62)
-            tablet_state = transform_collection(tablet, (0, 0, 0), offset=(0.48, 0.05, -0.52), scale=0.62)
-            phone_state = transform_collection(phone, (0, 0, 0), offset=(1.12, -0.14, -0.77), scale=0.62)
-            set_visible_collections(laptop, tablet, phone)
-            render(mobile_path, 720, 960, (1.0, -7.2, 1.8), (0.1, -0.45, 0.45), 60, False, ortho_scale=5.1)
-            restore_matrices(laptop, laptop_state)
-            restore_matrices(tablet, tablet_state)
-            restore_matrices(phone, phone_state)
+            render_paths.extend(render_closing_posters(collections, mats))
+            continue
 
         render_paths.extend([desktop_path, mobile_path])
 
     set_screen_texture(mats["desktop_screen"], default_screens["laptop"])
     set_screen_texture(mats["tablet_screen"], default_screens["tablet"])
     set_screen_texture(mats["phone_screen"], default_screens["phone"])
-    shutil.copyfile(OUTPUT_DIR / "scene-08-desktop.webp", OUTPUT_DIR / "desktop-poster.webp")
-    shutil.copyfile(OUTPUT_DIR / "scene-08-mobile.webp", OUTPUT_DIR / "mobile-poster.webp")
-    render_paths.extend([OUTPUT_DIR / "desktop-poster.webp", OUTPUT_DIR / "mobile-poster.webp"])
     return render_paths
 
 

@@ -1214,50 +1214,14 @@ describe("the conversation panel unpinned", () => {
   });
 });
 
+// #148: the overview is a body of the one conversation panel, so its bounds
+// are the panel's at every width and in both layouts — there is no rule of its
+// own left to drift from them.
 describe("the agent overview's bounds", () => {
-  const phoneRule = (selector) => cssRules().find((rule) =>
-    enclosingAtRule(rule.at) === PHONE_QUERY && rule.selector === selector);
-
-  it("uses the docked conversation track without covering the work", () => {
-    const rail = baseRule("#agent-rail");
-    const overview = baseRule("#agent-rail.rail-overview");
-    const standing = baseRule("#agent-rail.rail-overview:not(.rail-popover)");
-    expect(declaration(rail.body, "grid-column")).toBe("3");
-    expect(declaration(rail.body, "margin-left")).toBe("var(--region-gap, 10px)");
-    expect(declaration(overview.body, "position")).toBeNull();
-    expect(declaration(overview.body, "grid-column")).toBeNull();
-    expect(declaration(overview.body, "left")).toBeNull();
-    expect(declaration(standing.body, "width")).toBe("calc(var(--agent-panel) + var(--agent-strip))");
-    expect(declaration(baseRule(".rail-overview-content").body, "flex")).toBe("1 1 auto");
-    expect(declaration(baseRule(".rail-strip").body, "width")).toBe("var(--agent-strip)");
-  });
-
-  it("uses the popover card's bounds while reserving only the strip", () => {
-    const card = baseRule("#agent-rail.rail-popover .rail-panel");
-    const overview = baseRule("#agent-rail.rail-overview.rail-popover .rail-overview-content");
-    const away = baseRule("#agent-rail.rail-unpinned, #agent-rail.rail-collapsed");
-    expect(declaration(away.body, "width")).toBe("var(--agent-strip)");
-    for (const property of ["position", "top", "bottom", "right", "width"]) {
-      expect(declaration(overview.body, property)).toBe(declaration(card.body, property));
-    }
-    expect(declaration(overview.body, "left")).toBeNull();
-    expect(Number(declaration(baseRule("#agent-rail.rail-popover .rail-strip").body, "z-index")))
-      .toBeGreaterThan(Number(declaration(overview.body, "z-index")));
-  });
-
-  it("keeps phone overview within the panel or popover above the strip", () => {
-    const rail = phoneRule("#agent-rail.rail-overview");
-    const standing = phoneRule("#agent-rail.rail-overview .rail-overview-content");
-    const popover = phoneRule("#agent-rail.rail-overview.rail-popover .rail-overview-content");
-    const panel = phoneRule("#agent-rail.rail-popover .rail-panel");
-    expect(declaration(rail.body, "pointer-events")).toBe("none");
-    expect(declaration(standing.body, "pointer-events")).toBe("auto");
-    expect(declaration(phoneRule("#agent-rail.rail-overview .rail-strip").body, "pointer-events")).toBe("auto");
-    expect(declaration(standing.body, "bottom")).toBe("var(--agent-strip)");
-    expect(declaration(popover.body, "bottom"))
-      .toBe("calc(var(--agent-strip) + 8px)");
-    expect(declaration(popover.body, "left")).toBe(declaration(panel.body, "left"));
-    expect(declaration(popover.body, "right")).toBe(declaration(panel.body, "right"));
+  it("has no box of its own: nothing lays the rail or a second panel out for it", () => {
+    const selectors = cssRules().map((rule) => rule.selector);
+    expect(selectors.filter((selector) => /rail-overview-content|#agent-rail\.rail-overview\b/.test(selector))).toEqual([]);
+    expect(declaration(baseRule(".rail-overview-list").body, "flex")).toBe("1 1 auto");
   });
 });
 

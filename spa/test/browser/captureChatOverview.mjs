@@ -84,7 +84,7 @@ for (const [label, viewport] of VIEWPORTS) {
     await sectionsAre(page, ["Project agents", "chat-overview-nav"]);
     await settled(page);
     await page.screenshot({ path: `${output}overview-workspace-${label}.png` });
-    await page.locator("#rail-overview .rail-overview-up").click();
+    await page.locator("#rail-panel .rail-overview-up").click();
     await sectionsAre(page, ["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav",
       "relay-candidates", "review-system-plan"]);
     await settled(page);

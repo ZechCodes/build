@@ -240,7 +240,13 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
   };
 
   return {
-    open() { active = true; void refresh(); },
+    // The rail says open on every paint the overview is showing in; only the
+    // first starts the read, and the cache watches keep it current after that.
+    open() {
+      if (active) return;
+      active = true;
+      void refresh();
+    },
     refresh() { void refresh(); },
     close() { active = false; generation += 1; watch([]); },
   };

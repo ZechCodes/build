@@ -245,6 +245,10 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * A workspace read while the panel is on the project's conversation can still
  * take another agent, and the control that adds one belongs to it.
  *
+ * `selectedKind` is which of the rail's one selection is open (#148): the
+ * conversation `selectedId` names, the `+`'s chooser, or the chat overview,
+ * whose control the rail puts after the `+`. At most one bubble is active.
+ *
  * A work item Build owns no agent in yet gets a single GHOST bubble instead:
  * the conversation exists before the agent does, and the first message is what
  * brings the agent into being — so the ghost wears the face that first agent
@@ -257,8 +261,8 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * has on every workspace's strip, so the page and the strip agree about whose
  * agent this is. `projectName` is what that initial is cut from.
  */
-export function railBubbles({ agents = [], selectedId = null, kind = "branch", chatCapable = true, addingAgent = false, canAdd = null, projectAgent = null, projectName } = {}) {
-  const own = ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd, projectName });
+export function railBubbles({ agents = [], selectedId = null, selectedKind = "agent", kind = "branch", chatCapable = true, canAdd = null, projectAgent = null, projectName } = {}) {
+  const own = ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName });
   return projectAgent ? underTheProject(own, projectAgent) : own;
 }
 
@@ -276,7 +280,7 @@ function underTheProject(own, projectAgent) {
 }
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd, projectName }) {
+function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName }) {
   const onProjectPage = kind === "project";
   const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
   if (!agents.length) {
@@ -286,7 +290,7 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd
         id: "",
         ...face(agentPattern(1)),
         title: chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
-        active: true,
+        active: selectedKind === "agent",
         unread: 0,
         working: false,
       },
@@ -300,7 +304,7 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
     title: bubbleTip(agent),
-    active: !addingAgent && agent.id === selectedId,
+    active: selectedKind === "agent" && agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
     live: agentSessionIsLive(agent),
@@ -315,7 +319,7 @@ function ownBubbles({ agents, selectedId, kind, chatCapable, addingAgent, canAdd
       label: "+",
       pattern: null,
       title: addAgentTitle(kind),
-      active: addingAgent,
+      active: selectedKind === "add",
       unread: 0,
       working: false,
     });

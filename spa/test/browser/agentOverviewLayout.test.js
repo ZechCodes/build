@@ -21,7 +21,6 @@ const rects = () => {
   return {
     work, rail: rect("#agent-rail"), strip: rect(".rail-strip"),
     panel: document.querySelector(".rail-panel") ? rect(".rail-panel") : null,
-    overview: document.querySelector(".rail-overview-content") ? rect(".rail-overview-content") : null,
     workHit: document.elementFromPoint(point.x, point.y)?.closest("#root")?.id || null,
   };
 };
@@ -33,7 +32,7 @@ const sameRect = (actual, expected) => {
   }
 };
 
-it("mounted agent overview replaces only the chat panel in docked and popover modes", async () => {
+it("shows the agent overview in the chat panel's own box, docked and as a popover", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountLayout(page, markup, {
       basePath,
@@ -68,30 +67,43 @@ it("mounted agent overview replaces only the chat panel in docked and popover mo
     const dockedPanel = await page.evaluate(rects);
     assert.ok(dockedPanel.panel.width > 0);
     await page.locator(".rail-overview-toggle").click();
-    await page.waitForSelector(".rail-overview-content");
-    await page.waitForFunction(() => !document.querySelector(".rail-overview-content")?.getAnimations().length);
+    await page.waitForSelector("#rail-panel .rail-overview-list");
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
     const dockedOverview = await page.evaluate(rects);
-    sameRect(dockedOverview.overview, dockedPanel.panel);
+    // #148: the overview is a body of the one panel, so it has the panel's box.
+    sameRect(dockedOverview.panel, dockedPanel.panel);
     sameRect(dockedOverview.strip, dockedPanel.strip);
     assert.equal(dockedOverview.workHit, "root");
-    assert.ok(dockedOverview.work.x + dockedOverview.work.width <= dockedOverview.overview.x,
+    assert.ok(dockedOverview.work.x + dockedOverview.work.width <= dockedOverview.panel.x,
       "the docked overview must start to the right of the workspace");
     await page.locator("#workspace-action").click();
     assert.equal(await page.evaluate(() => window.__workspaceClicks), 1);
 
-    await page.locator("#rail-overview .pinbtn").click();
+    await page.locator("#rail-panel .pinbtn").click();
     await page.waitForSelector("#agent-rail.rail-popover:not([data-panel-transition])");
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
     const popoverOverview = await page.evaluate(rects);
     assert.equal(popoverOverview.workHit, "root");
     assert.equal(Math.round(popoverOverview.rail.width), Math.round(popoverOverview.strip.width));
     await page.locator("#workspace-action").click();
     assert.equal(await page.evaluate(() => window.__workspaceClicks), 2);
+    // The popover's notch points at the overview's control, measured the way
+    // it is for a bubble: the control's middle, along the panel's edge.
+    const notch = await page.evaluate(() => {
+      const panel = document.querySelector("#rail-panel");
+      const toggle = document.querySelector(".rail-overview-toggle").getBoundingClientRect();
+      return { anchor: panel.dataset.anchor, offset: panel.style.getPropertyValue("--rail-anchor"),
+        wanted: `${Math.round(toggle.top + toggle.height / 2 - panel.getBoundingClientRect().top)}px` };
+    });
+    assert.equal(notch.anchor, "overview");
+    assert.equal(notch.offset, notch.wanted);
 
-    await page.locator(".rail-overview-toggle").click();
-    await page.waitForSelector(".rail-overview-content", { state: "detached" });
-    await page.waitForFunction(() => document.querySelector(".rail-panel")?.getAttribute("aria-hidden") === "false");
+    // Another bubble while it is out: the same card, now the conversation.
+    await page.locator('[data-bubble="agent"]').click();
+    await page.waitForFunction(() => !document.querySelector("#rail-panel .rail-overview-list"));
+    await page.waitForFunction(() => !document.querySelector(".rail-panel")?.getAnimations().length);
     const popoverPanel = await page.evaluate(rects);
-    sameRect(popoverOverview.overview, popoverPanel.panel);
+    sameRect(popoverOverview.panel, popoverPanel.panel);
     sameRect(popoverOverview.strip, popoverPanel.strip);
   }, { width: 1320, height: 850 });
 }, 30_000);
@@ -193,7 +205,7 @@ it("moves the chat overview between one workspace and the whole project", async 
     await page.waitForSelector('.rail-bubble-add + .rail-overview-toggle', { timeout: 5000 });
     await page.locator(".rail-overview-toggle").click();
     await sectionsNamed(["Project agents", "chat-overview-nav"]);
-    await page.locator("#rail-overview .rail-overview-up").click();
+    await page.locator("#rail-panel .rail-overview-up").click();
     await sectionsNamed(["Project agents", "spa-flaky-tests", "landing-page", "chat-overview-nav",
       "relay-candidates", "review-system-plan"]);
     assert.deepEqual((await sections()).map(({ agents, seeAll }) => [agents.length, seeAll]),
@@ -202,12 +214,12 @@ it("moves the chat overview between one workspace and the whole project", async 
     assert.equal(await page.locator('.rail-overview-section[aria-label="review-system-plan"] .rail-overview-add').count(), 1);
     await page.locator('.rail-overview-open[data-overview-scope="workspace-new"]').click();
     await sectionsNamed(["Project agents", "review-system-plan"]);
-    await page.locator("#rail-overview .rail-overview-up").click();
-    assert.equal(await page.locator("#rail-overview .rail-overview-up").count(), 0);
+    await page.locator("#rail-panel .rail-overview-up").click();
+    assert.equal(await page.locator("#rail-panel .rail-overview-up").count(), 0);
 
     await page.locator('.rail-overview-open[data-overview-scope="workspace-quiet"]').click();
     await sectionsNamed(["Project agents", "landing-page"]);
-    await page.locator("#rail-overview .rail-overview-up").click();
+    await page.locator("#rail-panel .rail-overview-up").click();
     await page.locator('.rail-overview-see-all[data-overview-scope="workspace-busy"]').click();
     await sectionsNamed(["Project agents", "spa-flaky-tests"]);
     assert.deepEqual((await sections())[1].agents, ["busy-5", "busy-4", "busy-3", "busy-2", "busy-1"]);

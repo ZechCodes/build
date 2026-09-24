@@ -593,6 +593,185 @@ describe("the unpinned panel's popover", () => {
   });
 });
 
+// #148: the chats, the new chat and the chat overview are one selection shown
+// in one panel, and every bubble on the strip toggles it the same way. Zech's
+// two reports are the cases this pins: pressing the open overview's control
+// showed the previous chat, and chat → overview → chat closed both.
+describe("one selection in one panel (#148)", () => {
+  const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
+  const control = (which) => railHost().querySelector(
+    which === "overview" ? '[data-bubble="overview"]' : which === "add" ? '[data-bubble="add"]' : `[data-agent="${which}"]`);
+  const press = async (which) => {
+    control(which).click();
+    await flush();
+  };
+  const panelOut = () => !!panel() && panel().getAttribute("aria-hidden") === "false";
+  /** What the one panel is showing: the overview's list, the new-agent
+   *  chooser, or whose conversation. */
+  const shows = () => {
+    if (panel().querySelector(".rail-overview-list")) return "overview";
+    if (panel().querySelector(".rail-newagent")) return "add";
+    return headWho(panel());
+  };
+  const selected = () => [...railHost().querySelectorAll(".rail-strip > .active")]
+    .map((one) => (one.dataset.bubble === "agent" ? one.dataset.agent : one.dataset.bubble));
+  const SHOWN = { "ag-1": "Fix login redirect", "ag-2": "Polish the rail", add: "add", overview: "overview" };
+
+  beforeEach(() => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  });
+  afterEach(() => atWidth(1024));
+
+  for (const layout of ["docked", "popover"]) {
+    describe(`${layout}`, () => {
+      beforeEach(() => atWidth(layout === "docked" ? 1024 : 390));
+
+      for (const [which, other] of [["ag-2", "overview"], ["add", "ag-2"], ["overview", "ag-2"]]) {
+        it(`toggles the panel on ${which} and switches to ${other} without closing`, async () => {
+          await mount();
+          // Standing start: a closed panel, whatever the layout opens with.
+          if (panelOut()) await press(selected()[0]);
+          expect(panelOut()).toBe(false);
+
+          await press(which);
+          expect(panelOut()).toBe(true);
+          expect(shows()).toBe(SHOWN[which]);
+          expect(selected()).toEqual([which]);
+
+          await press(which);
+          expect(panelOut()).toBe(false);
+          expect(selected()).toEqual([which]);
+
+          await press(which);
+          expect(panelOut()).toBe(true);
+          expect(shows()).toBe(SHOWN[which]);
+
+          await press(other);
+          expect(panelOut()).toBe(true);
+          expect(shows()).toBe(SHOWN[other]);
+          expect(selected()).toEqual([other]);
+
+          await press(which);
+          expect(panelOut()).toBe(true);
+          expect(shows()).toBe(SHOWN[which]);
+
+          await press(other);
+          await press(other);
+          expect(panelOut()).toBe(false);
+          await press(which);
+          expect(panelOut()).toBe(true);
+          expect(shows()).toBe(SHOWN[which]);
+        });
+      }
+
+      it("goes chat → overview → chat and ends with the chat open", async () => {
+        await mount();
+        await press("ag-1");
+        if (!panelOut()) await press("ag-1");
+        expect(shows()).toBe("Fix login redirect");
+        await press("overview");
+        expect(shows()).toBe("overview");
+        await press("ag-1");
+        expect(panelOut()).toBe(true);
+        expect(shows()).toBe("Fix login redirect");
+        expect(selected()).toEqual(["ag-1"]);
+      });
+
+      it("closes the open overview on its own control rather than showing the chat behind it", async () => {
+        await mount();
+        await press("overview");
+        expect(shows()).toBe("overview");
+        await press("overview");
+        expect(panelOut()).toBe(false);
+        expect(selected()).toEqual(["overview"]);
+        expect(railHost().querySelector("#rail-overview")).toBeNull();
+      });
+    });
+  }
+
+  it("is one panel: the overview is a body of #rail-panel, not a second element", async () => {
+    await mount();
+    await press("overview");
+    expect(railHost().querySelectorAll("#rail-panel")).toHaveLength(1);
+    expect(railHost().querySelector("#rail-overview")).toBeNull();
+    expect(panel().querySelector(".rail-head .rail-who").textContent).toContain("Agents");
+  });
+
+  it("says the overview's control is expanded and controls the panel, like every bubble", async () => {
+    await mount();
+    const toggle = control("overview");
+    expect(toggle.getAttribute("aria-controls")).toBe("rail-panel");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    await press("overview");
+    expect(control("overview").getAttribute("aria-expanded")).toBe("true");
+    expect(control("ag-1").getAttribute("aria-expanded")).toBe("false");
+    await press("overview");
+    expect(control("overview").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("anchors the popover's notch on the overview's control", async () => {
+    atWidth(390);
+    await mount();
+    await press("overview");
+    expect(panelOut()).toBe(true);
+    expect(railHost().classList.contains("rail-popover")).toBe(true);
+    expect(panel().dataset.anchor).toBe("overview");
+    expect(panel().style.getPropertyValue("--rail-anchor")).toBe("0px");
+    await press("add");
+    expect(panel().dataset.anchor).toBe("add");
+    await press("ag-2");
+    expect(panel().dataset.anchor).toBe("ag-2");
+  });
+
+  it("puts the overview away on Escape and an outside press, as it does a chat", async () => {
+    atWidth(390);
+    await mount();
+    await press("overview");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flush();
+    expect(panelOut()).toBe(false);
+    await press("overview");
+    document.body.append(document.createElement("button"));
+    document.body.lastElementChild.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    await flush();
+    expect(panelOut()).toBe(false);
+    expect(selected()).toEqual(["overview"]);
+  });
+
+  it("keeps an open overview through a push", async () => {
+    await mount();
+    await press("overview");
+    await pushRow(branchRow({ agents: [agent({ unread_count: 2 }), agent({ id: "ag-2", ordinal: 2 })] }));
+    expect(panelOut()).toBe(true);
+    expect(shows()).toBe("overview");
+    expect(selected()).toEqual(["overview"]);
+  });
+
+  it("keeps an open overview through a remount", async () => {
+    await mount();
+    await press("overview");
+    rail.dispose();
+    rail = mountAgentRail(railHost(), railAddress());
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    expect(selected()).toEqual(["overview"]);
+    await press("ag-2");
+    rail.dispose();
+    rail = mountAgentRail(railHost(), railAddress());
+    await vi.waitFor(() => expect(panel() && shows()).toBe("Polish the rail"));
+  });
+
+  it("opens a row's agent in the same panel, the move its bubble makes", async () => {
+    await mount();
+    await press("overview");
+    await vi.waitFor(() => expect(railHost().querySelector('[data-overview-agent="ag-2"]')).toBeTruthy());
+    railHost().querySelector('[data-overview-agent="ag-2"]').click();
+    await flush();
+    expect(panelOut()).toBe(true);
+    expect(shows()).toBe("Polish the rail");
+    expect(selected()).toEqual(["ag-2"]);
+  });
+});
+
 // The reviewer's headline complaint: switching workspaces showed a rail with
 // nothing in it until a round trip came back. The rail reads the cache and
 // nothing else now — the strip and the conversation are on the first frame,
@@ -1039,8 +1218,8 @@ describe("the bubble strip", () => {
     });
     expect(rowFor("ag-1").textContent).toContain("Checking the build");
     expect(rowFor("ag-2").textContent).toContain("The diff is ready");
-    expect(railHost().classList.contains("rail-overview")).toBe(true);
-    expect(panel().getAttribute("aria-hidden")).toBe("true");
+    expect(panel().contains(rowFor("ag-1"))).toBe(true);
+    expect(panel().getAttribute("aria-hidden")).toBe("false");
 
     await writeRailThread("run-3", "ag-1", { items: [
       { type: "event", data: { sequence: 3, event: "tool_use", summary: "Running tests" } },
@@ -1048,8 +1227,7 @@ describe("the bubble strip", () => {
     await vi.waitFor(() => expect(rowFor("ag-1")?.textContent).toContain("Running tests"));
 
     rowFor("ag-2").click();
-    await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
-    expect(railHost().querySelector("#rail-overview")).toBeNull();
+    await vi.waitFor(() => expect(railHost().querySelector(".rail-overview-list")).toBeNull());
     expect(headWho(panel())).toBe("Second agent");
     expect(panel().getAttribute("aria-hidden")).toBe("false");
   });
@@ -1138,8 +1316,8 @@ describe("the bubble strip", () => {
   it("gives the overview a chat header with only a working pin", async () => {
     await mountOverviewReady();
     railHost().querySelector(".rail-overview-toggle").click();
-    const head = railHost().querySelector("#rail-overview .rail-head");
-    expect(head).toBeTruthy();
+    await vi.waitFor(() => expect(panel().querySelector(".rail-overview-list")).toBeTruthy());
+    const head = panel().querySelector(".rail-head");
     expect(head.querySelector(".rail-who").textContent).toContain("Agents");
     expect([...head.querySelectorAll("button")].map((button) => button.className)).toEqual([
       expect.stringContaining("pinbtn"),
@@ -1154,27 +1332,35 @@ describe("the bubble strip", () => {
     expect(await pinnedValue()).toBe(true);
   });
 
-  it("keeps the overview mounted while it closes and animates opening", async () => {
+  // #148: the overview opens and closes with the panel's own motion, and what
+  // leaves is the overview — never the conversation that was open before it.
+  it("closes and reopens the overview with the panel's own motion", async () => {
     await mountOverviewReady();
+    const toggle = () => railHost().querySelector(".rail-overview-toggle");
+    const shown = panel();
     const animations = recordAnimations();
     try {
-      railHost().querySelector(".rail-overview-toggle").click();
-      const overview = railHost().querySelector("#rail-overview");
-      expect(overview).toBeTruthy();
-      await vi.waitFor(() => expect(animations.some((run) => run.element === overview)).toBe(true));
-      const opening = animations.find((run) => run.element === overview);
+      toggle().click();
+      await vi.waitFor(() => expect(shown.querySelector(".rail-overview-list")).toBeTruthy());
+      expect(animations).toHaveLength(0);
+
+      toggle().click();
+      expect(panel()).toBe(shown);
+      expect(shown.getAttribute("aria-hidden")).toBe("true");
+      expect(shown.hasAttribute("inert")).toBe(true);
+      expect(shown.querySelector(".rail-overview-list")).toBeTruthy();
+      await vi.waitFor(() => expect(shown.classList.contains("rail-panel-concealed")).toBe(true));
+
+      toggle().click();
+      expect(panel()).toBe(shown);
+      await vi.waitFor(() => expect(animations.some((run) => run.element === shown)).toBe(true));
+      const opening = animations.find((run) => run.element === shown);
       expect(opening.options.duration).toBe(160);
       expect(opening.keyframes[0]).toMatchObject({ opacity: "0" });
       expect(opening.keyframes[1]).toMatchObject({ opacity: "1", transform: "none" });
+      expect(shown.getAttribute("aria-hidden")).toBe("false");
+      expect(shown.querySelector(".rail-overview-list")).toBeTruthy();
       opening.onfinish();
-
-      railHost().querySelector(".rail-overview-toggle").click();
-      expect(railHost().querySelector("#rail-overview")).toBe(overview);
-      expect(overview.getAttribute("aria-hidden")).toBe("true");
-      expect(overview.hasAttribute("inert")).toBe(true);
-      expect(railHost().classList.contains("rail-overview")).toBe(true);
-      await vi.waitFor(() => expect(railHost().querySelector("#rail-overview")).toBeNull());
-      expect(railHost().classList.contains("rail-overview")).toBe(false);
     } finally {
       stopRecordingAnimations();
     }
@@ -1186,12 +1372,14 @@ describe("the bubble strip", () => {
     window.matchMedia = (query) => ({ matches: query === "(prefers-reduced-motion: reduce)" });
     const animations = recordAnimations();
     try {
-      railHost().querySelector(".rail-overview-toggle").click();
-      const overview = railHost().querySelector("#rail-overview");
-      expect(overview.getAttribute("aria-hidden")).toBe("false");
-      expect(animations.filter((run) => run.element === overview)).toHaveLength(0);
-      railHost().querySelector(".rail-overview-toggle").click();
-      expect(railHost().querySelector("#rail-overview")).toBeNull();
+      const toggle = () => railHost().querySelector(".rail-overview-toggle");
+      toggle().click();
+      toggle().click();
+      expect(panel().classList.contains("rail-panel-concealed")).toBe(true);
+      toggle().click();
+      expect(panel().getAttribute("aria-hidden")).toBe("false");
+      expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+      expect(animations).toHaveLength(0);
     } finally {
       window.matchMedia = originalMatchMedia;
       stopRecordingAnimations();
@@ -1199,7 +1387,7 @@ describe("the bubble strip", () => {
   });
 
   // #117: the overview's control is a bare icon right after the `+`, not a
-  // bubble at the strip's far end.
+  // bubble at the strip's far end — and #148: it is selected as a bubble is.
   it("puts the chat overview control right after the + as a bare, labelled icon", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     await mountOverviewReady();
@@ -1212,20 +1400,21 @@ describe("the bubble strip", () => {
     expect(toggle.getAttribute("aria-label")).toBe("Chat overview");
     expect(toggle.title).toBe("Chat overview");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.getAttribute("aria-controls")).toBe("rail-overview");
+    expect(toggle.getAttribute("aria-controls")).toBe("rail-panel");
 
     const rule = shellCss.match(/\.rail-overview-toggle \{([^}]*)\}/)[1];
     expect(rule).toMatch(/border:0/);
     expect(rule).toMatch(/background:none/);
     expect(rule).not.toMatch(/margin-(top|left):auto/);
     expect(shellCss).toMatch(/\.rail-overview-toggle:focus-visible \{ outline:2px solid var\(--accent\)/);
+    expect(shellCss).toMatch(/\.rail-overview-toggle\.active \{ color:var\(--accent\); \}/);
 
     toggle.click();
     await vi.waitFor(() => {
       const open = railHost().querySelector(".rail-overview-toggle");
-      expect(open.getAttribute("aria-label")).toBe("Close chat overview");
+      expect(open.classList.contains("active")).toBe(true);
+      expect(open.getAttribute("aria-label")).toBe("Chat overview");
       expect(open.getAttribute("aria-expanded")).toBe("true");
-      expect(railHost().querySelector("#rail-overview")?.getAttribute("aria-label")).toBe("Chat overview");
     });
   });
 
@@ -1236,7 +1425,7 @@ describe("the bubble strip", () => {
     const sectionNamed = (name) => [...railHost().querySelectorAll(".rail-overview-section")]
       .find((section) => section.getAttribute("aria-label") === name);
     const rowNames = (section) => [...section.querySelectorAll(".rail-overview-name")].map((one) => one.textContent);
-    const scopeOut = () => railHost().querySelector("#rail-overview .rail-head .rail-overview-up");
+    const scopeOut = () => panel()?.querySelector(".rail-head .rail-overview-up");
     const openOverview = () => railHost().querySelector(".rail-overview-toggle").click();
 
     const writeProjectBoard = async (current) => {
@@ -1383,8 +1572,7 @@ describe("the bubble strip", () => {
       document.body.innerHTML = bodyHtml;
       rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
         projectAgent: { projectId: "p1", entityId: "run-project" } }));
-      await vi.waitFor(() => expect(railHost().querySelector(".rail-overview-toggle")).toBeTruthy());
-      openOverview();
+      // The overview was what this page was left on, so it is what comes back.
       await vi.waitFor(() => expect(sectionNamed("Busy workspace")).toBeTruthy());
       expect(scopeOut()).toBeNull();
     });

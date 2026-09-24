@@ -234,25 +234,50 @@ async function standProjectRail(parts, context, mine) {
   // and its bubbles should wear its initial the moment they appear.
   const named = { ...parts, rail: { ...parts.rail, projectName: row?.name || "" } };
   if (ownerOf(row)) live.rail = mountRail({ ...named.rail, entityId: ownerOf(row) }, context);
-  else if (canAnswer(context)) await standOnAnswer(named, context, mine);
   else live.rail = standWhenAsked(named, context, mine);
 }
 
-/** The rail over a machine that cannot be asked for an owner yet: whichever
- *  comes first, the list naming one or the machine answering to mint one. A
- *  question that can only be refused is not asked, and not toasted. */
+/** Whether this machine can be asked, once the greeting of the session it is on
+ *  has settled. A session is adopted before it is greeted, and the greeting is
+ *  what says whether this tab can read the bridge at all: a bridge speaking an
+ *  API nothing here claims is not asked to mint anything. A reconnect landing
+ *  under the wait arms a greeting of its own, which is waited on in turn. */
+async function answersOnceGreeted(context) {
+  let greeting;
+  do {
+    greeting = context.greeted;
+    await greeting;
+  } while (greeting !== context.greeted);
+  return canAnswer(context);
+}
+
+/** The rail over a project whose list names no owner: whichever comes first,
+ *  the list naming one or the machine answering to mint one. A question that
+ *  can only be refused is not asked, and not toasted. Exactly one of the two
+ *  mounts: the list's pending read is fenced the moment the machine is asked. */
 function standWhenAsked(parts, context, mine) {
   const listed = standWhenListed(parts, context, mine);
-  const stopWaiting = onDeviceStateChanged(() => {
-    if (listed?.mounted() || generation !== mine) return stopWaiting();
-    if (!canAnswer(context)) return undefined;
-    stopWaiting();
+  let waiting = true;
+  let stopListening = () => {};
+  const stop = () => {
+    waiting = false;
+    stopListening();
+  };
+  const ask = async () => {
+    if (!waiting || !canAnswer(context)) return;
+    const answering = await answersOnceGreeted(context);
+    if (!waiting) return;
+    if (listed?.mounted() || generation !== mine) return stop();
+    if (!answering) return;
+    stop();
     listed?.dispose();
-    return void standOnAnswer(parts, context, mine);
-  });
+    await standOnAnswer(parts, context, mine);
+  };
+  stopListening = onDeviceStateChanged(() => void ask());
+  void ask();
   return {
     dispose() {
-      stopWaiting();
+      stop();
       listed?.dispose();
     },
   };
@@ -280,10 +305,13 @@ function standWhenListed(parts, context, mine) {
   if (!address) return null;
   let rail = null;
   let unsubscribe = null;
+  let disposed = false;
   const tryMount = async () => {
     const row = await cachedProject(context, parts.rail.projectId);
     const owner = ownerOf(row);
-    if (!owner || rail || generation !== mine) return;
+    // A read that was in flight when the wait was given up mounts nothing: the
+    // wait's owner has handed the rail to someone else.
+    if (!owner || rail || disposed || generation !== mine) return;
     unsubscribe?.();
     unsubscribe = null;
     rail = mountRail({ ...parts.rail, projectName: row.name || "", entityId: owner }, context);
@@ -292,6 +320,7 @@ function standWhenListed(parts, context, mine) {
   return {
     mounted: () => Boolean(rail),
     dispose() {
+      disposed = true;
       unsubscribe?.();
       unsubscribe = null;
       rail?.dispose?.();

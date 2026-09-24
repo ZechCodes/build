@@ -40,7 +40,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App, resetApplication } = await import("../src/app.js");
-const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
@@ -168,6 +168,9 @@ beforeEach(async () => {
       return {};
     },
   });
+  // Greeted, too: a project with no owner is minted one only once its bridge
+  // has said which API it speaks (core/shell.js).
+  adoptBridgeSelection(contextFor(DEVICE_ID), { version: "1.22.0" }, null);
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });

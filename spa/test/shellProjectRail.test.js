@@ -15,7 +15,7 @@ vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountA
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
 
-let standShell, stopShell, writeCached, scopeFor, clearCacheScope, stampProject, adoptDeviceSession, resetDeviceContexts;
+let standShell, stopShell, writeCached, scopeFor, clearCacheScope, stampProject, adoptDeviceSession, adoptBridgeSelection, resetDeviceContexts;
 let scope, rpc;
 
 const route = { name: "project", deviceId: "dev-1", projectId: "proj-1" };
@@ -23,6 +23,13 @@ const issueRoute = { name: "trackerIssue", deviceId: "dev-1", projectId: "proj-1
 
 const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
+};
+
+/** The machine's session landing and greeting: the shell asks a machine to
+ *  mint nothing before its bridge has said which API it speaks. */
+const land = () => {
+  const context = adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+  adoptBridgeSelection(context, { version: "1.22.0" }, null);
 };
 
 const listProjects = (rows) =>
@@ -39,10 +46,10 @@ beforeEach(async () => {
   ({ writeCached } = await import("../src/core/localCache.js"));
   ({ scopeFor, clearCacheScope } = await import("../src/core/cacheScope.js"));
   ({ stampProject } = await import("../src/core/feedMerge.js"));
-  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  ({ adoptDeviceSession, adoptBridgeSelection, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   scope = scopeFor("dev-1");
   rpc = vi.fn(async () => ({ entity_id: "run-minted" }));
-  adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+  land();
 });
 
 afterEach(() => {
@@ -116,7 +123,7 @@ describe("the conversation a project page stands on", () => {
     expect(notifyError).not.toHaveBeenCalled();
     expect(mountAgentRail).not.toHaveBeenCalled();
 
-    adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+    land();
     await flush();
 
     expect(rpc).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
@@ -133,7 +140,7 @@ describe("the conversation a project page stands on", () => {
 
     await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
     await flush();
-    adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+    land();
     await flush();
 
     expect(rpc).not.toHaveBeenCalled();

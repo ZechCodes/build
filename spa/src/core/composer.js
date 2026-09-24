@@ -555,10 +555,26 @@ export function mountComposerAttachments(root, {
 /// surface caps its own box: a full-width page can afford a taller one than the
 /// agent rail, where a growing box is taking its room from the conversation it
 /// is a reply to. Past the ceiling the box scrolls its own text.
+///
+/// The box is written only when its height has to change. Collapsing it to
+/// measure on every keystroke is two writes on the element being typed into,
+/// the kind of churn a phone's keyboard is sensitive to (#138). Text that only
+/// grew can only need more room, and whether it does is a read: its content
+/// overflows the height it was given. Only a box that lost text is collapsed
+/// to find how far it shrank.
 export function autoGrow(input) {
-  const fit = () => {
+  let measuredLength = null;
+  const measure = () => {
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight}px`;
+  };
+  const stillFits = () =>
+    measuredLength !== null
+    && input.value.length >= measuredLength
+    && input.scrollHeight <= Number.parseFloat(input.style.height);
+  const fit = () => {
+    if (!stillFits()) measure();
+    measuredLength = input.value.length;
   };
   input.addEventListener("input", fit);
   fit();

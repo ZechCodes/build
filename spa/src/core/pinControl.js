@@ -8,6 +8,7 @@
 // button stands in index.html and is only ever re-labelled, the panel's head is
 // rewritten as markup whenever what it says changes.
 
+import { setAttr } from "../dom.js";
 import { ICON_PIN } from "./icons.js";
 import { esc, pinText } from "./text.js";
 
@@ -25,7 +26,7 @@ export function pinButtonHtml({ subject, pinned }) {
 /** …and the same state written onto a button that is already standing. */
 export function syncPinButton(button, { subject, pinned }) {
   const label = pinText(pinned, subject);
-  button.setAttribute("aria-pressed", String(pinned));
-  button.setAttribute("aria-label", label);
-  button.title = label;
+  setAttr(button, "aria-pressed", pinned);
+  setAttr(button, "aria-label", label);
+  setAttr(button, "title", label);
 }

@@ -19,6 +19,7 @@
 // the line finishes what it is doing and then goes straight to the newest one,
 // so the reader never watches it chase a queue.
 
+import { setHidden } from "../dom.js";
 import { MOTION_BEAT_MS, MOTION_DURATION_MS, MOTION_EASING, prefersReducedMotion } from "./motion.js";
 import { gitStatusPlan } from "./gitStatusCells.js";
 
@@ -154,7 +155,7 @@ export function createGitStatusTicker(host) {
       snap(plan.cells);
       return;
     }
-    host.hidden = false;
+    setHidden(host, false);
     if (plan.exits.length) await cascade(plan.exits, CASCADE_OUT);
     const staying = plan.cells.filter((cell) => !plan.enters.includes(cell.key)).map((cell) => cell.key);
     const before = leftEdges(staying);
@@ -164,7 +165,7 @@ export function createGitStatusTicker(host) {
   }
 
   function settleHost() {
-    host.hidden = painted.length === 0;
+    setHidden(host, painted.length === 0);
   }
 
   function start(cells) {

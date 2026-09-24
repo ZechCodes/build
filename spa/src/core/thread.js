@@ -24,6 +24,7 @@ import { ICON_CHECK } from "./icons.js";
 import { openAttachmentLightbox } from "./threadAttachmentLightbox.js";
 import { attachmentListHtml, isMediaAttachment } from "./attachmentTiles.js";
 import { setMotionRowHtml } from "./motion.js";
+import { setAttr } from "../dom.js";
 import { issueCardHtml } from "./trackerMessageCard.js";
 import { issueActionLineHtml } from "./trackerActionLine.js";
 import { isIssueNotice, issueNoticeLineHtml, issueNoticeOf } from "./trackerNotice.js";
@@ -1125,7 +1126,7 @@ function markNearestUserTick(list, previous) {
   for (const tick of list.querySelectorAll(".thread-user-tick")) {
     const active = Number(tick.dataset.userTickIndex) === previous;
     tick.classList.toggle("active", active);
-    if (active) tick.setAttribute("aria-current", "location");
+    if (active) setAttr(tick, "aria-current", "location");
     else tick.removeAttribute("aria-current");
     if (active) keepUserTickInView(list, tick);
   }
@@ -1899,6 +1900,10 @@ function showEmptyThread(section, empty) {
   section.querySelector(".thread-items").classList.toggle("is-empty", empty);
 }
 
+/** The tick markup each nav source was last written with. Rewriting it resets
+ *  the tick window, which re-patches every tick even when no message moved. */
+const paintedTicks = new WeakMap();
+
 /// Draw a conversation into `container` as keyed rows.
 ///
 /// The frame — the title, the timeline, the revision viewer, whatever composer
@@ -1924,8 +1929,12 @@ export function paintThreadEntries(container, built, options = {}) {
     render: (row) => row.html,
   });
   const source = section.querySelector(".thread-user-nav-source");
-  source.innerHTML = userMessageTicks(built).map(userMessageTickHtml).join("");
-  section.querySelector(".thread-user-nav-list").removeAttribute("data-window-start");
+  const ticks = userMessageTicks(built).map(userMessageTickHtml).join("");
+  if (paintedTicks.get(source) !== ticks) {
+    source.innerHTML = ticks;
+    paintedTicks.set(source, ticks);
+    section.querySelector(".thread-user-nav-list").removeAttribute("data-window-start");
+  }
   syncUserMessageTicks(container);
   return framed;
 }
@@ -2360,17 +2369,25 @@ export function wireThreadComposer(root, {
   const unsubscribeContext = mountViewingContext(root, ids.input, viewingContext);
 
   const say = (message) => {
-    if (hint) hint.textContent = message;
+    if (hint && hint.textContent !== message) hint.textContent = message;
   };
   let canInterrupt = !!send?.classList.contains("is-stop");
   let submitting = false;
   let blocked = false;
   let tray = null;
   const hasDraft = () => input.value.trim() !== "" || !!(tray && !tray.isEmpty());
+  // The control is rebuilt only when it changes shape. Every keystroke asks, and
+  // replacing the button beside the box on every key is churn a phone's
+  // keyboard is sensitive to (#138).
+  let paintedAction = null;
   const paintAction = () => {
     if (!control || submitting) return;
-    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt, hasDraft: hasDraft() });
-    wireSendControl();
+    const wanted = sendControlHtml({ sendId: ids.send, canInterrupt, hasDraft: hasDraft() });
+    if (wanted !== paintedAction) {
+      control.innerHTML = wanted;
+      paintedAction = wanted;
+      wireSendControl();
+    }
     setPressable(true);
   };
   tray = upload
@@ -2394,7 +2411,7 @@ export function wireThreadComposer(root, {
 
   const setPressable = (pressable) => {
     const disabled = !pressable || blocked;
-    send.disabled = disabled;
+    if (send.disabled !== disabled) send.disabled = disabled;
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line

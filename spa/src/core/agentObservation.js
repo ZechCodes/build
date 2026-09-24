@@ -1,5 +1,5 @@
 import "../styles/agentObservation.css";
-import { el } from "../dom.js";
+import { el, setHidden } from "../dom.js";
 import { patchElement } from "./domPatch.js";
 import { observationPanelModel } from "./agentObservationModel.js";
 import { observationPanelHtml } from "./agentObservationRender.js";
@@ -11,8 +11,8 @@ export function mountAgentObservation(host) {
     set(surfaces, { generation = null, working = false } = {}) {
       const html = observationPanelHtml(observationPanelModel(surfaces, { working }));
       if (!html) {
-        host.replaceChildren();
-        host.hidden = true;
+        if (host.firstChild) host.replaceChildren();
+        setHidden(host, true);
         return;
       }
       const next = el(html);
@@ -20,7 +20,7 @@ export function mountAgentObservation(host) {
       if (!host.firstElementChild || changedGeneration) host.replaceChildren(next);
       else patchElement(host.firstElementChild, next);
       currentGeneration = generation;
-      host.hidden = false;
+      setHidden(host, false);
     },
     dispose() {
       host.replaceChildren();

@@ -13,6 +13,7 @@
 // markup: a push of the agent record lands while somebody is typing, and a
 // repaint of the box would take the caret with it.
 
+import { setAttr, setData, setHidden } from "../dom.js";
 import { composerPartIds } from "./composer.js";
 
 /** The windows the harnesses run at, by provider id. The Claude models all
@@ -91,12 +92,12 @@ export function mountContextGauge(root, { ids }) {
       const key = gauge ? `${gauge.text}|${gauge.step}|${gauge.title}` : "";
       if (key === painted) return;
       painted = key;
-      node.hidden = !gauge;
+      setHidden(node, !gauge);
       if (!gauge) return;
-      node.textContent = gauge.text;
-      node.dataset.step = gauge.step;
-      node.title = gauge.title;
-      node.setAttribute("aria-label", gauge.title);
+      if (node.textContent !== gauge.text) node.textContent = gauge.text;
+      setData(node, "step", gauge.step);
+      setAttr(node, "title", gauge.title);
+      setAttr(node, "aria-label", gauge.title);
     },
   };
 }

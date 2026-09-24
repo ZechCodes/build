@@ -15,6 +15,7 @@
 // told when to repaint. That is what lets the issue page and the inbox import
 // the same rule without agreeing about anything else.
 
+import { setAttr } from "../dom.js";
 import { esc } from "./text.js";
 import { ICON_EYE } from "./icons.js";
 
@@ -152,9 +153,9 @@ export function watchButtonHtml(state = {}) {
 export function syncWatchButton(button, state = {}) {
   if (!button) return;
   const label = watchTitle(state);
-  button.setAttribute("aria-pressed", String(Boolean(state.watching)));
-  button.setAttribute("title", label);
-  button.setAttribute("aria-label", label);
+  setAttr(button, "aria-pressed", Boolean(state.watching));
+  setAttr(button, "title", label);
+  setAttr(button, "aria-label", label);
   button.classList.toggle("watching", Boolean(state.watching));
   // A verb in flight is not the reader's to press again (`press` ignores it
   // anyway); saying so is what keeps the control honest about why.

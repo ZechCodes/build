@@ -26,6 +26,7 @@
 // page leaving the workspace. The rail is on one of the two at a time and reads
 // the other beside it, so the strip says what both are doing.
 
+import { setAttr, setData } from "../dom.js";
 import { AGENT_CAPABILITIES, AGENT_ROLES, modelForRole } from "./agentRoles.js";
 import { wireReaderMotion } from "./paintKeepingPlace.js";
 import { chatOverlaysPage, panelDocksByDefault } from "./railLayout.js";
@@ -493,12 +494,17 @@ export function bubbleHtml(bubble) {
   if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
   // The chat overview's control: a bare icon right after the `+`, not a
   // bubble — it stands for no conversation (#117).
+  // Each says what it opens, and whether it has, in its markup: the strip is
+  // repainted on every push, and markup that left these to syncPopover had them
+  // stripped and written back each time.
   if (bubble.type === "overview") return `<button type="button" class="rail-overview-toggle" data-bubble="overview"
-    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">${ICON_CHAT_OVERVIEW}</button>`;
+    title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}"
+    aria-expanded="${Boolean(bubble.active)}" aria-controls="rail-overview">${ICON_CHAT_OVERVIEW}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
-    aria-label="${esc(bubble.title)}">${bubbleFaceHtml(bubble)}</button>`;
+    aria-label="${esc(bubble.title)}" aria-expanded="${Boolean(bubble.expanded)}"
+    aria-controls="rail-panel">${bubbleFaceHtml(bubble)}</button>`;
 }
 
 export function syncStripPainters(bubbles, painted, faces) {
@@ -1857,7 +1863,8 @@ function mountRailOnContext(host, context, swap) {
       projectAgent: projectAgentEntry(),
       projectName,
     });
-    paintStrip(strip, [...bubbles, { type: "overview", id: "", title: overviewVisible ? "Close chat overview" : "Chat overview",
+    const opened = (bubble) => ({ ...bubble, expanded: panelVisible && !overviewVisible && Boolean(bubble.active) });
+    paintStrip(strip, [...bubbles.map(opened), { type: "overview", id: "", title: overviewVisible ? "Close chat overview" : "Chat overview",
       active: overviewVisible, label: "", unread: 0, working: false }]);
     // The strip is useful immediately; the panel waits for its cached pin
     // choice so a remount never flashes the wrong layout or creates a panel
@@ -1883,7 +1890,7 @@ function mountRailOnContext(host, context, swap) {
    *  on a phone, because that is which way the strip runs. */
   const anchorPopover = (panel, showing) => {
     const bubble = showing ? host.querySelector(".rail-bubble.active") : null;
-    panel.dataset.anchor = bubble?.dataset.agent || "";
+    setData(panel, "anchor", bubble?.dataset.agent || "");
     if (!bubble) return panel.style.removeProperty(ANCHOR_PROPERTY);
     const box = bubble.getBoundingClientRect();
     const frame = panel.getBoundingClientRect();
@@ -1900,18 +1907,20 @@ function mountRailOnContext(host, context, swap) {
     host.classList.toggle(POPOVER_CLASS, card);
     const panel = host.querySelector("#rail-panel");
     if (panel) {
-      panel.setAttribute("aria-hidden", String(!panelVisible || overviewVisible));
+      setAttr(panel, "aria-hidden", !panelVisible || overviewVisible);
       panel.toggleAttribute("inert", !panelVisible || overviewVisible);
       anchorPopover(panel, card);
     }
     host.querySelectorAll(".rail-bubble").forEach((bubble) => {
       const expanded = panelVisible && !overviewVisible && bubble.classList.contains("active");
-      bubble.setAttribute("aria-expanded", String(expanded));
-      bubble.setAttribute("aria-controls", "rail-panel");
+      setAttr(bubble, "aria-expanded", expanded);
+      setAttr(bubble, "aria-controls", "rail-panel");
     });
     const toggle = host.querySelector(".rail-overview-toggle");
-    toggle?.setAttribute("aria-expanded", String(overviewVisible));
-    toggle?.setAttribute("aria-controls", "rail-overview");
+    if (toggle) {
+      setAttr(toggle, "aria-expanded", overviewVisible);
+      setAttr(toggle, "aria-controls", "rail-overview");
+    }
   };
 
   /** Dock the panel, or let it go. Unpinning leaves the conversation on screen

@@ -55,10 +55,10 @@ const STUDIO_CARDS = [
   { size: [0.85, 5], position: [4, 1, 3], color: 0xf1f4fa, intensity: 1.7 },
   { size: [2.2, 1], position: [-1.8, 5, 1], color: 0xffffff, intensity: 2.2 },
   { size: [6, 2], position: [-1, 0.1, 5], color: 0xf0f3f7, intensity: 0.9 },
-  { size: [1.6, 3], position: [-3.2, 1.2, -5], color: 0xffffff, intensity: 2.2 },
-  { size: [0.6, 3], position: [-0.8, 1.2, -5], color: 0xffffff, intensity: 1.4 },
-  { size: [2.4, 3], position: [2.2, 1.2, -5], color: 0xffffff, intensity: 1.0 },
-  { size: [0.4, 3], position: [4.6, 1.2, -5], color: 0xffffff, intensity: 3.0 },
+  { size: [1.6, 3], position: [-3.2, 1.2, -5], color: 0xffffff, intensity: 1.65 },
+  { size: [0.6, 3], position: [-0.8, 1.2, -5], color: 0xffffff, intensity: 1.05 },
+  { size: [2.4, 3], position: [2.2, 1.2, -5], color: 0xffffff, intensity: 0.75 },
+  { size: [0.4, 3], position: [4.6, 1.2, -5], color: 0xffffff, intensity: 2.25 },
 ];
 
 function createDeviceEnvironment(renderer) {
@@ -87,13 +87,21 @@ export function createDeviceScreenMaterial() {
   return material;
 }
 
-// Bead-blasted aluminium: fully metallic and smooth enough to carry the
-// studio's strips as soft gradients. Rougher, it averages them into one flat
-// grey, which is what reads as plastic.
+// Anodized aluminium: fully metallic, with a satin roughness that spreads the
+// studio's strips into soft gradients. Smoother reads as polished silver;
+// much rougher averages the strips into one flat grey, which reads as plastic.
 function dressAluminium(material) {
-  material.color.setRGB(0.7, 0.71, 0.73);
+  material.color.setRGB(0.65, 0.66, 0.68);
   material.metalness = 1;
-  material.roughness = 0.22;
+  material.roughness = 0.45;
+  material.clearcoat = 0;
+}
+
+// The trackpad is the same satin metal a shade darker, not a lacquered pad.
+function dressTrackpad(material) {
+  material.color.setRGB(0.5, 0.51, 0.53);
+  material.metalness = 1;
+  material.roughness = 0.32;
   material.clearcoat = 0;
 }
 
@@ -101,6 +109,7 @@ export function cloneDeviceSurfaceMaterial(material, maximumAnisotropy) {
   const clone = material.clone();
   if (clone.map) clone.map.anisotropy = Math.min(MAX_ANISOTROPY, maximumAnisotropy);
   if (/Aluminum$/.test(clone.name)) dressAluminium(clone);
+  if (/^Trackpad/.test(clone.name)) dressTrackpad(clone);
   if (clone.name === "FrontGlass") {
     clone.metalness = 0;
     clone.roughness = 0.3;

@@ -36,16 +36,24 @@ test("a canvas without WebGL is refused, not half started", () => {
   assert.throws(() => stage.createDeviceStage({ canvas: fakeCanvas(null) }), /WebGL/i);
 });
 
-test("the chassis is bare aluminium: fully metallic, satin, no lacquer", async () => {
+test("the chassis is anodized aluminium: fully metallic, satin, no lacquer", async () => {
   const { MeshPhysicalMaterial } = await import("three");
   for (const name of ["SpaceBlackAluminum", "DeepBlueAluminum"]) {
     const source = new MeshPhysicalMaterial({ name, metalness: 0.4, roughness: 0.34, clearcoat: 0.5 });
     const chassis = stage.cloneDeviceSurfaceMaterial(source, 8);
     assert.equal(chassis.metalness, 1);
-    // Rough enough to hide the facets, smooth enough to carry the studio's
-    // strips as gradients instead of one flat grey.
-    assert.ok(chassis.roughness >= 0.15 && chassis.roughness <= 0.26, `${name} roughness ${chassis.roughness}`);
+    // Satin: rough enough not to read as polished silver, smooth enough to
+    // carry the studio's strips as gradients instead of one flat grey.
+    assert.ok(chassis.roughness >= 0.4 && chassis.roughness <= 0.5, `${name} roughness ${chassis.roughness}`);
     assert.equal(chassis.clearcoat, 0);
     assert.equal(source.metalness, 0.4, "the loaded material is left alone");
   }
+});
+
+test("the trackpad is satin metal, not a lacquered pad", async () => {
+  const { MeshPhysicalMaterial } = await import("three");
+  const source = new MeshPhysicalMaterial({ name: "TrackpadSpaceBlack", metalness: 0.9, roughness: 0.26, clearcoat: 0.62 });
+  const pad = stage.cloneDeviceSurfaceMaterial(source, 8);
+  assert.equal(pad.metalness, 1);
+  assert.equal(pad.clearcoat, 0);
 });

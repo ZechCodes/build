@@ -73,6 +73,10 @@ exports against the real module exports, a previously observed build failure.
   fixture clears IndexedDB. Otherwise a previous send can write after the clear
   and appear as a duplicate in the next test. Send assertions wait for their
   rendered message rather than assuming a fixed number of event-loop ticks.
+- The cold-conversation case explicitly checks that no thread record exists,
+  then waits for the returned newest window to paint before asserting the
+  exact request. Mount's twelve timer turns are not a completion barrier for
+  the asynchronous row, selected conversation seed, and syncer cache reads.
 - The bridge's unauthenticated socket test waits for a real ping/pong before
   asserting unreachability. The saturated-worker test holds its worker on a
   channel until the liveness assertion, then releases it even on panic.

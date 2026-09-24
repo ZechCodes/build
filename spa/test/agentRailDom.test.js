@@ -3640,6 +3640,8 @@ describe("the conversation's local cache", () => {
   });
 
   it("prioritizes the shared newest window when the selected conversation is cold", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    expect(await readCached(address)).toBeUndefined();
     feedSnapshot = { items: feedItems, projects: [] };
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
@@ -3657,11 +3659,13 @@ describe("the conversation's local cache", () => {
 
     await mount();
 
+    // Mount's timer turns do not finish the row/selection/seed reads. The
+    // returned window painting proves the cold read and its cache write landed.
+    await vi.waitFor(() => expect(railHost().querySelector("#rail-body")?.textContent).toContain("cold first paint"));
     expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
     ]);
-    await vi.waitFor(() => expect(railHost().querySelector("#rail-body").textContent).toContain("cold first paint"));
-    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
+    const record = await readCached(address);
     expect(record.value).toMatchObject({ deliveredSequence: 270, knownTotalItems: 270, olderItemsRemain: true });
   });
 

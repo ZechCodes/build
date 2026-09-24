@@ -52,19 +52,17 @@ Design rules:
 
 - Always use TDD: write the test first, watch it fail, make it pass.
 - Always commit your changes as you make them.
-- Run semgrep and gitleaks before every commit (commands below).
+- Run gitleaks before every push and semgrep before you post ready (commands below). The roll gate runs both again on every merge.
 - Security checklists must be 100/100. The feature checklists live in
   `planning/v2/*Security Checklist.md`.
 - One issue per branch, branched from `main`. Nothing merges without a review.
-- **SPA rendering draws from the cache, never from connection state.** Zech's
-  rule (2026-09-24): "Everything should be drawing from cache. A corollary to
-  this is that nothing should draw based on the status of a connection. All
-  rendering should assume the local cache is up to date and never be aware of
-  the connection state machine's status unless it's deemed necessary to have a
-  render state showing the status (generally never). If the device is
-  connecting, everything should render from local cache as if it is
-  connected." New code follows the rule. The places today's code departs from
-  it are listed under "Current exceptions" in
+- **SPA rendering draws from the cache, never from connection state.** Every
+  view renders from the local cache and assumes it is up to date. Nothing
+  draws based on the status of a connection or is aware of the connection
+  state machine's status, unless a render state showing that status is truly
+  needed (generally never). While a device is connecting, everything renders
+  from the local cache as if it were connected. New code follows the rule. The
+  places today's code departs from it are listed under "Current exceptions" in
   [Render from cache](ARCHITECTURE.md#render-from-cache). They are not
   precedent.
 - Never run `npm ci` in `spa/`: `spa/package-lock.json` is gitignored because
@@ -105,8 +103,8 @@ commit. A new function over the cap is split, not annotated.
 
 ## Gates
 
-Run every gate under `nice -n 10`: gates run on the same machine as the user's
-bridge and apps, and niced they lose to both. **Judge every gate by its exit
+Run every gate under `nice -n 10`: gates run on the same machine as the bridge
+and apps they test, and niced they lose to both. **Judge every gate by its exit
 code**, never by grepping its summary: a suite can print "passed" and still
 exit non-zero.
 
@@ -133,10 +131,10 @@ includes the Chromium browser tests (`spa/test/browser/`), which need Chromium
 on `PATH` or `CHROMIUM_PATH`. Run `npx vitest` only from inside `spa/`, so the
 repo's own vitest runs.
 
-Before committing:
+The scans (gitleaks before each push, semgrep before you post ready):
 
 ```bash
-nice -n 10 semgrep scan --config p/security-audit --config p/secrets --error --metrics off <changed files>
+nice -n 10 semgrep --config auto --error <changed js/mjs/css files>
 nice -n 10 gitleaks git --no-banner --redact --log-opts='main..HEAD' .
 git diff --check main..HEAD
 ```

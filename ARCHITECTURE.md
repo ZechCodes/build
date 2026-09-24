@@ -363,14 +363,14 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 ### Render from cache
 
-**The rule** (Zech, 2026-09-24). All new SPA code follows it:
+**The rule.** All new SPA code follows it:
 
-> "Everything should be drawing from cache. A corollary to this is that nothing
-> should draw based on the status of a connection. All rendering should assume
-> the local cache is up to date and never be aware of the connection state
-> machine's status unless it's deemed necessary to have a render state showing
-> the status (generally never). If the device is connecting, everything should
-> render from local cache as if it is connected."
+> Everything draws from the cache. A corollary is that nothing draws based on
+> the status of a connection. All rendering assumes the local cache is up to
+> date and is never aware of the connection state machine's status unless a
+> render state showing that status is deemed necessary (generally never). If
+> the device is connecting, everything renders from the local cache as if it
+> is connected.
 
 In practice:
 

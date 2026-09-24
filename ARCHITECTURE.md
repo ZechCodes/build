@@ -77,7 +77,7 @@ Every `BRIDGE_*` environment variable is read in `bridge/src/main.rs` and
 
 ### Module layout
 
-Modules are declared in `bridge/src/lib.rs`. The main groups:
+Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to `bridge/src/`):
 
 | Area | Modules |
 | --- | --- |
@@ -104,7 +104,7 @@ A push is a frame with a `type` and no `id`. Contract fixtures for every verb li
 in `fixtures/api/v1/` and are checked by `bridge/tests/api_contract.rs` and
 `spa/test/apiContract.test.js`.
 
-**Dispatch.** `carrier/dispatch.rs` runs frame handlers on blocking worker
+**Dispatch.** `bridge/src/carrier/dispatch.rs` runs frame handlers on blocking worker
 threads. Each frame goes to `dispatch_frame` in `bridge/src/app/rpc.rs`, which
 tries in order:
 
@@ -217,7 +217,7 @@ and those feed git and files changes into the `ChangeBus`.
 | --- | --- | --- |
 | `Claude` | `bridge/src/harness/claude.rs` | Claude Code TUI in a full PTY (`bridge/src/pty.rs`) |
 | `Codex` | `bridge/src/harness/codex.rs` | Codex TUI in a PTY |
-| `ClaudeAdk` | `bridge/src/harness/adk.rs`, `adk/` | Claude Code headless over its stream-json session protocol |
+| `ClaudeAdk` | `bridge/src/harness/adk.rs`, `bridge/src/harness/adk/` | Claude Code headless over its stream-json session protocol |
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
@@ -297,7 +297,7 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 | Path | What it holds |
 | --- | --- |
-| `spa/src/main.js` | entry: fonts, CSS, theme, router, device picker, then `boot()` from `views/gate.js` |
+| `spa/src/main.js` | entry: fonts, CSS, theme, router, device picker, then `boot()` from `spa/src/views/gate.js` |
 | `spa/src/app.js` | the `App` object, route handling (`go`, `initRouter`), the `VIEWS` table, `render` |
 | `spa/src/connection.js` | per-device session lifecycle |
 | `spa/src/api.js` | the only plain-HTTP calls, all to skriftapp (`/api/devices`, `/api/gateway-token`, `/api/rtc/ice-servers`, push) |
@@ -353,8 +353,8 @@ device's DataChannels:
   has sat on TURN for 20 s onto a direct pair. `spa/src/core/transportPath.js`
   classifies the path.
 - **Session**: `openSession` (`spa/src/core/session.js`) combines
-  `sessionRpc.js` (encryption, pending calls, receipts, pushes) with
-  `sessionSwitch.js`, which sends `rtc.*` over the rendezvous and everything else
+  `spa/src/core/sessionRpc.js` (encryption, pending calls, receipts, pushes)
+  with `spa/src/core/sessionSwitch.js`, which sends `rtc.*` over the rendezvous and everything else
   over the peer.
 - **States**: a device's lifetime is `spa/src/core/deviceLifecycle.js` (`new` →
   `available`; unavailable as `away` / `blocked` / `refused`; `retired`). Each

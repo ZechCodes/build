@@ -148,7 +148,7 @@ const panel = () => host().querySelector("#rail-panel");
 const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
 const menuItems = () => [...panel().querySelectorAll(".rail-surface-menu .mi")];
 const menuItem = (action) => panel().querySelector(`.rail-surface-menu .mi[data-action="${action}"]`);
-const markedLevel = () => menuItems().find((item) => item.classList.contains("on"))?.dataset.action;
+const markedLevel = () => menuItems().find((item) => item.getAttribute("aria-checked") === "true")?.dataset.action;
 
 const timeline = () => panel().querySelector(".thread-items");
 const rowKinds = () => ({
@@ -235,19 +235,22 @@ afterEach(() => {
 });
 
 describe("the detail levels on the conversation's menu", () => {
-  it("offers three, above whatever surfaces the agent has", async () => {
+  it("offers three, as a radio set under the setting's name", async () => {
     await mountWorkspaceRail();
 
-    expect(menuItems().slice(0, 3).map((item) => item.dataset.action)).toEqual([
+    const group = panel().querySelector('.rail-surface-menu [role="group"][aria-label="Detail"]');
+    const rows = [...group.querySelectorAll(".mi")];
+    expect(rows.map((item) => item.dataset.action)).toEqual([
       "detail:all",
       "detail:messages",
       "detail:agent",
     ]);
-    expect(menuItems().slice(0, 3).map((item) => item.querySelector(".mt").textContent)).toEqual([
+    expect(rows.map((item) => item.querySelector(".mt").textContent)).toEqual([
       "All",
       "All messages",
       "Agent only",
     ]);
+    expect(rows.every((item) => item.getAttribute("role") === "menuitemradio")).toBe(true);
   });
 
   it("marks the level the conversation is being read at", async () => {

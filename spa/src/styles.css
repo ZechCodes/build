@@ -975,7 +975,10 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .tabmenu .mi:hover { background:var(--accent-soft); }
 .tabmenu .mi .mt { color:var(--ink); font-weight:550; }
 .tabmenu .mi .md { color:var(--dim); font-size:11px; }
-.splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px var(--shadow); overflow:hidden; z-index:25; }
+/* Hidden on x for the corners; auto on y so a menu given a max-height by the
+   lift (core/splitButton.js, a menu taller than the room it has) scrolls
+   inside it rather than being cut. */
+.splitmenu { position:absolute; bottom:calc(100% + 6px); right:0; min-width:180px; background:var(--panel); border:1px solid var(--line); border-radius:10px; box-shadow:0 10px 30px var(--shadow); overflow:hidden auto; z-index:25; }
 .splitmenu[hidden] { display:none; }
 .splitmenu .mi { padding:9px 13px; font-size:13px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
 .splitmenu .mi:hover { background:var(--accent-soft); }
@@ -987,6 +990,27 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* A menu that is a SELECTION rather than a verb (the composer's model menu)
    marks the answer standing now, in the same place the answer is read. */
 .splitmenu .mi.on .mt { color:var(--accent); }
+/* The keyboard's row wears the pointer's highlight: one mark for where the
+   reader is, whichever hand put it there. */
+.splitmenu .mi:focus-visible { background:var(--accent-soft); outline:none; }
+/* ---- a menu in sections (core/splitButton.js `groupedMenuButtonMarkup`) ----
+   The conversation head's ⋮ (#124): what the agent opened, then the
+   conversation's settings. Each group is headed by what it holds — the
+   heading says what the setting IS, so its rows can be bare values — and a
+   rule stands between one group and the next. */
+.splitmenu .menu-group + .menu-group { border-top:1px solid var(--line2); }
+.splitmenu .menu-group-title { padding:9px 13px 2px; font-size:10.5px; font-weight:600;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--dim); }
+/* A setting's rows are one radio set, and wear it: a ring before each value,
+   filled for the one standing, so a setting reads as a setting beside the
+   things to open above it. Only in a sectioned menu — a flat selection (the
+   composer's model menu) says it with the accent title alone. */
+.splitmenu .menu-group .mi[role="menuitemradio"] { position:relative; padding-left:34px; }
+.splitmenu .menu-group .mi[role="menuitemradio"]::before { content:""; position:absolute; left:13px; top:12px;
+  width:13px; height:13px; box-sizing:border-box; border-radius:50%;
+  border:1.5px solid var(--line3); background:var(--panel2); }
+.splitmenu .menu-group .mi[aria-checked="true"]::before { border-color:var(--accent); background:var(--accent);
+  box-shadow:inset 0 0 0 2.5px var(--panel); }
 /* The git bar sits at the top of its pane: a menu opening upward from it runs
    under the navigation bar and is cut off, so its menus open downward. */
 .gp-toolbar .splitmenu { top:calc(100% + 6px); bottom:auto; }

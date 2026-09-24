@@ -14,11 +14,11 @@ const marked = (agent) => compactionMenuOptions(agent).filter((option) => option
 describe("the compaction rows", () => {
   it("offers the device's default, three sizes and never", () => {
     expect(labels({ max_context_tokens: null, compact_at_tokens: 200000 })).toEqual([
-      "Compact at: Default (200k)",
-      "Compact at: 150k",
-      "Compact at: 200k",
-      "Compact at: 300k",
-      "Compact at: Off",
+      "Default (200k)",
+      "150k",
+      "200k",
+      "300k",
+      "Off",
     ]);
   });
 
@@ -35,14 +35,14 @@ describe("the compaction rows", () => {
   });
 
   it("names the default by the threshold in effect, which may be off", () => {
-    expect(labels({ max_context_tokens: null, compact_at_tokens: 0 })[0]).toBe("Compact at: Default (off)");
-    expect(labels({ max_context_tokens: null, compact_at_tokens: 250000 })[0]).toBe("Compact at: Default (250k)");
+    expect(labels({ max_context_tokens: null, compact_at_tokens: 0 })[0]).toBe("Default (off)");
+    expect(labels({ max_context_tokens: null, compact_at_tokens: 250000 })[0]).toBe("Default (250k)");
   });
 
   // With a limit of its own standing, the digest's threshold is that limit, not
   // the device's — so the default row cannot say what it would be.
   it("names the default without a number while an override stands", () => {
-    expect(labels({ max_context_tokens: 150000, compact_at_tokens: 150000 })[0]).toBe("Compact at: Default");
+    expect(labels({ max_context_tokens: 150000, compact_at_tokens: 150000 })[0]).toBe("Default");
   });
 });
 

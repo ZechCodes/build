@@ -3,7 +3,7 @@
 // once inlined in views/task.js. Pure markup + thin wiring; every user-supplied
 // string is escaped.
 
-import { hide, reveal } from "./motion.js";
+import { hide, motionSettled, reveal } from "./motion.js";
 import { esc } from "./text.js";
 
 const MENU_MOVE = { axis: "height" };
@@ -11,6 +11,7 @@ const MENU_MOVE = { axis: "height" };
 export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
 const SPLIT_MENU_SELECTOR = ".splitmenu";
+const MENU_ITEM_SELECTOR = ".mi";
 
 /** The app's button vocabulary a split button can be painted in: the accent
  *  primary (the default — a surface's decisive verb) or the mini secondary the
@@ -21,7 +22,17 @@ const VARIANT_BUTTON_CLASS = {
   mini: "btn mini",
 };
 
-/** The menu half's rows: one per option, its name and what it does.
+/** A row's word to assistive tech. One that carries a standing answer
+ *  (`selected` is a boolean) is one of a radio set: the menu is a selection,
+ *  and a screen reader says which answer stands. Any other row is a plain
+ *  item. */
+const isAnswer = (option) => typeof option.selected === "boolean";
+const roleAttributes = (option) =>
+  isAnswer(option) ? ` role="menuitemradio" aria-checked="${option.selected}"` : ' role="menuitem"';
+
+/** The menu half's rows: one per option, its name and what it does. Each is
+ *  reachable from the keyboard once the menu is open — `mountSplitMenu` walks
+ *  them with the arrows — and out of the tab order otherwise.
  *
  *  `danger` marks a destructive verb where it is READ, in the list beside the
  *  ones it is chosen over. `selected` marks the one in use — a menu that is a
@@ -31,24 +42,55 @@ function menuItemsHtml(options) {
   return options
     .map(
       (o) =>
-        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
+        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"${roleAttributes(o)} tabindex="-1"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
     )
     .join("");
+}
+
+/** A menu in sections. Each group `{ id, label, options }` is headed by what
+ *  it holds, and named for assistive tech by the group itself, so the heading
+ *  is read once rather than twice. The conversation head's ⋮
+ *  (core/agentRail.js) is one: what the agent opened, then the conversation's
+ *  settings, each of those a radio set. */
+function menuGroupsHtml(groups) {
+  return groups
+    .map(
+      (group) =>
+        `<div class="menu-group" role="group" aria-label="${esc(group.label)}" data-group="${esc(group.id)}"><div class="menu-group-title" aria-hidden="true">${esc(group.label)}</div>${menuItemsHtml(group.options)}</div>`,
+    )
+    .join("");
+}
+
+const menuHtml = (rowsHtml, name) =>
+  `<div class="splitmenu" hidden role="menu"${name ? ` aria-label="${esc(name)}"` : ""}>${rowsHtml}</div>`;
+
+/** The opener's word to assistive tech: it holds a menu, shut until pressed.
+ *  `mountSplitMenu` keeps the second half true. */
+const POPUP_ATTRIBUTES = ' aria-haspopup="menu" aria-expanded="false"';
+
+function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = true } = {}) {
+  const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
+  const opener = icon
+    ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}</button>`
+    : `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
+  return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
+    ${opener}
+    ${menuHtml(rowsHtml, title)}
+  </div>`;
 }
 
 /** Pure markup for the menu half ALONE: one button that opens it, and the same
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. */
-export function menuButtonMarkup(label, options, { title = "", icon = false, arrow = true } = {}) {
-  const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
-  const opener = icon
-    ? `<button type="button" class="iconbtn caret"${titled}>${esc(label)}</button>`
-    : `<button type="button" class="btn mini caret"${titled}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
-  return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
-    ${opener}
-    <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
-  </div>`;
+export function menuButtonMarkup(label, options, shape = {}) {
+  return menuButtonHtml(label, menuItemsHtml(options), shape);
+}
+
+/** `menuButtonMarkup` for a menu in sections: `groups` in place of options,
+ *  each `{ id, label, options }` (`menuGroupsHtml`). */
+export function groupedMenuButtonMarkup(label, groups, shape = {}) {
+  return menuButtonHtml(label, menuGroupsHtml(groups), shape);
 }
 
 /** Pure markup for a GitHub-style split button. options[0] is the default.
@@ -68,7 +110,7 @@ export function splitButtonMarkup(options, { variant = "primary", primaryId = ""
   const primary = options[0];
   const primaryButton = `<button class="${buttonClass}"${primaryId ? ` id="${esc(primaryId)}"` : ""} data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
   if (options.length === 1) return `<div class="splitbtn">${primaryButton}</div>`;
-  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions" aria-label="More actions"><span class="disclosure-caret" aria-hidden="true">▾</span></button><div class="splitmenu" hidden>${menuItemsHtml(options)}</div></div>`;
+  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions" aria-label="More actions"${POPUP_ATTRIBUTES}><span class="disclosure-caret" aria-hidden="true">▾</span></button>${menuHtml(menuItemsHtml(options), "More actions")}</div>`;
 }
 
 /** Pure single-flight latch: begin() arms and returns true, or returns false
@@ -104,14 +146,25 @@ function scrollingAncestorOf(element) {
   return null;
 }
 
+/** The bottom edge a lifted menu is kept above: the viewport's, cut to the
+ *  region its caller keeps it within where that region's box is known. The
+ *  conversation panel stops on the bubble strip at phone width and the strip
+ *  is drawn over it, so a menu run to the viewport's foot had its last rows
+ *  under the strip (#124); the rail names its panel. A region that reports no
+ *  box (one not laid out) says nothing, and the viewport stands. */
+function bottomBoundOf(region) {
+  const edge = region ? region.getBoundingClientRect().bottom : 0;
+  return edge > 0 ? Math.min(window.innerHeight, edge) : window.innerHeight;
+}
+
 /** Which way a menu falls from its button: DOWN, the direction the stylesheet
- *  writes every menu in, unless the menu does not fit below the button and does
- *  fit above it. Preferring above whenever there was room — the rule this
- *  replaced — opened the conversation head's menu upward off the top of the
- *  screen, because the room it measured was the whole page above a header that
- *  sits at the top of it. */
-function menuOpensAbove(buttonBox, menuHeight) {
-  const roomBelow = window.innerHeight - buttonBox.bottom - MENU_GAP_PX - VIEWPORT_GAP_PX;
+ *  writes every menu in, unless the menu does not fit below the button (above
+ *  `bound`) and does fit above it. Preferring above whenever there was room —
+ *  the rule this replaced — opened the conversation head's menu upward off
+ *  the top of the screen, because the room it measured was the whole page
+ *  above a header that sits at the top of it. */
+function menuOpensAbove(buttonBox, menuHeight, bound) {
+  const roomBelow = bound - buttonBox.bottom - MENU_GAP_PX - VIEWPORT_GAP_PX;
   const roomAbove = buttonBox.top - MENU_GAP_PX - VIEWPORT_GAP_PX;
   return menuHeight > roomBelow && roomAbove >= menuHeight;
 }
@@ -124,20 +177,25 @@ function clampedToViewport(offset, extent, bound) {
   return Math.max(VIEWPORT_GAP_PX, Math.min(offset, bound - extent - VIEWPORT_GAP_PX));
 }
 
-function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: menuHeight }) {
+function placeMenuFromButtonBox(menu, buttonBox, { width: menuWidth, height: menuHeight }, bound) {
   const left = clampedToViewport(buttonBox.right - menuWidth, menuWidth, window.innerWidth);
   menu.style.position = "fixed";
   menu.style.left = `${left}px`;
   menu.style.right = "auto";
-  if (menuOpensAbove(buttonBox, menuHeight)) {
+  if (menuOpensAbove(buttonBox, menuHeight, bound)) {
     // Anchored by its bottom edge: a menu opening upward has to GROW upward as
     // the reveal animates its height, away from the button rather than over it.
-    const bottom = clampedToViewport(window.innerHeight - buttonBox.top + MENU_GAP_PX, menuHeight, window.innerHeight);
+    // The inset is from the viewport's foot, so the bound's edge is at least
+    // its own gutter above that.
+    const bottom = Math.max(
+      clampedToViewport(window.innerHeight - buttonBox.top + MENU_GAP_PX, menuHeight, window.innerHeight),
+      window.innerHeight - bound + VIEWPORT_GAP_PX,
+    );
     menu.style.top = "auto";
     menu.style.bottom = `${bottom}px`;
     return { left, edge: "bottom", bottom: window.innerHeight - bottom };
   }
-  const top = clampedToViewport(buttonBox.bottom + MENU_GAP_PX, menuHeight, window.innerHeight);
+  const top = clampedToViewport(buttonBox.bottom + MENU_GAP_PX, menuHeight, bound);
   menu.style.top = `${top}px`;
   menu.style.bottom = "auto";
   return { left, edge: "top", top };
@@ -178,11 +236,20 @@ function correctFixedMenuOffset(menu, wanted) {
   }
 }
 
-function liftMenuOutOfScroll(container, menu, closeMenu) {
+function liftMenuOutOfScroll(container, menu, closeMenu, region) {
   const buttonBox = container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect();
-  const wanted = placeMenuFromButtonBox(menu, buttonBox, menuSizeWhenShown(menu));
+  const bound = bottomBoundOf(region);
+  // Taller than the room there is, the menu scrolls inside it (`.splitmenu`
+  // scrolls on its y axis) rather than running off the edge.
+  menu.style.maxHeight = `${bound - 2 * VIEWPORT_GAP_PX}px`;
+  const wanted = placeMenuFromButtonBox(menu, buttonBox, menuSizeWhenShown(menu), bound);
   correctFixedMenuOffset(menu, wanted);
-  const onViewportMoved = () => closeMenu();
+  // A scroll inside the menu itself is the reader reading it, not the page
+  // moving out from under the menu.
+  const onViewportMoved = (event) => {
+    if (event.type === "scroll" && menu.contains(event.target)) return;
+    closeMenu();
+  };
   document.addEventListener("scroll", onViewportMoved, { capture: true });
   window.addEventListener("resize", onViewportMoved);
   return () => {
@@ -193,21 +260,136 @@ function liftMenuOutOfScroll(container, menu, closeMenu) {
     menu.style.top = "";
     menu.style.bottom = "";
     menu.style.right = "";
+    menu.style.maxHeight = "";
   };
 }
 
+/** One watch per container for focus leaving it. A caller that re-renders
+ *  into the same slot mounts again and again (the composer's model menu), and
+ *  a listener added each time would pile up, every old one shutting a menu
+ *  that is no longer there. `onfocusout` would do the same in one line, but
+ *  jsdom does not carry it, and the DOM suites are how the wiring is proven. */
+const focusWatchers = new WeakMap();
+
+function watchFocusLeaving(container, onLeft) {
+  const previous = focusWatchers.get(container);
+  if (previous) container.removeEventListener("focusout", previous);
+  container.addEventListener("focusout", onLeft);
+  focusWatchers.set(container, onLeft);
+}
+
+/** A row's top, measured from the menu's scrolling origin: its offsets summed
+ *  up to the menu, whichever of its ancestors are positioned. */
+function rowTopWithin(menu, row) {
+  let top = 0;
+  for (let each = row; each && each !== menu && menu.contains(each); each = each.offsetParent) top += each.offsetTop;
+  return top;
+}
+
+/** Where a row's sight starts: at the row, or at its group's heading when
+ *  it is the group's first row (`menuGroupsHtml`) — a value without the name
+ *  of its setting above it is a bare word. */
+function sightTopOf(menu, row) {
+  const opensGroup = row.parentElement !== menu && !row.previousElementSibling?.matches(MENU_ITEM_SELECTOR);
+  return rowTopWithin(menu, opensGroup ? row.parentElement : row);
+}
+
+/** Scroll the menu, and only the menu, until the row is inside its visible
+ *  area. A row takes focus with `preventScroll` so the page under a lifted
+ *  menu stays where it is — but a menu taller than its bound scrolls inside
+ *  itself (`liftMenuOutOfScroll`), and a row past its edge would otherwise
+ *  take focus out of sight, where Enter chooses what the reader cannot see.
+ *  Measured in layout units: the reveal animates the menu's height, so a
+ *  scroll made while it plays can land wrong, and `focusRow` measures again
+ *  once motion has settled. */
+function scrollRowIntoMenu(menu, row) {
+  const above = sightTopOf(menu, row) - menu.scrollTop;
+  const below = rowTopWithin(menu, row) + row.offsetHeight - menu.scrollTop - menu.clientHeight;
+  if (above < 0) menu.scrollTop += above;
+  else if (below > 0) menu.scrollTop += below;
+}
+
+/** The keys a menu answers. On its opener, the arrows open it with a row
+ *  focused — ArrowDown the first, ArrowUp the last — and Escape shuts it. In
+ *  the menu, the arrows walk the rows and wrap, Home and End jump, Enter and
+ *  Space choose the focused row, and Escape shuts without choosing. Focus goes
+ *  back to the opener whenever the menu shuts from the keyboard. Tab is left
+ *  alone: focus leaving the menu shuts it (`mountSplitMenu`'s focusout).
+ *
+ *  Every row the keys land on is scrolled into sight (`scrollRowIntoMenu`):
+ *  at once, and again once the menu's motion has settled, for a key pressed
+ *  while the reveal is still playing. */
+function menuKeyboard({ caret, menu, isOpen, openMenu, closeMenu, choose }) {
+  const rows = () => [...menu.querySelectorAll(MENU_ITEM_SELECTOR)];
+  const focusedRow = () => rows().find((each) => each === document.activeElement);
+  const showFocusedRow = () => {
+    const row = focusedRow();
+    if (row) scrollRowIntoMenu(menu, row);
+  };
+  const focusRow = (index) => {
+    const all = rows();
+    if (!all.length) return;
+    all[((index % all.length) + all.length) % all.length].focus({ preventScroll: true });
+    showFocusedRow();
+    motionSettled().then(showFocusedRow);
+  };
+  // Shown at once, so the row can take focus; the reveal still plays over
+  // the top of that, from nothing to its height.
+  const openOnRow = (index) => {
+    openMenu();
+    menu.hidden = false;
+    focusRow(index);
+  };
+  const shutToCaret = () => {
+    closeMenu();
+    caret.focus({ preventScroll: true });
+  };
+  const chooseFocused = () => {
+    const row = focusedRow();
+    if (row) choose(row);
+  };
+  const focusedIndex = () => rows().indexOf(document.activeElement);
+  const onCaret = {
+    ArrowDown: () => openOnRow(0),
+    ArrowUp: () => openOnRow(-1),
+    Escape: () => (isOpen() ? closeMenu() : false),
+  };
+  const onMenu = {
+    ArrowDown: () => focusRow(focusedIndex() + 1),
+    ArrowUp: () => focusRow(focusedIndex() - 1),
+    Home: () => focusRow(0),
+    End: () => focusRow(-1),
+    Escape: shutToCaret,
+    Enter: chooseFocused,
+    " ": chooseFocused,
+  };
+  // A key the menu does not answer — or Escape with nothing open — is left to
+  // whatever else is listening.
+  const handling = (keys) => (event) => {
+    if (!Object.hasOwn(keys, event.key) || keys[event.key]() === false) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  return { onCaretKey: handling(onCaret), onMenuKey: handling(onMenu) };
+}
+
 /** Wire the caret and the menu of a split button already in the DOM: the caret
- *  toggles it, a press outside closes it, and choosing an item closes it and
+ *  toggles it, a press outside closes it, focus leaving it closes it, the
+ *  keyboard drives it (`menuKeyboard`), and choosing an item closes it and
  *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
  *  shut it for its own reasons — a press that starts working, say. A container
  *  holding a lone button (no caret, no menu) wires nothing and the close is a
  *  no-op.
  *
+ *  `keepWithin` names the region a lifted menu stays inside, by its bottom
+ *  edge (`bottomBoundOf`): the rail's panel, which on a phone stops on the
+ *  bubble strip that would otherwise cover the menu's last rows.
+ *
  *  Split out of `mountSplitButton` because the composer's send is a split
  *  button whose press is NOT a single-flight action with a busy label: it is a
  *  submit that restores its own button, and re-rendering it under the poll is
  *  the composer's business. What both share is the menu. */
-export function mountSplitMenu(container, { onChoose, onOpenChange = null }) {
+export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepWithin = null }) {
   const caret = container.querySelector(CARET_SELECTOR);
   const menu = container.querySelector(SPLIT_MENU_SELECTOR);
 
@@ -220,10 +402,12 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null }) {
   let stopWatchingOutsidePress = null;
   let settleLiftedMenu = null;
   let menuIsOpen = false;
+  const sayExpanded = () => caret?.setAttribute("aria-expanded", String(menuIsOpen));
   const closeMenu = (announce = true) => {
     if (!menu) return Promise.resolve();
     const wasOpen = menuIsOpen;
     menuIsOpen = false;
+    sayExpanded();
     if (wasOpen && announce) onOpenChange?.(false);
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
     return hide(menu, MENU_MOVE).then(() => {
@@ -232,11 +416,18 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null }) {
       settleLiftedMenu = null;
     });
   };
+  // Lifted out of a scrolling ancestor once per opening, and put back once
+  // the menu has shut (`closeMenu`).
+  const liftIfScrolling = () => {
+    if (settleLiftedMenu || !scrollingAncestorOf(menu)) return;
+    settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu, keepWithin ? keepWithin() : null);
+  };
   const openMenu = (announce = true) => {
     if (!menu || menuIsOpen) return;
     menuIsOpen = true;
+    sayExpanded();
     if (announce) onOpenChange?.(true);
-    if (!settleLiftedMenu && scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
+    liftIfScrolling();
     reveal(menu, MENU_MOVE);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
@@ -250,33 +441,47 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null }) {
     };
   };
 
+  // A choice shuts the menu and puts focus back on the opener — from the
+  // keyboard that is where the reader was; from a pointer it keeps focus
+  // from falling to the body when the row it was on is hidden.
+  const choose = (row) => {
+    closeMenu();
+    caret.focus({ preventScroll: true });
+    onChoose(row.dataset.action);
+  };
+
   if (caret && menu) {
+    const keys = menuKeyboard({ caret, menu, isOpen: () => menuIsOpen, openMenu, closeMenu, choose });
     caret.onclick = (event) => {
       event.stopPropagation();
       if (caret.disabled) return;
       if (menuIsOpen) closeMenu();
       else openMenu();
     };
-    menu.querySelectorAll(".mi").forEach(
-      (mi) =>
-        (mi.onclick = () => {
-          closeMenu();
-          onChoose(mi.dataset.action);
-        }),
-    );
+    caret.onkeydown = keys.onCaretKey;
+    menu.onkeydown = keys.onMenuKey;
+    watchFocusLeaving(container, (event) => {
+      if (menuIsOpen && !container.contains(event.relatedTarget)) closeMenu();
+    });
+    menu.querySelectorAll(MENU_ITEM_SELECTOR).forEach((mi) => (mi.onclick = () => choose(mi)));
   }
   return { closeMenu, openMenu };
 }
 
 const menuMountedInContainer = new WeakMap();
 
-export function mountMenuIfChanged(container, markup, { onChoose }) {
+export function mountMenuIfChanged(container, markup, { onChoose, keepWithin = null }) {
   const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
   if (mounted) mounted.closeMenu();
+  // A remount under the reader's focus — the mark moved after a choice made
+  // from the keyboard — hands focus to the new opener rather than dropping
+  // it on the body.
+  const hadFocus = container.contains(document.activeElement);
   container.innerHTML = markup;
-  const { closeMenu } = mountSplitMenu(container, { onChoose });
+  const { closeMenu } = mountSplitMenu(container, { onChoose, keepWithin });
   menuMountedInContainer.set(container, { markup, closeMenu });
+  if (hadFocus) container.querySelector(CARET_SELECTOR)?.focus({ preventScroll: true });
   return closeMenu;
 }
 

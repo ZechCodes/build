@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { dashboardSections, doneMoveToday, latestCachedAgentActivity } from "../src/core/trackerDashboardModel.js";
+import {
+  DONE_SINCE_CAP_MS, dashboardSections, doneMoveToday, doneSince, doneSinceCutoff, latestCachedAgentActivity,
+} from "../src/core/trackerDashboardModel.js";
 
 const PROJECT = "device-1/proj-1";
 const NOW = Date.parse("2026-09-22T20:00:00Z");
@@ -69,7 +71,7 @@ describe("Dashboard cache projection", () => {
       [old.id, detail([move("2026-09-21T19:59:59Z")])],
       [movedAway.id, detail([move("2026-09-22T19:00:00Z"), move("2026-09-22T19:30:00Z", "in_review")])],
     ]);
-    expect(dashboardSections([today, old, unknown, movedAway], { detailById: details, nowMs: NOW }).doneToday)
+    expect(dashboardSections([today, old, unknown, movedAway], { detailById: details, nowMs: NOW }).done)
       .toEqual([{ issue: today, movedAt: "2026-09-22T19:00:00Z", sha: "def456" }]);
   });
 
@@ -79,5 +81,87 @@ describe("Dashboard cache projection", () => {
     expect(doneMoveToday(done, detail([move("2026-09-22T20:00:01Z")]), NOW)).toBeNull();
     expect(doneMoveToday(done, detail([move("invalid")]), NOW)).toBeNull();
     expect(doneMoveToday(done, null, NOW)).toBeNull();
+  });
+});
+
+describe("Done since you left", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GAP = 6 * HOUR;
+  const at = (iso) => Date.parse(iso);
+  /** The bridge's summary: `started`/`last` are this session, `ended` the one
+   *  before it. */
+  const session = (started, last, ended = null) => ({
+    session_started_ms: started, last_activity_ms: last, previous_session_ended_ms: ended, gap_ms: GAP,
+  });
+  const finished = (id, iso) => issue(id, { status: "done", done_at: iso });
+
+  it("reaches back over a 15 hour night, before and after the first action of the day", () => {
+    const leftAt = at("2026-09-21T18:00:00Z");
+    const walkIn = at("2026-09-22T09:00:00Z");
+    // Walking in, nothing done yet: the bridge still describes yesterday.
+    expect(doneSinceCutoff(session(at("2026-09-21T09:00:00Z"), leftAt), walkIn)).toBe(leftAt);
+    // The first action has started today's session on the bridge.
+    const acted = walkIn + 5 * 60_000;
+    expect(doneSinceCutoff(session(acted, acted, leftAt), acted + HOUR)).toBe(leftAt);
+  });
+
+  it("covers a weekend: Friday 18:00 to Monday 09:00 is 63 hours", () => {
+    const friday = at("2026-09-18T18:00:00Z");
+    const monday = at("2026-09-21T09:00:00Z");
+    expect(monday - friday).toBe(63 * HOUR);
+    expect(doneSinceCutoff(session(friday - 9 * HOUR, friday), monday)).toBe(friday);
+    expect(doneSinceCutoff(session(monday, monday + HOUR, friday), monday + 2 * HOUR)).toBe(friday);
+  });
+
+  it("covers a three-day weekend inside the 96 hour cap, all day long", () => {
+    const friday = at("2026-09-18T18:00:00Z");
+    const tuesday = at("2026-09-22T09:00:00Z");
+    expect(tuesday - friday).toBe(87 * HOUR);
+    expect(doneSinceCutoff(session(friday - 9 * HOUR, friday), tuesday)).toBe(friday);
+    // Late on Tuesday it has been over 96 hours since Friday, but the absence
+    // was 87: the list does not empty halfway through the day back.
+    const evening = at("2026-09-22T20:00:00Z");
+    expect(evening - friday).toBeGreaterThan(DONE_SINCE_CAP_MS);
+    expect(doneSinceCutoff(session(tuesday, evening - HOUR, friday), evening)).toBe(friday);
+  });
+
+  it("starts a week's vacation from a blank slate that fills with this session's work", () => {
+    const left = at("2026-09-11T18:00:00Z");
+    const back = at("2026-09-21T09:00:00Z");
+    // Walked in, nothing done yet: the cutoff is when this client saw it.
+    expect(doneSinceCutoff(session(left - HOUR, left), back, back)).toBe(back);
+    const acted = back + 60_000;
+    const cutoff = doneSinceCutoff(session(acted, acted, left), acted + HOUR);
+    expect(cutoff).toBe(acted);
+    const duringVacation = finished("vacation", "2026-09-15T12:00:00Z");
+    const thisMorning = finished("today", new Date(acted + 30 * 60_000).toISOString());
+    expect(dashboardSections([duringVacation], { doneCutoffMs: cutoff }).done).toEqual([]);
+    expect(dashboardSections([duringVacation, thisMorning], { doneCutoffMs: cutoff }).done.map((entry) => entry.issue.id))
+      .toEqual(["today"]);
+  });
+
+  it("ends a session at exactly six hours of silence and not a millisecond before", () => {
+    const earlier = at("2026-09-21T09:00:00Z");
+    const last = at("2026-09-22T12:00:00Z");
+    const summary = session(at("2026-09-22T08:00:00Z"), last, earlier);
+    expect(doneSinceCutoff(summary, last + GAP)).toBe(last);
+    expect(doneSinceCutoff(summary, last + GAP - 1)).toBe(earlier);
+  });
+
+  it("with no earlier session starts from this one, and with no activity at all from the walk-in", () => {
+    const started = at("2026-09-22T08:00:00Z");
+    expect(doneSinceCutoff(session(started, started + HOUR), started + 2 * HOUR)).toBe(started);
+    expect(doneSinceCutoff(session(null, null), NOW, NOW - HOUR)).toBe(NOW - HOUR);
+  });
+
+  it("lists only issues in Done whose done_at is at or after the cutoff, from the list record alone", () => {
+    const cutoff = at("2026-09-22T08:00:00Z");
+    expect(doneSince(finished("at", "2026-09-22T08:00:00Z"), cutoff)).toBe("2026-09-22T08:00:00Z");
+    expect(doneSince(finished("before", "2026-09-22T07:59:59Z"), cutoff)).toBeNull();
+    expect(doneSince(issue("moved-away", { status: "in_review", done_at: "2026-09-22T09:00:00Z" }), cutoff)).toBeNull();
+    expect(doneSince(issue("never", { status: "done" }), cutoff)).toBeNull();
+    // No timeline was needed: the details map is empty.
+    expect(dashboardSections([finished("x", "2026-09-22T09:00:00Z")], { doneCutoffMs: cutoff }).done)
+      .toEqual([{ issue: finished("x", "2026-09-22T09:00:00Z"), movedAt: "2026-09-22T09:00:00Z", sha: null }]);
   });
 });

@@ -54,6 +54,7 @@ in this document, "plan" means the legacy flow and "issue" means the tracker's.
 | `created_by` | actor | Who filed it. |
 | `created_at`, `updated_at` | RFC 3339 UTC | |
 | `closed_at` | RFC 3339 UTC \| `null` | Set when `state` becomes `closed`, cleared on reopen. |
+| `done_at` | RFC 3339 UTC, absent | When the issue last moved into Done, while it is there; absent anywhere else. Stamped by the move (or by filing it in Done) and cleared when it leaves. An issue written before the field existed gets it from its timeline's latest move into Done the next time `issues.list` or `issues.get` reads it, and keeps it. Announced as `issues.doneSinceLeft`. |
 
 ### Comment
 
@@ -175,7 +176,7 @@ move together, and the new fixtures' `since` equals that number.
 
 | Verb | Params | Result |
 | --- | --- | --- |
-| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue]}` |
+| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue], user_session}` — see [The user's session](#the-users-session) |
 | `issues.get` | `{issue_id}` | `{issue, timeline: [TimelineEntry]}` |
 | `issues.create` | `{project_id, title, body?, status?, labels?, priority?, assignee?, links?}` | `{issue, dispatch}` |
 | `issues.update` | `{issue_id, title?, body?, labels?, priority?, status?, state?}` | `{issue}` |
@@ -861,6 +862,46 @@ what an issue page's timeline sentences should use as well.)
 
 `session.hello` states `"issues": { "attachments": true, "watching": true }`, so
 a client gates its inbox on the capability rather than on a version compare.
+
+## The user's session
+
+The dashboard's Done section is "Done since you left" (#106): every issue in
+Done whose `done_at` is at or after the moment the user left. The bridge keeps
+one device-wide summary of the user's session and `issues.list` carries it
+beside the issues, so the section paints from the cached list and needs no
+cached timelines.
+
+```json
+"user_session": {
+  "session_started_ms": 1758272400000,
+  "last_activity_ms": 1758276720000,
+  "previous_session_ended_ms": 1758218400000,
+  "gap_ms": 21600000
+}
+```
+
+- **Activity** is the user acting: the client verbs in
+  `rpc::USER_ACTIVITY_VERBS`, which are messages, issue writes, read marks
+  (`issues.read_through`, `entity.seen`) and the other user-initiated writes.
+  Reads, subscriptions, acks, resizes and re-attaches are not in it, and
+  neither is `term.input`, which a terminal also sends by itself. Agents act
+  through MCP and never reach it.
+- **A session** ends after `gap_ms` (6 hours) without activity. The update is
+  #98's session function with that gap; when a new session starts,
+  `previous_session_ended_ms` becomes the old `last_activity_ms`.
+- **Stored** as one `meta` row, rewritten on each change. A boot folds that
+  row's instants together with every stored user action (issue events and
+  comments by the user, messages the user sent) in timestamp order, so a first
+  boot after this shipped starts from history.
+- **Cutoff** (client): `previous_session_ended_ms`, or `last_activity_ms`
+  when the silence has not ended yet (the user walked in and has not acted).
+  If there is no earlier session, or it ended more than 96 hours before this
+  one started, the cutoff is this session's start: a blank slate that fills as
+  work finishes. The cap measures the absence, not the time since it, so a
+  three-day weekend stays listed all through the day back.
+
+Clients gate on the `issues.doneSinceLeft` capability name; without it the
+section stays "Done", the last 24 hours read from cached timelines.
 
 ## Push
 

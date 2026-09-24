@@ -56,6 +56,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "issues.attachments",
     "issues.commentUserMentions",
     "issues.context",
+    "issues.doneSinceLeft",
     "issues.watching",
     "messages.context",
     "messages.fromAgent",

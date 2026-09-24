@@ -104,6 +104,7 @@
       "issues.context",
       "issues.create",
       "issues.dismiss",
+      "issues.doneSinceLeft",
       "issues.for_agent",
       "issues.get",
       "issues.link",

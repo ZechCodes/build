@@ -124,10 +124,23 @@ impl AppState {
                 .load_tracker_timeline(&issue.id)
                 .stored()?;
             let issue = self.backfill_issue_identities(issue, &timeline)?;
+            let issue = self.backfill_done_at(issue, &timeline)?;
             let issue = self.issue_with_read_identities(issue, &timeline);
             rows.push(issue_json(&project_id, &issue));
         }
-        Ok(json!({ "project_id": project_id, "issues": rows }))
+        let session = self.user_session();
+        Ok(json!({
+            "project_id": project_id,
+            "issues": rows,
+            // Device-wide, and here because the Done section reads it beside
+            // the list: every push that moves an issue re-reads this answer.
+            "user_session": {
+                "session_started_ms": session.session_started_ms,
+                "last_activity_ms": session.last_activity_ms,
+                "previous_session_ended_ms": session.previous_session_ended_ms,
+                "gap_ms": crate::session_summary::USER_SESSION_GAP_MS,
+            },
+        }))
     }
 
     /// `issues.get` — one issue and its whole timeline.
@@ -139,8 +152,26 @@ impl AppState {
             .load_tracker_timeline(&issue.id)
             .stored()?;
         let issue = self.backfill_issue_identities(issue, &timeline)?;
+        let issue = self.backfill_done_at(issue, &timeline)?;
         let issue = self.issue_with_read_identities(issue, &timeline);
         Ok(issue_with_timeline_json(&project_id, &issue, &timeline))
+    }
+
+    /// Give an issue filed before `done_at` existed the one its timeline
+    /// says, and keep it, so the next write carries it too.
+    fn backfill_done_at(
+        &self,
+        mut issue: Issue,
+        timeline: &[crate::tracker::TimelineEntry],
+    ) -> Result<Issue, String> {
+        let done_at = crate::tracker::done_at_from_timeline(&issue, timeline);
+        if issue.done_at.is_none() && done_at.is_some() {
+            issue.done_at = done_at;
+            self.tracker_store()?
+                .save_tracker_issue_activity(&issue, &[], &[])
+                .stored()?;
+        }
+        Ok(issue)
     }
 
     /// `issues.columns` — the board's columns, in board order.

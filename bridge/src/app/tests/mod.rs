@@ -230,5 +230,6 @@ mod tracker_tracking;
 mod tracker_watching;
 mod updates;
 mod usage_limits;
+mod user_session;
 mod workflow;
 mod workspaces;

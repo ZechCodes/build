@@ -13,7 +13,7 @@
 
 import { messageOf } from "./text.js";
 import { hashFromRoute } from "./router.js";
-import { watchChanges } from "./changeEvents.js";
+import { bridgeCapabilities, watchChanges } from "./changeEvents.js";
 import { issuesPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
@@ -46,7 +46,8 @@ import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceA
 import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
-import { dashboardSections } from "./trackerDashboardModel.js";
+import { dashboardSections, doneSinceCutoff, stillAway } from "./trackerDashboardModel.js";
+import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
@@ -83,6 +84,8 @@ export function mountIssuesPane(host, options) {
     // When the cache took each list this pane can paint from (#119).
     queryAt: 0,
     wholeAt: 0,
+    userSession: null, // the bridge's, from the device's cache
+    walkedIn: null, // { last, at }: when this tab first saw the user's silence end
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
   const uiSnapshot = () => ({
@@ -201,12 +204,31 @@ export function mountIssuesPane(host, options) {
       saveUi();
     },
     dashboardTab: state.dashboardTab,
+    doneSinceLeft: carriesDoneSinceLeft(),
     onDashboardTab: (id) => {
       if (!dashboardTabIds.includes(id) || state.dashboardTab === id) return;
       state.dashboardTab = id;
       saveUi();
     },
   });
+
+  /** Whether this device's bridge carries `done_at` and the user's session.
+   *  Asked at each paint: the greeting can land after the cache has painted. */
+  function carriesDoneSinceLeft() {
+    return bridgeCapabilities(state.deviceId)?.issues?.doneSinceLeft === true;
+  }
+
+  /** The cutoff at `nowMs`. A silence the bridge has not seen end yet ends
+   *  when this tab first noticed it, and stays there, so work finishing while
+   *  the user looks at the Dashboard joins the section rather than chasing a
+   *  cutoff that moves with the clock. */
+  function doneCutoff(nowMs) {
+    const session = state.userSession;
+    const last = session?.last_activity_ms ?? null;
+    if (!stillAway(session, nowMs)) state.walkedIn = null;
+    else if (state.walkedIn?.last !== last) state.walkedIn = { last, at: nowMs };
+    return doneSinceCutoff(session, nowMs, state.walkedIn?.at ?? nowMs);
+  }
 
   const groupLabels = [
     [WORKING_GROUP, "In progress with an agent"],
@@ -237,6 +259,7 @@ export function mountIssuesPane(host, options) {
       entries: () => dashboardSections(state.shown, {
         feed: state.feed(), projectKey: state.projectKey, detailById: details.read(),
         activityByAgent: activity?.read(),
+        doneCutoffMs: carriesDoneSinceLeft() ? doneCutoff(Date.now()) : null,
       }),
     },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },
@@ -359,6 +382,16 @@ export function mountIssuesPane(host, options) {
     void paintFromCache();
   });
 
+  async function paintUserSession() {
+    const session = await readUserSession(state.deviceId);
+    if (state.disposed) return;
+    state.userSession = session;
+    if (state.view === DASHBOARD_VIEW) paint();
+  }
+  const userSessionWatcher = subscribeCache(userSessionAddress(state.deviceId), () => {
+    void paintUserSession();
+  });
+
   details = createTrackerIssueDetailsFeed({
     deviceId: state.deviceId,
     projectId: state.projectId,
@@ -396,6 +429,7 @@ export function mountIssuesPane(host, options) {
       // An unnarrowed answer is also the authoritative whole-list record.
       if (!narrowsTheRead(filters))
         await writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(answer?.issues, columns));
+      await writeUserSession(state.deviceId, answer);
     } catch (error) {
       if (state.disposed) return;
       // The wire going away is not news about this project's issues. With a
@@ -635,6 +669,7 @@ export function mountIssuesPane(host, options) {
     if (state.disposed) return;
     paint();
     watchQuery();
+    void paintUserSession();
     void paintFromCache().then(() => refresh());
   });
   // No cadence: nothing in this client polls. The tab hears that an issue of
@@ -665,6 +700,7 @@ export function mountIssuesPane(host, options) {
       uiRecord.dispose();
       watcher.dispose();
       wholeListWatcher?.();
+      userSessionWatcher?.();
       details.dispose();
       activity.dispose();
       queryUnsubscribe?.();

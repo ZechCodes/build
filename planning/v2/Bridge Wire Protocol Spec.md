@@ -604,8 +604,9 @@ behavior or response shapes use feature names: `changes.subscriptions`,
 `issues.attachments`, `issues.context`, `issues.watching`, `conversations.settings`,
 `changes.bodies`, `requests.receipts`, `messages.context`,
 `threads.postOperations`, `settings.roleModels`, `settings.projectAgent`,
-`agents.names`, `messages.fromAgent`, `messages.issueNotices`,
-`board.usageLimits`, `threads.newestDeltaPagination`,
+`agents.names`, `messages.fromAgent`, `issues.doneSinceLeft` (`done_at` on
+issues and `user_session` on `issues.list`, see the Issues spec),
+`messages.issueNotices`, `board.usageLimits`, `threads.newestDeltaPagination`,
 `issues.commentUserMentions`, `issues.agentIdentities`, and
 `issues.attachmentChunks`. The method registry supplies typed verb names,
 and a small explicit list supplies legacy and session-scoped verbs. Contract

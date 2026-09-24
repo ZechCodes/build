@@ -1,6 +1,6 @@
 use super::AppState;
 use crate::orchestrator::ActiveRun;
-use crate::session_summary::{message_millis, SessionSummary};
+use crate::session_summary::{message_millis, SessionSummary, UserSession};
 use crate::thread::ThreadItem;
 
 impl AppState {
@@ -96,6 +96,58 @@ impl AppState {
                     .and_modify(|summary| *summary = summary.updated(ts))
                     .or_insert_with(|| SessionSummary::default().updated(ts));
             }
+        }
+        Ok(())
+    }
+
+    /// The user did something, now. Only the verbs that are the user acting
+    /// call this, so an agent working through the night never starts a
+    /// session. A write that fails is logged rather than failing the verb:
+    /// the next action rewrites the whole row, and a boot replays the actions
+    /// the store already holds.
+    pub(in crate::app) fn note_user_activity(&mut self, ts: i64) {
+        let updated = self.user_session.updated(ts);
+        if updated == self.user_session {
+            return;
+        }
+        self.user_session = updated;
+        if let Some(store) = self.store.as_ref() {
+            if let Err(error) = store.save_user_session(&updated) {
+                eprintln!("user session persist failed: {error}");
+            }
+        }
+    }
+
+    pub(in crate::app) fn user_session(&self) -> UserSession {
+        self.user_session
+    }
+
+    /// The persisted summary and every stored user action, folded in
+    /// timestamp order. The summary carries what the store cannot replay (read
+    /// marks keep only their latest), the actions repair anything the summary
+    /// missed, and a first boot after this shipped starts from history rather
+    /// than from nothing.
+    pub(in crate::app) fn rebuild_user_session(&mut self) -> Result<(), String> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(());
+        };
+        let mut times = store
+            .user_action_times()
+            .map_err(|error| format!("user session rebuild: {error}"))?;
+        if let Some(saved) = store
+            .load_user_session()
+            .map_err(|error| format!("user session rebuild: {error}"))?
+        {
+            times.extend(saved.instants());
+        }
+        times.sort_unstable();
+        self.user_session = times
+            .into_iter()
+            .fold(UserSession::default(), UserSession::updated);
+        if self.user_session != UserSession::default() {
+            store
+                .save_user_session(&self.user_session)
+                .map_err(|error| format!("user session rebuild: {error}"))?;
         }
         Ok(())
     }

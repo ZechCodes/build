@@ -68,7 +68,13 @@
         "updated_at": "2026-09-19T10:12:00Z",
         "closed_at": null
       }
-    ]
+    ],
+    "user_session": {
+      "session_started_ms": 1758272400000,
+      "last_activity_ms": 1758276720000,
+      "previous_session_ended_ms": 1758218400000,
+      "gap_ms": 21600000
+    }
   },
   "errors": [
     "not_found",

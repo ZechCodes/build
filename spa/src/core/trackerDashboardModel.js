@@ -7,7 +7,14 @@ import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js"
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+/** How long an absence "since you left" reaches back over. Past it the user
+ *  starts from a blank slate: 96 hours holds a three-day weekend, and a week
+ *  away is too much to catch up on as a list. */
+export const DONE_SINCE_CAP_MS = 96 * HOUR_MS;
+/** The bridge states its own gap; this is only for an answer that does not. */
+const USER_SESSION_GAP_MS = 6 * HOUR_MS;
 const isDoneMove = (entry) =>
   entry?.type === "event" && entry.kind === "moved" && entry.payload?.to === "done";
 const activityLineOf = (item) => {
@@ -48,6 +55,53 @@ export function doneMoveToday(issue, detail, nowMs) {
   return movedMs >= nowMs - DAY_MS && movedMs <= nowMs ? event.at : null;
 }
 
+/**
+ * Where "Done since you left" starts, in epoch milliseconds.
+ *
+ * `session` is the bridge's user session (`issues.list`'s `user_session`).
+ * The cutoff is the last thing the user did before their latest silence of
+ * `gap_ms` or more. A silence that has not ended yet counts: a user walking
+ * in after a night away has not acted yet, so the bridge still describes the
+ * session before, and `walkedInMs` is when this client first saw that.
+ *
+ * With no earlier session, or one that ended more than 96 hours before this
+ * one started, the cutoff is this session's start: a blank slate that fills
+ * as work finishes while the user is here. The cap measures the absence, not
+ * the time since it, so a long weekend does not vanish halfway through the
+ * day the user comes back.
+ */
+export function doneSinceCutoff(session, nowMs, walkedInMs = nowMs) {
+  if (!Number.isFinite(nowMs)) return null;
+  const { started, ended } = sessionAt(session, nowMs, finite(walkedInMs) ?? nowMs);
+  return ended === null || started - ended > DONE_SINCE_CAP_MS ? started : ended;
+}
+
+const finite = (value) => (Number.isFinite(value) ? value : null);
+const gapOf = (session) => (session?.gap_ms > 0 ? session.gap_ms : USER_SESSION_GAP_MS);
+
+/** Whether the user's latest silence is still going on at `nowMs`: they have
+ *  not acted for a whole gap, or ever. */
+export function stillAway(session, nowMs) {
+  const last = finite(session?.last_activity_ms);
+  return last === null || nowMs - last >= gapOf(session);
+}
+
+/** This session's start and where the one before it ended, as of `nowMs`. */
+function sessionAt(session, nowMs, walkedInMs) {
+  if (stillAway(session, nowMs)) return { started: walkedInMs, ended: finite(session?.last_activity_ms) };
+  const started = finite(session.session_started_ms) ?? session.last_activity_ms;
+  return { started, ended: finite(session.previous_session_ended_ms) };
+}
+
+/** When an issue moved into Done, if it is there and got there at or after
+ *  `cutoffMs`. Read from the list record alone, so an issue whose timeline
+ *  this client never fetched is not missed. */
+export function doneSince(issue, cutoffMs) {
+  if (issue?.status !== "done" || !Number.isFinite(cutoffMs)) return null;
+  const movedMs = Date.parse(issue.done_at || "");
+  return movedMs >= cutoffMs ? issue.done_at : null;
+}
+
 const cachedActivity = (activityByAgent, agentId) => {
   const snippet = activityByAgent instanceof Map
     ? activityByAgent.get(agentId)
@@ -57,13 +111,18 @@ const cachedActivity = (activityByAgent, agentId) => {
 
 /** Three sections of the same cached issue list, in its existing order.
  * `activityByAgent` contains optional text read from cached conversations,
- * keyed by agent id. No feed digest provides a latest activity snippet. */
+ * keyed by agent id. No feed digest provides a latest activity snippet.
+ *
+ * `doneCutoffMs` is given for a bridge that carries `done_at` and the user's
+ * session: Done is then everything finished since the user left. Without it
+ * Done falls back to the cached timelines' last 24 hours. */
 export function dashboardSections(issues, {
   feed = null,
   projectKey = "",
   detailById = new Map(),
   nowMs = Date.now(),
   activityByAgent = new Map(),
+  doneCutoffMs = null,
 } = {}) {
   const grouped = attentionGroups(issues, { feed, projectKey, detailById });
   const reading = {
@@ -82,9 +141,16 @@ export function dashboardSections(issues, {
     const { reasons } = grouped.attentionById.get(issue.id);
     return reasons.length ? [{ issue, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
   });
-  const doneToday = (issues || []).flatMap((issue) => {
-    const movedAt = doneMoveToday(issue, detailById.get(issue.id), nowMs);
+  const done = doneEntries(issues, { detailById, nowMs, doneCutoffMs });
+  return { inProgress, needsYou, done };
+}
+
+function doneEntries(issues, { detailById, nowMs, doneCutoffMs }) {
+  const movedAtOf = doneCutoffMs === null
+    ? (issue) => doneMoveToday(issue, detailById.get(issue.id), nowMs)
+    : (issue) => doneSince(issue, doneCutoffMs);
+  return (issues || []).flatMap((issue) => {
+    const movedAt = movedAtOf(issue);
     return movedAt ? [{ issue, movedAt, sha: issue.links?.commits?.at(-1) || null }] : [];
   });
-  return { inProgress, needsYou, doneToday };
 }

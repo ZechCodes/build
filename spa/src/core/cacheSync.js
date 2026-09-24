@@ -48,6 +48,7 @@ import {
 } from "./localCache.js";
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
 import { issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
+import { writeUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
   FILE_RECORD_KIND,
@@ -419,7 +420,10 @@ async function readIssuesNow(context, projectId) {
     ? held.columns
     : (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
   if (!context.active()) return;
-  await writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns));
+  await Promise.all([
+    writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns)),
+    writeUserSession(context.deviceId, answer),
+  ]);
 }
 
 /** One project's list read at a time on a session (#119). A push heard while

@@ -285,7 +285,7 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[data-issue-view="dashboard"]').getAttribute("aria-pressed")).toBe("true");
     expect(clearPress()).toBeNull();
     expect(tabs().map((tab) => [tab.dataset.dashboardTab, tab.textContent.trim(), tab.getAttribute("aria-selected")]))
-      .toEqual([["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"], ["doneToday", "Done1", "false"]]);
+      .toEqual([["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"], ["done", "Done1", "false"]]);
     expect(dashboardRows("needsYou")).toEqual(["review"]);
     expect(host.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
     await chooseTab("inProgress");
@@ -294,9 +294,9 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[role="tab"][aria-selected="true"]').dataset.dashboardTab).toBe("inProgress");
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
       .toContain("Writing summary");
-    await chooseTab("doneToday");
-    expect(dashboardRows("doneToday")).toEqual(["done"]);
-    expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-detail').textContent)
+    await chooseTab("done");
+    expect(dashboardRows("done")).toEqual(["done"]);
+    expect(host.querySelector('[data-dashboard-section="done"] .issue-dashboard-detail').textContent)
       .toContain("abc123def456");
   });
 
@@ -321,9 +321,9 @@ describe("the Dashboard", () => {
 
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
       .toContain("Cached new activity");
-    await chooseTab("doneToday");
-    expect(dashboardRows("doneToday")).toEqual(["done"]);
-    expect(host.querySelector('[data-dashboard-section="doneToday"] .issue-dashboard-link').getAttribute("href"))
+    await chooseTab("done");
+    expect(dashboardRows("done")).toEqual(["done"]);
+    expect(host.querySelector('[data-dashboard-section="done"] .issue-dashboard-link').getAttribute("href"))
       .toContain("done");
   });
 
@@ -400,7 +400,7 @@ describe("the Dashboard", () => {
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
     await chooseTab("inProgress");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent is working on an issue.");
-    await chooseTab("doneToday");
+    await chooseTab("done");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing moved to Done in the last 24 hours.");
   });
 

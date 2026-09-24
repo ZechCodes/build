@@ -89,7 +89,7 @@ describe("adapter selection", () => {
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
-      issues: { attachments: false, watching: false, context: false },
+      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
       messages: { context: false },
@@ -201,7 +201,7 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
-        issues: { attachments: false, watching: false, context: false },
+        issues: { attachments: false, watching: false, context: false, doneSinceLeft: false },
         conversations: { settings: false },
         messages: { context: false },
         threads: { postOperations: false },
@@ -269,7 +269,7 @@ describe("named capabilities", () => {
     expect(flags({
       ...namedGreeting(features),
       changes: { subscriptions: false }, requests: { priority: false },
-      errors: { codes: false }, issues: { attachments: false, watching: false, context: false },
+      errors: { codes: false }, issues: { attachments: false, watching: false, context: false, doneSinceLeft: false },
     })).toEqual(features);
   });
 

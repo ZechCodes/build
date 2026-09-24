@@ -202,16 +202,18 @@ function deviceTimeline(tl, pose) {
     move("laptop", laptopRests[index], rest, between(index + 1, 0.2), between(index + 1, 0.85));
   });
 
+  // A remote screen comes in only after its act's display cue, at the middle
+  // of the move (SCREEN_CUES), so it never shows a blank screen; and it is
+  // in place before the act's copy is fully in, so act 4's question is on
+  // screen when the beat asks it.
   const phone = POSES.phone;
-  // In place before act 4's copy, so its question is on screen when the
-  // beat asks it.
-  move("phone", entrancePose("phone", phone[4]), phone[4], between(3, 0.3), between(3, 0.9), "power3.out");
-  move("phone", phone[4], departPose("phone", phone[4]), between(4, 0.1), between(4, 0.5), "power2.in");
-  move("phone", entrancePose("phone", phone[8]), phone[8], between(7, 0.35), between(7, 0.95), "power3.out");
+  move("phone", entrancePose("phone", phone[4]), phone[4], between(3, 0.52), between(3, 0.92), "power3.out");
+  move("phone", phone[4], departPose("phone", phone[4]), between(4, 0.1), between(4, 0.45), "power2.in");
+  move("phone", entrancePose("phone", phone[8]), phone[8], between(7, 0.52), between(7, 0.95), "power3.out");
 
   const tablet = POSES.tablet;
-  move("tablet", entrancePose("tablet", tablet["7-arrive"]), tablet["7-arrive"], between(6, 0.3), between(6, 0.75), "power3.out");
-  move("tablet", tablet["7-arrive"], tablet[7], between(6, 0.75), between(6, 0.95));
+  move("tablet", entrancePose("tablet", tablet["7-arrive"]), tablet["7-arrive"], between(6, 0.52), between(6, 0.8), "power3.out");
+  move("tablet", tablet["7-arrive"], tablet[7], between(6, 0.8), between(6, 0.95));
   move("tablet", tablet[7], tablet[8], between(7, 0.2), between(7, 0.85));
 }
 

@@ -112,6 +112,20 @@ function rowsFor(devices, recoveries, nowMs) {
   return [...listed, ...unlisted];
 }
 
+/** The supervisor's records, and one more for each live machine whose link is
+ *  putting a failed path right in place (#123). That machine still holds its
+ *  session, so the supervisor has no record of it — but nothing it is asked is
+ *  answered until the restart lands, and a restart against a bridge that has
+ *  itself restarted never does. A green ring over that was the whole of what a
+ *  reader was told. It is a dial in flight, and says so. */
+function withRestoring(devices, recoveries) {
+  const recorded = new Set(recoveries.map((record) => record.deviceId));
+  const restoring = devices
+    .filter((device) => device.live && device.restoring && !recorded.has(device.id))
+    .map((device) => ({ deviceId: device.id, status: ATTEMPTING, failedAttempts: 0, nextAttemptAt: null }));
+  return [...recoveries, ...restoring];
+}
+
 /**
  * The icon's whole state.
  *
@@ -123,8 +137,9 @@ function rowsFor(devices, recoveries, nowMs) {
  * another between tries, what is happening is the dial, and the ring shows the
  * thing that is happening.
  */
-export function connectionStatus({ devices = [], recoveries = [], nowMs = Date.now() } = {}) {
-  const connectedCount = devices.filter((device) => device.live).length;
+export function connectionStatus({ devices = [], recoveries: recorded = [], nowMs = Date.now() } = {}) {
+  const recoveries = withRestoring(devices, recorded);
+  const connectedCount = devices.filter((device) => device.live && !device.restoring).length;
   const recovering = recoveries.filter((record) => RECOVERING.has(record.status));
   const attempting = recovering.filter((record) => record.status === ATTEMPTING);
   const waiting = recovering.filter((record) => record.status === WAITING);

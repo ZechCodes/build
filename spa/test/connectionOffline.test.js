@@ -180,6 +180,14 @@ function fakePeerLink(deviceId) {
     // Every real link tells its owner when the way it is carrying changes, so
     // the ring can redraw the word (core/peerLink.js, issue #31).
     onPathChanged: vi.fn(() => () => {}),
+    // A failed path put right by its restart, which may have landed on a
+    // bridge that restarted under it (#123).
+    restored: new Set(),
+    onRestored: vi.fn((fn) => {
+      link.restored.add(fn);
+      return () => link.restored.delete(fn);
+    }),
+    restore: () => link.restored.forEach((fn) => fn()),
     transportPath: () => null,
     close: vi.fn(),
   };
@@ -390,6 +398,27 @@ describe("per-device connections", () => {
 
     expect(boardReads("dev-a")).toBeGreaterThan(0);
     expect(rendezvousFor.get("dev-a").close).toHaveBeenCalled();
+  });
+
+  // #123: an ICE restart can land on a bridge process that restarted under the
+  // session. It carries the same id and key and holds nothing else — no
+  // greeting, so no subscriptions and no pushes — and the channel it rides has
+  // not changed, so no carrier change greets it. The restored path does.
+  // (The greeting is what replays the subscriptions and refetches every
+  // surface: core/changeEvents.js greetBridge, tested there.)
+  it("greets the machine again when its failed path is restored", async () => {
+    await connectEveryDevice();
+    const session = lastSession("dev-a");
+    const hellos = () => session.call.mock.calls.filter(([method]) => method === "session.hello").length;
+    const greeted = hellos();
+    expect(greeted).toBeGreaterThan(0);
+
+    linksFor.get("dev-a").restore();
+    await flush();
+
+    await vi.waitFor(() => expect(hellos()).toBeGreaterThan(greeted));
+    expect(lastSession("dev-a")).toBe(session); // the same session, greeted again
+    expect(contextFor("dev-a").offline).toBe(false);
   });
 
   it("closes a failed handoff instead of treating a network error as an old bridge", async () => {

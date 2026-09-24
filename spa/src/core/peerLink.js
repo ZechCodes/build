@@ -38,7 +38,18 @@ function createRecoveryStatus() {
   };
 }
 
+/** What a failed restart is recorded as: the two causes worth telling apart
+ *  in a report, and everything else. */
+const restartFailure = (error) =>
+  (["timeout", "not-carried"].includes(error?.blockedReason) ? error.blockedReason : "failed");
+
+/**
+ * `confirmCarried` answers whether the session is carried over this link once a
+ * restart says `connected` (#123) — the session's own ping, since only an
+ * answer that crossed the channels proves they reach the process holding it.
+ */
 export async function openPeerLink({ signal, fetchIceServers, onPush, onConnected = () => {}, onFailed = () => {},
+  confirmCarried,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection, openTimeoutMs = OPEN_TIMEOUT_MS, diagnosticId = "peer" }) {
   const diagnostic = (event, detail = {}) => recordConnectionDiagnostic(diagnosticId, event, detail);
   const iceServers = await withinDeadline(openTimeoutMs, () => fetchIceServers());
@@ -60,6 +71,11 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  re-nominates. A subscription rather than a callback parameter, so nothing
    *  above has to be handed down into the link to hear about it. */
   const pathListeners = new Set();
+  /** Told when a failed path has been put right and carries again (#123). The
+   *  restart may have landed on a NEW bridge process — one that answered the
+   *  offer and carries, and holds nothing of this session — so whoever owns
+   *  the session greets it again. */
+  const restoredListeners = new Set();
   /** This connection's stats, or null when the peer cannot be asked. Two readings
    *  are taken off them — which path is carrying, and whether a direct pair is
    *  worth trying — and neither may throw at its caller. */
@@ -94,6 +110,14 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
    *  over one peer would race each other's local description, and the failure
    *  watcher and the direct-pair attempt can both want one. */
   let renegotiating = false;
+  /** Whether a failed path is being put right in place: the restart the
+   *  failure watcher runs, and the carry check after it. Not the optional
+   *  direct-pair attempt, whose path works throughout. What the ring reads to
+   *  say the machine is being reconnected to (#123), announced through
+   *  `recovery`'s transitions. */
+  let restoring = false;
+  /** A caller that cannot ask its session is taken at ICE's word, as before. */
+  const carried = async () => (confirmCarried ? confirmCarried() : true);
   /** The timer that will ask whether this relayed session could be direct, and
    *  whether it has already been asked. Once per connection: a session that has
    *  had its second run at the race does not get a third. */
@@ -173,6 +197,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     clearTimeout(upgradeTimer);
     recovery.clear();
     pathListeners.clear();
+    restoredListeners.clear();
     holdInbound.close();
     holdOutbound.close();
     unsubscribe();
@@ -317,19 +342,32 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   stopWatching = watchForFailure(peer, diagnostic, async () => {
     if (renegotiating) return; // one negotiation at a time; see `attemptDirectPair`
     renegotiating = true;
+    restoring = true;
     recovery.begin();
     try {
       await renegotiate("restart");
       if (torn) return;
+      // `connected` here is ICE's and DTLS's word. After the bridge restarts,
+      // the NEW process answers this offer and the channels still read `open`
+      // from the association the old one took with it, so nothing crosses
+      // them — and each restart would "land" again, six seconds apart, for
+      // ever, with the session never reported lost (#123). Still recovering
+      // while this is asked, so the path probe leaves the verdict to it.
+      if (!(await carried())) throw blockedBy("not-carried", "the restarted path does not carry this session");
+      if (torn) return;
       readIceState();
       diagnostic("connected", { phase: "restart" });
       await sampleTransportPath();
+      restoring = false;
       recovery.end();
       await onConnected();
+      for (const listener of [...restoredListeners]) listener();
     } catch (error) {
-      diagnostic("restart-failed", { reason: error?.blockedReason === "timeout" ? "timeout" : "failed" });
+      restoring = false;
+      diagnostic("restart-failed", { reason: restartFailure(error) });
       tearDown("the ICE restart did not land");
     } finally {
+      restoring = false;
       renegotiating = false;
     }
   });
@@ -339,12 +377,21 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
     app,
     term,
     recovery,
+    restoring: () => restoring,
     transportPath: () => transportPath,
     /** Hear when this connection starts carrying a different way. Returns the
      *  unsubscribe, which is the only way off. */
     onPathChanged(fn) {
       pathListeners.add(fn);
       return () => pathListeners.delete(fn);
+    },
+    /** Hear when a failed path carries again after its restart. Returns the
+     *  unsubscribe. Not told after the optional direct-pair attempt: that runs
+     *  on a path that never failed, so the process behind it cannot have
+     *  changed. */
+    onRestored(fn) {
+      restoredListeners.add(fn);
+      return () => restoredListeners.delete(fn);
     },
     close: tearDown,
   };

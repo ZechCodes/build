@@ -497,6 +497,71 @@ describe("openPeerLink", () => {
     expect(lost.sort()).toEqual(["app", "term"]);
   });
 
+  // #123: after a bridge restart the ICE restart reaches the NEW process, which
+  // answers the offer; ICE and DTLS connect and the channels still read `open`
+  // from the dead process's association. A restart is not trusted until the
+  // caller confirms the session is carried over it.
+  it("closes the link when a restart connects but nothing is carried over it", async () => {
+    clearConnectionDiagnosticHistory();
+    const restored = [];
+    const { peer, resolved } = await upgrade({
+      onConnected: () => restored.push("up"),
+      confirmCarried: async () => false,
+    });
+    const lost = [];
+    resolved.app.onClose(() => lost.push("app"));
+    resolved.term.onClose(() => lost.push("term"));
+    peer.fail();
+    await vi.waitFor(() => expect(peer.closed).toBe(true));
+    expect(lost.sort()).toEqual(["app", "term"]);
+    expect(restored).toEqual([]);
+    const history = connectionDiagnosticHistory();
+    expect(history.find((entry) => entry.event === "restart-failed")?.reason).toBe("not-carried");
+    expect(history.filter((entry) => entry.event === "connected").map((entry) => entry.phase)).toEqual(["initial"]);
+  });
+
+  it("holds the restart as recovering until the carry is confirmed, then keeps the link", async () => {
+    let confirm;
+    const restored = [];
+    const { peer, resolved } = await upgrade({
+      onConnected: () => restored.push("up"),
+      confirmCarried: () => new Promise((resolve) => { confirm = resolve; }),
+    });
+    peer.fail();
+    await vi.waitFor(() => expect(confirm).toBeTypeOf("function"));
+    // The path probe stands down while this is true; the verdict is this one's.
+    expect(resolved.recovery.snapshot().recovering).toBe(true);
+    // And the ring says the machine is being reconnected to.
+    expect(resolved.restoring()).toBe(true);
+    expect(restored).toEqual([]);
+    confirm(true);
+    await vi.waitFor(() => expect(restored).toEqual(["up"]));
+    expect(resolved.recovery.snapshot().recovering).toBe(false);
+    expect(resolved.restoring()).toBe(false);
+    expect(peer.closed).toBe(false);
+  });
+
+  // #123: the restart can land on a NEW bridge process that answers it and
+  // carries — and holds nothing of this session: no greeting, so no
+  // subscriptions and no pushes. Whoever owns the session greets it again.
+  it("says a failed path was restored, once the restart carries", async () => {
+    const restored = [];
+    const { peer, resolved } = await upgrade({ confirmCarried: async () => true });
+    resolved.onRestored(() => restored.push("restored"));
+    peer.fail();
+    await vi.waitFor(() => expect(restored).toEqual(["restored"]));
+    expect(peer.closed).toBe(false);
+  });
+
+  it("says nothing was restored when the restart carries nothing", async () => {
+    const restored = [];
+    const { peer, resolved } = await upgrade({ confirmCarried: async () => false });
+    resolved.onRestored(() => restored.push("restored"));
+    peer.fail();
+    await vi.waitFor(() => expect(peer.closed).toBe(true));
+    expect(restored).toEqual([]);
+  });
+
   it("closing the link takes both carriers and the peer connection with it", async () => {
     const { peer, resolved, signalled } = await upgrade();
     const lost = [];
@@ -631,6 +696,42 @@ describe("a session that landed on a relayed pair", () => {
     expect(offers(signalled)).toBeGreaterThan(before);
     expect(resolved.transportPath()).toBe("direct");
     expect(diagnosticsOf("direct-pair")).toEqual(["trying", "renominated"]);
+  });
+
+  // The optional second run at the race is not a reconnect: the path it may
+  // leave works, so the ring has nothing to say about it (#123).
+  it("is not restoring anything while it tries for a direct pair", async () => {
+    const { peer, resolved } = await landedOnRelay();
+    const seen = [];
+    resolved.recovery.subscribe(() => seen.push(resolved.restoring()));
+    peer.getStats = async () => asReport([
+      ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+      ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+    ]);
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(diagnosticsOf("direct-pair")[0]).toBe("trying");
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((restoring) => restoring === false)).toBe(true);
+  });
+
+  it("does not ask for a new greeting after a direct-pair attempt: nothing failed", async () => {
+    const { peer, resolved } = await landedOnRelay();
+    const restored = [];
+    resolved.onRestored(() => restored.push("restored"));
+    let asked = 0;
+    peer.getStats = async () => {
+      asked += 1;
+      if (asked === 1) {
+        return asReport([
+          ...pairEntries("relayed", { localType: "relay", remoteType: "host", nominated: true }),
+          ...pairEntries("direct", { localType: "host", remoteType: "host" }),
+        ]);
+      }
+      return asReport(pairEntries("direct", { localType: "host", remoteType: "host", nominated: true }));
+    };
+    await vi.advanceTimersByTimeAsync(21000);
+    expect(diagnosticsOf("direct-pair")).toEqual(["trying", "renominated"]);
+    expect(restored).toEqual([]);
   });
 
   it("does not try when the check list holds no direct pair that worked", async () => {

@@ -18,9 +18,18 @@
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
+import { peerFrameAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
+
+/** How long a restarted path has to show it carries this session (#123).
+ *
+ *  Longer than the probe's ping on purpose: a restart on a healthy path comes
+ *  back to whatever the bridge queued while it was down, and the pong waits
+ *  behind it — but any frame at all ends the wait. A path that carries nothing
+ *  for this long after its restart says `connected` is not this session's. */
+export const CARRY_CONFIRM_MS = 10000;
 
 /** Whether this rejection is the PATH's deadline: a frame that went out and was
  *  never acknowledged, which is the one failure that is about the wire rather
@@ -257,6 +266,30 @@ export async function openSession({
      */
     watchRecovery: (isRecovering) => {
       peerIsRecovering = typeof isRecovering === "function" ? isRecovering : () => false;
+    },
+
+    /**
+     * Does the channel this session rides carry it? Asked after an ICE restart
+     * reports `connected` (#123), because that word is ICE's and DTLS's: a
+     * bridge that restarted answers the restart's offer as a fresh session, and
+     * the browser's channels still read `open` from the association the old
+     * process took with it. Nothing crosses them.
+     *
+     * `true` once the ping is answered or any frame arrives after asking;
+     * `false` when neither happens inside `timeoutMs`, or there is no channel.
+     * Severs nothing and never rejects: what a dead restart costs is the link's
+     * call, and the path probe's own verdict stays latched for real deadlines.
+     */
+    confirmCarried: async (timeoutMs = CARRY_CONFIRM_MS) => {
+      const riding = carrierSwitch.active();
+      if (!riding || severed) return false;
+      const asked = Date.now();
+      try {
+        await rpc.call("ping", {}, { timeoutMs, carrier: riding });
+        return true;
+      } catch {
+        return peerFrameAt(rpc, riding) > asked;
+      }
     },
 
     /**

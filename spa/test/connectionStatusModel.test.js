@@ -50,6 +50,31 @@ describe("every machine connected", () => {
   });
 });
 
+// #123: a machine whose link is putting a failed path right in place — an ICE
+// restart, and the check that the session is carried over it — still holds its
+// session, and that is all it holds. Nothing it is asked is answered until the
+// restart lands, so the ring says it is being reconnected to rather than
+// counting it connected.
+describe("a connected machine whose path is being restored in place", () => {
+  it("is being reconnected to, and is not counted connected", () => {
+    const seen = status([{ ...STUDIO, restoring: true }, LAPTOP]);
+    expect(seen.state).toBe("attempting");
+    expect(seen.label).toBe("Reconnecting to Studio");
+    expect(seen.connectedCount).toBe(1);
+    expect(seen.rows.map((row) => [row.name, row.label])).toEqual([
+      ["Studio", "Reconnecting"],
+      ["Laptop", "Connected"],
+    ]);
+  });
+
+  it("leaves a machine the supervisor is already recovering to its record", () => {
+    const waiting = { deviceId: "a", status: "waiting", failedAttempts: 1, nextAttemptAt: NOW + 2400 };
+    const seen = status([{ ...STUDIO, restoring: true }], [waiting]);
+    expect(seen.state).toBe("waiting");
+    expect(seen.centre).toBe("3");
+  });
+});
+
 // The ring says what is true of the account; the menu behind it says what is
 // true of each machine. One derivation, because the two must never disagree
 // about the same machine — and the words are the menu's own: a row has the

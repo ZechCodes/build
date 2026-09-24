@@ -2,7 +2,7 @@
 // peer connection and by nothing else (spec rules 1 and 2).
 
 import { describe, it, expect, vi } from "vitest";
-import { DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
+import { CARRY_CONFIRM_MS, DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
 import { ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
 import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
 import { PATH_PROBE_EVENT } from "../src/core/pathProbe.js";
@@ -555,6 +555,62 @@ describe("a session whose path has silently died", () => {
       expect(peer.sent.map((sent) => sent.frameFields.payload.method)).toEqual(["thread.post"]);
       expect(events.lost).toBe(0);
     });
+  });
+});
+
+// ---- an ICE restart that reached a different bridge (#123) ------------------
+
+// After the bridge restarts, an ICE restart re-attaches this session to the NEW
+// bridge process: it mints the id afresh, ICE and DTLS connect, and the
+// browser's channels still read `open` from the dead process's association.
+// Nothing crosses them. Only an answer on the channel says the restart landed.
+describe("confirming a restarted path carries this session", () => {
+  const onFakeTime = async (body) => {
+    const stood = await carrying();
+    vi.useFakeTimers();
+    try {
+      return await body(stood);
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it("is carried when the ping on the channel is answered", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replyTo(peer).method).toBe("ping");
+      answer(peer, {});
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  it("is carried when a frame arrives while the ping is behind a backlog", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(1);
+      peer.frames.at = Date.now();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  it("is not carried when nothing comes back, however connected ICE says it is", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      peer.frames.connected = true;
+      peer.frames.at = Date.now(); // before the restart: says nothing about after it
+      await vi.advanceTimersByTimeAsync(1);
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(false);
+      // The verdict is the caller's to act on: asking severs nothing.
+      expect(events.lost).toBe(0);
+    });
+  });
+
+  it("is not carried when the session has no channel to ask on", async () => {
+    const { session } = await opened();
+    expect(await session.confirmCarried()).toBe(false);
   });
 });
 

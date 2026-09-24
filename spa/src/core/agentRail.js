@@ -104,10 +104,11 @@ import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
-  activityRunKeyAt,
+  activityRunDrawn,
   activityRunThroughAt,
   chatPaintFingerprint,
   createThreadCache,
+  cutRunKeyAt,
   digestsOf,
   paintThreadEntries,
   paintThreadKeepingPlace,
@@ -1058,6 +1059,7 @@ function mountRailOnContext(host, context, swap) {
   let reportedFloor = null; // and how much of the conversation it held saying so
   let paintedChat = null; // what the timeline in the panel was drawn from
   let paintedDigests = []; // the run totals that timeline was drawn with
+  let paintedEntryKeyOf = () => null; // which of its entries draws a sequence
   // How much of the held conversation the timeline draws (#158): the newest
   // entries, and more as the reader asks for them.
   const timelineSlice = createTimelineSlice();
@@ -2355,21 +2357,39 @@ function mountRailOnContext(host, context, swap) {
 
   /// Draw the timeline down to `sequence` if it stops short of it, so what is
   /// about to be gone to — a deep link's row, a tick's message — is there.
+  ///
+  /// Whether it is drawn is whether the entry that owns it is: its own row, or
+  /// the run the held items say it is folded into. Never whether some drawn
+  /// run's numbers cover it, since a subagent's calls fold under the call that
+  /// spawned them wherever they land and one run's span can reach across
+  /// another's (#158).
   const drawDownTo = (sequence) => {
     const body = host.querySelector("#rail-body");
     const wanted = Number(sequence);
-    if (!body || !Number.isFinite(wanted) || isDrawn(body, wanted)) return;
-    const heldFrom = threadCache.windowFloorSequence() ?? wanted;
-    // Older than anything held, it has no row to draw down to, unless it sits
-    // in the cut half of a run the window starts inside.
-    if (wanted < heldFrom && !digestCovering(paintedDigests, wanted)) return;
-    timelineSlice.reachDown(Math.max(wanted, heldFrom));
-    paintChat({ olderItemsPrepended: true });
+    if (!body || !Number.isFinite(wanted)) return;
+    const key = paintedEntryKeyOf(wanted);
+    if (key === null) {
+      drawDownToUnheld(body, wanted);
+      return;
+    }
+    if (!body.querySelector(`.thread-items > [data-key="${key}"]`)) reachDownTo(Number(key));
   };
 
-  /// Whether `sequence` has a row on the timeline, or a run drawn to fold it.
-  const isDrawn = (body, sequence) =>
-    !!activityRunKeyAt(body, sequence) || !!body.querySelector(`.thread-items [data-sequence="${sequence}"]`);
+  /// A sequence the window does not hold has no owner in hand to go by. It is a
+  /// row an open run fetched, or it sits in the cut half of a run whose digest
+  /// reaches back over it, or it is older than anything held and has no row to
+  /// draw down to.
+  const drawDownToUnheld = (body, wanted) => {
+    if (cutRunKeyAt(body, wanted) || body.querySelector(`.thread-items [data-sequence="${wanted}"]`)) return;
+    const heldFrom = threadCache.windowFloorSequence() ?? wanted;
+    if (wanted < heldFrom && !digestCovering(paintedDigests, wanted)) return;
+    reachDownTo(Math.max(wanted, heldFrom));
+  };
+
+  const reachDownTo = (sequence) => {
+    timelineSlice.reachDown(sequence);
+    paintChat({ olderItemsPrepended: true });
+  };
 
   const readOlderItems = async () => {
     const request = olderReadRequest();
@@ -2666,6 +2686,7 @@ function mountRailOnContext(host, context, swap) {
       olderOnBridge: threadCache.hasOlderItems(),
     });
     timelineSlice.settle(built.sliced);
+    paintedEntryKeyOf = built.entryKeyOf;
     // Taken after the slice settles, so the floor it settled on is not news to
     // the next tick.
     paintedChat = chatFingerprintOf(thread, agentLabel);
@@ -2974,9 +2995,18 @@ function mountRailOnContext(host, context, swap) {
   /// waited for: the half of a cut run the window never held is a fetch away,
   /// and reaching for the row before it lands finds nothing.
   const openRunHolding = async (body, sequence) => {
-    const runKey = activityRunKeyAt(body, sequence);
+    const runKey = runKeyHolding(body, sequence);
     if (!runKey || conversationRuns().isOpen(runKey)) return;
     await pressActivityRun(runKey);
+  };
+
+  /// The run a sequence is folded into: the one the held items say owns it,
+  /// or, for a sequence they do not hold, the run whose cut half reaches over
+  /// it. Nothing for a sequence that is a row of its own.
+  const runKeyHolding = (body, sequence) => {
+    const key = paintedEntryKeyOf(Number(sequence));
+    if (key === null) return cutRunKeyAt(body, sequence);
+    return activityRunDrawn(body, key) ? key : null;
   };
 
   const surfaceViewerCallbacks = () => ({

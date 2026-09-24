@@ -1322,25 +1322,35 @@ export function pressedActivityRunKey(target) {
 
 const runSpanAttribute = (run, name) => Number(run.getAttribute(name));
 
-/// The run a sequence is folded into, or nothing when the row stands on its
-/// own. A reference from elsewhere in the app (a subagent row naming the call
-/// that spawned it) points at a sequence, and a shut run holds no row to point
-/// at — so the run is opened first, and this is what says which one.
+/// The run whose cut half reaches over a sequence the window never held, or
+/// nothing.
 ///
-/// The span it matches on is the DIGEST's, which reaches back over the half of
-/// a run the page cut away; the key it answers with is the run's, which is the
-/// oldest sequence the window holds. Matching on the key instead would miss
-/// every call that never travelled — exactly the ones a press has to fetch.
-export function activityRunKeyAt(scroller, sequence) {
+/// A reference from elsewhere in the app (a subagent row naming the call that
+/// spawned it) can point into the half of a run a page cut away, and no item in
+/// hand says what owns it: the parent link is on the item that never travelled.
+/// The run's DIGEST is the only word on it, and its span reaches back from the
+/// run's key, the oldest sequence the window holds, to where the run started.
+/// That stretch is all this matches. The bridge cuts runs from consecutive
+/// sequences, so no two runs' cut halves overlap.
+///
+/// A sequence the window does hold is found by what owns it (`entryKeyOf` on
+/// `timelineEntries`), never by which run's numbers cover it: a subagent's calls
+/// fold under the call that spawned them wherever they land, so one run's span
+/// can reach across another's (#158).
+export function cutRunKeyAt(scroller, sequence) {
   const wanted = Number(sequence);
   if (!scroller || !Number.isFinite(wanted)) return null;
   const run = [...scroller.querySelectorAll(`[${ACTIVITY_RUN_ATTRIBUTE}]`)].find(
     (element) =>
       runSpanAttribute(element, ACTIVITY_RUN_FROM_ATTRIBUTE) <= wanted &&
-      runSpanAttribute(element, ACTIVITY_RUN_THROUGH_ATTRIBUTE) >= wanted,
+      wanted < runSpanAttribute(element, ACTIVITY_RUN_ATTRIBUTE),
   );
   return run ? run.getAttribute(ACTIVITY_RUN_ATTRIBUTE) : null;
 }
+
+/// Whether the run keyed `runKey` has a box on the timeline.
+export const activityRunDrawn = (scroller, runKey) =>
+  !!(scroller && scroller.querySelector(`[${ACTIVITY_RUN_ATTRIBUTE}="${runKey}"]`));
 
 /// The newest sequence a run's box stands for — its own rows and the calls they
 /// fold — read back off the document, and 0 for a run that is not drawn.
@@ -1413,8 +1423,8 @@ function rowReachesSequence(row) {
 /// keeps its identity — and with it, the scroll position inside the box they
 /// opened. It carries the whole span it stands for as well — the digest's, so
 /// the half a page cut away is inside it — which is how a reference from
-/// somewhere else in the app finds the run a call is folded into without
-/// opening every one of them (`activityRunKeyAt`).
+/// somewhere else in the app finds the run a call the window never held is cut
+/// into, without opening every one of them (`cutRunKeyAt`).
 ///
 /// The fold is the render's to write: `RENDERED_FOLD_ATTRIBUTE` tells the patch
 /// so, and the pane cancels the press's own activation, so `open` says what the
@@ -1737,6 +1747,26 @@ function entrySpansOf(topLevelItems) {
   return { spans, rows };
 }
 
+/// Which entry draws a sequence: the key of its own row, or of the run it is
+/// folded into. Found by what the held items say owns it (`ownerSequenceOf`),
+/// then the top-level entry that owner stands in, whose spans never overlap.
+/// Never by the numbers a run's box covers, which do (#158). Null for a
+/// sequence the items do not hold, or one no row draws.
+function entryKeyOfTimeline({ folding, topLevelItems }, spans) {
+  let held = null;
+  return (sequence) => {
+    held ??= new Set(
+      topLevelItems
+        .filter((item) => !(item.type === "message" && drawsNoRow(item.data || {})))
+        .map((item) => Number((item.data || {}).sequence)),
+    );
+    const owner = folding.ownerSequenceOf(Number(sequence));
+    if (!held.has(owner)) return null;
+    const span = spans.find((entry) => entry.from <= owner && owner <= entry.through);
+    return span ? String(span.from) : null;
+  };
+}
+
 /// Every message of the reader's the timeline holds, as ticks for the column
 /// that maps them — drawn or not, so a tick above the slice is a way down to it.
 const userMessageTicksOf = (topLevelItems) =>
@@ -1812,6 +1842,7 @@ export function timelineEntries(
     entries: [...earlierRow(slice, sliced, olderOnBridge), ...withUnreadLine(entries, unreadFrom, sourceItems)],
     userTicks: userMessageTicksOf(timeline.topLevelItems),
     sliced: { hidden: sliced.hidden, floor: sliced.floor },
+    entryKeyOf: entryKeyOfTimeline(timeline, spans),
     itemCount: rows,
     // How many items the caller's detail level kept OUT of `sourceItems` —
     // which is the whole of whether an empty timeline means nothing was said.

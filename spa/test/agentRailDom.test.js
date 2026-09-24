@@ -5807,6 +5807,62 @@ describe("a long conversation held in the cache", () => {
   });
 });
 
+// A subagent's calls fold under the call that spawned it wherever they land,
+// so one run's span can reach across another's. Which run a call is in is what
+// the held items say owns it, never which drawn run's numbers cover it (#158).
+describe("a deep link to a call another run reaches across", () => {
+  const said = (sequence) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body: `said ${sequence}` } });
+  const call = (sequence, parent_sequence) => ({ type: "event", data: { sequence, parent_sequence, event: "tool_use", summary: `call ${sequence}` } });
+  const saidFrom = (from, through) => Array.from({ length: through - from + 1 }, (_, index) => said(from + index));
+  const pointingAt = (callSequence, items) => {
+    const last = items[items.length - 1].data.sequence;
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "child call", state: "running", call_sequence: callSequence }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: items.length, thread_last_sequence: last } },
+    });
+  };
+  const pressSurface = async () => {
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+  };
+
+  // Astra's reproduction from the #158 review: the slice draws run 90, whose
+  // span reaches 110, and hides run 1, which owns 100.
+  it("draws down to the hidden run that owns a call, past a drawn run whose span covers it", async () => {
+    pointingAt(100, [call(1), ...saidFrom(2, 89), call(90), ...saidFrom(91, 99), call(100, 1), ...saidFrom(101, 109), call(110, 90), ...saidFrom(111, 150)]);
+    await mount();
+    expect(railHost().querySelector('.thread-items > [data-key="90"]')).not.toBeNull();
+    expect(railHost().querySelector('.thread-items > [data-key="1"]')).toBeNull();
+
+    await pressSurface();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items > [data-key="1"][open] [data-sequence="100"]')).not.toBeNull();
+  });
+
+  it("opens the run that owns a call, not an older drawn run whose span covers it", async () => {
+    pointingAt(110, [call(1), said(2), call(90), said(91), call(110, 90), said(111), call(120, 1), said(121)]);
+    await mount();
+
+    await pressSurface();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items > [data-key="90"][open] [data-sequence="110"]')).not.toBeNull();
+    expect(railHost().querySelector('.thread-items > [data-key="1"]').open).toBe(false);
+  });
+
+  it("opens no run for a call the window never held, whatever drawn run's span covers it", async () => {
+    pointingAt(95, [call(1), said(2), call(90), said(91), call(110, 90), said(111)]);
+    await mount();
+
+    await pressSurface();
+
+    expect(railHost().querySelector('.thread-items > [data-key="90"]').open).toBe(false);
+    expect(notifyError).toHaveBeenCalledWith("That call is not in the loaded conversation", expect.any(String));
+  });
+});
+
 describe("a deep link past everything the cache holds", () => {
   const said = (sequence) => ({ type: "message", data: { sequence, id: `m-${sequence}`, role: "agent", body: `said ${sequence}` } });
 

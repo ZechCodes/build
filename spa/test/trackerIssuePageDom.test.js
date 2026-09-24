@@ -1183,6 +1183,78 @@ describe("the comment box across what arrives while typing", () => {
     });
   });
 
+  /** A paste, and what the browser does with it when nobody cancels it: the
+   *  text goes in at the caret. jsdom does no default actions, so the test
+   *  does this one. Answers whether the paste was cancelled. */
+  const paste = (field, text) => {
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", { value: { files: [], items: [], getData: (type) => (type === "text/plain" ? text : "") } });
+    field.dispatchEvent(event);
+    if (event.defaultPrevented) return true;
+    typeText(field, text);
+    return false;
+  };
+  const dropFile = (form) => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", { value: { files: [new File(["png"], "shot.png", { type: "image/png" })] } });
+    form.dispatchEvent(event);
+    return event.defaultPrevented;
+  };
+  const attachAnswers = () => call.mockImplementation(async (method) => {
+    if (method === "issues.attach") return { name: "shot.png", path: "/store/shot.png", mime: "image/png", size: 3 };
+    return method === "issues.get" ? answerFor() : {};
+  });
+
+  it("takes a long paste as text and a drop as nothing while the paperclip is off", async () => {
+    await mount();
+    await settle();
+    attachAnswers();
+    const field = host.querySelector("#issue-comment");
+    const form = host.querySelector("[data-issue-composer]");
+    field.focus();
+    carriesAttachments = false;
+    page.feedMoved();
+    expect(host.querySelector(".issue-composer .composer-attach")).toBeNull();
+
+    const long = "x".repeat(1300);
+    expect(paste(field, long), "the paste was cancelled").toBe(false);
+    expect(dropFile(form), "the drop was cancelled").toBe(false);
+    const dragOver = new Event("dragover", { bubbles: true, cancelable: true });
+    form.dispatchEvent(dragOver);
+    expect(dragOver.defaultPrevented).toBe(false);
+    await settle();
+    expect(listed("issues.attach")).toEqual([]);
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(field.value).toBe(long);
+    expect(form.querySelector('button[type="submit"]').disabled).toBe(false);
+
+    call.mockClear();
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(listed("issues.comment")).toHaveLength(1));
+    expect(listed("issues.comment")[0][1]).toEqual({ issue_id: "issue-1", body: long });
+  });
+
+  it("takes pastes and drops as files again once the paperclip is back", async () => {
+    await mount();
+    await settle();
+    attachAnswers();
+    const field = host.querySelector("#issue-comment");
+    const form = host.querySelector("[data-issue-composer]");
+    field.focus();
+    carriesAttachments = false;
+    page.feedMoved();
+    carriesAttachments = true;
+    page.feedMoved();
+    expect(host.querySelector(".issue-composer .composer-attach")).not.toBeNull();
+
+    expect(paste(field, "y".repeat(1300)), "the long paste went in as text").toBe(true);
+    expect(dropFile(form)).toBe(true);
+    await vi.waitFor(() => expect(host.querySelectorAll(".issue-composer .composer-chip.ready")).toHaveLength(2));
+    expect(listed("issues.attach").map(([, params]) => params.filename)).toEqual(["pasted-text-1.txt", "shot.png"]);
+    expect(field.value).toBe("");
+    expect(host.querySelector("#issue-comment")).toBe(field);
+  });
+
   it("keeps the selection and the field's scroll when another tab writes a different draft", async () => {
     const { writeCached } = await import("../src/core/localCache.js");
     const { uiAddress } = await import("../src/core/localUiState.js");

@@ -354,7 +354,8 @@ export function mountIssuePage(host, options) {
    *  its caret and its undo history stay with it (#153).
    *
    *  Controls taken off are kept, not dropped: their tray and its uploads are
-   *  wired to this textarea, and they go back on as they were. */
+   *  wired to this textarea, and they go back on as they were. While they are
+   *  held, the paste and drop wired with them take nothing. */
   let heldControls = null;
   function syncCommentAttachments() {
     const frame = host.querySelector(".issue-comment-field");
@@ -613,6 +614,9 @@ export function mountIssuePage(host, options) {
       // The send press turns on the moment a file is in the tray, and off
       // again when the last one is taken out.
       onChange: () => paint(),
+      // Its paste and drop stay on the box and the form, which outlive the
+      // controls: while those are held off, the box is a plain one.
+      accepting: () => !heldControls,
     });
   }
 

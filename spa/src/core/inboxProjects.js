@@ -4,7 +4,8 @@
 // where two machines use that name.
 //
 // The block's head opens the project's own page — its workspaces, and the agent
-// you talk to about the project — and offers the one create surface behind a +.
+// you talk to about the project — and offers the one create surface behind a +,
+// the project's settings, and a ⋯ menu that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
@@ -17,13 +18,14 @@
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import { RECENT_AFTER_MS, clashingNames, dimDeviceHtml, workspaceIsRecent } from "./inbox.js";
 import { sessionTimes } from "./sessionSpans.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
  *  asked anything: the reader's question about such a block is never "which
- *  laptop" but "why is nothing in here moving". */
+ *  laptop" but "why is nothing in here moving". A mark and nothing more — the
+ *  block's controls are the same either way. */
 export const OFFLINE_TAG = "Offline";
 
 /** What a project is called: its name, or the bare id when the device has
@@ -151,8 +153,8 @@ export function deviceTags(projects, devices = [], offlineDeviceIds = null) {
  *
  *  A project whose machine is away says so ALWAYS, clash or no clash. Which
  *  laptop holds it stops being the useful fact the moment none of them can
- *  answer: what the reader needs to know is why the block is inert, and
- *  "Offline" is that in one word. */
+ *  answer: what the reader needs to know is why nothing in the block is
+ *  moving, and "Offline" is that in one word. */
 export function deviceTagHtml(project) {
   if (!project) return "";
   if (project.offline) return dimDeviceHtml(OFFLINE_TAG);
@@ -190,29 +192,40 @@ function foldButtonHtml(block, folded) {
   return `<button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.projectKey)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>`;
 }
 
+/** The block's ⋯: one quiet control beside Settings and the +, named the way a
+ *  row's is, because it opens the block's menu the way a row's opens the row's. */
+const blockMoreHtml = (block) =>
+  `<button class="iconbtn inbox-more" type="button" data-menu="${esc(block.key)}" title="More" aria-label="More actions for ${esc(block.name)}">⋯</button>`;
+
 /**
- * Put a block away, offered only while the machine holding it cannot answer.
+ * The block's menu, in the markup only while it is open — the rows' rule, for
+ * the rows' reason: the DOM patcher leaves a split menu's `hidden` alone.
  *
- * A machine that is away leaves its projects on the rail for ever: nothing can
- * refresh them, nothing can be done in them, and an account that has retired a
- * laptop reads its blocks every day for work it will never pick up again. So an
- * offline block can be dropped — from the cache, which is all it is once its
- * machine has gone (core/projectHide.js).
+ * Its one item puts the block away. A machine that has gone leaves its projects
+ * on the rail for ever: nothing can refresh them, nothing can be done in them,
+ * and an account that has retired a laptop reads its blocks every day for work
+ * it will never pick up again. So a block can be dropped — from the cache,
+ * which is all it is once its machine has gone (core/projectHide.js).
  *
  * It is hide, not delete: nothing on the machine is touched, and the project
- * comes back the moment that machine lists it again. Which is why it is not
- * offered on a machine that is answering — there it would simply undo itself on
- * the next tick.
+ * comes back the moment that machine lists it again. It is offered on every
+ * block, whatever this tab knows about the machine right now: which controls a
+ * block has is what the cache holds, never whether a session has landed yet. On
+ * a machine that is answering it simply comes back on the next pass.
  */
-const hideButtonHtml = (block) =>
-  block.offline
-    ? `<button class="iconbtn inbox-project-hide" type="button" data-project-hide="${esc(block.projectKey)}" aria-label="Hide project ${esc(block.name)}" title="Hide project">${ICON_EYE_OFF}</button>`
+const blockMenuHtml = (block, open) =>
+  open
+    ? `<div class="splitmenu inbox-menu"><div class="mi" data-project-hide="${esc(block.projectKey)}"><span class="mt">Hide project</span><span class="md">Takes it off the rail until its machine lists it again</span></div></div>`
     : "";
 
 /** The block's head: the fold, the name that opens the project's own page,
- *  how much inside is waiting, and the + that starts another workspace. The fold is
- *  disabled on a block with nothing to fold. `ui`: { folded } — the set of
- *  folded project keys, as blockIsFolded decides. */
+ *  how much inside is waiting, the project's settings, the + that starts
+ *  another workspace, and the ⋯ behind which the block's menu opens. The fold
+ *  is disabled on a block with nothing to fold. `ui`: { folded, openMenuKey } —
+ *  the set of folded project keys, as blockIsFolded decides, and the one menu
+ *  the rail holds open. The menu hangs off the head itself rather than the
+ *  cluster its ⋯ sits in, so the grey an away block's head wears never reaches
+ *  it (styles/shell.css). */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
@@ -222,8 +235,8 @@ export function projectHeadHtml(block, ui = {}) {
   return `<div class="inbox-project-head">
     ${foldButtonHtml(block, folded)}
     <button class="inbox-project-name" type="button" data-project-open="${esc(block.projectKey)}" title="${esc(title)}">${esc(block.name)}</button>
-    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${hideButtonHtml(block)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
-    ${unread}
+    <span class="inbox-project-tools"><span class="inbox-project-device">${device}</span><span class="inbox-project-actions">${blockMoreHtml(block)}<button class="iconbtn inbox-project-settings" type="button" data-project-settings="${esc(block.projectKey)}" aria-label="Settings for ${esc(block.name)}" title="Settings for ${esc(block.name)}">${ICON_SETTINGS}</button>${create}</span></span>
+    ${unread}${blockMenuHtml(block, ui.openMenuKey === block.key)}
   </div>`;
 }
 

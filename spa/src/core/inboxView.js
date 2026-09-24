@@ -92,8 +92,11 @@ let folds = new Map();
 let foldRecord = null;
 let recentRecord = null;
 let menuRecord = null;
+// Where a press leaves an open menu alone: a row's own action cluster, and a
+// block head's ⋯ and the menu it opens.
+const MENU_ZONES = ".inbox-actions, .inbox-project-head .inbox-more, .inbox-project-head > .inbox-menu";
 const onOutsideMenu = (event) => {
-  if (!event.target.closest(".inbox-actions")) closeMenu();
+  if (!event.target.closest(MENU_ZONES)) closeMenu();
 };
 const syncMenuDismissal = () => {
   document.removeEventListener("pointerdown", onOutsideMenu);
@@ -486,9 +489,6 @@ const LIST_CONTROLS = [...ROW_CONTROLS, ...CAPTURE_CONTROLS, ...BLOCK_CONTROLS];
 /// row was spoken for.
 function onListClick(event) {
   const { target } = event;
-  // A control the row's device cannot answer for is shut, not hidden: the
-  // reader can see the verb and reads why it is unavailable on it.
-  if (target.closest('[aria-disabled="true"]')) return;
   if (pressed(LIST_CONTROLS, target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
@@ -509,10 +509,11 @@ function openMenu(key) {
 
 // ---- project blocks -----------------------------------------------------------
 //
-// What a block's head can do: fold, open the project's own page, and create —
-// a branch or an issue, on the one create surface, scoped to the block's
-// project. And the one control above every block: a new project. Which press
-// is which is the table BLOCK_CONTROLS, up with the other control tables.
+// What a block's head can do: fold, open the project's own page, open its
+// settings, create — a workspace, on the one create surface, scoped to the
+// block's project — and, behind its ⋯, hide it. And the one control above every
+// block: a new project. Which press is which is the table BLOCK_CONTROLS, up
+// with the other control tables.
 
 /** The block's name opens the project's own page — its workspaces, and the
  *  agent you talk to about the project. Every project has one, so every head
@@ -522,11 +523,31 @@ function openBlockHead(projectKey) {
   if (block) goFromInbox(block.route);
 }
 
+/** What each verb the settings sheet sends was for, in the reader's words — the
+ *  sentence a press on it says when the block's machine is away. A verb this
+ *  does not name is still a change to the project's settings. */
+const SETTINGS_DOING = {
+  "project.list": "open this project's settings",
+  "project.set_remote": "save this project's remote",
+  "project.set_isolation": "change this project's isolation",
+  "project.add_source": "add a folder to this project",
+  "project.remove_source": "remove this folder from this project",
+  "project.delete": "delete this project",
+  "settings.get": "list this machine's folders",
+  "fs.list": "list this machine's folders",
+  "fs.mkdir": "make a folder on this machine",
+};
+const settingsDoing = (method) => SETTINGS_DOING[method] || "change this project's settings";
+
+/** Settings open on what the cache holds for the project, whether or not its
+ *  machine is answering; each change the sheet sends goes through the block's
+ *  own call, which refuses one the machine cannot take in a sentence saying
+ *  so. */
 function settingsForBlock(projectKey) {
   const block = blockOf(projectKey);
   if (!block) return;
   openProjectSettings(block.id, {
-    callRpc: verbCall(block),
+    callRpc: verbCall(block, settingsDoing),
     deviceId: block.deviceId,
     onDeleted: async () => {
       if (routeProjectKey(App.route) === block.projectKey) goFromInbox({ name: "inbox" });
@@ -553,12 +574,13 @@ function createInBlock(projectKey) {
 }
 
 /** Put a block away: it goes from the rail, and everything cached under it on
- *  its own machine goes with it (core/projectHide.js). Only an offline block
- *  paints this control, and the fold the user had set for it goes too — a fold
- *  is about a block that is there, and this one is not coming back the same
- *  way. The rail repaints off the feed the drop delivers. */
+ *  its own machine goes with it (core/projectHide.js). Every block's menu
+ *  offers it, and the fold the user had set for it goes too — a fold is about a
+ *  block that is there, and this one is not coming back the same way. The rail
+ *  repaints off the feed the drop delivers. */
 function hideBlock(projectKey) {
   const block = blockOf(projectKey);
+  closeMenu();
   if (!block) return;
   folds.delete(projectKey);
   void writeFolds();
@@ -618,7 +640,7 @@ async function toggleMute(entry) {
   closeMenu();
   await optimisticVerb(entry, {
     write: () => patchFeedRow(entry.deviceId, entry, { muted }),
-    call: () => verbCall(entry)("entity.mute", { entity_id: entry.entityId, muted }),
+    call: () => verbCall(entry, `${muted ? "mute" : "unmute"} this item`)("entity.mute", { entity_id: entry.entityId, muted }),
     failureSummary: `Couldn't ${muted ? "mute" : "unmute"} ${entry.branch || "this item"}`,
   });
 }
@@ -640,7 +662,7 @@ async function unwatchIssue(entry) {
       };
     },
     call: async () => {
-      const answer = await verbCall(entry)("issues.unwatch", { issue_id: entry.issueId });
+      const answer = await verbCall(entry, "stop watching this issue")("issues.unwatch", { issue_id: entry.issueId });
       unwatched.set(entry.key, Date.parse(answer?.issue?.updated_at || "") || entry.anchorMs);
     },
     failureSummary: `Couldn't stop watching ${entry.name}`,
@@ -677,10 +699,11 @@ async function dismissEntry(entry) {
       // Clearing an unread row also acknowledges its unread notification. The
       // dismissal controls placement, but preserving read state avoids an
       // obsolete badge if the entry later returns.
+      const call = verbCall(entry, "clear this item");
       if (entry.state === "unread" && entry.entityId) {
-        await verbCall(entry)("entity.seen", { entity_id: entry.entityId });
+        await call("entity.seen", { entity_id: entry.entityId });
       }
-      await verbCall(entry)("entity.dismiss", params);
+      await call("entity.dismiss", params);
     },
     failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
   });
@@ -691,7 +714,7 @@ async function dismissEntry(entry) {
  *  archives. Neither is refused for the state of the work — what the
  *  destruction costs came down with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
-  const call = verbCall(target);
+  const call = verbCall(target, target.kind === "issue" ? "archive this issue" : "delete this branch");
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
   else await call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
   // Done ends the work, and an ending is an attention event. The user did this
@@ -725,7 +748,7 @@ async function finishWorkspace(entry) {
   errors.delete(entry.key);
   draw();
   try {
-    await verbCall(entry)("workspace.finish", { workspace_id: entry.workspaceId });
+    await verbCall(entry, "archive this workspace")("workspace.finish", { workspace_id: entry.workspaceId });
     workspaces = workspaces.filter((workspace) => workspace.workspaceKey !== entry.workspaceKey);
     leaveFinishedWorkspace(entry);
   } catch (error) {
@@ -832,7 +855,7 @@ export function mountInboxList() {
   watchedIssues = followWatchedIssues({ onChange: drawFromFeed });
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost
-  // device holds and shutting the verbs that would have asked it.
+  // device holds. Its verbs stay as they were; each refuses at the press.
   stopSubscriptions = [
     onDeviceStateChanged(draw),
     subscribePendingCaptures(drawFromFeed),

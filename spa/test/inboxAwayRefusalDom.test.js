@@ -1,0 +1,184 @@
+// @vitest-environment jsdom
+// #140: nothing on the rail is shut because its machine is away. Every control
+// a row or block has stays live, and the press is what finds out: each one is
+// refused at the moment it acts, in one plain sentence on the surface that was
+// pressed — "Build cannot … because this machine is away."
+//
+// Real cache, feed, device registry, rail, create dialog and settings sheet;
+// the session's `call` is the only stand-in, and a machine that is away never
+// reaches it.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { issue, issueDetail } from "./trackerWireFixture.js";
+
+const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+const DEVICE = "dev-1";
+const PROJECT = "proj-1";
+const PROJECT_KEY = `${DEVICE}/${PROJECT}`;
+const WAIT = { timeout: 5000, interval: 20 };
+const GREETING = { api_version: "1.21.0", push_events: true, issues: { watching: true, attachments: true } };
+const project = { project_id: PROJECT, name: "Build", path: "/work/build", sources: [{ id: "src-1", name: "api", path: "/work/api" }] };
+const workspace = {
+  id: "ws-1",
+  project_id: PROJECT,
+  name: "Checkout",
+  root: "/work/checkout",
+  status: "ready",
+  can_finish: true,
+  finish_blockers: [],
+  directories: [{ id: "api", source_id: "src-1", is_git: true }],
+};
+const watchedIssue = issue({ id: "issue-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: "2026-09-24T01:00:00Z" });
+
+let modules;
+/** The bridge: greets, and answers every verb — so a verb that reached it would
+ *  succeed, and a sentence on screen can only have come from the refusal. */
+const call = vi.fn((method) => Promise.resolve(method === "session.hello" ? GREETING : {}));
+const sentVerbs = () => call.mock.calls.map(([method]) => method).filter((method) => method !== "session.hello");
+
+const $ = (selector) => document.querySelector(selector);
+const block = () => $(`[data-project="${PROJECT_KEY}"]`);
+const rowFor = (key) => [...document.querySelectorAll("#inbox-list .inbox-entry")].find((row) => row.dataset.key === key) || null;
+const rowError = (key) => rowFor(key)?.querySelector("[data-done-error]");
+const shown = (element) => Boolean(element && !element.hidden && element.textContent);
+
+beforeEach(async () => {
+  vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  document.body.innerHTML = bodyHtml;
+  call.mockClear();
+  const { App } = await import("../src/app.js");
+  Object.assign(App, { route: { name: "inbox" }, devices: [{ id: DEVICE, name: "Laptop", status: "online" }],
+    selectedDeviceId: DEVICE, deviceFilter: null });
+  modules = {
+    tracker: await import("../src/core/trackerCache.js"),
+    taskFeed: await import("../src/core/taskFeed.js"),
+    inboxView: await import("../src/core/inboxView.js"),
+    deviceContexts: await import("../src/core/deviceContexts.js"),
+    connection: await import("../src/connection.js"),
+  };
+  // A reload: the board and the watched issue are already on disk. The fixture
+  // is imported with the fresh modules, so it writes the cache they read.
+  const { writeRailBoard } = await import("./railCacheFixture.js");
+  await writeRailBoard({ projects: [project], workspaces: [workspace] });
+  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([watchedIssue], []));
+  await modules.tracker.writeIssueRecord(DEVICE, PROJECT, watchedIssue.id, issueDetail(watchedIssue, []));
+  // The machine answered once — which is how this tab knows it carries
+  // watching — and is away now.
+  const context = modules.deviceContexts.adoptDeviceSession({
+    deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
+    installAdapter: (selection) => selection.create(call),
+  });
+  await modules.connection.greetLiveBridge(context);
+  modules.deviceContexts.setContextOffline(DEVICE, { offline: true });
+  modules.inboxView.setInboxView("projects");
+  modules.inboxView.mountInboxList();
+  await modules.taskFeed.startFeed();
+  await vi.waitFor(() => expect(block()?.classList.contains("inbox-offline")).toBe(true), WAIT);
+  call.mockClear();
+});
+
+afterEach(() => {
+  modules.inboxView.unmountInboxList();
+  modules.taskFeed.stopFeed();
+  modules.deviceContexts.resetDeviceContexts();
+});
+
+describe("a press on a machine that is away", () => {
+  it("says why a workspace's Done did nothing, on the row", async () => {
+    const key = `workspace:${DEVICE}/ws-1`;
+    await vi.waitFor(() => expect(rowFor(key)?.querySelector("[data-workspace-done]")).toBeTruthy(), WAIT);
+    rowFor(key).querySelector("[data-workspace-done]").click();
+    await vi.waitFor(() => expect(shown(rowError(key))).toBe(true), WAIT);
+    expect(rowError(key).textContent).toBe("Build cannot archive this workspace because this machine is away.");
+    expect(sentVerbs()).toEqual([]);
+  });
+
+  it("says why Stop watching did nothing, on the issue's row", async () => {
+    const key = `tracker_issue:${watchedIssue.id}`;
+    await vi.waitFor(() => expect(rowFor(key)).not.toBe(null), WAIT);
+    rowFor(key).querySelector("[data-menu]").click();
+    await vi.waitFor(() => expect(rowFor(key).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
+    rowFor(key).querySelector("[data-unwatch]").click();
+    await vi.waitFor(() => expect(shown(rowError(key))).toBe(true), WAIT);
+    expect(rowError(key).textContent).toBe("Build cannot stop watching this issue because this machine is away.");
+    const held = await modules.tracker.readIssuesRecord(DEVICE, PROJECT);
+    expect(held.issues[0].watched).toBe(true);
+    expect(sentVerbs()).toEqual([]);
+  });
+
+  it("says why a new workspace was not made, in the create dialog", async () => {
+    block().querySelector("[data-project-create]").click();
+    await vi.waitFor(() => expect($("[data-create-go]")).not.toBe(null), WAIT);
+    $("#create-work-input").value = "fix";
+    $("#create-work-input").dispatchEvent(new Event("input"));
+    $("[data-create-go]").click();
+    await vi.waitFor(() => expect(shown($(".create-error"))).toBe(true), WAIT);
+    expect($(".create-error").textContent).toBe("Build cannot create a workspace because this machine is away.");
+    expect(sentVerbs()).toEqual([]);
+  });
+
+  it("says why settings nothing cached could not be opened, in the sheet", async () => {
+    block().querySelector("[data-project-settings]").click();
+    await vi.waitFor(() => expect($("#sheet").textContent).toContain("because this machine is away"), WAIT);
+    expect($("#sheet .sub").textContent).toBe("Build cannot open this project's settings because this machine is away.");
+  });
+
+  describe("in a project's settings, painted from the cache", () => {
+    beforeEach(async () => {
+      const { writeProjectSetting } = await import("../src/core/settingsRecords.js");
+      await writeProjectSetting(DEVICE, project);
+      block().querySelector("[data-project-settings]").click();
+      await vi.waitFor(() => expect($("#pssave")).not.toBe(null), WAIT);
+    });
+
+    it("says why the remote was not saved", async () => {
+      $("#psremote").value = "git@example.com:build.git";
+      $("#pssave").click();
+      await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
+      expect($("#pserr").textContent).toBe("Build cannot save this project's remote because this machine is away.");
+      expect(sentVerbs()).toEqual([]);
+    });
+
+    it("says why a folder was not removed", async () => {
+      $('[data-remove-source="src-1"]').click();
+      await vi.waitFor(() => expect($("#pssrcerr").textContent).not.toBe(""), WAIT);
+      expect($("#pssrcerr").textContent).toBe("Build cannot remove this folder from this project because this machine is away.");
+      expect(sentVerbs()).toEqual([]);
+    });
+
+    it("says why the project was not deleted", async () => {
+      $("#psdelete").click();
+      await vi.waitFor(() => expect($("[data-confirm-ok]")).not.toBe(null), WAIT);
+      $("[data-confirm-ok]").click();
+      await vi.waitFor(() => expect($("#pserr").textContent).not.toBe(""), WAIT);
+      expect($("#pserr").textContent).toBe("Build cannot delete this project because this machine is away.");
+      expect(sentVerbs()).toEqual([]);
+    });
+  });
+
+  // Done off a row's menu and off a branch's own page both finish through
+  // finishWorkItem, and the page shows what it throws.
+  it("says why Done on an issue or a branch did nothing", async () => {
+    const { finishWorkItem } = modules.inboxView;
+    await expect(finishWorkItem({ kind: "issue", deviceId: DEVICE, issueId: "issue-7" })).rejects.toThrow(
+      "Build cannot archive this issue because this machine is away.",
+    );
+    await expect(finishWorkItem({ kind: "branch", deviceId: DEVICE, projectId: PROJECT, branch: "fix" })).rejects.toThrow(
+      "Build cannot delete this branch because this machine is away.",
+    );
+    expect(sentVerbs()).toEqual([]);
+  });
+
+  // Hide asks no machine anything, so it is the one press that works while the
+  // machine is away — from the block's menu, as on every block.
+  it("hides the block from its menu", async () => {
+    block().querySelector(".inbox-project-head [data-menu]").click();
+    await vi.waitFor(() => expect(block().querySelector("[data-project-hide]")).not.toBe(null), WAIT);
+    block().querySelector("[data-project-hide]").click();
+    await vi.waitFor(() => expect(block()).toBe(null), WAIT);
+  });
+});

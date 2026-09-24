@@ -193,7 +193,7 @@ describe("workspace creation", () => {
     modal().querySelector("[data-create-go]").click();
     await flush();
     expect(bridge.call).not.toHaveBeenCalled();
-    expect(modal().querySelector(".create-error").textContent).toContain("connected project");
+    expect(modal().querySelector(".create-error").textContent).toBe("Build cannot create a workspace because this machine is away.");
 
     setContextOffline("dev-1", { offline: false });
     modal().querySelector("[data-create-go]").click();

@@ -4,8 +4,8 @@
 // leaves its projects standing on the rail with nothing able to move them:
 // nothing refreshes them, no verb in them can be carried out, and an account
 // that has retired a laptop reads that laptop's blocks every day for work it
-// will never pick up. The rail offers such a block one thing — hide — and this
-// is what hide does.
+// will never pick up. Every block's menu on the rail offers hide for that, and
+// this is what hide does.
 //
 // HIDE, NOT DELETE. Nothing on the machine is touched and nothing is remembered
 // here: a project on a gone machine is nothing but cache, so dropping the cache
@@ -33,8 +33,8 @@ import { dropFeedProject } from "./taskFeed.js";
  *  All three, because the boot paint reads the two lists from their own
  *  records rather than out of the feed: a board push rewrites those two and
  *  never the feed. A hide that rewrote the feed alone would be undone by the
- *  next reload, and nothing would ever rewrite the lists — hide is only
- *  offered for a machine that has gone, so no live pass is coming. */
+ *  next reload, and nothing would ever rewrite the lists — a machine that has
+ *  gone has no live pass coming. */
 const RECORDS = Object.freeze(["feed", "projects", "workspaces"]);
 
 const recordAddress = (deviceId, kind) => ({ deviceId, entityId: "", kind });

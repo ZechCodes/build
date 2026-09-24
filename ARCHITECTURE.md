@@ -481,12 +481,6 @@ them into new code; each is a candidate to bring under the rule.
   - the connection icon (`spa/src/connectionStatus.js`);
   - the compose box's "… is away" note, painted before anything is queued
     (`spa/src/core/composeView.js`, #137).
-  - **pending, not accepted:** the inbox shuts a row's Done and menu actions
-    and a block's New workspace and Settings while the machine cannot answer,
-    and offers Hide project only then (`spa/src/core/inboxDevices.js`
-    `paintDeviceState`, `spa/src/core/inboxProjects.js` `hideButtonHtml`). A
-    disabled action control is a render guard, not a status display; #140
-    removes it.
   - **pending, not accepted:** the account's offline mark
     (`accountSaysAway`, written by `markWhatTheAccountNoLongerLists` in
     `spa/src/devices.js`) lands only on contexts that exist at the presence

@@ -4,13 +4,13 @@
 // A workspace belongs to one machine, so every row carries the machine that
 // answered for it and the account-wide names minted from it
 // (core/deviceKey.js): a row's verbs go to its own device, a row whose machine
-// is away is greyed with its verbs shut, and the picker narrows the list
-// without touching the route.
+// is away is greyed with every verb it had still on it, and the picker narrows
+// the list without touching the route.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { deviceOfflineMark, deviceOfflineWord } from "../src/core/text.js";
+import { deviceOfflineWord } from "../src/core/text.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -506,18 +506,28 @@ describe("an account with more than one device", () => {
     expect(rows()[1].textContent).toContain("laptop");
   });
 
-  it("greys a row whose machine is away and shuts the verbs that would ask it", () => {
+  // Greyed is a mark, not a guard: the row keeps the verb it had, and pressing
+  // it is what says the machine is away (test/inboxAwayRefusalDom.test.js).
+  it("greys a row whose machine is away and leaves its verbs as they were", async () => {
     twoDevicesWithDone();
 
     setContextOffline("dev-2", { offline: true });
 
     expect(rows()[1].classList.contains("inbox-offline")).toBe(true);
     expect(rows()[0].classList.contains("inbox-offline")).toBe(false);
-    // Greyed is not shut: the verb that would ask the machine says why instead.
     const away = rows()[1].querySelector("[data-workspace-done]");
-    expect(away.hasAttribute("disabled")).toBe(true);
-    expect(away.title).toBe(deviceOfflineMark);
-    expect(rows()[0].querySelector("[data-workspace-done]").hasAttribute("disabled")).toBe(false);
+    const here = rows()[0].querySelector("[data-workspace-done]");
+    expect([away.disabled, away.getAttribute("aria-disabled"), away.title]).toEqual([
+      here.disabled,
+      here.getAttribute("aria-disabled"),
+      here.title,
+    ]);
+    away.click();
+    await vi.waitFor(() => expect(rows()[1].querySelector("[data-done-error]").hidden).toBe(false));
+    expect(rows()[1].querySelector("[data-done-error]").textContent).toBe(
+      "Build cannot archive this workspace because this machine is away.",
+    );
+    expect(laptopCall).not.toHaveBeenCalledWith("workspace.finish", expect.anything());
   });
 
   // Grey on its own says "this matters less", not "the machine holding it is
@@ -546,11 +556,11 @@ describe("an account with more than one device", () => {
 
     expect(rows()[1].classList.contains("inbox-offline")).toBe(true);
     expect(rows()[1].querySelector(".inbox-away").textContent).toBe("update");
-    expect(rows()[1].querySelector("[data-workspace-done]").title).toBe("Bridge is out of date");
+    expect(rows()[1].querySelector("[data-workspace-done]").disabled).toBe(false);
     expect(rows()[0].querySelector(".inbox-away")).toBeNull();
   });
 
-  it("greys a block whose machine is away and shuts its +", () => {
+  it("greys a block whose machine is away and leaves its + and settings live", () => {
     twoDevices();
     setInboxView("projects");
 
@@ -558,12 +568,16 @@ describe("an account with more than one device", () => {
 
     const away = document.querySelector('[data-project="dev-2/project-1"]');
     expect(away.classList.contains("inbox-offline")).toBe(true);
-    const create = away.querySelector("[data-project-create]");
-    expect(create.hasAttribute("disabled")).toBe(true);
-    expect(create.title).toBe(deviceOfflineMark);
     const here = document.querySelector('[data-project="dev-1/project-1"]');
     expect(here.classList.contains("inbox-offline")).toBe(false);
-    expect(here.querySelector("[data-project-create]").hasAttribute("disabled")).toBe(false);
+    for (const control of ["[data-project-create]", "[data-project-settings]", "[data-menu]"]) {
+      const shown = away.querySelector(control);
+      expect(shown.hasAttribute("disabled")).toBe(false);
+      expect(shown.hasAttribute("aria-disabled")).toBe(false);
+      expect(shown.title).toBe(here.querySelector(control).title);
+    }
+    away.querySelector("[data-project-create]").click();
+    expect(createWorkspace).toHaveBeenCalledWith(expect.objectContaining({ projectId: "project-1", deviceId: "dev-2" }));
   });
 
   // A block whose machine cannot be asked anything says why it is inert, and
@@ -588,33 +602,41 @@ describe("an account with more than one device", () => {
     expect(tagOf("dev-2/project-1")).toBe("Offline");
   });
 
-  it("offers Hide only on a block whose machine is away", () => {
+  /** Open one block's ⋯ menu, and answer what it offers once it is open. */
+  const openBlockMenu = async (projectKey) => {
+    document.querySelector(`[data-project="${projectKey}"] .inbox-project-head [data-menu]`).click();
+    await vi.waitFor(() => expect(document.querySelector(`[data-project="${projectKey}"] .inbox-menu`)).not.toBeNull());
+    return [...document.querySelectorAll("[data-project-hide]")].map((item) => item.dataset.projectHide);
+  };
+
+  // Which controls a block has is what the cache holds: Hide is in every
+  // block's menu, whether its machine is answering, connecting or gone.
+  it("offers Hide in every block's menu, whatever its machine is doing", async () => {
     twoDevices();
     setInboxView("projects");
     expect(document.querySelectorAll("[data-project-hide]")).toHaveLength(0);
 
-    setContextOffline("dev-2", { offline: true });
+    expect(await openBlockMenu("dev-1/project-1")).toEqual(["dev-1/project-1"]);
 
-    expect([...document.querySelectorAll("[data-project-hide]")].map((button) => button.dataset.projectHide)).toEqual([
-      "dev-2/project-1",
-    ]);
-    // Everything else on an away block is shut with the reason; hide is the one
-    // thing that can still be done, so it stays live.
-    const hide = document.querySelector("[data-project-hide]");
-    expect(hide.hasAttribute("disabled")).toBe(false);
+    setContextOffline("dev-2", { offline: true });
+    expect(await openBlockMenu("dev-2/project-1")).toEqual(["dev-2/project-1"]);
+    expect(document.querySelector("[data-project-hide]").hasAttribute("disabled")).toBe(false);
 
     setContextOffline("dev-2", { offline: false });
-    expect(document.querySelectorAll("[data-project-hide]")).toHaveLength(0);
+    expect([...document.querySelectorAll("[data-project-hide]")].map((item) => item.dataset.projectHide)).toEqual([
+      "dev-2/project-1",
+    ]);
   });
 
   // Hide drops the project from the cache — which, on a machine that has gone,
   // is everything it is. The block and its rows leave with it; the other
   // machine's project of the same number is untouched.
-  it("takes the block and its rows off the rail when Hide is pressed", () => {
+  it("takes the block and its rows off the rail when Hide is pressed", async () => {
     twoDevices();
     setInboxView("projects");
     setContextOffline("dev-2", { offline: true });
 
+    await openBlockMenu("dev-2/project-1");
     document.querySelector("[data-project-hide]").click();
 
     expect(hidden).toEqual([{ deviceId: "dev-2", projectKey: "dev-2/project-1" }]);

@@ -248,6 +248,7 @@ async function reconnect() {
   await new Promise((done) => setTimeout(done, 3000));
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
+  if (!held) await dumpDiagnostics("reconnect-held");
   await context.setOffline(false);
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] ONLINE`);
   // The SPA's own reconnect backs off while it was offline, so the deadline

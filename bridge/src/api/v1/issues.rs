@@ -412,6 +412,10 @@ pub struct UserSessionView {
     pub previous_session_ended_ms: Option<i64>,
     /// The silence that ends a session.
     pub gap_ms: i64,
+    /// This bridge's clock when it answered. A client measures silences
+    /// against this, plus the time since it arrived, and never against its
+    /// own clock.
+    pub now_ms: i64,
 }
 
 /// What every mutating verb answers: the issue as it now stands.

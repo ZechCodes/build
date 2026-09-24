@@ -128,18 +128,13 @@ impl AppState {
             let issue = self.issue_with_read_identities(issue, &timeline);
             rows.push(issue_json(&project_id, &issue));
         }
-        let session = self.user_session();
         Ok(json!({
             "project_id": project_id,
             "issues": rows,
             // Device-wide, and here because the Done section reads it beside
-            // the list: every push that moves an issue re-reads this answer.
-            "user_session": {
-                "session_started_ms": session.session_started_ms,
-                "last_activity_ms": session.last_activity_ms,
-                "previous_session_ended_ms": session.previous_session_ended_ms,
-                "gap_ms": crate::session_summary::USER_SESSION_GAP_MS,
-            },
+            // the list: every push that moves an issue re-reads this answer,
+            // and a new session is pushed as one (`note_user_activity`).
+            "user_session": self.user_session_json(),
         }))
     }
 

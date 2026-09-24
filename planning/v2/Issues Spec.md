@@ -876,16 +876,33 @@ cached timelines.
   "session_started_ms": 1758272400000,
   "last_activity_ms": 1758276720000,
   "previous_session_ended_ms": 1758218400000,
-  "gap_ms": 21600000
+  "gap_ms": 21600000,
+  "now_ms": 1758277020000
 }
 ```
 
+`now_ms` is the bridge's clock when it answered. A client measures silences
+against it plus the time it has counted since, never against its own clock,
+which may be hours out; the cache holds it beside the session with the moment
+it was heard.
+
 - **Activity** is the user acting: the client verbs in
   `rpc::USER_ACTIVITY_VERBS`, which are messages, issue writes, read marks
-  (`issues.read_through`, `entity.seen`) and the other user-initiated writes.
-  Reads, subscriptions, acks, resizes and re-attaches are not in it, and
-  neither is `term.input`, which a terminal also sends by itself. Agents act
-  through MCP and never reach it.
+  (`issues.read_through`, `entity.seen`), Resume, Stop and opening a terminal
+  (`agent.start`, `agent.interrupt`, `term.create`, stamped where the frame is
+  dispatched because they bypass `dispatch`), and the other user-initiated
+  writes. Refusals are not activity. Reads, subscriptions, acks, resizes and
+  re-attaches are not in it, and neither is `term.input`, which a terminal
+  also sends by itself. Agents act through MCP and never reach it.
+- **Arriving** is activity too: `user.present` (no params; answers
+  `{user_session}`) records it on the bridge's clock. The client sends it to
+  every connected bridge that announces `issues.doneSinceLeft` when the app
+  opens in a focused window, when the window is focused again (or its tab
+  shown while focused), on a pointer, key or wheel input, and on navigation;
+  at most once a minute per bridge (`spa/src/core/userPresence.js`). A
+  reconnect, a list read or a push is never an arrival, and an arrival a
+  bridge could not be told of is dropped after two minutes, so a bridge that
+  reconnects at 3am is not told the user arrived at 3am.
 - **Automatic read marks** (a chat or issue page marking what arrives on
   screen, rather than the user sending, moving or opening something) are sent
   only while the document is visible and focused (`document.hasFocus()`). A
@@ -895,16 +912,25 @@ cached timelines.
 - **A session** ends after `gap_ms` (6 hours) without activity. The update is
   #98's session function with that gap; when a new session starts,
   `previous_session_ended_ms` becomes the old `last_activity_ms`.
-- **Stored** as one `meta` row, rewritten on each change. A boot folds that
-  row's instants together with every stored user action (issue events and
-  comments by the user, messages the user sent) in timestamp order, so a first
-  boot after this shipped starts from history.
-- **Cutoff** (client): `previous_session_ended_ms`, or `last_activity_ms`
-  when the silence has not ended yet (the user walked in and has not acted).
-  If there is no earlier session, or it ended more than 96 hours before this
-  one started, the cutoff is this session's start: a blank slate that fills as
-  work finishes. The cap measures the absence, not the time since it, so a
-  three-day weekend stays listed all through the day back.
+- **Pushed** when a new session starts: an `issues` change on every project
+  (empty `issue_ids`), so every client re-reads a list and its session. A
+  laptop holding the old session does not infer an absence the user spent on
+  their phone. Activity inside a session pushes nothing.
+- **Stored** as one `meta` row, rewritten on each change. The row is
+  authoritative for the interval it covers, since much of what made it (read
+  marks, which keep only their latest) is not in the store to replay; a boot
+  starts from it and folds only the stored user actions after its last
+  activity (issue events and comments by the user, messages the user sent),
+  which are what a failed write missed. A store with no row (a bridge from
+  before this shipped) replays them all.
+- **Cutoff** (client): `previous_session_ended_ms`. If the bridge's clock says
+  the silence has not ended yet (a list read that landed before the arrival
+  did), `last_activity_ms`, unless that silence is already longer than 96
+  hours, when nothing is listed until the arrival is recorded. If there is no
+  earlier session, or it ended more than 96 hours before this one started, the
+  cutoff is this session's start: a blank slate that fills as work finishes.
+  The cap measures the absence, not the time since it, so a three-day weekend
+  stays listed all through the day back.
 
 Clients gate on the `issues.doneSinceLeft` capability name; without it the
 section stays "Done", the last 24 hours read from cached timelines.

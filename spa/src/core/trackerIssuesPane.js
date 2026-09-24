@@ -46,7 +46,7 @@ import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceA
 import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountIssuesChrome } from "./trackerPaneChrome.js";
 import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
-import { dashboardSections, doneSinceCutoff, stillAway } from "./trackerDashboardModel.js";
+import { dashboardSections, doneSinceCutoff } from "./trackerDashboardModel.js";
 import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
@@ -85,7 +85,6 @@ export function mountIssuesPane(host, options) {
     queryAt: 0,
     wholeAt: 0,
     userSession: null, // the bridge's, from the device's cache
-    walkedIn: null, // { last, at }: when this tab first saw the user's silence end
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
   const uiSnapshot = () => ({
@@ -218,18 +217,6 @@ export function mountIssuesPane(host, options) {
     return bridgeCapabilities(state.deviceId)?.issues?.doneSinceLeft === true;
   }
 
-  /** The cutoff at `nowMs`. A silence the bridge has not seen end yet ends
-   *  when this tab first noticed it, and stays there, so work finishing while
-   *  the user looks at the Dashboard joins the section rather than chasing a
-   *  cutoff that moves with the clock. */
-  function doneCutoff(nowMs) {
-    const session = state.userSession;
-    const last = session?.last_activity_ms ?? null;
-    if (!stillAway(session, nowMs)) state.walkedIn = null;
-    else if (state.walkedIn?.last !== last) state.walkedIn = { last, at: nowMs };
-    return doneSinceCutoff(session, nowMs, state.walkedIn?.at ?? nowMs);
-  }
-
   const groupLabels = [
     [WORKING_GROUP, "In progress with an agent"],
     [NEEDS_YOU_GROUP, "Needs you"],
@@ -259,7 +246,7 @@ export function mountIssuesPane(host, options) {
       entries: () => dashboardSections(state.shown, {
         feed: state.feed(), projectKey: state.projectKey, detailById: details.read(),
         activityByAgent: activity?.read(),
-        doneCutoffMs: carriesDoneSinceLeft() ? doneCutoff(Date.now()) : null,
+        doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession, Date.now()) : null,
       }),
     },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },

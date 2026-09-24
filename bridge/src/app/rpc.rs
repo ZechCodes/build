@@ -50,10 +50,17 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
 /// own — acks, resizes, subscriptions, re-attaching after a reconnect — and a
 /// tab left open overnight must not keep a session alive. `term.input` stays
 /// out for the same reason: a terminal answers a program's queries by itself.
+///
+/// `agent.start`, `agent.interrupt` and `term.create` are answered outside
+/// `dispatch` ([`session_scoped`]), so [`dispatch_frame`] stamps those itself.
+/// `user.present` is not listed: it records the arrival and answers the
+/// session in one step.
 pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "agent.add",
     "agent.choose",
+    "agent.interrupt",
     "agent.remove",
+    "agent.start",
     "branch.dispatch",
     "branch.finish",
     "bridge.install_update",
@@ -114,6 +121,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "run.release",
     "run.request_changes",
     "settings.set",
+    "term.create",
     "thread.attach",
     "thread.post",
     "workspace.add_directory",
@@ -191,7 +199,7 @@ pub(in crate::app) fn dispatch_frame(
     };
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
-        Some(outcome) => outcome.map_err(|error| {
+        Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer).map_err(|error| {
             if error == PROJECT_DELETION_IN_PROGRESS {
                 ApiError::unavailable(error)
             } else {
@@ -205,6 +213,22 @@ pub(in crate::app) fn dispatch_frame(
         }),
     };
     api::reply(id, result)
+}
+
+/// Resume, Stop and a new terminal are answered by [`session_scoped`] and
+/// never reach `dispatch`, whose stamp is the only other one; so a
+/// successful one is noted here. A refusal is not the user being here.
+fn noted_as_user_activity(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    outcome: Result<Value, String>,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    if outcome.is_ok() && USER_ACTIVITY_VERBS.contains(&method) {
+        let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
+        timer.lock(state).note_user_activity(now);
+    }
+    outcome
 }
 
 /// What a `ping` answers, wherever it is answered from.

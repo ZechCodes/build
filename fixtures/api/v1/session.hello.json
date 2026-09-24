@@ -191,6 +191,7 @@
       "thread.revision",
       "threads.newestDeltaPagination",
       "threads.postOperations",
+      "user.present",
       "workspace.add_directory",
       "workspace.create",
       "workspace.delete",

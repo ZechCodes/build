@@ -1,7 +1,8 @@
 //! The board family: the feed and the archive (`board.list`, `archive.list`,
 //! `archived.list`), the project surface (`project.*` less the diff reads the
 //! git family owns), the capture surface (`capture.*`), and what the Account
-//! page reads and writes (`settings.*`, `models.list`).
+//! page reads and writes (`settings.*`, `models.list`), and the user
+//! arriving at a client (`user.present`).
 //!
 //! Same shape as `git.rs`: the implementations under `app/` are untouched —
 //! each handler resolves its typed params, hands them to the implementation
@@ -127,10 +128,18 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             SettingsResult
         ),
         v1_method!("models.list", models_list, NoParams, ModelsListResult),
+        v1_method!("user.present", user_present, NoParams, UserPresent),
     ]
 }
 
 // ---------------------------------------------------------------- params ---
+
+/// What `user.present` answers: the user's session after the arrival, the
+/// same object `issues.list` carries.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UserPresent {
+    pub user_session: super::issues::UserSessionView,
+}
 
 /// Delete a project and its workspaces after explicit confirmation.
 #[derive(Debug, Deserialize, Serialize)]
@@ -1211,6 +1220,10 @@ fn models_list(
     _params: NoParams,
 ) -> Result<Answer<ModelsListResult>, ApiError> {
     answer(Ok(app.models_list()))
+}
+
+fn user_present(app: &mut AppState, _params: NoParams) -> Result<Answer<UserPresent>, ApiError> {
+    answer(Ok(app.user_present()))
 }
 
 #[cfg(test)]

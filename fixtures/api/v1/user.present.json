@@ -1,0 +1,17 @@
+{
+  "method": "user.present",
+  "since": "1.22.0",
+  "params": {},
+  "result": {
+    "user_session": {
+      "session_started_ms": 1758272400000,
+      "last_activity_ms": 1758272400000,
+      "previous_session_ended_ms": 1758218400000,
+      "gap_ms": 21600000,
+      "now_ms": 1758272400000
+    }
+  },
+  "errors": [
+    "internal"
+  ]
+}

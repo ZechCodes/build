@@ -86,23 +86,6 @@ impl UserSession {
             previous_session_ended_ms: previous,
         }
     }
-
-    /// The instants this summary stands for, oldest first. Folding them back
-    /// through [`Self::updated`] reproduces it, which is how a persisted
-    /// summary joins the stored actions a startup rebuild replays.
-    pub fn instants(&self) -> Vec<i64> {
-        let mut instants: Vec<i64> = [
-            self.previous_session_ended_ms,
-            self.session_started_ms,
-            self.last_activity_ms,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        instants.sort_unstable();
-        instants.dedup();
-        instants
-    }
 }
 
 pub fn message_millis(at: &str) -> Option<i64> {
@@ -194,25 +177,6 @@ mod tests {
             user.previous_session_ended_ms,
             Some(USER_SESSION_GAP_MS - 1)
         );
-    }
-
-    #[test]
-    fn user_session_instants_fold_back_to_the_same_summary() {
-        let user = [0, 2 * HOUR, 20 * HOUR, 21 * HOUR]
-            .into_iter()
-            .fold(UserSession::default(), UserSession::updated);
-        let replayed = user
-            .instants()
-            .into_iter()
-            .fold(UserSession::default(), UserSession::updated);
-        assert_eq!(replayed, user);
-        let mut merged = user.instants();
-        merged.extend([HOUR, 20 * HOUR + 30]);
-        merged.sort_unstable();
-        let merged = merged
-            .into_iter()
-            .fold(UserSession::default(), UserSession::updated);
-        assert_eq!(merged, user);
     }
 
     #[test]

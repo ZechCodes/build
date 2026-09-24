@@ -58,39 +58,53 @@ export function doneMoveToday(issue, detail, nowMs) {
 /**
  * Where "Done since you left" starts, in epoch milliseconds.
  *
- * `session` is the bridge's user session (`issues.list`'s `user_session`).
- * The cutoff is the last thing the user did before their latest silence of
- * `gap_ms` or more. A silence that has not ended yet counts: a user walking
- * in after a night away has not acted yet, so the bridge still describes the
- * session before, and `walkedInMs` is when this client first saw that.
+ * `session` is the bridge's user session as the cache holds it
+ * (core/userSessionCache.js). The cutoff is the last thing the user did before
+ * their latest silence of `gap_ms` or more. An arrival is recorded on the
+ * bridge (`user.present`), so normally the bridge has already started this
+ * session and says where the last one ended.
+ *
+ * A silence the bridge has not seen end yet (this tab painted before the
+ * arrival landed) counts from its last activity, measured on the BRIDGE's
+ * clock: the `now_ms` it answered with plus the time since, never this
+ * device's own clock, which may be hours out.
  *
  * With no earlier session, or one that ended more than 96 hours before this
  * one started, the cutoff is this session's start: a blank slate that fills
- * as work finishes while the user is here. The cap measures the absence, not
- * the time since it, so a long weekend does not vanish halfway through the
- * day the user comes back.
+ * as work finishes while the user is here. Until the bridge has recorded that
+ * start the slate shows nothing. The cap measures the absence, not the time
+ * since it, so a long weekend does not vanish halfway through the day the
+ * user comes back.
  */
-export function doneSinceCutoff(session, nowMs, walkedInMs = nowMs) {
-  if (!Number.isFinite(nowMs)) return null;
-  const { started, ended } = sessionAt(session, nowMs, finite(walkedInMs) ?? nowMs);
+export function doneSinceCutoff(session, localNowMs) {
+  const { started, ended } = sessionAt(session, localNowMs);
+  if (started === null) return ended ?? Infinity;
   return ended === null || started - ended > DONE_SINCE_CAP_MS ? started : ended;
 }
 
 const finite = (value) => (Number.isFinite(value) ? value : null);
 const gapOf = (session) => (session?.gap_ms > 0 ? session.gap_ms : USER_SESSION_GAP_MS);
 
-/** Whether the user's latest silence is still going on at `nowMs`: they have
- *  not acted for a whole gap, or ever. */
-export function stillAway(session, nowMs) {
-  const last = finite(session?.last_activity_ms);
-  return last === null || nowMs - last >= gapOf(session);
+/** The bridge's clock now: what it said when it answered, plus the time this
+ *  device has counted since. Null for a record that carries no clock. */
+export function bridgeNow(session, localNowMs) {
+  const said = finite(session?.now_ms);
+  const heard = finite(session?.received_ms);
+  if (said === null || heard === null || !Number.isFinite(localNowMs)) return null;
+  return said + Math.max(0, localNowMs - heard);
 }
 
-/** This session's start and where the one before it ended, as of `nowMs`. */
-function sessionAt(session, nowMs, walkedInMs) {
-  if (stillAway(session, nowMs)) return { started: walkedInMs, ended: finite(session?.last_activity_ms) };
-  const started = finite(session.session_started_ms) ?? session.last_activity_ms;
-  return { started, ended: finite(session.previous_session_ended_ms) };
+/** This session's start and where the one before it ended. A silence the
+ *  bridge has not seen end yet has no start: it ended at the last activity,
+ *  unless it has run past the cap, which is a blank slate. */
+function sessionAt(session, localNowMs) {
+  const last = finite(session?.last_activity_ms);
+  const now = bridgeNow(session, localNowMs);
+  if (last === null) return { started: null, ended: null };
+  if (now !== null && now - last >= gapOf(session)) {
+    return { started: null, ended: now - last > DONE_SINCE_CAP_MS ? null : last };
+  }
+  return { started: finite(session.session_started_ms) ?? last, ended: finite(session.previous_session_ended_ms) };
 }
 
 /** When an issue moved into Done, if it is there and got there at or after

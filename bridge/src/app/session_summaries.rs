@@ -105,9 +105,16 @@ impl AppState {
     /// session. A write that fails is logged rather than failing the verb:
     /// the next action rewrites the whole row, and a boot replays the actions
     /// the store already holds.
+    ///
+    /// A new session is pushed to every client as an `issues` change on every
+    /// project, because the list answer carries the session: a laptop holding
+    /// the old one reads the new start rather than inferring an absence the
+    /// user spent on their phone. Activity inside a session pushes nothing;
+    /// no client decides anything from `last_activity_ms` alone for long.
     pub(in crate::app) fn note_user_activity(&mut self, ts: i64) {
-        let updated = self.user_session.updated(ts);
-        if updated == self.user_session {
+        let before = self.user_session;
+        let updated = before.updated(ts);
+        if updated == before {
             return;
         }
         self.user_session = updated;
@@ -116,35 +123,69 @@ impl AppState {
                 eprintln!("user session persist failed: {error}");
             }
         }
+        let new_boundary = updated.session_started_ms != before.session_started_ms
+            || updated.previous_session_ended_ms != before.previous_session_ended_ms;
+        if new_boundary {
+            for project in self.projects.iter() {
+                self.changes.note_issues(&project.id, &[]);
+            }
+        }
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn user_session(&self) -> UserSession {
         self.user_session
     }
 
-    /// The persisted summary and every stored user action, folded in
-    /// timestamp order. The summary carries what the store cannot replay (read
-    /// marks keep only their latest), the actions repair anything the summary
-    /// missed, and a first boot after this shipped starts from history rather
-    /// than from nothing.
+    /// The session as `issues.list` and `user.present` answer it, with the
+    /// bridge's clock beside it: a client measures the six-hour silence and
+    /// the 96-hour absence against this, never against its own clock.
+    pub(in crate::app) fn user_session_json(&self) -> serde_json::Value {
+        let session = self.user_session;
+        serde_json::json!({
+            "session_started_ms": session.session_started_ms,
+            "last_activity_ms": session.last_activity_ms,
+            "previous_session_ended_ms": session.previous_session_ended_ms,
+            "gap_ms": crate::session_summary::USER_SESSION_GAP_MS,
+            "now_ms": i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX),
+        })
+    }
+
+    /// `user.present` — the user arrived at a client: its window came to the
+    /// front, or they touched or navigated it. Recorded on this bridge's
+    /// clock, so a reload, or another client, reads the same arrival.
+    pub(crate) fn user_present(&mut self) -> serde_json::Value {
+        let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
+        self.note_user_activity(now);
+        serde_json::json!({ "user_session": self.user_session_json() })
+    }
+
+    /// The persisted summary, then every stored user action after it.
+    ///
+    /// The summary is authoritative for the interval it covers: it is
+    /// rewritten on every change, and much of what made it (read marks, which
+    /// keep only their latest) is not in the store to replay. Replaying only
+    /// its endpoints would split a session sustained by read marks. The
+    /// actions after its last activity are the ones a failed write missed; a
+    /// store with no summary (a bridge from before this shipped) replays them
+    /// all.
     pub(in crate::app) fn rebuild_user_session(&mut self) -> Result<(), String> {
         let Some(store) = self.store.as_ref() else {
             return Ok(());
         };
-        let mut times = store
+        let times = store
             .user_action_times()
             .map_err(|error| format!("user session rebuild: {error}"))?;
-        if let Some(saved) = store
+        let saved = store
             .load_user_session()
             .map_err(|error| format!("user session rebuild: {error}"))?
-        {
-            times.extend(saved.instants());
-        }
-        times.sort_unstable();
+            .unwrap_or_default();
+        let replay_after = saved.last_activity_ms.unwrap_or(i64::MIN);
         self.user_session = times
             .into_iter()
-            .fold(UserSession::default(), UserSession::updated);
-        if self.user_session != UserSession::default() {
+            .filter(|ts| *ts > replay_after)
+            .fold(saved, UserSession::updated);
+        if self.user_session != saved {
             store
                 .save_user_session(&self.user_session)
                 .map_err(|error| format!("user session rebuild: {error}"))?;

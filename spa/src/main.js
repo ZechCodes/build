@@ -17,6 +17,7 @@ import { installTheme } from "./core/theme.js";
 import { initCompose } from "./core/composeView.js";
 import { boot } from "./views/gate.js";
 import { mountConnectionStatus } from "./connectionStatus.js";
+import { startUserPresence } from "./core/userPresence.js";
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
 // takes ownership of the same attribute and keeps following the OS while the
@@ -65,3 +66,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 boot();
+// The user arriving, told to each bridge: where "Done since you left" starts.
+startUserPresence();

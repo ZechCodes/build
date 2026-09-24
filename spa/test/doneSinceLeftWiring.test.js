@@ -1,11 +1,13 @@
 /** @vitest-environment jsdom */
 // "Done since you left", with nothing mocked between the bridge and the tab:
-// the bridge's real greeting gates it, and two real `issues.list` answers,
-// one before and one after a user action, drive it through the cache.
+// the bridge's real greeting gates it, and real `issues.list` answers and the
+// real push item drive it through the cache.
 //
-// The Rust side (bridge app::tests::user_session) has an agent finish an issue
-// and then the user comment on the bridge. Seven hours later the finish was
-// news before that comment and is not after it: the user was here since.
+// The Rust side (bridge app::tests::user_session) runs two clients. The user
+// left eight hours before an issue was finished; the laptop holds that. The
+// user comes back on a phone, the laptop is pushed the new session, and later
+// the user comments. This tab is the laptop, and its clock runs six hours
+// ahead of the bridge's, which must change nothing.
 
 import { execFile } from "node:child_process";
 import { resolve } from "node:path";
@@ -16,9 +18,9 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { bridgeCapabilities, dispatchChangeEvent, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { mountIssuesPane } = await import("../src/core/trackerIssuesPane.js");
-const { writeUserSession } = await import("../src/core/userSessionCache.js");
+const { readUserSession } = await import("../src/core/userSessionCache.js");
 
 const run = promisify(execFile);
 const bridgeRoot = resolve(process.cwd(), "../bridge");
@@ -47,20 +49,24 @@ beforeAll(async () => {
   const hello = await printed("the_greeting_and_the_probe_report_the_api_version", "BUILD_PRINT_HELLO_CAPABILITIES", "BUILD_REAL_HELLO");
   greeting = hello.result;
   answers = await printed(
-    "a_user_action_after_work_finished_moves_the_answer_the_dashboard_reads",
+    "the_answers_the_dashboard_reads_around_an_absence",
     "BUILD_PRINT_DONE_SINCE_LEFT",
     "BUILD_DONE_SINCE_LEFT",
   );
 }, 1_220_000);
+
+/** What the bridge answers `issues.list` with right now. */
+let listed;
 
 beforeEach(() => {
   resetChangeEvents();
   globalThis.indexedDB = new IDBFactory();
   document.body.innerHTML = '<div id="issues"></div>';
   host = document.querySelector("#issues");
-  // Seven hours after the user's comment: they have left and come back.
+  listed = answers.away;
+  // This device's clock, six hours ahead of the bridge's.
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(answers.after.user_session.last_activity_ms + 7 * HOUR_MS);
+  vi.setSystemTime(answers.away.user_session.now_ms + 6 * HOUR_MS);
 });
 
 afterEach(() => {
@@ -73,19 +79,19 @@ const doneTab = () => host.querySelector('[data-dashboard-tab="done"]');
 const doneRows = () => [...host.querySelectorAll('[data-dashboard-section="done"] .issue-dashboard-row')]
   .map((row) => row.dataset.issue);
 
-async function mountWith(hello, listAnswer) {
+async function mountWith(hello) {
   const call = async (method) => {
     if (method === "session.hello") return hello;
-    if (method === "issues.list") return listAnswer;
+    if (method === "issues.list") return listed;
     if (method === "issues.columns") return { columns: [] };
     return {};
   };
   await greetBridge(call, { deviceId: "dev-1", strict: true });
   pane = mountIssuesPane(host, {
-    projectId: listAnswer.project_id,
+    projectId: listed.project_id,
     projectName: "Build",
     deviceId: "dev-1",
-    projectKey: `dev-1|${listAnswer.project_id}`,
+    projectKey: `dev-1|${listed.project_id}`,
     callRpc: call,
     catalog: () => ({ providers: [] }),
     refreshCatalog: async () => ({ providers: [] }),
@@ -97,24 +103,53 @@ async function mountWith(hello, listAnswer) {
   doneTab().click();
 }
 
-it("shows work finished after the user left, and drops it once the bridge saw them after it", async () => {
-  const finished = answers.before.issues[0];
+async function remount() {
+  pane.dispose();
+  host.innerHTML = "";
+  await mountWith(greeting);
+}
+
+/** The push the bridge sent the laptop, delivered as it arrives off the wire. */
+const pushed = () => dispatchChangeEvent({ type: "changes", items: [answers.pushed] }, "dev-1");
+const heldStart = async () => (await readUserSession("dev-1"))?.session_started_ms;
+
+it("shows work finished while the user was away, across their return on another client, until they leave again", async () => {
+  const finished = answers.away.issues[0];
   expect(finished.status).toBe("done");
-  await mountWith(greeting, answers.before);
+  await mountWith(greeting);
   expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(true);
   expect(doneTab().textContent).toContain("Done since you left");
   await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
 
-  // What a later list read writes: the same session writer the pane and the
-  // sync pass use, and the cache announcement is the repaint.
-  await writeUserSession("dev-1", answers.after);
-  await vi.waitFor(() => expect(doneRows()).toEqual([]));
-  expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing has moved to Done since you left.");
+  // The user came back on the phone: the push brings the new session here.
+  listed = answers.back;
+  expect(pushed()).toBe(true);
+  await vi.waitFor(async () => expect(await heldStart()).toBe(answers.back.user_session.session_started_ms));
+  expect(doneRows()).toEqual([finished.id]);
+
+  // They comment on it, then leave for seven hours; the laptop reloads.
+  listed = answers.commented;
+  pushed();
+  await vi.waitFor(async () => expect((await readUserSession("dev-1"))?.last_activity_ms)
+    .toBe(answers.commented.user_session.last_activity_ms));
+  // Reloaded at once: this device's clock says six hours have passed since
+  // the comment, the bridge's says none. Still the same session.
+  await remount();
+  await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
+
+  // Seven hours on, the bridge answers with its own clock seven hours on.
+  vi.setSystemTime(Date.now() + 7 * HOUR_MS);
+  const later = answers.commented.user_session.now_ms + 7 * HOUR_MS;
+  listed = { ...answers.commented, user_session: { ...answers.commented.user_session, now_ms: later } };
+  await remount();
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-empty")?.textContent)
+    .toBe("Nothing has moved to Done since you left."));
+  expect(doneRows()).toEqual([]);
 });
 
 it("keeps the 24-hour Done when the bridge does not announce it", async () => {
   const hello = { ...greeting, capabilities: greeting.capabilities.filter((name) => name !== "issues.doneSinceLeft") };
-  await mountWith(hello, answers.before);
+  await mountWith(hello);
   expect(bridgeCapabilities("dev-1").issues.doneSinceLeft).toBe(false);
   expect(doneTab().textContent.trim()).toMatch(/^Done\d*$/);
 });

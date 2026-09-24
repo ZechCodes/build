@@ -605,14 +605,15 @@ behavior or response shapes use feature names: `changes.subscriptions`,
 `changes.bodies`, `requests.receipts`, `messages.context`,
 `threads.postOperations`, `settings.roleModels`, `settings.projectAgent`,
 `agents.names`, `messages.fromAgent`, `issues.doneSinceLeft` (`done_at` on
-issues and `user_session` on `issues.list`, see the Issues spec),
-`messages.issueNotices`, `board.usageLimits`, `threads.newestDeltaPagination`,
-`issues.commentUserMentions`, `issues.agentIdentities`, and
-`issues.attachmentChunks`. The method registry supplies typed verb names,
-and a small explicit list supplies legacy and session-scoped verbs. Contract
-tests require every method fixture to have an announced name and compare an
-actual `session.hello` reply with that registry. The existing `events` array
-and all earlier greeting fields remain present.
+issues, `user_session` on `issues.list`, and the `user.present` verb, see the
+Issues spec), `messages.issueNotices`, `board.usageLimits`,
+`threads.newestDeltaPagination`, `issues.commentUserMentions`,
+`issues.agentIdentities`, and `issues.attachmentChunks`. The method registry
+supplies typed verb names, and a small explicit list supplies legacy and
+session-scoped verbs. Contract tests require every method fixture to have an
+announced name and compare an actual `session.hello` reply with that
+registry. The existing `events` array and all earlier greeting fields remain
+present.
 
 The latter six names describe additions to existing verbs, so the verb names
 alone cannot establish whether a bridge provides them. These six names are

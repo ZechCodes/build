@@ -73,7 +73,8 @@
       "session_started_ms": 1758272400000,
       "last_activity_ms": 1758276720000,
       "previous_session_ended_ms": 1758218400000,
-      "gap_ms": 21600000
+      "gap_ms": 21600000,
+      "now_ms": 1758277020000
     }
   },
   "errors": [

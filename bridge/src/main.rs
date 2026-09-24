@@ -420,7 +420,7 @@ async fn load_device_identity(config: &BridgeConfig) -> Result<LoadedIdentity, S
             let stored = match identity::load(&identity_path) {
                 Ok(Some(stored)) => stored,
                 Ok(None) => {
-                    let fresh = identity::generate(&env("BRIDGE_DEVICE_NAME", &hostname()));
+                    let fresh = identity::generate(&identity::default_device_name());
                     identity::save(&identity_path, &fresh).map_err(|error| {
                         format!("could not persist identity to {identity_path:?}: {error}")
                     })?;
@@ -1060,18 +1060,6 @@ fn bridge_config() -> build_bridge::config::BridgeConfig {
 
 fn env(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-/// A human-recognizable default device name. Falls back to `bridge` when the host
-/// name can't be determined.
-fn hostname() -> String {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "bridge".to_string())
 }
 
 /// `build-bridge mcp --task <id>` — the per-session MCP server the harness spawns

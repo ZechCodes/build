@@ -61,6 +61,7 @@ pub(crate) mod fs_scope;
 pub mod git_fixture;
 pub mod git_process;
 pub mod gitgui;
+pub mod github;
 pub mod harness;
 pub mod identity;
 pub mod isolation;

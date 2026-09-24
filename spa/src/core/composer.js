@@ -38,7 +38,7 @@ import {
   reasoningSelectorLabel,
   reasoningSelectorOptions,
 } from "./agentChoice.js";
-import { fieldTraits } from "./fieldTraits.js";
+import { applyFieldTraits, fieldTraits } from "./fieldTraits.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -596,19 +596,27 @@ const MIRRORED_STYLE = [
 
 const mirrors = new WeakMap();
 
-/** One copy per document, hidden and never focused, that takes a box's type
- *  and text so its height can be read without touching the box. */
+/** A box's copy, hidden and never focused. It carries a box's field traits
+ *  like every text field the SPA draws, though no keyboard ever reaches it. */
+function newMirror(doc) {
+  const mirror = doc.createElement("textarea");
+  applyFieldTraits(mirror, "prose");
+  mirror.setAttribute("aria-hidden", "true");
+  mirror.tabIndex = -1;
+  mirror.readOnly = true;
+  Object.assign(mirror.style, {
+    position: "fixed", top: "0", left: "-10000px", visibility: "hidden", pointerEvents: "none",
+    height: "auto", maxHeight: "none", overflow: "hidden", borderStyle: "solid", contain: "layout paint",
+  });
+  return mirror;
+}
+
+/** One copy per document that takes a box's type and text so its height can
+ *  be read without touching the box. */
 function mirrorFor(doc) {
   let mirror = mirrors.get(doc);
   if (!mirror) {
-    mirror = doc.createElement("textarea");
-    mirror.setAttribute("aria-hidden", "true");
-    mirror.tabIndex = -1;
-    mirror.readOnly = true;
-    Object.assign(mirror.style, {
-      position: "fixed", top: "0", left: "-10000px", visibility: "hidden", pointerEvents: "none",
-      height: "auto", maxHeight: "none", overflow: "hidden", borderStyle: "solid", contain: "layout paint",
-    });
+    mirror = newMirror(doc);
     mirrors.set(doc, mirror);
   }
   if (!mirror.isConnected) doc.body.append(mirror);

@@ -129,6 +129,18 @@ pub struct SessionPeers {
     driver: Option<tokio::runtime::Handle>,
 }
 
+/// What the map decided about a peer an offer just built.
+enum Registered {
+    /// The offer's opening already has a peer: ride it, close the new one.
+    Riding(Arc<dyn SessionPeer>),
+    /// The offer's opening has ended, or the id is open again under another
+    /// opening whose peer is not this offer's to replace: close the new one.
+    Ended,
+    /// The new peer is the session's, and this is the peer the opening it
+    /// displaced (an ended one) had left behind, if any.
+    Opened(Option<Arc<dyn SessionPeer>>),
+}
+
 impl SessionPeers {
     pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self> {
         Self::with_factory_on(factory, None)
@@ -258,14 +270,22 @@ impl SessionPeers {
     /// This session's peer and whether this call is the one that opened it.
     ///
     /// Building a peer is foreign work — a real one allocates an ICE agent and
-    /// a DTLS transport — so it runs with no lock held, and two offers racing
-    /// on one session still leave one peer: the one that reached the map first,
-    /// the loser closed rather than left negotiating. A peer an earlier
-    /// opening of this id left behind is closed and replaced: that opening is
-    /// over, and its peer is nobody's. And an opening that ended while its
-    /// peer was being built gets none: the peer is closed again and the
-    /// offer refused, so a session's end and its offer racing leave nothing
-    /// registered for a session that is gone.
+    /// a DTLS transport — so it runs with no lock held, and what to do with
+    /// the built peer is decided under the map's lock afterwards, in one
+    /// place, with the offer's own opening checked FIRST: an offer whose
+    /// opening ended while its peer was being built touches nothing in the
+    /// map. The same id may be open again by then, with a peer of that
+    /// opening's own negotiating, and this offer's only right is to close
+    /// what it built and be refused (the round-2 review of issue #128 caught
+    /// a stale offer closing the new opening's live peer as "stale" before it
+    /// noticed it had ended itself).
+    ///
+    /// From there: two offers racing on one open opening still leave one peer,
+    /// the one that reached the map first, the loser closed rather than left
+    /// negotiating. A peer an earlier opening of this id left behind — its
+    /// opening ended — is closed and replaced: it is nobody's. A peer of an
+    /// opening that is still open is never replaced by another opening's
+    /// offer, whatever order the two arrived in.
     fn riding_or_opened(
         &self,
         session_id: &str,
@@ -277,32 +297,49 @@ impl SessionPeers {
             }
         }
         let opened = self.factory.open(session_id)?;
-        let (peer, opened_by_this_offer, displaced) = {
+        let registered = {
             let mut peers = self.peers.lock().unwrap();
-            match peers.get(session_id) {
-                Some((riding, peer)) if riding.is(opening) => (peer.clone(), false, None),
-                _ => {
-                    let displaced = peers
-                        .insert(session_id.to_string(), (opening.clone(), opened.clone()))
-                        .map(|(_, stale)| stale);
-                    (opened.clone(), true, displaced)
+            if !opening.is_open() {
+                Registered::Ended
+            } else {
+                match peers.get(session_id) {
+                    Some((riding, peer)) if riding.is(opening) => Registered::Riding(peer.clone()),
+                    Some((riding, _)) if riding.is_open() => Registered::Ended,
+                    _ => Registered::Opened(
+                        peers
+                            .insert(session_id.to_string(), (opening.clone(), opened.clone()))
+                            .map(|(_, stale)| stale),
+                    ),
                 }
             }
         };
-        if !opened_by_this_offer {
-            self.awaited(opened.close());
-        }
-        if let Some(stale) = displaced {
-            diagnostic(session_id, "stale_opening_peer_closed");
-            self.awaited(stale.close());
-        }
-        if opened_by_this_offer && !opening.is_open() {
-            if let Some(unusable) = self.take(session_id, opening) {
-                self.awaited(unusable.close());
+        match registered {
+            Registered::Riding(peer) => {
+                self.awaited(opened.close());
+                Ok((peer, false))
             }
-            return Err(RtcError::Ended(session_id.to_string()));
+            Registered::Ended => {
+                self.awaited(opened.close());
+                Err(RtcError::Ended(session_id.to_string()))
+            }
+            Registered::Opened(displaced) => {
+                if let Some(stale) = displaced {
+                    diagnostic(session_id, "stale_opening_peer_closed");
+                    self.awaited(stale.close());
+                }
+                // The opening may have ended between the check and here — its
+                // end is flipped under the registry's lock, not this map's —
+                // and what this offer registered for it is then this offer's
+                // own to take back.
+                if !opening.is_open() {
+                    if let Some(unusable) = self.take(session_id, opening) {
+                        self.awaited(unusable.close());
+                    }
+                    return Err(RtcError::Ended(session_id.to_string()));
+                }
+                Ok((opened, true))
+            }
         }
-        Ok((peer, opened_by_this_offer))
     }
 
     /// The peer of the sender's own opening, if that opening is open and has
@@ -1511,7 +1548,9 @@ pub mod recording {
         refuse_offers: AtomicBool,
         /// Run as each peer is built, before it exists: where a test puts
         /// the thing that happens while an offer's peer is being made.
-        on_open: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+        /// Cloned out of its lock before it runs, so the thing may itself be
+        /// an offer through this factory.
+        on_open: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     impl RecordingPeerFactory {
@@ -1533,8 +1572,8 @@ pub mod recording {
         }
 
         /// Run `hook` while each peer is being built.
-        pub fn on_open(&self, hook: Box<dyn Fn() + Send + Sync>) {
-            *self.on_open.lock().unwrap() = Some(hook);
+        pub fn on_open(&self, hook: impl Fn() + Send + Sync + 'static) {
+            *self.on_open.lock().unwrap() = Some(Arc::new(hook));
         }
 
         pub fn peer_of(&self, session_id: &str) -> Option<Arc<RecordingPeer>> {
@@ -1550,7 +1589,8 @@ pub mod recording {
 
     impl SessionPeerFactory for RecordingPeerFactory {
         fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
-            if let Some(hook) = self.on_open.lock().unwrap().as_ref() {
+            let hook = self.on_open.lock().unwrap().clone();
+            if let Some(hook) = hook {
                 hook();
             }
             let peer = Arc::new(RecordingPeer {
@@ -1607,7 +1647,7 @@ mod opening_fence_tests {
         let (peers, factory) = peers();
         let sender = SessionSender::detached("s-1");
         let ending = sender.clone();
-        factory.on_open(Box::new(move || ending.opening_ended()));
+        factory.on_open(move || ending.opening_ended());
         let offered = {
             let peers = Arc::clone(&peers);
             blocking(move || peers.offer("v=0", &[], sender)).await
@@ -1677,6 +1717,78 @@ mod opening_fence_tests {
         peers.end_session("s-1");
         current.closed().await;
         assert_eq!(peers.count(), 0);
+    }
+
+    /// The interleaving the round-2 review reproduced: an offer's opening
+    /// ends while its peer is being built, the same id is opened again and
+    /// negotiates a peer of its own, and only then does the old offer get to
+    /// the map. It finds a peer that is not its opening's — and that peer is
+    /// the live opening's, not a stale one to close. The old offer closes
+    /// what it built, is refused, and the new opening's peer is untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_old_offer_that_arrives_after_the_next_opening_leaves_its_peer_alone() {
+        let (peers, factory) = peers();
+        let first = SessionSender::detached("s-1");
+        let second = SessionSender::detached("s-1");
+        let new_opening_s_peer: Arc<Mutex<Option<Arc<super::recording::RecordingPeer>>>> =
+            Arc::new(Mutex::new(None));
+        {
+            // While the first offer's peer is being built: its opening ends,
+            // and the second opening offers and is answered. Once only — the
+            // second offer builds a peer through this same factory.
+            let (peers, factory, first, second) = (
+                Arc::clone(&peers),
+                Arc::clone(&factory),
+                first.clone(),
+                second.clone(),
+            );
+            let stash = Arc::clone(&new_opening_s_peer);
+            let once = std::sync::atomic::AtomicBool::new(false);
+            factory.clone().on_open(move || {
+                if once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                first.opening_ended();
+                peers
+                    .offer("v=0 second", &[], second.clone())
+                    .expect("the new opening's offer is answered");
+                *stash.lock().unwrap() = factory.peer_of("s-1");
+            });
+        }
+        let old_offer = {
+            let (peers, first) = (Arc::clone(&peers), first.clone());
+            blocking(move || peers.offer("v=0 first", &[], first)).await
+        };
+        assert!(
+            matches!(old_offer, Err(RtcError::Ended(_))),
+            "{old_offer:?}"
+        );
+        assert_eq!(factory.opened_count(), 2);
+
+        let current = new_opening_s_peer
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the new opening negotiated a peer while the old offer was stalled");
+        assert!(
+            !current.is_closed(),
+            "the old offer must not close the new opening's live peer"
+        );
+        assert_eq!(
+            peers.count(),
+            1,
+            "the new opening's peer is still registered"
+        );
+        let trickled = {
+            let (peers, second) = (Arc::clone(&peers), second.clone());
+            blocking(move || peers.candidate(&second, json!({ "candidate": "live" }))).await
+        };
+        assert!(trickled.is_ok(), "{trickled:?}");
+        assert_eq!(
+            current.remote_candidates().len(),
+            1,
+            "the live opening's candidates reach its own peer"
+        );
     }
 }
 

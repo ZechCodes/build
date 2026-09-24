@@ -558,25 +558,68 @@ export function mountComposerAttachments(root, {
 ///
 /// The box is written only when its height has to change. Collapsing it to
 /// measure on every keystroke is two writes on the element being typed into,
-/// the kind of churn a phone's keyboard is sensitive to (#138). Text that only
-/// grew can only need more room, and whether it does is a read: its content
-/// overflows the height it was given. Only a box that lost text is collapsed
-/// to find how far it shrank.
+/// the kind of churn a phone's keyboard is sensitive to (#138). So the text is
+/// measured in a copy of the box instead — same width, same type, off screen —
+/// and the box itself hears of it only when the answer moves. The copy sees
+/// every edit alike, so text replaced by as much or more that wraps into fewer
+/// lines still lets the box shrink.
 export function autoGrow(input) {
-  let measuredLength = null;
-  const measure = () => {
-    input.style.height = "auto";
-    input.style.height = `${input.scrollHeight}px`;
-  };
-  const stillFits = () =>
-    measuredLength !== null
-    && input.value.length >= measuredLength
-    && input.scrollHeight <= Number.parseFloat(input.style.height);
   const fit = () => {
-    if (!stillFits()) measure();
-    measuredLength = input.value.length;
+    const height = measuredHeight(input);
+    if (height !== null && input.style.height !== height) input.style.height = height;
   };
   input.addEventListener("input", fit);
   fit();
   return fit;
+}
+
+/// What sets where a textarea's text wraps, how tall its lines stand, and the
+/// least it stands at.
+const MIRRORED_STYLE = [
+  "boxSizing", "width", "minHeight", "fontFamily", "fontSize", "fontStyle", "fontWeight", "fontStretch", "fontVariant",
+  "fontFeatureSettings", "lineHeight", "letterSpacing", "wordSpacing", "textTransform", "textIndent",
+  "whiteSpace", "wordBreak", "overflowWrap", "tabSize", "direction",
+  "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+  "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+];
+
+const mirrors = new WeakMap();
+
+/** One copy per document, hidden and never focused, that takes a box's type
+ *  and text so its height can be read without touching the box. */
+function mirrorFor(doc) {
+  let mirror = mirrors.get(doc);
+  if (!mirror) {
+    mirror = doc.createElement("textarea");
+    mirror.setAttribute("aria-hidden", "true");
+    mirror.tabIndex = -1;
+    mirror.readOnly = true;
+    Object.assign(mirror.style, {
+      position: "fixed", top: "0", left: "-10000px", visibility: "hidden", pointerEvents: "none",
+      height: "auto", maxHeight: "none", overflow: "hidden", borderStyle: "solid", contain: "layout paint",
+    });
+    mirrors.set(doc, mirror);
+  }
+  if (!mirror.isConnected) doc.body.append(mirror);
+  return mirror;
+}
+
+/** The height the box's text wants, as the `style.height` that gives it, or
+ *  null while the box is not laid out and there is nothing to measure against.
+ *  The stylesheet's min- and max-height still bound the box it is written on. */
+function measuredHeight(input) {
+  const doc = input.ownerDocument;
+  const view = doc.defaultView;
+  if (!doc.body || !view) return null;
+  const style = view.getComputedStyle(input);
+  if (style.display === "none" || !style.width || style.width === "auto") return null;
+  const mirror = mirrorFor(doc);
+  for (const property of MIRRORED_STYLE) {
+    if (mirror.style[property] !== style[property]) mirror.style[property] = style[property];
+  }
+  // Collapsed, the box stands as many rows tall as it asks for; its text can
+  // only make it taller.
+  if (mirror.rows !== input.rows) mirror.rows = input.rows;
+  mirror.value = input.value;
+  return `${mirror.scrollHeight}px`;
 }

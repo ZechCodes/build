@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { mountLayout, loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
+import { captureLayout, mountLayout, loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
 
 const fixture = (readThrough = "ic-0016") => {
   const timeline = [{
@@ -106,7 +106,7 @@ for (const { label, width, height } of [
       expect(overlay.pillHeight).toBeGreaterThanOrEqual(30);
       expect(overlay.pillBottom).toBeLessThanOrEqual(overlay.hostBottom);
       expect(overlay.pillBottom).toBeGreaterThan(overlay.hostBottom - 100);
-      await page.screenshot({ path: `/tmp/issue-unread-${label}-before.png` });
+      await captureLayout(page, `issue-unread-${label}-before.png`);
 
       await page.locator(".new-messages-pill").click();
       await page.waitForFunction(() => {
@@ -136,7 +136,7 @@ for (const { label, width, height } of [
       expect(after.pillVisible, JSON.stringify(after)).toBe(false);
       expect(after.pageScrollTop).toBe(0);
       expect(after.shellScrollTop).toBe(0);
-      await page.screenshot({ path: `/tmp/issue-unread-${label}-after.png` });
+      await captureLayout(page, `issue-unread-${label}-after.png`);
       await page.evaluate(() => window.__layoutPill.dispose());
     }, { width, height });
   }, 30_000);

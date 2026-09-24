@@ -1896,6 +1896,16 @@ mod tests {
         assert!(poll(condition), "the session never {expectation}");
     }
 
+    fn wait_for_activity_closed(activity: &mut broadcast::Receiver<ActivityReport>) {
+        wait_until("closed its activity channel", || {
+            match activity.try_recv() {
+                Err(broadcast::error::TryRecvError::Empty) => false,
+                Err(broadcast::error::TryRecvError::Closed) => true,
+                other => panic!("unexpected activity before channel closed: {other:?}"),
+            }
+        });
+    }
+
     fn drain_reports(
         activity: &mut broadcast::Receiver<ActivityReport>,
         until: impl Fn(&[ActivityReport]) -> bool,
@@ -2431,10 +2441,7 @@ mod tests {
         assert!(settled_code.is_some());
         assert_eq!(session.status(), AgentStatus::Ended { code: settled_code });
         assert_eq!(session.epitaph().as_deref(), Some("late"));
-        assert!(matches!(
-            activity.try_recv(),
-            Err(broadcast::error::TryRecvError::Closed)
-        ));
+        wait_for_activity_closed(&mut activity);
     }
 
     #[test]
@@ -2461,10 +2468,7 @@ mod tests {
             session.epitaph().as_deref(),
             Some("Codex stderr did not settle within 100ms")
         );
-        assert!(matches!(
-            activity.try_recv(),
-            Err(broadcast::error::TryRecvError::Closed)
-        ));
+        wait_for_activity_closed(&mut activity);
     }
 
     #[test]
@@ -2491,12 +2495,7 @@ mod tests {
             session.epitaph().as_deref(),
             Some("Codex stdout did not settle within 100ms")
         );
-        wait_until("closed its activity channel", || {
-            matches!(
-                activity.try_recv(),
-                Err(broadcast::error::TryRecvError::Closed)
-            )
-        });
+        wait_for_activity_closed(&mut activity);
     }
 
     #[test]

@@ -272,9 +272,18 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
         .map(|entry| entry.path().join("record.json"))
         .find(|path| path.is_file())
         .expect("a record to touch");
+    let imported_at = std::fs::metadata(root.join("SUPERSEDED-BY-build.db.md"))
+        .expect("the superseded note exists")
+        .modified()
+        .expect("the superseded note has a modification time");
     let raw = std::fs::read_to_string(&touched).expect("record reads");
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     std::fs::write(&touched, raw).expect("record rewrites");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&touched)
+        .expect("rewritten record opens")
+        .set_modified(imported_at + std::time::Duration::from_secs(2))
+        .expect("rewritten record is newer than the import note");
     match rebuilt.refuse_a_rolled_back_store() {
         Err(error) => println!("rollback refused: {error}"),
         Ok(()) => panic!("a JSON record written after the import was not noticed"),

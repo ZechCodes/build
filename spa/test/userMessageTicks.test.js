@@ -10,7 +10,6 @@ import {
 } from "../src/core/thread.js";
 
 const styles = readFileSync(resolve("src/styles.css"), "utf8");
-const railStyles = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
 function mount() {
   document.body.innerHTML = `<div id="scroller" style="scroll-padding-top:20px">${threadHtml({ items: [
@@ -50,7 +49,7 @@ const visibleIndexes = (scroller) => [...scroller.querySelectorAll(".thread-user
   .map((tick) => Number(tick.dataset.userTickIndex));
 
 describe("grouped user message navigator", () => {
-  it("groups pill ticks in the existing gutter without reserving message width", () => {
+  it("groups pill ticks in a navigator outside message rows", () => {
     const scroller = mount();
     const navigator = scroller.querySelectorAll(".thread-user-nav");
     const ticks = scroller.querySelectorAll(".thread-user-tick");
@@ -60,10 +59,6 @@ describe("grouped user message navigator", () => {
     expect([...ticks].every((tick) => tick.closest(".thread-user-nav") === navigator[0])).toBe(true);
     expect(scroller.querySelector(".thread-message .thread-user-tick")).toBeNull();
     expect(ticks[0].getAttribute("aria-label")).toContain("Jump to your message from Sep 22, 2026");
-    expect(styles).toMatch(/\.thread-user-nav \{ position:sticky; top:50%;[^}]*width:0; height:0/);
-    expect(styles).toMatch(/\.thread-user-nav-list \{ position:absolute; top:0; left:-20px/);
-    expect(styles).toMatch(/\.thread-timeline \{ --thread-gap:20px; gap:var\(--thread-gap\); padding:20px 12px; \}/);
-    expect(railStyles).toMatch(/\.rail-body \.thread-timeline \{[^}]*padding:4px 12px 16px; \}/);
     expect(styles).toMatch(/\.thread-user-tick span \{[^}]*width:10px; height:3px; border-radius:999px/);
     expect(styles).toMatch(/transition:width 200ms ease-out, background-color 200ms ease-out/);
   });

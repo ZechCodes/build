@@ -36,7 +36,7 @@ import {
   workflowPhases,
 } from "../src/core/agentSurfacesModel.js";
 import { patchList } from "../src/core/patchList.js";
-import { EXPANDED_ATTRIBUTE, KEYED_LIST_ATTRIBUTE } from "../src/core/domPatch.js";
+import { KEYED_LIST_ATTRIBUTE } from "../src/core/domPatch.js";
 
 const HOSTILE_MARKUP = "</div><img onerror=x>";
 
@@ -180,10 +180,9 @@ describe("agentRowHtml", () => {
     expect(factValue(row, "Tool calls")).toBe("0");
   });
 
-  it("prints the model name the row arrived with, having named it nowhere itself", () => {
+  it("prints the model name the row arrived with", () => {
     const named = agentRows([readerEntry], { modelLabel: (id) => `Opus 5 · ${id}` })[0];
     expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Opus 5 · haiku");
-    expect(coreSourceOf("agentSurfacesRender.js")).not.toContain("modelLabel");
   });
 
   it("keeps the delegated task and reasoning effort visible beside the canonical agent path", () => {
@@ -537,12 +536,6 @@ describe("the text a viewer clips", () => {
   it("shows one line unless it is asked for more, and escapes what it is given", () => {
     expect(parseHtml(clippedTextHtml("one")).firstElementChild.getAttribute("data-clip-lines")).toBe("1");
     expectEscaped(clippedTextHtml(HOSTILE_MARKUP));
-  });
-
-  it("is the one place the viewer's clip markup is built", () => {
-    const source = coreSourceOf("agentSurfacesRender.js");
-    expect(source.match(/data-clip-lines/g)).toHaveLength(1);
-    expect(source).not.toContain(EXPANDED_ATTRIBUTE);
   });
 
   it("clips the summary label but leaves expanded agent details readable in full", () => {

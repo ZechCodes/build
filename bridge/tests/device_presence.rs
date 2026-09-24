@@ -15,6 +15,7 @@
 //! about the tie, not about either half.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use build_bridge::carrier::{testing, FrameHandler, FrameIntake};
@@ -25,6 +26,7 @@ use common::{bind_relay, device_identity, greet_device, request_message, session
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
@@ -47,22 +49,25 @@ fn idle_intake() -> Arc<FrameIntake> {
 /// An intake whose one worker never finishes a frame and whose queue holds one
 /// more — a stand-in for the handler pool being full, which is the state the
 /// daemon's own pool reaches under load.
-fn wedged_intake() -> Arc<FrameIntake> {
-    FrameIntake::with_pool(
+fn wedged_intake() -> (Arc<FrameIntake>, std::sync::mpsc::Sender<()>) {
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let blocked = Mutex::new(blocked);
+    let intake = FrameIntake::with_pool(
         FrameHandler::new(
             build_bridge::timing::FrameClock::new(),
-            |_sender, _frame, _timer| {
+            move |_sender, _frame, _timer| {
                 // The worker runs handlers on a blocking thread, so blocking one
-                // is what taking a worker out of the pool looks like. Long past
-                // the hand-over deadline, never forever.
-                std::thread::sleep(Duration::from_secs(5));
+                // is what taking a worker out of the pool looks like. Dropping
+                // `release` unblocks it, including when the test panics.
+                let _ = blocked.lock().unwrap().recv();
                 json!({ "ok": true })
             },
         ),
         transport::generate_transport_keypair(),
         1,
         1,
-    )
+    );
+    (intake, release)
 }
 
 /// Wait for the device to read `want`, or give up. Polled rather than awaited
@@ -85,13 +90,23 @@ async fn relay_holding_the_socket(listener: TcpListener) {
     while let Some(Ok(_)) = ws.next().await {}
 }
 
-/// A relay that completes the WebSocket handshake and then says nothing: the
-/// socket is up, and this device has not been authorised onto it.
-async fn relay_that_never_greets(listener: TcpListener) {
+/// A relay that completes the WebSocket handshake but never authenticates the
+/// device. A pong proves the device has processed traffic on this socket before
+/// the test checks reachability.
+async fn relay_that_never_greets(listener: TcpListener, ready: oneshot::Sender<()>) {
     let (tcp, _) = listener.accept().await.expect("device connects");
     let mut ws = tokio_tungstenite::accept_async(tcp)
         .await
         .expect("ws handshake");
+    ws.send(Message::Ping(Vec::new()))
+        .await
+        .expect("ping sends");
+    while let Some(Ok(message)) = ws.next().await {
+        if matches!(message, Message::Pong(_)) {
+            let _ = ready.send(());
+            break;
+        }
+    }
     while let Some(Ok(_)) = ws.next().await {}
 }
 
@@ -119,7 +134,8 @@ async fn a_device_becomes_reachable_when_the_relay_authenticates_its_socket() {
 #[tokio::test]
 async fn a_socket_the_relay_never_authenticated_leaves_the_device_unreachable() {
     let (listener, url) = bind_relay().await;
-    let socket = tokio::spawn(relay_that_never_greets(listener));
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let socket = tokio::spawn(relay_that_never_greets(listener, ready_tx));
     let reachable = Reachability::unreachable();
 
     let running = {
@@ -129,7 +145,10 @@ async fn a_socket_the_relay_never_authenticated_leaves_the_device_unreachable() 
         })
     };
 
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::timeout(testing::PATIENCE, ready_rx)
+        .await
+        .expect("the device processes the relay's ping")
+        .expect("the relay observes its pong");
     assert!(
         !reachable.is_reachable(),
         "a TCP connection is not a rendezvous: nothing can route to this device yet"
@@ -174,7 +193,7 @@ async fn a_device_whose_relay_socket_drops_stops_being_reachable() {
 #[tokio::test]
 async fn a_bridge_that_cannot_drain_its_socket_gives_it_up_and_reads_unreachable() {
     let (listener, url) = bind_relay().await;
-    let intake = wedged_intake();
+    let (intake, release_worker) = wedged_intake();
     let transport_public_key = intake.transport_public_key().to_string();
     let session_key = transport::generate_session_key();
     let reachable = Reachability::unreachable();
@@ -222,5 +241,6 @@ async fn a_bridge_that_cannot_drain_its_socket_gives_it_up_and_reads_unreachable
         !reachable.is_reachable(),
         "a bridge that cannot answer on its socket must not report itself online"
     );
+    drop(release_worker);
     socket.abort();
 }

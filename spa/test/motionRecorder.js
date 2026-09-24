@@ -1,4 +1,5 @@
 import { MOTION_BEAT_MS, motionSettled } from "../src/core/motion.js";
+import { vi } from "vitest";
 
 export function recordAnimations() {
   const started = [];
@@ -34,7 +35,13 @@ export function stopRecordingAnimations() {
   delete Element.prototype.animate;
 }
 
-export const motionBeat = () => new Promise((resolve) => setTimeout(resolve, MOTION_BEAT_MS + 10));
+export async function motionBeat() {
+  const beat = new Promise((resolve) => setTimeout(resolve, MOTION_BEAT_MS + 10));
+  // A suite may fake only intervals. Await the actual timeout even when
+  // advancing the fake clock, so that partial clocks still yield a real beat.
+  if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(MOTION_BEAT_MS + 10);
+  await beat;
+}
 
 const SETTLING_ROUNDS = 24;
 

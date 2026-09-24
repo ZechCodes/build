@@ -652,7 +652,7 @@ describe("the board", () => {
 });
 
 describe("moving a card", () => {
-  const drop = async (issueId, columnId) => {
+  const drop = (issueId, columnId) => {
     const data = new Map([["text/plain", issueId]]);
     host.querySelector(`[data-column-drop="${columnId}"]`).dispatchEvent(
       Object.assign(new Event("drop", { bubbles: true }), {
@@ -660,13 +660,13 @@ describe("moving a card", () => {
         dataTransfer: { getData: (key) => data.get(key) },
       }),
     );
-    await flush();
   };
 
   it("calls issues.update with the new status, and only that", async () => {
     await mount({ view: "board" });
     call.mockClear();
-    await drop("issue-12", "in_review");
+    drop("issue-12", "in_review");
+    await vi.waitFor(() => expect(listed("issues.update")).toHaveLength(1));
     expect(listed("issues.update")[0][1]).toEqual({ issue_id: "issue-12", status: "in_review" });
   });
 
@@ -679,10 +679,12 @@ describe("moving a card", () => {
       return new Promise((resolve) => { settle = resolve; });
     });
     await mount({ view: "board" });
-    await drop("issue-12", "done");
-    expect(cardsIn("done")).toEqual(["issue-12"]);
+    drop("issue-12", "done");
+    await vi.waitFor(() => expect(cardsIn("done")).toEqual(["issue-12"]));
+    await vi.waitFor(() => expect(listed("issues.update")).toHaveLength(1));
     settle({});
-    await flush();
+    const updateIndex = call.mock.calls.findIndex(([method]) => method === "issues.update");
+    await call.mock.results[updateIndex].value;
   });
 
   // A card that stayed put with no word is a card the reader will drag again.
@@ -693,9 +695,9 @@ describe("moving a card", () => {
       throw new Error("issue is closed");
     });
     await mount({ view: "board" });
-    await drop("issue-12", "done");
+    drop("issue-12", "done");
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed"));
     expect(cardsIn("backlog")).toEqual(["issue-12"]);
-    expect(notifyError).toHaveBeenCalledWith("Could not move this issue", "issue is closed");
   });
 
   // Dragging is one way to move a card; the arrow keys are the other.
@@ -704,7 +706,7 @@ describe("moving a card", () => {
     call.mockClear();
     const card = host.querySelector('.issue-card[data-issue="issue-12"]');
     card.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-    await flush();
+    await vi.waitFor(() => expect(listed("issues.update")).toHaveLength(1));
     expect(listed("issues.update")[0][1]).toEqual({ issue_id: "issue-12", status: "in_review" });
   });
 

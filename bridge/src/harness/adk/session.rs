@@ -9,7 +9,8 @@ use crate::harness::{
 use crate::models::{AgentProvider, ModelChoice};
 use crate::pty::HarnessSpec;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
@@ -33,6 +34,45 @@ pub struct AdkSession {
     /// can be collected exactly once, and the crash message is written from it
     /// long after.
     exit_code: Mutex<Option<i32>>,
+    #[cfg(test)]
+    delimiter_blocked: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+}
+
+struct RestoreFdFlags {
+    fd: RawFd,
+    flags: libc::c_int,
+}
+
+impl Drop for RestoreFdFlags {
+    fn drop(&mut self) {
+        loop {
+            if unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.flags) } >= 0
+                || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+            {
+                break;
+            }
+        }
+    }
+}
+
+fn wait_writable(fd: RawFd) -> io::Result<()> {
+    let mut readiness = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut readiness, 1, -1) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+    }
 }
 
 impl AdkSession {
@@ -158,6 +198,8 @@ impl AdkSession {
                 activity,
                 revision,
                 exit_code: Mutex::new(None),
+                #[cfg(test)]
+                delimiter_blocked: Mutex::new(None),
             },
             subscribed,
         ))
@@ -178,6 +220,57 @@ impl AdkSession {
         pipe.write_all(b"\n")?;
         pipe.flush()?;
         Ok(())
+    }
+
+    /// Commit the turn at its final newline. The child cannot answer an
+    /// incomplete line, and the reader cannot handle its answer until the
+    /// state update is done. Neither a large payload nor a full pipe may hold
+    /// the state lock while waiting for the child to read.
+    fn write_turn_line(&self, line: &str) -> Result<(), HarnessError> {
+        let mut stdin = self.stdin.lock().unwrap();
+        let pipe = stdin.as_mut().ok_or_else(|| {
+            HarnessError::Session("this session has ended — it takes no more turns".to_string())
+        })?;
+        pipe.write_all(line.as_bytes())?;
+        let fd = pipe.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error().into());
+        }
+        let _restore_flags = RestoreFdFlags { fd, flags };
+        let committed = loop {
+            let mut state = self.state.lock().unwrap();
+            match pipe.write(b"\n") {
+                Ok(1) => {
+                    if !state.turn_open {
+                        state.turn_had_success = false;
+                    }
+                    state.turn_open = true;
+                    state.first_turn_at.get_or_insert_with(Instant::now);
+                    // A queued steering turn inherits the interrupt's result boundary.
+                    if let Some(pending) = state.pending_interrupt.as_mut() {
+                        pending.steered = true;
+                    }
+                    publish_status(&self.status_updates, state.live_status());
+                    break Ok(());
+                }
+                Ok(_) => break Err(io::Error::from(io::ErrorKind::WriteZero).into()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    drop(state);
+                    #[cfg(test)]
+                    if let Some(signal) = self.delimiter_blocked.lock().unwrap().take() {
+                        let _ = signal.send(());
+                    }
+                    wait_writable(fd)?;
+                }
+                Err(error) => break Err(error.into()),
+            }
+        };
+        committed
     }
 
     /// Ask the child to run `model` from the next turn on, if it is not what
@@ -336,22 +429,7 @@ impl AgentSession for AdkSession {
             },
         })
         .to_string();
-        self.write_line(&line)?;
-        let mut state = self.state.lock().unwrap();
-        if !state.turn_open {
-            state.turn_had_success = false;
-        }
-        state.turn_open = true;
-        state.first_turn_at.get_or_insert_with(Instant::now);
-        // A turn handed over behind an outstanding interrupt is the steering
-        // turn: the child runs it once the interrupted one is closed, so the
-        // result that closes that one must hand `Working` on to this rather
-        // than report a session that is actively working as waiting.
-        if let Some(pending) = state.pending_interrupt.as_mut() {
-            pending.steered = true;
-        }
-        publish_status(&self.status_updates, state.live_status());
-        Ok(())
+        self.write_turn_line(&line)
     }
 
     /// Announced by the child in its own `init` line, so the same provider
@@ -560,5 +638,151 @@ impl AgentSession for AdkSession {
             .last_line
             .checked_sub(ago)
             .expect("a stamp old enough to age");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod commit_tests {
+    use super::*;
+    use crate::harness::adk::fake::{INIT, RESULT, TASK_NOTIFICATION, TASK_STARTED};
+    use std::ffi::CString;
+    use std::fs::OpenOptions;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    struct ReapChild(Arc<Mutex<Child>>);
+
+    impl Drop for ReapChild {
+        fn drop(&mut self) {
+            let mut child = self.0.lock().unwrap();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn wait_for(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn release_fifo(path: &Path) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path)
+            {
+                Ok(mut gate) => {
+                    gate.write_all(b"go\n").unwrap();
+                    return;
+                }
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
+                    assert!(Instant::now() < deadline, "child never opened {path:?}");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("cannot open {path:?}: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn full_stdin_pipe_does_not_hold_the_reader_out_of_protocol_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let first_gate = dir.path().join("report-task");
+        let second_gate = dir.path().join("read-turn");
+        for path in [&first_gate, &second_gate] {
+            let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        let script = format!(
+            "printf '%s\\n' '{INIT}'; read gate < '{}'; printf '%s\\n' '{TASK_STARTED}'; read gate < '{}'; printf '%s\\n' '{TASK_NOTIFICATION}'; IFS= read -r turn; printf '%s\\n' '{RESULT}'; while IFS= read -r rest; do :; done",
+            first_gate.display(),
+            second_gate.display(),
+        );
+        let spec = HarnessSpec::new("sh").arg("-c").arg(script);
+        let choice = ModelChoice {
+            provider: AgentProvider::ClaudeAdk,
+            ..ModelChoice::default()
+        };
+        let session = Arc::new(AdkSession::spawn(&spec, None, &choice).unwrap().0);
+        let _reap = ReapChild(Arc::clone(&session.child));
+        wait_for("init", || session.status() == AgentStatus::Waiting);
+
+        let watched = session.status_updates.subscribe();
+        let (capacity, original_flags, reader_fd) = {
+            let stdin = session.stdin.lock().unwrap();
+            let fd = stdin.as_ref().unwrap().as_raw_fd();
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert!(unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, 4096) } > 0);
+            let capacity = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
+            assert!(capacity > 0);
+            let duplicate = unsafe { libc::dup(fd) };
+            assert!(duplicate >= 0);
+            (capacity as usize, flags, unsafe {
+                OwnedFd::from_raw_fd(duplicate)
+            })
+        };
+        let overhead =
+            json!({"type":"user","message":{"role":"user","content":[{"type":"text","text":""}]}})
+                .to_string()
+                .len();
+        assert!(capacity > overhead);
+        let turn = Turn::new("x".repeat(capacity - overhead));
+        let (blocked, delimiter_blocked) = mpsc::channel();
+        *session.delimiter_blocked.lock().unwrap() = Some(blocked);
+        let sender = Arc::clone(&session);
+        let (sent, finished) = mpsc::channel();
+        let sending = std::thread::spawn(move || {
+            sent.send(sender.send_turn(&turn).map_err(|error| error.to_string()))
+                .unwrap();
+        });
+
+        wait_for("the user line to fill stdin before its newline", || {
+            let mut unread = 0;
+            assert_eq!(
+                unsafe { libc::ioctl(reader_fd.as_raw_fd(), libc::FIONREAD, &mut unread) },
+                0
+            );
+            unread == capacity as libc::c_int
+        });
+        delimiter_blocked
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the final newline finds the pipe full");
+        assert!(matches!(
+            finished.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        release_fifo(&first_gate);
+        wait_for("the reader to report the task while stdin is full", || {
+            watched.borrow().status == AgentStatus::Working
+        });
+        assert!(matches!(
+            finished.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        release_fifo(&second_gate);
+        finished
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the child drains stdin")
+            .expect("the turn is written");
+        sending.join().unwrap();
+        assert_eq!(
+            unsafe { libc::fcntl(reader_fd.as_raw_fd(), libc::F_GETFL) },
+            original_flags,
+            "the delimiter write restores the pipe's original flags"
+        );
+        wait_for("the turn result", || {
+            watched.borrow().status == AgentStatus::Waiting
+        });
+        session.end();
     }
 }

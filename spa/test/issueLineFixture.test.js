@@ -107,6 +107,13 @@ export const ISSUE_LINE_ITEMS = [
 
 const rendered = () => threadHtml({ id: "c-1", items: ISSUE_LINE_ITEMS }, { place, agentLabels });
 
+// Lucide embeds its package version in the SVG license comment. A dependency
+// update can change that comment without changing the icon the browser draws.
+const withoutLucideVersion = (markup) => markup.replace(
+  /(<!-- @license lucide-static )v\d+\.\d+\.\d+( - ISC -->)/g,
+  "$1vVERSION$2",
+);
+
 // The fixture carries relative times ("1 hour ago") rendered against the
 // clock, so the clock is frozen here or the committed markup rots by the hour.
 const FROZEN_NOW = new Date("2026-09-20T22:30:00Z");
@@ -128,7 +135,8 @@ describe("the markup the browser measurement is taken over", () => {
       mkdirSync(dirname(FIXTURE), { recursive: true });
       writeFileSync(FIXTURE, html);
     }
-    expect(measuredMarkup(readFileSync(FIXTURE, "utf8"))).toBe(html);
+    expect(withoutLucideVersion(measuredMarkup(readFileSync(FIXTURE, "utf8"))))
+      .toBe(withoutLucideVersion(html));
   });
 
   // The measurement asks about these rows specifically; a fixture that stopped

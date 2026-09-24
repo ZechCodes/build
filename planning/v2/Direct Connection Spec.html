@@ -138,7 +138,7 @@ existing socket carrier. Nothing is ever plaintext on the wire, even inside the 
 
 <h2 id="invite">4. The invite</h2>
 <p>
-  <code>build-bridge direct invite [--name "Zech's phone"] [--ttl 10m]</code> prints a compact string
+  <code>build-bridge direct invite [--name "Alice's phone"] [--ttl 10m]</code> prints a compact string
   and a QR code. It is <b>not a JWT</b>: the browser has no prior trust in any key, so a signature
   proves nothing at this point. The invite is a bootstrap credential: it tells the browser where the
   bridge is, which key to expect, and gives it one secret to prove it was invited.
@@ -149,7 +149,7 @@ existing socket carrier. Nothing is ever plaintext on the wire, even inside the 
   "fp":   "sha256:9f3c…a1",                        // bridge identity public key fingerprint
   "secret": "base64url(32 random bytes)",          // one-time, ≥ 256 bits
   "exp":  1758000000,                              // unix seconds; default now + 10 min
-  "name": "Zech's phone"                           // label the bridge will store for this client
+  "name": "Alice's phone"                           // label the bridge will store for this client
 }
 → encoded as base64url(JSON), shown as text and as  build-direct://&lt;encoded&gt;
 → the QR carries  https://box.tail1234.ts.net/#invite=&lt;encoded&gt;   (fragment, never query string)</code></pre>
@@ -166,7 +166,7 @@ existing socket carrier. Nothing is ever plaintext on the wire, even inside the 
   <span class="n">2</span><span>bridge → client: <code>{"type":"pair_challenge","bridge_nonce":n_b,"identity_public_key":pk_b,"sig":Sign(sk_b, "direct-pair-v1" ‖ n_c ‖ n_b ‖ pk_b)}</code></span>
   <span class="n">3</span><span>client verifies <code>sha256(pk_b) == fp</code> from the invite and the signature. On mismatch it stops and shows "this is not the bridge the invite came from". The bridge key is now <b>pinned</b>.</span>
   <span class="n">4</span><span>client → bridge: <code>{"type":"pair_prove","client_public_key":pk_c,"name":name,"mac":HMAC(secret, "direct-pair-v1" ‖ n_c ‖ n_b ‖ pk_b ‖ pk_c ‖ name)}</code></span>
-  <span class="n">5</span><span>bridge looks up a pending invite whose secret verifies the MAC (constant-time), checks <code>exp</code>, then appends <code>{pk_c, name, paired_at, last_seen}</code> to <code>authorized_clients</code>, deletes the invite, and notifies the desktop ("Zech's phone paired").</span>
+  <span class="n">5</span><span>bridge looks up a pending invite whose secret verifies the MAC (constant-time), checks <code>exp</code>, then appends <code>{pk_c, name, paired_at, last_seen}</code> to <code>authorized_clients</code>, deletes the invite, and notifies the desktop ("Alice's phone paired").</span>
   <span class="n">6</span><span>bridge → client: <code>{"type":"pair_ok","transport_public_key":tpk_b,"sig":Sign(sk_b, "direct-pair-ok-v1" ‖ n_c ‖ n_b ‖ tpk_b ‖ pk_c)}</code></span>
   <span class="n">7</span><span>client verifies and stores <code>{origin, fp, tpk_b, own keypair, bridge name}</code> as a <b>direct device record</b>. Pairing is complete; the socket closes.</span>
 </div>
@@ -240,7 +240,7 @@ compile time, so <code>spa/</code> keeps building into one place). At boot the S
 <h2 id="tailnet">9. Tailnet integration</h2>
 <ul>
   <li><b>Detection.</b> The bridge asks <code>tailscale status --json</code> at start (if the binary exists) for its own <code>.ts.net</code> name and address, uses them in invites, and prints the <code>serve</code> command.</li>
-  <li><b>Identity allow-list (optional).</b> With <code>BRIDGE_DIRECT_TAILNET_USERS=zech@github</code> the bridge requires, on <code>/direct/pair</code> and <code>/direct/ws</code>, that <code>tailscale whois &lt;peer-ip&gt;</code> (or the <code>Tailscale-User-Login</code> header from the loopback proxy) names an allowed login. This runs <em>before</em> the client-key check and never replaces it.</li>
+  <li><b>Identity allow-list (optional).</b> With <code>BRIDGE_DIRECT_TAILNET_USERS=alice@github</code> the bridge requires, on <code>/direct/pair</code> and <code>/direct/ws</code>, that <code>tailscale whois &lt;peer-ip&gt;</code> (or the <code>Tailscale-User-Login</code> header from the loopback proxy) names an allowed login. This runs <em>before</em> the client-key check and never replaces it.</li>
   <li><b>Headscale</b> and other control planes work the same; nothing here talks to Tailscale's servers except tailscaled itself.</li>
   <li><b>Docs.</b> <code>deploy/README.md</code> gains "Direct connections over Tailscale": install Tailscale on the machine and the phone, mint an invite, run the serve command, scan the QR.</li>
 </ul>
@@ -294,7 +294,7 @@ the same choice SSH makes with <code>authorized_keys</code>.</div>
   <tr><td>2</td><td>Invite, pairing, authorized clients</td><td><code>direct invite/invites/clients/revoke</code> CLI, <code>authorized_clients.json</code>, the §5 handshake with rate limits, signed <code>session_init</code> admission (§6), <code>CarrierKind::Direct</code>, revocation ending sessions.</td></tr>
   <tr><td>3</td><td>SPA direct mode</td><td><code>createDirectRendezvous</code>, direct-mode boot with no api calls, client key storage, new-device screen (paste + fragment/QR), presence by ping, the source-scan test.</td></tr>
   <tr><td>4</td><td>Tailnet integration</td><td>Tailscale detection for invites, optional whois allow-list, settings page for direct clients, docs for iOS/Android and the serve command.</td></tr>
-  <tr><td>5</td><td>Security pass</td><td>Checklist to 100/100, threat-model amendment, a real phone pairing over a tailnet recorded in HANDOFF, semgrep/gitleaks, complexity gates.</td></tr>
+  <tr><td>5</td><td>Security pass</td><td>Checklist to 100/100, threat-model amendment, a real phone pairing over a tailnet recorded in the release notes, semgrep/gitleaks, complexity gates.</td></tr>
 </table>
 <p>Estimated at half to two-thirds of the strict-P2P change. No WebRTC work.</p>
 

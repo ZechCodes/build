@@ -139,7 +139,7 @@ gone; their two ratchet annotations are retired (`RATCHETED_FUNCTIONS` 28 → 26
 - `terminal/manager.js` / `terminal/session.js` — `TerminalSocket` no longer creates a
   relay link; `followTerminalDevice()` hands it a terminal session minted through the
   followed device's rendezvous plus that device's `term` carrier; `_reattachAll` runs
-  on `onActive`. (Per-device terminal sessions remain the follow-on HANDOFF lists.)
+  on `onActive`. (Per-device terminal sessions remain a listed follow-on.)
 - `devices.js` — presence from `GET /api/devices` only; `markDeviceOnline/Offline`
   deleted; `watchPresence()` polls, and each refresh calls `openDeviceSessions()` for
   newly online devices and blocks contexts whose device is no longer online.
@@ -186,7 +186,7 @@ gone; their two ratchet annotations are retired (`RATCHETED_FUNCTIONS` 28 → 26
   the relay refusal of rule 1. `web/` is dev-only, so the npm dependency is acceptable.
 - `deploy/k8s/relay.yaml`: memory limit 128Mi, the presence comment rewritten; the
   `Recreate` rationale becomes "in-flight negotiations, not held connections".
-- README / HANDOFF / `deploy/README.md`: the "peers that cannot hole-punch simply keep
+- README / `deploy/README.md`: the "peers that cannot hole-punch simply keep
   working over the relay" sentence and the topology diagram are replaced.
 
 ## Non-goals

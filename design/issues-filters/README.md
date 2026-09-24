@@ -1,6 +1,6 @@
 # The Issues tab's filter bar, after #44
 
-Zech, 2026-09-20: "Would be nice if we used custom drop downs so it would be
+The maintainer, 2026-09-20: "Would be nice if we used custom drop downs so it would be
 possible to select multiple and have fuzzy search for labels and assignees."
 
 - `menu-390-dark.png` — a phone. The popover is a sheet at the bottom of the

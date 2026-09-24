@@ -11,7 +11,7 @@ description: Build/launch/drive recipe for verifying spa/ changes end-to-end in 
 `npm install` in a fresh worktree:
 
 ```sh
-ln -sfn ~/Projects/8ly/build-secure-transport "$(git rev-parse --show-toplevel)/../build-secure-transport"
+ln -sfn ~/Projects/build-secure-transport "$(git rev-parse --show-toplevel)/../build-secure-transport"
 cd spa && npm install
 ```
 
@@ -60,10 +60,10 @@ process dies with the tool call.
 
 ## Driving
 
-Python Playwright is installed (pyenv 3.13.7, browsers cached):
+Drive it with Python Playwright (Python 3.13, Playwright browsers installed):
 
 ```sh
-uv run --python ~/.pyenv/versions/3.13.7/bin/python3.13 --with playwright==1.60.0 script.py
+uv run --python 3.13 --with playwright==1.60.0 script.py
 ```
 
 - Context: `new_context(viewport=..., has_touch=True, is_mobile=True)`.

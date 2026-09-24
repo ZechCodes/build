@@ -84,10 +84,10 @@ Container (migrates then serves — `skrift db upgrade heads` runs framework +
 app migrations against `$DATABASE_URL` on every start):
 
 ```bash
-podman build -t ghcr.io/8ly-dev/build-app -f skriftapp/Containerfile .   # from the repo root
+podman build -t build-app -f skriftapp/Containerfile .   # from the repo root
 podman run -e SECRET_KEY=... -e INTERNAL_API_SECRET=... \
   -e DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db \
-  -p 8080:8080 ghcr.io/8ly-dev/build-app
+  -p 8080:8080 build-app
 ```
 
 Required env: `SECRET_KEY`, `DATABASE_URL`, `INTERNAL_API_SECRET` — the shared

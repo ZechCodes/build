@@ -1,6 +1,6 @@
 # Build landing page: story and direction
 
-Issue #75. Planning only: nothing on the page changes until Zech approves this document.
+Issue #75. Planning only: nothing on the page changes until the maintainer approves this document.
 Written by the Fable lead, converged with the Astra co-planner on the issue.
 
 **Working title:** *Your agents. Your machine. Your call.*
@@ -17,19 +17,19 @@ demonstration state of that product, drawn in the current Build visual language.
 practical section under the story (hosts, harnesses, storage) keeps describing what exists
 today, so the film can be ambitious without the page lying about the alpha.
 
-**Call to action (decided by Zech on #75).** The primary button everywhere is **Join the
+**Call to action (decided on #75).** The primary button everywhere is **Join the
 waitlist**. Access is invite-only until the alpha reaches beta-level stability, so there
 is no Download button on the page. The waitlist endpoint and form already exist
 (`POST /api/waitlist`, `landing/waitlist.html`). The secondary link is GitHub.
 
-**The control claim (decided by Zech on #75).** The promise is: agents and checkouts run
+**The control claim (decided on #75).** The promise is: agents and checkouts run
 on hardware you choose, with the model providers you configure. The page does not promise
 local inference or that no data leaves the machine. Every line of copy in this document
 is written to that scope, and the "Deliberately not doing" list keeps it that way.
 
-**The look (decided by Zech on #75).** Build's current visual language: black, one mint
+**The look (decided on #75).** Build's current visual language: black, one mint
 accent (`#51ffb4`), Inter and JetBrains Mono, as in the SPA and the existing stills.
-Zech's constraint is that it must not look bland and must not look busy, so the page
+The constraint is that it must not look bland and must not look busy, so the page
 gets its richness from three things and nothing else: the lit devices (the screens are
 the colour on the page, and the studio lighting gives the hardware depth), large
 confident type with generous space around it, and motion that always means something
@@ -91,7 +91,7 @@ faceCamera). Copy is real draft copy in the brand voice: second person, short se
 one benefit per sentence, no buzzwords, no exclamation points. Screen textures named
 `ui1x-*` are new; `ui0x-*` already exist in `skriftapp/buildapp/landing/assets/screens/`.
 
-Round 2 amendment (Zech, 2026-09-22). Scroll drives only low-information motion: the
+Round 2 amendment (2026-09-22). Scroll drives only low-information motion: the
 device moves between acts and a close-up showing or going with its act. Nothing a person
 reads is scrubbed. When the playhead crosses an act's arrival (the device settled), the
 act's copy comes in on the clock and the act's scene (typing, the card's move, the team,
@@ -102,12 +102,12 @@ Scrolling back rewinds a scene at its act's arrival and shows an act as it finis
 between. The hero laptop turns a little toward the copy, not the visitor. In the builder
 the handoff is a highlight running each step's outline and the arrow after it, not a dot.
 
-Round 3 amendment (Zech, 2026-09-23). The first desktop paint is the film's layout: a
+Round 3 amendment (2026-09-23). The first desktop paint is the film's layout: a
 head script picks film or document before paint, the hero copy and call to action are
 there at once, and a capture of the live stage at the hero pose (lid where the welcome
 starts) holds the laptop's place until the first WebGL frame, then crossfades. The
 hardware is classic silver aluminium, not space black. A slim bar (Build, Docs, GitHub,
-Join the waitlist) stays on screen and reserves its height (Zech, 2026-09-23: "The slim
+Join the waitlist) stays on screen and reserves its height (2026-09-23: "The slim
 is good"). A lifted close-up stays readable while the visitor stays in its act and
 goes back as the act's copy leaves; act 7 holds the open finding at least four seconds
 before approval, and its panel gives way to the merge on the clock. Act 4 is a close
@@ -134,7 +134,7 @@ close-up. Nothing depends on the 3D to be understood (see section 5).
 - **Screen:** `ui10-editor-macbook` (new). A real editor: file tree on the left
   (`build-app/src/search/archive.ts`, `archive.test.ts`), code in the middle, a collapsed
   terminal drawer along the bottom, agents rail on the right with "Fixing archive button ·
-  Claude Code · Working". Status bar carries the machine label: `zech-mbp · ~/code/build ·
+  Claude Code · Working". Status bar carries the machine label: `dev-mbp · ~/code/build ·
   main`. That label persists on every laptop screen for the rest of the page.
 - **Entrance (time-based, not scroll-driven):** when the hero is in view (on load, or
   when it scrolls into view if the page was restored mid-scroll), the laptop settles
@@ -531,7 +531,7 @@ parallel, so this list is written to be worked from without further questions. E
 is UI capture or a render of the existing models; nothing needs generated imagery, and no
 image-generation API key is needed right now. If the implementation adds something Astra
 cannot make (for example a photographic or painted hero background at a specific size),
-that is the point to ask Zech for one.
+that is the point to ask the maintainer for one.
 
 **Rules that apply to every screen texture.**
 
@@ -547,7 +547,7 @@ that is the point to ask Zech for one.
   already draws (menu bar and Dock, iPad status bar and Dock, iPhone status bar and home
   indicator), the system clock at 9:41, and text inside the text-safe bounds.
 - Every macbook texture carries the machine label in the app status bar:
-  `zech-mbp · ~/code/build · main`. Today's macbook textures lack it, which is why
+  `dev-mbp · ~/code/build · main`. Today's macbook textures lack it, which is why
   `ui05-merged-macbook` is re-captured below.
 - The product term is **workspace** (copy-on-write), never "worktree", in every path and
   label. Paths look like `~/code/build/workspaces/archive-search`.

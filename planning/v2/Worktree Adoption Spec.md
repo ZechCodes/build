@@ -195,7 +195,7 @@ Pinned rule:
 
 Pinned test cases: `("hotfix/login-redirect", _) → "hotfix/login-redirect"`;
 `("wip", "Fix the thing") → "Fix the thing"`; `("wip-2", s) → s`;
-`("zech/test_3", s) → s`; `("feature", s) → s`; `("", "") → "Adopted worktree"`.
+`("ada/test_3", s) → s`; `("feature", s) → s`; `("", "") → "Adopted worktree"`.
 
 ### 1.4 Layer-1 tests (write first)
 
@@ -519,7 +519,7 @@ and adoption is exactly the recovery path for it.
       "worktree_id": "wt-3fa9c04d21ab",
       "project_id": "proj-1",
       "project": "Build",
-      "path": "/Users/zech/Projects/8ly/Build-hotfix",
+      "path": "/Users/ada/Projects/example/Build-hotfix",
       "branch": "hotfix/login",
       "head_sha": "abc123…full sha…",
       "head_subject": "Fix login redirect",
@@ -558,7 +558,7 @@ the SPA view needs one RPC):
   "branch": "hotfix/login",
   "head_subject": "Fix login redirect",
   "dirty_files": 3,
-  "path": "/Users/zech/Projects/8ly/Build-hotfix",
+  "path": "/Users/ada/Projects/example/Build-hotfix",
   "adoptable": true,
   "stat": { "files_changed": 5, "insertions": 120, "deletions": 8 },
   "files": [ { "path": "src/login.rs", "status": "Modified" } ],

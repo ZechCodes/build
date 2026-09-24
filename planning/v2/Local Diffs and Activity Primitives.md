@@ -1,6 +1,6 @@
 # Primitives: local-feel diffs and chat (bridge-git, bridge-thread, spa-diffs, spa-chat)
 
-> **Amendment (2026-09-18, Zech):** `post_thread_message` takes only `status`,
+> **Amendment (2026-09-18):** `post_thread_message` takes only `status`,
 > `body` and `options`. There is no `phase`, `outputs`, `anchor` or `links`:
 > Build knows which phase a report closes from the session that sent it, and a
 > plan's stages are read from `.build/plan/stages.json` on disk when the plan

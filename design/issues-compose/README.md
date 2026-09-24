@@ -1,6 +1,6 @@
 # Filing an issue in place, after #57
 
-Zech: "Issue creation should be inline and support file attachments."
+The maintainer: "Issue creation should be inline and support file attachments."
 
 - `compose-390-dark.png` — the phone. The composer is a sheet at the foot of
   the screen, like the filter menus, with the list it is being filed against

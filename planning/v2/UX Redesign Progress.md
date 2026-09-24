@@ -17,7 +17,7 @@ from here. Companion doc: `UX Redesign Decisions.md` (the binding design).
 
 Marking off = `fields.status = {type: text, value: done}` via Do's
 `update_document_fields` service, run inside the `do-worker` pod
-(namespace `zechcodes`); read access likewise via `kubectl exec` +
+(namespace `<namespace>`); read access likewise via `kubectl exec` +
 asyncpg against the `getdo` schema. The Do MCP is not connected.
 
 ## Stage log (all on branch build/ui-rebuild)
@@ -73,12 +73,12 @@ asyncpg against the `getdo` schema. The Do MCP is not connected.
 - The launchd bridge (ing.getbuild.bridge) still runs the Aug 9 binary and
   its done socket was unlinked on 2026-08-14 (~01:58) — real agents' done
   reports fail against it and the driving session cannot post to its
-  reviewer thread. Fix: `launchctl kickstart -k gui/501/ing.getbuild.bridge`
+  reviewer thread. Fix: `launchctl kickstart -k gui/$(id -u)/ing.getbuild.bridge`
   (binary already installed at ~/.cargo/bin/build-bridge). DO NOT run this
   while a session that matters is live — it kills every session the daemon
   hosts, including the one driving this build. It is the LAST step.
 - Workflow model policy: Opus implements, Sonnet verifies (single task,
   step-by-step), Fable escalates/checkins/E2E. Scripts + full agent results:
-  session dir `9b662e9c…` under ~/.claude/projects/-Users-zech--build-worktrees-proj-2-ui-rebuild/.
+  the driving session's directory under `~/.claude/projects/`.
 - Issue docs snapshot: the session scratchpad (`issue-*.md`); re-pull from Do
   if the scratchpad is gone.

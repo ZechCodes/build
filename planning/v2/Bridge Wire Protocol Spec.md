@@ -802,7 +802,7 @@ and it passes `effort` itself.
 
 **Nothing gates the model id.** A model outside this bridge's catalog is passed
 through with only a shape check, so a model newer than the bridge is usable
-(Zech, 2026-09-20: "Don't gate"). The **harness** is a closed set — Build can
+(2026-09-20: "Don't gate"). The **harness** is a closed set — Build can
 only run what it implements — and an **effort** must be one that harness
 accepts; both are refused by name with the accepted values in the sentence.
 

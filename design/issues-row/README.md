@@ -1,6 +1,6 @@
 # The Issues tab's list row, before and after #45
 
-Zech, 2026-09-20: "The issue list still feels cluttered/messy."
+The maintainer, 2026-09-20: "The issue list still feels cluttered/messy."
 
 `after-*.png` is the row this branch ships; `before-*.png` is the same dozen
 issues on `760877d6`, which is the row #28 and #33 left behind. Two widths —

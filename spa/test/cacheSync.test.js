@@ -840,6 +840,88 @@ describe("a pass that is still out when the next session lands", () => {
     await settle();
   });
 
+  it("starts a restored session's baseline when its old board read never answers", async () => {
+    const release = stallTheBoard();
+    board = [branchItem({ agents: [{ id: "ag-after" }] })];
+    sync.startCacheSync();
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+
+    // The restored greeting belongs to the same session. The old bridge's
+    // board call is still out and may never answer at all.
+    const session = contexts.get("dev-1").session;
+    script = {};
+    const refreshed = sync.syncRestoredDevice("dev-1", session);
+    await refreshed;
+    await settle();
+
+    expect(calls("board.list")).toHaveLength(2);
+    expect((await read("run-1", "row"))?.value?.agents).toEqual([{ id: "ag-after" }]);
+    release();
+    await settle();
+    expect((await read("run-1", "row"))?.value?.agents).toEqual([{ id: "ag-after" }]);
+  });
+
+  it("does not fold a restored issue list behind the old path's unanswered read", async () => {
+    let release;
+    script["issues.list"] = () => new Promise((resolve) => { release = () => resolve({ issues: [{ id: "old" }] }); });
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    expect(calls("issues.list")).toHaveLength(1);
+
+    script = {};
+    await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
+    await settle();
+    expect(calls("issues.list")).toHaveLength(2);
+    expect(registeredWatchers.map((watcher) => watcher.id)).toContain("s-inbox");
+    expect((await read("p1", "tracker-issues"))?.value?.issues).toEqual([]);
+
+    release();
+    await settle();
+    expect(calls("issues.list")).toHaveLength(2);
+    expect((await read("p1", "tracker-issues"))?.value?.issues).toEqual([]);
+  });
+
+  it("does not share a restored diff read with the old path's unanswered request", async () => {
+    let release;
+    script["run.diff"] = () => new Promise((resolve) => { release = () => resolve({ diff_key: "old", patch: "old" }); });
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    expect(calls("run.diff")).toHaveLength(1);
+
+    script = {};
+    await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
+    await settle();
+    expect(calls("run.diff")).toHaveLength(2);
+    expect((await read("run-1", "diff"))?.value?.diff_key).toBe("d1");
+
+    release();
+    await settle();
+    expect((await read("run-1", "diff"))?.value?.diff_key).toBe("d1");
+  });
+
+  it("ignores a late diff read started by a push on the old path", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    let release;
+    script["run.diff"] = () => new Promise((resolve) => { release = () => resolve({ diff_key: "old", patch: "old" }); });
+    const active = registeredWatchers.find((watcher) => watcher.id === "s-active" && !watcher.disposed);
+    active.onChanges([{ entity_id: "run-1", git: { diff: null } }]);
+    await settle();
+    expect(calls("run.diff")).toHaveLength(2); // boot and the old push
+
+    await cache.deleteCached([{ deviceId: "dev-1", entityId: "run-1", kind: "diff" }]);
+    script = {};
+    await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
+    await settle();
+    expect((await read("run-1", "diff"))?.value?.diff_key).toBe("d1");
+
+    release();
+    await settle();
+    expect((await read("run-1", "diff"))?.value?.diff_key).toBe("d1");
+  });
+
   // The greeting settles when the bridge answers, when the session dies, or
   // when a newer session arms its own. A session whose transport is up and
   // whose bridge says nothing settles none of those.

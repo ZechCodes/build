@@ -98,6 +98,7 @@ export const LOCK_WAIT_MS = 4000;
  *  hold this device's turn for the life of the tab. Past the wait the pass
  *  stands down; the greeting landing announces the device, which asks again. */
 export const GREETING_WAIT_MS = 15000;
+const RESTORE_DRAIN_MS = 1000;
 
 // The thresholds this layer is written against live in core/cacheThresholds.js
 // — a module that imports nothing, so the surfaces can read the same bounds
@@ -122,6 +123,7 @@ let stopDeviceWatch = null;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
+const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -132,13 +134,25 @@ const NOTHING = () => {};
  *  `superseded` is how a newer session's pass tells this one to stop, and it
  *  rides `active()` so every step that already asks "is this still worth
  *  doing" asks this too. */
-const syncContext = (context, turn = null) =>
-  context && {
+const requestScopeOf = (context) => {
+  const restored = restoredScopes.get(context.deviceId);
+  if (restored?.session === context.session) return restored.scope;
+  if (restored) restoredScopes.delete(context.deviceId);
+  return context.cacheScope;
+};
+
+const syncContext = (context, turn = null) => {
+  if (!context) return null;
+  const session = context.session;
+  const requestScope = requestScopeOf(context);
+  return {
     deviceId: context.deviceId,
     call: context.rpc,
-    requestScope: context.cacheScope,
-    active: () => context.active() && !turn?.superseded,
+    requestScope,
+    active: () => context.active() && context.session === session
+      && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
+};
 
 const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.deviceId, entityId, kind, sub });
 
@@ -218,6 +232,36 @@ export async function syncDevice(deviceId) {
     if (passes.has(deviceId)) return false; // another ask got in first; it owns this turn
   }
   return startPass(deviceId);
+}
+
+/** A recovered path can re-greet the bridge without replacing its session.
+ * Its earlier pass may have read the old process, so stand it down and give
+ * its writes a bounded chance to drain before reading the recovered bridge.
+ * Ordinary device-state changes are covered by the per-session pass. */
+export async function syncRestoredDevice(deviceId, session) {
+  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  // A carried session has the same caller and cache scope as before its ICE
+  // restart. The bridge behind it may be new, so reads from the old path may
+  // neither answer nor be shared with this path's baseline.
+  restoredScopes.set(deviceId, { session, scope: {} });
+  const previous = passes.get(deviceId);
+  if (previous) {
+    previous.superseded = true;
+    let timeout;
+    try {
+      await Promise.race([
+        previous.done,
+        new Promise((resolve) => { timeout = setTimeout(resolve, RESTORE_DRAIN_MS); }),
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    // A read sent before the restart may never answer. Its captured turn is
+    // already fenced off, so it must not hold the restored bridge's first pass.
+    if (passes.get(deviceId) === previous) passes.delete(deviceId);
+  }
+  if (!holdingLock || sessionOf(deviceId) !== session) return false;
+  return syncDevice(deviceId);
 }
 
 /** The session this device is on right now, which is what a pass belongs to. */
@@ -308,10 +352,14 @@ async function readLists(context) {
 }
 
 async function writeLists(context, view) {
+  if (!context.active()) return;
   await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
+  if (!context.active()) return;
   await writeSessionList(context, "projects", view.projects);
+  if (!context.active()) return;
   await writeSessionList(context, "workspaces", view.workspaces);
   for (const row of view.items || []) {
+    if (!context.active()) return;
     const entityId = entityIdOf(row);
     if (!entityId) continue;
     await writeCached(addressOf(context, entityId, "row"), row);
@@ -429,14 +477,29 @@ async function readIssuesNow(context, projectId) {
 /** One project's list read at a time on a session (#119). A push heard while
  *  it is out is read once after it, under the newest context that asked. */
 const latestIssueReads = new Map();
+const issueReadGenerations = new Map();
+function issueReadGeneration(deviceId) {
+  const session = sessionOf(deviceId);
+  const requestScope = restoredScopes.get(deviceId)?.session === session
+    ? restoredScopes.get(deviceId).scope : null;
+  const held = issueReadGenerations.get(deviceId);
+  if (held?.session === session && held?.requestScope === requestScope) return held;
+  const generation = { session, requestScope };
+  issueReadGenerations.set(deviceId, generation);
+  return generation;
+}
 const issueReads = trailingRead((key) => {
   const { context, projectId } = latestIssueReads.get(key);
   return readIssuesNow(context, projectId);
-}, { generationOf: (key) => sessionOf(latestIssueReads.get(key).context.deviceId) });
+}, { generationOf: (key) => issueReadGeneration(latestIssueReads.get(key).context.deviceId) });
 
 function readIssues(context, projectId) {
   const key = JSON.stringify([context.deviceId, projectId]);
-  latestIssueReads.set(key, { context, projectId });
+  const generation = issueReadGeneration(context.deviceId);
+  latestIssueReads.set(key, {
+    context: { ...context, active: () => context.active() && issueReadGeneration(context.deviceId) === generation },
+    projectId,
+  });
   return issueReads(key);
 }
 
@@ -1339,6 +1402,8 @@ export function stopCacheSync() {
   }
   subscriptions.clear();
   syncedSessions.clear();
+  restoredScopes.clear();
+  issueReadGenerations.clear();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.
   for (const turn of passes.values()) turn.superseded = true;

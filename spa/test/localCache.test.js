@@ -3,7 +3,7 @@
 // (2026-08-31): E2EE protects the wire; the browser profile is trusted.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
 
 const DB_NAME = "build-cache";
 const STORE = "records";
@@ -132,6 +132,178 @@ describe("a write that fails", () => {
     expect(heard).toEqual([]);
     // Degraded to "no cache", silently — never to "what you hold has changed".
     await expect(cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).resolves.toBeUndefined();
+  });
+});
+
+describe("a suspended browser whose IndexedDB connection closes", () => {
+  it("reopens the store and keeps records readable after wake", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    let openedDb;
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      openedDb = this;
+      return originalTransaction.apply(this, args);
+    });
+    try {
+      await cache.writeCached(address, { head: "before-sleep" });
+      expect(openedDb).toBeDefined();
+      forceCloseDatabase(openedDb);
+      expect((await cache.readCached(address))?.value).toEqual({ head: "before-sleep" });
+      await cache.writeCached(address, { head: "after-wake" });
+      expect((await cache.readCached(address))?.value).toEqual({ head: "after-wake" });
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("recovers a closed handle before its close event arrives", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    const handles = [];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      handles.push(this);
+      return originalTransaction.apply(this, args);
+    });
+    try {
+      await cache.writeCached(address, { head: "stored" });
+      handles[0].close(); // close() leaves the retained handle without an onclose event
+      expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+      expect(new Set(handles).size).toBe(2);
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("lets concurrent reads recover from the same closed handle", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    const handles = [];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      handles.push(this);
+      return originalTransaction.apply(this, args);
+    });
+    try {
+      await cache.writeCached(address, { head: "stored" });
+      handles[0].close();
+      const records = await Promise.all([cache.readCached(address), cache.readCached(address)]);
+      expect(records.map((record) => record?.value)).toEqual([{ head: "stored" }, { head: "stored" }]);
+      expect(new Set(handles).size).toBe(2);
+      await cache.writeCached(address, { head: "later" });
+      expect((await cache.readCached(address))?.value).toEqual({ head: "later" });
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("retries an aborted write and announces only its committed result", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { head: "before" });
+    const heard = [];
+    cache.subscribeCache(address, (changed) => heard.push(changed));
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let aborted = false;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      const opened = originalTransaction.apply(this, args);
+      if (args[1] === "readwrite" && !aborted) {
+        aborted = true;
+        queueMicrotask(() => opened.abort());
+      }
+      return opened;
+    });
+    try {
+      await cache.writeCached(address, { head: "after" });
+      expect(aborted).toBe(true);
+      expect((await cache.readCached(address))?.value).toEqual({ head: "after" });
+      expect(heard).toHaveLength(1);
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("ignores a delayed close event from an older handle", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    const handles = [];
+    const transactions = [];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      handles.push(this);
+      const opened = originalTransaction.apply(this, args);
+      transactions.push(opened);
+      return opened;
+    });
+    try {
+      await cache.writeCached(address, { head: "before" });
+      const oldHandle = handles[0];
+      oldHandle.close();
+      await cache.readCached(address); // reopen through the closed-handle retry
+      const currentHandle = handles.at(-1);
+      oldHandle.onclose(new Event("close"));
+      transactions.find((opened) => typeof opened.onabort === "function").onabort(new Event("abort"));
+      await cache.writeCached(address, { head: "after" });
+      expect(handles.at(-1)).toBe(currentHandle);
+      expect((await cache.readCached(address))?.value).toEqual({ head: "after" });
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("retries a transient WebKit connection-loss error", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { head: "stored" });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let failed = false;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("Connection to Indexed Database server lost", "UnknownError");
+      }
+      return originalTransaction.apply(this, args);
+    });
+    try {
+      expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+      expect(transaction).toHaveBeenCalledTimes(2);
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
+  it("retries a transient connection error while opening the database", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    const originalOpen = indexedDB.open.bind(indexedDB);
+    let failed = false;
+    const open = vi.spyOn(indexedDB, "open").mockImplementation((...args) => {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("Connection to Indexed Database server lost", "UnknownError");
+      }
+      return originalOpen(...args);
+    });
+    try {
+      await cache.writeCached(address, { head: "stored" });
+      expect(open).toHaveBeenCalledTimes(2);
+      expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it("stands down after a bounded number of persistent connection failures", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.readCached(address); // let fake-indexeddb create its upgrade transaction
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+      throw new DOMException("connection closed", "InvalidStateError");
+    });
+    try {
+      expect(await cache.readCached(address)).toBeUndefined();
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(await cache.readCached(address)).toBeUndefined();
+      expect(transaction).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      transaction.mockRestore();
+      warn.mockRestore();
+    }
   });
 });
 

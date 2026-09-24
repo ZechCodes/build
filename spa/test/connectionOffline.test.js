@@ -16,6 +16,7 @@ const terminals = vi.hoisted(() => ({ followTerminalDevice: vi.fn(), terminalDev
 const wire = vi.hoisted(() => ({ openSession: vi.fn(), openPeerLink: vi.fn() }));
 
 let devices = [];
+let boardRows = new Map();
 
 vi.mock("../src/core/rendezvous.js", () => ({
   createRelayRendezvous: (options) => makeRendezvous(options),
@@ -77,6 +78,7 @@ const { initDevicePicker, paintDevicePicker, stopWatchingPresence } = await impo
 const { clearMemoryCacheRecords, DEVICES_ADDRESS, writeCached } = await import("./memoryCache.js");
 const { startFeed, stopFeed, subscribeFeed } = await import("../src/core/taskFeed.js");
 const { startCacheSync, stopCacheSync, syncDevice } = await import("../src/core/cacheSync.js");
+const { dispatchChangeEvent } = await import("../src/core/changeEvents.js");
 const { allDevicesOfflineText, deviceUnreachableText, devicesBlockedText } = await import("../src/core/text.js");
 const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
@@ -206,7 +208,9 @@ function fakeSession(deviceId, onLost = () => {}) {
     sessionId: `session-${deviceId}`,
     call: vi.fn(async (method) => {
       if (method === "session.hello" && greetings.has(deviceId)) return greetings.get(deviceId)();
-      if (method === "board.list") return { items: [{ id: `${deviceId}-row`, project_id: "proj-1", title: "Work" }] };
+      if (method === "board.list") return { items: [boardRows.get(deviceId) || {
+        id: `${deviceId}-row`, project_id: "proj-1", title: "Work",
+      }] };
       if (method === "project.list") return { projects: [{ project_id: "proj-1", name: `${deviceId} repo` }] };
       // The rail lists workspaces, so a machine with none paints no rows at
       // all: each one keeps a checkout of the project both machines name.
@@ -271,6 +275,7 @@ beforeEach(async () => {
   impostors = new Set();
   slowMs = new Map();
   greetings.clear();
+  boardRows = new Map();
   handedOut.clear();
   rendezvousFor.clear();
   linksFor.clear();
@@ -410,18 +415,70 @@ describe("per-device connections", () => {
   // (The greeting is what replays the subscriptions and refetches every
   // surface: core/changeEvents.js greetBridge, tested there.)
   it("greets the machine again when its failed path is restored", async () => {
+    greetings.set("dev-a", async () => ({
+      api_version: "1.22.0",
+      push_events: true,
+      capabilities: ["changes.subscriptions", "issues.attachments"],
+      changes: { kinds: ["state", "thread"] },
+    }));
+    const row = (agentId) => ({
+      kind: "branch", run_id: "dev-a-row", project_id: "proj-1", branch: "build/demo",
+      worktree_id: "dev-a-worktree", state: "building", agents: [{ id: agentId }],
+    });
+    boardRows.set("dev-a", row("agent-before"));
     await connectEveryDevice();
+    await paintFeed();
     const session = lastSession("dev-a");
     const hellos = () => session.call.mock.calls.filter(([method]) => method === "session.hello").length;
     const greeted = hellos();
+    const boardBefore = boardReads("dev-a");
     expect(greeted).toBeGreaterThan(0);
+    expect(boardBefore).toBeGreaterThan(0);
+    expect(contextFor("dev-a").adapter.capabilities.changes.subscriptions).toBe(true);
+    expect(feed.items.find((item) => item.deviceId === "dev-a")?.agents).toEqual([{ id: "agent-before" }]);
 
+    boardRows.set("dev-a", row("agent-after"));
     linksFor.get("dev-a").restore();
     await flush();
 
     await vi.waitFor(() => expect(hellos()).toBeGreaterThan(greeted));
     expect(lastSession("dev-a")).toBe(session); // the same session, greeted again
     expect(contextFor("dev-a").offline).toBe(false);
+    expect(contextFor("dev-a").adapter.capabilities.changes.subscriptions).toBe(true);
+    expect(boardReads("dev-a")).toBeGreaterThan(boardBefore); // the bridge may have missed changes while the path was down
+    await vi.waitFor(() => expect(feed.items.find((item) => item.deviceId === "dev-a")?.agents)
+      .toEqual([{ id: "agent-after" }]));
+
+    const boardAfter = boardReads("dev-a");
+    expect(dispatchChangeEvent({
+      type: "changes", subscription_id: "s-inbox",
+      items: [{ entity_id: "dev-a-row", state: row("agent-pushed") }],
+    }, "dev-a")).toBe(true);
+    await vi.waitFor(() => expect(feed.items.find((item) => item.deviceId === "dev-a")?.agents)
+      .toEqual([{ id: "agent-pushed" }]));
+    expect(boardReads("dev-a")).toBe(boardAfter); // the pushed body writes the cache without another list read
+  });
+
+  it("ignores a restored-path callback from a replaced session", async () => {
+    await connectEveryDevice();
+    await paintFeed();
+    const oldSession = lastSession("dev-a");
+    const oldLink = linksFor.get("dev-a");
+
+    goOffline("dev-a");
+    await connectDevice("dev-a");
+    await flush();
+    const currentSession = lastSession("dev-a");
+    expect(currentSession).not.toBe(oldSession);
+    const boardBefore = boardReads("dev-a");
+    const oldHelloBefore = oldSession.call.mock.calls.filter(([method]) => method === "session.hello").length;
+
+    oldLink.restore();
+    await flush();
+
+    expect(lastSession("dev-a")).toBe(currentSession);
+    expect(boardReads("dev-a")).toBe(boardBefore);
+    expect(oldSession.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(oldHelloBefore);
   });
 
   // The link only knows a restart landed on a dead process if it can ask the

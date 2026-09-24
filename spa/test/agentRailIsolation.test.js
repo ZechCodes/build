@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -35,7 +35,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { resetApplication } = await import("../src/app.js");
-const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession, canAnswer, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -171,6 +171,47 @@ afterEach(() => {
 });
 
 describe("agent rail chat ownership", () => {
+  it("keeps a named cached conversation mounted through offline and a closed database, then paints later cache writes", async () => {
+    payload.run.thread.items = [
+      { type: "message", data: { sequence: 1, role: "agent", body: "Cached first reply" } },
+    ];
+    let openedDb;
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      openedDb = this;
+      return originalTransaction.apply(this, args);
+    });
+    try {
+      await mountBranch();
+      expect(host().querySelector(".rail-who").title).toBe("Fix login redirect");
+      expect(host().textContent).toContain("Cached first reply");
+      expect(openedDb).toBeDefined();
+
+      setContextOffline(DEVICE_ID, { offline: true });
+      forceCloseDatabase(openedDb);
+      await flush();
+      expect(canAnswer(device())).toBe(false);
+      expect(host().querySelector(".rail-who").title).toBe("Fix login redirect");
+      expect(host().textContent).toContain("Cached first reply");
+
+      setContextOffline(DEVICE_ID, { offline: false });
+      expect(canAnswer(device())).toBe(true);
+      payload.agents[0].topic = "Fixed login redirect";
+      payload.run.thread.items.push(
+        { type: "message", data: { sequence: 2, role: "agent", body: "Refilled after reconnect" } },
+      );
+      await writeRailWorkItem(payload, { deviceId: DEVICE_ID });
+      await flush();
+
+      await vi.waitFor(() => {
+        expect(host().querySelector(".rail-who").title).toBe("Fixed login redirect");
+        expect(host().textContent).toContain("Refilled after reconnect");
+      });
+    } finally {
+      transaction.mockRestore();
+    }
+  });
+
   it("keeps a late rejection with its original agent and leaves the selected draft and focus alone", async () => {
     let rejectPost;
     let postCount = 0;

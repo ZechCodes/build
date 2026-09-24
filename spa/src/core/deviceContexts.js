@@ -85,6 +85,7 @@ function createDeviceContext(deviceId) {
     apiVersion: null, // the `api_version` it greeted with
     unsupported: null, // "app" | "bridge" when no adapter here speaks to it
     greeted: null, // this session's greeting, once one is in flight (connection.js)
+    accountSaysAway: false, // the account's last presence read listed it offline (devices.js)
     /** Still the registry's context for this device, and still able to address
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
@@ -220,6 +221,24 @@ export const canAnswer = (context) =>
  */
 export const awaitingFirstAnswer = (context) =>
   Boolean(context) && !context.session && !context.offlineSince && !context.unsupported;
+
+/**
+ * What the account's last presence read said of this machine: listed online,
+ * or not.
+ *
+ * Kept apart from the machine's own lifecycle on purpose. The account calling
+ * a machine offline is not this client trying it: one a page stood up over its
+ * records before it answered is still a machine nothing here has asked, and
+ * the stale-listing guess (connection.js) still dials it. What reads this is
+ * the strip over such a page (core/deviceNotice.js), which has to say the
+ * machine is not connected once the account has said so.
+ */
+export function noteAccountPresence(context, listedOnline) {
+  const away = !listedOnline;
+  if (!context || context.accountSaysAway === away) return;
+  context.accountSaysAway = away;
+  announceDeviceState();
+}
 
 /** This machine's context once this client has opened it — tried it, at
  *  least — or null. One a page stood up over its records before it answered

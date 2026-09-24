@@ -68,7 +68,9 @@ it("says the machine is not connected once the account says it is offline", asyn
   const standIn = await standOnRecords();
   await accountSays("offline");
 
-  expect(contexts.awaitingFirstAnswer(standIn)).toBe(false);
   expect(strip()).not.toBeNull();
+  // …without counting the machine as tried: nothing here has dialled it, and
+  // the stale-listing guess still may (connectionOffline.test.js).
+  expect(contexts.awaitingFirstAnswer(standIn)).toBe(true);
   expect(host.textContent).toContain("cached content");
 });

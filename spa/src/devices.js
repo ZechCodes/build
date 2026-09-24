@@ -11,7 +11,7 @@
 
 import { $ } from "./dom.js";
 import { esc, nothingAnswersMark } from "./core/text.js";
-import { canAnswer, knownContexts, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
+import { canAnswer, knownContexts, noteAccountPresence, onDeviceStateChanged, openedContext } from "./core/deviceContexts.js";
 import { deviceAwayWord } from "./core/deviceAway.js";
 import { ICON_CHEVRON_DOWN, ICON_HOURGLASS, ICON_SETTINGS, ICON_WIFI_OFF } from "./core/icons.js";
 import { onUsageLimitsChanged, readCachedUsageLimits, untilAnyTextChanges, usageLimitText, usageLimitsOf } from "./core/usageLimits.js";
@@ -195,7 +195,9 @@ export async function readPresence() {
  *  online: its bridge stopped saying it was there. */
 function markWhatTheAccountNoLongerLists() {
   for (const context of knownContexts()) {
-    if (deviceFor(context.deviceId)?.status !== "online") deviceWentAway(context.deviceId);
+    const listedOnline = deviceFor(context.deviceId)?.status === "online";
+    noteAccountPresence(context, listedOnline);
+    if (!listedOnline) deviceWentAway(context.deviceId);
   }
 }
 

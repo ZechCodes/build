@@ -102,9 +102,10 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
 
 /** Nothing to name: the machine answers, is being dialled, or has not been
  *  tried yet at all — a cold reload paints from the records before the account
- *  has even said which machines are up, and that is connecting, not gone. */
+ *  has even said which machines are up, and that is connecting, not gone. Once
+ *  the account has said it is offline, that is gone, tried or not. */
 const unnamed = (context) =>
-  canAnswer(context) || recovering(context.deviceId) || awaitingFirstAnswer(context);
+  canAnswer(context) || recovering(context.deviceId) || (awaitingFirstAnswer(context) && !context.accountSaysAway);
 
 /** One strip or none: the host carries at most one, whatever the account says
  *  and however often it says it. */

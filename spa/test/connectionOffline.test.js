@@ -1692,3 +1692,42 @@ describe("per-device connections", () => {
     await replacement;
   });
 });
+
+// A page can stand on a machine's records before that machine has answered in
+// this tab (core/surfaceContext.js). The account saying that machine is offline
+// is news the strip over the page has to tell (core/deviceNotice.js), but it is
+// not a dial: the machine is still one nothing here has asked, and a listing
+// that may simply not have caught up is still worth the one guess.
+describe("a machine a page stands on, which the account calls offline", () => {
+  const recentlyAway = (id, name) => ({ ...away(id, name), last_seen_at: new Date(Date.now() - 120000).toISOString() });
+  const readPresence = async () => {
+    const devicesModule = await import("../src/devices.js");
+    await devicesModule.readPresence();
+    for (let turn = 0; turn < 12; turn += 1) await flush();
+  };
+
+  it("is still guessed at once, as a machine nothing here has asked", async () => {
+    devices = [recentlyAway("dev-a", "Laptop")];
+    App.devices = devices;
+    knownDeviceContext("dev-a");
+
+    await readPresence();
+
+    expect(openedFor("dev-a")).toHaveLength(1);
+    expect(liveIds()).toEqual(["dev-a"]);
+  });
+
+  it("is guessed at when the last machine answering leaves", async () => {
+    devices = [online("dev-a", "Laptop"), recentlyAway("dev-b", "Desktop")];
+    App.devices = devices;
+    await connectEveryDevice();
+    expect(liveIds()).toEqual(["dev-a"]);
+    knownDeviceContext("dev-b");
+
+    devices = [recentlyAway("dev-a", "Laptop"), recentlyAway("dev-b", "Desktop")];
+    await readPresence();
+
+    expect(openedFor("dev-b")).toHaveLength(1);
+    expect(liveIds()).toEqual(["dev-b"]);
+  });
+});

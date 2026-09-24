@@ -137,6 +137,15 @@ describe("the slice a conversation is drawn from", () => {
     expect(drawnKeys(paint(items, slice))[0]).toBe("7");
   });
 
+  it("reaches a sequence folded under a call as the call's own row", () => {
+    const slice = createTimelineSlice();
+    const items = [call(1), { type: "event", data: { sequence: 2, parent_sequence: 1, event: "tool_use", summary: "Read 2.js" } }, ...messages(100, 3)];
+    paint(items, slice);
+
+    slice.reachDown(2);
+    expect(drawnKeys(paint(items, slice))[0]).toBe("1");
+  });
+
   it("draws everything for a caller that asks for no slice", () => {
     const built = timelineEntries(messages(200), "Claude Code", "th-1", []);
 

@@ -1577,7 +1577,19 @@ function threadFolding(items, agentLabel) {
     standingFor(item, new Set())
       .filter((held) => (held.data || {}).event === TOOL_CALL_KIND)
       .map(callOf);
-  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder };
+  const parentBySequence = new Map(foldingChildren.map((item) => [Number(sequenceOf(item)), Number(parentSequenceOf(item))]));
+  /// The sequence of the row a sequence is drawn under: its own, unless it is
+  /// folded under a call, and then that call's row, at whatever depth.
+  const ownerSequenceOf = (sequence) => {
+    const walked = new Set();
+    let at = sequence;
+    while (parentBySequence.has(at) && !walked.has(at)) {
+      walked.add(at);
+      at = parentBySequence.get(at);
+    }
+    return at;
+  };
+  return { foldedItems, foldedChildrenHtmlOf, rowsUnder, toolCallsUnder, ownerSequenceOf };
 }
 
 export function revealThreadSequence(scroller, sequence) {
@@ -1794,7 +1806,7 @@ export function timelineEntries(
   const { spans, rows } = entrySpansOf(timeline.topLevelItems);
   // The slice is cut before anything is drawn, so the rows above it cost
   // nothing: no markup, and no reading of what each one says (#158).
-  const sliced = slicedSpans(spans, slice, unreadFrom);
+  const sliced = slicedSpans(spans, slice, unreadFrom, timeline.folding);
   const entries = foldActivityRuns(rowsOfTimeline(timeline, firstItemOf(sliced), threadId, view), digests, view);
   return {
     entries: [...earlierRow(slice, sliced, olderOnBridge), ...withUnreadLine(entries, unreadFrom, sourceItems)],
@@ -1809,9 +1821,13 @@ export function timelineEntries(
 
 /// The entries of a timeline a paint draws: every one, unless a slice was
 /// asked for, and then down to the unread line wherever the slice would stop.
-function slicedSpans(spans, slice, unreadFrom) {
+///
+/// A sequence reached for may be folded under a call (a subagent's row), and
+/// the slice reaches the call's row, which is the entry that draws it.
+function slicedSpans(spans, slice, unreadFrom, folding) {
   if (!slice) return { entries: spans, hidden: 0, floor: null };
-  return sliceTimeline(spans, { ...slice, reach: minFinite(slice.reach, unreadFrom) });
+  const reach = Number.isFinite(slice.reach) ? folding.ownerSequenceOf(slice.reach) : slice.reach;
+  return sliceTimeline(spans, { ...slice, reach: minFinite(reach, unreadFrom) });
 }
 
 /// Where in the timeline's items the drawn entries start.

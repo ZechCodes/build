@@ -5834,4 +5834,28 @@ describe("a deep link past everything the cache holds", () => {
     expect(railHost().querySelectorAll(".thread-items > [data-sequence]")).toHaveLength(drawn);
     expect(notifyError).toHaveBeenCalledWith("That call is not in the loaded conversation", expect.any(String));
   });
+
+  // Astra's reproduction from the #158 review: the call a subagent's row points
+  // at is folded under the call that spawned it, and that call's run sits above
+  // the slice. The slice reaches the run, which is the entry that draws it.
+  it("reaches a call folded under a run above the slice, and opens the run on it", async () => {
+    const items = [
+      { type: "event", data: { sequence: 1, event: "tool_use", summary: "Task(parent)" } },
+      { type: "event", data: { sequence: 2, parent_sequence: 1, event: "tool_use", summary: "Read child.js" } },
+      ...Array.from({ length: 100 }, (_, index) => said(index + 3)),
+    ];
+    payload = branchRow({
+      agents: [agent({ surfaces: { subagents: [{ id: "s1", label: "child call", state: "running", call_sequence: 2 }] } })],
+      run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 102, thread_last_sequence: 102 } },
+    });
+    await mount();
+    expect(railHost().querySelector('.thread-items [data-sequence="1"]')).toBeNull();
+
+    await openSurfacePill("subagents");
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
+    await flush();
+
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(railHost().querySelector('.thread-items [data-sequence="2"]')).not.toBeNull();
+  });
 });

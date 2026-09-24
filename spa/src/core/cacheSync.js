@@ -24,11 +24,22 @@
 // and the reader's own workspace never waits behind eleven others. Only the
 // routed workspace's reads are foreground; everything else rides behind
 // whatever a surface is waiting on.
+//
+// # Subscribed before it reads
+//
+// The bridge starts a subscription empty and records a change only for the
+// subscriptions it holds when the change happens. So a pass takes its
+// subscriptions out, and waits for the bridge to hold them, before it asks
+// for anything: whatever changed before a read is in the read, and whatever
+// changes after it is pushed (#142). A push can then overtake the read it
+// followed, so a read never writes over a record a push wrote after it was
+// asked (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { watchChanges } from "./changeEvents.js";
+import { subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
+import { forgetPushes, notePush, pushFence, pushedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -170,6 +181,17 @@ async function ask(context, method, params, priority) {
   }
 }
 
+/** A whole shape read off the wire, written where it belongs unless a push
+ *  wrote that record after the read was asked: the push is the newer word
+ *  (core/pushFence.js). Answers what was read, written or not. */
+async function readWhole(context, address, request, shape = (answer) => answer) {
+  const fence = pushFence();
+  const answer = await ask(context, request.method, request.params, request.priority);
+  if (!answer || answer.unchanged || !context.active()) return answer;
+  if (!pushedSince(address, fence)) await writeCached(address, shape(answer));
+  return answer;
+}
+
 /** The git scope a feed row's checkout answers under — the same derivation the
  *  branch surface makes, minus the project's own directory: a row that names
  *  neither a run nor a worktree holds no checkout, so it never reaches here. */
@@ -203,16 +225,16 @@ function dirsOf(paths) {
 // ─── The ordered sync ────────────────────────────────────────────────────────
 
 /**
- * One device's whole pass: lists, then every workspace worth reading in the
- * order the reader will want them, then the lifetime rules, then the three
- * subscriptions.
+ * One device's whole pass: the three subscriptions, then the lists, then every
+ * workspace worth reading in the order the reader will want them, then the
+ * lifetime rules.
  *
  * Re-entrant by device and no more: a tab that comes back while a pass is
  * running does not start a second one, and another device's pass is another
  * device's business.
  *
- * Answers whether the pass got all the way to the subscriptions — what the
- * caller needs to know to decide whether this session has been read at all.
+ * Answers whether the pass got all the way through — what the caller needs to
+ * know to decide whether this session has been read at all.
  */
 export async function syncDevice(deviceId) {
   if (!holdingLock) return false;
@@ -288,16 +310,21 @@ function startPass(deviceId) {
 async function orderedSync(deviceId, turn) {
   const context = await greetedContext(deviceId, turn);
   if (!context) return false;
+  await subscribeDevice(context);
+  if (!context.active()) return false;
   const passStartedAt = Date.now();
-  const view = await readLists(context);
+  const fence = pushFence();
+  const view = await readLists(context, fence);
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
-  await readWorkspaces(context, pass);
+  await readWorkspaces(context, pass, fence);
   await readProjectIssues(context, view);
-  await evictRowsThatAreOver(context, view);
-  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt);
+  await evictRowsThatAreOver(context, view, fence);
+  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
-  await subscribeDevice(context);
+  // The reader may have walked off while the pass read, and on a cold cache
+  // the workspace they stand in had no row to resolve until the lists landed.
+  await refollowRoute(deviceId);
   return true;
 }
 
@@ -328,9 +355,13 @@ function settledWithin(promise, waitMs) {
   ]).finally(() => clearTimeout(timer));
 }
 
-async function readWorkspaces(context, pass) {
+/** Every workspace in the pass's order — less any a push has taken off the
+ *  board since the lists were read, which would only be read back into
+ *  records nothing names. */
+async function readWorkspaces(context, pass, fence) {
   for (const entityId of pass.order) {
     if (!context.active()) return;
+    if (pushedSince(addressOf(context, entityId, "row"), fence)?.removed) continue;
     await syncWorkspace(context, entityId, pass.rows.get(entityId), entityId === pass.routed);
   }
 }
@@ -338,7 +369,7 @@ async function readWorkspaces(context, pass) {
 /** Step 1: the three lists, written as they land so the inbox paints before
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
-async function readLists(context) {
+async function readLists(context, fence) {
   const [board, projects, workspaces] = await Promise.all([
     ask(context, "board.list", {}, "background"),
     ask(context, "project.list", {}, "background"),
@@ -347,24 +378,44 @@ async function readLists(context) {
   if (!board || !projects || !context.active()) return null;
   await writeUsageLimits(context.deviceId, board.usage_limits);
   const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
-  await writeLists(context, view);
+  await writeLists(context, view, fence);
   return view;
 }
 
-async function writeLists(context, view) {
+async function writeLists(context, view, fence) {
   if (!context.active()) return;
-  await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
-  if (!context.active()) return;
-  await writeSessionList(context, "projects", view.projects);
-  if (!context.active()) return;
-  await writeSessionList(context, "workspaces", view.workspaces);
+  await writeCached(addressOf(context, "", "feed"), withoutPushedRemovals(context, view, fence), { observedFeedRows: true });
+  for (const kind of ["projects", "workspaces"]) {
+    if (!context.active()) return;
+    if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind]);
+  }
   for (const row of view.items || []) {
     if (!context.active()) return;
-    const entityId = entityIdOf(row);
-    if (!entityId) continue;
-    await writeCached(addressOf(context, entityId, "row"), row);
-    await writeSurfaces(context, entityId, row.agents);
+    await writeListedRow(context, row, fence);
   }
+}
+
+/** One row as the board listed it — unless a push has written or removed it
+ *  since the board was asked, which is the newer word. */
+async function writeListedRow(context, row, fence) {
+  const entityId = entityIdOf(row);
+  if (!entityId || pushedSince(addressOf(context, entityId, "row"), fence)) return;
+  await writeCached(addressOf(context, entityId, "row"), row);
+  await writeSurfaces(context, entityId, row.agents);
+}
+
+/** The snapshot without the entities a push said left after it was asked for:
+ *  written back, the board's older word would put their rows on the rail
+ *  again. */
+function withoutPushedRemovals(context, view, fence) {
+  const gone = new Set();
+  for (const field of BOARD_COLLECTIONS) {
+    for (const row of view[field] || []) {
+      const entityId = entityIdOf(row);
+      if (entityId && pushedSince(addressOf(context, entityId, "row"), fence)?.removed) gone.add(entityId);
+    }
+  }
+  return gone.size ? withoutEntities(view, gone) : view;
 }
 
 /**
@@ -553,37 +604,47 @@ async function recentStillHoldingData(context, items, seen) {
  *  The push that said so evicts it as it lands — but a tab that was not open
  *  to hear it boots to a board that already says the row is over, and the rule
  *  has to hold there too. */
-async function evictRowsThatAreOver(context, view) {
+async function evictRowsThatAreOver(context, view, fence) {
   for (const row of view.items || []) {
     if (!context.active()) return;
     const entityId = entityIdOf(row);
-    if (entityId && isFinishedState(row.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
+    if (!entityId || !isFinishedState(row.state)) continue;
+    // A push since the board was read is the row's newer word, and its own
+    // applier evicted the data if that word was "over".
+    if (pushedSince(addressOf(context, entityId, "row"), fence)) continue;
+    await evictWorkspaceData(context.deviceId, entityId, context.active);
   }
 }
 
 /** Step 4, the other half: an entity the board has stopped naming altogether
  *  is gone — the row is the board's to list and the board's to remove, so the
  *  row goes with the data. Another device's records are another device's
- *  business. */
-async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt) {
+ *  business, and an entity a push named after the board was read is one the
+ *  board had not heard of yet. */
+async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence) {
   const named = entitiesTheBoardNames(view);
   const visible = new Set((view.items || []).map(entityIdOf));
   const hiddenRuns = new Set((view.runs || []).map(entityIdOf).filter((id) => id && !visible.has(id)));
+  const pushedRow = (entityId) => pushedSince(addressOf(context, entityId, "row"), fence);
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!named.has(cachedId)) {
-      await dropUnnamedEntity(context, cachedId);
+      if (!pushedRow(cachedId)) await dropUnnamedEntity(context, cachedId);
     } else if (hiddenRuns.has(cachedId)) {
-      // Keep the live conversation's records, but remove an older inbox row:
-      // `taskFeed` appends standalone row records to the board's `items`, and
-      // an unwatched run is deliberately absent from that list. A state push
-      // after this pass began owns a newer row and must not be erased.
-      const address = addressOf(context, cachedId, "row");
-      const row = await readCached(address);
-      if (!context.active()) return;
-      if (row && row.at < passStartedAt) await deleteCached([address]);
+      await dropOlderHiddenRow(context, cachedId, passStartedAt);
     }
   }
+}
+
+/** Keep the live conversation's records, but remove an older inbox row:
+ *  `taskFeed` appends standalone row records to the board's `items`, and an
+ *  unwatched run is deliberately absent from that list. A state push after
+ *  this pass began owns a newer row and must not be erased. */
+async function dropOlderHiddenRow(context, entityId, passStartedAt) {
+  const address = addressOf(context, entityId, "row");
+  const row = await readCached(address);
+  if (!context.active()) return;
+  if (row && row.at < passStartedAt) await deleteCached([address]);
 }
 
 const entitiesTheBoardNames = (view) => {
@@ -656,9 +717,7 @@ async function syncWorkspace(context, entityId, row, routed) {
 async function syncStatus(context, entityId, scope, priority) {
   const held = await heldValue(context, entityId, "status");
   const params = held?.status_key ? { ...scope, if_status_key: held.status_key } : scope;
-  const answer = await ask(context, "git.status", params, priority);
-  if (!answer || answer.unchanged || !context.active()) return;
-  await writeCached(addressOf(context, entityId, "status"), answer);
+  await readWhole(context, addressOf(context, entityId, "status"), { method: "git.status", params, priority });
 }
 
 /** The top-level listing always — the Files tab's first paint — plus whichever
@@ -672,11 +731,11 @@ async function syncTrees(context, entityId, scope, priority) {
 async function listTrees(context, entityId, scope, paths, priority) {
   for (const path of paths) {
     if (!context.active()) return;
-    const listing = await ask(context, "fs.tree", { ...scope, path }, priority);
-    if (!listing || !context.active()) continue;
-    await writeCached(
+    await readWhole(
+      context,
       addressOf(context, entityId, "tree", path),
-      { path: listing.path || "", entries: listing.entries || [] },
+      { method: "fs.tree", params: { ...scope, path }, priority },
+      (listing) => ({ path: listing.path || "", entries: listing.entries || [] }),
     );
   }
 }
@@ -684,9 +743,12 @@ async function listTrees(context, entityId, scope, paths, priority) {
 async function syncTerminals(context, entityId, row, priority) {
   const scope = terminalScopeOf(row);
   if (!scope) return;
-  const answer = await ask(context, "term.list", scope, priority);
-  if (!answer || !context.active()) return;
-  await writeCached(addressOf(context, entityId, "terminals"), { tabs: answer.terminals || [] });
+  await readWhole(
+    context,
+    addressOf(context, entityId, "terminals"),
+    { method: "term.list", params: scope, priority },
+    (answer) => ({ tabs: answer.terminals || [] }),
+  );
 }
 
 /** The two commit lists, answered whole. The commit record is handed back: the
@@ -802,10 +864,12 @@ async function syncUnpushed(context, entityId, scope, priority) {
   // deletes it on arrival — and asking for it anyway put most of a megabyte on
   // the wire for every cold pass. A reader opening the review asks for the
   // body itself, from the pane, uncapped.
-  const answer = await ask(context, "git.unpushed", { ...scope, patch: false }, priority);
-  if (!answer || !context.active()) return null;
-  await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(answer));
-  return answer;
+  return readWhole(
+    context,
+    addressOf(context, entityId, "unpushed"),
+    { method: "git.unpushed", params: { ...scope, patch: false }, priority },
+    unpushedRecord,
+  );
 }
 
 /** The patches behind the unpushed commits: the first twenty, and only the
@@ -939,7 +1003,7 @@ async function syncThread(context, entityId, agent, priority) {
   });
 }
 
-// ─── Step 5: the three subscriptions ─────────────────────────────────────────
+// ─── Step 0: the three subscriptions ─────────────────────────────────────────
 //
 // `s-inbox` carries every workspace's state and conversation in realtime —
 // that is the inbox, and it is what the reader is looking at whatever page
@@ -956,12 +1020,13 @@ const subscriptionShape = (deviceId) => ({
   onChanges: (items) => void applyChanges(items, deviceId),
 });
 
-/** The three watchers, and the one that follows the reader.
+/** The three watchers, and the one that follows the reader — taken out before
+ *  the pass reads, and answered once the bridge holds them.
  *
- *  The routed workspace is resolved here rather than carried from the top of
- *  the pass: a pass is six or eight reads per workspace long and the reader
- *  walks off mid-way through it. Standing the active subscription up on where
- *  they were when it started would leave the workspace on screen with no
+ *  The routed workspace is resolved again at the end of the pass rather than
+ *  carried from here: a pass is six or eight reads per workspace long and the
+ *  reader walks off mid-way through it. Standing the active subscription up on
+ *  where they were when it started would leave the workspace on screen with no
  *  realtime watcher at all. */
 async function subscribeDevice(context) {
   const deviceId = context.deviceId;
@@ -989,6 +1054,9 @@ async function subscribeDevice(context) {
     });
   }
   await refollowRoute(deviceId);
+  // Held on the bridge before the pass reads a thing (#142). Bounded like the
+  // greeting: a bridge that never answers a subscribe still gets its pass.
+  await settledWithin(subscriptionsSettledFor(deviceId), GREETING_WAIT_MS);
 }
 
 /** The active subscription follows the reader: the workspace they are standing
@@ -1017,9 +1085,9 @@ function followRoutedEntity(deviceId, entityId) {
  *  (app.js `standOn`), so a move within a surface counts the same as a
  *  navigation: both can change which workspace is on screen.
  *
- *  A device whose pass has not reached its subscriptions yet is not here to be
- *  told, and does not need to be: that pass resolves the route for itself when
- *  it gets there. */
+ *  A device whose pass has not taken its subscriptions out yet is not here to
+ *  be told, and does not need to be: that pass resolves the route for itself
+ *  when it does, and again when it ends. */
 export function routeChanged() {
   if (!holdingLock) return;
   for (const deviceId of [...subscriptions.keys()]) void refollowRoute(deviceId);
@@ -1044,6 +1112,13 @@ const validSession = (record) => Number.isSafeInteger(record?.session_started_ms
 
 async function writeSessionList(context, kind, incoming) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming);
+}
+
+/** A record as a push carries it, marked so a read that was already out when
+ *  it landed does not write its older answer over it. */
+function writePushed(address, value) {
+  notePush(address);
+  return writeCached(address, value);
 }
 
 async function applyChanges(items, deviceId) {
@@ -1080,6 +1155,7 @@ async function applyBoard(context, state) {
   if (removed.length) await dropRemovedRows(context, removed);
   if (!context.active()) return;
   if (state.projects) {
+    notePush(addressOf(context, "", "projects"));
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
   if (!context.active()) return;
@@ -1090,6 +1166,7 @@ async function applyBoard(context, state) {
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
+    notePush(addressOf(context, "", "workspaces"));
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
   }
@@ -1116,6 +1193,7 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
  * own removal.
  */
 async function dropRemovedRows(context, removed) {
+  for (const entityId of removed) notePush(addressOf(context, entityId, "row"), { removed: true });
   const gone = new Set(removed);
   const record = await readCached(addressOf(context, "", "feed"));
   if (!context.active()) return;
@@ -1149,7 +1227,7 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state) {
   if (!isFeedRow(state)) return;
-  await writeCached(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
+  await writePushed(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
   if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
   if (!context.active()) return;
@@ -1222,14 +1300,14 @@ async function applyThreadTip(context, entityId, tip) {
 async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (!context.active()) return;
-  if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
+  if (git.status) await writePushed(addressOf(context, entityId, "status"), git.status);
   if (!context.active()) return;
   if (git.log) {
     await mergeCached(addressOf(context, entityId, "log"), (current) =>
       context.active() ? windowedLog(current, git.log) : null);
   }
   if (!context.active()) return;
-  if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
+  if (git.unpushed) await writePushed(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
   if (!context.active()) return;
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
   if (!context.active()) return;
@@ -1268,7 +1346,7 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
  *  not "these paths". */
 async function applyFiles(context, entityId, files) {
   if (files.root) {
-    await writeCached(
+    await writePushed(
       addressOf(context, entityId, "tree", files.root.path || ""),
       { path: files.root.path || "", entries: files.root.entries || [] },
     );
@@ -1318,7 +1396,7 @@ async function rereadFile(context, entityId, scope, path) {
 }
 
 const applyTerminals = (context, entityId, terminals) =>
-  writeCached(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
+  writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
 
 /** `issues`: which issues of this project moved. Content-free beyond the ids —
  *  and dropped altogether past 200 of them — so there is one answer either
@@ -1391,11 +1469,10 @@ function considerDevices() {
 }
 
 /** A session is marked read before its pass runs, so two announcements in a
- *  row are one pass. A pass that did not finish takes the mark off again: the
- *  lists it stopped at are the step the subscriptions sit behind, so a session
- *  left marked on a stalled `board.list` would spend its whole life hearing
- *  nothing and reading nothing. Unmarked, the next thing the device announces
- *  asks again. */
+ *  row are one pass. A pass that did not finish takes the mark off again: a
+ *  session left marked on a stalled `board.list` would spend its whole life
+ *  hearing only what changed after it and never reading what it missed.
+ *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
   if (await syncDevice(deviceId)) return;
   if (syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
@@ -1430,6 +1507,7 @@ export function stopCacheSync() {
   syncedSessions.clear();
   restoredScopes.clear();
   issueReadGenerations.clear();
+  forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.
   for (const turn of passes.values()) turn.superseded = true;

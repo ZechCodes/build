@@ -233,3 +233,143 @@ describe("a flush arriving at the real subscriptions", () => {
     ]);
   });
 });
+
+// #142: the bridge starts a subscription empty and records a change only for
+// the subscriptions it holds when the change happens (bridge/src/changes.rs).
+// A pass that read the board before its subscriptions were held lost whatever
+// changed in between: not in the snapshot, and pushed to nobody.
+describe("a pass racing the wire", () => {
+  const HELLO = {
+    api_version: "1.21.0",
+    push_events: true,
+    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"], items: "bodies" },
+  };
+
+  /** A bridge that holds subscriptions the way the real one does, and a board
+   *  that moves when the test says so: `during(method, change)` runs `change`
+   *  the first time `method` is asked, before it answers. */
+  const subscribingBridge = () => {
+    const held = new Set();
+    const pending = new Map();
+    const wire = {
+      held,
+      during: (method, change) => pending.set(method, change),
+      /** What the bridge pushes for one entity's row: to `s-inbox`, if it is held. */
+      pushRow: (entityId) => {
+        if (!held.has("s-inbox")) return;
+        const state = structuredClone(board.find((row) => row.run_id === entityId));
+        changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s-inbox", items: [{ entity_id: entityId, state }] }, "dev-1");
+      },
+    };
+    bridge.call = vi.fn(async (method, params) => {
+      if (method === "session.hello") return HELLO;
+      if (method === "changes.subscribe") held.add(params.subscription_id);
+      if (method === "changes.unsubscribe") held.delete(params.subscription_id);
+      if (method === "board.list") {
+        const listed = { items: structuredClone(board) };
+        pending.get(method)?.();
+        pending.delete(method);
+        return listed;
+      }
+      const change = pending.get(method);
+      pending.delete(method);
+      change?.();
+      return answer(method, params);
+    });
+    return wire;
+  };
+
+  const agentsOf = async (entityId) => (await read(entityId, "row"))?.value.agents.map((agent) => agent.id);
+  const withAgents = (...ids) => branchItem({ agents: ids.map((id) => ({ id })) });
+
+  const greet = () => changeEvents.greetBridge(bridge.call, { deviceId: "dev-1" });
+
+  it("asks for nothing until the bridge holds its subscriptions", async () => {
+    subscribingBridge();
+    const heard = [];
+    const answering = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      heard.push(`asked ${method}`);
+      // A subscribe the bridge is slow to answer: the pass must wait it out.
+      if (method === "changes.subscribe") await new Promise((done) => setTimeout(done, 20));
+      const answered = await answering(method, params);
+      heard.push(`answered ${method}`);
+      return answered;
+    });
+    await greet();
+    sync.startCacheSync();
+    await settle();
+    await new Promise((done) => setTimeout(done, 60));
+    await settle();
+
+    const lastSubscribeAnswered = heard.lastIndexOf("answered changes.subscribe");
+    expect(lastSubscribeAnswered).toBeGreaterThan(-1);
+    expect(heard.indexOf("asked board.list")).toBeGreaterThan(lastSubscribeAnswered);
+  });
+
+  it("does not lose an agent added while a restarted pass fills workspace details", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [withAgents("ag-1")];
+    App.route = BRANCH_ROUTE;
+    sync.startCacheSync();
+    await settle();
+    expect(wire.held.has("s-inbox")).toBe(true);
+
+    wire.during("git.status", () => {
+      board = [withAgents("ag-1", "ag-2")];
+      wire.pushRow("run-1");
+    });
+    sync.startCacheSync(); // what gate.restartCacheReaders does on hand-back
+    await settle();
+
+    expect(await agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
+  });
+
+  it("does not let the board it read overwrite a row pushed while the lists were out", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [withAgents("ag-1")];
+    // board.list has answered with one agent; the second lands before the
+    // project list does, and is pushed at once.
+    wire.during("project.list", () => {
+      board = [withAgents("ag-1", "ag-2")];
+      wire.pushRow("run-1");
+    });
+    sync.startCacheSync();
+    await settle();
+
+    expect(await agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
+  });
+
+  it("does not let the project list it read overwrite one a board item carried since", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [branchItem()];
+    wire.during("workspace.list", () => {
+      changeEvents.dispatchChangeEvent({
+        type: "changes",
+        subscription_id: "s-inbox",
+        items: [{ entity_id: "board", state: { revision: 3, projects: [{ project_id: "p2", name: "relaydb" }] } }],
+      }, "dev-1");
+    });
+    sync.startCacheSync();
+    await settle();
+
+    expect((await read("", "projects")).value.map((project) => project.id)).toEqual(["p2"]);
+  });
+
+  it("keeps a workspace a push added after the board was read", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [branchItem()];
+    wire.during("git.status", () => {
+      board = [branchItem(), branchItem({ run_id: "run-2", branch: "build/signup", worktree_id: "wt-2" })];
+      wire.pushRow("run-2");
+    });
+    sync.startCacheSync();
+    await settle();
+
+    expect((await read("run-2", "row"))?.value.branch).toBe("build/signup");
+  });
+});

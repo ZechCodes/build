@@ -397,6 +397,18 @@ export async function subscriptionsSettled() {
   } while (!sameChains(before, pendingChains()));
 }
 
+/** Resolves when one device's bridge has answered everything asked of it so
+ *  far — what a pass waits on before it reads, so a change after the read is
+ *  one the bridge pushes (#142). At once for a device that was never greeted. */
+export async function subscriptionsSettledFor(deviceId) {
+  const state = bridgeFor(deviceId);
+  let settled = null;
+  while (state && settled !== state.chain) {
+    settled = state.chain;
+    await settled;
+  }
+}
+
 /** Run a watcher's refresh for an event, under the same visibility gate its
  *  poll runs under. A hidden tab notes that it owes a refetch instead. */
 function deliver(watcher) {

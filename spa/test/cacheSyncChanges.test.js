@@ -41,6 +41,9 @@ vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  // A stand-in bridge holds whatever it is asked to at once
+  // (test/cacheSyncDelivery.test.js drives the real one).
+  subscriptionsSettledFor: async () => {},
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);

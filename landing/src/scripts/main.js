@@ -6,6 +6,34 @@
 // the pinned, scroll-driven version with the three.js device stage, for the
 // visitors film-boot.js chose. Phones, reduced motion, save-data and
 // machines without WebGL keep the document.
+
+// The document's copy comes in as its act comes into view, once
+// (landing.css). Acts already in view are marked before the copy is hidden,
+// so nothing on screen blinks.
+function watchActArrivals() {
+  const acts = [...document.querySelectorAll("[data-act]")];
+  const arrive = (act) => { act.dataset.arrived = ""; };
+  if (typeof IntersectionObserver !== "function") {
+    acts.forEach(arrive);
+    return;
+  }
+  const line = innerHeight * 0.9;
+  const waiting = acts.filter((act) => {
+    if (act.getBoundingClientRect().top >= line) return true;
+    arrive(act);
+    return false;
+  });
+  const observer = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      arrive(entry.target);
+      observer.unobserve(entry.target);
+    }
+  }, { rootMargin: "0px 0px -10% 0px" });
+  waiting.forEach((act) => observer.observe(act));
+}
+
+watchActArrivals();
 document.documentElement.dataset.js = "ready";
 
 // film-boot.js, in the head, already chose before the first paint and set

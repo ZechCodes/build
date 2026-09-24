@@ -96,16 +96,13 @@ async function inspectDocument(width, height, options, label) {
   await context.close();
 }
 
-async function seek(page, act, local) {
-  await page.evaluate(({ act, local }) => window.BuildFilm.seek(act, local), { act, local });
-  // The scrub eases the playhead toward the scroll position. On SwiftShader
-  // GSAP's lag smoothing slows that clock with the renderer: a 1920x1080 jump
-  // from act 1 to act 7 measured 14-21 s on a quiet machine (round 2's film
-  // included), so its budget is a minute.
-  await page.waitForFunction(({ act, local }) => {
+// An act's resting point, where its copy and beat are.
+async function rest(page, act) {
+  await page.evaluate((n) => window.BuildFilm.rest(n), act);
+  await page.waitForFunction((n) => {
     const film = window.BuildFilm;
-    return Math.abs(film.timeline.time() - film.time()) < 0.5 && document.querySelector("[data-film]").dataset.act === String(act);
-  }, { act, local }, { timeout: gpu ? 5000 : 60_000 });
+    return Math.abs(film.timeline.time() - film.time()) < 0.5 && document.querySelector("[data-film]").dataset.act === String(n);
+  }, act, { timeout: gpu ? 5000 : 60_000 });
   await page.waitForTimeout(150);
 }
 
@@ -128,10 +125,10 @@ async function assertAligned(page, label, width, height) {
   }
 }
 
-// A storyboard beat: the wheel at the act's position and the act's scene,
-// which otherwise runs on the clock, held at the same local progress.
+// A storyboard beat: the wheel at the act's resting point and the act's
+// scene, which otherwise runs on the clock, held at a local progress.
 async function checkAct(page, label, act, local, height) {
-  await seek(page, act, local);
+  await rest(page, act);
   await page.evaluate(({ act, local }) => window.BuildFilm.sceneSeek(act, local), { act, local });
   await page.waitForTimeout(100);
   // The film root carries the current act as data-act too; the id is the act's.
@@ -184,7 +181,7 @@ async function checkHeroPointerPath(page, label) {
     return document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) === field;
   }, null, { timeout: gpu ? 10_000 : 30_000 });
   await page.screenshot({ path: path.join(output, `${label}-hero-cta-click.png`) });
-  await seek(page, 1, 0);
+  await rest(page, 1);
   await page.waitForTimeout(400);
 }
 
@@ -212,10 +209,11 @@ async function inspectFilm(width, height) {
   await context.close();
 }
 
-// The clock, not the wheel: entering an act brings its copy in and plays its
-// scene through on its own; leaving it backwards rewinds both; a beat can be
-// held for a check. The label sequences Astra reproduced in round 1 run on
-// the scene's clock now.
+// The clock, not the wheel: reaching an act's resting point brings its copy
+// in and plays its beat through on its own in BEAT_SECONDS; an act is
+// finished whenever the visitor comes back to it; a beat can be held for a
+// check. The label sequences Astra reproduced in round 1 run on the scene's
+// clock.
 const SCRUBS = [
   { name: "act 4 implement status", act: 4, selector: '[data-row-status="implement"]', steps: [[0.6, "Waiting", true], [0.82, "Working", false], [0.6, "Waiting", true]] },
   { name: "act 5 implement caption", act: 5, selector: '[data-node-status="implement"]', steps: [[0.5, "Done · handoff pending"], [0.82, "Done"], [0.5, "Done · handoff pending"]] },
@@ -226,9 +224,9 @@ const SCRUBS = [
   { name: "act 6 file count", act: 6, selector: "[data-total-files]", steps: [[0.6, "2 files"], [0.9, "0 files"], [0.6, "2 files"]] },
 ];
 
-// A scene runs on GSAP's clock, which lag smoothing slows whenever a frame
-// takes over half a second: on a loaded SwiftShader box act 7's 12 s scene
-// can take minutes of wall time while running correctly.
+// A beat runs on GSAP's clock, which lag smoothing slows whenever a frame
+// takes over half a second: on a loaded SwiftShader box a 5 s beat can take
+// minutes of wall time while running correctly.
 const sceneTimeout = () => (gpu ? 20_000 : 180_000);
 
 async function opacityOf(page, selector) {
@@ -239,34 +237,31 @@ async function waitForOpacity(page, selector, value) {
   await page.waitForFunction(({ query, value }) => getComputedStyle(document.querySelector(query)).opacity === value, { query: selector, value }, { timeout: 5000 });
 }
 
+async function beatStarted(page, act) {
+  await page.waitForFunction((n) => window.BuildFilm.playing(n), act, { timeout: 5000 });
+}
+
+async function beatFinished(page, act) {
+  await page.waitForFunction((n) => !window.BuildFilm.playing(n) && window.BuildFilm.beats[n].progress() === 1, act, { timeout: sceneTimeout() });
+}
+
 async function inspectScenes(width, height) {
   const label = `${width}x${height}-scenes`;
   const { context, page, errors, state } = await openFilm(width, height, label);
-  // Into act 3: the copy comes in and the scene plays to its end by itself.
-  await seek(page, 3, 0.5);
-  await page.waitForFunction(() => window.BuildFilm.scenes[3].isActive(), null, { timeout: 5000 });
+  // Into act 3: the copy comes in and the beat plays to its end by itself.
+  await rest(page, 3);
+  await beatStarted(page, 3);
   await waitForOpacity(page, "#act-3-title", "1");
   await waitForOpacity(page, "#act-2-title", "0");
-  await page.waitForFunction(() => window.BuildFilm.scenes[3].progress() === 1, null, { timeout: sceneTimeout() });
+  await beatFinished(page, 3);
   assert.equal(await opacityOf(page, '[data-column="progress"]'), "1", `${label}: the card reached In progress on the clock`);
   await page.screenshot({ path: path.join(output, `${label}-act-3-played.png`) });
-  // Back into act 2: act 3 rewinds and its copy leaves.
-  await seek(page, 2, 0.5);
-  await waitForOpacity(page, "#act-3-title", "0");
-  await waitForOpacity(page, "#act-2-title", "1");
-  assert.equal(await page.evaluate(() => window.BuildFilm.scenes[3].progress()), 0, `${label}: act 3's scene rewound`);
-  assert.equal(await opacityOf(page, '[data-column="ready"]'), "1", `${label}: the card is back in Ready`);
-  // On to act 4: the scene runs through and Implement is back at work.
-  await seek(page, 4, 0.5);
-  await page.waitForFunction(() => window.BuildFilm.scenes[4].progress() === 1, null, { timeout: sceneTimeout() });
-  const status = await readLabel(page, '[data-row-status="implement"]');
-  assert.deepEqual(status, { text: "Working", waiting: false }, `${label}: act 4 finished on the clock`);
-  await checkReadingHolds(page, label);
   await checkPhoneBeforeQuestion(page, label);
+  await checkFinishedOnReturn(page, label);
   await checkMergeUncovered(page, label);
   await checkClosingBeats(page, label);
   for (const { name, act, selector, steps } of SCRUBS) {
-    await seek(page, act, 0.5);
+    await rest(page, act);
     for (const [local, expected, waiting] of steps) {
       await page.evaluate(({ act, local }) => window.BuildFilm.sceneSeek(act, local), { act, local });
       const found = await readLabel(page, selector);
@@ -279,12 +274,6 @@ async function inspectScenes(width, height) {
   await context.close();
 }
 
-// Round 2's review, item by item, with the wheel stopped where a visitor
-// would stop it and no sceneSeek: the scene has to get there on its own.
-async function scenePlayed(page, act) {
-  await page.waitForFunction((n) => window.BuildFilm.scenes[n].progress() === 1, act, { timeout: sceneTimeout() });
-}
-
 function panelOpacity(page, name) {
   return page.evaluate((panel) => {
     const element = document.querySelector(`[data-panel="${panel}"]`);
@@ -292,68 +281,96 @@ function panelOpacity(page, name) {
   }, name);
 }
 
-// Act 3's card keeps its branch and stays lifted while the visitor stays;
-// leaving plays the return. A modest overshoot during playback, still inside
-// the act, neither restarts nor cuts the scene.
-async function checkReadingHolds(page, label) {
-  await seek(page, 2, 0.5);
-  await seek(page, 3, 0.3);
-  await page.waitForFunction(() => window.BuildFilm.scenes[3].isActive(), null, { timeout: 5000 });
-  await seek(page, 3, 0.55);
-  assert.ok(await page.evaluate(() => window.BuildFilm.scenes[3].progress() > 0), `${label}: an overshoot inside act 3 keeps its scene going`);
-  await scenePlayed(page, 3);
+// Act 4's phone is on screen before its question is asked, and the beat
+// ends with Implement back at work.
+async function checkPhoneBeforeQuestion(page, label) {
+  await rest(page, 4);
+  await beatStarted(page, 4);
+  const phone = await page.evaluate(() => window.BuildFilm.pose.phone.opacity);
+  assert.ok(phone > 0.99, `${label}: the phone is in place as act 4's beat starts (${phone})`);
+  await page.screenshot({ path: path.join(output, `${label}-act-4-question.png`) });
+  await beatFinished(page, 4);
+  const status = await readLabel(page, '[data-row-status="implement"]');
+  assert.deepEqual(status, { text: "Working", waiting: false }, `${label}: act 4 finished on the clock`);
+  await page.screenshot({ path: path.join(output, `${label}-act-4-finished.png`) });
+}
+
+// Back to an act already seen: it is finished at once, not replayed, and its
+// card keeps its branch while the visitor stays; leaving plays the return.
+// Further back, the act before is finished too.
+async function checkFinishedOnReturn(page, label) {
+  await rest(page, 3);
+  assert.equal(await page.evaluate(() => window.BuildFilm.playing(3)), false, `${label}: act 3 does not replay`);
+  assert.equal(await page.evaluate(() => window.BuildFilm.beats[3].progress()), 1, `${label}: act 3 is finished on return`);
+  await waitForOpacity(page, "#act-3-title", "1");
   await page.waitForTimeout(1500);
   assert.equal(await opacityOf(page, "[data-branch-line]"), "1", `${label}: act 3's branch stays open while the visitor stays`);
-  await seek(page, 3, 0.95);
+  await rest(page, 2);
+  await waitForOpacity(page, "#act-3-title", "0");
+  await waitForOpacity(page, "#act-2-title", "1");
+  assert.equal(await page.evaluate(() => window.BuildFilm.beats[2].progress()), 1, `${label}: act 2 is finished on return`);
+  await rest(page, 3);
+  await page.evaluate(() => window.BuildFilm.seek(3, 0.6));
   await waitForOpacity(page, "[data-branch-line]", "0");
   await page.screenshot({ path: path.join(output, `${label}-act-3-departed.png`) });
 }
 
-// Act 4's phone is on screen before its question is asked.
-async function checkPhoneBeforeQuestion(page, label) {
-  await seek(page, 3, 0.5);
-  await seek(page, 4, 0.23);
-  await page.waitForFunction(() => window.BuildFilm.scenes[4].isActive(), null, { timeout: 5000 });
-  const phone = await page.evaluate(() => window.BuildFilm.pose.phone.opacity);
-  assert.ok(phone > 0.99, `${label}: the phone is in place as act 4's scene starts (${phone})`);
-  await page.screenshot({ path: path.join(output, `${label}-act-4-question.png`) });
-  await scenePlayed(page, 4);
-  await page.screenshot({ path: path.join(output, `${label}-act-4-finished.png`) });
-}
-
-// Act 7's approved panel gives way to the merge on the clock, and comes back
-// on a replay.
+// Act 7's approved panel gives way to the merge on the clock, and the merge
+// is what a return shows.
 async function checkMergeUncovered(page, label) {
-  await seek(page, 6, 0.5);
-  await seek(page, 7, 0.6);
-  await page.waitForFunction(() => window.BuildFilm.scenes[7].isActive(), null, { timeout: 5000 });
-  await scenePlayed(page, 7);
+  await rest(page, 6);
+  await rest(page, 7);
+  await beatStarted(page, 7);
+  await beatFinished(page, 7);
   await page.waitForTimeout(300);
   assert.equal(await panelOpacity(page, "review"), 0, `${label}: the approved panel is off the merge`);
   const screens = await page.evaluate(() => window.BuildFilm.stage.getState().screens);
   assert.match(String(screens.tablet), /merged/, `${label}: the tablet shows the merge`);
   await page.screenshot({ path: path.join(output, `${label}-act-7-merged.png`) });
-  await seek(page, 6, 0.5);
-  await seek(page, 7, 0.6);
-  await page.waitForFunction(() => window.BuildFilm.scenes[7].isActive(), null, { timeout: 5000 });
-  assert.ok(await panelOpacity(page, "review") > 0.5, `${label}: a replay brings the review panel back`);
+  await rest(page, 6);
+  await rest(page, 7);
+  await page.waitForTimeout(300);
+  assert.equal(await panelOpacity(page, "review"), 0, `${label}: a return shows the merge, not a replay`);
 }
 
-// Act 8's two beats: a jump from an early act, or a quick crossing, ends on
-// one beat, never both.
+// Act 8's two beats: arriving plays the first and ends on the second; the
+// move back toward act 7 takes both; a return, or quick crossings, end on
+// the second alone.
 async function checkClosingBeats(page, label) {
-  const beats = () => page.evaluate(() => ["a", "b"].map((beat) => Number(getComputedStyle(document.querySelector(`[data-beat="${beat}"]`)).opacity)));
-  await seek(page, 2, 0.5);
-  await seek(page, 8, 0.9);
-  await page.waitForTimeout(1500);
-  assert.deepEqual(await beats(), [0, 1], `${label}: a jump to 8/.9 shows only the second beat`);
-  await seek(page, 8, 0.3);
-  await page.waitForTimeout(1500);
-  assert.deepEqual(await beats(), [1, 0], `${label}: back to 8/.3 shows only the first beat`);
-  await seek(page, 8, 0.7);
-  await seek(page, 8, 0.4);
-  await seek(page, 8, 0.8);
-  await page.waitForTimeout(1500);
+  // What a visitor sees of each beat: the element's opacity times its
+  // headline's, since the scroll fades one and the beat the other.
+  const beats = () => page.evaluate(() => ["a", "b"].map((beat) => {
+    const element = document.querySelector(`[data-beat="${beat}"]`);
+    return Number(getComputedStyle(element).opacity) * Number(getComputedStyle(element.querySelector("h2")).opacity);
+  }));
+  await rest(page, 2);
+  await rest(page, 8);
+  await beatFinished(page, 8);
+  await page.waitForTimeout(300);
+  assert.deepEqual(await beats(), [0, 1], `${label}: act 8 settles on its second beat`);
+  await rest(page, 7);
+  await page.waitForTimeout(1000);
+  assert.deepEqual(await beats(), [0, 0], `${label}: back in act 7, neither beat shows`);
+  await rest(page, 8);
+  await page.waitForTimeout(300);
+  assert.deepEqual(await beats(), [0, 1], `${label}: a return shows the second beat`);
+  // A jump back that the playhead crosses in one slow frame, as a software
+  // renderer does: the scroll's fade and the beat's rewind must not leave a
+  // beat on. The frame is held just under GSAP's lag-smoothing threshold,
+  // so the scrub covers most of the jump in one tick.
+  await page.evaluate(() => {
+    window.BuildFilm.rest(7);
+    const started = performance.now();
+    while (performance.now() - started < 450);
+  });
+  await page.waitForTimeout(500);
+  assert.deepEqual(await beats(), [0, 0], `${label}: a one-frame jump back to act 7 shows neither beat`);
+  await rest(page, 8);
+  await rest(page, 7);
+  await rest(page, 8);
+  await rest(page, 6);
+  await rest(page, 8);
+  await page.waitForTimeout(1000);
   assert.deepEqual(await beats(), [0, 1], `${label}: quick crossings end on one beat`);
   await page.screenshot({ path: path.join(output, `${label}-act-8.png`) });
 }
@@ -500,7 +517,7 @@ async function inspectNav(width, height) {
     const nav = page.locator(".site-nav");
     assert.ok(await nav.isVisible(), `${label}: the bar is there on the hero`);
     const before = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
-    await seek(page, 4, 0.5);
+    await rest(page, 4);
     await page.waitForTimeout(500);
     const after = await page.locator("#act-4-title").evaluate(() => document.querySelector(".act[data-act='4'] .act__copy").getBoundingClientRect().top);
     assert.equal(before, after, `${label}: the story sits in the same place`);
@@ -530,6 +547,10 @@ async function inspectResize([fromWidth, fromHeight], [toWidth, toHeight]) {
   await page.setViewportSize({ width: toWidth, height: toHeight });
   // ScrollTrigger refreshes on a debounce; give it that and a few frames.
   await page.waitForTimeout(600);
+  // The re-measured pin keeps the visitor in the act they were reading.
+  await page.waitForFunction(() => document.querySelector("[data-film]").dataset.act === "7", null, { timeout: gpu ? 5000 : 60_000 })
+    .catch(() => {});
+  assert.equal(await page.evaluate(() => document.querySelector("[data-film]").dataset.act), "7", `${label}: a resize keeps the film in act 7`);
   for (const [act, local] of [[7, 0.55], [6, 0.8], [5, 0.75], [3, 0.6]]) {
     await checkAct(page, label, act, local, toHeight);
     await assertAligned(page, `${label} act ${act}`, toWidth, toHeight);

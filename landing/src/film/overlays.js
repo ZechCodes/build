@@ -8,7 +8,7 @@
 // the act; its return is a departure, played on the clock as the act's copy
 // leaves. update() turns each panel's state into a matrix3d.
 import gsap from "gsap";
-import { SCENES, TEXTURE_SIZES, at, sceneClock, span } from "./acts.js";
+import { SCENES, TEXTURE_SIZES, at, between, sceneClock } from "./acts.js";
 import { flatQuad, panelTransform } from "../stage/overlay.js";
 
 function numbers(value) {
@@ -27,8 +27,9 @@ function readPanel(element) {
     width,
     height,
     flat: flat ? { fx: flat[0], fy: flat[1], fw: flat[2] } : null,
-    // `visible` is the scroll's; `shown` is the scene's, for a panel that
-    // must give way to the display under it before the act is over.
+    // `visible` is the scroll's; `shown` is the beat's, for a panel that
+    // comes or goes inside an act. The two never write the same property,
+    // so a beat finished during a fast scroll cannot undo the scroll.
     state: { visible: 0, shown: 1, lift: 0, x, y },
   };
 }
@@ -46,14 +47,15 @@ function typeInto(tl, element, from, until, ease = "none") {
   }, from);
 }
 
-// A panel's state object fades through `visible`; a DOM element through
-// autoAlpha. Either, or a list of either.
+// Inside a scene, a panel's state object fades through `shown`, since
+// `visible` is the scroll's; a DOM element fades through autoAlpha. Either,
+// or a list of either.
 function fade(tl, target, value, from, until, ease) {
   const targets = [].concat(target);
-  const states = targets.filter((candidate) => candidate && !(candidate instanceof Element) && "visible" in candidate);
+  const states = targets.filter((candidate) => candidate && !(candidate instanceof Element) && "shown" in candidate);
   const elements = targets.filter((candidate) => !states.includes(candidate));
   const duration = Math.max(until - from, 0.01);
-  if (states.length) tl.to(states, { visible: value, duration, ease }, from);
+  if (states.length) tl.to(states, { shown: value, duration, ease }, from);
   if (elements.length) tl.to(elements, { autoAlpha: value, duration, ease }, from);
 }
 
@@ -120,23 +122,34 @@ function screenCue(tl, screens, actId, time, device, name) {
   });
 }
 
-// What the scroll timeline does to the close-ups: each shows as its act
-// arrives, matching the fixture under it, and goes as the act leaves.
+// What the scroll timeline does to the close-ups: each shows as its act's
+// devices come to rest, matching the fixture under it, and goes on the way
+// to the next act, before that act's display swap at the middle of the move.
+// Every step is a fromTo, so scrolling back restores it whatever a beat did
+// in between. The editor's arrival belongs to act 1's beat, not the scroll.
 function visibilityBeats(tl, panels) {
-  show(tl, panels.editor.state, at(1, 0.18), at(1, 0.21));
-  hide(tl, panels.editor.state, at(2, 0.9), at(3, 0));
-  show(tl, panels.issue.state, at(3, 0.18), at(3, 0.2));
-  hide(tl, [panels.issue.state, panels.hole.state], at(3, 0.98), at(4, 0.01));
-  show(tl, panels.team.state, at(4, 0), at(4, 0.01));
-  hide(tl, panels.team.state, at(4, 0.96), at(5, 0));
-  show(tl, panels.builder.state, at(5, 0.12), at(5, 0.15));
-  hide(tl, panels.builder.state, at(6, 0), at(6, 0.03));
-  show(tl, panels.git.state, at(6, 0.02), at(6, 0.05));
+  const during = (state, from, to, start, end) => {
+    tl.fromTo(state, { visible: from }, { visible: to, duration: end - start, immediateRender: false }, start);
+  };
+  const show = (state, fromAct, start = 0.9, end = 0.97) => during(state, 0, 1, between(fromAct, start), between(fromAct, end));
+  const hide = (state, fromAct, start, end) => during(state, 1, 0, between(fromAct, start), between(fromAct, end));
+  // The editor is the hero's from the start; its beat brings it in.
+  panels.editor.state.visible = 1;
+  hide(panels.editor.state, 2, 0.1, 0.4);
+  show(panels.issue.state, 2);
+  show(panels.hole.state, 2);
+  hide(panels.issue.state, 3, 0.42, 0.5);
+  hide(panels.hole.state, 3, 0.42, 0.5);
+  show(panels.team.state, 3, 0.5, 0.51);
+  hide(panels.team.state, 4, 0.46, 0.5);
+  show(panels.builder.state, 4);
+  hide(panels.builder.state, 5, 0.5, 0.53);
+  show(panels.git.state, 5, 0.52, 0.55);
   // The laptop shrinks into its host pose for act 7; the Git close-up goes
-  // with the move, before the merge can reach the display under it.
-  hide(tl, panels.git.state, at(6, 0.86), at(7, 0));
-  show(tl, panels.review.state, at(7, 0.17), at(7, 0.25));
-  hide(tl, panels.review.state, at(7, 0.84), at(7, 0.87));
+  // before the move, before the merge can reach the display under it.
+  hide(panels.git.state, 6, 0.1, 0.2);
+  show(panels.review.state, 6);
+  hide(panels.review.state, 7, 0.05, 0.1);
 }
 
 // Act 1: the laptop has finished its push; a test types in, the gutter marks
@@ -180,6 +193,9 @@ function issueBeats(tl, panels, { at, span }) {
   const progress = card.querySelector('[data-column="progress"]');
   const branch = card.querySelector("[data-branch-line]");
   gsap.set([agent, progress, branch], { autoAlpha: 0 });
+  // The slot the card leaves is the scene's to show; the scroll only
+  // places it with the card.
+  hole.state.shown = 0;
   gsap.set(branch, { height: 0 });
   tl.to(issue.state, { lift: 1, duration: span(3, 0.2, 0.34), ease: "power3.inOut" }, at(3, 0.2));
   show(tl, hole.state, at(3, 0.2), at(3, 0.26));

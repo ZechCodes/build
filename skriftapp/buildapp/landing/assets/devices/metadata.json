@@ -610,13 +610,13 @@
       "file": "desktop-poster.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 39568,
-      "sha256": "1096b4344063a948dc397a2cabdd8af24d59e6c98a7c52447e9e6e5bcc491e54",
+      "bytes": 48820,
+      "sha256": "12cdf7863464e41e59251d3e1d7377c65f339111af0c2701409d6fa742df36c1",
       "content_bounds_px_bottom_left": [
         72,
-        52,
-        1124,
-        668
+        232,
+        1289,
+        496
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -642,13 +642,13 @@
       "file": "mobile-poster.webp",
       "width": 720,
       "height": 960,
-      "bytes": 22416,
-      "sha256": "5ac5d2a64a2c8866bf9f49962c1a2f2982ebfa706e3c67842d1e99f97cfd0f8d",
+      "bytes": 17550,
+      "sha256": "9b93dad673c32c09fbd784ed638674c2f44c154c537255fe31308aa41d1e34f2",
       "content_bounds_px_bottom_left": [
         36,
-        201,
-        541,
-        539
+        356,
+        616,
+        246
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -754,13 +754,13 @@
       "file": "scene-08-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 39568,
-      "sha256": "1096b4344063a948dc397a2cabdd8af24d59e6c98a7c52447e9e6e5bcc491e54",
+      "bytes": 48820,
+      "sha256": "12cdf7863464e41e59251d3e1d7377c65f339111af0c2701409d6fa742df36c1",
       "content_bounds_px_bottom_left": [
         72,
-        52,
-        1124,
-        668
+        232,
+        1289,
+        496
       ],
       "provenance": {
         "blend": "build-devices.blend",
@@ -786,13 +786,13 @@
       "file": "scene-08-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 22416,
-      "sha256": "5ac5d2a64a2c8866bf9f49962c1a2f2982ebfa706e3c67842d1e99f97cfd0f8d",
+      "bytes": 17550,
+      "sha256": "9b93dad673c32c09fbd784ed638674c2f44c154c537255fe31308aa41d1e34f2",
       "content_bounds_px_bottom_left": [
         36,
-        201,
-        541,
-        539
+        356,
+        616,
+        246
       ],
       "provenance": {
         "blend": "build-devices.blend",

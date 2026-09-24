@@ -106,6 +106,10 @@ impl WorktreeWatchers {
             }
             match WorktreeWatcher::start(root, id, Arc::clone(bus)) {
                 Ok(watcher) => {
+                    let (watched, skipped) = watcher.coverage();
+                    crate::logline::say(format!(
+                        "watch: {id} watching {watched} directories, {skipped} ignored subtrees left unwatched"
+                    ));
                     running.insert(id.to_string(), watcher);
                     bus.clear_polled(id);
                 }

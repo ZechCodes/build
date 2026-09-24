@@ -297,10 +297,10 @@ repository by default; `BUILD_RELEASES_REPO` overrides it for a single install.
 ## Develop
 
 ```bash
-cd bridge && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+cd bridge && nice -n 10 cargo test && nice -n 10 cargo clippy --all-targets -- -D warnings && nice -n 10 cargo fmt --check
 cd skriftapp && uv run --frozen ruff check buildapp && uv run --frozen pytest buildapp
-cd spa && npm run lint && npm test && npm run build
-cd desktop && npm test && npm run pack
+cd spa && nice -n 10 npm run lint && nice -n 10 npm test && nice -n 10 npm run build
+cd desktop && nice -n 10 npm test && nice -n 10 npm run pack
 ```
 
 The bridge's ICE agent is tuned by three variables (strict P2P transport spec,

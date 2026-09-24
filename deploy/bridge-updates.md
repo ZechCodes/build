@@ -94,7 +94,7 @@ bytes match the production pin:
 
 ```sh
 cd bridge
-BUILD_COSIGN_TEST_BINARY=/path/to/pinned/cosign cargo test --lib update::release::signature_tests -- --nocapture
+BUILD_COSIGN_TEST_BINARY=/path/to/pinned/cosign nice -n 10 cargo test --lib update::release::signature_tests -- --nocapture
 ```
 
 The SPA suite invokes the Rust RPC probe itself; run the Rust gates first to

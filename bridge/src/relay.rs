@@ -20,8 +20,8 @@
 //! - device → `{"type":"session_accept","session_id":S,"envelope":{...}}`
 //! - both → `{"type":"e2ee_envelope","session_id":S,"envelope":{...}}`
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -31,6 +31,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::carrier::{self, CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
+use crate::logline::{say, Throttle};
 use crate::reachability::Reachability;
 use crate::transport::{self, Envelope, SessionInit};
 
@@ -92,6 +93,64 @@ pub fn silence_deadline(heartbeat_interval_s: u64) -> Duration {
 /// rather than after the relay has already written the device off.
 pub fn handoff_deadline(heartbeat_interval_s: u64) -> Duration {
     Duration::from_secs(heartbeat_interval_s.max(1))
+}
+
+/// A heartbeat round trip slower than this is worth a line: the relay severs
+/// the device after three unanswered beats, so one that took a second is a
+/// third of the way to the phone reading "Device not reachable".
+const SLOW_HEARTBEAT: Duration = Duration::from_secs(1);
+
+/// How often a repeating heartbeat complaint is written. One line a minute
+/// says the socket is struggling; sixty would say nothing more.
+const HEARTBEAT_LINES: Duration = Duration::from_secs(60);
+
+/// What the heartbeat task and the read loop know together about the relay's
+/// answers: when the last ping went out, and whether its pong came back.
+///
+/// The relay pings the device and severs it for a missed pong; the device
+/// pings the relay for the same reason in the other direction. This watch is
+/// the device's view of its own pings, which is the earliest sign the socket,
+/// or the runtime under it, has stopped keeping up.
+struct HeartbeatWatch {
+    outstanding: Mutex<Option<Instant>>,
+    lines: Throttle,
+}
+
+impl HeartbeatWatch {
+    fn new() -> Arc<HeartbeatWatch> {
+        Arc::new(HeartbeatWatch {
+            outstanding: Mutex::new(None),
+            lines: Throttle::new(HEARTBEAT_LINES),
+        })
+    }
+
+    /// A ping is going out now. The line to write, if the previous one was
+    /// never answered.
+    fn pinged(&self, now: Instant) -> Option<String> {
+        let unanswered = self.outstanding.lock().unwrap().replace(now);
+        let since = unanswered?;
+        let suppressed = self.lines.admit("unanswered")?;
+        Some(format!(
+            "relay: the heartbeat ping sent {}s ago was never answered; pinging again{}",
+            now.duration_since(since).as_secs(),
+            crate::logline::suppressed_suffix(suppressed, HEARTBEAT_LINES)
+        ))
+    }
+
+    /// A pong came in. The line to write, if the round trip was slow.
+    fn answered(&self, now: Instant) -> Option<String> {
+        let sent = self.outstanding.lock().unwrap().take()?;
+        let round_trip = now.duration_since(sent);
+        if round_trip < SLOW_HEARTBEAT {
+            return None;
+        }
+        let suppressed = self.lines.admit("slow")?;
+        Some(format!(
+            "relay: heartbeat round trip took {} ms{}",
+            round_trip.as_millis(),
+            crate::logline::suppressed_suffix(suppressed, HEARTBEAT_LINES)
+        ))
+    }
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for RelayError {
@@ -172,9 +231,14 @@ pub async fn run_with_connector(
     reachable: &Reachability,
 ) -> Result<(), RelayError> {
     let request = auth_request(url, identity)?;
+    let dialled_at = Instant::now();
     let (stream, _resp) =
         tokio_tungstenite::connect_async_tls_with_config(request, None, false, tls_connector)
             .await?;
+    say(format!(
+        "relay: socket open to {url} after {} ms",
+        dialled_at.elapsed().as_millis()
+    ));
     let (sink, mut source) = stream.split();
 
     // Unbounded so terminal output bursts never block the app under a lock.
@@ -195,7 +259,21 @@ pub async fn run_with_connector(
             let Some(message) = next else { break };
             let text = match message? {
                 Message::Text(text) => text,
-                Message::Close(_) => break,
+                Message::Close(frame) => {
+                    say(format!(
+                        "relay: socket closed by the relay{}",
+                        frame
+                            .map(|frame| format!(": {} {}", u16::from(frame.code), frame.reason))
+                            .unwrap_or_default()
+                    ));
+                    break;
+                }
+                Message::Pong(_) => {
+                    if let Some(line) = connection.heartbeats.answered(Instant::now()) {
+                        say(line);
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             let Ok(msg) = serde_json::from_str::<Value>(&text) else {
@@ -263,6 +341,8 @@ struct RelayConnection<'a> {
     intake: &'a FrameIntake,
     carrier: CarrierHandle,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
+    /// The device's own pings and their pongs, shared with the heartbeat task.
+    heartbeats: Arc<HeartbeatWatch>,
     /// How long the relay may stay silent before this socket is given up on;
     /// the interval `authenticated` carries sets it.
     deadline: Duration,
@@ -287,6 +367,7 @@ impl<'a> RelayConnection<'a> {
             intake,
             carrier,
             heartbeat: None,
+            heartbeats: HeartbeatWatch::new(),
             deadline: silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S),
             handoff: handoff_deadline(DEFAULT_HEARTBEAT_INTERVAL_S),
             reachable: reachable.clone(),
@@ -327,10 +408,18 @@ impl<'a> RelayConnection<'a> {
             .get("heartbeat_interval_s")
             .and_then(Value::as_u64)
             .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
-        self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));
+        self.heartbeat = Some(spawn_heartbeat(
+            self.control_tx.clone(),
+            interval,
+            self.heartbeats.clone(),
+        ));
         self.deadline = silence_deadline(interval);
         self.handoff = handoff_deadline(interval);
         self.reachable.reached();
+        say(format!(
+            "relay: authenticated; heartbeat every {interval}s, silent after {}s",
+            self.deadline.as_secs()
+        ));
     }
 
     /// A client opened a session: parse its `session_init` off the relay wire
@@ -384,17 +473,24 @@ impl Drop for RelayConnection<'_> {
 fn spawn_heartbeat(
     control_tx: mpsc::UnboundedSender<Message>,
     interval_s: u64,
+    watch: Arc<HeartbeatWatch>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_s.max(1)));
+        // The first tick fires at once; the ping it sends is the first, with
+        // nothing outstanding to complain about.
+        ticker.tick().await;
         loop {
-            ticker.tick().await;
+            if let Some(line) = watch.pinged(Instant::now()) {
+                say(line);
+            }
             let heartbeat =
                 control_tx.send(Message::Text(json!({"type": "heartbeat"}).to_string()));
             let ping = control_tx.send(Message::Ping(Vec::new()));
             if heartbeat.is_err() || ping.is_err() {
                 break;
             }
+            ticker.tick().await;
         }
     })
 }
@@ -484,6 +580,59 @@ mod writer_tests {
         assert_eq!(
             wire["envelope"],
             serde_json::to_value(outbound.envelope()).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_watch_tests {
+    use super::*;
+
+    #[test]
+    fn a_pong_inside_a_second_says_nothing() {
+        let watch = HeartbeatWatch::new();
+        let sent = Instant::now();
+        assert_eq!(
+            watch.pinged(sent),
+            None,
+            "the first ping has nothing to report"
+        );
+        assert_eq!(watch.answered(sent + Duration::from_millis(200)), None);
+    }
+
+    #[test]
+    fn a_slow_pong_is_said_once_a_minute() {
+        let watch = HeartbeatWatch::new();
+        let sent = Instant::now();
+        watch.pinged(sent);
+        let line = watch
+            .answered(sent + Duration::from_millis(2500))
+            .expect("a slow line");
+        assert_eq!(line, "relay: heartbeat round trip took 2500 ms");
+        watch.pinged(sent + Duration::from_secs(30));
+        assert_eq!(
+            watch.answered(sent + Duration::from_secs(33)),
+            None,
+            "the second slow pong inside the minute is counted, not said"
+        );
+    }
+
+    #[test]
+    fn a_ping_never_answered_is_said_when_the_next_one_goes_out() {
+        let watch = HeartbeatWatch::new();
+        let sent = Instant::now();
+        assert_eq!(watch.pinged(sent), None);
+        let line = watch
+            .pinged(sent + Duration::from_secs(30))
+            .expect("an unanswered line");
+        assert_eq!(
+            line,
+            "relay: the heartbeat ping sent 30s ago was never answered; pinging again"
+        );
+        assert_eq!(
+            watch.answered(sent + Duration::from_secs(31)),
+            Some("relay: heartbeat round trip took 1000 ms".to_string()),
+            "the late pong answers the newest ping"
         );
     }
 }

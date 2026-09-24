@@ -13,7 +13,13 @@
 use super::{Store, StoreError};
 use crate::tracker::{Issue, IssueComment, IssueEvent, IssueState, TimelineEntry};
 use rusqlite::{OptionalExtension, Transaction};
+use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// The most issue ids one timeline read binds. SQLite refuses a statement with
+/// more parameters than its build allows (999 before 3.32), so a long list is
+/// read in chunks well under any of them.
+const TIMELINE_IDS_PER_READ: usize = 500;
 
 /// What a list read narrows to, answered in SQL off the hoisted columns.
 ///
@@ -174,8 +180,42 @@ impl Store {
             .into_iter()
             .map(TimelineEntry::Event),
         );
-        entries.sort_by(|left, right| left.ordering_key().cmp(&right.ordering_key()));
+        in_timeline_order(&mut entries);
         Ok(entries)
+    }
+
+    /// Many issues' timelines, each exactly what [`Store::load_tracker_timeline`]
+    /// answers for it, in two reads per [`TIMELINE_IDS_PER_READ`] issues rather
+    /// than two per issue.
+    ///
+    /// What a list reads: a timeline read per listed issue held the app lock
+    /// for as long as the project's history was long (#128). Every id asked
+    /// for has an entry, empty when nothing answers to it.
+    pub fn load_tracker_timelines(
+        &self,
+        issue_ids: &[String],
+    ) -> Result<HashMap<String, Vec<TimelineEntry>>, StoreError> {
+        let mut timelines: HashMap<String, Vec<TimelineEntry>> = HashMap::new();
+        let mut unique = Vec::with_capacity(issue_ids.len());
+        for id in issue_ids {
+            if timelines.insert(id.clone(), Vec::new()).is_none() {
+                unique.push(id.as_str());
+            }
+        }
+        let conn = self.connection();
+        for chunk in unique.chunks(TIMELINE_IDS_PER_READ) {
+            // Comments before events, the way the one-issue read gathers
+            // them, so the stable sort breaks any tie the same way.
+            let comments = read_records_of_issues(&conn, "tracker_comments", chunk)?;
+            gather(&mut timelines, comments, TimelineEntry::Comment);
+            let events = read_records_of_issues(&conn, "tracker_events", chunk)?;
+            gather(&mut timelines, events, TimelineEntry::Event);
+        }
+        drop(conn);
+        for timeline in timelines.values_mut() {
+            in_timeline_order(timeline);
+        }
+        Ok(timelines)
     }
 
     /// Take a project's whole tracker with it.
@@ -286,6 +326,46 @@ fn read_records<T: serde::de::DeserializeOwned>(
     rows.into_iter()
         .map(|(id, raw)| decode(&raw, table, &id))
         .collect()
+}
+
+/// Every record of several issues' from one table, each with the issue it is
+/// on, in the table's own order.
+fn read_records_of_issues<T: serde::de::DeserializeOwned>(
+    conn: &rusqlite::Connection,
+    table: &str,
+    issue_ids: &[&str],
+) -> Result<Vec<(String, T)>, StoreError> {
+    let marks = vec!["?"; issue_ids.len()].join(", ");
+    let sql = format!("SELECT issue_id, id, record FROM {table} WHERE issue_id IN ({marks})");
+    let mut statement = conn.prepare(&sql)?;
+    let rows: Vec<(String, String, String)> = statement
+        .query_map(rusqlite::params_from_iter(issue_ids), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<Result<_, _>>()?;
+    drop(statement);
+    rows.into_iter()
+        .map(|(issue_id, id, raw)| Ok((issue_id, decode(&raw, table, &id)?)))
+        .collect()
+}
+
+/// File each record under the timeline of the issue it is on.
+fn gather<T>(
+    timelines: &mut HashMap<String, Vec<TimelineEntry>>,
+    records: Vec<(String, T)>,
+    entry: fn(T) -> TimelineEntry,
+) {
+    for (issue_id, record) in records {
+        timelines.entry(issue_id).or_default().push(entry(record));
+    }
+}
+
+/// A timeline's one ascending order: when it happened, then the id, which is
+/// time-ordered itself so two things stamped in the same second still have one
+/// order every reader agrees on. Stable, so the order entries arrive in only
+/// decides between two with the same time and the same id.
+fn in_timeline_order(entries: &mut [TimelineEntry]) {
+    entries.sort_by(|left, right| left.ordering_key().cmp(&right.ordering_key()));
 }
 
 /// A stored record, or a corruption that names the row it came from.

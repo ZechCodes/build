@@ -1,0 +1,51 @@
+# The liveness stack for #128 ("Bridge drops phone sessions when the host is
+# under load"): compose.real.yml on its own ports, with the bridge squeezed to
+# look like a small, busy host. Laid over the base file, never used alone:
+#
+#   docker compose -p liveness128 -f deploy/compose.real.yml -f deploy/compose.liveness.yml \
+#     up -d --build app relay bridge
+#   docker compose -p liveness128 -f deploy/compose.real.yml -f deploy/compose.liveness.yml \
+#     --profile qa run --rm --no-deps -T qa node pair.mjs </dev/null
+#
+# What it changes, and nothing else:
+#
+#   • app :8128 and relay :18128 on the host, so it stands beside the default
+#     stack (8090/18090) and anyone else's. `!override` because compose MERGES
+#     `ports` lists across files — without it the base file's 8090/18090 would
+#     still be bound next to these. The SPA bakes the relay URL at build time,
+#     so the app build arg moves with the port (a browser pass would also need
+#     app.dev.yaml's connect-src widened; web/liveness-soak.mjs runs inside the
+#     qa container and reaches app/relay by name, so it does not).
+#   • the bridge's tokio runtime pinned to LIVENESS_BRIDGE_WORKERS threads
+#     (`#[tokio::main]` reads TOKIO_WORKER_THREADS) and its container to
+#     LIVENESS_BRIDGE_CPUS cpus: a 24-core dev box otherwise hides every
+#     starvation the phone sees on a laptop running agents.
+#
+#   LIVENESS_BRIDGE_WORKERS=2     tokio worker threads in the bridge
+#   LIVENESS_BRIDGE_CPUS=1.0      the bridge container's cpu quota
+#
+# Changing either (or rebuilding the bridge) recreates the bridge, and a
+# recreated bridge is a NEW device: its identity lives in the container. The
+# app keeps its sqlite, so pair.mjs sees the old device as owned and does
+# nothing; approve the new one with `… qa node pair-another.mjs` (the qa
+# service's PAIRING_CODE is this bridge's). The old device still reads online
+# for the api's 90 s presence window, and the harness takes the first online
+# device, so pass `-e PREFER_DEVICE_ID=<new id>` (pair-another prints it) or
+# wait that out. `docker update --cpus …` changes the quota with no recreate.
+
+services:
+  app:
+    build:
+      args:
+        VITE_RELAY_URL: ws://localhost:18128
+    ports: !override
+      - "8128:8080"
+
+  relay:
+    ports: !override
+      - "18128:8799"
+
+  bridge:
+    environment:
+      TOKIO_WORKER_THREADS: ${LIVENESS_BRIDGE_WORKERS:-2}
+    cpus: ${LIVENESS_BRIDGE_CPUS:-1.0}

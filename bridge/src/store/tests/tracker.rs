@@ -246,6 +246,93 @@ fn a_timeline_interleaves_comments_and_events_in_one_ascending_order() {
     );
 }
 
+/// Several issues with timelines of their own: comments and events out of
+/// insertion order, a comment and an event stamped in the same second, and an
+/// issue with nothing said on it beyond its creation.
+fn issues_with_timelines(store: &Store, count: usize) -> Vec<Issue> {
+    (0..count)
+        .map(|index| {
+            let issue = filed(store, &format!("issue {index}"));
+            let minute = |m: usize| format!("2026-08-21T10:{:02}:00Z", (index + m) % 60);
+            let comments: Vec<IssueComment> = (0..index % 4)
+                .rev()
+                .map(|n| comment(&issue, &format!("said {n}"), &minute(n * 2 + 1)))
+                .collect();
+            let events: Vec<IssueEvent> = (0..index % 3)
+                .map(|n| {
+                    IssueEvent::new(
+                        &issue.id,
+                        Actor::User,
+                        IssueEventKind::Labelled,
+                        serde_json::json!({ "added": [format!("l{n}")], "removed": [] }),
+                        &minute(n * 3 + 1),
+                    )
+                })
+                .collect();
+            store
+                .save_tracker_issue_activity(&issue, &comments, &events)
+                .unwrap();
+            issue
+        })
+        .collect()
+}
+
+/// Many issues' timelines in one read answer, for every issue, exactly what
+/// reading that issue's timeline alone answers — the same entries in the same
+/// order — and an id nothing answers to reads as an empty timeline.
+#[test]
+fn many_timelines_read_together_match_each_read_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let issues = issues_with_timelines(&store, 12);
+    let mut ids: Vec<String> = issues.iter().map(|issue| issue.id.clone()).collect();
+    ids.push("issue-nobody".into());
+    ids.push(issues[3].id.clone());
+
+    let together = store.load_tracker_timelines(&ids).unwrap();
+
+    assert_eq!(
+        together.len(),
+        issues.len() + 1,
+        "one timeline per id asked"
+    );
+    for id in &ids {
+        assert_eq!(
+            together[id],
+            store.load_tracker_timeline(id).unwrap(),
+            "{id} reads the same together as alone"
+        );
+    }
+    assert!(together["issue-nobody"].is_empty());
+    assert!(
+        together.values().any(|timeline| timeline.len() > 4),
+        "the fixture interleaves more than a creation event"
+    );
+}
+
+/// A list longer than one statement may bind is read in chunks, and an issue
+/// on either side of a chunk boundary still gets its whole timeline.
+#[test]
+fn many_timelines_read_across_the_parameter_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let issues = issues_with_timelines(&store, 6);
+    let mut ids: Vec<String> = (0..1_200).map(|n| format!("issue-absent-{n}")).collect();
+    for (slot, issue) in [0, 499, 500, 501, 999, 1_199].into_iter().zip(&issues) {
+        ids[slot] = issue.id.clone();
+    }
+
+    let together = store.load_tracker_timelines(&ids).unwrap();
+
+    assert_eq!(together.len(), ids.len());
+    for issue in &issues {
+        assert_eq!(
+            together[&issue.id],
+            store.load_tracker_timeline(&issue.id).unwrap()
+        );
+    }
+}
+
 /// An append is idempotent by id, so a retry of a write whose answer was lost
 /// adds nothing a second time.
 #[test]

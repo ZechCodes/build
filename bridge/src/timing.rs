@@ -149,7 +149,7 @@ pub struct FrameClock {
 impl FrameClock {
     /// The daemon's clock: slow frames go to stderr.
     pub fn new() -> Arc<FrameClock> {
-        FrameClock::reporting_to(Arc::new(|line: &str| eprintln!("{line}")))
+        FrameClock::reporting_to(Arc::new(|line: &str| crate::logline::say(line)))
     }
 
     /// A clock whose slow-frame lines go somewhere a test can read them.

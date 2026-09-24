@@ -2,7 +2,7 @@ use crate::api::{self, ApiError, API_VERSION};
 use crate::app::{
     agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
     stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
-    DeliveryRunner,
+    DeliveryRunner, PeersSlot,
 };
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::orchestrator::OrchestratorError;
@@ -145,6 +145,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
 /// retryability, details — are written in exactly one place.
 pub(in crate::app) fn dispatch_frame(
     state: &Arc<Mutex<AppState>>,
+    peers: &PeersSlot,
     sender: SessionSender,
     frame: Frame,
     timer: FrameTimer,
@@ -177,6 +178,15 @@ pub(in crate::app) fn dispatch_frame(
         .get("params")
         .cloned()
         .unwrap_or_else(|| json!({}));
+
+    // Signaling first, and off the app mutex entirely: an offer or a candidate
+    // touches the peers and nothing else, and an ICE restart that waits behind
+    // a busy app is a phone that gives up on the device (issue #128). Admission
+    // is not consulted either — a peer negotiating across an update handoff
+    // reads and writes no state the handoff protects.
+    if let Some(outcome) = signaling(peers, &sender, &method, &params) {
+        return api::reply(id, outcome.map_err(ApiError::from));
+    }
 
     // Keep a request admitted through its off-lock git work and queue drain.
     // The idle updater can claim the bridge only between complete requests.
@@ -231,6 +241,23 @@ fn noted_as_user_activity(
     outcome
 }
 
+/// The three signaling verbs, answered from the peers slot alone. `None` is
+/// every other verb.
+fn signaling(
+    peers: &PeersSlot,
+    sender: &SessionSender,
+    method: &str,
+    params: &Value,
+) -> Option<Result<Value, String>> {
+    let peers = peers.get();
+    Some(match method {
+        "rtc.offer" => rtc_offer(&peers, sender, params),
+        "rtc.ice" => rtc_ice(&peers, sender, params),
+        "rtc.close" => rtc_close(&peers, sender),
+        _ => return None,
+    })
+}
+
 /// What a `ping` answers, wherever it is answered from.
 ///
 /// Two places answer it and they must answer identically: the carrier's fast
@@ -275,9 +302,6 @@ fn session_scoped(
         "bridge.stats" => Ok(timer.clock().stats()),
         // QA-only (`BRIDGE_QA_AGENT=1`); unknown to everyone else.
         "stream.start" if timer.lock(state).qa_agent => stream_start(state, params, timer),
-        "rtc.offer" => rtc_offer(state, sender, params, timer),
-        "rtc.ice" => rtc_ice(state, sender.session_id(), params, timer),
-        "rtc.close" => rtc_close(state, sender.session_id(), timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
@@ -529,9 +553,12 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+        let (clock, peers) = {
+            let app = state.lock().unwrap();
+            (Arc::clone(&app.frame_clock), app.peers_slot())
+        };
         FrameHandler::new(clock, move |sender, frame, timer| {
-            dispatch_frame(&state, sender, frame, timer)
+            dispatch_frame(&state, &peers, sender, frame, timer)
         })
     }
 

@@ -227,6 +227,10 @@ async fn the_end_of_a_session_tears_down_its_peer() {
     signal(&handler, &sender, "rtc.offer", offer("v=0 ending")).await;
     let peer = factory.peer_of("s-ending").expect("the session has a peer");
 
+    // The close frame is the registry's, emitted once the opening has ended:
+    // every sender of that opening is told first, and the peer goes with an
+    // opening that is over, never with one that is still open.
+    sender.opening_ended();
     let close = Frame {
         session_id: "s-ending".into(),
         message_id: "m".into(),

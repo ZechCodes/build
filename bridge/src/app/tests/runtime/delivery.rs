@@ -1399,8 +1399,10 @@ async fn a_close_frame_detaches_the_sessions_terminal_sender() {
         created_at: String::new(),
         payload: Value::Null,
     };
+    let peers = state.lock().unwrap().peers_slot();
     let response = dispatch_frame(
         &state,
+        &peers,
         SessionSender::detached("s-dead"),
         close,
         FrameClock::new().frame("close"),

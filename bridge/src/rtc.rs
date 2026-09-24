@@ -38,7 +38,7 @@ use webrtc::peer_connection::{
 
 use rtc::ice::mdns::MulticastDnsMode;
 
-use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
+use crate::carrier::{self, CarrierHandle, FrameIntake, Opening, OutboundEnvelope, SessionSender};
 use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
 
 /// Content-free lifecycle events share a wall clock with browser diagnostics.
@@ -68,6 +68,8 @@ pub enum RtcError {
     Unavailable,
     #[error("the peer connection refused the offer: {0}")]
     Refused(String),
+    #[error("session {0} has ended")]
+    Ended(String),
 }
 
 /// One live peer connection — one per E2EE session, always the answerer.
@@ -102,6 +104,9 @@ pub trait SessionPeerFactory: Send + Sync {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError>;
 }
 
+/// A session's peer and the opening of the session it was registered for.
+type RegisteredPeer = (Opening, Arc<dyn SessionPeer>);
+
 /// Which peer connection each E2EE session has, and when it stops being its.
 ///
 /// **Boundary** the whole lifecycle behind three verbs the signaling arms call
@@ -112,37 +117,101 @@ pub trait SessionPeerFactory: Send + Sync {
 /// a blocking thread and gets its answer back before it replies.
 pub struct SessionPeers {
     factory: Arc<dyn SessionPeerFactory>,
-    peers: Mutex<HashMap<String, Arc<dyn SessionPeer>>>,
+    /// Each session's peer, and the opening of that session it belongs to.
+    /// The opening is the fence: a session id is opened, ended and opened
+    /// again, and a close or a candidate from an opening that has ended must
+    /// not act on the peer the id's next opening negotiated.
+    peers: Mutex<HashMap<String, RegisteredPeer>>,
+    /// The runtime every peer's work is driven on: the daemon's liveness
+    /// runtime (`crate::liveness`), so a peer's channels and its close never
+    /// share a worker with a task that takes the app lock. `None` drives on
+    /// whatever runtime the caller is in — the tests, which have one runtime.
+    driver: Option<tokio::runtime::Handle>,
+}
+
+/// What the map decided about a peer an offer just built.
+enum Registered {
+    /// The offer's opening already has a peer: ride it, close the new one.
+    Riding(Arc<dyn SessionPeer>),
+    /// The offer's opening has ended, or the id is open again under another
+    /// opening whose peer is not this offer's to replace: close the new one.
+    Ended,
+    /// The new peer is the session's, and this is the peer the opening it
+    /// displaced (an ended one) had left behind, if any.
+    Opened(Option<Arc<dyn SessionPeer>>),
 }
 
 impl SessionPeers {
     pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self> {
+        Self::with_factory_on(factory, None)
+    }
+
+    /// Peers whose work runs on `driver`.
+    pub fn with_factory_on(
+        factory: Arc<dyn SessionPeerFactory>,
+        driver: Option<tokio::runtime::Handle>,
+    ) -> Arc<Self> {
         Arc::new(SessionPeers {
             factory,
             peers: Mutex::new(HashMap::new()),
+            driver,
         })
+    }
+
+    /// Finish one peer-connection call where a frame handler can wait for it.
+    /// Handlers run on the runtime's blocking pool (`carrier::dispatch`), so
+    /// the peer's async work is finished here rather than outliving the reply
+    /// the client is waiting for — the one place that happens. Driven on the
+    /// liveness runtime when there is one: everything the future spawns (the
+    /// peer's driver, its channels' pumps) lands there.
+    fn awaited<T>(&self, work: impl std::future::Future<Output = T>) -> T {
+        match &self.driver {
+            Some(driver) => driver.block_on(work),
+            None => tokio::runtime::Handle::current().block_on(work),
+        }
+    }
+
+    /// Run `work` on the peers' runtime without waiting for it.
+    fn spawn_off<F>(&self, work: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        match &self.driver {
+            Some(driver) => {
+                driver.spawn(work);
+            }
+            None => {
+                tokio::spawn(work);
+            }
+        }
     }
 
     /// Answer this session's offer, opening its peer if this is the first one.
     ///
-    /// A first offer the peer cannot answer leaves the session with no peer, so
-    /// the browser's retry builds a fresh one rather than reaching the
-    /// half-open peer that just failed; a failed ICE restart keeps the peer
-    /// that is already carrying.
+    /// The session is the sender's: an offer from an opening that has ended is
+    /// refused, not answered by opening a peer nobody will ever close. A first
+    /// offer the peer cannot answer leaves the session with no peer, so the
+    /// browser's retry builds a fresh one rather than reaching the half-open
+    /// peer that just failed; a failed ICE restart keeps the peer that is
+    /// already carrying.
     pub fn offer(
         &self,
-        session_id: &str,
         offer_sdp: &str,
         ice_servers: &[Value],
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
-        let (peer, opened_by_this_offer) = self.riding_or_opened(session_id)?;
-        match awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
+        let session_id = signaling.session_id().to_string();
+        let opening = signaling.opening();
+        if !opening.is_open() {
+            return Err(RtcError::Ended(session_id));
+        }
+        let (peer, opened_by_this_offer) = self.riding_or_opened(&session_id, &opening)?;
+        match self.awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
             Ok(answer) => Ok(answer),
             Err(refused) => {
                 if opened_by_this_offer {
-                    if let Some(unusable) = self.take(session_id) {
-                        awaited(unusable.close());
+                    if let Some(unusable) = self.take(&session_id, &opening) {
+                        self.awaited(unusable.close());
                     }
                 }
                 Err(refused)
@@ -151,75 +220,156 @@ impl SessionPeers {
     }
 
     /// Trickle one of the browser's candidates to the peer this session is
-    /// negotiating over. A candidate for a session that never offered is
-    /// refused, not answered by opening a peer nobody negotiated.
-    pub fn candidate(&self, session_id: &str, candidate: Value) -> Result<(), RtcError> {
-        let peer = self
-            .peers
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
-        awaited(peer.add_remote_candidate(candidate))
+    /// negotiating over. A candidate for a session that never offered, or
+    /// from an opening whose peer this is not, is refused rather than
+    /// answered by opening a peer nobody negotiated.
+    pub fn candidate(&self, signaling: &SessionSender, candidate: Value) -> Result<(), RtcError> {
+        let peer = self.peer_of(signaling)?;
+        self.awaited(peer.add_remote_candidate(candidate))
     }
 
     /// The browser gave up on the peer carrier: tear this session's peer down
-    /// and leave the session working over the relay.
-    pub fn close(&self, session_id: &str) -> Result<(), RtcError> {
+    /// and leave the session working over the relay. Only the peer of the
+    /// sender's own opening: a close that ran late, after the id was opened
+    /// again, must not take the new opening's peer with it.
+    pub fn close(&self, signaling: &SessionSender) -> Result<(), RtcError> {
+        let session_id = signaling.session_id();
         diagnostic(session_id, "close_requested");
+        let opening = signaling.opening();
+        if !opening.is_open() {
+            return Err(RtcError::Ended(session_id.to_string()));
+        }
         let peer = self
-            .take(session_id)
+            .take(session_id, &opening)
             .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
-        awaited(peer.close());
+        self.awaited(peer.close());
         Ok(())
     }
 
     /// The session ended, so its peer does: an ICE negotiation belongs to the
-    /// session that offered it. The teardown is spawned, because this runs
-    /// where the app releases everything else the session held and nothing
-    /// there waits on a socket.
+    /// session that offered it. Only a peer whose opening has ended goes —
+    /// the id may be open again already, with a peer of that opening's own.
+    /// The teardown is spawned, because this runs where the app releases
+    /// everything else the session held and nothing there waits on a socket.
     pub fn end_session(&self, session_id: &str) {
-        if let Some(peer) = self.take(session_id) {
+        let ended = {
+            let mut peers = self.peers.lock().unwrap();
+            match peers.get(session_id) {
+                Some((opening, _)) if !opening.is_open() => {
+                    peers.remove(session_id).map(|(_, peer)| peer)
+                }
+                _ => None,
+            }
+        };
+        if let Some(peer) = ended {
             diagnostic(session_id, "session_ended_closing_peer");
-            tokio::spawn(async move { peer.close().await });
+            self.spawn_off(async move { peer.close().await });
         }
     }
 
     /// This session's peer and whether this call is the one that opened it.
     ///
     /// Building a peer is foreign work — a real one allocates an ICE agent and
-    /// a DTLS transport — so it runs with no lock held, and two offers racing
-    /// on one session still leave one peer: the one that reached the map first,
-    /// the loser closed rather than left negotiating.
-    fn riding_or_opened(&self, session_id: &str) -> Result<(Arc<dyn SessionPeer>, bool), RtcError> {
-        if let Some(peer) = self.peers.lock().unwrap().get(session_id) {
-            return Ok((peer.clone(), false));
+    /// a DTLS transport — so it runs with no lock held, and what to do with
+    /// the built peer is decided under the map's lock afterwards, in one
+    /// place, with the offer's own opening checked FIRST: an offer whose
+    /// opening ended while its peer was being built touches nothing in the
+    /// map. The same id may be open again by then, with a peer of that
+    /// opening's own negotiating, and this offer's only right is to close
+    /// what it built and be refused (the round-2 review of issue #128 caught
+    /// a stale offer closing the new opening's live peer as "stale" before it
+    /// noticed it had ended itself).
+    ///
+    /// From there: two offers racing on one open opening still leave one peer,
+    /// the one that reached the map first, the loser closed rather than left
+    /// negotiating. A peer an earlier opening of this id left behind — its
+    /// opening ended — is closed and replaced: it is nobody's. A peer of an
+    /// opening that is still open is never replaced by another opening's
+    /// offer, whatever order the two arrived in.
+    fn riding_or_opened(
+        &self,
+        session_id: &str,
+        opening: &Opening,
+    ) -> Result<(Arc<dyn SessionPeer>, bool), RtcError> {
+        if let Some((riding, peer)) = self.peers.lock().unwrap().get(session_id) {
+            if riding.is(opening) {
+                return Ok((peer.clone(), false));
+            }
         }
         let opened = self.factory.open(session_id)?;
-        let won_the_race = {
+        let registered = {
             let mut peers = self.peers.lock().unwrap();
-            match peers.get(session_id) {
-                Some(peer) => Some(peer.clone()),
-                None => {
-                    peers.insert(session_id.to_string(), opened.clone());
-                    None
+            if !opening.is_open() {
+                Registered::Ended
+            } else {
+                match peers.get(session_id) {
+                    Some((riding, peer)) if riding.is(opening) => Registered::Riding(peer.clone()),
+                    Some((riding, _)) if riding.is_open() => Registered::Ended,
+                    _ => Registered::Opened(
+                        peers
+                            .insert(session_id.to_string(), (opening.clone(), opened.clone()))
+                            .map(|(_, stale)| stale),
+                    ),
                 }
             }
         };
-        match won_the_race {
-            Some(peer) => {
-                awaited(opened.close());
+        match registered {
+            Registered::Riding(peer) => {
+                self.awaited(opened.close());
                 Ok((peer, false))
             }
-            None => Ok((opened, true)),
+            Registered::Ended => {
+                self.awaited(opened.close());
+                Err(RtcError::Ended(session_id.to_string()))
+            }
+            Registered::Opened(displaced) => {
+                if let Some(stale) = displaced {
+                    diagnostic(session_id, "stale_opening_peer_closed");
+                    self.awaited(stale.close());
+                }
+                // The opening may have ended between the check and here — its
+                // end is flipped under the registry's lock, not this map's —
+                // and what this offer registered for it is then this offer's
+                // own to take back.
+                if !opening.is_open() {
+                    if let Some(unusable) = self.take(session_id, opening) {
+                        self.awaited(unusable.close());
+                    }
+                    return Err(RtcError::Ended(session_id.to_string()));
+                }
+                Ok((opened, true))
+            }
         }
     }
 
-    /// Take this session's peer out — the one place a peer stops being the
-    /// session's, so an answer still in flight cannot put a closed one back.
-    fn take(&self, session_id: &str) -> Option<Arc<dyn SessionPeer>> {
-        self.peers.lock().unwrap().remove(session_id)
+    /// The peer of the sender's own opening, if that opening is open and has
+    /// one.
+    fn peer_of(&self, signaling: &SessionSender) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        let session_id = signaling.session_id();
+        let opening = signaling.opening();
+        if !opening.is_open() {
+            return Err(RtcError::Ended(session_id.to_string()));
+        }
+        self.peers
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .filter(|(riding, _)| riding.is(&opening))
+            .map(|(_, peer)| peer.clone())
+            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))
+    }
+
+    /// Take this session's peer out, if it is `opening`'s — the one place a
+    /// peer stops being the session's, so an answer still in flight cannot
+    /// put a closed one back.
+    fn take(&self, session_id: &str, opening: &Opening) -> Option<Arc<dyn SessionPeer>> {
+        let mut peers = self.peers.lock().unwrap();
+        match peers.get(session_id) {
+            Some((riding, _)) if riding.is(opening) => {
+                peers.remove(session_id).map(|(_, peer)| peer)
+            }
+            _ => None,
+        }
     }
 
     /// Test-only: how many sessions hold a peer.
@@ -227,14 +377,6 @@ impl SessionPeers {
     pub fn count(&self) -> usize {
         self.peers.lock().unwrap().len()
     }
-}
-
-/// Finish one peer-connection call where a frame handler can wait for it.
-/// Handlers run on the runtime's blocking pool (`carrier::dispatch`), so the
-/// peer's async work is finished here rather than outliving the reply the
-/// client is waiting for — the one place that happens.
-fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Handle::current().block_on(work)
 }
 
 /// A bridge with no peer transport built in. Every offer is refused, and a
@@ -254,6 +396,12 @@ impl SessionPeerFactory for NoPeerFactory {
 pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
     signaling.push(json!({ "type": "rtc.ice", "candidate": candidate }))
 }
+
+/// How many reactor threads carry every peer's driver between them. Two: a
+/// device carries a few sessions, each a trickle of consent checks and
+/// whatever the channels move, and the second thread is so one session's
+/// burst is not the other's stall.
+const REACTOR_THREADS: usize = 2;
 
 /// How many bytes a channel may hold undelivered before it stops taking more
 /// (spec §Backpressure). The peer connection owns the waiting: a send past this
@@ -464,7 +612,15 @@ impl WebrtcPeer {
                     .with_setting_engine(self.policy.setting_engine(multicast_dns))
                     .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
                     .with_handler(events.clone())
-                    .with_udp_addrs(udp_addrs.clone());
+                    .with_udp_addrs(udp_addrs.clone())
+                    // The driver — the UDP sockets, ICE's checks and consent,
+                    // DTLS, SCTP's timers — on the crate's own reactor
+                    // threads, off every runtime the daemon parks (issue
+                    // #128). Handlers are the callbacks above: a line to
+                    // stderr and a candidate encrypted and queued, nothing
+                    // that blocks.
+                    .with_dedicated_reactor_thread(true)
+                    .with_reactor_pool_size(REACTOR_THREADS);
                 async move { attempt.build().await }
             })
             .await?,
@@ -711,6 +867,12 @@ struct GathererLog;
 /// client they allocate through.
 const GATHERER_LOG_TARGETS: [&str; 2] = ["webrtc::peer_connection::transports", "rtc_turn"];
 
+/// How often one kind of gatherer complaint is written.
+const GATHERER_LOG_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+
+static GATHERER_LINES: crate::logline::Throttle =
+    crate::logline::Throttle::new(GATHERER_LOG_WINDOW);
+
 impl log::Log for GathererLog {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         metadata.level() <= log::Level::Warn
@@ -720,14 +882,22 @@ impl log::Log for GathererLog {
     }
 
     fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!(
-                "rtc: {} {}: {}",
-                record.level(),
-                record.target(),
-                record.args()
-            );
+        if !self.enabled(record.metadata()) {
+            return;
         }
+        // One line per kind per window: Cloudflare answered 8,000 `ChannelBind
+        // 400`s in one evening, each its own transaction id, and the session
+        // lines between them were unreadable.
+        let message = record.args().to_string();
+        let Some(suppressed) = GATHERER_LINES.admit(&crate::logline::key_of(&message)) else {
+            return;
+        };
+        crate::logline::say(format!(
+            "rtc: {} {}: {message}{}",
+            record.level(),
+            record.target(),
+            crate::logline::suppressed_suffix(suppressed, GATHERER_LOG_WINDOW)
+        ));
     }
 
     fn flush(&self) {}
@@ -1376,6 +1546,11 @@ pub mod recording {
         opens: AtomicUsize,
         gate: Mutex<Option<Arc<AnswerGate>>>,
         refuse_offers: AtomicBool,
+        /// Run as each peer is built, before it exists: where a test puts
+        /// the thing that happens while an offer's peer is being made.
+        /// Cloned out of its lock before it runs, so the thing may itself be
+        /// an offer through this factory.
+        on_open: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     }
 
     impl RecordingPeerFactory {
@@ -1396,6 +1571,11 @@ pub mod recording {
             self.refuse_offers.store(true, Ordering::SeqCst);
         }
 
+        /// Run `hook` while each peer is being built.
+        pub fn on_open(&self, hook: impl Fn() + Send + Sync + 'static) {
+            *self.on_open.lock().unwrap() = Some(Arc::new(hook));
+        }
+
         pub fn peer_of(&self, session_id: &str) -> Option<Arc<RecordingPeer>> {
             self.opened.lock().unwrap().get(session_id).cloned()
         }
@@ -1409,6 +1589,10 @@ pub mod recording {
 
     impl SessionPeerFactory for RecordingPeerFactory {
         fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+            let hook = self.on_open.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
             let peer = Arc::new(RecordingPeer {
                 record: Mutex::new(PeerRecord::default()),
                 gate: self.gate.lock().unwrap().clone(),
@@ -1422,6 +1606,189 @@ pub mod recording {
                 .insert(session_id.to_string(), peer.clone());
             Ok(peer)
         }
+    }
+}
+
+/// The fence around a session's peer: what an offer, a candidate, a close and
+/// a session's end may do once the opening they came from has ended.
+#[cfg(test)]
+mod opening_fence_tests {
+    use super::recording::RecordingPeerFactory;
+    use super::*;
+    use crate::carrier::SessionSender;
+
+    fn peers() -> (Arc<SessionPeers>, Arc<RecordingPeerFactory>) {
+        let factory = RecordingPeerFactory::new();
+        (SessionPeers::with_factory(factory.clone()), factory)
+    }
+
+    /// The verbs finish their peer's async work on the calling thread, the
+    /// way a handler on the blocking pool does, so they run there.
+    async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        tokio::task::spawn_blocking(work).await.unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offer_from_an_ended_opening_is_refused_and_opens_no_peer() {
+        let (peers, factory) = peers();
+        let sender = SessionSender::detached("s-1");
+        sender.opening_ended();
+        let offered = {
+            let peers = Arc::clone(&peers);
+            blocking(move || peers.offer("v=0", &[], sender)).await
+        };
+        assert!(matches!(offered, Err(RtcError::Ended(_))), "{offered:?}");
+        assert_eq!(factory.opened_count(), 0, "no peer was so much as built");
+        assert_eq!(peers.count(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_opening_that_ends_while_its_peer_is_built_is_left_no_peer() {
+        let (peers, factory) = peers();
+        let sender = SessionSender::detached("s-1");
+        let ending = sender.clone();
+        factory.on_open(move || ending.opening_ended());
+        let offered = {
+            let peers = Arc::clone(&peers);
+            blocking(move || peers.offer("v=0", &[], sender)).await
+        };
+        assert!(matches!(offered, Err(RtcError::Ended(_))), "{offered:?}");
+        assert_eq!(
+            peers.count(),
+            0,
+            "nothing stays registered for a session that is gone"
+        );
+        assert!(
+            factory.peer_of("s-1").unwrap().is_closed(),
+            "the peer built for nobody was closed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_earlier_opening_s_close_and_candidates_leave_the_next_opening_s_peer_alone() {
+        let (peers, factory) = peers();
+        let first = SessionSender::detached("s-1");
+        {
+            let (peers, first) = (Arc::clone(&peers), first.clone());
+            blocking(move || peers.offer("v=0 first", &[], first))
+                .await
+                .unwrap();
+        }
+        let stale = factory.peer_of("s-1").unwrap();
+        first.opening_ended();
+        // The same id, opened again: a new opening with a peer of its own,
+        // which displaces the one the ended opening left behind.
+        let second = SessionSender::detached("s-1");
+        {
+            let (peers, second) = (Arc::clone(&peers), second.clone());
+            blocking(move || peers.offer("v=0 second", &[], second))
+                .await
+                .unwrap();
+        }
+        assert_eq!(factory.opened_count(), 2);
+        assert!(
+            stale.is_closed(),
+            "the ended opening's peer was closed, not left"
+        );
+        let current = factory.peer_of("s-1").unwrap();
+
+        let closed = {
+            let (peers, first) = (Arc::clone(&peers), first.clone());
+            blocking(move || peers.close(&first)).await
+        };
+        assert!(matches!(closed, Err(RtcError::Ended(_))), "{closed:?}");
+        let trickled = {
+            let (peers, first) = (Arc::clone(&peers), first.clone());
+            blocking(move || peers.candidate(&first, json!({ "candidate": "late" }))).await
+        };
+        assert!(matches!(trickled, Err(RtcError::Ended(_))), "{trickled:?}");
+        assert!(!current.is_closed(), "the next opening's peer is untouched");
+        assert!(current.remote_candidates().is_empty());
+
+        // The ended opening's close frame, run late: it ends nothing of the
+        // new opening's.
+        peers.end_session("s-1");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(peers.count(), 1);
+        assert!(!current.is_closed());
+
+        // And once the new opening ends, its close frame takes its peer.
+        second.opening_ended();
+        peers.end_session("s-1");
+        current.closed().await;
+        assert_eq!(peers.count(), 0);
+    }
+
+    /// The interleaving the round-2 review reproduced: an offer's opening
+    /// ends while its peer is being built, the same id is opened again and
+    /// negotiates a peer of its own, and only then does the old offer get to
+    /// the map. It finds a peer that is not its opening's — and that peer is
+    /// the live opening's, not a stale one to close. The old offer closes
+    /// what it built, is refused, and the new opening's peer is untouched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_old_offer_that_arrives_after_the_next_opening_leaves_its_peer_alone() {
+        let (peers, factory) = peers();
+        let first = SessionSender::detached("s-1");
+        let second = SessionSender::detached("s-1");
+        let new_opening_s_peer: Arc<Mutex<Option<Arc<super::recording::RecordingPeer>>>> =
+            Arc::new(Mutex::new(None));
+        {
+            // While the first offer's peer is being built: its opening ends,
+            // and the second opening offers and is answered. Once only — the
+            // second offer builds a peer through this same factory.
+            let (peers, factory, first, second) = (
+                Arc::clone(&peers),
+                Arc::clone(&factory),
+                first.clone(),
+                second.clone(),
+            );
+            let stash = Arc::clone(&new_opening_s_peer);
+            let once = std::sync::atomic::AtomicBool::new(false);
+            factory.clone().on_open(move || {
+                if once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                first.opening_ended();
+                peers
+                    .offer("v=0 second", &[], second.clone())
+                    .expect("the new opening's offer is answered");
+                *stash.lock().unwrap() = factory.peer_of("s-1");
+            });
+        }
+        let old_offer = {
+            let (peers, first) = (Arc::clone(&peers), first.clone());
+            blocking(move || peers.offer("v=0 first", &[], first)).await
+        };
+        assert!(
+            matches!(old_offer, Err(RtcError::Ended(_))),
+            "{old_offer:?}"
+        );
+        assert_eq!(factory.opened_count(), 2);
+
+        let current = new_opening_s_peer
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the new opening negotiated a peer while the old offer was stalled");
+        assert!(
+            !current.is_closed(),
+            "the old offer must not close the new opening's live peer"
+        );
+        assert_eq!(
+            peers.count(),
+            1,
+            "the new opening's peer is still registered"
+        );
+        let trickled = {
+            let (peers, second) = (Arc::clone(&peers), second.clone());
+            blocking(move || peers.candidate(&second, json!({ "candidate": "live" }))).await
+        };
+        assert!(trickled.is_ok(), "{trickled:?}");
+        assert_eq!(
+            current.remote_candidates().len(),
+            1,
+            "the live opening's candidates reach its own peer"
+        );
     }
 }
 

@@ -18,15 +18,27 @@
 //! build tool rewriting a tree costs one `note_files` rather than thousands.
 //! Everything after the debounce is set arithmetic; no git process, no libgit2
 //! call, and no lock but the bus's own is taken on the watcher thread.
+//!
+//! Ignored directories are never watched at all. A recursive watch on the root
+//! would put an inotify watch on every directory under `target/` and
+//! `node_modules/` — three to five thousand per checkout — and every file a
+//! test run writes there would wake the backend thread, cross the channel and
+//! be classified only to be dropped. On 2026-09-24 ten such watchers had two
+//! `notify-rs inotify` threads at the top of the bridge's CPU table (issue
+//! #128). So the tree is walked once at start, the directories the repository
+//! ignores are skipped along with everything beneath them, and each watched
+//! directory is watched on its own; a directory created later is adopted the
+//! same way when its creation is seen.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
-use notify::Watcher;
+use notify::event::ModifyKind;
+use notify::{Event, EventKind, Watcher};
 
 use crate::changes::{ChangeBus, Kind};
 
@@ -54,12 +66,21 @@ pub enum WatchError {
 /// classifying thread; dropping it stops watching — the dropped watcher closes
 /// the raw channel, and the thread ends on the next receive.
 pub struct WorktreeWatcher {
-    _watcher: notify::RecommendedWatcher,
+    _watcher: SharedWatcher,
+    /// How many directories were watched at start, and how many ignored
+    /// subtrees were left alone: the two numbers that say what the watcher
+    /// costs.
+    watched: usize,
+    skipped: usize,
 }
 
+/// The `notify` watcher, shared with the classifying thread so a directory
+/// created later can be adopted from there.
+type SharedWatcher = Arc<Mutex<notify::RecommendedWatcher>>;
+
 impl WorktreeWatcher {
-    /// Begin watching `worktree_root` recursively, noting every classified
-    /// burst against `entity_id` on `bus`.
+    /// Begin watching `worktree_root`, noting every classified burst against
+    /// `entity_id` on `bus`.
     ///
     /// Runs on a blocking task: `notify`'s backend and the classifying thread
     /// are both synchronous.
@@ -69,6 +90,12 @@ impl WorktreeWatcher {
         bus: Arc<ChangeBus>,
     ) -> Result<WorktreeWatcher, WatchError> {
         start_with_sink(worktree_root, entity_id, bus, DEBOUNCE)
+    }
+
+    /// How many directories carry a watch, and how many ignored subtrees do
+    /// not.
+    pub fn coverage(&self) -> (usize, usize) {
+        (self.watched, self.skipped)
     }
 }
 
@@ -129,44 +156,175 @@ fn start_with_sink<S: ChangeSink>(
     // strips the root off them.
     let root = std::fs::canonicalize(worktree_root).map_err(|err| fail(err.to_string()))?;
 
-    let (raw_tx, raw_rx) = std::sync::mpsc::channel::<Vec<PathBuf>>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    let (raw_tx, raw_rx) = std::sync::mpsc::channel::<Event>();
+    let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
         if let Ok(event) = res {
-            let _ = raw_tx.send(event.paths);
+            let _ = raw_tx.send(event);
         }
     })
     .map_err(|err| fail(err.to_string()))?;
-    watcher
-        .watch(&root, notify::RecursiveMode::Recursive)
-        .map_err(|err| fail(err.to_string()))?;
+    let watcher: SharedWatcher = Arc::new(Mutex::new(watcher));
 
-    let classifier = Classifier::for_root(&root);
+    let classifier = Arc::new(Classifier::for_root(&root));
+    let mut coverage = Coverage::default();
+    watch_tree(&watcher, &classifier, &root, &mut coverage).map_err(fail)?;
+
     let entity_id = entity_id.to_string();
-    std::thread::spawn(move || classify_loop(raw_rx, &classifier, &entity_id, &*sink, debounce));
+    // Weak, so the thread's hold on the watcher is not a hold at all: the
+    // owner dropping it is what stops the watching and closes the channel.
+    let adopter = Adopter {
+        watcher: Arc::downgrade(&watcher),
+        classifier: Arc::clone(&classifier),
+    };
+    std::thread::spawn(move || {
+        classify_loop(raw_rx, &classifier, &adopter, &entity_id, &*sink, debounce)
+    });
 
-    Ok(WorktreeWatcher { _watcher: watcher })
+    Ok(WorktreeWatcher {
+        _watcher: watcher,
+        watched: coverage.watched,
+        skipped: coverage.skipped,
+    })
+}
+
+/// What one walk of the tree registered and what it left alone.
+#[derive(Default)]
+struct Coverage {
+    watched: usize,
+    skipped: usize,
+    /// The files found under a directory adopted after start, relative to
+    /// the root: written before the watch existed, so noted here instead.
+    files: Vec<String>,
+}
+
+/// Watch `dir` and, beneath it, every directory the repository does not
+/// ignore. `.git` is watched whole: its churn is classified away, and its
+/// metadata is the thing rule one is about. A watch that cannot be added
+/// ends the walk with the reason, so a worktree past the inotify limit is
+/// polled rather than half-watched.
+fn watch_tree(
+    watcher: &SharedWatcher,
+    classifier: &Classifier,
+    dir: &Path,
+    coverage: &mut Coverage,
+) -> Result<(), String> {
+    watcher
+        .lock()
+        .unwrap()
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|err| err.to_string())?;
+    coverage.watched += 1;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(()); // vanished or unreadable since it was seen: nothing to watch
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(relative) = path.strip_prefix(&classifier.root) else {
+            continue;
+        };
+        if kind.is_dir() {
+            if relative == Path::new(".git") {
+                watcher
+                    .lock()
+                    .unwrap()
+                    .watch(&path, notify::RecursiveMode::Recursive)
+                    .map_err(|err| err.to_string())?;
+                coverage.watched += 1;
+            } else if classifier.is_ignored_dir(relative) {
+                coverage.skipped += 1;
+            } else {
+                watch_tree(watcher, classifier, &path, coverage)?;
+            }
+        } else if kind.is_file() && !classifier.is_ignored(relative) {
+            coverage.files.push(slash_path(relative));
+        }
+    }
+    Ok(())
+}
+
+/// What the classifying thread needs to watch a directory it first hears of
+/// after start.
+struct Adopter {
+    watcher: Weak<Mutex<notify::RecommendedWatcher>>,
+    classifier: Arc<Classifier>,
+}
+
+impl Adopter {
+    /// A directory was created or moved into place: watch it and what is
+    /// under it, unless the repository ignores it, and name the files already
+    /// inside it (written before any watch could see them).
+    fn adopt(&self, dir: &Path, burst: &mut Burst) {
+        let Ok(relative) = dir.strip_prefix(&self.classifier.root) else {
+            return;
+        };
+        if relative.starts_with(".git") || self.classifier.is_ignored_dir(relative) {
+            return;
+        }
+        let Some(watcher) = self.watcher.upgrade() else {
+            return; // the owner let go: nothing is watched any more
+        };
+        let mut coverage = Coverage::default();
+        if let Err(reason) = watch_tree(&watcher, &self.classifier, dir, &mut coverage) {
+            crate::logline::say(format!(
+                "watch: cannot watch {}: {reason}; its later writes reach the TTL refresh only",
+                dir.display()
+            ));
+        }
+        for file in coverage.files {
+            burst.git = true;
+            burst.files.insert(file);
+        }
+    }
 }
 
 /// Block for the first event of a burst, drain until the filesystem has been
 /// quiet for `debounce`, then note the burst once. Ends when the watcher is
 /// dropped and the channel closes.
 fn classify_loop<S: ChangeSink>(
-    raw_rx: Receiver<Vec<PathBuf>>,
+    raw_rx: Receiver<Event>,
     classifier: &Classifier,
+    adopter: &Adopter,
     entity_id: &str,
     sink: &S,
     debounce: Duration,
 ) {
     while let Ok(first) = raw_rx.recv() {
         let mut burst = Burst::default();
-        classifier.absorb(&mut burst, &first);
+        classifier.absorb(&mut burst, &first.paths);
+        adopt_new_directories(adopter, &first, &mut burst);
         while let Ok(more) = raw_rx.recv_timeout(debounce) {
-            classifier.absorb(&mut burst, &more);
+            classifier.absorb(&mut burst, &more.paths);
+            adopt_new_directories(adopter, &more, &mut burst);
         }
         note(&burst, entity_id, sink);
     }
     // The outer `recv` only fails once the channel is closed: the watcher was
     // dropped, so this thread is done.
+}
+
+/// Whether an event can be a directory appearing under a watched one: a
+/// creation, or a rename landing (`mv build-tmp src/generated`).
+fn may_add_a_directory(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+    )
+}
+
+fn adopt_new_directories(adopter: &Adopter, event: &Event, burst: &mut Burst) {
+    if !may_add_a_directory(&event.kind) {
+        return;
+    }
+    for path in &event.paths {
+        // `symlink_metadata`: a symlink to a directory is a file here, as it
+        // is to git, and following it could leave the worktree.
+        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir()) {
+            adopter.adopt(path, burst);
+        }
+    }
 }
 
 /// Put one debounced burst on the sink: the named paths first, then git, so a
@@ -246,12 +404,22 @@ impl Classifier {
     /// Ignored by the root's rules or by the user's global excludes. Parents
     /// count: `node_modules/` ignores everything beneath it.
     fn is_ignored(&self, relative: &Path) -> bool {
+        self.matched(relative, false)
+    }
+
+    /// The same question for a directory, which a rule like `target/` names
+    /// only when asked about a directory.
+    fn is_ignored_dir(&self, relative: &Path) -> bool {
+        self.matched(relative, true)
+    }
+
+    fn matched(&self, relative: &Path, is_dir: bool) -> bool {
         self.ignores
-            .matched_path_or_any_parents(relative, false)
+            .matched_path_or_any_parents(relative, is_dir)
             .is_ignore()
             || self
                 .global
-                .matched_path_or_any_parents(relative, false)
+                .matched_path_or_any_parents(relative, is_dir)
                 .is_ignore()
     }
 }
@@ -441,6 +609,57 @@ mod tests {
                 .iter()
                 .any(|path| path.starts_with("node_modules/")),
             "ignored paths are not files the human reads, got {:?}",
+            sink.noted_paths()
+        );
+    }
+
+    /// The point of the walk: a checkout's `target/` and `node_modules/` are
+    /// thousands of directories a test run writes to constantly, and not one
+    /// of them carries a watch. A write under one is not seen at all — not
+    /// noted, not classified, not even read off the kernel.
+    #[test]
+    fn nothing_under_an_ignored_directory_is_watched() {
+        let dir = repo();
+        std::fs::create_dir_all(dir.path().join("node_modules/left-pad")).unwrap();
+        let (watcher, sink) = start_recording(dir.path());
+        let (_, skipped) = watcher.coverage();
+        assert_eq!(skipped, 1, "node_modules is the one ignored subtree");
+
+        std::fs::write(
+            dir.path().join("node_modules/left-pad/index.js"),
+            "module.exports = 1\n",
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+
+        assert_eq!(sink.git_notes(), 0, "an unwatched write moves nothing");
+        assert!(sink.noted_paths().is_empty(), "{:?}", sink.noted_paths());
+    }
+
+    /// A directory that appears after start is adopted: watched, and the files
+    /// written into it before the watch existed are named in the same burst.
+    #[test]
+    fn a_directory_created_later_is_watched_and_its_files_noted() {
+        let dir = repo();
+        let (_watcher, sink) = start_recording(dir.path());
+
+        std::fs::create_dir_all(dir.path().join("src/generated")).unwrap();
+        std::fs::write(dir.path().join("src/generated/early.rs"), "// first\n").unwrap();
+        assert!(
+            settle(&sink, |s| s
+                .noted_paths()
+                .contains(&"src/generated/early.rs".to_string())),
+            "a file written as the directory appeared is named, got {:?}",
+            sink.noted_paths()
+        );
+
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::write(dir.path().join("src/generated/later.rs"), "// second\n").unwrap();
+        assert!(
+            settle(&sink, |s| s
+                .noted_paths()
+                .contains(&"src/generated/later.rs".to_string())),
+            "the adopted directory is watched from then on, got {:?}",
             sink.noted_paths()
         );
     }

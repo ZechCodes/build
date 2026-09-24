@@ -3,8 +3,27 @@
 
 use super::StoredAnswer;
 use crate::app::AppState;
+use crate::store::{PersistedPlan, PersistedRun};
 use crate::tracker::{Actor, Issue, IssueAgentIdentity, TimelineEntry};
-use std::collections::BTreeSet;
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeSet, HashMap};
+
+/// The store's word on agents no live roster holds, read at most once however
+/// many issues one call resolves identities for.
+///
+/// Telling who a departed agent was reads every run and every plan, each with
+/// its agents' conversation tails. Done again for every agent every issue
+/// names, that read held the app lock for seconds at a time under
+/// `issues.list` (#128). Nothing a call does between two issues changes those
+/// records — a backfill writes the issue, never a run — so the first answer
+/// for an agent stands for the rest of the call. Build one per call, never
+/// keep one.
+#[derive(Default)]
+pub(super) struct StoredRosters {
+    runs: OnceCell<Option<Vec<PersistedRun>>>,
+    plans: OnceCell<Option<Vec<PersistedPlan>>>,
+    answers: RefCell<HashMap<String, Option<IssueAgentIdentity>>>,
+}
 
 fn mentioned(issue: &Issue, timeline: &[TimelineEntry]) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
@@ -97,6 +116,22 @@ fn retain_known_fields(
     }
 }
 
+fn identity_in_plans(agent_id: &str, plans: &[PersistedPlan]) -> Option<IssueAgentIdentity> {
+    plans.iter().find_map(|plan| {
+        let roster = plan.roster();
+        let agent = roster.by_id(agent_id)?;
+        Some(IssueAgentIdentity {
+            agent_id: agent_id.to_string(),
+            name: agent.name.clone(),
+            ordinal: Some(agent.ordinal),
+            workspace_id: None,
+            workspace_name: None,
+            provider: Some(agent.choice.provider.wire_id().to_string()),
+            available: false,
+        })
+    })
+}
+
 impl AppState {
     /// Migrate every issue before a roster can disappear. An old author's
     /// only reference may be in a closed, unlinked issue's timeline; reads
@@ -110,12 +145,15 @@ impl AppState {
             return Ok(());
         };
         let project_path = self.tracker_project_path(project_id)?;
-        for issue in store
+        let issues = store
             .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
-            .stored()?
-        {
-            let timeline = store.load_tracker_timeline(&issue.id).stored()?;
-            self.backfill_issue_identities(issue, &timeline)?;
+            .stored()?;
+        let ids: Vec<String> = issues.iter().map(|issue| issue.id.clone()).collect();
+        let mut timelines = store.load_tracker_timelines(&ids).stored()?;
+        let rosters = StoredRosters::default();
+        for issue in issues {
+            let timeline = timelines.remove(&issue.id).unwrap_or_default();
+            self.backfill_issue_identities(issue, &timeline, &rosters)?;
         }
         Ok(())
     }
@@ -161,7 +199,7 @@ impl AppState {
         project_id: &str,
         issue: &Issue,
     ) -> serde_json::Value {
-        let issue = self.issue_with_read_identities(issue.clone(), &[]);
+        let issue = self.issue_with_read_identities(issue.clone(), &[], &StoredRosters::default());
         super::issue_json(project_id, &issue)
     }
 
@@ -201,57 +239,93 @@ impl AppState {
 
     /// A run can have left the active roster while its agent row still lives
     /// in the store. Read that row before calling an older actor unknown.
-    fn stored_issue_identity(&self, agent_id: &str) -> Option<IssueAgentIdentity> {
+    fn stored_issue_identity(
+        &self,
+        agent_id: &str,
+        rosters: &StoredRosters,
+    ) -> Option<IssueAgentIdentity> {
+        if let Some(answer) = rosters.answers.borrow().get(agent_id) {
+            return answer.clone();
+        }
+        let answer = self.read_stored_issue_identity(agent_id, rosters);
+        rosters
+            .answers
+            .borrow_mut()
+            .insert(agent_id.to_string(), answer.clone());
+        answer
+    }
+
+    /// Runs first, then plans, each read once per [`StoredRosters`]; a store
+    /// that cannot be read knows nobody.
+    fn read_stored_issue_identity(
+        &self,
+        agent_id: &str,
+        rosters: &StoredRosters,
+    ) -> Option<IssueAgentIdentity> {
         let store = self.tracker_store().ok()?;
-        for run in store.load_all_runs().ok()? {
+        let runs = rosters
+            .runs
+            .get_or_init(|| store.load_all_runs().ok())
+            .as_ref()?;
+        if let Some(identity) = self.identity_in_runs(agent_id, runs) {
+            return Some(identity);
+        }
+        let plans = rosters
+            .plans
+            .get_or_init(|| store.load_all_plans().ok())
+            .as_ref()?;
+        identity_in_plans(agent_id, plans)
+    }
+
+    fn identity_in_runs(
+        &self,
+        agent_id: &str,
+        runs: &[PersistedRun],
+    ) -> Option<IssueAgentIdentity> {
+        runs.iter().find_map(|run| {
             let roster = run.roster();
-            let Some(agent) = roster.by_id(agent_id) else {
-                continue;
-            };
+            let agent = roster.by_id(agent_id)?;
             let workspace = self.workspaces.list(None).into_iter().find(|workspace| {
                 crate::app::workspaces::same_path(
                     &workspace.root,
                     std::path::Path::new(&run.worktree_path),
                 )
             });
-            return Some(IssueAgentIdentity {
+            Some(IssueAgentIdentity {
                 agent_id: agent_id.to_string(),
                 name: agent.name.clone(),
                 ordinal: Some(agent.ordinal),
                 workspace_id: workspace.map(|workspace| workspace.id.clone()),
-                workspace_name: Some(run.worktree_name),
+                workspace_name: Some(run.worktree_name.clone()),
                 provider: Some(agent.choice.provider.wire_id().to_string()),
                 available: false,
-            });
-        }
-        for plan in store.load_all_plans().ok()? {
-            let roster = plan.roster();
-            let Some(agent) = roster.by_id(agent_id) else {
-                continue;
-            };
-            return Some(IssueAgentIdentity {
-                agent_id: agent_id.to_string(),
-                name: agent.name.clone(),
-                ordinal: Some(agent.ordinal),
-                workspace_id: None,
-                workspace_name: None,
-                provider: Some(agent.choice.provider.wire_id().to_string()),
-                available: false,
-            });
-        }
-        None
+            })
+        })
     }
 
-    fn resolved_issue_identity(&self, agent_id: &str) -> Option<IssueAgentIdentity> {
+    fn resolved_issue_identity(
+        &self,
+        agent_id: &str,
+        rosters: &StoredRosters,
+    ) -> Option<IssueAgentIdentity> {
         self.live_issue_identity(agent_id)
-            .or_else(|| self.stored_issue_identity(agent_id))
+            .or_else(|| self.stored_issue_identity(agent_id, rosters))
     }
 
     /// Add the identities this write can still inspect before a workspace is
     /// removed. Existing snapshots stay when an agent is no longer present.
     pub(super) fn capture_issue_identities(&self, issue: &mut Issue, timeline: &[TimelineEntry]) {
+        self.capture_identities_with(issue, timeline, &StoredRosters::default());
+    }
+
+    fn capture_identities_with(
+        &self,
+        issue: &mut Issue,
+        timeline: &[TimelineEntry],
+        rosters: &StoredRosters,
+    ) {
         for id in mentioned(issue, timeline) {
-            if let Some(identity) = self.resolved_issue_identity(&id) {
+            if let Some(identity) = self.resolved_issue_identity(&id, rosters) {
                 issue
                     .identities
                     .entry(id)
@@ -270,9 +344,10 @@ impl AppState {
         &self,
         mut issue: Issue,
         timeline: &[TimelineEntry],
+        rosters: &StoredRosters,
     ) -> Result<Issue, String> {
         let before = issue.identities.clone();
-        self.capture_issue_identities(&mut issue, timeline);
+        self.capture_identities_with(&mut issue, timeline, rosters);
         if issue.identities != before {
             self.tracker_store()?
                 .save_tracker_issue_activity(&issue, &[], &[])
@@ -287,10 +362,11 @@ impl AppState {
         &self,
         mut issue: Issue,
         timeline: &[TimelineEntry],
+        rosters: &StoredRosters,
     ) -> Issue {
         let ids = mentioned(&issue, timeline);
         for id in ids {
-            if let Some(identity) = self.resolved_issue_identity(&id) {
+            if let Some(identity) = self.resolved_issue_identity(&id, rosters) {
                 issue
                     .identities
                     .entry(id)

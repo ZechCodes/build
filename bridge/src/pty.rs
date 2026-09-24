@@ -25,6 +25,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
 use crate::harness::{AgentSession, AgentStatus, HarnessError, TerminalView, Turn};
+use crate::priority::{ChildKind, ChildPlacement, Launch};
 
 /// Resolve `binary` the way a shell would, against the daemon's PATH (or the
 /// spec's own override). We do this rather than leaving it to portable-pty:
@@ -184,6 +185,9 @@ pub struct HarnessSpec {
     /// The Build agent this spec starts, when the harness logs anything that
     /// must name it (issue #58: a usage limit in bridge.log says whose turn).
     pub agent_id: Option<String>,
+    /// An agent's harness or the user's own shell: where it runs, and behind
+    /// whom (`crate::priority`).
+    pub kind: ChildKind,
 }
 
 impl HarnessSpec {
@@ -200,7 +204,14 @@ impl HarnessSpec {
             known_session_id: None,
             compaction_sidecar: None,
             agent_id: None,
+            kind: ChildKind::Agent,
         }
+    }
+
+    /// This spec starts the user's own shell, not an agent.
+    pub fn as_terminal(mut self) -> Self {
+        self.kind = ChildKind::Terminal;
+        self
     }
 
     /// Name the Build agent this spec starts, for the harness's own log lines.
@@ -286,12 +297,69 @@ pub struct PtySession {
     compaction_sidecar: Option<PathBuf>,
 }
 
+/// Start `binary` with `spec`'s arguments and environment on `slave`, at a
+/// gate, and place it as `placement` says before it runs (`crate::priority`):
+/// the one spawn there is, whatever the placement comes to.
+fn spawn_child(
+    slave: &dyn portable_pty::SlavePty,
+    spec: &HarnessSpec,
+    binary: &std::path::Path,
+    cwd: Option<&std::path::Path>,
+    placement: &ChildPlacement,
+) -> Result<Box<dyn Child + Send + Sync>, HarnessError> {
+    let launch = Launch::gated(binary, &spec.args)
+        .map_err(|error| HarnessError::Session(error.to_string()))?;
+    let mut cmd = CommandBuilder::new(&launch.program);
+    cmd.args(&launch.args);
+    for key in &spec.unset {
+        cmd.env_remove(key);
+    }
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
+    if let Some(cwd) = cwd {
+        cmd.cwd(cwd);
+    }
+    let mut child = slave
+        .spawn_command(cmd)
+        .map_err(|e| HarnessError::Session(e.to_string()))?;
+    let Some(pid) = child.process_id() else {
+        return Err(HarnessError::Session("the spawned child has no pid".into()));
+    };
+    let placed = placement.place(launch.gate, spec.kind, pid, &mut || {
+        matches!(child.try_wait(), Ok(None))
+    });
+    match placed.released {
+        Ok(()) => Ok(child),
+        Err(reason) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(HarnessError::Session(format!(
+                "the child never ran: {reason}"
+            )))
+        }
+    }
+}
+
 impl PtySession {
-    /// Spawn `spec` in a fresh PTY of `size`, optionally in `cwd` (the worktree).
+    /// Spawn `spec` in a fresh PTY of `size`, optionally in `cwd` (the worktree),
+    /// placed the way the daemon places every child (`crate::priority`).
     pub fn spawn(
         spec: &HarnessSpec,
         cwd: Option<PathBuf>,
         size: PtySize,
+    ) -> Result<PtySession, HarnessError> {
+        Self::spawn_placed(spec, cwd, size, ChildPlacement::current())
+    }
+
+    /// [`spawn`](Self::spawn) under an explicit placement — the seam the tests
+    /// use to prove the scoped path and its fallback without touching the
+    /// process-wide choice.
+    pub fn spawn_placed(
+        spec: &HarnessSpec,
+        cwd: Option<PathBuf>,
+        size: PtySize,
+        placement: ChildPlacement,
     ) -> Result<PtySession, HarnessError> {
         if let Some(path) = spec.compaction_sidecar.as_ref() {
             let parent = path.parent().ok_or_else(|| {
@@ -318,22 +386,8 @@ impl PtySession {
             .openpty(size)
             .map_err(|e| HarnessError::Session(e.to_string()))?;
 
-        let mut cmd = CommandBuilder::new(resolve_binary(spec)?);
-        cmd.args(&spec.args);
-        for key in &spec.unset {
-            cmd.env_remove(key);
-        }
-        for (key, value) in &spec.env {
-            cmd.env(key, value);
-        }
-        if let Some(cwd) = cwd {
-            cmd.cwd(cwd);
-        }
-
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| HarnessError::Session(e.to_string()))?;
+        let binary = resolve_binary(spec)?;
+        let child = spawn_child(&*pair.slave, spec, &binary, cwd.as_deref(), &placement)?;
         // Close the slave in the parent so EOF propagates when the child exits.
         drop(pair.slave);
 
@@ -757,6 +811,7 @@ impl PtySession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     fn small_pty() -> PtySize {
         PtySize {
@@ -1625,5 +1680,99 @@ mod tests {
             session.has_exited(),
             "an ended session is reaped, not merely signalled"
         );
+    }
+
+    /// A spec that prints the nice it runs at the moment it starts, then
+    /// waits to be reaped. No pause first: the child is lowered at its gate,
+    /// before it runs a thing, so its first fork already sees the nice.
+    fn nice_reporting_spec() -> HarnessSpec {
+        let mut spec = HarnessSpec::new("sh");
+        spec.args = vec!["-c".into(), "echo NICE=$(nice); sleep 2".into()];
+        spec
+    }
+
+    async fn reported_nice(session: &PtySession) -> String {
+        let mut output = session.subscribe();
+        let seen = read_until(&mut output, "NICE=").await;
+        let after = seen.split("NICE=").nth(1).unwrap_or_default();
+        after.chars().take_while(|c| c.is_ascii_digit()).collect()
+    }
+
+    /// A stand-in for `busctl` that refuses every scope, and a placement that
+    /// uses it with deadlines a test can wait out.
+    fn refusing_busctl(dir: &std::path::Path) -> ChildPlacement {
+        let path = dir.join("busctl");
+        std::fs::write(
+            &path,
+            "#!/bin/sh\necho 'Failed to connect to bus: No such file or directory' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ChildPlacement::TransientScope {
+            busctl: path,
+            systemctl: None,
+            bound_to: None,
+            deadlines: crate::priority::ScopeDeadlines {
+                call: Duration::from_millis(500),
+                arrival: Duration::from_millis(200),
+            },
+        }
+    }
+
+    /// The one thing every agent child has in common, whatever else its
+    /// placement does: it runs behind the daemon. Read back through the PTY
+    /// itself, so the nice is proven on the process the terminal is attached to.
+    /// What an agent child should report: ten below this process, which the
+    /// test runner may itself run niced (the gates run under `nice -n 10`).
+    fn agent_nice() -> String {
+        crate::priority::child_nice_for(crate::priority::own_nice(), crate::priority::CHILD_NICE)
+            .to_string()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_spawned_agent_runs_ten_below_the_daemon() {
+        let session = PtySession::spawn(&nice_reporting_spec(), None, small_pty()).unwrap();
+        assert_eq!(reported_nice(&session).await, agent_nice());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_user_s_shell_without_a_scope_is_half_a_step_down() {
+        // With no scope to rank it in (the tests never install one), the
+        // user's shell runs half a step down: below the daemon, above the
+        // agents.
+        let spec = nice_reporting_spec().as_terminal();
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        assert_eq!(
+            reported_nice(&session).await,
+            crate::priority::child_nice_for(
+                crate::priority::own_nice(),
+                crate::priority::TERMINAL_NICE_WITHOUT_SCOPE
+            )
+            .to_string()
+        );
+    }
+
+    /// The fallback, seen from the terminal: a manager that refuses the scope
+    /// costs the child nothing but the scope. It runs once, niced, and the
+    /// terminal shows the child's own output and not a word of the refusal,
+    /// which went to the daemon's log.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_refused_scope_is_silent_on_the_terminal_and_the_child_runs_niced() {
+        let dir = tempfile::tempdir().unwrap();
+        let placement = refusing_busctl(dir.path());
+        let session =
+            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap();
+        let mut output = session.subscribe();
+        let seen = read_until(&mut output, "NICE=").await;
+        assert!(
+            !seen.contains("Failed") && !seen.contains("bus"),
+            "the refusal reached the terminal: {seen:?}"
+        );
+        let after = seen.split("NICE=").nth(1).unwrap_or_default();
+        let nice: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        assert_eq!(nice, agent_nice());
     }
 }

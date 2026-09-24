@@ -32,6 +32,7 @@ pub use agent_files::AGENT_ATTACHMENT_MAX_BYTES;
 pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 
 pub(in crate::app) use dispatch::AssignTarget;
+use identities::StoredRosters;
 pub(in crate::app) use views::{columns_json, issue_json, issue_with_timeline_json};
 
 use crate::app::{require_str, AppState};
@@ -96,6 +97,11 @@ impl AppState {
     /// `state` and `status` narrow the store read; `assignee` and `label` are
     /// applied to what it answers, because both live inside the record and
     /// hoisting a label list would mean a join table phase 1 does not need.
+    ///
+    /// Every row is what `issues.get` says of that issue, gathered in bulk:
+    /// the timelines in one read, and the store's agent records at most once.
+    /// Read per issue, a long project's list held the app lock — and every
+    /// other call behind it — for seconds (#128).
     pub(crate) fn issues_list(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project_path = self.tracker_project_path(&project_id)?;
@@ -113,19 +119,23 @@ impl AppState {
             .stored()?;
         let assignee = edits::optional_assignee_filter(params)?;
         let label = crate::app::optional_nonempty_string(params, "label")?.map(str::to_string);
-        let mut rows = Vec::new();
-        for issue in issues
+        let issues: Vec<Issue> = issues
             .into_iter()
             .filter(|issue| assignee.matches(issue))
             .filter(|issue| edits::carries_label(issue, label.as_deref()))
-        {
-            let timeline = self
-                .tracker_store()?
-                .load_tracker_timeline(&issue.id)
-                .stored()?;
-            let issue = self.backfill_issue_identities(issue, &timeline)?;
+            .collect();
+        let ids: Vec<String> = issues.iter().map(|issue| issue.id.clone()).collect();
+        let mut timelines = self
+            .tracker_store()?
+            .load_tracker_timelines(&ids)
+            .stored()?;
+        let rosters = StoredRosters::default();
+        let mut rows = Vec::with_capacity(issues.len());
+        for issue in issues {
+            let timeline = timelines.remove(&issue.id).unwrap_or_default();
+            let issue = self.backfill_issue_identities(issue, &timeline, &rosters)?;
             let issue = self.backfill_done_at(issue, &timeline)?;
-            let issue = self.issue_with_read_identities(issue, &timeline);
+            let issue = self.issue_with_read_identities(issue, &timeline, &rosters);
             rows.push(issue_json(&project_id, &issue));
         }
         Ok(json!({
@@ -146,9 +156,10 @@ impl AppState {
             .tracker_store()?
             .load_tracker_timeline(&issue.id)
             .stored()?;
-        let issue = self.backfill_issue_identities(issue, &timeline)?;
+        let rosters = StoredRosters::default();
+        let issue = self.backfill_issue_identities(issue, &timeline, &rosters)?;
         let issue = self.backfill_done_at(issue, &timeline)?;
-        let issue = self.issue_with_read_identities(issue, &timeline);
+        let issue = self.issue_with_read_identities(issue, &timeline, &rosters);
         Ok(issue_with_timeline_json(&project_id, &issue, &timeline))
     }
 
@@ -370,7 +381,8 @@ impl AppState {
         self.notify_trackers(&write);
         // And the agent says, in its own conversation, what it just did.
         self.say_what_the_agent_did(&write);
-        let issue = self.issue_with_read_identities(write.issue, &timeline);
+        let issue =
+            self.issue_with_read_identities(write.issue, &timeline, &StoredRosters::default());
         Ok(json!({ "issue": issue_json(project_id, &issue) }))
     }
 

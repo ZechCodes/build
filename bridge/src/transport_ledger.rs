@@ -96,7 +96,7 @@ pub struct StderrLedger;
 
 impl TransportLedger for StderrLedger {
     fn record(&self, session_id: &str, event: TransportEvent) {
-        eprintln!("{}", render(session_id, &event));
+        crate::logline::say(render(session_id, &event));
     }
 }
 

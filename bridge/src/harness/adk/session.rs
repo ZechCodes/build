@@ -7,13 +7,14 @@ use crate::harness::{
     TurnChoiceSupport,
 };
 use crate::models::{AgentProvider, ModelChoice};
+use crate::priority::ChildPlacement;
 use crate::pty::HarnessSpec;
 use serde_json::json;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
@@ -118,22 +119,27 @@ impl AdkSession {
         choice: &ModelChoice,
         startup_deadline: Duration,
     ) -> Result<(AdkSession, broadcast::Receiver<ActivityReport>), HarnessError> {
-        let mut command = Command::new(crate::pty::resolve_binary(spec)?);
-        command.args(&spec.args);
-        for key in &spec.unset {
-            command.env_remove(key);
-        }
-        for (key, value) in &spec.env {
-            command.env(key, value);
-        }
-        if let Some(cwd) = cwd {
-            command.current_dir(cwd);
-        }
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let binary = crate::pty::resolve_binary(spec)?;
+        // Placed the way every child of the daemon is (`crate::priority`):
+        // in a scope of its own behind the daemon and the user's apps where
+        // the user's systemd answers, niced everywhere, before it runs a
+        // thing — the same gate a terminal's child goes through.
+        let mut child =
+            ChildPlacement::current().spawn_command(spec.kind, &binary, &spec.args, |command| {
+                for key in &spec.unset {
+                    command.env_remove(key);
+                }
+                for (key, value) in &spec.env {
+                    command.env(key, value);
+                }
+                if let Some(cwd) = &cwd {
+                    command.current_dir(cwd);
+                }
+                command
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+            })?;
 
         let state = Arc::new(Mutex::new(ProtocolState::new(choice)));
         state.lock().unwrap().agent_id = spec.agent_id.clone();

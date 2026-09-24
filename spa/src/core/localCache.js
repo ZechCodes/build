@@ -121,15 +121,25 @@ function standDown(error) {
   dbPromise = null;
 }
 
-/** Abort a transaction after an application error. This is different from an
- *  IndexedDB abort, which may mean a suspended connection needs reopening. */
-function abortForError(store, error) {
-  intentionalAborts.set(store.transaction, error);
+/** Record why our callback aborted. A storage call can fail when its connection
+ *  closes; a caller's update/merge error must never be retried as a cache fault. */
+function abortForError(store, error, recoverable = false) {
+  intentionalAborts.set(store.transaction, { error, recoverable });
   store.transaction.abort();
 }
 
 const connectionError = (error) => error?.name === "InvalidStateError" || error?.name === "AbortError" ||
   (error?.name === "UnknownError" && /connection to indexed database server lost/i.test(error.message));
+
+function putOrAbort(store, record, key) {
+  try {
+    store.put(record, key);
+    return true;
+  } catch (error) {
+    abortForError(store, error, connectionError(error));
+    return false;
+  }
+}
 
 /** One transaction, one operation, resolved when the transaction settles with
  *  what it did: whether it committed, and the result of the request `run`
@@ -146,8 +156,9 @@ async function transact(mode, run) {
         const transaction = db.transaction(STORE, mode);
         request = run(transaction.objectStore(STORE));
         transaction.onabort = () => {
-          const error = intentionalAborts.get(transaction) || transaction.error;
-          const recoverable = !intentionalAborts.has(transaction) && (!error || connectionError(error));
+          const marked = intentionalAborts.get(transaction);
+          const error = marked?.error || transaction.error;
+          const recoverable = marked ? marked.recoverable : (!error || connectionError(error));
           resolve({ committed: false, error, recoverable });
         };
         transaction.oncomplete = () =>
@@ -330,8 +341,8 @@ function writeFeed(address, update, observedFeedRows = false) {
         if (next == null) return;
         const at = Date.now();
         const order = nextWriteOrder();
-        store.put({ at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) }, key);
-        changed = true;
+        const record = { at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) };
+        changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
       }
@@ -382,7 +393,7 @@ export function captureCachedGeneration(address) {
           return;
         }
         generation = newCacheGeneration();
-        store.put({ at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
+        putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
       } catch (error) {
         abortForError(store, error);
       }
@@ -401,11 +412,10 @@ function writeBridgeUpdate(address, value, expectedGeneration) {
       try {
         const current = request.result;
         if (expectedGeneration !== undefined && cachedGeneration(current) !== expectedGeneration) return;
-        store.put({
+        changed = putOrAbort(store, {
           at: Date.now(), order: nextWriteOrder(), value,
           generation: newCacheGeneration(),
         }, key);
-        changed = true;
       } catch (error) {
         abortForError(store, error);
       }
@@ -447,8 +457,8 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence }), key);
-        applied = true;
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence });
+        applied = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
       }
@@ -503,8 +513,8 @@ export function mergeCachedAtomically(address, merge) {
       try {
         const next = merge(request.result?.value);
         if (next == null) return;
-        store.put(withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next }), key);
-        changed = true;
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next });
+        changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
       }

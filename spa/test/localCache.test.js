@@ -3,7 +3,7 @@
 // (2026-08-31): E2EE protects the wire; the browser profile is trusted.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore, forceCloseDatabase } from "fake-indexeddb";
 
 const DB_NAME = "build-cache";
 const STORE = "records";
@@ -136,6 +136,129 @@ describe("a write that fails", () => {
 });
 
 describe("a suspended browser whose IndexedDB connection closes", () => {
+  it("retries a transient put failure inside an atomic merge", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { count: 1 });
+    const heard = [];
+    cache.subscribeCache(address, (changed) => heard.push(changed));
+    const originalPut = IDBObjectStore.prototype.put;
+    let failed = false;
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("connection closed", "InvalidStateError");
+      }
+      return originalPut.apply(this, args);
+    });
+    try {
+      expect(await cache.mergeCachedAtomically(address, (previous) => ({ count: previous.count + 1 }))).toBe(true);
+      expect(put).toHaveBeenCalledTimes(2);
+      expect((await cache.readCached(address))?.value).toEqual({ count: 2 });
+      expect(heard).toHaveLength(1);
+      expect(await cache.cacheAvailable()).toBe(true);
+      await cache.writeCached(address, { count: 3 });
+      expect((await cache.readCached(address))?.value).toEqual({ count: 3 });
+      expect(heard).toHaveLength(2);
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  it("retries a transient put failure inside a feed update", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "feed" };
+    await cache.writeCached(address, { items: [], runs: [], count: 1 });
+    const originalPut = IDBObjectStore.prototype.put;
+    let failed = false;
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("connection closed", "InvalidStateError");
+      }
+      return originalPut.apply(this, args);
+    });
+    try {
+      expect(await cache.updateCachedFeed(address, (previous) => ({ ...previous, count: previous.count + 1 }))).toBe(true);
+      expect((await cache.readCached(address))?.value.count).toBe(2);
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  it("retries a transient put failure without bypassing a bridge generation", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "bridge-update" };
+    await cache.writeCached(address, { count: 1 });
+    const generation = (await cache.readCached(address)).generation;
+    const originalPut = IDBObjectStore.prototype.put;
+    let failed = false;
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("connection closed", "InvalidStateError");
+      }
+      return originalPut.apply(this, args);
+    });
+    try {
+      expect(await cache.writeCachedIfGeneration(address, { count: 2 }, generation)).toBe(true);
+      expect((await cache.readCached(address))?.value).toEqual({ count: 2 });
+      expect(await cache.writeCachedIfGeneration(address, { count: 3 }, generation)).toBe(false);
+      expect((await cache.readCached(address))?.value).toEqual({ count: 2 });
+    } finally {
+      put.mockRestore();
+    }
+  });
+
+  it("keeps a caller's merge error fatal even when it resembles a connection error", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { count: 1 });
+    let calls = 0;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await cache.mergeCachedAtomically(address, () => {
+        calls += 1;
+        throw new DOMException("caller failed", "InvalidStateError");
+      })).toBe(false);
+      expect(calls).toBe(1);
+      expect(await cache.readCached(address)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("stands down for an uncloneable record from an atomic merge", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { count: 1 });
+    const heard = [];
+    cache.subscribeCache(address, (changed) => heard.push(changed));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await cache.mergeCachedAtomically(address, () => ({ uncloneable: () => {} }))).toBe(false);
+      expect(heard).toEqual([]);
+      expect(await cache.readCached(address)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("bounds repeated storage put failures inside a merge", async () => {
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
+    await cache.writeCached(address, { count: 1 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
+      throw new DOMException("connection closed", "InvalidStateError");
+    });
+    try {
+      expect(await cache.mergeCachedAtomically(address, (previous) => ({ count: previous.count + 1 }))).toBe(false);
+      expect(put).toHaveBeenCalledTimes(2);
+      expect(await cache.readCached(address)).toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      put.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("reopens the store and keeps records readable after wake", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
     let openedDb;
@@ -220,30 +343,42 @@ describe("a suspended browser whose IndexedDB connection closes", () => {
     }
   });
 
-  it("ignores a delayed close event from an older handle", async () => {
+  it("does not let an old pending transaction's abort invalidate a reopened handle", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
     const handles = [];
-    const transactions = [];
+    await cache.writeCached(address, { head: "stored" });
+    const open = vi.spyOn(indexedDB, "open");
+    let oldTransaction;
     const originalTransaction = IDBDatabase.prototype.transaction;
     const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
       handles.push(this);
       const opened = originalTransaction.apply(this, args);
-      transactions.push(opened);
+      if (!oldTransaction) {
+        oldTransaction = opened;
+        // Keep a real fake-indexeddb transaction active until after the next
+        // connection has opened, so its abort event arrives genuinely late.
+        opened._start = () => {};
+      }
       return opened;
     });
     try {
-      await cache.writeCached(address, { head: "before" });
+      const pendingRead = cache.readCached(address);
+      await vi.waitFor(() => expect(oldTransaction).toBeDefined());
       const oldHandle = handles[0];
-      oldHandle.close();
-      await cache.readCached(address); // reopen through the closed-handle retry
-      const currentHandle = handles.at(-1);
       oldHandle.onclose(new Event("close"));
-      transactions.find((opened) => typeof opened.onabort === "function").onabort(new Event("abort"));
+      expect(await cache.cacheAvailable()).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+      oldTransaction.abort();
+      expect((await pendingRead)?.value).toEqual({ head: "stored" });
+      const currentHandle = handles.at(-1);
+      expect(currentHandle).not.toBe(oldHandle);
+      expect(open).toHaveBeenCalledTimes(1);
       await cache.writeCached(address, { head: "after" });
       expect(handles.at(-1)).toBe(currentHandle);
       expect((await cache.readCached(address))?.value).toEqual({ head: "after" });
     } finally {
       transaction.mockRestore();
+      open.mockRestore();
     }
   });
 

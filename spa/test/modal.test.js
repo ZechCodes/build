@@ -91,30 +91,6 @@ describe("openModal", () => {
     document.removeEventListener("keydown", underlying);
   });
 
-  it("leaves a key that is not Escape to whatever is under it", async () => {
-    const onClose = vi.fn();
-    openModal({ dialogHtml: DIALOG, onClose });
-
-    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-
-    expect(onClose).not.toHaveBeenCalled();
-    expect(scrimOnScreen()).not.toBe(null);
-  });
-
-  it("closes on a press on the scrim and stays open on one inside the dialog", async () => {
-    const onClose = vi.fn();
-    const { body } = openModal({ dialogHtml: DIALOG, onClose });
-
-    body.click();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(scrimOnScreen()).not.toBe(null);
-
-    scrimOnScreen().click();
-    await vi.waitFor(() => expect(scrimOnScreen()).toBe(null));
-    expect(onClose).toHaveBeenCalledTimes(1);
-    expect(scrimOnScreen()).toBe(null);
-  });
-
   it("closes at its caller's word, and a second close changes nothing", async () => {
     const onClose = vi.fn();
     const { close } = openModal({ dialogHtml: DIALOG, onClose });
@@ -151,6 +127,43 @@ describe("the modal's motion", () => {
   });
 
   const keyframedProperties = (run) => Object.keys(run.keyframes[0]);
+
+  it("leaves a key that is not Escape to whatever is under it", async () => {
+    const onClose = vi.fn();
+    const { close } = openModal({ dialogHtml: DIALOG, onClose });
+    await settleMotion();
+    started.length = 0;
+
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settleMotion();
+
+    expect(started).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(scrimOnScreen()).not.toBe(null);
+
+    const closing = close();
+    await settleMotion();
+    await closing;
+  });
+
+  it("closes on a press on the scrim and stays open on one inside the dialog", async () => {
+    const onClose = vi.fn();
+    const { body } = openModal({ dialogHtml: DIALOG, onClose });
+    await settleMotion();
+    started.length = 0;
+
+    body.click();
+    await settleMotion();
+
+    expect(started).toHaveLength(0);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(scrimOnScreen()).not.toBe(null);
+
+    scrimOnScreen().click();
+    await settleMotion();
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(scrimOnScreen()).toBe(null);
+  });
 
   it("leaves focus where its caller put it when the opening motion finishes", async () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });

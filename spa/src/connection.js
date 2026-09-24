@@ -30,6 +30,7 @@ import {
   adoptBridgeSelection,
   adoptDeviceConnection,
   announceDeviceTransport,
+  awaitingFirstAnswer,
   blockCurrentDevice,
   blockDeviceConnection,
   canAnswer,
@@ -569,7 +570,11 @@ export function goOffline(deviceId) {
  */
 export function deviceWentAway(deviceId) {
   const context = contextFor(deviceId);
-  if (!context || (context.offline && !context.blocked)) return;
+  // A machine already standing down has been told. One a page stood up over its
+  // records before it answered (core/surfaceContext.js) has not: it is session-
+  // less, so offline, but nothing has said why, and the account saying it is
+  // offline is the answer everything that speaks for the machine waits on.
+  if (!context || (context.offline && !context.blocked && !awaitingFirstAnswer(context))) return;
   // A connect in flight owns that machine's rendezvous: standing the machine
   // down would close the socket the handshake is being made over and re-block
   // the machine that was about to answer — on a list that is up to a heartbeat

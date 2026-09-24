@@ -3,6 +3,7 @@ import { createOptimisticStore } from "./optimistic.js";
 import { createChatChoiceController } from "./chatChoiceController.js";
 import { normalizeViewingContext } from "./viewingContext.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { selectAdapter } from "./bridgeApi/index.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [] });
 export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
@@ -15,6 +16,22 @@ const REQUIRED_OPERATION_RECEIPT_FIELDS = [
   "posted_sequence",
   "operation_status",
 ];
+
+/** Interpret one greeting through the adapter, then retain the status verb
+ * used by a supported post operation. Older bridges announce that verb in
+ * metadata; a named 1.22 capability uses the v1 method when metadata is absent. */
+function chatCapabilitiesOf(greeting) {
+  const selection = selectAdapter(greeting);
+  const capabilities = selection.unsupported ? null : selection.create(() => {}).capabilities;
+  const offered = greeting.thread_post_operations;
+  const statusMethod = typeof offered?.status_method === "string" && offered.status_method
+    ? offered.status_method : "thread.operation";
+  return {
+    messageContext: capabilities?.messages?.context === true,
+    threadPostOperations: capabilities?.threads?.postOperations
+      ? Object.freeze({ version: 1, statusMethod }) : null,
+  };
+}
 
 /** The message with nothing said about where it was written — what goes to a
  *  bridge that does not take context, and what a stamp alone leaves behind when
@@ -809,11 +826,7 @@ export function createChatRepository({
 
     configureCapabilities(greeting = {}) {
       repository.assertActive();
-      const offered = greeting.thread_post_operations;
-      threadPostOperations = offered && offered.version === 1 && typeof offered.status_method === "string"
-        ? Object.freeze({ version: 1, statusMethod: offered.status_method })
-        : null;
-      messageContext = greeting.message_context?.version === 1;
+      ({ messageContext, threadPostOperations } = chatCapabilitiesOf(greeting));
       viewingContext?.setEnabled?.(messageContext);
     },
 

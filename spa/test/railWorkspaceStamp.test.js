@@ -183,7 +183,7 @@ beforeEach(async () => {
   });
   // The stamp rides `viewing_context`, which the SPA sends only where the
   // bridge offers it.
-  contextFor(DEVICE_ID).chatRepository.configureCapabilities({ message_context: { version: 1 } });
+  contextFor(DEVICE_ID).chatRepository.configureCapabilities({ api_version: "1.19.0", message_context: { version: 1 } });
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
 });

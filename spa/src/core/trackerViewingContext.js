@@ -11,53 +11,20 @@
 // naming something the bridge has never heard of. The rule learned there
 // applies here — ask only for what the bridge says it has.
 //
-// # Why this is a version and not a capability
-//
-// Push kinds are advertised in the greeting (`changes.kinds`), so
-// core/trackerPush.js can read the list. Viewing-context kinds are not
-// advertised anywhere, so the only signal is the API minor the item landed in
-// — which is why #20 puts the item's `since` in the fixture.
-//
-// # The threshold, and why it was not guessed
-//
-// 1.5.0 — the minor #13 introduces and #20 lands the item at: `versions.json`
-// current 1.5.0 and the bridge's API_VERSION 1.5.0, with `issues.track`,
-// `issues.untrack`, `issues.for_agent` and this item all at that minor.
-//
-// It was held at null until that number was reported rather than inferred, and
-// the reason is worth keeping: guess 1.5.0, have the verbs land at 1.6.0, and
-// every message sent from the issue page to a 1.5.0 bridge is refused whole —
-// the exact outage this gate exists to prevent, with the user's own words as
-// the casualty. A gate guessed low is worse than no gate at all.
+// The adapter's issues.context flag answers this for each greeted device.
+// Older bridges derive that flag from the 1.5.0 introduction; names-only
+// greetings state it directly, including when a newer bridge withdraws it.
 
-import { bridgeApiVersion } from "./changeEvents.js";
-import { compare } from "./bridgeApi/semver.js";
-
-/**
- * The API minor that first accepts a viewing context naming an issue.
- *
- * A bridge below this is told nothing about which issue is open: it would
- * refuse the whole message rather than the item it does not know.
- */
-export const ISSUE_CONTEXT_SINCE = "1.5.0";
+import { bridgeCapabilities } from "./changeEvents.js";
 
 /**
  * Whether this device's bridge accepts the issue item.
  *
- * Read defensively and refused by default: every unknown — no device, no
- * greeting yet, a version that does not parse, a threshold not yet set — answers
- * no. The cost of a wrong yes is the user's message; the cost of a wrong no is
- * an agent that has to be told which issue is open.
+ * Read the capability of this greeted device. Unknown devices and unsupported
+ * bridges answer no; a wrong yes could refuse the user's whole message.
  */
-export function carriesIssueContext(deviceId, since = ISSUE_CONTEXT_SINCE) {
-  if (!since || !deviceId) return false;
-  const version = bridgeApiVersion(deviceId);
-  if (!version) return false;
-  try {
-    return compare(version, since) >= 0;
-  } catch {
-    return false;
-  }
+export function carriesIssueContext(deviceId) {
+  return Boolean(deviceId) && bridgeCapabilities(deviceId)?.issues?.context === true;
 }
 
 /**
@@ -67,7 +34,7 @@ export function carriesIssueContext(deviceId, since = ISSUE_CONTEXT_SINCE) {
  * been read yet — a page that stamps a half-read issue would tell the agent a
  * number with no title behind it.
  */
-export function issueContextItem(issue, deviceId, since = ISSUE_CONTEXT_SINCE) {
-  if (!issue?.id || !issue?.title || !carriesIssueContext(deviceId, since)) return null;
+export function issueContextItem(issue, deviceId) {
+  if (!issue?.id || !issue?.title || !carriesIssueContext(deviceId)) return null;
   return { kind: "issue", issue_id: issue.id, number: issue.number, title: issue.title };
 }

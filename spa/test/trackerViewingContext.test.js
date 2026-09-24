@@ -6,16 +6,19 @@
 // refusal takes the whole message with it. So the gate is not about a missing
 // feature; it is about not losing what the user typed.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeViewingContext } from "../src/core/viewingContext.js";
+import { greetBridge, resetChangeEvents } from "../src/core/changeEvents.js";
+import { carriesIssueContext, issueContextItem } from "../src/core/trackerViewingContext.js";
+import versions from "../../fixtures/api/versions.json";
 
-let apiVersion = "1.4.0";
-vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeApiVersion: () => apiVersion,
-}));
+beforeEach(() => resetChangeEvents());
 
-const { ISSUE_CONTEXT_SINCE, carriesIssueContext, issueContextItem } = await import(
-  "../src/core/trackerViewingContext.js"
+const greet = (apiVersion, over = {}) => greetBridge(
+  async (method) => method === "session.hello"
+    ? { api_version: apiVersion, push_events: true, ...over }
+    : {},
+  { deviceId: "dev-1" },
 );
 
 const issue = (over = {}) => ({
@@ -68,52 +71,40 @@ describe("the item on the wire", () => {
 });
 
 describe("the gate", () => {
-  // The minor #13 introduces and #20 lands the item at. It was held at null
-  // until that number was reported rather than inferred: guess low and every
-  // message from the issue page is refused whole, the user's words with it.
-  it("stands at the minor the item landed in", () => {
-    expect(ISSUE_CONTEXT_SINCE).toBe("1.5.0");
-  });
-
-  it("opens at that minor and above, on the constant alone", () => {
-    apiVersion = "1.5.0";
+  it("opens at the legacy minor the item landed in and later 1.x releases", async () => {
+    await greet("1.5.0");
     expect(carriesIssueContext("dev-1")).toBe(true);
-    apiVersion = "1.6.0";
-    expect(carriesIssueContext("dev-1")).toBe(true);
-    apiVersion = "2.0.0";
+    await greet("1.19.0");
     expect(carriesIssueContext("dev-1")).toBe(true);
   });
 
-  it("stays shut below it", () => {
-    apiVersion = "1.4.0";
+  it("stays shut below the legacy minor", async () => {
+    await greet("1.4.0");
     expect(carriesIssueContext("dev-1")).toBe(false);
     expect(issueContextItem(issue(), "dev-1")).toBeNull();
-    apiVersion = "1.2.0";
+  });
+
+  it("takes the named capability over the minor on a current bridge", async () => {
+    await greet(versions.current, { capabilities: ["issues.context"] });
+    expect(carriesIssueContext("dev-1")).toBe(true);
+    expect(issueContextItem(issue(), "dev-1")?.kind).toBe("issue");
+
+    await greet(versions.current, { capabilities: [] });
     expect(carriesIssueContext("dev-1")).toBe(false);
+    expect(issueContextItem(issue(), "dev-1")).toBeNull();
   });
 
-  // A threshold nobody has named yet sends nothing to anybody — the state this
-  // gate spent its first day in, kept because it is the safe default.
-  it("sends nothing at all when no minor is named", () => {
-    apiVersion = "9.9.9";
-    expect(carriesIssueContext("dev-1", null)).toBe(false);
-    expect(issueContextItem(issue(), "dev-1", null)).toBeNull();
-  });
-
-  // Every unknown answers no: the cost of a wrong yes is the user's message.
-  it("refuses on anything it cannot read", () => {
-    apiVersion = "1.5.0";
-    expect(carriesIssueContext(null, "1.5.0")).toBe(false);
-    apiVersion = "";
-    expect(carriesIssueContext("dev-1", "1.5.0")).toBe(false);
-    apiVersion = "not a version";
-    expect(carriesIssueContext("dev-1", "1.5.0")).toBe(false);
+  it("refuses an ungreeted device, no device, and an unsupported major", async () => {
+    expect(carriesIssueContext(null)).toBe(false);
+    expect(carriesIssueContext("dev-1")).toBe(false);
+    await greet("2.0.0", { capabilities: ["issues.context"] });
+    expect(carriesIssueContext("dev-1")).toBe(false);
   });
 });
 
 describe("the item the page would send", () => {
-  it("names the issue once the bridge can take it", () => {
-    apiVersion = "1.5.0";
+  it("names the issue once the bridge can take it", async () => {
+    await greet("1.5.0");
     expect(issueContextItem(issue(), "dev-1")).toEqual({
       kind: "issue",
       issue_id: "issue-01M2ZS29",
@@ -124,8 +115,8 @@ describe("the item the page would send", () => {
 
   // A page that stamps a half-read issue tells the agent a number with no
   // title behind it.
-  it("says nothing about an issue that has not been read", () => {
-    apiVersion = "1.5.0";
+  it("says nothing about an issue that has not been read", async () => {
+    await greet("1.5.0");
     expect(issueContextItem(null, "dev-1")).toBeNull();
     expect(issueContextItem({ id: "issue-1" }, "dev-1")).toBeNull();
   });

@@ -1,6 +1,5 @@
 // The SPA half of the contract: the same fixtures/api/v1/ the bridge's
-// api_contract.rs test reads. One fixture, two consumers — if a shape moves in
-// the bridge without the version moving with it, one of these two goes red.
+// api_contract.rs test reads. One fixture, two consumers — fixtures hold shapes and advertised names to the bridge and the client.
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

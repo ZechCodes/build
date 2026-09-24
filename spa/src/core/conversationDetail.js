@@ -123,7 +123,7 @@ export function itemsAtDetailLevel(items, level) {
 }
 
 /** The menu's rows: one per level, the standing one marked. The prefix is what
- *  keeps these ids clear of the surface kinds they sit above in the same menu
+ *  keeps these ids clear of the surface kinds in the same menu
  *  (core/agentSurfacesModel.js `surfaceMenuOptions`). */
 export const DETAIL_OPTION_PREFIX = "detail:";
 
@@ -134,6 +134,13 @@ export function detailLevelMenuOptions(level) {
     description: LEVEL_COPY[name].description,
     selected: name === level,
   }));
+}
+
+/** The menu's Detail group: the levels as a radio set under the setting's
+ *  name (core/splitButton.js `groupedMenuButtonMarkup`), which is what makes
+ *  a row read as a value of it. */
+export function detailLevelMenuGroup(level) {
+  return { id: "detail", label: "Detail", options: detailLevelMenuOptions(level) };
 }
 
 /** The level a menu id stands for, or null for an id that is not one of these

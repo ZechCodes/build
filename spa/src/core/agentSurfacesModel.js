@@ -188,6 +188,15 @@ export function surfaceMenuOptions(surfaces) {
   }));
 }
 
+/** The ⋮'s group of what the agent opened — things to open, each with how
+ *  much of it is going on — or null when it has opened nothing. The group is
+ *  absent rather than empty: the menu stands on the conversation's settings
+ *  alone (core/agentRail.js `surfaceMenuGroupsInFocus`). */
+export function surfaceMenuGroup(surfaces) {
+  const options = surfaceMenuOptions(surfaces);
+  return options.length ? { id: "show", label: "Show", options } : null;
+}
+
 export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {
   const expiries = KINDS_THAT_LINGER.filter(
     (kind) =>

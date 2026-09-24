@@ -8,7 +8,8 @@
 // and `compact_at_tokens` the threshold in effect, 0 when it never compacts.
 //
 // The rows sit in the same menu as the detail levels, and are routed the same
-// way: by a prefix on their ids (core/conversationDetail.js).
+// way: by a prefix on their ids (core/conversationDetail.js). They stand as a
+// group of their own under the setting's name, so each row is the bare value.
 
 import { bridgeCapabilities } from "./changeEvents.js";
 
@@ -59,8 +60,14 @@ export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
   return LIMITS.map((limit) => {
     const { word, description } = ROW_COPY[copyKindOf(limit)](agent, limit);
-    return { id: optionIdOf(limit), label: `Compact at: ${word}`, description, selected: limit === standing };
+    return { id: optionIdOf(limit), label: word, description, selected: limit === standing };
   });
+}
+
+/** The menu's group: the limits as a radio set under the setting's name
+ *  (core/splitButton.js `groupedMenuButtonMarkup`). */
+export function compactionMenuGroup(agent) {
+  return { id: "compact", label: "Compact at", options: compactionMenuOptions(agent) };
 }
 
 /** The limit a menu id stands for, as `{ maxContextTokens }`, or null for an id

@@ -138,9 +138,9 @@ import { ISSUES_ENTRY_KIND } from "./agentSurfacesModel.js";
 import { mountAgentObservation } from "./agentObservation.js";
 import { createTaskCompletionTracker } from "./taskCompletionModel.js";
 import { mountTaskCompletionToast } from "./taskCompletionToast.js";
-import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
+import { surfaceMenuGroup, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import {
-  detailLevelMenuOptions,
+  detailLevelMenuGroup,
   detailLevelOfOptionId,
   itemsAtDetailLevel,
   defaultDetailLevel,
@@ -148,7 +148,7 @@ import {
 } from "./conversationDetail.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { surfaceSessionGeneration } from "./surfacesCache.js";
-import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
+import { groupedMenuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { PIN_CLASS, pinButtonHtml, syncPinButton } from "./pinControl.js";
@@ -157,7 +157,7 @@ import { carriesWatching } from "./trackerWatch.js";
 import {
   carriesCompactionSettings,
   compactionLimitOfOptionId,
-  compactionMenuOptions,
+  compactionMenuGroup,
   createCompactionChoice,
 } from "./conversationCompaction.js";
 import { providerInSameFamily } from "./providerCatalog.js";
@@ -198,7 +198,7 @@ const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
 const SURFACE_MENU_CLASS = "rail-surface-menu";
 const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
 const SURFACE_MENU_LABEL = "⋮";
-const SURFACE_MENU_TITLE = "Open a surface";
+const SURFACE_MENU_TITLE = "Conversation menu";
 const AGENT_NOT_YET_BORN = "ghost";
 const COMPACTION_REFUSED = "Build could not change when this chat compacts.";
 
@@ -564,12 +564,14 @@ const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_V
 const railObservationHostHtml = () =>
   `<div class="agent-observation-host" id="${RAIL_OBSERVATION_ID}" hidden></div>`;
 
-function surfaceMenuHtml(options) {
-  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
+/** The conversation's ⋮: a menu in sections (core/splitButton.js), or nothing
+ *  for a head with no sections to offer. */
+function surfaceMenuHtml(groups) {
+  return groups.length ? groupedMenuButtonMarkup(SURFACE_MENU_LABEL, groups, { title: SURFACE_MENU_TITLE, icon: true }) : "";
 }
 
-function surfaceMenuRegionHtml(options) {
-  return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
+function surfaceMenuRegionHtml(groups) {
+  return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(groups)}</span>`;
 }
 
 /** What the remove button says it will do, in the same words as the
@@ -619,7 +621,7 @@ const HEAD_DEFAULTS = Object.freeze({
   provider: "",
   removable: false,
   hasTerminal: true,
-  surfaceOptions: [],
+  menuGroups: [],
   showHarnessIcon: true,
   heading: null,
   pinned: true,
@@ -643,7 +645,7 @@ export function panelHeadHtml(who, mode, given = {}) {
     ${railWatchButtonHtml(head.watch)}
     ${railProjectChipHtml(head.projectChip)}
     ${pinButtonHtml({ subject: PANEL_SUBJECT, pinned: head.pinned })}
-    ${surfaceMenuRegionHtml(head.surfaceOptions)}
+    ${surfaceMenuRegionHtml(head.menuGroups)}
   </div>`;
 }
 
@@ -2086,7 +2088,7 @@ function mountRailOnContext(host, context, swap) {
       disposeTitleMotion();
       disposeTui();
       releaseConversationChrome();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, menuGroups: surfaceMenuGroupsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -2117,7 +2119,7 @@ function mountRailOnContext(host, context, swap) {
         provider,
         removable,
         hasTerminal,
-        surfaceOptions: surfaceMenuOptionsInFocus(),
+        menuGroups: surfaceMenuGroupsInFocus(),
         heading,
         pinned,
         removalWho,
@@ -2890,24 +2892,28 @@ function mountRailOnContext(host, context, swap) {
     return { surfaces: null, generation, at: Date.now() };
   };
 
-  /** Everything the conversation's ⋮ offers: how much of the thread to draw,
-   *  when it compacts, then whichever surfaces this agent has opened. The levels are always
-   *  there, which is what makes the menu itself always there — it used to
-   *  vanish with the last surface, and the toggle has to be reachable from a
-   *  conversation that has none. */
-  const surfaceMenuOptionsInFocus = () => [
-    ...detailLevelMenuOptions(detailLevel()),
-    ...compactionMenuOptionsInFocus(),
-    ...surfaceMenuOptions(surfacesWithIssues(surfacesSeen().surfaces)),
-  ];
+  /** Everything the conversation's ⋮ offers, in sections (#124): whichever
+   *  surfaces this agent has opened, then the conversation's two settings —
+   *  how much of the thread to draw, and when it compacts. What the agent
+   *  opened comes first because it is what a menu on a conversation is opened
+   *  FOR; the settings sit under it as settings do, each under its own name,
+   *  and the group of surfaces is absent when there are none. The levels are
+   *  always there, which is what makes the menu itself always there — it used
+   *  to vanish with the last surface, and the toggle has to be reachable from
+   *  a conversation that has none. */
+  const surfaceMenuGroupsInFocus = () => [
+    surfaceMenuGroup(surfacesWithIssues(surfacesSeen().surfaces)),
+    detailLevelMenuGroup(detailLevel()),
+    compactionMenuGroupInFocus(),
+  ].filter(Boolean);
 
-  /** The compaction rows, for a settled agent on a bridge that has the verb —
-   *  none while the chooser is up, and none for an agent not yet born, which
-   *  has no conversation to set. */
-  const compactionMenuOptionsInFocus = () => {
+  /** The compaction group, for a settled agent on a bridge that has the verb
+   *  — none while the chooser is up, and none for an agent not yet born,
+   *  which has no conversation to set. */
+  const compactionMenuGroupInFocus = () => {
     const agent = settledAgentInFocus();
-    if (!agent || !entity.entityId || !carriesCompactionSettings(context.deviceId)) return [];
-    return compactionMenuOptions(compactionChoice.agentAsKnown(agent));
+    if (!agent || !entity.entityId || !carriesCompactionSettings(context.deviceId)) return null;
+    return compactionMenuGroup(compactionChoice.agentAsKnown(agent));
   };
 
   const mountSurfaces = (panel) => {
@@ -2970,11 +2976,14 @@ function mountRailOnContext(host, context, swap) {
     });
   };
 
+  /** The menu is kept within the panel: on a phone the panel stops on the
+   *  bubble strip, which is drawn over it and would cover the menu's tail. */
   const paintSurfaceMenu = () => {
     const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
-    closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
+    closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuGroupsInFocus()), {
       onChoose: chooseFromSurfaceMenu,
+      keepWithin: () => host.querySelector("#rail-panel"),
     });
   };
 

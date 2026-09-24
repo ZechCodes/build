@@ -215,7 +215,10 @@ describe("compaction on the conversation's menu", () => {
       "compact:300000",
       "compact:off",
     ]);
-    expect(rowLabel(markedRow())).toBe("Compact at: Default (200k)");
+    expect(rowLabel(markedRow())).toBe("Default (200k)");
+    // The group says what the setting is; the rows are its values.
+    expect(compactionRows()[0].closest('[role="group"]').getAttribute("aria-label")).toBe("Compact at");
+    expect(compactionRows().every((row) => row.getAttribute("role") === "menuitemradio")).toBe(true);
   });
 
   it("shows the conversation's own limit when the digest carries one", async () => {
@@ -252,7 +255,7 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:default");
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
-    expect(rowLabel(markedRow())).toBe("Compact at: Default (200k)");
+    expect(rowLabel(markedRow())).toBe("Default (200k)");
   });
 
   it("marks what the bridge answered", async () => {

@@ -207,7 +207,7 @@ describe("panelHeadHtml's surface menu", () => {
   });
 
   it("writes no menu at all when the agent has nothing to show", () => {
-    const html = panelHeadHtml("Claude Code", "chat", { surfaceOptions: [] });
+    const html = panelHeadHtml("Claude Code", "chat", { menuGroups: [] });
     expect(html).toContain("rail-surface-menu");
     expect(html).not.toContain("splitbtn");
   });
@@ -215,7 +215,7 @@ describe("panelHeadHtml's surface menu", () => {
   it("places the pin between Done and the vertical menu without a collapse control", () => {
     const html = panelHeadHtml("Claude Code", "chat", {
       removable: true,
-      surfaceOptions: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }],
+      menuGroups: [{ id: "show", label: "Show", options: [{ id: SHELL_ENTRY_KIND, label: "Shells", description: "1 running" }] }],
     });
     expect(html).toContain(`data-action="${SHELL_ENTRY_KIND}"`);
     expect(html).toContain("Shells");
@@ -340,6 +340,15 @@ describe("the conversation header's menu", () => {
     expect(menuCaret()).not.toBe(null);
     expect(surfaceMenuItems()).toEqual([]);
     expect(menuItems().map((item) => item.dataset.action)).toEqual(["detail:all", "detail:messages", "detail:agent"]);
+    // The group of things to open is absent, not empty.
+    expect(panel().querySelector('.rail-surface-menu [data-group="show"]')).toBe(null);
+  });
+
+  it("heads the surfaces as things to show, apart from the settings under them", async () => {
+    await mount();
+    const groups = [...panel().querySelectorAll('.rail-surface-menu [role="group"]')];
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Show", "Detail"]);
+    expect([...groups[0].querySelectorAll(".mi")].map((item) => item.dataset.action)).toEqual([WORKFLOW_ENTRY_KIND, SHELL_ENTRY_KIND]);
   });
 
   it("leaves an open menu open through a read that lists the same options", async () => {

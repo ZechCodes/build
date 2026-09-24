@@ -308,3 +308,80 @@ describe("a split menu's motion", () => {
     expect(menu.hidden).toBe(false);
   });
 });
+
+/// The region a menu is kept within. The conversation panel stops on the
+/// bubble strip at phone width and the strip is drawn over it, so a menu run
+/// to the viewport's foot had its last rows under the strip (#124). The rail
+/// names its panel; the menu stays above that box's bottom edge, and grows a
+/// scrollbar rather than a tail when even that is not enough room.
+describe("a lifted menu kept within a region", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "innerHeight", { value: 800, configurable: true });
+    Object.defineProperty(window, "innerWidth", { value: 1200, configurable: true });
+  });
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  const mountWithin = (regionBox) => {
+    const host = scrollingHost();
+    const region = document.createElement("div");
+    region.getBoundingClientRect = () => box(regionBox);
+    host.appendChild(region);
+    const container = document.createElement("div");
+    container.innerHTML = menuButtonMarkup("Ask", OPTIONS);
+    region.appendChild(container);
+    const handle = mountSplitMenu(container, { onChoose: () => {}, keepWithin: () => region });
+    return { container, ...handle, caret: container.querySelector(".caret"), menu: container.querySelector(".splitmenu") };
+  };
+
+  it("stops at the region's bottom edge rather than the viewport's", () => {
+    const { container, caret, menu } = mountWithin({ top: 0, bottom: 600, left: 0, right: 1200 });
+    // A head near the top: no room above, and below it the region's edge
+    // comes before the viewport's. Unbounded, this menu would open at 136.
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 100, bottom: 130, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 470, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
+
+    caret.click();
+
+    expect(menu.style.top).toBe("122px");
+    expect(menu.style.bottom).toBe("auto");
+  });
+
+  it("scrolls inside the room the region leaves rather than running off it", async () => {
+    const { container, caret, menu } = mountWithin({ top: 0, bottom: 600, left: 0, right: 1200 });
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 40, bottom: 70, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 900, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
+
+    caret.click();
+    expect(menu.style.maxHeight).toBe("584px");
+
+    menu.querySelector('.mi[data-action="stop"]').click();
+    await motionBeat();
+
+    expect(menu.style.maxHeight).toBe("");
+  });
+
+  it("does not shut on a scroll inside itself", () => {
+    const { container, caret, menu } = mountWithin({ top: 0, bottom: 600, left: 0, right: 1200 });
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 40, bottom: 70, left: 900, right: 980 });
+    caret.click();
+
+    menu.dispatchEvent(new Event("scroll", { bubbles: false }));
+
+    expect(menu.hidden).toBe(false);
+  });
+
+  it("falls back to the viewport when the region reports no box", () => {
+    const { container, caret, menu } = mountWithin({ top: 0, bottom: 0, left: 0, right: 0 });
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
+    Object.defineProperty(menu, "offsetWidth", { value: 180, configurable: true });
+
+    caret.click();
+
+    expect(menu.style.top).toBe("536px");
+  });
+});

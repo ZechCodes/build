@@ -44,19 +44,19 @@ pub(in crate::app) fn rtc_offer(
     let sdp = require_str(params, "sdp")?;
     let ice_servers = require_array(params, "ice_servers")?;
     let answer = peers
-        .offer(sender.session_id(), &sdp, &ice_servers, sender.clone())
+        .offer(&sdp, &ice_servers, sender.clone())
         .map_err(|e| e.to_string())?;
     Ok(json!({ "sdp": answer }))
 }
 
 pub(in crate::app) fn rtc_ice(
     peers: &SessionPeers,
-    session_id: &str,
+    sender: &SessionSender,
     params: &Value,
 ) -> Result<Value, String> {
     let candidate = require_value(params, "candidate")?;
     peers
-        .candidate(session_id, candidate)
+        .candidate(sender, candidate)
         .map_err(|e| e.to_string())?;
     Ok(json!({}))
 }
@@ -66,8 +66,11 @@ pub(in crate::app) fn rtc_ice(
 /// next offer — but it has no data path until one opens again (rule 1), which
 /// is why a browser sends this only when it is done with the device or about
 /// to renegotiate.
-pub(in crate::app) fn rtc_close(peers: &SessionPeers, session_id: &str) -> Result<Value, String> {
-    peers.close(session_id).map_err(|e| e.to_string())?;
+pub(in crate::app) fn rtc_close(
+    peers: &SessionPeers,
+    sender: &SessionSender,
+) -> Result<Value, String> {
+    peers.close(sender).map_err(|e| e.to_string())?;
     Ok(json!({}))
 }
 

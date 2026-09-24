@@ -92,6 +92,25 @@ pub(crate) fn session_accept_message(session_id: &str, envelope: &Envelope) -> V
     })
 }
 
+/// One opening of a session id, as a token. A session id is opened, ended
+/// and opened again; what a handler registers for an opening — a peer
+/// connection, say — is that opening's and not the id's, so a close or a
+/// candidate from an opening that has ended must not act on the id's next
+/// one. Two tokens are the same opening when they are the same allocation.
+#[derive(Clone)]
+pub struct Opening(Arc<AtomicBool>);
+
+impl Opening {
+    pub fn is_open(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Whether `other` is this same opening.
+    pub fn is(&self, other: &Opening) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// A handle the app uses to push encrypted frames to a specific client session —
 /// the channel for server-initiated output (live terminal bytes, updates), not
 /// just request replies. Cheap to clone; store one per attached client.
@@ -110,14 +129,22 @@ impl SessionSender {
         &self.session_id
     }
 
-    fn session_is_open(&self) -> bool {
+    /// Whether the opening this sender was built for is still open. The
+    /// fence every handler runs behind (`dispatch::run_handler`), and the
+    /// fence the frames answered off the queue run behind too.
+    pub(crate) fn session_is_open(&self) -> bool {
         self.still_open.load(Ordering::SeqCst)
+    }
+
+    /// The opening this sender belongs to, as a token.
+    pub(crate) fn opening(&self) -> Opening {
+        Opening(Arc::clone(&self.still_open))
     }
 
     /// Test-only: what the registry does to every sender of an opening that
     /// ended.
     #[cfg(test)]
-    fn opening_ended(&self) {
+    pub(crate) fn opening_ended(&self) {
         self.still_open.store(false, Ordering::SeqCst);
     }
 
@@ -612,7 +639,7 @@ pub struct FrameIntake {
     /// Each live wire's admitter: the queue its frames wait in, in arrival
     /// order, for the dispatcher — so the wire's reader never does the
     /// waiting itself (see [`FrameIntake::admit`]).
-    admitters: Mutex<HashMap<CarrierId, mpsc::Sender<Admitted>>>,
+    admitters: Mutex<HashMap<CarrierId, Admitter>>,
     /// How many frames one wire may have waiting before its next is refused.
     admission_depth: usize,
     /// The device's durable X25519 keypair clients wrap session keys to. The
@@ -800,12 +827,18 @@ impl FrameIntake {
     fn admitter_for(&self, carrier: &CarrierHandle) -> mpsc::Sender<Admitted> {
         let mut admitters = self.admitters.lock().unwrap();
         if let Some(admitter) = admitters.get(&carrier.id) {
-            return admitter.clone();
+            return admitter.queue.clone();
         }
-        let (tx, rx) = mpsc::channel(self.admission_depth);
-        tokio::spawn(admit_in_order(rx, Arc::clone(&self.dispatcher)));
-        admitters.insert(carrier.id, tx.clone());
-        tx
+        let (queue, rx) = mpsc::channel(self.admission_depth);
+        let task = tokio::spawn(admit_in_order(rx, Arc::clone(&self.dispatcher)));
+        admitters.insert(
+            carrier.id,
+            Admitter {
+                queue: queue.clone(),
+                task,
+            },
+        );
+        queue
     }
 
     /// The wire has more waiting than the bridge can promise to answer: say
@@ -842,6 +875,14 @@ impl FrameIntake {
     fn answer_without_queueing(&self, sender: SessionSender, frame: Frame) {
         let handler = self.dispatcher.handler();
         tokio::task::spawn_blocking(move || {
+            // The rule the dispatcher keeps for every queued frame
+            // (`dispatch::run_handler`), kept for the frames that skip its
+            // queues: nothing runs for a session after its close. An offer
+            // that ran for an ended opening would register a peer nobody
+            // will ever close.
+            if !sender.session_is_open() {
+                return;
+            }
             let answer = handler.call(sender.clone(), frame);
             sender.push(answer);
         });
@@ -892,10 +933,14 @@ impl FrameIntake {
     }
 
     pub(crate) fn close_carrier(&self, carrier: &CarrierHandle) {
-        // Its admitter drains what it holds and ends; the sessions those
-        // frames belong to are the dispatcher's to check, as they are for any
-        // frame admitted before its session ended.
-        self.admitters.lock().unwrap().remove(&carrier.id);
+        // Its admitter ends with it, and what it still held is dropped: those
+        // frames arrived on a wire that is gone, and their answers would have
+        // gone out on it. Aborted, not drained — a drain would feed a wire's
+        // worth of parked frames to the dispatcher on behalf of nobody, and a
+        // reconnecting client would leave one such queue per lost wire.
+        if let Some(admitter) = self.admitters.lock().unwrap().remove(&carrier.id) {
+            admitter.task.abort();
+        }
         self.close_ended(self.registry.release_carrier(carrier));
     }
 
@@ -908,6 +953,13 @@ impl FrameIntake {
                 .close_session(&session_id, move || !registry.reopened_since(&end));
         }
     }
+}
+
+/// One wire's admitter: its queue, and the task that drains it, which lives
+/// exactly as long as the wire does (`FrameIntake::close_carrier`).
+struct Admitter {
+    queue: mpsc::Sender<Admitted>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 /// One frame a wire admitted, waiting for the dispatcher.
@@ -927,6 +979,13 @@ const ADMISSION_DEPTH: usize = 1024;
 /// on its queue for each — the wait the wire's reader must never do.
 async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<Dispatcher>) {
     while let Some(Admitted { sender, frame }) = admitted.recv().await {
+        // A frame whose opening ended while it waited here goes no further:
+        // the dispatcher would refuse to run it, but not before giving it a
+        // lane, and a lane opened for a session that is gone is a lane
+        // nothing ever closes.
+        if !sender.session_is_open() {
+            continue;
+        }
         dispatcher.dispatch(sender, frame).await;
     }
 }
@@ -1826,6 +1885,71 @@ mod intake_tests {
             pong["id"],
             json!(7),
             "the pong overtook everything: {pong:?}"
+        );
+    }
+
+    /// A wire that closes with frames still parked takes them with it: they
+    /// are never fed to the dispatcher, even for a session that lives on
+    /// over another wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_closed_wire_s_parked_frames_never_reach_the_dispatcher() {
+        let handled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counting = Arc::clone(&handled);
+        let intake = FrameIntake::with_pool_and_admission(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                move |_sender, _frame, _timer| {
+                    counting.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(400));
+                    json!({ "ok": true })
+                },
+            ),
+            TRANSPORT.clone(),
+            1,
+            1,
+            8,
+        );
+        let (first, mut out) = CarrierHandle::open_channel();
+        let (second, _second_out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &first)
+            .unwrap();
+        out.try_recv().expect("the accept rode the carrier");
+        // The session rides the second wire too, so closing the first ends
+        // nothing: what is parked on the first is dropped for the wire's
+        // sake alone.
+        intake
+            .accept(
+                client_request(&key, "s-1", "data", json!({ "id": 0, "method": "ping" })),
+                &second,
+            )
+            .await
+            .expect("the ping was admitted");
+
+        // One held by the worker, one in the pool queue, one in the
+        // admitter's hands, three parked in the wire's queue.
+        for id in 1..=6 {
+            intake
+                .accept(
+                    client_request(
+                        &key,
+                        "s-1",
+                        "data",
+                        json!({ "id": id, "method": "term.list" }),
+                    ),
+                    &first,
+                )
+                .await
+                .expect("the frame was admitted");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        intake.close_carrier(&first);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(
+            handled.load(Ordering::SeqCst),
+            2,
+            "the running and the queued frame ran; the parked ones went with the wire"
         );
     }
 

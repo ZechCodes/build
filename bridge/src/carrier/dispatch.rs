@@ -306,6 +306,12 @@ impl Dispatcher {
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
+        // Refused here as well as at the handler (`run_handler`): a frame for
+        // an ended opening must not so much as open a lane, since the lane
+        // would outlive the session whose close already took its lanes away.
+        if !sender.session_is_open() {
+            return;
+        }
         match ordered_lane(&sender, &frame) {
             // A terminal's frames are scheduled by its lane and by nothing else:
             // its stream is the client's own typing, never a background pull, and
@@ -1552,6 +1558,30 @@ mod dispatcher_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_folded_read_admitted_before_the_end_never_runs_after_it() {
         a_queued_frame_never_runs_after_its_session_ended("board.list").await;
+    }
+
+    /// A terminal frame for an opening that has ended opens no lane: the
+    /// session's close took its lanes away, and a lane opened after that is
+    /// one nothing ever closes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_terminal_frame_for_an_ended_opening_opens_no_lane() {
+        let handler: FrameHandler = FrameHandler::new(
+            crate::timing::FrameClock::new(),
+            |_sender, _frame, _timer| json!({ "ok": true }),
+        );
+        let dispatcher = Dispatcher::with_capacity(handler, 4, 1);
+        let (sender, _rx, _key) = SessionSender::observable("s-ended");
+        sender.opening_ended();
+        dispatcher
+            .dispatch(
+                sender,
+                request(1, "term.input", json!({ "term_id": "t-1", "data": "" })),
+            )
+            .await;
+        assert!(
+            dispatcher.lanes.lock().unwrap().is_empty(),
+            "no lane for a session that is gone"
+        );
     }
 
     /// Queue `method` behind a held worker — the only one — end the session,

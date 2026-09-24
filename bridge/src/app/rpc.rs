@@ -252,8 +252,8 @@ fn signaling(
     let peers = peers.get();
     Some(match method {
         "rtc.offer" => rtc_offer(&peers, sender, params),
-        "rtc.ice" => rtc_ice(&peers, sender.session_id(), params),
-        "rtc.close" => rtc_close(&peers, sender.session_id()),
+        "rtc.ice" => rtc_ice(&peers, sender, params),
+        "rtc.close" => rtc_close(&peers, sender),
         _ => return None,
     })
 }

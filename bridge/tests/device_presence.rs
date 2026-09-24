@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use build_bridge::carrier::{testing, FrameHandler, FrameIntake};
 use build_bridge::reachability::Reachability;
-use build_bridge::relay::{self, RelayError};
+use build_bridge::relay;
 use build_bridge::transport;
 use common::{bind_relay, device_identity, greet_device, request_message, session_init_message};
 use futures_util::{SinkExt, StreamExt};
@@ -184,14 +184,17 @@ async fn a_device_whose_relay_socket_drops_stops_being_reachable() {
     running.abort();
 }
 
-/// The read loop hands frames over to a bounded pool, so a pool that is full
-/// blocks it — and a blocked read loop sends no pongs, which is what had the
-/// relay log `pings unanswered (read loop dead) for 90s; severing`. The socket
-/// is given up at one heartbeat interval instead, well inside the relay's own
-/// window, so the daemon redials rather than sitting behind a socket the relay
-/// has already written off.
+/// The read loop hands frames to a queue of the wire's own and never waits on
+/// the handler pool, so a pool that is full — the state the daemon's own pool
+/// reaches under load — costs the socket nothing: the heartbeat is answered,
+/// the device stays reachable, and the socket is held rather than given up.
+/// (A read loop that waited on the pool sent no pongs, the relay logged
+/// `pings unanswered (read loop dead) for 90s; severing`, and the socket was
+/// given up after one heartbeat interval to be redialled — a redial the phone
+/// had to wait out.) The frames the pool cannot take wait on the wire's queue,
+/// and past its depth are refused as busy (`carrier`'s tests).
 #[tokio::test]
-async fn a_bridge_that_cannot_drain_its_socket_gives_it_up_and_reads_unreachable() {
+async fn a_bridge_whose_pool_is_full_keeps_its_socket_and_stays_reachable() {
     let (listener, url) = bind_relay().await;
     let (intake, release_worker) = wedged_intake();
     let transport_public_key = intake.transport_public_key().to_string();
@@ -205,14 +208,14 @@ async fn a_bridge_that_cannot_drain_its_socket_gives_it_up_and_reads_unreachable
         ))
         .await
         .unwrap();
-        // One frame for the worker, one for the queue, one with nowhere to go:
-        // the third is the one the read loop has to wait on.
+        // One frame for the worker, one for the queue, one with nowhere to go
+        // but the wire's own queue: the pool is full for the rest of the test.
         for n in 0..3 {
             ws.send(Message::Text(
                 request_message(
                     &session_key,
                     "sess-wedge",
-                    json!({ "method": "rtc.ice", "n": n }),
+                    json!({ "method": "term.list", "n": n }),
                 )
                 .to_string(),
             ))
@@ -222,25 +225,24 @@ async fn a_bridge_that_cannot_drain_its_socket_gives_it_up_and_reads_unreachable
         while let Some(Ok(_)) = ws.next().await {}
     });
 
-    let outcome = tokio::time::timeout(
-        testing::PATIENCE,
-        relay::run(&url, &device_identity(), intake, &reachable),
-    )
-    .await
-    .expect("a socket it cannot drain is one the bridge gives up, not one it holds");
+    let running = {
+        let reachable = reachable.clone();
+        tokio::spawn(async move { relay::run(&url, &device_identity(), intake, &reachable).await })
+    };
+    assert!(reads_as(&reachable, true).await, "the device connected");
 
-    match outcome {
-        Err(RelayError::Wedged(after)) => assert_eq!(
-            after,
-            Duration::from_secs(HEARTBEAT_INTERVAL_S),
-            "given up after one heartbeat interval"
-        ),
-        other => panic!("expected RelayError::Wedged, got {other:?}"),
-    }
+    // Well past the one interval a socket the reader could not drain used to
+    // be given up at.
+    tokio::time::sleep(Duration::from_secs(3 * HEARTBEAT_INTERVAL_S)).await;
     assert!(
-        !reachable.is_reachable(),
-        "a bridge that cannot answer on its socket must not report itself online"
+        !running.is_finished(),
+        "the socket is held while the pool is full, not given up"
     );
+    assert!(
+        reachable.is_reachable(),
+        "a bridge whose pool is full still answers on its socket, and says so"
+    );
+    running.abort();
     drop(release_worker);
     socket.abort();
 }

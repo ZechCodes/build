@@ -11,6 +11,10 @@ fn assert_unrelated_frame_completes(state: &Arc<Mutex<AppState>>) {
     assert_eq!(reply["ok"], true, "{reply}");
 }
 
+/// An offer's peer work — the answer, and the cleanup of a peer that could
+/// not answer — runs with the app mutex free. Held at the peer itself, where
+/// the work is, since an offer never takes the mutex at all any more: the
+/// peers live in a slot beside the state (`app::rtc::PeersSlot`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn merged_rtc_offer_and_failure_cleanup_leave_the_mutex_free() {
     for fails in [false, true] {
@@ -19,15 +23,14 @@ async fn merged_rtc_offer_and_failure_cleanup_leave_the_mutex_free() {
         if fails {
             factory.fail_answers();
         }
-        let (gate, held) = OffLockGate::new();
-        state.lock().unwrap().off_lock_gate = Some(gate);
+        let answering = factory.hold_answers();
         let sender = SessionSender::detached("merge-rtc");
         let offering = tokio::task::spawn_blocking(move || {
             handler.call(sender, req("rtc.offer", offer("v=0 merge")))
         });
-        held.wait_for_arrival();
+        answering.wait_until_answering().await;
         assert_unrelated_frame_completes(&state);
-        held.release();
+        answering.release();
         let reply = offering.await.unwrap();
         assert_eq!(reply["ok"], !fails, "{reply}");
         let app = state.lock().unwrap();

@@ -6062,7 +6062,9 @@ describe("review158 independent ownership cases", () => {
       ? { items: [call(12), call(50)], oldest_sequence: 12, has_more: false } : previous(method, params));
     await mount();
     await press();
+    // Opening this run reads another cache record after the bridge replies.
+    // Wait for that observable result, rather than a fixed number of turns.
+    await vi.waitFor(() => expect(railHost().querySelector('[data-key="50"][open] [data-sequence="12"]')).not.toBeNull());
     expect(notifyError).not.toHaveBeenCalled();
-    expect(railHost().querySelector('[data-key="50"][open] [data-sequence="12"]')).not.toBeNull();
   });
 });

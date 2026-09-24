@@ -236,7 +236,7 @@ fn place_children() {
     placement.install();
     if !scoped {
         eprintln!(
-            "children: no scope ({reason}); agents nice +{}, terminals nice +{}",
+            "children: no scope ({reason}); agents nice +{}, terminals nice +{}, all at their gate",
             build_bridge::priority::CHILD_NICE,
             build_bridge::priority::TERMINAL_NICE_WITHOUT_SCOPE
         );
@@ -607,7 +607,7 @@ async fn run_daemon(
     // liveness runtime. The main thread waits for the signal that ends the
     // daemon; the socket task is aborted then, which is the socket generation
     // ending the way every other end does (`relay::RelayConnection`'s drop).
-    let relay_socket = liveness.spawn(relay_forever(
+    let mut relay_socket = liveness.spawn(relay_forever(
         runtime.device_url.clone(),
         identity.clone(),
         intake.clone(),
@@ -620,13 +620,24 @@ async fn run_daemon(
         // one more reconnect is worth nothing next to the roster.
         biased;
         () = going_down.recv() => {}
-        _ = relay_socket => {}
+        _ = &mut relay_socket => {}
     }
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
     eprintln!("bridge: shutting down");
     AppState::record_resume_roster(&app, &runtime.tasks_dir, env!("CARGO_PKG_VERSION"));
+    // Then the children: in scopes of their own they are no longer in this
+    // unit's cgroup for systemd to end, so they are ended here (and by the
+    // `BindsTo=` each scope carries, should this not run).
+    if let Some(stopped) = build_bridge::priority::stop_children() {
+        eprintln!("{stopped}");
+    }
+    // Then the transport: the socket task first, so the relay sees a close
+    // rather than a silence, then the runtime it ran on — stopped, not
+    // dropped, because this is a task of the main runtime (`liveness.rs`).
+    relay_socket.abort();
+    liveness.stop();
 }
 
 /// Hold a relay socket open, and redial whenever it ends.

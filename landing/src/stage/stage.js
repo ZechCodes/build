@@ -18,6 +18,7 @@ import {
   Scene,
   SRGBColorSpace,
   TextureLoader,
+  Vector3,
   WebGLRenderer,
 } from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
@@ -105,6 +106,35 @@ const LID_SHELL_NODE = "laptop_lid_shell";
 export function dressLidShell(material) {
   material.color.setRGB(0.12, 0.13, 0.14);
   material.roughness = 0.6;
+}
+
+// The phone and tablet bodies are one mesh: sides, back and the thin front
+// band around the glass. Only the band gets the lid rim's dark finish; the
+// sides keep the chassis metal. Screen-facing triangles move to group 1.
+const FRONT_BAND_NODES = new Set(["phone_body", "tablet_body"]);
+const FRONT_FACING = 0.5;
+
+export function splitFrontBand(geometry) {
+  const split = geometry.clone();
+  const position = split.getAttribute("position");
+  const source = split.index ? split.index.array : Array.from({ length: position.count }, (_, i) => i);
+  const sides = [];
+  const band = [];
+  const a = new Vector3();
+  const b = new Vector3();
+  const c = new Vector3();
+  for (let i = 0; i < source.length; i += 3) {
+    a.fromBufferAttribute(position, source[i]);
+    b.fromBufferAttribute(position, source[i + 1]);
+    c.fromBufferAttribute(position, source[i + 2]);
+    const normal = c.sub(b).cross(a.sub(b)).normalize();
+    (normal.z > FRONT_FACING ? band : sides).push(source[i], source[i + 1], source[i + 2]);
+  }
+  split.setIndex([...sides, ...band]);
+  split.clearGroups();
+  split.addGroup(0, sides.length, 0);
+  split.addGroup(sides.length, band.length, 1);
+  return split;
 }
 
 // The trackpad is the same satin metal a shade darker, not a lacquered pad.
@@ -226,6 +256,14 @@ function prepareModel(name, source, maximumAnisotropy) {
     const materials = Array.isArray(node.material) ? node.material : [node.material];
     const clones = materials.map((material) => cloneDeviceSurfaceMaterial(material, maximumAnisotropy));
     if (node.name === LID_SHELL_NODE) clones.forEach(dressLidShell);
+    if (FRONT_BAND_NODES.has(node.name) && clones.length === 1) {
+      const band = clones[0].clone();
+      dressLidShell(band);
+      node.geometry = splitFrontBand(node.geometry);
+      clones.push(band);
+      node.material = clones;
+      return;
+    }
     node.material = Array.isArray(node.material) ? clones : clones[0];
   });
   if (!screenMeshes.length) throw new Error(`Missing ${name} screen mesh`);

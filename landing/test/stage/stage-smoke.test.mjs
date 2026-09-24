@@ -66,3 +66,15 @@ test("the lid rim is darker than the chassis, so it frames the screen quietly", 
   assert.equal(rim.metalness, 1);
   assert.ok(rim.color.r <= chassis.color.r * 0.25, `rim ${rim.color.r} vs chassis ${chassis.color.r}`);
 });
+
+test("phone and tablet bodies split off only the screen-facing band for the dark rim", async () => {
+  const { BoxGeometry } = await import("three");
+  const box = new BoxGeometry(1, 1, 1);
+  const split = stage.splitFrontBand(box);
+  assert.equal(split.groups.length, 2);
+  const [sides, band] = split.groups;
+  assert.equal(band.materialIndex, 1);
+  assert.equal(band.count, 6, "only the +z face's two triangles");
+  assert.equal(sides.count, 30);
+  assert.equal(box.groups.length, 6, "source geometry untouched");
+});

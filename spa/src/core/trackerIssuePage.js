@@ -184,7 +184,7 @@ export function mountIssuePage(host, options) {
   const reads = createReadRetry({
     host,
     watch: deviceWatch(state.deviceId),
-    retry: () => void refresh({ keepDrafts: true }),
+    retry: () => void refresh(),
     hasContent: () => Boolean(state.issue),
   });
 
@@ -343,7 +343,8 @@ export function mountIssuePage(host, options) {
   /** Read the issue again. Agents commenting push every flush, so a read
    *  asked for while one is out waits for it and runs once after it (#126, as
    *  #119 for the list): every answer lands, and a push is never answered by a
-   *  read begun before it. */
+   *  read begun before it. A write awaiting this while a read is out settles
+   *  with the read after it, so the page paints what was written. */
   let issueReads = null;
   function refresh() {
     issueReads ||= trailingRead(readIssue, { generationOf: () => deviceSession(state.deviceId) });
@@ -380,7 +381,7 @@ export function mountIssuePage(host, options) {
     paint();
     try {
       await state.callRpc(method, params);
-      await refresh({ keepDrafts: true });
+      await refresh();
     } catch (error) {
       if (!state.disposed) notifyError(whatFailed, messageOf(error));
     } finally {
@@ -421,7 +422,7 @@ export function mountIssuePage(host, options) {
       await state.callRpc("issues.comment", params);
       await commentDraft.write({ body: "" });
       comments?.clear();
-      await refresh({ keepDrafts: true });
+      await refresh();
     } catch (error) {
       if (!state.disposed) notifyError("Could not add this comment", messageOf(error));
     } finally {
@@ -552,7 +553,7 @@ export function mountIssuePage(host, options) {
   // is what re-reads it, and the pass behind that (core/cacheSync.js) is the
   // whole of the safety net.
   const watcher = watchChanges({
-    refresh: () => void refresh({ keepDrafts: true }),
+    refresh: () => void refresh(),
     entity: state.projectId,
     deviceId: state.deviceId,
   // Named only where the bridge carries them (core/trackerPush.js): every
@@ -561,7 +562,7 @@ export function mountIssuePage(host, options) {
     kinds: issuesPushKinds(state.deviceId),
     mode: "realtime",
     onChanges: (items) => {
-      if (namesIssue(items, state.issueId)) void refresh({ keepDrafts: true });
+      if (namesIssue(items, state.issueId)) void refresh();
     },
   });
 

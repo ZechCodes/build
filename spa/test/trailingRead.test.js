@@ -81,3 +81,40 @@ it("does not hold a new session's read behind one out on the old session", async
   runs[1].resolve();
   await vi.waitFor(() => expect(runs).toHaveLength(3));
 });
+
+// #126: a write awaits a refresh to paint what it wrote. An ask folded into a
+// read begun before the write must resolve with the read after it, not the
+// read already out.
+it("resolves a folded ask with the trailing read, not the read already out", async () => {
+  const runs = [];
+  const read = trailingRead(() => {
+    const one = deferred();
+    runs.push(one);
+    return one.promise;
+  });
+
+  const first = read();
+  let foldedWith = "pending";
+  void read().then((answer) => { foldedWith = answer; });
+
+  runs[0].resolve("before the write");
+  expect(await first).toBe("before the write");
+  await vi.waitFor(() => expect(runs).toHaveLength(2));
+  expect(foldedWith).toBe("pending");
+
+  runs[1].resolve("after the write");
+  await vi.waitFor(() => expect(foldedWith).toBe("after the write"));
+});
+
+it("rejects a folded ask with the trailing read's failure, not the first read's", async () => {
+  let calls = 0;
+  const read = trailingRead(async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("the first read failed");
+    return "the trailing read landed";
+  });
+  const first = read();
+  const folded = read();
+  await expect(first).rejects.toThrow("the first read failed");
+  await expect(folded).resolves.toBe("the trailing read landed");
+});

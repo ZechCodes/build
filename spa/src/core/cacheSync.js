@@ -1231,8 +1231,12 @@ const applyTerminals = (context, entityId, terminals) =>
  *  and dropped altogether past 200 of them — so there is one answer either
  *  way, which is to read the project's list again. The entity here is a
  *  PROJECT, not a workspace: every other applier below is handed a board row's
- *  entity, and this one is handed the project the issues belong to. */
-const applyIssues = (context, projectId) => readIssues(context, projectId);
+ *  entity, and this one is handed the project the issues belong to. Not
+ *  awaited: a read folded behind one already out settles only after the read
+ *  that follows it, and the rest of the flush has nothing to wait for. */
+const applyIssues = (context, projectId) => {
+  void readIssues(context, projectId);
+};
 
 /** One writer per kind, in the order a reader would want them applied: what
  *  the row says, what was said in it, then the surfaces under it. */

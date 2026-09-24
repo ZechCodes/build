@@ -18,16 +18,19 @@
  * Wrap `read(key)` so that, per key and per session, at most one call is out
  * at a time.
  *
- * Asking while that key's read is out returns the read already out and marks
- * the key for one more run when it settles, however many times it was asked.
- * A read that threw still takes its trailing run. `generationOf(key)` names
- * the session a read belongs to; asking under a different one starts a read of
- * its own, and the older read settling afterwards starts nothing.
+ * Asking while that key's read is out marks the key for one more run when it
+ * settles, however many times it was asked, and returns that trailing run's
+ * promise: a folded ask settles with the read begun after it, never with the
+ * one already out, so a caller that wrote and then asked paints what it wrote
+ * (#126). A read that threw still takes its trailing run. `generationOf(key)`
+ * names the session a read belongs to; asking under a different one starts a
+ * read of its own, which is also what an ask folded under the older session
+ * settles with, and the older read settling afterwards starts nothing.
  */
 export function trailingRead(read, { generationOf = () => null } = {}) {
   const out = new Map();
   const run = (key, generation) => {
-    const held = { again: false, done: null, generation };
+    const held = { again: false, done: null, next: null, generation };
     out.set(key, held);
     let started;
     try {
@@ -37,16 +40,20 @@ export function trailingRead(read, { generationOf = () => null } = {}) {
     }
     held.done = started.finally(() => {
       if (out.get(key) !== held) return; // overtaken by a newer session's read
-      if (held.again) void run(key, generationOf(key)).catch(() => {});
-      else out.delete(key);
+      if (held.again) {
+        held.next = run(key, generationOf(key));
+        held.next.catch(() => {});
+      } else out.delete(key);
     });
     return held.done;
   };
   return (key = "") => {
     const generation = generationOf(key);
     const held = out.get(key);
-    if (!held || held.generation !== generation) return run(key, generation);
+    if (!held) return run(key, generation);
+    if (held.generation !== generation) return (held.next = run(key, generation));
     held.again = true;
-    return held.done;
+    const next = () => held.next;
+    return held.done.then(next, next);
   };
 }

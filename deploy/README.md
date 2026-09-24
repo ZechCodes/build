@@ -1,5 +1,7 @@
 # Running Build v2
 
+These manifests deploy the maintainers' instance; adapt the namespace, context and hostnames for your own.
+
 > **Production (Kubernetes):** see [`k8s/`](k8s/) — kustomize manifests for the
 > `8ly` namespace (app + Rust relay + Postgres), `bootstrap-secrets.sh`, and the
 > [`k8s/CUTOVER.md`](k8s/CUTOVER.md) runbook.

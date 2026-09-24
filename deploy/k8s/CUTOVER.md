@@ -1,7 +1,7 @@
 # Cutover: getbuild.ing v2 (namespace `8ly`)
 
-This replaces the old v1 deployment (`build-web` + `build-relay` in namespace
-`zechcodes`) with the v2 stack in namespace `8ly`:
+This replaces the old v1 deployment (`build-web` + `build-relay` in its own
+namespace, `<v1-namespace>` below) with the v2 stack in namespace `8ly`:
 
 - **build-app** — the Skrift app (auth, device registry, gateway tokens, SPA) at
   `getbuild.ing`
@@ -9,7 +9,7 @@ This replaces the old v1 deployment (`build-web` + `build-relay` in namespace
 - **build-postgres** — Postgres 16 on a `do-block-storage-retain` volume
 
 DNS for `getbuild.ing` and `relay.getbuild.ing` **already points at this
-cluster** (via the old `zechcodes` ingresses), so there is no DNS step — routing
+cluster** (via the old v1 ingresses), so there is no DNS step — routing
 flips when the old host-based ingresses are removed.
 
 Cluster context: `do-nyc1-production-hosting`.
@@ -95,7 +95,7 @@ curl -si http://127.0.0.1:18799/health | head -1  # HTTP/1.1 200 OK
 kill %1 %2
 ```
 
-## 4. Tear down the old v1 deployment (USER RUNS THIS — not automated)
+## 4. Tear down the old v1 deployment (run by hand — not automated)
 
 While both sets of ingresses exist, traefik has **two host-based routes for the
 same hosts**, so `getbuild.ing`/`relay.getbuild.ing` traffic and the new
@@ -104,9 +104,9 @@ Delete only the workloads and routing; **old TLS secrets and any volumes stay in
 place** (nothing named `pvc`, `pv`, or a database is ever deleted):
 
 ```bash
-kubectl --context do-nyc1-production-hosting -n zechcodes delete ingress build-web-ingress build-relay-ingress
-kubectl --context do-nyc1-production-hosting -n zechcodes delete service build-web build-relay
-kubectl --context do-nyc1-production-hosting -n zechcodes delete deployment build-web build-relay
+kubectl --context do-nyc1-production-hosting -n <v1-namespace> delete ingress build-web-ingress build-relay-ingress
+kubectl --context do-nyc1-production-hosting -n <v1-namespace> delete service build-web build-relay
+kubectl --context do-nyc1-production-hosting -n <v1-namespace> delete deployment build-web build-relay
 ```
 
 ## 5. Post-cutover checks
@@ -128,7 +128,7 @@ Then:
 
 ## Rollback
 
-The old `zechcodes` deployment is only scaled away by step 4. Until you run
+The old v1 deployment is only scaled away by step 4. Until you run
 step 4, rollback means removing **only the v2 workloads and routing** — the old
 ingresses still own the hosts:
 
@@ -147,7 +147,7 @@ push subscription) and the `data-build-postgres-0` PVC. Same rule as step 4:
 nothing named `pvc`, `pv`, a Secret, or a database is ever deleted.
 
 After step 4, re-create the old ingresses/services from your last-known
-manifests (or `kubectl -n zechcodes rollout undo` if only the deployments were
+manifests (or `kubectl -n <v1-namespace> rollout undo` if only the deployments were
 touched). The retained Postgres volume survives any rollback: the
 `do-block-storage-retain` PV is never deleted automatically.
 

@@ -19,7 +19,9 @@ import {
 import { App, render, unmountView } from "../app.js";
 import { connectDevice, openDeviceSessions, securityStopText, stopWatchingForWake, watchForWake } from "../connection.js";
 import { deviceAwayText, deviceAwayWord } from "../core/deviceAway.js";
-import { contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged } from "../core/deviceContexts.js";
+import {
+  awaitingFirstAnswer, contextFor, existingDeviceLifecycle, knownContexts, liveContexts, onDeviceStateChanged,
+} from "../core/deviceContexts.js";
 import { deviceNameOf } from "../core/devicePolicy.js";
 import { markNothingAnswers, paintDevicePicker, readPresence, refreshDevices, stopWatchingPresence, watchPresence } from "../devices.js";
 import { renderAppBehindBridgeGate, renderBridgeBehindAppGate } from "./versionGate.js";
@@ -223,7 +225,8 @@ export function holdAppWhileNoDeviceAnswers() {
     // A pre-connection listener is waiting to perform the shell's one-time
     // handoff when the first context lands. Once contexts exist, losing them
     // while presence remains online is recovery and keeps the shell in place.
-    if (!knownContexts().length) {
+    // A context a page stood up over a machine's records is not one landing.
+    if (!knownContexts().some((context) => !awaitingFirstAnswer(context))) {
       holding = true;
       return;
     }

@@ -17,6 +17,10 @@ const contexts = [];
 const stateListeners = new Set();
 vi.mock("../src/core/deviceContexts.js", () => ({
   liveContexts: () => [...contexts],
+  whenGreeted: async (context, dispatch) => {
+    await context.greeted;
+    return { sent: dispatch(), stands: () => true };
+  },
   onDeviceStateChanged: (fn) => {
     stateListeners.add(fn);
     return () => stateListeners.delete(fn);

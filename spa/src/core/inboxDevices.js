@@ -46,8 +46,10 @@ function deviceTarget(deviceId) {
  * Asked the same way a call is, so no reader compares device ids or falls back
  * to an account-wide answer: the composer asks for home's, the create dialog
  * and the agent rail for the machine of the address they were given. A machine
- * that cannot answer offers the empty catalog — the harness's own default, and
- * nothing to choose between — rather than the last machine's list.
+ * that cannot answer right now offers what it last said it offered, off disk
+ * (Render from cache), and is asked once it can be; one nothing here has held
+ * offers the empty catalog — the harness's own default, and nothing to choose
+ * between — rather than another machine's list.
  *
  * Asking a machine AGAIN is the settings page's business, not this door's: a
  * page that has just changed what a catalog reports holds that machine's
@@ -56,8 +58,13 @@ function deviceTarget(deviceId) {
  */
 export const deviceCatalog = (deviceId) => {
   const context = contextOf(deviceId);
-  return canAnswer(context) ? context.modelCatalog() : Promise.resolve(EMPTY_CATALOG);
+  return context ? context.modelCatalog() : Promise.resolve(EMPTY_CATALOG);
 };
+
+/** Hear this machine's catalog change: its answer landing after a surface
+ *  painted what the disk held, or the settings page asking it again. */
+export const followDeviceCatalog = (deviceId, listener) =>
+  contextOf(deviceId)?.onModelCatalogChanged(listener) || (() => {});
 
 /** The call a surface about one machine makes: that machine's, or one that
  *  refuses in the words its rows are greyed with — so no call site asks whether

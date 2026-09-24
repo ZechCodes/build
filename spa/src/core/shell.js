@@ -26,7 +26,8 @@ import { mountAgentRail } from "./agentRail.js";
 import { chatOverlaysPage } from "./railLayout.js";
 import { mountConsole } from "./console.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { canAnswer, routeContext } from "./deviceContexts.js";
+import { surfaceContext } from "./surfaceContext.js";
+import { canAnswer, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
 import { hashFromRoute } from "./router.js";
 import { notifyError } from "./notify.js";
@@ -48,11 +49,6 @@ const STANDING = {
     route.workspaceId &&
     route.projectId && {
       key: `workspace:${route.workspaceId}`,
-      // A workspace page paints from the records even when its machine cannot
-      // answer, and so does the rail — every read it makes is the cache's. So
-      // the bubbles stay beside a checkout read off disk, with the device strip
-      // over the page saying whose state that is.
-      paintsFromRecords: true,
       // The project's agent is a bubble above the line here, not the thing the
       // page stands on. A rail that minted one to paint that bubble would give
       // every workspace page a project agent, a scratch directory and a run
@@ -136,7 +132,6 @@ export function shellPartsForRoute(route = {}) {
   return {
     key: parts.key,
     mintsProjectConversation: parts.mintsProjectConversation,
-    paintsFromRecords: parts.paintsFromRecords === true,
     // The agent a conversation link names (`?agent=…`, core/router.js): the
     // rail comes up standing on it, whichever kind of page it landed on.
     rail: { ...parts.rail, deviceId, openAgentId: route.agent || null, addingAgent: route.newAgent === true },
@@ -169,14 +164,12 @@ export function shellSelection() {
 export function standShell(route) {
   collapseChatOnNavigation(route);
   const parts = shellPartsForRoute(route);
-  const context = parts ? routeContext(route) : null;
-  // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to WRITE, so the shell stands the reader nowhere
-  // rather than beside a rail whose every call can only be refused. The page
-  // says so on the surface (core/deviceNotice.js). What that machine's records
-  // already hold can still be READ, though, so a kind that paints from them
-  // keeps its bubbles: only never having opened the machine at all takes them.
-  const key = parts && standable(parts, context) ? parts.key : null;
+  // The rail and the console page what they show out of the records, so they
+  // stand beside a surface whether or not its machine can answer, exactly as
+  // the surface does (core/surfaceContext.js). Only a machine nothing here has
+  // ever held stands the reader nowhere; the page names it (core/deviceNotice.js).
+  const context = parts ? surfaceContext(route) : null;
+  const key = parts && context ? parts.key : null;
   if (live && live.key === key && key) return live.selection;
   teardown();
   live = { key, selection: createAgentSelection(), late: {}, rail: null, console: null };
@@ -184,9 +177,6 @@ export function standShell(route) {
   mountShellParts(parts, context);
   return live.selection;
 }
-
-const standable = (parts, context) =>
-  Boolean(context) && (canAnswer(context) || parts.paintsFromRecords);
 
 function mountShellParts(parts, context) {
   const mine = ++generation;
@@ -244,7 +234,41 @@ async function standProjectRail(parts, context, mine) {
   // and its bubbles should wear its initial the moment they appear.
   const named = { ...parts, rail: { ...parts.rail, projectName: row?.name || "" } };
   if (ownerOf(row)) live.rail = mountRail({ ...named.rail, entityId: ownerOf(row) }, context);
-  else await standOnAnswer(named, context, mine);
+  else live.rail = standWhenAsked(named, context, mine);
+}
+
+/** The rail over a project whose list names no owner: whichever comes first,
+ *  the list naming one or the machine answering to mint one. A question that
+ *  can only be refused is not asked, and not toasted. Exactly one of the two
+ *  mounts: the list's pending read is fenced the moment the machine is asked. */
+function standWhenAsked(parts, context, mine) {
+  const listed = standWhenListed(parts, context, mine);
+  let waiting = true;
+  let stopListening = () => {};
+  const stop = () => {
+    waiting = false;
+    stopListening();
+  };
+  // Asked on the verdict of the greeting it goes out on, in the same turn: a
+  // session adopted under the wait has a greeting of its own to wait for.
+  const ask = async () => {
+    if (!waiting || !canAnswer(context)) return;
+    await whenGreeted(context, () => {
+      if (!waiting) return null;
+      stop();
+      if (listed?.mounted() || generation !== mine) return null;
+      listed?.dispose();
+      return standOnAnswer(parts, context, mine);
+    });
+  };
+  stopListening = onDeviceStateChanged(() => void ask());
+  void ask();
+  return {
+    dispose() {
+      stop();
+      listed?.dispose();
+    },
+  };
 }
 
 /** The bridge's answer for a project the list names no owner for. A call that
@@ -269,17 +293,22 @@ function standWhenListed(parts, context, mine) {
   if (!address) return null;
   let rail = null;
   let unsubscribe = null;
+  let disposed = false;
   const tryMount = async () => {
     const row = await cachedProject(context, parts.rail.projectId);
     const owner = ownerOf(row);
-    if (!owner || rail || generation !== mine) return;
+    // A read that was in flight when the wait was given up mounts nothing: the
+    // wait's owner has handed the rail to someone else.
+    if (!owner || rail || disposed || generation !== mine) return;
     unsubscribe?.();
     unsubscribe = null;
     rail = mountRail({ ...parts.rail, projectName: row.name || "", entityId: owner }, context);
   };
   unsubscribe = subscribeCache(address, () => void tryMount());
   return {
+    mounted: () => Boolean(rail),
     dispose() {
+      disposed = true;
       unsubscribe?.();
       unsubscribe = null;
       rail?.dispose?.();

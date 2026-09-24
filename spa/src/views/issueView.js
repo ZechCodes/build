@@ -12,7 +12,7 @@ import { $ } from "../dom.js";
 import { App, go } from "../app.js";
 import { hashFromRoute } from "../core/router.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
-import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { surfaceContext } from "../core/surfaceContext.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { deviceCatalog } from "../core/inboxDevices.js";
 import { mountIssueView } from "../core/issueView.js";
@@ -27,21 +27,22 @@ export async function renderIssue() {
   let projectId = App.route.projectId || null;
   let selectedStageId = App.route.stage || null;
   // The machine this link is about: its caller, its cache and its conversations
-  // are what the surface, the rail and the console below are built on. One that
-  // cannot answer — never opened here, or gone since — has nothing under this
-  // link, so the surface names it instead of painting an empty issue.
-  const context = routeContext(App.route);
+  // are what the surface, the rail and the console below are built on.
+  const context = surfaceContext(App.route);
   root.className = "surface";
-  if (!canAnswer(context)) {
-    mountDeviceNotice(root, deviceId); // …and hands the link back when it lands
+  // The surface paints what the records hold of this machine whether or not it
+  // can answer. Only a machine nothing here has ever held has nothing to paint:
+  // the notice names it, waits for it, and hands the link back when it lands.
+  if (!context) {
+    mountDeviceNotice(root, deviceId);
     return;
   }
   // The device's caller, not the session's: a drop and resume under this
   // surface replaces the transport, and the surface keeps asking the machine.
   const callRpc = context.rpc;
   root.innerHTML = '<div id="tabbody" class="flush"></div>';
-  // This machine answers now. If it goes while the surface is open, what was
-  // read stays on screen and the strip says whose state that is.
+  // While the machine cannot answer, what the records hold stays on screen and
+  // the strip says whose state that is.
   const deviceStrip = mountDeviceStrip(root, context);
 
   // Looking at an issue is seeing it — the dot settles until it moves again.

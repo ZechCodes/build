@@ -35,7 +35,7 @@ import { branchStateIn, initialBranchState, projectGitState } from "./branchSeed
 import { createAdopters } from "../core/adoption.js";
 import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
-import { canAnswer, routeContext } from "../core/deviceContexts.js";
+import { surfaceContext } from "../core/surfaceContext.js";
 import { routeProjectKey } from "../core/deviceKey.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
@@ -102,7 +102,7 @@ export async function renderBranch() {
   // The machine this link is about, read once: everything mounted below is
   // handed its caller, its cache scope, its conversations and its offline mark
   // from here, so no pane has to ask which device it is on.
-  const context = routeContext(App.route);
+  const context = surfaceContext(App.route);
   // The account's name for this project — the pair (device, project), since
   // every machine mints a `p1`.
   const projectKey = routeProjectKey(App.route);
@@ -112,11 +112,10 @@ export async function renderBranch() {
   // focus back to the composer.
   const openAt = openPlaceOf(App.route);
   root.className = "surface";
-  // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to read or write, so the surface names it rather
-  // than standing a frame up over calls that can only be refused. The notice
-  // waits for that machine and hands the link back when it lands.
-  if (!canAnswer(context)) {
+  // The surface paints what the records hold of this machine whether or not it
+  // can answer. Only a machine nothing here has ever held has nothing to paint:
+  // the notice names it, waits for it, and hands the link back when it lands.
+  if (!context) {
     mountDeviceNotice(root, deviceId);
     return;
   }
@@ -145,10 +144,10 @@ export async function renderBranch() {
 
   let disposed = false;
   let row = null; // the cached feed row, with the run's own body on it
-  // This machine answers now. If it goes while the surface is open, what was
-  // read stays on screen and the strip says whose state that is — but only once
-  // there is something to be whose: until the row lands this frame says
-  // "loading…", and nothing on it came from that machine at all.
+  // While the machine cannot answer, what the records hold stays on screen and
+  // the strip says whose state that is — but only once there is something to
+  // be whose: until the row lands this frame says "loading…", and nothing on it
+  // came from that machine at all.
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(row) });
   let pane = null; // the mounted tab body ({ dispose })
   let mountedKey = null; // what the body was mounted over: tab + review key

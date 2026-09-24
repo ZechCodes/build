@@ -39,7 +39,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
 
 const { App } = await import("../src/app.js");
-const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
@@ -186,7 +186,7 @@ beforeEach(async () => {
   });
   // The machine the rail is mounted on, which is the one its harness catalog
   // comes from.
-  adoptDeviceSession(sessionAnswering(bridge));
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
 });
 
 afterEach(() => {

@@ -402,6 +402,12 @@ In practice:
   `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
+- **Route surfaces** (branch, issue, tracker issue, project, workspace) and the
+  shell's rail and console stand on `surfaceContext(route)`
+  (`spa/src/core/surfaceContext.js`): the device's context, or a session-less
+  one when only its records are on disk (a cold reload). They never ask whether
+  the machine can answer. `mountDeviceNotice` (`spa/src/core/deviceNotice.js`)
+  stands in only for a machine nothing here has ever held.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
 
@@ -438,9 +444,24 @@ them into new code; each is a candidate to bring under the rule.
   `LOCK_WAIT_MS` (4 s) syncs anyway, in case the holder is frozen, and a
   browser without the Locks API syncs every tab. The cost is duplicate reads.
 - **Connection-aware rendering.** Some surfaces still show device state:
-  - greyed "offline" rows and the strip over a surface whose machine is away,
-    worded by `spa/src/core/deviceAway.js`;
-  - the connection icon (`spa/src/connectionStatus.js`).
+  - greyed "offline" rows and the strip over a surface whose machine is away
+    and not being dialled, worded by `spa/src/core/deviceAway.js`;
+  - the notice a link to a machine with no records here shows ("Connecting
+    to …" or away), `spa/src/core/deviceNotice.js`;
+  - the connection icon (`spa/src/connectionStatus.js`);
+  - the compose box's "… is away" note, painted before anything is queued
+    (`spa/src/core/composeView.js`, #137).
+  - **pending, not accepted:** the inbox shuts a row's Done and menu actions
+    and a block's New workspace and Settings while the machine cannot answer,
+    and offers Hide project only then (`spa/src/core/inboxDevices.js`
+    `paintDeviceState`, `spa/src/core/inboxProjects.js` `hideButtonHtml`). A
+    disabled action control is a render guard, not a status display; #140
+    removes it.
+  - **pending, not accepted:** the account's offline mark
+    (`accountSaysAway`, written by `markWhatTheAccountNoLongerLists` in
+    `spa/src/devices.js`) lands only on contexts that exist at the presence
+    read. A surface stood up on a machine's records after that read shows no
+    strip until the next one.
 
 ### Connection state machine
 
@@ -491,6 +512,24 @@ refuses when that device cannot answer.
   greeting flags. New features get a name, never a legacy row.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- A session is adopted before it is greeted, so `canAnswer` is true before the
+  greeting's verdict. Each greeting, including a re-greeting on a new carrier
+  or a restored path (`greetLiveBridge` in `spa/src/connection.js`), gets its
+  own authority and arms `context.greeted`; the first hello claims the wait
+  reserved at session adoption. A newer greeting supersedes every
+  older one on that session, transferring pending waits to its promise; only
+  the current authority can install an adapter or verdict and release the wait.
+  `whenGreeted()` in `spa/src/core/deviceContexts.js` checks `stands()` and
+  dispatches in the same turn: the context still owns the session, this is its
+  latest issued greeting, and that greeting reported a compatible API. The
+  model catalog and both project/workspace `ensure_conversation` requests use
+  this authority, including owner creation through captured repository callers;
+  an owner answer whose authority no longer stands is rejected too.
+  The catalog checks it again when the answer arrives and inside the cache
+  write transaction; a superseded answer is re-asked under the current greeting,
+  or left unasked until a lost machine returns. Cached surfaces paint throughout.
+  `user.present` likewise uses the greeting at dispatch and at its cache write,
+  while retaining the arrival's freshness and focus checks.
 
 ### Surfaces
 

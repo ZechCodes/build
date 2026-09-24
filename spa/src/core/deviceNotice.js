@@ -8,7 +8,8 @@ import { App, render } from "../app.js";
 import { deviceFrozenText, esc } from "./text.js";
 import { deviceAwayText } from "./deviceAway.js";
 import { deviceNameOf } from "./devicePolicy.js";
-import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
+import { awaitingFirstAnswer, canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
+import { surfaceContext } from "./surfaceContext.js";
 import { connectDevice, deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
 
 /** What this client says about a machine it cannot reach, in the account's name
@@ -34,7 +35,8 @@ const recovering = (deviceId) => {
 
 /**
  * Stand the notice up where a surface would go, and take it down again the
- * moment its machine can answer.
+ * moment the surface has a machine to stand on (core/surfaceContext.js) — the
+ * one question every route surface asks before it paints.
  *
  * A link is not dead for naming a machine that is not here yet: the devices land
  * one at a time, so a reload paints on whichever answered first and the link's
@@ -46,7 +48,7 @@ const recovering = (deviceId) => {
  */
 export function mountDeviceNotice(root, deviceId) {
   const paint = () => {
-    if (canAnswer(routeContext(App.route))) return render();
+    if (surfaceContext(App.route)) return render();
     const context = contextFor(deviceId);
     const connecting = listedOnline(deviceId) && (!context?.blocked || recovering(deviceId));
     root.innerHTML = connecting
@@ -87,7 +89,7 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
   const paint = () =>
     nameTheMachine(
       host,
-      canAnswer(context) || recovering(context.deviceId) ? null : awayWords(context.deviceId, hasContent),
+      unnamed(context) ? null : awayWords(context.deviceId, hasContent),
       context.deviceId,
     );
   paint();
@@ -97,6 +99,13 @@ export function mountDeviceStrip(host, context, { hasContent = () => true } = {}
     nameTheMachine(host, null);
   };
 }
+
+/** Nothing to name: the machine answers, is being dialled, or has not been
+ *  tried yet at all — a cold reload paints from the records before the account
+ *  has even said which machines are up, and that is connecting, not gone. Once
+ *  the account has said it is offline, that is gone, tried or not. */
+const unnamed = (context) =>
+  canAnswer(context) || recovering(context.deviceId) || (awaitingFirstAnswer(context) && !context.accountSaysAway);
 
 /** One strip or none: the host carries at most one, whatever the account says
  *  and however often it says it. */

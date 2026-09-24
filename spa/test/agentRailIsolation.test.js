@@ -35,7 +35,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { resetApplication } = await import("../src/app.js");
-const { adoptDeviceSession, canAnswer, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceSession, canAnswer, contextFor, setContextOffline } = await import("../src/core/deviceContexts.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { resetChangeEvents } = await import("../src/core/changeEvents.js");
@@ -112,7 +112,10 @@ const device = () => contextFor(DEVICE_ID);
 /** Its bridge answers with this from now on. Adopting a session for a device
  *  the registry already holds is that bridge reconnecting, so this is how a
  *  case hands the rail a new transport mid-run. */
-const bridgeAnswersWith = (answer) => adoptDeviceSession({ deviceId: DEVICE_ID, call: answer });
+// Landed and greeted: a machine is asked for its catalog only once it has said
+// which API it speaks.
+const bridgeAnswersWith = (answer) =>
+  adoptBridgeSelection(adoptDeviceSession({ deviceId: DEVICE_ID, call: answer }), { version: "1.22.0" }, null);
 
 const mountBranch = async () => {
   // The work item is read off this machine's disk, so that is where a case

@@ -95,7 +95,7 @@ vi.mock("../src/core/trackerIssuesPane.js", () => ({
 }));
 
 const { App, go, render, unmountView } = await import("../src/app.js");
-const { adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
+const { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { stopShell } = await import("../src/core/shell.js");
 const { wipeCache } = await import("../src/core/localCache.js");
 
@@ -137,14 +137,16 @@ const PLACES = {
   "branch (legacy)": { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" },
 };
 
+// Greeted, too: a project with no owner is minted one only once its bridge
+// has said which API it speaks (core/shell.js).
 const openDevice = () =>
-  adoptDeviceSession({
+  adoptBridgeSelection(adoptDeviceSession({
     deviceId: "dev-1",
     call: (...args) => bridge.call(...args),
     close: () => {},
     peer: () => {},
     onCarrier: () => {},
-  });
+  }), { version: "1.22.0" }, null);
 
 /** Go to a route the way the app does, and let the reads that paint it land. */
 const visit = async (route) => {

@@ -31,7 +31,9 @@ vi.mock("../src/core/inboxView.js", () => ({ inboxListRouteChanged: vi.fn(), mou
 import { initDevicePicker, markNothingAnswers, paintDevicePicker } from "../src/devices.js";
 import { rememberDeviceFilter, resetDeviceFilterCache } from "../src/core/deviceFilter.js";
 import { nothingAnswersMark } from "../src/core/text.js";
-import { adoptBridgeSelection, adoptDeviceSession, contextFor, resetDeviceContexts, setContextOffline } from "../src/core/deviceContexts.js";
+import {
+  adoptBridgeSelection, adoptDeviceSession, contextFor, knownDeviceContext, resetDeviceContexts, setContextOffline,
+} from "../src/core/deviceContexts.js";
 import { resetUsageLimits, setUsageLimitsForTest as setUsageLimits } from "../src/core/usageLimits.js";
 import { clearMemoryCacheRecords } from "./memoryCache.js";
 
@@ -170,6 +172,17 @@ describe("custom device picker", () => {
   // own says otherwise.
   it("says nothing about a machine it has not opened yet", () => {
     expect(labelOf(choices()[1])).toBe("Laptop");
+  });
+
+  // A cold reload stands a page on a machine's records before it answers,
+  // over a session-less context (core/surfaceContext.js). Nothing has been
+  // tried yet, so the picker still says what the account list says.
+  it("says nothing about a machine a page stands on before it has answered", () => {
+    knownDeviceContext("a");
+    paintDevicePicker();
+    expect(labelOf(choices()[1])).toBe("Laptop");
+    expect(document.querySelector('[data-settings-device="a"]')).not.toBeNull();
+    expect(choices()[1].closest(".device-picker-row").querySelector(".device-picker-offline")).toBeNull();
   });
 
   it("picking a device sets the filter and does not touch selectedDeviceId", async () => {

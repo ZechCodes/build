@@ -56,9 +56,9 @@ export const announceDeviceTransport = () => announceDeviceState();
 /**
  * A caller to one machine that refuses when that machine cannot answer.
  *
- * Every surface asks canAnswer before it stands a frame up, but a poll already
- * running, a watcher already subscribed and the cache syncer's background tier
- * ask nobody — they hold a caller from mount and call it. A greeting that
+ * Surfaces keep painting cached records while a watcher already subscribed or
+ * the cache syncer's background tier holds a caller from mount and calls it.
+ * A greeting that
  * settles unsupported under them (a bridge updated past this tab re-greets on
  * its next session) would otherwise leave them asking for answers in a shape
  * this tab cannot read, and painting whatever came back. So the refusal lives
@@ -71,8 +71,25 @@ export const announceDeviceTransport = () => announceDeviceState();
  * params, timeoutMs)` — is passed straight through, so an argument the caller
  * left out stays left out and the session's own defaults apply.
  */
-const asking = (context, transport) => (...asked) =>
-  (canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context))));
+const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
+const asking = (context, transport) => (...asked) => {
+  if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
+  return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
+};
+
+/** Owner creation also comes from rail actions, through a captured repository
+ * caller. Every path must send on its own session's latest compatible hello. */
+async function askOwner(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    const call = transport();
+    if (call !== context.call) throw new Error("session replaced before creating a conversation");
+    return call(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  const answer = await request.sent;
+  if (!request.stands()) throw new Error("greeting superseded while creating a conversation");
+  return answer;
+}
 
 function createDeviceContext(deviceId) {
   const lifecycle = deviceLifecycles.forDevice(deviceId);
@@ -85,6 +102,7 @@ function createDeviceContext(deviceId) {
     apiVersion: null, // the `api_version` it greeted with
     unsupported: null, // "app" | "bridge" when no adapter here speaks to it
     greeted: null, // this session's greeting, once one is in flight (connection.js)
+    accountSaysAway: false, // the account's last presence read listed it offline (devices.js)
     /** Still the registry's context for this device, and still able to address
      *  the cache: what a late answer must ask before it writes anything. */
     active: () => contexts.get(deviceId) === context && Boolean(context.cacheScope?.active()),
@@ -103,9 +121,17 @@ function createDeviceContext(deviceId) {
    *  whichever session the device is on when the call is made; a call already
    *  in flight settles on the session that accepted it. */
   context.rpc = asking(context, () => context.call);
+  // The conversations exist before any session does: a page can stand the rail
+  // up over this machine's records before it answers (core/surfaceContext.js),
+  // and the session that lands retargets this repository rather than minting
+  // one the rail never hears of.
+  bindRepository(context, context.rpc);
   // What this bridge offers to start work with, held here rather than on the
   // app: the machine is what the answer is about (core/modelCatalog.js).
-  Object.assign(context, createModelCatalog(context));
+  Object.assign(context, createModelCatalog(context, {
+    canAsk: () => canAnswer(context),
+    whenGreeted: (dispatch) => whenGreeted(context, dispatch),
+  }));
   contexts.set(deviceId, context);
   return context;
 }
@@ -134,13 +160,16 @@ export function knownDeviceContext(deviceId) {
  * to it. Written in this one place, so every surface reads the same three
  * fields whichever machine it is about.
  */
-export function adoptBridgeSelection(context, selection, adapter) {
-  if (!context) return null;
+export function adoptBridgeSelection(context, selection, adapter, authority = greetingAuthorities.get(context)) {
+  if (!authority?.current()) return null;
+  const verdict = selection || {};
   context.adapter = adapter || null;
-  context.apiVersion = selection?.version || null;
-  context.unsupported = selection?.unsupported || null;
-  releaseGreeting(context); // this bridge has said what it speaks
+  context.apiVersion = verdict.version || null;
+  context.unsupported = verdict.unsupported || null;
+  authority.compatible = Boolean(selection) && !context.unsupported;
+  releaseGreeting(context, authority); // only this greeting has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
+  context.answering?.(); // what a surface wanted while it could not be asked
   return context;
 }
 
@@ -149,14 +178,12 @@ function forgetBridgeSelection(context) {
   context.adapter = null;
   context.apiVersion = null;
   context.unsupported = null;
-  releaseGreeting(context); // whoever was waiting on the last one waits on the next
   armGreeting(context);
 }
 
-// What releases each device's armed greeting, kept beside the contexts rather
-// than on them: a promise's own settle is not something a surface should be
-// able to reach for.
-const greetingReleases = new Map(); // context → { promise, release }
+// Retain the latest authority after settlement: a resolved promise alone says
+// neither which greeting answered nor whether it reported a compatible API.
+const greetingAuthorities = new WeakMap(); // context → latest greeting authority
 
 /**
  * Arm this device's greeting: the promise a reader that must not ask before the
@@ -170,14 +197,32 @@ const greetingReleases = new Map(); // context → { promise, release }
  * bridge had said which API major it speaks.
  */
 function armGreeting(context) {
+  const previous = greetingAuthorities.get(context);
+  const session = context.session;
   let release;
   const promise = new Promise((settle) => { release = settle; });
-  const token = { promise, release };
-  greetingReleases.set(context, token);
+  const token = {
+    promise, release, issued: false, compatible: false,
+    current: () => context.active() && context.session === session && greetingAuthorities.get(context) === token,
+    stands: () => token.current() && token.compatible && canAnswer(context),
+  };
+  greetingAuthorities.set(context, token);
   context.greeted = promise;
+  // Even readers that captured the old promise once must wait for its
+  // successor. Supersession transfers the wait; an older result cannot end it.
+  previous?.release(promise);
+  return token;
 }
 
-export const greetingToken = (context) => greetingReleases.get(context) || null;
+/** The first hello claims adoption's reserved wait, which the initial cache
+ * sync may already hold. Every subsequent hello gets its own authority,
+ * superseding even a pending greeting on this same session. */
+export function greetingInFlight(context) {
+  const reserved = greetingAuthorities.get(context);
+  const authority = reserved && !reserved.issued ? reserved : armGreeting(context);
+  authority.issued = true;
+  return authority;
+}
 
 /** This device's greeting has settled, however it settled: an adapter was
  *  selected, a side was named behind, or the session died with nothing said.
@@ -185,10 +230,12 @@ export const greetingToken = (context) => greetingReleases.get(context) || null;
  *  device unread. */
 export function releaseGreeting(context, token) {
   if (!context) return;
-  const current = greetingReleases.get(context);
+  const current = greetingAuthorities.get(context);
   if (arguments.length > 1 && current !== token) return;
-  current?.release();
-  greetingReleases.delete(context);
+  if (current) {
+    current.issued = true;
+    current.release();
+  }
 }
 
 /**
@@ -199,11 +246,74 @@ export function releaseGreeting(context, token) {
  * reads held against it outlive the connection — and a link can name a machine
  * this client has never opened at all, which has none. A bridge speaking an API
  * major nothing here claims is the third way: the socket is up, and every answer
- * off it would be a guess at a shape. Every surface that would stand a frame up
- * over a device asks here, so the question is asked one way.
+ * off it would be a guess at a shape. This guards requests; cached rendering
+ * does not depend on whether the machine can answer.
  */
 export const canAnswer = (context) =>
   Boolean(context && context.call && !context.offline && !context.unsupported);
+
+/**
+ * Send this machine something it will keep, once the greeting of the session it
+ * is on has settled: `dispatch()` is called with the verdict in hand, and what it
+ * sends is handed back as `sent` beside `stands()`, which says whether that
+ * session and that greeting still stand, compatible. Null, sending nothing, when
+ * the verdict is that this machine cannot be asked.
+ *
+ * A session is adopted before it is greeted — `canAnswer` is true from the
+ * adoption — and the greeting is what says whether this tab can read the bridge
+ * at all. So what asks a machine something it will keep (a conversation minted
+ * for a project, the catalog written to disk) goes through here: a bridge
+ * speaking an API nothing here claims is never asked. The verdict is read and
+ * the request sent in one turn, since a session adopted in between would be
+ * asked on a greeting that was not its own; and the answer is kept only if
+ * `stands()` when it lands, since a session greeted again (a new carrier, a
+ * restored path) or replaced under the wait may be speaking another release.
+ */
+export async function whenGreeted(context, dispatch) {
+  let authority;
+  do {
+    authority = greetingAuthorities.get(context);
+    await authority?.promise;
+  } while (authority !== greetingAuthorities.get(context));
+  if (!authority?.stands()) return null;
+  return { sent: dispatch(authority.stands), stands: authority.stands };
+}
+
+/**
+ * A context stood up over a machine's records before that machine has ever
+ * answered (core/surfaceContext.js): no session, no greeting's verdict, and no
+ * mark saying why not — every stand-down stamps `offlineSince`. Nothing has
+ * been tried and failed, so whatever speaks for the machine's reachability
+ * treats it as a machine this client has not opened yet.
+ */
+export const awaitingFirstAnswer = (context) =>
+  Boolean(context) && !context.session && !context.offlineSince && !context.unsupported;
+
+/**
+ * What the account's last presence read said of this machine: listed online,
+ * or not.
+ *
+ * Kept apart from the machine's own lifecycle on purpose. The account calling
+ * a machine offline is not this client trying it: one a page stood up over its
+ * records before it answered is still a machine nothing here has asked, and
+ * the stale-listing guess (connection.js) still dials it. What reads this is
+ * the strip over such a page (core/deviceNotice.js), which has to say the
+ * machine is not connected once the account has said so.
+ */
+export function noteAccountPresence(context, listedOnline) {
+  const away = !listedOnline;
+  if (!context || context.accountSaysAway === away) return;
+  context.accountSaysAway = away;
+  announceDeviceState();
+}
+
+/** This machine's context once this client has opened it — tried it, at
+ *  least — or null. One a page stood up over its records before it answered
+ *  says nothing about the machine yet. */
+export function openedContext(deviceId) {
+  const context = contextFor(deviceId);
+  return awaitingFirstAnswer(context) ? null : context;
+}
 
 /** Every registered device, offline ones included, in App.devices order —
  *  devices the list has not caught up with yet keep their adoption order last. */
@@ -363,11 +473,13 @@ export function homeContext() {
  * cannot answer — blocked, away, speaking an API nothing here reads. A machine
  * with no context at all has not failed, it has not answered YET (a dial in
  * flight, a boot that has not reached it), and taking home off it would hand
- * every account's home to whichever bridge shook hands quickest.
+ * every account's home to whichever bridge shook hands quickest. Nor has one
+ * whose context a page stood up over its records before it answered
+ * (core/surfaceContext.js): that context wears no mark.
  */
 const stillWorthAsking = (deviceId) => {
   const context = contexts.get(deviceId);
-  return !context || canAnswer(context);
+  return !context || canAnswer(context) || awaitingFirstAnswer(context);
 };
 
 /**

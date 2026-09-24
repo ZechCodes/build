@@ -15,7 +15,7 @@ vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail: (...args) => mountA
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
 
-let standShell, stopShell, writeCached, scopeFor, clearCacheScope, stampProject, adoptDeviceSession, resetDeviceContexts;
+let standShell, stopShell, writeCached, scopeFor, clearCacheScope, stampProject, adoptDeviceSession, adoptBridgeSelection, resetDeviceContexts;
 let scope, rpc;
 
 const route = { name: "project", deviceId: "dev-1", projectId: "proj-1" };
@@ -23,6 +23,13 @@ const issueRoute = { name: "trackerIssue", deviceId: "dev-1", projectId: "proj-1
 
 const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
+};
+
+/** The machine's session landing and greeting: the shell asks a machine to
+ *  mint nothing before its bridge has said which API it speaks. */
+const land = () => {
+  const context = adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+  adoptBridgeSelection(context, { version: "1.22.0" }, null);
 };
 
 const listProjects = (rows) =>
@@ -39,10 +46,10 @@ beforeEach(async () => {
   ({ writeCached } = await import("../src/core/localCache.js"));
   ({ scopeFor, clearCacheScope } = await import("../src/core/cacheScope.js"));
   ({ stampProject } = await import("../src/core/feedMerge.js"));
-  ({ adoptDeviceSession, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
+  ({ adoptDeviceSession, adoptBridgeSelection, resetDeviceContexts } = await import("../src/core/deviceContexts.js"));
   scope = scopeFor("dev-1");
   rpc = vi.fn(async () => ({ entity_id: "run-minted" }));
-  adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+  land();
 });
 
 afterEach(() => {
@@ -100,6 +107,45 @@ describe("the conversation a project page stands on", () => {
     const rail = mountAgentRail.mock.results[0].value;
     stopShell();
     expect(rail.dispose).toHaveBeenCalled();
+  });
+
+  // A page can stand on a machine's records while that machine cannot answer
+  // (core/surfaceContext.js). Asking it for an owner then can only be refused,
+  // so the shell waits quietly — on the list, and on the machine — and asks
+  // the moment it can.
+  it("waits quietly for a machine that cannot answer, and asks it for the owner once it lands", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    await listProjects([{ project_id: "proj-1", name: "build" }]);
+    setContextOffline("dev-1");
+    standShell(route);
+    await flush();
+    expect(rpc).not.toHaveBeenCalled();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(mountAgentRail).not.toHaveBeenCalled();
+
+    land();
+    await flush();
+
+    expect(rpc).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
+    expect(mountAgentRail).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail.mock.calls[0][1].entityId).toBe("run-minted");
+  });
+
+  it("stops waiting on the machine once the list names the owner first", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    await listProjects([{ project_id: "proj-1", name: "build" }]);
+    setContextOffline("dev-1");
+    standShell(route);
+    await flush();
+
+    await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
+    await flush();
+    land();
+    await flush();
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(mountAgentRail).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail.mock.calls[0][1].entityId).toBe("run-7");
   });
 
   it("stands nothing up when the reader left while the owner was being found", async () => {

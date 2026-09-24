@@ -14,7 +14,8 @@ import { renderFilesTab } from "./files.js";
 import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
-import { canAnswer, knownDeviceContext, routeContext } from "../core/deviceContexts.js";
+import { routeContext } from "../core/deviceContexts.js";
+import { surfaceContext } from "../core/surfaceContext.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { deviceFeedNow } from "../core/feedRows.js";
 import { cachedFeedView } from "../core/cachedRows.js";
@@ -426,19 +427,14 @@ function mountWorkspace(workspace, state) {
 export async function renderWorkspace() {
   const root = $("#root");
   const route = App.route;
-  // The records may hold this workspace before its machine has a context at
-  // all — a cold reload, the session not yet attempted. A session-less context
-  // stands in (it answers nothing, and the session retargets it when it lands)
-  // so the surface paints from disk rather than waiting on the wire.
-  const held = workspaceNow(route.deviceId, route.workspaceId);
-  const context = routeContext(route) || (held && route.deviceId ? knownDeviceContext(route.deviceId) : null);
+  const context = surfaceContext(route);
   root.className = "surface";
-  // A machine that cannot answer has nothing under this link to WRITE — but
-  // what the records hold of it can still be read. A workspace the machine's
-  // cached checkout list names paints from those records, with the strip
-  // naming the machine over it; only a link to a machine never opened here, or
-  // to a workspace nothing here has seen, stands the notice up instead.
-  if (!canAnswer(context) && !(context && held)) {
+  // The surface paints what the records hold of this machine whether or not it
+  // can answer, and a workspace they do not name yet is waited for exactly as
+  // it is while the machine answers (standOnWorkspace). Only a machine nothing
+  // here has ever held has nothing to paint: the notice names it, waits for it,
+  // and hands the link back when it lands.
+  if (!context) {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
@@ -452,10 +448,10 @@ export async function renderWorkspace() {
     state.gitOptionsRead = readGitOptions(state, address.sub);
   });
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  // This machine answers now. If it goes while the workspace is open, what was
-  // read stays on screen and the strip says whose state that is — but only once
-  // there is something to be whose: until the workspace lands this frame says
-  // "loading…", and nothing on it came from that machine at all.
+  // While the machine cannot answer, what the records hold stays on screen and
+  // the strip says whose state that is — but only once there is something to be
+  // whose: until the workspace lands this frame says "loading…", and nothing on
+  // it came from that machine at all.
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => Boolean(state.workspace) });
   App.viewDispose = () => {
     state.disposed = true;

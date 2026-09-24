@@ -105,10 +105,11 @@ describe("an issue on another device", () => {
   });
 });
 
-// The machine answered once and has since gone: its context is still here, but
-// nothing can be read through it until it is back.
+// The machine answered once and has since gone: its context is still here, so
+// the surface stands up on what the records hold, as if it answered, and the
+// strip over it names the machine. Nothing is read through it until it is back.
 describe("an issue on a device that has gone offline", () => {
-  it("an offline route device renders the offline state naming that device", async () => {
+  it("an offline route device paints the surface and names that device over it", async () => {
     const contexts = await import("../src/core/deviceContexts.js");
     App.devices = App.devices.map((device) => device.id === "dev-2" ? { ...device, status: "offline" } : device);
     contexts.setContextOffline("dev-2");
@@ -116,8 +117,8 @@ describe("an issue on a device that has gone offline", () => {
     await renderIssue();
     await flush();
 
-    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
-    expect(document.getElementById("tabbody")).toBeNull();
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeTruthy();
     expect(theirCall).not.toHaveBeenCalled();
     expect(bridge.call).not.toHaveBeenCalled();
   });

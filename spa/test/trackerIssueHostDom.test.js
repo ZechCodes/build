@@ -31,14 +31,16 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 import { App } from "../src/app.js";
 import { renderTrackerIssue } from "../src/views/trackerIssueView.js";
-import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
+import { adoptBridgeSelection, adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 const device = (deviceId) => {
   const call = vi.fn(async () => ({}));
-  adoptDeviceSession({ ...fakeSession(deviceId), call });
+  // Greeted, too: a project with no owner is minted one only once its
+  // bridge has said which API it speaks (core/shell.js).
+  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession(deviceId), call }), { version: "1.22.0" }, null);
   return call;
 };
 

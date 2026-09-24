@@ -61,8 +61,9 @@ const captures = vi.hoisted(() => ({ flush: vi.fn(async () => {}) }));
 const mints = vi.hoisted(() => ({ provided: null }));
 
 const { App, resetApplication, rememberSelectedDevice } = await import("../src/app.js");
-const { canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, liveContexts, resetDeviceContexts } =
-  await import("../src/core/deviceContexts.js");
+const {
+  canAnswer, contextFor, deviceFeedView, homeContext, knownContexts, knownDeviceContext, liveContexts, resetDeviceContexts,
+} = await import("../src/core/deviceContexts.js");
 const {
   chooseCreationDevice,
   connectDevice,
@@ -927,6 +928,25 @@ describe("per-device connections", () => {
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
   });
 
+  // A shell entered while its machines are still being dialled paints the
+  // route off the records, and that page stands on a session-less context
+  // (core/surfaceContext.js). The context is not the machine landing: the
+  // shell's one hand-back — feed, sync, route — is still owed to the first
+  // machine that answers.
+  it("still hands the app back when a page stood on a machine's records before it answered", async () => {
+    initDevicePicker();
+    knownDeviceContext("dev-a");
+    holdAppWhileNoDeviceAnswers();
+    await flush();
+    routes.renderInbox.mockClear();
+
+    await connectDevice("dev-a");
+    await flush();
+
+    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
+    expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");
+  });
+
   it("does not misreport revoked online rows as an all-offline account", async () => {
     await connectEveryDevice();
     await paintFeed();
@@ -1670,5 +1690,44 @@ describe("per-device connections", () => {
     expect(newSession.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(hellosBefore);
     releaseGreeting({ capabilities: {} });
     await replacement;
+  });
+});
+
+// A page can stand on a machine's records before that machine has answered in
+// this tab (core/surfaceContext.js). The account saying that machine is offline
+// is news the strip over the page has to tell (core/deviceNotice.js), but it is
+// not a dial: the machine is still one nothing here has asked, and a listing
+// that may simply not have caught up is still worth the one guess.
+describe("a machine a page stands on, which the account calls offline", () => {
+  const recentlyAway = (id, name) => ({ ...away(id, name), last_seen_at: new Date(Date.now() - 120000).toISOString() });
+  const readPresence = async () => {
+    const devicesModule = await import("../src/devices.js");
+    await devicesModule.readPresence();
+    for (let turn = 0; turn < 12; turn += 1) await flush();
+  };
+
+  it("is still guessed at once, as a machine nothing here has asked", async () => {
+    devices = [recentlyAway("dev-a", "Laptop")];
+    App.devices = devices;
+    knownDeviceContext("dev-a");
+
+    await readPresence();
+
+    expect(openedFor("dev-a")).toHaveLength(1);
+    expect(liveIds()).toEqual(["dev-a"]);
+  });
+
+  it("is guessed at when the last machine answering leaves", async () => {
+    devices = [online("dev-a", "Laptop"), recentlyAway("dev-b", "Desktop")];
+    App.devices = devices;
+    await connectEveryDevice();
+    expect(liveIds()).toEqual(["dev-a"]);
+    knownDeviceContext("dev-b");
+
+    devices = [recentlyAway("dev-a", "Laptop"), recentlyAway("dev-b", "Desktop")];
+    await readPresence();
+
+    expect(openedFor("dev-b")).toHaveLength(1);
+    expect(liveIds()).toEqual(["dev-b"]);
   });
 });

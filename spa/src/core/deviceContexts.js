@@ -56,9 +56,9 @@ export const announceDeviceTransport = () => announceDeviceState();
 /**
  * A caller to one machine that refuses when that machine cannot answer.
  *
- * Every surface asks canAnswer before it stands a frame up, but a poll already
- * running, a watcher already subscribed and the cache syncer's background tier
- * ask nobody — they hold a caller from mount and call it. A greeting that
+ * Surfaces keep painting cached records while a watcher already subscribed or
+ * the cache syncer's background tier holds a caller from mount and calls it.
+ * A greeting that
  * settles unsupported under them (a bridge updated past this tab re-greets on
  * its next session) would otherwise leave them asking for answers in a shape
  * this tab cannot read, and painting whatever came back. So the refusal lives
@@ -71,8 +71,25 @@ export const announceDeviceTransport = () => announceDeviceState();
  * params, timeoutMs)` — is passed straight through, so an argument the caller
  * left out stays left out and the session's own defaults apply.
  */
-const asking = (context, transport) => (...asked) =>
-  (canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context))));
+const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
+const asking = (context, transport) => (...asked) => {
+  if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
+  return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
+};
+
+/** Owner creation also comes from rail actions, through a captured repository
+ * caller. Every path must send on its own session's latest compatible hello. */
+async function askOwner(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    const call = transport();
+    if (call !== context.call) throw new Error("session replaced before creating a conversation");
+    return call(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  const answer = await request.sent;
+  if (!request.stands()) throw new Error("greeting superseded while creating a conversation");
+  return answer;
+}
 
 function createDeviceContext(deviceId) {
   const lifecycle = deviceLifecycles.forDevice(deviceId);
@@ -143,12 +160,14 @@ export function knownDeviceContext(deviceId) {
  * to it. Written in this one place, so every surface reads the same three
  * fields whichever machine it is about.
  */
-export function adoptBridgeSelection(context, selection, adapter) {
-  if (!context) return null;
+export function adoptBridgeSelection(context, selection, adapter, authority = greetingAuthorities.get(context)) {
+  if (!authority?.current()) return null;
+  const verdict = selection || {};
   context.adapter = adapter || null;
-  context.apiVersion = selection?.version || null;
-  context.unsupported = selection?.unsupported || null;
-  releaseGreeting(context); // this bridge has said what it speaks
+  context.apiVersion = verdict.version || null;
+  context.unsupported = verdict.unsupported || null;
+  authority.compatible = Boolean(selection) && !context.unsupported;
+  releaseGreeting(context, authority); // only this greeting has said what it speaks
   announceDeviceState(); // an unsupported bridge is a machine that cannot answer
   context.answering?.(); // what a surface wanted while it could not be asked
   return context;
@@ -159,14 +178,12 @@ function forgetBridgeSelection(context) {
   context.adapter = null;
   context.apiVersion = null;
   context.unsupported = null;
-  releaseGreeting(context); // whoever was waiting on the last one waits on the next
   armGreeting(context);
 }
 
-// What releases each device's armed greeting, kept beside the contexts rather
-// than on them: a promise's own settle is not something a surface should be
-// able to reach for.
-const greetingReleases = new Map(); // context → { promise, release }
+// Retain the latest authority after settlement: a resolved promise alone says
+// neither which greeting answered nor whether it reported a compatible API.
+const greetingAuthorities = new WeakMap(); // context → latest greeting authority
 
 /**
  * Arm this device's greeting: the promise a reader that must not ask before the
@@ -180,21 +197,31 @@ const greetingReleases = new Map(); // context → { promise, release }
  * bridge had said which API major it speaks.
  */
 function armGreeting(context) {
+  const previous = greetingAuthorities.get(context);
+  const session = context.session;
   let release;
   const promise = new Promise((settle) => { release = settle; });
-  const token = { promise, release };
-  greetingReleases.set(context, token);
+  const token = {
+    promise, release, issued: false, compatible: false,
+    current: () => context.active() && context.session === session && greetingAuthorities.get(context) === token,
+    stands: () => token.current() && token.compatible && canAnswer(context),
+  };
+  greetingAuthorities.set(context, token);
   context.greeted = promise;
+  // Even readers that captured the old promise once must wait for its
+  // successor. Supersession transfers the wait; an older result cannot end it.
+  previous?.release(promise);
+  return token;
 }
 
-/** The greeting this device's session is about to send is one a reader must
- *  wait on: the one already armed when it is still pending (the adoption armed
- *  it), or a fresh one when the last has settled — a session greeted again
- *  answers for a bridge that may have restarted as another release. Hands back
- *  the token its failure releases. */
+/** The first hello claims adoption's reserved wait, which the initial cache
+ * sync may already hold. Every subsequent hello gets its own authority,
+ * superseding even a pending greeting on this same session. */
 export function greetingInFlight(context) {
-  if (!greetingReleases.has(context)) armGreeting(context);
-  return greetingReleases.get(context);
+  const reserved = greetingAuthorities.get(context);
+  const authority = reserved && !reserved.issued ? reserved : armGreeting(context);
+  authority.issued = true;
+  return authority;
 }
 
 /** This device's greeting has settled, however it settled: an adapter was
@@ -203,10 +230,12 @@ export function greetingInFlight(context) {
  *  device unread. */
 export function releaseGreeting(context, token) {
   if (!context) return;
-  const current = greetingReleases.get(context);
+  const current = greetingAuthorities.get(context);
   if (arguments.length > 1 && current !== token) return;
-  current?.release();
-  greetingReleases.delete(context);
+  if (current) {
+    current.issued = true;
+    current.release();
+  }
 }
 
 /**
@@ -217,8 +246,8 @@ export function releaseGreeting(context, token) {
  * reads held against it outlive the connection — and a link can name a machine
  * this client has never opened at all, which has none. A bridge speaking an API
  * major nothing here claims is the third way: the socket is up, and every answer
- * off it would be a guess at a shape. Every surface that would stand a frame up
- * over a device asks here, so the question is asked one way.
+ * off it would be a guess at a shape. This guards requests; cached rendering
+ * does not depend on whether the machine can answer.
  */
 export const canAnswer = (context) =>
   Boolean(context && context.call && !context.offline && !context.unsupported);
@@ -241,15 +270,13 @@ export const canAnswer = (context) =>
  * restored path) or replaced under the wait may be speaking another release.
  */
 export async function whenGreeted(context, dispatch) {
-  let greeting;
+  let authority;
   do {
-    greeting = context.greeted;
-    await greeting;
-  } while (greeting !== context.greeted);
-  if (!canAnswer(context)) return null;
-  const session = context.session;
-  const stands = () => context.session === session && context.greeted === greeting && canAnswer(context);
-  return { sent: dispatch(), stands };
+    authority = greetingAuthorities.get(context);
+    await authority?.promise;
+  } while (authority !== greetingAuthorities.get(context));
+  if (!authority?.stands()) return null;
+  return { sent: dispatch(authority.stands), stands: authority.stands };
 }
 
 /**

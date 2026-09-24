@@ -1,4 +1,4 @@
-import { mergeCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { mergeCached, mergeCachedAtomically, readCached, subscribeCache, writeCached } from "./localCache.js";
 
 export const deviceSettingsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "settings" });
 export const deviceModelsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "models" });
@@ -65,11 +65,23 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
       await writeCached(address, value);
       await reads;
     },
-    pull: async (fetch) => {
+    // An authority-sensitive pull checks acceptance inside the write
+    // transaction too: opening the database can outlive the RPC's authority.
+    // False asks its caller to fetch again under the new authority.
+    pull: async (fetch, { accept } = {}) => {
       const began = revision;
       const value = await fetch();
-      if (active && began === revision) await writeCached(address, value);
+      let accepted = true;
+      if (active && began === revision) {
+        if (accept) {
+          await mergeCachedAtomically(address, () => {
+            accepted = accept();
+            return accepted && active && began === revision ? value : null;
+          });
+        } else await writeCached(address, value);
+      }
       await reads;
+      return accepted;
     },
     dispose,
   };

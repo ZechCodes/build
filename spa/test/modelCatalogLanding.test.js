@@ -144,6 +144,57 @@ it("waits for a restored path's greeting before asking a machine that greeted be
   expect(await cachedProvider()).toBe("cached");
 });
 
+it("keeps the catalog cached when an older compatible hello answers while a newer hello is pending", async () => {
+  const { context, peer } = await greetedMachine();
+  const older = greetLiveBridge(context);
+  const newer = greetLiveBridge(context);
+  await flush();
+  expect(asked(peer).filter((method) => method === "session.hello")).toHaveLength(3);
+  expect((await deviceCatalog("dev-a")).providers[0].id).toBe("cached");
+
+  peer.answerNth("session.hello", 1, { api_version: SUPPORTED_API });
+  await older;
+  await flush();
+  expect(asked(peer)).not.toContain("models.list");
+  expect(await cachedProvider()).toBe("cached");
+
+  peer.answerNth("session.hello", 2, { api_version: UNSUPPORTED_API });
+  await newer;
+  await flush();
+  expect(context.unsupported).toBe("app");
+  expect(context.apiVersion).toBe(UNSUPPORTED_API);
+  expect(context.adapter).toBe(null);
+  expect(asked(peer)).not.toContain("models.list");
+  expect(await cachedProvider()).toBe("cached");
+  expect((await context.modelCatalog()).providers[0].id).toBe("cached");
+});
+
+it("keeps the newer unsupported verdict when an older compatible hello answers afterward", async () => {
+  const { context, peer } = await greetedMachine();
+  const older = greetLiveBridge(context);
+  const newer = greetLiveBridge(context);
+  await flush();
+  expect((await deviceCatalog("dev-a")).providers[0].id).toBe("cached");
+
+  peer.answerNth("session.hello", 2, { api_version: UNSUPPORTED_API });
+  await newer;
+  await flush();
+  expect(context.unsupported).toBe("app");
+  expect(context.apiVersion).toBe(UNSUPPORTED_API);
+  expect(context.adapter).toBe(null);
+  expect(asked(peer)).not.toContain("models.list");
+
+  peer.answerNth("session.hello", 1, { api_version: SUPPORTED_API });
+  await older;
+  await flush();
+  expect(context.unsupported).toBe("app");
+  expect(context.apiVersion).toBe(UNSUPPORTED_API);
+  expect(context.adapter).toBe(null);
+  expect(asked(peer)).not.toContain("models.list");
+  expect(await cachedProvider()).toBe("cached");
+  expect((await context.modelCatalog()).providers[0].id).toBe("cached");
+});
+
 it("waits for a new carrier's greeting before asking a machine that greeted before", async () => {
   const { context, session } = await greetedMachine();
   const nextPeer = carrier();

@@ -41,3 +41,12 @@ it("writes nothing for a bridge that sends no session", async () => {
   expect(await writeUserSession("dev-2", { issues: [] })).toBe(false);
   expect(await readUserSession("dev-2")).toBeNull();
 });
+
+it("checks answer authority when the queued cache merge runs", async () => {
+  let authorized = true;
+  const writing = writeUserSession("dev-4", answer(20), () => authorized);
+  authorized = false; // a newer greeting starts before IndexedDB reads the record
+
+  expect(await writing).toBe(false);
+  expect(await readUserSession("dev-4")).toBeNull();
+});

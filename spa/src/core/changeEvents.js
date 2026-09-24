@@ -800,10 +800,19 @@ export async function greetBridge(
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, deviceId, isCurrent, strict);
-  if (!current) return changeEventsArmed(deviceId);
+  if (!current || !isCurrent()) return changeEventsArmed(deviceId);
+  const adapter = install(selectAdapter(greeting));
+  // Installing announces device state; a listener may issue another greeting
+  // synchronously. That newer greeting now owns the shared bridge state too.
+  if (!isCurrent()) return changeEventsArmed(deviceId);
+  return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
+}
+
+/** Publish the current selection to capability readers and subscriptions. */
+function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   const state = bridgeState(deviceId);
   state.apiVersion = greetingVersion(greeting);
-  state.adapter = install(selectAdapter(greeting)) || null;
+  state.adapter = adapter || null;
   if (!state.adapter) return abandonBridge(state);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);

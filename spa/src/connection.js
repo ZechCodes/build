@@ -676,21 +676,21 @@ export function greetLiveBridge(context, {
   const session = context?.session;
   if (!session) return Promise.resolve(false);
   const greetingAuthority = greetingInFlight(context);
+  const isCurrent = () => isAuthoritative() && greetingAuthority.current();
   const repository = context.chatRepository;
   const greeting = greetBridge(session.call, {
     strict: !suppressFailure,
     deviceId: session.deviceId,
-    // The device's context may have been retargeted onto a newer session while
-    // this greeting was in flight; that greeting belongs to the session that
-    // asked for it, not to the one the device is on now.
-    isCurrent: () => isAuthoritative() && contextFor(session.deviceId)?.session === session,
+    // Session identity alone is insufficient: restoration can issue another
+    // greeting on this same session before the first hello answers.
+    isCurrent,
     onGreeting: (greeting) => repository?.configureCapabilities(greeting),
     // The session first, so a gate that lets the app back in finds it there;
     // then the device's context, which is where every surface reads what this
     // machine's bridge speaks (core/deviceContexts.js).
     install: (selection) => {
       const adapter = session.installAdapter(selection);
-      adoptBridgeSelection(context, selection, adapter);
+      adoptBridgeSelection(context, selection, adapter, greetingAuthority);
       return adapter;
     },
   }).then((settled) => {
@@ -700,21 +700,20 @@ export function greetLiveBridge(context, {
     // awaited: the app comes back the moment the bridge has said what it
     // speaks, and the recovery announces itself through the controllers when it
     // answers. `settled` passes through untouched.
-    if (isAuthoritative() && contextFor(session.deviceId)?.session === session) {
+    if (isCurrent()) {
       // Pictures first, and synchronously: the next repaint of a timeline the
       // reader is already looking at is what asks for them again, and it can be
       // milliseconds away.
       releaseDeferredAttachments(session.deviceId, repository);
-      void repository?.resolveUncertainPosts();
-      void refreshBridgeUpdateStatus(session.deviceId, session.call, () =>
-        isAuthoritative() && contextFor(session.deviceId)?.session === session).catch(() => {});
+      if (greetingAuthority.stands()) void repository?.resolveUncertainPosts();
+      void refreshBridgeUpdateStatus(session.deviceId, session.call, isCurrent).catch(() => {});
     }
     return settled;
   }).catch((error) => {
     // Wake greeting-dependent reads only after this failed session is marked
     // unavailable; otherwise the feed can send a request between the rejected
     // hello and the outer connection attempt's cleanup.
-    if (!suppressFailure && isAuthoritative() && contextFor(session.deviceId)?.session === session) {
+    if (!suppressFailure && isCurrent()) {
       if (lifetime) blockDeviceConnection(session.deviceId, lifetime, reasonOf(error));
     }
     throw error;

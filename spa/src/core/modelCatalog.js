@@ -78,17 +78,22 @@ export function createModelCatalog(context, {
       const answer = await asking.sent.catch((error) => {
         if (asking.stands()) throw error;
       });
-      if (asking.stands()) return answer;
+      if (asking.stands()) return { answer, stands: asking.stands };
     }
   };
 
   const read = async () => {
     try {
-      await record.pull(async () => {
-        const answer = await askGreeted();
-        if (!context.active()) throw new Error("device retired during models.list");
-        return answer;
-      });
+      let accepted;
+      do {
+        let stands = () => false;
+        accepted = await record.pull(async () => {
+          const asking = await askGreeted();
+          if (!context.active()) throw new Error("device retired during models.list");
+          stands = asking.stands;
+          return asking.answer;
+        }, { accept: () => context.active() && stands() });
+      } while (!accepted);
     } catch (error) {
       if (!canAsk()) asked = false; // nothing answered: its next greeting asks
       throw error;

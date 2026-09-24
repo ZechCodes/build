@@ -12,7 +12,7 @@
 // left focused overnight sends nothing until someone comes back to it.
 
 import { bridgeCapabilities } from "./changeEvents.js";
-import { liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
+import { liveContexts, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { writeUserSession } from "./userSessionCache.js";
 
@@ -62,14 +62,15 @@ function tellBridges() {
  *  like any list read's, so the Dashboard repaints from it. A bridge that does
  *  not record them, or refuses, is asked again at the next arrival. */
 async function tell(context, at) {
-  await context.greeted;
   const forget = () => { if (told.get(context.deviceId) === at) told.delete(context.deviceId); };
-  if (!arrivalIsFresh() || !readerIsHere() || !carriesPresence(context.deviceId)) return forget();
-  const answer = await Promise.resolve()
-    .then(() => context.rpc("user.present", {}))
-    .catch(() => null);
-  if (!answer) return forget();
-  return writeUserSession(context.deviceId, answer);
+  const request = await whenGreeted(context, () => {
+    if (!arrivalIsFresh() || !readerIsHere() || !carriesPresence(context.deviceId)) return null;
+    return context.rpc("user.present", {});
+  }).catch(() => null);
+  if (!request?.sent) return forget();
+  const answer = await request.sent.catch(() => null);
+  if (!answer || !request.stands()) return forget();
+  return writeUserSession(context.deviceId, answer, request.stands);
 }
 
 /** Listen for arrivals, and count this page load as one if the window has

@@ -51,11 +51,12 @@ function newer(held, session) {
   return earlier(held.now_ms, session.now_ms) && standingOf(held) !== standingOf(session);
 }
 
-/** Write what one answer carried, if it is news. */
-export function writeUserSession(deviceId, answer) {
+/** Write what one answer carried, if it is news and still belongs to its caller. */
+export function writeUserSession(deviceId, answer, accept = () => true) {
   const session = userSessionOf(answer);
   if (!session) return Promise.resolve(false);
-  return mergeCachedAtomically(userSessionAddress(deviceId), (held) => (newer(held, session) ? session : null));
+  return mergeCachedAtomically(userSessionAddress(deviceId), (held) =>
+    (accept() && newer(held, session) ? session : null));
 }
 
 export async function readUserSession(deviceId) {

@@ -28,6 +28,12 @@ export function carrier() {
       const asked = this.sent.findLast((request) => request.method === method);
       for (const fn of readers) fn({ frameFields: { payload: { id: asked.id, ok: true, result } } });
     },
+    /** Answer a particular request when two greetings share this carrier. */
+    answerNth(method, ordinal, result) {
+      const request = this.sent.filter((sent) => sent.method === method)[ordinal];
+      if (!request) throw new Error(`No ${method} request at index ${ordinal}`);
+      for (const fn of readers) fn({ frameFields: { payload: { id: request.id, ok: true, result } } });
+    },
   };
 }
 

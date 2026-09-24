@@ -514,13 +514,22 @@ refuses when that device cannot answer.
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
 - A session is adopted before it is greeted, so `canAnswer` is true before the
   greeting's verdict. Each greeting, including a re-greeting on a new carrier
-  or a restored path (`greetLiveBridge` in `spa/src/connection.js`), arms
-  `context.greeted` until it settles. A request whose answer is kept (the
-  model catalog, the project owner minted by `project.ensure_conversation`)
-  goes through `whenGreeted()` in `spa/src/core/deviceContexts.js`. It sends
-  in the same turn it reads the verdict, and its `stands()` says whether that
-  session and greeting still hold when the answer lands. The catalog keeps
-  only a standing answer and asks again otherwise.
+  or a restored path (`greetLiveBridge` in `spa/src/connection.js`), gets its
+  own authority and arms `context.greeted`; the first hello claims the wait
+  reserved at session adoption. A newer greeting supersedes every
+  older one on that session, transferring pending waits to its promise; only
+  the current authority can install an adapter or verdict and release the wait.
+  `whenGreeted()` in `spa/src/core/deviceContexts.js` checks `stands()` and
+  dispatches in the same turn: the context still owns the session, this is its
+  latest issued greeting, and that greeting reported a compatible API. The
+  model catalog and both project/workspace `ensure_conversation` requests use
+  this authority, including owner creation through captured repository callers;
+  an owner answer whose authority no longer stands is rejected too.
+  The catalog checks it again when the answer arrives and inside the cache
+  write transaction; a superseded answer is re-asked under the current greeting,
+  or left unasked until a lost machine returns. Cached surfaces paint throughout.
+  `user.present` likewise uses the greeting at dispatch and at its cache write,
+  while retaining the arrival's freshness and focus checks.
 
 ### Surfaces
 

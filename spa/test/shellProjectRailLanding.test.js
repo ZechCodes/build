@@ -113,6 +113,35 @@ it("mints nothing on a landing machine whose bridge speaks an API this tab canno
   expect(spies.notify).not.toHaveBeenCalled();
 });
 
+it("does not mint a project owner on an older hello while a newer hello is pending", async () => {
+  const context = contexts.knownDeviceContext("dev-a");
+  await listProjects(context, [{ project_id: "proj-1", name: "Project" }]);
+  const { peer, landed } = await landOn(context);
+  peer.answer("session.hello", { api_version: SUPPORTED_API });
+  await landed;
+
+  const { greetLiveBridge } = await import("../src/connection.js");
+  const older = greetLiveBridge(context);
+  const newer = greetLiveBridge(context);
+  shell.standShell(App.route);
+  await flush();
+  expect(asked(peer).filter((method) => method === "session.hello")).toHaveLength(3);
+  expect(asked(peer)).not.toContain("project.ensure_conversation");
+
+  peer.answerNth("session.hello", 1, { api_version: SUPPORTED_API });
+  await older;
+  await flush();
+  expect(asked(peer)).not.toContain("project.ensure_conversation");
+
+  peer.answerNth("session.hello", 2, { api_version: UNSUPPORTED_API });
+  await newer;
+  await flush();
+  expect(context.unsupported).toBe("app");
+  expect(context.adapter).toBe(null);
+  expect(asked(peer)).not.toContain("project.ensure_conversation");
+  expect(spies.mountRail).not.toHaveBeenCalled();
+});
+
 it("mints nothing on a session on the greeting of the session it replaced", async () => {
   const standIn = contexts.knownDeviceContext("dev-a");
   await listProjects(standIn, [{ project_id: "proj-1", name: "Project" }]);

@@ -113,6 +113,21 @@ describe("the adapter a greeting selects", () => {
     expect(bridgeAdapter()).toBe(null);
   });
 
+  it("rechecks greeting authority after negotiation, before installing its verdict", async () => {
+    let current = true;
+    const install = vi.fn();
+    const isCurrent = () => {
+      const answer = current;
+      // A newer greeting starts after negotiation returns, before its caller
+      // resumes to install the negotiated adapter.
+      queueMicrotask(() => { current = false; });
+      return answer;
+    };
+    await greetBridge(async () => ({ api_version: "1.22.0" }), { install, isCurrent });
+    expect(install).not.toHaveBeenCalled();
+    expect(bridgeAdapter()).toBe(null);
+  });
+
   it("asks for subscriptions off the adapter's capabilities, not the raw greeting", async () => {
     const call = vi.fn(async () => greeting11());
     await greetBridge(call);

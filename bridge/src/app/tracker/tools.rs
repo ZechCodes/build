@@ -75,6 +75,7 @@ impl AppState {
                 refs,
                 attachments,
                 mention_user,
+                notify_user,
                 ..
             } => self.comment_issue_as_agent(
                 &scope,
@@ -82,7 +83,10 @@ impl AppState {
                 body,
                 refs,
                 attachments,
-                mention_user.unwrap_or(false),
+                CommentAsks {
+                    mentions_user: mention_user.unwrap_or(false),
+                    notifies_user: notify_user.unwrap_or(false),
+                },
             ),
             BridgeAction::TrackerAssignIssue {
                 issue_id,
@@ -282,6 +286,9 @@ impl AppState {
         if comment.mentions_user {
             read["mentions_user"] = json!(true);
         }
+        if comment.notifies_user {
+            read["notifies_user"] = json!(true);
+        }
         if let Some(reading) = &comment.author_context {
             read["author_context"] = json!(reading);
         }
@@ -377,7 +384,7 @@ impl AppState {
         body: &str,
         refs: &[crate::thread::ThreadLink],
         attachments: &[Value],
-        mentions_user: bool,
+        asks: CommentAsks,
     ) -> Result<Value, String> {
         let issue = self.issue_of_this_agents_project(scope, issue_id)?;
         let params = json!({ "body": body, "refs": refs });
@@ -392,7 +399,8 @@ impl AppState {
             issue_id: issue.id.clone(),
             author: scope.actor.clone(),
             body,
-            mentions_user,
+            mentions_user: asks.mentions_user,
+            notifies_user: asks.notifies_user,
             refs,
             attachments,
             created_at: now.clone(),
@@ -556,6 +564,15 @@ impl AppState {
 /// `null` is a value that says neither — `json!` would write one for every
 /// `None`, which is how a tool that filtered nothing would be refused for
 /// sending a status that is not a string.
+/// What an agent's comment asked of the user, kept on the comment: a mention
+/// (`mention_user`) and a notice (`notify_user`). Either one also watches the
+/// issue ([`wants_the_user_told`]).
+#[derive(Clone, Copy)]
+struct CommentAsks {
+    mentions_user: bool,
+    notifies_user: bool,
+}
+
 /// Whether a tool call asked for the user to be told. Absent is no.
 pub(in crate::app) fn notify_user_asked(params: &Value) -> bool {
     params

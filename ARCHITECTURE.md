@@ -194,7 +194,7 @@ cannot starve the relay connection, the heartbeat or negotiation.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `1.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.

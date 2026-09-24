@@ -275,6 +275,7 @@ impl AppState {
             author: Actor::User,
             body,
             mentions_user: false,
+            notifies_user: false,
             refs,
             attachments,
             created_at: now.clone(),

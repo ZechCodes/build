@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "1.22.0",
+    "api_version": "1.23.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -101,6 +101,7 @@
       "issues.columns",
       "issues.comment",
       "issues.commentUserMentions",
+      "issues.commentUserNotifies",
       "issues.context",
       "issues.create",
       "issues.dismiss",

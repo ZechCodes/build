@@ -433,6 +433,9 @@ pub struct IssueCommentView {
     pub body: String,
     #[serde(default, skip_serializing_if = "is_false")]
     pub mentions_user: bool,
+    /// An agent's comment written with `notify_user` (#144). Absent otherwise.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notifies_user: bool,
     pub refs: Vec<crate::thread::ThreadLink>,
     #[serde(default)]
     pub attachments: Vec<IssueAttachment>,

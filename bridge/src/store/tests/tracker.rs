@@ -42,6 +42,7 @@ fn comment(issue: &Issue, body: &str, at: &str) -> IssueComment {
         },
         body: body.into(),
         mentions_user: false,
+        notifies_user: false,
         refs: Vec::new(),
         attachments: Vec::new(),
         created_at: at.into(),

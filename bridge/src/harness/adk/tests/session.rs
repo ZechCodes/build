@@ -772,8 +772,9 @@ fn a_press_that_lands_between_turns_leaves_the_next_turn_alone() {
     // message rides along the way the composer sends it.
     session.interrupt().expect("this child advertised one");
     session.send_turn(&Turn::new("try the other file")).unwrap();
-    assert_eq!(session.status(), AgentStatus::Working);
 
+    // The fake may answer before send_turn returns. Its result must still
+    // close this turn, including when it arrives immediately.
     wait_for_status(&session, AgentStatus::Waiting);
     assert_eq!(
         session.epitaph().as_deref(),

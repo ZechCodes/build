@@ -45,10 +45,11 @@ change is needed for the test fixes here.
 | Four exact CSS substrings in `userMessageTicks.test.js` (nav position/inset, tick width, timeline padding) | Pin implementation spelling rather than geometry. | `browser/userTickLayout.test.js`: “the grouped ticks consume only the chat's existing left padding” measures the real gutter, pill bounds, and unchanged message width; the DOM navigator test remains. |
 | `agentSurfacesRender.test.js`: “is the one place the viewer's clip markup is built” | Counts source tokens and bans a constant name without exercising output. | The adjacent “is one span…” and “shows one line…” cases check clip markup, title, line count and escaping; “clips the summary label but leaves expanded agent details readable in full” checks expanded output. |
 | The `modelLabel` source substring assertion in `agentSurfacesRender.test.js` | Duplicates the rendered-label assertion in the same test. | “prints the model name the row arrived with” still asserts the resulting label. |
+| Immediate `Working` snapshot in ADK's `a_press_that_lands_between_turns_leaves_the_next_turn_alone` | An immediate result can legitimately finish before the sender samples status. | That case still checks eventual Waiting, the error epitaph and exactly two user lines with no interrupt; `a_turn_is_working_until_its_result_line_arrives` checks Working while a result is held. |
 
-One test and five additional assertions were removed. The now-unused
+One test and six additional assertions were removed. The now-unused
 `EXPANDED_ATTRIBUTE` import was removed with its source-only test. No real
-browser test, unmocked feature wiring, or behavior assertion was deleted.
+browser test or unmocked feature wiring was deleted.
 
 The fixture audit found no unused SPA helper modules or bridge fixture files.
 SPA capture scripts are manual tools, not unused fixtures. Bridge's presence
@@ -68,12 +69,23 @@ exports against the real module exports, a previously observed build failure.
   completion instead of assuming twenty event-loop ticks finish IndexedDB.
 - Cut activity runs in the agent rail wait for the fetched sequence rows and
   fold state before checking navigation and fetch deduplication.
+- The rail fixture drains queued conversation-record merges before the next
+  fixture clears IndexedDB. Otherwise a previous send can write after the clear
+  and appear as a duplicate in the next test. Send assertions wait for their
+  rendered message rather than assuming a fixed number of event-loop ticks.
 - The bridge's unauthenticated socket test waits for a real ping/pong before
   asserting unreachability. The saturated-worker test holds its worker on a
   channel until the liveness assertion, then releases it even on panic.
 - Shutdown checks wait for the conversation's session-end record and activity
   stream closure. A tab becoming non-live and a provider status becoming Ended
   precede those effects; they are not completion barriers for later assertions.
+- ADK turn submission commits its state with the final newline under the
+  protocol lock. Previously an immediate result could close the turn before
+  the sender marked it open, leaving it permanently Working. The newline is
+  nonblocking; a full pipe releases the protocol lock before waiting for space,
+  so the child and reader can keep making progress. A controlled full-pipe
+  regression checks reader progress, the final Waiting state and restored fd
+  flags. This is a production ordering fix, beyond test synchronization.
 - The fixture-gated migration test sets its record's mtime relative to the
   import note instead of sleeping for filesystem timestamp resolution.
 

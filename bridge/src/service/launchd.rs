@@ -28,6 +28,11 @@ impl ServiceManager for Launchd {
 
     /// Run at load, keep alive across crashes, log under the bridge's own state
     /// dir.
+    ///
+    /// `ProcessType` is `Interactive`, not `Background`: Background is
+    /// launchd's throttled class (CPU and I/O deprioritised behind everything
+    /// the user does), and the bridge relays the user's live phone session, so
+    /// it gets the class launchd gives an app with a UI.
     fn render_unit(&self, config: &ServiceConfig) -> String {
         let binary = xml_escape(&config.binary_path.to_string_lossy());
         let stdout_log = xml_escape(&config.log_dir.join("bridge.log").to_string_lossy());
@@ -61,7 +66,7 @@ impl ServiceManager for Launchd {
     <key>KeepAlive</key>
     <true/>
     <key>ProcessType</key>
-    <string>Background</string>
+    <string>Interactive</string>
     <key>EnvironmentVariables</key>
     <dict>
 {env_entries}
@@ -125,6 +130,8 @@ mod tests {
         assert!(plist.contains("<string>serve</string>"));
         assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
         assert!(plist.contains("<key>KeepAlive</key>\n    <true/>"));
+        assert!(plist.contains("<key>ProcessType</key>\n    <string>Interactive</string>"));
+        assert!(!plist.contains("<string>Background</string>"));
         assert!(plist.contains("<key>BRIDGE_RELAY_URL</key>"));
         assert!(plist.contains("<string>wss://relay.getbuild.ing</string>"));
         assert!(plist.contains("/Users/dev/.build/log/bridge.log"));

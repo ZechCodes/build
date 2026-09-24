@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  DONE_SINCE_CAP_MS, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
+  DONE_SINCE_CAP_MS, backlogGroups, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
   latestCachedAgentActivity, standingOf,
 } from "../src/core/trackerDashboardModel.js";
 
@@ -282,5 +282,65 @@ describe("Done grouped by time", () => {
     const sections = dashboardSections(issues, { nowMs: NOW, doneCutoffMs: NOW - HOUR, sessionStartedMs: NOW - 30 * MINUTE });
     expect(titled(sections.doneGroups)).toEqual([["15 minutes ago", ["done"]]]);
     expect(sections.doneGroups[0].entries).toEqual(sections.done);
+  });
+});
+
+describe("Backlog", () => {
+  const agent = { agent_id: "agent-7", name: "Still review", ordinal: 1, workspace_name: "Composer", available: true };
+  const backlogOf = (issues, options = {}) => dashboardSections(issues, { nowMs: NOW, ...options });
+  const grouped = (groups) => groups.map((group) => [group.title, group.entries.map((entry) => [entry.issue.id, entry.holder, entry.columnName])]);
+
+  it("takes every open issue in Backlog or Ready, and nothing started, finished or closed", () => {
+    const issues = [
+      issue("backlog"),
+      issue("ready", { status: "ready" }),
+      issue("working", { status: "in_progress" }),
+      issue("review", { status: "in_review" }),
+      issue("done", { status: "done" }),
+      issue("closed", { state: "closed" }),
+    ];
+    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id)).toEqual(["backlog", "ready"]);
+  });
+
+  it("puts an issue held by an agent or by the user under Assigned, first, and the rest under Unassigned", () => {
+    const issues = [
+      issue("loose", { status: "ready" }),
+      issue("agent", { assignee: { kind: "agent", agent_id: "agent-7" }, identities: { "agent-7": agent } }),
+      issue("mine", { status: "ready", assignee: { kind: "user" } }),
+      issue("project", { assignee: { kind: "project_agent" } }),
+      issue("filed"),
+    ];
+    const feed = { projects: [{ projectKey: PROJECT, name: "Build" }] };
+    const sections = backlogOf(issues, { feed, projectKey: PROJECT });
+    expect(grouped(sections.backlogGroups)).toEqual([
+      ["Assigned", [["agent", "Composer · Still review", "Backlog"], ["mine", "you", "Ready"], ["project", "Build", "Backlog"]]],
+      ["Unassigned", [["loose", null, "Ready"], ["filed", null, "Backlog"]]],
+    ]);
+    expect(sections.backlog).toHaveLength(5);
+  });
+
+  it("orders each group most pressing first, and within a priority keeps the list's own order", () => {
+    const mine = { assignee: { kind: "user" } };
+    const issues = [
+      issue("n9"), issue("l8", { priority: "low" }), issue("u7", { priority: "urgent" }), issue("h6", { priority: "high", ...mine }),
+      issue("m5", { priority: "medium" }), issue("h4", { priority: "high" }), issue("x3", { priority: "later" }),
+      issue("n2", mine), issue("u1", { priority: "urgent", ...mine }),
+    ];
+    expect(grouped(backlogOf(issues).backlogGroups).map(([title, rows]) => [title, rows.map(([id]) => id)])).toEqual([
+      ["Assigned", ["u1", "h6", "n2"]],
+      ["Unassigned", ["u7", "h4", "m5", "l8", "n9", "x3"]],
+    ]);
+  });
+
+  it("names a column the way the cached columns do", () => {
+    const columns = [{ id: "backlog", name: "Icebox" }, { id: "ready", name: "Up next" }];
+    expect(backlogOf([issue("x"), issue("y", { status: "ready" })], { columns }).backlog.map((entry) => entry.columnName))
+      .toEqual(["Icebox", "Up next"]);
+  });
+
+  it("draws no group without entries, and none at all for an empty backlog", () => {
+    expect(backlogGroups([{ issue: issue("x"), holder: "you" }]).map((group) => group.id)).toEqual(["assigned"]);
+    expect(backlogGroups([])).toEqual([]);
+    expect(backlogOf([issue("w", { status: "in_progress" })]).backlogGroups).toEqual([]);
   });
 });

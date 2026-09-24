@@ -8,6 +8,7 @@ import { esc } from "./text.js";
 const SECTIONS = [
   { id: "needsYou", title: "Needs you", empty: "Nothing needs your look right now." },
   { id: "inProgress", title: "In progress", empty: "No agent is working on an issue." },
+  { id: "backlog", title: "Backlog", empty: "Nothing in the backlog." },
   { id: "done", title: "Done", empty: "Nothing moved to Done in the last 24 hours." },
 ];
 /** Done on a bridge that knows when the user was last here. */
@@ -24,8 +25,13 @@ export const dashboardTabIds = SECTIONS.map((section) => section.id);
 const secondaryText = {
   inProgress: (entry) => [entry.agentName, entry.activity].filter(Boolean).join(" · "),
   needsYou: (entry) => (entry.reasonLabels || []).join(" · "),
+  backlog: (entry) => entry.holder ? `With ${entry.holder} · ${entry.columnName}` : entry.columnName,
   done: (entry) => entry.sha ? `Commit ${entry.sha.slice(0, 12)}` : "Moved to Done",
 };
+
+/** The sections drawn as titled groups, each with the attribute its group
+ *  blocks are keyed by. */
+const GROUP_ATTRIBUTES = { backlog: "data-backlog-group", done: "data-done-group" };
 
 const dashboardRowHtml = (entry, context, section) => {
   const issue = entry.issue;
@@ -38,24 +44,25 @@ const dashboardRowHtml = (entry, context, section) => {
   </li>`;
 };
 
-/** One age group of Done: its title above and outside its own panel, and a
- *  keyed list of its rows inside. The list is patched by `paintDoneGroups`, so
- *  the block's markup leaves it empty. */
-const doneGroupHtml = (group) => `<div class="issue-dashboard-group" data-done-group="${esc(group.id)}">
+/** One group of a grouped section (Done's ages, Backlog's holders): its title
+ *  above and outside its own panel, and a keyed list of its rows inside. The
+ *  list is patched by `paintGroups`, so the block's markup leaves it empty. */
+const groupHtml = (group, attribute) => `<div class="issue-dashboard-group" ${attribute}="${esc(group.id)}">
     <h3 class="issue-dashboard-group-title">${esc(group.title)}</h3>
     <div class="issue-dashboard-group-panel"><ul class="issue-dashboard-list" ${KEYED_LIST_ATTRIBUTE}></ul></div>
   </div>`;
 
-/** Done grouped by time: one block per group, keyed by group id, each holding
+/** A grouped section: one block per group, keyed by group id, each holding
  *  its own keyed list, so a row keeps its element while it stays in its group. */
-function paintDoneGroups(container, groups, context) {
-  patchList(container, groups, { keyOf: (group) => group.id, render: doneGroupHtml });
+function paintGroups(container, groups, context, section) {
+  const attribute = GROUP_ATTRIBUTES[section];
+  patchList(container, groups, { keyOf: (group) => group.id, render: (group) => groupHtml(group, attribute) });
   const blocks = [...container.children];
   for (const group of groups) {
-    const block = blocks.find((element) => element.dataset.doneGroup === group.id);
+    const block = blocks.find((element) => element.getAttribute(attribute) === group.id);
     patchList(block.querySelector(".issue-dashboard-list"), group.entries, {
       keyOf: (entry) => entry.issue.id,
-      render: (entry) => dashboardRowHtml(entry, context, "done"),
+      render: (entry) => dashboardRowHtml(entry, context, section),
     });
   }
 }
@@ -66,7 +73,8 @@ export function paintIssueDashboard(body, sections, context) {
   const shown = sectionsFor(context);
   const selected = shown.find((section) => section.id === context.dashboardTab) || shown[0];
   const entries = sections[selected.id] || [];
-  const grouped = selected.id === "done" && Array.isArray(sections.doneGroups) && entries.length > 0;
+  const groups = GROUP_ATTRIBUTES[selected.id] ? sections[`${selected.id}Groups`] : null;
+  const grouped = Array.isArray(groups) && entries.length > 0;
   const tabs = shown.map((section) => `<button type="button" class="issue-dashboard-tab" role="tab"
     id="issue-dashboard-tab-${section.id}" data-dashboard-tab="${section.id}"
     aria-controls="issue-dashboard-panel" aria-selected="${section.id === selected.id}"
@@ -93,7 +101,7 @@ export function paintIssueDashboard(body, sections, context) {
     };
   });
   if (grouped) {
-    paintDoneGroups(body.querySelector(".issue-dashboard-groups"), sections.doneGroups, context);
+    paintGroups(body.querySelector(".issue-dashboard-groups"), groups, context, selected.id);
     return;
   }
   patchList(body.querySelector(".issue-dashboard-list"), entries, {

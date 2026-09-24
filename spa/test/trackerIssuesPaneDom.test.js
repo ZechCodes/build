@@ -266,7 +266,7 @@ describe("the Dashboard", () => {
     });
   };
 
-  it("defaults to Needs you with three counted tabs and switches the sole list from cached records", async () => {
+  it("defaults to Needs you with four counted tabs and switches the sole list from cached records", async () => {
     const working = issue({ id: "working", number: 4, title: "Write release notes", assignee: { kind: "agent", agent_id: "agent-1" } });
     const review = issue({ id: "review", number: 3, title: "Review patch", status: "in_review" });
     const done = issue({ id: "done", number: 2, title: "Shipped fix", status: "done", state: "closed", links: { commits: ["abc123def456"] } });
@@ -285,7 +285,10 @@ describe("the Dashboard", () => {
     expect(host.querySelector('[data-issue-view="dashboard"]').getAttribute("aria-pressed")).toBe("true");
     expect(clearPress()).toBeNull();
     expect(tabs().map((tab) => [tab.dataset.dashboardTab, tab.textContent.trim(), tab.getAttribute("aria-selected")]))
-      .toEqual([["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"], ["done", "Done1", "false"]]);
+      .toEqual([
+        ["needsYou", "Needs you1", "true"], ["inProgress", "In progress1", "false"],
+        ["backlog", "Backlog1", "false"], ["done", "Done1", "false"],
+      ]);
     expect(dashboardRows("needsYou")).toEqual(["review"]);
     expect(host.querySelectorAll('[role="tabpanel"]')).toHaveLength(1);
     await chooseTab("inProgress");
@@ -348,6 +351,55 @@ describe("the Dashboard", () => {
     await vi.waitFor(() => expect(host.querySelector('[data-issue="older"] .issue-dashboard-title').textContent)
       .toBe("Older fix, renamed"));
     expect(host.querySelector('[data-dashboard-section="done"] [data-issue="recent"]')).toBe(row);
+  });
+
+  it("splits Backlog into Assigned then Unassigned, each titled above its own panel, rows drawn as before", async () => {
+    const identities = { "agent-7": { agent_id: "agent-7", name: "Still review", ordinal: 1, workspace_name: "Composer", available: true } };
+    const open = [
+      issue({ id: "loose", number: 9, title: "Loose end", status: "ready" }),
+      issue({ id: "held", number: 8, title: "Held by an agent", assignee: { kind: "agent", agent_id: "agent-7" }, identities }),
+      issue({ id: "started", number: 7, title: "Started", status: "in_progress" }),
+      issue({ id: "mine", number: 6, title: "Mine", status: "ready", priority: "high", assignee: { kind: "user" } }),
+      issue({ id: "filed", number: 5, title: "Filed" }),
+    ];
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: open, columns: columns() });
+    call = vi.fn(() => new Promise(() => {}));
+    await mount({ defaultView: undefined });
+    await chooseTab("backlog");
+    await vi.waitFor(() => expect(dashboardRows("backlog")).toHaveLength(4));
+
+    const panel = host.querySelector('[data-dashboard-section="backlog"]');
+    expect(panel.classList.contains("is-grouped")).toBe(true);
+    expect(host.querySelector('[data-dashboard-tab="backlog"] .issue-dashboard-count').textContent).toBe("4");
+    const detailOf = (row) => row.querySelector(".issue-dashboard-detail").textContent;
+    expect([...panel.querySelectorAll(".issue-dashboard-group")].map((block) => [
+      block.dataset.backlogGroup, block.children[0].tagName, block.children[0].textContent, block.children[1].className,
+      [...block.querySelectorAll(".issue-dashboard-group-panel > .issue-dashboard-list > li")].map((row) => [row.dataset.issue, detailOf(row)]),
+    ])).toEqual([
+      ["assigned", "H3", "Assigned", "issue-dashboard-group-panel",
+        [["mine", "With you · Ready"], ["held", "With Composer · Still review · Backlog"]]],
+      ["unassigned", "H3", "Unassigned", "issue-dashboard-group-panel", [["loose", "Ready"], ["filed", "Backlog"]]],
+    ]);
+    expect(panel.querySelectorAll(".issue-dashboard-group-panel .issue-dashboard-group-title")).toHaveLength(0);
+    const row = panel.querySelector('[data-issue="filed"]');
+    expect(row.className).toBe("issue-dashboard-row");
+    expect([...row.querySelector(".issue-dashboard-link").children].map((part) => [part.className, part.textContent]))
+      .toEqual([["issue-dashboard-number", "#5"], ["issue-dashboard-title", "Filed"], ["issue-dashboard-detail", "Backlog"]]);
+    expect(row.querySelector(".issue-dashboard-link").getAttribute("href")).toContain("filed");
+
+    // A repaint keeps each row's element while it stays in its group.
+    const renamed = open.map((one) => (one.id === "loose" ? { ...one, title: "Loose end, renamed" } : one));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: renamed, columns: columns() });
+    await vi.waitFor(() => expect(host.querySelector('[data-issue="loose"] .issue-dashboard-title').textContent)
+      .toBe("Loose end, renamed"));
+    expect(host.querySelector('[data-dashboard-section="backlog"] [data-issue="filed"]')).toBe(row);
+
+    // A group with nothing in it is not drawn.
+    const allHeld = renamed.map((one) => (one.assignee ? one : { ...one, assignee: { kind: "user" } }));
+    await trackerCache.writeIssuesRecord("dev-1", "proj-1", { issues: allHeld, columns: columns() });
+    await vi.waitFor(() => expect([...panel.querySelectorAll(".issue-dashboard-group-title")].map((one) => one.textContent))
+      .toEqual(["Assigned"]));
+    expect(dashboardRows("backlog")).toEqual(["mine", "loose", "held", "filed"]);
   });
 
   it("redraws from real conversation and detail cache writes, with no bridge answer", async () => {
@@ -419,7 +471,7 @@ describe("the Dashboard", () => {
     call = vi.fn(() => new Promise(() => {}));
     mountDashboard();
     await vi.waitFor(() => {
-      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0", "0"]);
       expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("needsYou");
       expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("Nothing needs your look right now.");
     });
@@ -432,7 +484,7 @@ describe("the Dashboard", () => {
     host.innerHTML = "";
     mountDashboard();
     await vi.waitFor(() => {
-      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0", "0"]);
       expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress");
       expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent is working on an issue.");
     });
@@ -443,13 +495,18 @@ describe("the Dashboard", () => {
     call = vi.fn(() => new Promise(() => {}));
     mountDashboard();
     await vi.waitFor(() => {
-      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0"]);
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0", "0"]);
       expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("needsYou");
       expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("Nothing needs your look right now.");
     });
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
     await chooseTab("inProgress");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent is working on an issue.");
+    await chooseTab("backlog");
+    const backlog = host.querySelector('[data-dashboard-section="backlog"]');
+    expect(backlog.classList.contains("is-grouped")).toBe(false);
+    expect(backlog.querySelector(".issue-dashboard-groups")).toBeNull();
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing in the backlog.");
     await chooseTab("done");
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing moved to Done in the last 24 hours.");
   });
@@ -460,7 +517,7 @@ describe("the Dashboard", () => {
     call = vi.fn(() => new Promise(() => {}));
     mountDashboard();
     await vi.waitFor(() => {
-      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["1", "0", "0"]);
+      expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["1", "0", "0", "0"]);
       expect(dashboardRows("needsYou")).toEqual(["first"]);
     });
     const second = issue({ id: "second", number: 6, status: "in_review" });

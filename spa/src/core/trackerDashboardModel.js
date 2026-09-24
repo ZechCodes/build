@@ -6,6 +6,7 @@ import { attentionGroups, attentionReasonLabel } from "./trackerAttentionModel.j
 import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js";
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
+import { PRIORITIES, columnName } from "./trackerModel.js";
 
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -166,14 +167,52 @@ const cachedActivity = (activityByAgent, agentId) => {
   return typeof snippet === "string" ? snippet.trim() : "";
 };
 
-/** Three sections of the same cached issue list, in its existing order.
+/** The columns an issue waits in before anyone starts it. */
+const NOT_STARTED = new Set(["backlog", "ready"]);
+
+/** Who holds an issue, as its Backlog row says it: "you" for the user, and
+ *  otherwise the name every other surface gives that actor, read off the
+ *  cached issue's own identities. Null for nobody. */
+const holderOf = (issue, reading) => {
+  const assignee = issue.assignee;
+  if (!assignee?.kind) return null;
+  if (assignee.kind === "user") return "you";
+  return actorName(assignee, { ...reading, identities: issue.identities || {} }) || null;
+};
+
+/** How pressing a priority is, highest first; an unknown one reads as none. */
+const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate) => candidate.id === priority));
+
+/** Every open issue not yet started: most pressing first, and within a
+ *  priority the list's own order. Each names its holder, if any, and the
+ *  column it waits in. */
+function backlogEntries(issues, reading, columns) {
+  return (issues || [])
+    .filter((issue) => issue?.state !== "closed" && NOT_STARTED.has(issue?.status))
+    .sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority))
+    .map((issue) => ({ issue, holder: holderOf(issue, reading), columnName: columnName(columns, issue.status) }));
+}
+
+/** Backlog split by whether anyone holds the issue: Assigned first, then
+ *  Unassigned, each in the entries' own order. Only groups with entries are
+ *  given. */
+export function backlogGroups(entries) {
+  return [
+    { id: "assigned", title: "Assigned", entries: (entries || []).filter((entry) => entry.holder) },
+    { id: "unassigned", title: "Unassigned", entries: (entries || []).filter((entry) => !entry.holder) },
+  ].filter((group) => group.entries.length > 0);
+}
+
+/** Four sections of the same cached issue list, in its existing order, but
+ * for Backlog, which puts the most pressing first.
  * `activityByAgent` contains optional text read from cached conversations,
  * keyed by agent id. No feed digest provides a latest activity snippet.
  *
  * `doneCutoffMs` is given for a bridge that carries `done_at` and the user's
  * session: Done is then everything finished since the user left. Without it
  * Done falls back to the cached timelines' last 24 hours. `sessionStartedMs`
- * comes with it, and sets apart what finished before this session. */
+ * comes with it, and sets apart what finished before this session.
+ * `columns` are the cached `issues.columns`, which name Backlog's columns. */
 export function dashboardSections(issues, {
   feed = null,
   projectKey = "",
@@ -182,6 +221,7 @@ export function dashboardSections(issues, {
   activityByAgent = new Map(),
   doneCutoffMs = null,
   sessionStartedMs = null,
+  columns,
 } = {}) {
   const grouped = attentionGroups(issues, { feed, projectKey, detailById });
   const reading = {
@@ -201,7 +241,11 @@ export function dashboardSections(issues, {
     return reasons.length ? [{ issue, reasons, reasonLabels: reasons.map(attentionReasonLabel) }] : [];
   });
   const done = doneEntries(issues, { detailById, nowMs, doneCutoffMs });
-  return { inProgress, needsYou, done, doneGroups: doneGroups(done, { nowMs, sessionStartedMs }) };
+  const backlog = backlogEntries(issues, reading, columns);
+  return {
+    inProgress, needsYou, backlog, backlogGroups: backlogGroups(backlog),
+    done, doneGroups: doneGroups(done, { nowMs, sessionStartedMs }),
+  };
 }
 
 function doneEntries(issues, { detailById, nowMs, doneCutoffMs }) {

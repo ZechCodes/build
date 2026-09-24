@@ -31,10 +31,11 @@
 // `docker pause` freezes the bridge so completely that it stops answering ICE's
 // own consent checks, and the browser notices within a few seconds: the
 // connection goes `disconnected`, core/peerLink.js starts an ICE restart, and
-// that machinery — which predates this issue — is what handles it. Zech's fault
-// was the opposite and is the whole reason #30 exists: his consent checks WERE
-// being answered, ICE said `connected` for the full 105 seconds, and nothing
-// above it could tell that SCTP was delivering none of his frames.
+// that machinery — which predates this issue — is what handles it. The
+// maintainer's fault was the opposite and is the whole reason #30 exists: their
+// consent checks WERE being answered, ICE said `connected` for the full 105
+// seconds, and nothing above it could tell that SCTP was delivering none of
+// their frames.
 //
 // So a paused container on its own reproduces the symptom and not the fault, and
 // a run over it would pass or fail for reasons that have nothing to do with the
@@ -50,11 +51,12 @@
 // Same reason as dropped-read-check: `stop` deregisters the device, the account
 // stops listing it online, and the supervisor stands down — which is a machine
 // that is GONE, not a machine whose path died under it. A paused container holds
-// its registration and answers nothing, which is Zech's tablet exactly.
+// its registration and answers nothing, which is the maintainer's tablet
+// exactly.
 
 import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const BRIDGE = process.env.BRIDGE_CONTAINER || "deploy-bridge-1";
@@ -221,11 +223,11 @@ record("the conversation's composer is on screen", composerThere === 1, `${compo
 
 // ── 2. a message with a picture, written and uploaded while the path is fine ─
 //
-// This is the order Zech's report happened in and it matters: the bytes go up
-// BEFORE the message does, so the attachment was safely on the bridge and it was
-// the FETCH of it back — `thread.attachment`, for the preview of his own just-sent
-// message — that died. Uploading before the pause is therefore not a shortcut; it
-// is the case.
+// This is the order the maintainer's report happened in and it matters: the
+// bytes go up BEFORE the message does, so the attachment was safely on the
+// bridge and it was the FETCH of it back — `thread.attachment`, for the preview
+// of their own just-sent message — that died. Uploading before the pause is
+// therefore not a shortcut; it is the case.
 const stamp = Date.now().toString(36);
 await page.setInputFiles(RAIL.file, {
   name: `dead-path-${stamp}.png`,

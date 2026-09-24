@@ -36,7 +36,7 @@ import {
 } from "./trackerChips.js";
 
 /**
- * Line two, in the order Zech asked for it, quietly (#45).
+ * Line two, in the order the maintainer asked for it, quietly (#45).
  *
  * The same facts in the same order; what changed is how much each one weighs.
  * The column is the one chip and the only thing on the row with a background.

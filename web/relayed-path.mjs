@@ -1,10 +1,10 @@
 // The phone's conditions, locally: every peer connection forced through a TURN
 // relay.
 //
-// Zech's phone carries `host/relay` on every session and closes its peer every
-// six to twelve seconds; the compose stack pairs `host/host` and does not. That
-// difference is the one thing the reproduction was missing, and this is how it
-// is removed — without changing a line of the product.
+// The maintainer's phone carries `host/relay` on every session and closes its
+// peer every six to twelve seconds; the compose stack pairs `host/host` and
+// does not. That difference is the one thing the reproduction was missing, and
+// this is how it is removed — without changing a line of the product.
 //
 // Two levers, both in the browser:
 //
@@ -28,7 +28,7 @@
 
 import { readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP || "http://localhost:8090";
 const EMAIL = process.env.QA_EMAIL || "qa@localhost";

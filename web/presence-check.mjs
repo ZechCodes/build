@@ -19,7 +19,7 @@
 // It stops the bridge container and leaves it stopped; `docker compose start
 // bridge` puts it back.
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP || "http://localhost:8090";
 const EMAIL = process.env.QA_EMAIL || "qa@localhost";

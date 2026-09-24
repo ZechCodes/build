@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
-const SPA = "/home/zech/Projects/.build-worktrees/workspaces/proj-1/tracker-filters/Build/spa";
+import { fileURLToPath } from "node:url";
+const SPA = fileURLToPath(new URL("../../spa", import.meta.url));
 const sheet = (n) => readFileSync(`${SPA}/src/${n}`, "utf8");
 const OPTIONS = {
   states: [{value:"",label:"Open and closed"},{value:"open",label:"Open"},{value:"closed",label:"Closed"}],

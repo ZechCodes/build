@@ -6,8 +6,8 @@
 // and they had already drifted: one said "commented on" and the other said
 // "commented", and neither handled the token the bridge actually sends.
 //
-// Zech, on the rolled build (#40): the rows read "commented_on #39" and
-// "created #39" with no actor, and the project's own agent came out as
+// The maintainer, on the rolled build (#40): the rows read "commented_on #39"
+// and "created #39" with no actor, and the project's own agent came out as
 // "Agent 01M2" — it is not an agent of any workspace, so the feed had no label
 // for it and it fell through to four characters of its id.
 //

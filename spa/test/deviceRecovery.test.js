@@ -57,10 +57,11 @@ describe("device recovery supervisor", () => {
     expect(attempts).toHaveLength(7);
   });
 
-  // #60: Zech's phone had climbed the ladder across two earlier failures and was
-  // still sitting on the top step when he picked it up, so waking the screen bought
-  // a half-minute of nothing. A wake is not evidence about the machine — it is
-  // evidence that the reason the last dial failed has probably gone.
+  // #60: the maintainer's phone had climbed the ladder across two earlier
+  // failures and was still sitting on the top step when they picked it up, so
+  // waking the screen bought a half-minute of nothing. A wake is not evidence
+  // about the machine — it is evidence that the reason the last dial failed has
+  // probably gone.
   it("drops a waiting device back to the floor and dials at once when the app wakes", async () => {
     const { recovery, attempts } = setup();
     recovery.syncPresence([{ id: "dev-a", status: "online" }]);

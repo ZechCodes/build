@@ -132,8 +132,8 @@
                   "short": "a1b2c3d",
                   "hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
                   "subject": "Push the shapes a client would have pulled",
-                  "author": "Zech",
-                  "email": "zech@example.com",
+                  "author": "Ada",
+                  "email": "ada@example.com",
                   "time": 1789787235,
                   "ahead_of_base": true
                 }
@@ -154,8 +154,8 @@
                   "short": "a1b2c3d",
                   "hash": "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
                   "subject": "Push the shapes a client would have pulled",
-                  "author": "Zech",
-                  "email": "zech@example.com",
+                  "author": "Ada",
+                  "email": "ada@example.com",
                   "time": 1789787235
                 }
               ],

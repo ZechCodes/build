@@ -110,10 +110,10 @@
 
 /* ---- filing in place (#57) ------------------------------------------------
 
-   Zech: "Issue creation should be inline." So the form is a slab at the head
-   of the list rather than a dialog over it — the list it is filed against
-   stays on screen and stays readable, which is most of what you are looking at
-   while you write the title. */
+   The maintainer: "Issue creation should be inline." So the form is a slab at
+   the head of the list rather than a dialog over it — the list it is filed
+   against stays on screen and stays readable, which is most of what you are
+   looking at while you write the title. */
 
 .issue-compose-slot:empty { display:none; }
 .issue-compose {
@@ -206,7 +206,7 @@
 
 /* ---- the list ------------------------------------------------------------
 
-   Zech, #45: "the issue list still feels cluttered." The row keeps every fact
+   #45: "the issue list still feels cluttered." The row keeps every fact
    it had and the order it had them in; what changed is how much each one
    weighs. One chip (the column) and one colour on it. Labels are words, not
    pills. The priority left line two for a single mark before the title, and
@@ -665,11 +665,12 @@
    (#38). One kind of thing — a quiet clickable line about an issue — so the
    rules that matter are about the kind, not about which of the two it is.
 
-   Zech, on the rolled build (#40): "There's a lot of space on the left of the
-   issue notifications, there's a lot of space between them, and they're not
-   one line." All three were true and all three are here: the row inherited the
-   avatar gutter, carried its own indent on top of it, wrapped because the
-   title was allowed to, and sat a full message gap from the row above. */
+   The maintainer, on the rolled build (#40): "There's a lot of space on the
+   left of the issue notifications, there's a lot of space between them, and
+   they're not one line." All three were true and all three are here: the row
+   inherited the avatar gutter, carried its own indent on top of it, wrapped
+   because the title was allowed to, and sat a full message gap from the row
+   above. */
 
 /* No gutter of its own, and no box of its own: the row starts exactly where a
    message's text starts, and what gives it that — no indent, no padding but a

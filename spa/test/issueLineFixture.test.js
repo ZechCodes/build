@@ -78,10 +78,10 @@ export const ISSUE_LINE_ITEMS = [
   notice(42, "Issues list shows open issues by default", { actor: "agent-01M2A", action: "moved to In review" }),
   action(43, "Issue notice and action lines: one line, full width, no gutter, tight spacing", "commented_on"),
   action(44, "A short one", "created"),
-  // #52: an activity row in the middle of the run. Zech: "Activity entries
-  // should be styled like the notification entries … just same padding so
-  // they all group nicely together." Between two lines, so the measurement
-  // can ask whether the rhythm survives it.
+  // #52: an activity row in the middle of the run. The maintainer:
+  // "Activity entries should be styled like the notification entries … just
+  // same padding so they all group nicely together." Between two lines, so the
+  // measurement can ask whether the rhythm survives it.
   { type: "event", data: { event: "tool_use", sequence: 441, summary: "Bash cd spa && npm run lint", created_at: "2026-09-20T21:10:00Z" } },
   // #59: an assignment reads verb first and names who got it, so the row it
   // measures is the widest shape this line takes.

@@ -1660,9 +1660,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
 .thread-body { padding:12px; min-width:0; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 /* ---- a fenced code block, wherever markdown is rendered (#50) -------------
-   Zech, from the issue page: "Code blocks across the board need to scroll
-   horizontally rather than over flow. I've seen it in chat too, would guess it
-   happens anywhere code blocks are."
+   The maintainer, from the issue page: "Code blocks across the board need to
+   scroll horizontally rather than over flow. I've seen it in chat too, would
+   guess it happens anywhere code blocks are."
 
    The class is stamped by the renderer itself (core/markdown.js), not hung on
    a wrapper: the views do not agree about wrappers, and a bare `pre` rule
@@ -2132,8 +2132,9 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    390px, the lines were 19px tall and 4px apart and the tool-call row beside
    them was 28px tall and 22px away, because `.thread-issue-line +
    .thread-issue-line` named only one of the kinds and each kind's box carried
-   its own numbers. Zech: "Activity entries should be styled like the
-   notification entries … just same padding so they all group nicely together."
+   its own numbers. The maintainer: "Activity entries should be styled like
+   the notification entries … just same padding so they all group nicely
+   together."
 
    No gutter, no indent, no bubble: the row starts where a message's text
    starts. The icon comes off the spine and rides in the line — an absolute one

@@ -22,8 +22,8 @@
 //! api is logged and the loop beats on. Nothing above this waits on it.
 //!
 //! And nothing above it notices if it stops, which is why the loop is
-//! supervised rather than merely spawned. On 2026-09-19 one of Zech's machines
-//! posted its last beat at 19:37:18Z and none after, through six relay
+//! supervised rather than merely spawned. On 2026-09-19 one of the maintainer's
+//! machines posted its last beat at 19:37:18Z and none after, through six relay
 //! reconnects over the next three hours: the daemon was plainly alive and its
 //! beat was not, and the handle `main.rs` held was never looked at again. A
 //! beat that ends, panics, or simply goes quiet is now replaced.

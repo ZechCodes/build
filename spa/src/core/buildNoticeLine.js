@@ -1,7 +1,8 @@
 // What Build's own notices say when they are one line.
 //
-// Zech: "Agents receive 3 kinds of messages: from the user, from other agents,
-// and notifications … notifications are a single line left aligned."
+// The maintainer: "Agents receive 3 kinds of messages: from the user, from
+// other agents, and notifications … notifications are a single line left
+// aligned."
 //
 // A notification is written for the AGENT: the restart notice tells it to
 // carry on and what not to trust, the reminder lists every issue it still

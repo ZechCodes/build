@@ -1,9 +1,9 @@
 // #30 point 2: after a reconnect, a "Delivery uncertain" post resolves itself.
 //
-// Zech's post reached the bridge and its receipt did not reach him, so the
-// composer said "Delivery uncertain … Check delivery" and waited for a press.
-// The answer was already available: `thread.operation` is the bridge's durable
-// ledger of every post it admitted, and it says one of three things —
+// The maintainer's post reached the bridge and its receipt did not reach them,
+// so the composer said "Delivery uncertain … Check delivery" and waited for a
+// press. The answer was already available: `thread.operation` is the bridge's
+// durable ledger of every post it admitted, and it says one of three things —
 //
 //   a receipt          it landed; the post is Sent and the strip clears
 //   status "uncertain" the bridge HAS it and does not know whether the provider
@@ -54,7 +54,7 @@ const unknownOperation = (operationId) =>
   Object.assign(new Error(`unknown operation_id: ${operationId}`), { code: "not_found", error_code: "not_found" });
 
 /** A repository with a post already stranded uncertain: the send went out on a
- *  wire that then stopped carrying, exactly as Zech's did. */
+ *  wire that then stopped carrying, exactly as the maintainer's did. */
 async function stranded({ bodies = ["first"], statusCall } = {}) {
   const deadWire = vi.fn(async () => {
     throw Object.assign(new Error("thread.post timed out"), { timedOut: true, uncertain: true, deadline: "path" });

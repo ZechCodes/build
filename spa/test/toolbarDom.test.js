@@ -252,11 +252,11 @@ describe("the project's pages in the bar", () => {
   });
 });
 
-// #47. Zech, on the workspace page: "The bar with the workspace name, tabs, and
-// icons is workspace scoped. The rail on the left is directory scoped (tabs).
-// Issues are workspace scoped so shouldn't be in the left rail. Also the issues
-// icon in the workspace bar is too large. Might be better to just show the text
-// 'Issues' with a counter bubble."
+// #47. The maintainer, on the workspace page: "The bar with the workspace name,
+// tabs, and icons is workspace scoped. The rail on the left is directory scoped
+// (tabs). Issues are workspace scoped so shouldn't be in the left rail. Also
+// the issues icon in the workspace bar is too large. Might be better to just
+// show the text 'Issues' with a counter bubble."
 describe("the workspace's Issues, in the bar", () => {
   const issues = () => bar().querySelector("[data-workspace-issues]");
 

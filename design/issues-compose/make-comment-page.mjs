@@ -1,7 +1,8 @@
 // The issue page's comment box, both ways: with the paperclip against a 1.8
 // bridge, and the plain box an older one gets.
 import { readFileSync, writeFileSync } from "node:fs";
-const SPA = "/home/zech/Projects/.build-worktrees/workspaces/proj-1/tracker-filters/Build/spa";
+import { fileURLToPath } from "node:url";
+const SPA = fileURLToPath(new URL("../../spa", import.meta.url));
 const sheet = (n) => readFileSync(`${SPA}/src/${n}`, "utf8");
 
 const page = (theme, width) => `<!doctype html><html lang="en" data-theme="${theme}"><head><meta charset="utf-8">

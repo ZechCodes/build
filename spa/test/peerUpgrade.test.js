@@ -410,8 +410,8 @@ describe("a connection that goes after it was live", () => {
 
   // The terminal half is one stream on the path, not the path. It used to cost
   // the whole device — which is how a liveness probe timing out behind a loaded
-  // bridge re-dialled Zech's machine every few seconds for a day — and now it
-  // costs the terminals their session and nothing else.
+  // bridge re-dialled the maintainer's machine every few seconds for a day —
+  // and now it costs the terminals their session and nothing else.
   it("keeps the device when the terminal half goes alone", async () => {
     const link = fakeLink();
     linkOpensWith(link);

@@ -343,7 +343,7 @@ fn the_final_progress_array_takes_the_real_id_and_the_agent_totals() {
         Some(SurfaceTool {
             name: "Read".to_string(),
             summary: Some(
-                "/private/tmp/claude-501/-Users-zech--superconductor-worktre…".to_string()
+                "/private/tmp/claude-501/-Users-adam--superconductor-worktre…".to_string()
             ),
         })
     );

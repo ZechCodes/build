@@ -1,7 +1,7 @@
 // A filter menu, as a pure model: what is chosen, what a search leaves, and
 // what the press above it says.
 //
-// Zech, #44: "Would be nice if we used custom drop downs so it would be
+// #44: "Would be nice if we used custom drop downs so it would be
 // possible to select multiple and have fuzzy search for labels and assignees."
 // A native `<select multiple>` is not that control — it has no search, it says
 // nothing above itself about what is chosen, and on a phone it is whatever the

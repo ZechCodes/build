@@ -23,10 +23,10 @@
 //   • PAUSE, never stop. `docker stop` deregisters the device: the account
 //     stops listing it online, the supervisor stands down, and the surface is
 //     then a machine that is GONE — which core/deviceNotice.js names, and the
-//     mark is correctly silent. Zech's phone is the other case entirely: it
-//     stays online and registered while its session dies at the network layer.
-//     A paused container is that — holding its registration, answering
-//     nothing.
+//     mark is correctly silent. The maintainer's phone is the other case
+//     entirely: it stays online and registered while its session dies at the
+//     network layer. A paused container is that — holding its registration,
+//     answering nothing.
 //   • WAIT past the path deadline. A read that has not timed out has not
 //     failed, and watching a still-pending read proves nothing. The deadline
 //     is read out of the SPA below rather than written here twice.
@@ -42,7 +42,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const BRIDGE = process.env.BRIDGE_CONTAINER || "deploy-bridge-1";

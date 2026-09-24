@@ -2,11 +2,11 @@
 //
 // # Why the ring is large and says when it overflowed
 //
-// Zech reported a phone "spazzing" and pasted his diagnostics; they covered only
-// the final session — the one that worked. The three failures before it, which
-// were the entire story, had been pushed out of a hundred-entry ring by the very
-// reconnect storm they caused, so the report carried the recovery and none of the
-// cause (issue #60). A ring that silently drops the interesting part is worse
+// The maintainer reported a phone "spazzing" and pasted their diagnostics; they
+// covered only the final session — the one that worked. The three failures
+// before it, which were the entire story, had been pushed out of a hundred-entry
+// ring by the very reconnect storm they caused, so the report carried the
+// recovery and none of the cause (issue #60). A ring that silently drops the interesting part is worse
 // than no ring, because it reads like a complete account.
 //
 // So: room for a wake's worth of events, and when it does overflow the report

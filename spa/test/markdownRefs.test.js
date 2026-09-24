@@ -84,7 +84,7 @@ describe("what is not a reference", () => {
       "## Another",
       "the colour is #fff",       // hex colours are letters
       "#aabbcc on the border",
-      "write to hi@zech.codes",   // email has no leading @
+      "write to hi@example.codes", // email has no leading @
       "install @anthropic-ai/sdk", // an npm scope: slash, no colon
       "we pin @build/secure-transport",
       "run gitleaks@8.30.1",      // a version specifier, not a commit

@@ -594,9 +594,10 @@ describe("the unpinned panel's popover", () => {
 });
 
 // #148: the chats, the new chat and the chat overview are one selection shown
-// in one panel, and every bubble on the strip toggles it the same way. Zech's
-// two reports are the cases this pins: pressing the open overview's control
-// showed the previous chat, and chat → overview → chat closed both.
+// in one panel, and every bubble on the strip toggles it the same way. The
+// maintainer's two reports are the cases this pins: pressing the open
+// overview's control showed the previous chat, and chat → overview → chat
+// closed both.
 describe("one selection in one panel (#148)", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const control = (which) => railHost().querySelector(
@@ -2710,7 +2711,7 @@ describe("the conversation panel", () => {
   });
 
   // A desktop left showing a chat overnight: visible, nobody at it. A mark
-  // would read Zech's messages for him and keep his session alive.
+  // would read the user's messages for them and keep their session alive.
   it("sends no read mark for a post arriving in a visible unfocused window, and sends it on focus", async () => {
     const said = (count) => ({ run_id: "run-3", sessions: [], items: [
       { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },

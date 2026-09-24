@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
-// #62. Zech, on his phone with an agent's chat open on a workspace page:
-// "On mobile, where the chat takes up the full width of the viewport, tapping a
-// tab should collapse the chat. So if I'm looking at this chat and then tap
-// 'Issues' it should collapse so I can see the issues." And then: "That needs
-// to go for deep links too. Very confusing that tapping them doesn't collapse
-// the chat."
+// #62. The maintainer, on their phone with an agent's chat open on a workspace
+// page: "On mobile, where the chat takes up the full width of the viewport,
+// tapping a tab should collapse the chat. So if I'm looking at this chat and
+// then tap 'Issues' it should collapse so I can see the issues." And then:
+// "That needs to go for deep links too. Very confusing that tapping them
+// doesn't collapse the chat."
 //
 // So the rule is not about tabs. At a phone width the chat is laid OVER the
 // page, and ANY navigation from inside it changes a page the reader cannot

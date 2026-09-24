@@ -1,14 +1,14 @@
 // A tracking notice, as one line in the conversation it lands in.
 //
-// Zech, with a screenshot of a project-agent conversation: "Tracking notices
-// come in looking like user messages (same color and on the right). They
-// should be a single line 'X did Y on Z' deep linking."
+// The maintainer, with a screenshot of a project-agent conversation: "Tracking
+// notices come in looking like user messages (same color and on the right).
+// They should be a single line 'X did Y on Z' deep linking."
 //
 // They looked like that because that is what they are on the wire: a message
 // on the user's side, marked `from_build`, carrying a `from_issue` envelope
 // and a body that reads as prose. Drawn as an ordinary bubble it reads as
-// though Zech wrote it — right-aligned, his colour, the whole comment body
-// under it — which is three wrong claims in one row.
+// though the user wrote it — right-aligned, their colour, the whole comment
+// body under it — which is three wrong claims in one row.
 //
 // So a message carrying both marks is a NOTICE: one quiet left-aligned line,
 // the whole of it an anchor to the issue, and the comment body not shown at
@@ -148,8 +148,8 @@ const noticeReading = (notice, reading) => {
 };
 
 /** What the verb points at: the column a move landed in (its own field on the
- *  notice; Zech, 21:15Z: "What does 'moved by' mean? Moved where?"), or the
- *  person an assignment went to. */
+ *  notice; the maintainer, 21:15Z: "What does 'moved by' mean? Moved where?"),
+ *  or the person an assignment went to. */
 function actionTarget(notice, reading) {
   if (notice?.to) return columnName(notice.to);
   if (!notice?.assignee) return "";
@@ -238,8 +238,9 @@ const noticeWrapHtml = (notice, said, href, hover, split) => {
 /**
  * The line: `#41 moved to In review by transport-liveness · Agent 1`.
  *
- * Zech, on the lines as #40 shipped them: "Relevant info is getting pushed out
- * of view … Move what happened first and don't show the issue title."
+ * The maintainer, on the lines as #40 shipped them: "Relevant info is getting
+ * pushed out of view … Move what happened first and don't show the issue
+ * title."
  *
  * So the number leads — it is the deep link and the thing a person says out
  * loud — then what happened, then who did it. The title is gone from the line

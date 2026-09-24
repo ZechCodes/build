@@ -1,8 +1,8 @@
 /** @vitest-environment jsdom */
 // #54: the picture beside a comment on the issue page says WHAT wrote it.
 //
-// Zech, on an issue page: "On issue comments show the harness icon as the
-// profile picture."
+// The maintainer, on an issue page: "On issue comments show the harness icon as
+// the profile picture."
 //
 // Every author wore the same grey circle with a letter in it — "A" for every
 // agent that has ever commented, whichever harness it runs on and whether it

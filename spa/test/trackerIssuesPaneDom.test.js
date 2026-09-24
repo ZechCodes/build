@@ -1050,8 +1050,8 @@ describe("the two presses", () => {
 describe("the filter bar, mounted once", () => {
   // #43. The bar is not redrawn — ever. Not on a push, not on a feed move, not
   // on a re-read that changes the list, not on a filter change, and not when
-  // switching to the board and back. Zech: "The inputs/selects really
-  // shouldn't be redrawing ever."
+  // switching to the board and back. The maintainer: "The inputs/selects
+  // really shouldn't be redrawing ever."
   // Every control on the bar: the four menus' presses and the Clear beside
   // them. The search boxes and rows inside a menu are mounted with it.
   const controls = () => [
@@ -1298,8 +1298,8 @@ describe("a read that fails because the session dropped", () => {
   });
 });
 
-// #33. Zech, deciding the question #28 raised: "If closed means done we
-// shouldn't show them in the default view."
+// #33. The maintainer, deciding the question #28 raised: "If closed means
+// done we shouldn't show them in the default view."
 describe("what the tab opens on", () => {
   const OPEN_AND_CLOSED = [
     issue({ number: 12, id: "issue-12", title: "Still open", state: "open", status: "in_progress" }),

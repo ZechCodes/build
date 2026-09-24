@@ -2521,8 +2521,8 @@ function mountRailOnContext(host, context, swap) {
   });
 
   /** What this project's agents are called, for the one row that names an
-   *  agent it is not standing on: a tracking notice's "X did Y". Zech asked
-   *  for a name he recognises, and "Agent 01M2" is not one. */
+   *  agent it is not standing on: a tracking notice's "X did Y". The maintainer
+   *  asked for a name they recognise, and "Agent 01M2" is not one. */
   const conversationAgentLabels = () => {
     const place = conversationPlace();
     if (!place.projectId || !place.deviceId) return {};

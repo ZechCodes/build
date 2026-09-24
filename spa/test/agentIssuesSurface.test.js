@@ -2,11 +2,11 @@
 // The agent's issues as one of its surfaces (#34): the pill, its count, and
 // the fold that puts what the agent is finished with out of the way.
 //
-// Zech, on the entry as it rolled: "Right now the in review issues on an agent
-// are just noise taking up space on the chat. I had envisioned the issues
-// activity to be the same UX as agents/workflows/tasks/shells. So it's only
-// visible when the user wants it to be and there's a clear pattern for done
-// work."
+// The maintainer, on the entry as it rolled: "Right now the in review issues on
+// an agent are just noise taking up space on the chat. I had envisioned the
+// issues activity to be the same UX as agents/workflows/tasks/shells. So it's
+// only visible when the user wants it to be and there's a clear pattern for
+// done work."
 //
 // So the test is not "does it draw the right rows" — the surfaces layer draws
 // them — it is "is this the same surface the other four are". Everything below

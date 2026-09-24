@@ -11,7 +11,7 @@
 //! Only the agent's tools come through here. A path from a CLIENT is hostile
 //! input and stays fenced to the store (`attachments.rs`); an agent already
 //! reads this disk through its own shell, so where a file lives is not policed
-//! (Zech, #116 review). What IS policed is what the bridge does with it:
+//! (#116 review). What IS policed is what the bridge does with it:
 //!
 //! - It is opened once, without following a link and without blocking, and
 //!   everything after that asks the open handle: a path swapped for a link or

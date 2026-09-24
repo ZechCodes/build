@@ -68,7 +68,7 @@ it("renders the complete device settings view with a connected fixture bridge", 
       app.App.devices = [device];
       app.App.route = { name: "device", id: "laptop" };
       await cache.writeCached(cache.DEVICES_ADDRESS, [device]);
-      const settings = { projects_dir: "/home/zech/Projects", default_harness: "claude", agent_modes: {}, isolation: "worktree", isolation_available: { rift: false, reason: "Fixture" } };
+      const settings = { projects_dir: "/home/ada/Projects", default_harness: "claude", agent_modes: {}, isolation: "worktree", isolation_available: { rift: false, reason: "Fixture" } };
       const session = {
         deviceId: "laptop", close() {}, peer() {}, onCarrier() {}, onPush() {},
         call: async (method) => {

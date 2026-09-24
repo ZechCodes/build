@@ -1,6 +1,7 @@
 // The picture beside a comment on the issue page (#54).
 //
-// Zech: "On issue comments show the harness icon as the profile picture."
+// The maintainer: "On issue comments show the harness icon as the profile
+// picture."
 //
 // Every author wore one grey circle with a letter in it, and the letter was
 // the one thing about an author that carries nothing: "A" for every agent

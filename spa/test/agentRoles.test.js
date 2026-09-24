@@ -13,7 +13,7 @@ import {
   withoutRow,
 } from "../src/core/agentRoles.js";
 
-// Zech's own example.
+// The maintainer's own example.
 const declared = () => [
   { model: "claude-fable-5-1", roles: ["planner", "reviewer"], capability: "generalist" },
   { model: "claude-opus-5", roles: ["planner", "reviewer", "implementer"], capability: "scoped" },

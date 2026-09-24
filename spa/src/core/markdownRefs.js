@@ -17,7 +17,7 @@
 //
 //   `# A heading`        a heading needs the space — `#42` has none
 //   `#fff`, `#aabbcc`    hex colours are letters; an issue is digits
-//   `hi@zech.codes`      email has no LEADING `@`
+//   `hi@example.codes`   email has no LEADING `@`
 //   `@anthropic-ai/sdk`  an npm scope: a slash and no colon
 //   `gitleaks@8.30.1`    a version specifier
 //   `b8ce4ee9`           a bare SHA in prose

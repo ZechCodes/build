@@ -82,10 +82,10 @@ describe("the rows it supplies", () => {
     ]);
   });
 
-  // The whole of Zech's complaint: In review was sitting above the fold, and
-  // an agent that has said "this is ready to look at" has nothing more to do
-  // with it. It is still OPEN — the Issues tab still lists it — which is a
-  // different question asked by a different reader.
+  // The whole of the maintainer's complaint: In review was sitting above the
+  // fold, and an agent that has said "this is ready to look at" has nothing
+  // more to do with it. It is still OPEN — the Issues tab still lists it —
+  // which is a different question asked by a different reader.
   it("counts In review among what the agent is finished with", async () => {
     await putIssues([mine({ number: 1, id: "i1", status: "in_review" })]);
     await mount();

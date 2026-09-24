@@ -1547,11 +1547,11 @@ describe("per-device connections", () => {
     expect(liveIds()).toEqual(["dev-a", "dev-b"]);
   });
 
-  // The churn Zech watched all day: the terminals' liveness probe timed out
-  // behind a loaded bridge, closed the channel it had judged, and this layer
-  // read that as the machine going — re-minting session, link and rendezvous
-  // every few seconds. A terminal stream is one stream on the path, and the
-  // path is the app channel's to report.
+  // The churn the maintainer watched all day: the terminals' liveness probe
+  // timed out behind a loaded bridge, closed the channel it had judged, and
+  // this layer read that as the machine going — re-minting session, link and
+  // rendezvous every few seconds. A terminal stream is one stream on the path,
+  // and the path is the app channel's to report.
   it("keeps the device connected when the terminal channel goes alone", async () => {
     await connectEveryDevice();
     const link = linksFor.get("dev-a");

@@ -1,9 +1,9 @@
 /** @vitest-environment jsdom */
 // Three incoming kinds, three looks (#42).
 //
-// Zech, on a workspace agent's conversation: "Messages to agents and messages
-// from the user are different things and should never look the same. Agents
-// receive 3 kinds of messages: from the user, from other agents, and
+// The maintainer, on a workspace agent's conversation: "Messages to agents and
+// messages from the user are different things and should never look the same.
+// Agents receive 3 kinds of messages: from the user, from other agents, and
 // notifications. From the user is right aligned and the dark bluish color,
 // messages from agents are left aligned collapsed and green, notifications are
 // a single line left aligned."

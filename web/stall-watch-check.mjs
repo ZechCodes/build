@@ -12,8 +12,8 @@
 // exercise it by construction: a frozen container executes no code, so the very
 // thing under test is not running. The fault has to be made from the other end —
 // a client that stops reading while the bridge writes — which is also what
-// actually happened to Zech: his tablet was gone, the bridge had an admission
-// receipt and an `ok` queued for it, and nothing was leaving.
+// actually happened to the maintainer: their tablet was gone, the bridge had an
+// admission receipt and an `ok` queued for it, and nothing was leaving.
 //
 // # How a client is made to stop reading
 //
@@ -32,9 +32,9 @@
 //
 // The watch fires on bytes QUEUED AND NOT DRAINING, of which there is no minimum:
 // the first run of this harness caught it with `buffered_bytes=622`, which is the
-// size of an ordinary reply, and that is the right answer — Zech's stuck frames
-// were an admission receipt and an `ok`, both small. What the watch measures is
-// that nothing is moving, not that a lot is waiting.
+// size of an ordinary reply, and that is the right answer — the maintainer's
+// stuck frames were an admission receipt and an `ok`, both small. What the
+// watch measures is that nothing is moving, not that a lot is waiting.
 //
 // So the multi-megabyte attachment is not there to overflow anything. It is there
 // to GUARANTEE the bridge has something to write across the moment of the freeze:
@@ -49,7 +49,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 /** The system Chromium, as every browser pass on this machine uses: mise's

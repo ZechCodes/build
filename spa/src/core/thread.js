@@ -454,7 +454,7 @@ export function createThreadState({ ownerId = "" } = {}) {
   ///
   /// Three states, not two: held bytes, a refusal that is final, and this — a
   /// request that was never answered because nothing carried it. Remembering
-  /// this one as a refusal is how Zech's 789 KB screenshot read "unavailable"
+  /// this one as a refusal is how a user's 789 KB screenshot read "unavailable"
   /// for the rest of the tab's life over a path that came back twenty seconds
   /// later, with a hard refresh as the only cure. Remembering nothing at all is
   /// not the answer either: the timeline repaints every second and a half, and a
@@ -947,10 +947,10 @@ function sentMessageHtml(message, { place, threadState, refLinks }) {
 
 /// Build's own words in an agent's conversation, as ONE line.
 ///
-/// Zech: "notifications are a single line left aligned". They were a bubble —
-/// the reader's bubble, on the reader's side, in the reader's colour — and a
-/// restart notice that says "assume nothing you were doing finished" reads
-/// very differently when it looks like the reader typed it.
+/// The maintainer: "notifications are a single line left aligned". They were a
+/// bubble — the reader's bubble, on the reader's side, in the reader's colour —
+/// and a restart notice that says "assume nothing you were doing finished"
+/// reads very differently when it looks like the reader typed it.
 ///
 /// Every one of these is written for the AGENT: the restart notice tells it
 /// what to distrust, the reminder lists what it still holds. All of that has
@@ -1015,9 +1015,9 @@ function issueActionMessageHtml(message, context) {
 
 /// The three kinds of message an agent RECEIVES, and the one it sends.
 ///
-/// Zech: "Messages to agents and messages from the user are different things
-/// and should never look the same. Agents receive 3 kinds of messages: from
-/// the user, from other agents, and notifications."
+/// The maintainer: "Messages to agents and messages from the user are different
+/// things and should never look the same. Agents receive 3 kinds of messages:
+/// from the user, from other agents, and notifications."
 ///
 /// Named here, once, because the looks they get are mutually exclusive and
 /// the readings used to be a ladder of separate conditions that could each be

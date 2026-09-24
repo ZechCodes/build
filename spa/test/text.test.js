@@ -64,8 +64,8 @@ describe("deviceUnreachableText", () => {
   it("names the device, stamps the time it went unreachable, and promises resumption", () => {
     // A fixed local timestamp — assert on the pieces, not a locale-exact string.
     const sinceMs = new Date(2026, 6, 18, 15, 42).getTime();
-    const text = deviceUnreachableText("Zech's MacBook", sinceMs);
-    expect(text).toContain("Zech's MacBook");
+    const text = deviceUnreachableText("Ada's MacBook", sinceMs);
+    expect(text).toContain("Ada's MacBook");
     expect(text).toContain("unreachable since");
     expect(text).toContain("tasks will resume when it reconnects");
     // Carries a rendered clock time (locale-formatted h:mm).
@@ -93,8 +93,8 @@ describe("deviceOfflineText", () => {
   it("names the device that cannot be reached and says what that means here", () => {
     // The one sentence a work surface prints in place of itself, whether the
     // machine its link names has gone offline or was never opened here.
-    const text = deviceOfflineText("Zech's MacBook");
-    expect(text).toContain("Zech's MacBook");
+    const text = deviceOfflineText("Ada's MacBook");
+    expect(text).toContain("Ada's MacBook");
     expect(text).toContain("isn't connected");
   });
 

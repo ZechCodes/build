@@ -354,7 +354,7 @@ pub(in crate::app) enum NoticeVoice {
 
 /// The notice, as one line and nothing else.
 ///
-/// A notification, not the thing itself (Zech, 2026-09-20: "Least context
+/// A notification, not the thing itself (2026-09-20: "Least context
 /// necessary so if the agent is watching for a status change not a comment it
 /// knows to ignore"). The comment's words are NOT here: an agent watching an
 /// issue for a column move paid for every comment anybody wrote on it, and the

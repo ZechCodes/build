@@ -1,6 +1,6 @@
 // Filing an issue without leaving the list.
 //
-// Zech, #57: "Issue creation should be inline and support file attachments."
+// #57: "Issue creation should be inline and support file attachments."
 // It was a modal over a dialog over the tab: you left the list to file against
 // it, and you could not attach the screenshot that was the reason you were
 // filing at all. So the form opens IN the tab, at the head of the list it is

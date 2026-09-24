@@ -157,9 +157,9 @@ mod tests {
     #[test]
     fn plist_escapes_xml_significant_characters() {
         let mut config = sample_config(HOME);
-        config.env = vec![("BRIDGE_DEVICE_NAME".into(), "Zech's <Mac> & co".into())];
+        config.env = vec![("BRIDGE_DEVICE_NAME".into(), "Ada's <Mac> & co".into())];
         let plist = Launchd.render_unit(&config);
-        assert!(plist.contains("Zech's &lt;Mac&gt; &amp; co"));
+        assert!(plist.contains("Ada's &lt;Mac&gt; &amp; co"));
         assert!(!plist.contains("<Mac>"));
     }
 

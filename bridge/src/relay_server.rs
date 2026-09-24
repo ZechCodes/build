@@ -899,14 +899,14 @@ mod tests {
     fn relay_config_reads_production_env() {
         let vars: HashMap<&str, &str> = HashMap::from([
             ("RELAY_PORT", "9000"),
-            ("API_INTERNAL_URL", "http://api.8ly.svc:8080/"),
+            ("API_INTERNAL_URL", "http://api.example.svc:8080/"),
             ("RELAY_INTERNAL_SECRET", "s3cret"),
             ("RELAY_DEVICE_LIVENESS_S", "120"),
             ("RELAY_WRITE_STALL_S", "10"),
         ]);
         let config = RelayConfig::from_lookup(|k| vars.get(k).map(|v| v.to_string())).unwrap();
         assert_eq!(config.port, 9000);
-        assert_eq!(config.api_url, "http://api.8ly.svc:8080");
+        assert_eq!(config.api_url, "http://api.example.svc:8080");
         assert_eq!(config.internal_secret.as_deref(), Some("s3cret"));
         assert_eq!(config.device_liveness_timeout, Duration::from_secs(120));
         assert_eq!(config.write_stall_timeout, Duration::from_secs(10));

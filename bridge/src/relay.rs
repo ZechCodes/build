@@ -81,7 +81,7 @@ pub fn silence_deadline(heartbeat_interval_s: u64) -> Duration {
 /// dispatcher's queues are bounded, and a full queue makes the caller wait
 /// (`carrier/dispatch.rs`). Waiting there is waiting *inside* the read half, so
 /// no pong goes out while it lasts and the relay severs the device for silence
-/// — on 2026-09-19 at 15:00:57Z it logged exactly that against Zech's
+/// — on 2026-09-19 at 15:00:57Z it logged exactly that against a user's
 /// workstation, mid-workflow with a dozen agents on it, and refused the next
 /// three sessions a browser asked for. The sever does not end the wait either:
 /// this loop is parked in `accept`, not in the read, so it learns nothing until

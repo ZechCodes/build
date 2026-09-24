@@ -226,11 +226,11 @@ mod tests {
     #[test]
     fn unit_quotes_values_with_spaces_quotes_and_backslashes() {
         let unit = Systemd.render_unit(&ServiceConfig {
-            env: vec![("BRIDGE_DEVICE_NAME".into(), r#"Zech's "Mac" \ desk"#.into())],
+            env: vec![("BRIDGE_DEVICE_NAME".into(), r#"Ada's "Mac" \ desk"#.into())],
             ..sample_config(HOME)
         });
         assert!(
-            unit.contains(r#"Environment="BRIDGE_DEVICE_NAME=Zech's \"Mac\" \\ desk""#),
+            unit.contains(r#"Environment="BRIDGE_DEVICE_NAME=Ada's \"Mac\" \\ desk""#),
             "the value stays one assignment: {unit}"
         );
     }

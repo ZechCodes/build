@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 // One shell for every page.
 //
-// Zech, on his phone, opening an issue: "Chat bubble goes away as does the
-// entire bar except the status indicator." The issue page mounted no rail, and
-// it could because each page mounted its own. This walks the routes and holds
-// the shell to the rule: the regions are the same DOM nodes across every
-// navigation, every place with a conversation shows the bubble strip, and a
-// page swapping inside the shell does not take the strip down with it.
+// The maintainer, on their phone, opening an issue: "Chat bubble goes away as
+// does the entire bar except the status indicator." The issue page mounted no
+// rail, and it could because each page mounted its own. This walks the routes
+// and holds the shell to the rule: the regions are the same DOM nodes across
+// every navigation, every place with a conversation shows the bubble strip, and
+// a page swapping inside the shell does not take the strip down with it.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -224,8 +224,8 @@ describe("every place stands in the same shell", () => {
       await visit(route);
       // The page first: a strip beside an empty frame proves nothing.
       expect([place, Boolean(pageContent(place))]).toEqual([place, true]);
-      // Then Zech's report: the strip is there, on every page, at every width.
-      // An issue page that mounts no rail is what this catches.
+      // Then the maintainer's report: the strip is there, on every page, at
+      // every width. An issue page that mounts no rail is what this catches.
       expect([place, Boolean(strip())]).toEqual([place, true]);
     });
   }
@@ -436,9 +436,10 @@ describe("what the reader is looking at, while a modal is over the page", () => 
 });
 
 describe("the strip on a page standing on the project", () => {
-  // Zech, on the project page after the shell roll: two bubbles for the one
-  // project agent, one above the separator wearing the agent's unread count in
-  // place of the project's initial, and the same agent again below the line.
+  // The maintainer, on the project page after the shell roll: two bubbles for
+  // the one project agent, one above the separator wearing the agent's unread
+  // count in place of the project's initial, and the same agent again below the
+  // line.
   //
   // The line exists to separate the project's agent from the agents of the
   // thing you are standing IN. On the project page there is no such thing —

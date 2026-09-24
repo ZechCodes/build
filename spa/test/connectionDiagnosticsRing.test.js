@@ -1,10 +1,11 @@
 // #60 point 4: a report has to carry the failures, not just the recovery.
 //
-// Zech pasted his diagnostics from the phone and they covered only the last
-// session — the one that worked. The three that failed before it, which were the
-// whole story, had been pushed out of a hundred-entry ring by the reconnect storm
-// they caused. So the ring holds a wake's worth of events, and when it does
-// overflow it says so rather than presenting a truncated history as a whole one.
+// The maintainer pasted their diagnostics from the phone and they covered only
+// the last session — the one that worked. The three that failed before it,
+// which were the whole story, had been pushed out of a hundred-entry ring by
+// the reconnect storm they caused. So the ring holds a wake's worth of events,
+// and when it does overflow it says so rather than presenting a truncated
+// history as a whole one.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -23,8 +24,9 @@ describe("the connection diagnostic ring", () => {
   beforeEach(() => clearConnectionDiagnosticHistory());
 
   it("holds far more than a reconnect storm produces", () => {
-    // The storm that hid Zech's evidence was a few hundred entries across four
-    // sessions: candidates, ICE states, channel opens and closes, per attempt.
+    // The storm that hid the maintainer's evidence was a few hundred entries
+    // across four sessions: candidates, ICE states, channel opens and closes,
+    // per attempt.
     expect(DIAGNOSTIC_LIMIT).toBeGreaterThanOrEqual(1000);
   });
 

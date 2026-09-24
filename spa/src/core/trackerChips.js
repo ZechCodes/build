@@ -66,7 +66,7 @@ export const ROW_LABEL_LIMIT = 3;
 /**
  * Its labels, on a LIST ROW.
  *
- * Zech, #45: "the issue list still feels cluttered." Labels were the loudest
+ * #45: "the issue list still feels cluttered." Labels were the loudest
  * thing on the row — a pill each, bordered, however many the issue wore — and
  * a dozen rows of them read as a wall. So: small muted words, spaced rather
  * than boxed, three of them, and `+n` for the rest. They are still every label

@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 // Nothing the rail repaints may touch the box somebody is typing in (#138).
 //
-// On a phone, Zech's swipes died mid-word and key taps went missing while an
-// agent worked. The textarea itself was never replaced (composerFocus.test.js
-// holds that), but every push rewrote the composer row and the rail's
-// attributes, most of them with the value they already had: fifty writes a
-// second, two of them on the panel the textarea sits in, plus two style writes
-// on the textarea and a new send button for every key.
+// On a phone, the maintainer's swipes died mid-word and key taps went missing
+// while an agent worked. The textarea itself was never replaced
+// (composerFocus.test.js holds that), but every push rewrote the composer row
+// and the rail's attributes, most of them with the value they already had:
+// fifty writes a second, two of them on the panel the textarea sits in, plus
+// two style writes on the textarea and a new send button for every key.
 //
 // So nothing an agent does writes into the composer row: its Working clock and
 // its context gauge tick in the footer beside the row, never inside it. And no
@@ -125,7 +125,7 @@ describe("the rail composer while an agent works", () => {
   };
 
   /** The panel is a card over the work at a phone's width, shut until its
-   *  bubble is pressed: the layout Zech was typing in. */
+   *  bubble is pressed: the layout the maintainer was typing in. */
   const mountOnAPhone = async () => {
     atWidth(390, 844);
     await writeRailWorkItem(branchRow({ items: conversation }));

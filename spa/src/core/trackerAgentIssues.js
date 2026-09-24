@@ -92,10 +92,10 @@ export const byRecency = (left, right) =>
 // ---- the agent's issues as one of its surfaces ----------------------------
 //
 // #34. These four questions used to answer a block drawn inline in the
-// conversation, and Zech read it as noise: "I had envisioned the issues
-// activity to be the same UX as agents/workflows/tasks/shells. So it's only
-// visible when the user wants it to be and there's a clear pattern for done
-// work."
+// conversation, and the maintainer read it as noise: "I had envisioned the
+// issues activity to be the same UX as agents/workflows/tasks/shells. So it's
+// only visible when the user wants it to be and there's a clear pattern for
+// done work."
 //
 // So they answer a different shape now: one flat list of rows the surfaces
 // layer can draw (core/agentSurfacesModel.js), each carrying the state that

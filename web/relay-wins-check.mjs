@@ -21,8 +21,8 @@
 // nothing to choose between.
 //
 // This harness builds the race itself: both kinds of candidate present, and the
-// direct ones arriving LATE, which is the condition Zech's Wi-Fi produces and
-// this machine does not.
+// direct ones arriving LATE, which is the condition the maintainer's Wi-Fi
+// produces and this machine does not.
 //
 // # Why it once exited 3 here (#55)
 //
@@ -62,7 +62,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { execSync } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const CHROMIUM = "/usr/bin/chromium";
@@ -178,7 +178,7 @@ const startTurn = () => {
  * The exact mirror of the product's hold: it delays RELAY candidates so a direct
  * pair can win, and this delays DIRECT ones so a relay pair can. What it
  * simulates is a network where a host pair waits on mDNS resolution and consent
- * while a TURN allocation is ready at once — Zech's, and not this machine's,
+ * while a TURN allocation is ready at once — a user's, and not this machine's,
  * where every candidate is a plain address on one docker bridge.
  *
  * Both directions, because one is not enough and the first run of this harness

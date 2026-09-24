@@ -380,13 +380,13 @@ describe("workspace directories", () => {
     open({ callRpc });
     await vi.waitFor(() => expect($("#wsdiradd")).toBeTruthy());
     pick("#wsdiradd", "remote");
-    $("#wsdirremote").value = "git@github.com:8ly/tokens.git";
+    $("#wsdirremote").value = "git@github.com:example/tokens.git";
     $("#wsdirlabel").value = "tokens";
     $("#wsdiraddgo").click();
-    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", expect.objectContaining({ remote: "git@github.com:example/tokens.git" })));
     expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", {
       workspace_id: "ws-1",
-      remote: "git@github.com:8ly/tokens.git",
+      remote: "git@github.com:example/tokens.git",
       name: "tokens",
     });
   });

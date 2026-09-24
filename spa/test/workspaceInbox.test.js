@@ -97,7 +97,7 @@ describe("workspace inbox rows", () => {
       id: "workspace-1",
       project_id: "project-1",
       name: "Bridge wire interface",
-      root: "/home/zech/.build/workspaces/proj-1/bridge-wire-interface",
+      root: "/home/ada/.build/workspaces/proj-1/bridge-wire-interface",
       directories: [{ id: "api", source_id: "api", is_git: true, branch: "build/bridge-wire-interface" }],
     }]);
     expect(entry.name).toBe("Bridge wire interface");

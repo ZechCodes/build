@@ -1,5 +1,5 @@
 // Screenshots the pages render-list.mjs wrote. See README.md beside it.
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium" });
 const shots = [];

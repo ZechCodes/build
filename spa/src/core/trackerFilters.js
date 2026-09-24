@@ -51,10 +51,10 @@ export const NO_FILTERS = Object.freeze({ state: "", status: "", assignee: "", l
 /**
  * What the tab opens on, and what Clear goes back to.
  *
- * Zech, deciding the question #28 raised: "If closed means done we shouldn't
- * show them in the default view." So Open is the default and closed issues are
- * a thing you ask for — the filter still offers Closed and Open and closed,
- * and a closed row wears its own chip when one is on screen
+ * The maintainer, deciding the question #28 raised: "If closed means done we
+ * shouldn't show them in the default view." So Open is the default and closed
+ * issues are a thing you ask for — the filter still offers Closed and Open and
+ * closed, and a closed row wears its own chip when one is on screen
  * (core/trackerListRender.js), so it can never be misread as open.
  *
  * Not a narrowing of NO_FILTERS but a starting point beside it: "is this list

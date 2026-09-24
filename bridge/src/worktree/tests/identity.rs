@@ -99,7 +99,7 @@ fn derive_adoption_goal_pinned_cases() {
         "some subject"
     );
     assert_eq!(
-        derive_adoption_goal("zech/test_3", "some subject"),
+        derive_adoption_goal("ada/test_3", "some subject"),
         "some subject"
     );
     assert_eq!(

@@ -1,14 +1,14 @@
 // #128 on a stack: does a phone-shaped session survive a bridge under load?
 //
-// Zech's phone reaches his bridge through TURN and drops its session when the
-// host is busy — agents running, the tracker being read. This holds ONE session
-// the way the phone does (every candidate relayed, a ping every two seconds with
-// a three-second deadline, which is the SPA's liveness probe) for SOAK_MS, while
-// the harness itself makes the load, and says whether the session lived: every
-// ping's round trip, every ICE and connection state, every push, every channel
-// close. Exit 0 only with no drop, no timeout and no ping over RTT_CEILING_MS;
-// 1 when any of those happened; 3 when it was clean but the path was not
-// relay/relay, so it said nothing about the phone.
+// The maintainer's phone reaches their bridge through TURN and drops its
+// session when the host is busy — agents running, the tracker being read. This
+// holds ONE session the way the phone does (every candidate relayed, a ping
+// every two seconds with a three-second deadline, which is the SPA's liveness
+// probe) for SOAK_MS, while the harness itself makes the load, and says whether
+// the session lived: every ping's round trip, every ICE and connection state,
+// every push, every channel close. Exit 0 only with no drop, no timeout and no
+// ping over RTT_CEILING_MS; 1 when any of those happened; 3 when it was clean
+// but the path was not relay/relay, so it said nothing about the phone.
 //
 // It runs INSIDE the qa container, which has node-datachannel and the
 // secure-transport binding and reaches app, relay and coturn by name:

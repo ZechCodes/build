@@ -42,7 +42,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const REPO = process.env.ISSUES_REPO;

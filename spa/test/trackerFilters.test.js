@@ -219,8 +219,8 @@ describe("the order the list answers in", () => {
   });
 });
 
-// #33. Zech, deciding the open/closed question #28 raised: "If closed means
-// done we shouldn't show them in the default view."
+// #33. The maintainer, deciding the open/closed question #28 raised: "If
+// closed means done we shouldn't show them in the default view."
 describe("what the tab opens on", () => {
   it("is Open, not everything", () => {
     expect(DEFAULT_FILTERS.state).toBe("open");

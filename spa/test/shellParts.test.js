@@ -18,7 +18,8 @@ describe("what a route stands on", () => {
     expect(parts.rail.addingAgent).toBe(true);
   });
   it("gives the tracker's issue page the project's conversation", () => {
-    // The route Zech opened on his phone. It mounted no rail at all.
+    // The route the maintainer opened on their phone. It mounted no rail at
+    // all.
     //
     // It stands on the PROJECT's agent rather than on one of the issue's own: a
     // tracker issue carries no conversation — the agents its page names are
@@ -55,8 +56,9 @@ describe("what a route stands on", () => {
     expect(parts.key).toBe("project:d1/p-1");
   });
 
-  // Zech, on the project page after the shell roll: two bubbles for the one
-  // project agent, one above the separator and the same agent again below it.
+  // The maintainer, on the project page after the shell roll: two bubbles for
+  // the one project agent, one above the separator and the same agent again
+  // below it.
   //
   // The rail draws a project bubble above a line when the page is standing on
   // something ELSE in the project (core/agentRailModel.js `underTheProject`).

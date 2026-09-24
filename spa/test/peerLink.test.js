@@ -159,8 +159,8 @@ const pairEntries = (id, { localType, remoteType, state = "succeeded", nominated
 ];
 
 /** A session that landed on TURN, over a check list the case chooses. The
- *  interesting one is Zech's: a direct pair that ALSO succeeded, which the relay
- *  pair merely beat to nomination. */
+ *  interesting one is the maintainer's: a direct pair that ALSO succeeded,
+ *  which the relay pair merely beat to nomination. */
 const asReport = (entries) => new Map(entries.map((entry) => [entry.id, entry]));
 
 async function landed({ report, path }) {
@@ -179,8 +179,8 @@ async function landed({ report, path }) {
 }
 
 /** A session that landed on TURN, over a check list the case chooses. The
- *  interesting one is Zech's: a direct pair that ALSO succeeded, which the relay
- *  pair merely beat to nomination. */
+ *  interesting one is the maintainer's: a direct pair that ALSO succeeded,
+ *  which the relay pair merely beat to nomination. */
 const landedOnRelay = ({ alsoDirect = "succeeded" } = {}) =>
   landed({
     path: "turn",

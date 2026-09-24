@@ -19,7 +19,7 @@ const testCacheScope = scopeFor("dev-1");
 
 const log = () => ({
   branch: "main",
-  commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "earlier work", author: "Zech", email: "z@x", time: 1 }],
+  commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "earlier work", author: "Ada", email: "z@x", time: 1 }],
   more: false,
 });
 

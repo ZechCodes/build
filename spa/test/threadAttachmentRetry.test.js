@@ -3,7 +3,7 @@
 // "unavailable" — it is still loading, and it is asked for again after the
 // reconnect.
 //
-// Zech's 789 KB attachment showed "unavailable" while the post beside it said
+// A user's 789 KB attachment showed "unavailable" while the post beside it said
 // "Delivery uncertain", and only a hard refresh brought it back. The cache
 // remembered every failure as final, which is right for a bridge that refuses a
 // path (asking again on every 1.5-second repaint would be pure waste) and wrong

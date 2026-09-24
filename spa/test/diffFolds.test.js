@@ -16,7 +16,7 @@ const status = (over = {}) => tree.status(over);
 
 const log = () => ({
   branch: "main",
-  commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "earlier", author: "Zech", email: "z@x", time: 1 }],
+  commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "earlier", author: "Ada", email: "z@x", time: 1 }],
   more: false,
 });
 
@@ -25,7 +25,7 @@ const show = () => ({
   short: "aaaaaaa",
   subject: "earlier",
   body: "",
-  author: "Zech",
+  author: "Ada",
   email: "z@x",
   stat: { files_changed: 1, insertions: 1, deletions: 1 },
   patch: patchFor("src/b.js", "committed"),

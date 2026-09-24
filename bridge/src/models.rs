@@ -906,7 +906,7 @@ mod tests {
 mod role_model_tests {
     use super::*;
 
-    /// Zech's own example, written down.
+    /// The maintainer's own example, written down.
     fn declared() -> RoleModels {
         RoleModels(vec![
             RoleModel {

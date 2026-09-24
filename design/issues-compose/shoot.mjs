@@ -1,4 +1,4 @@
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium" });
 for (const [file, width, height] of [["compose-390", 390, 760], ["compose-1440", 1440, 620]]) {
   const p = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });

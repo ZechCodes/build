@@ -60,7 +60,7 @@
               "label": "line-counter",
               "last_tool": {
                 "name": "Read",
-                "summary": "/private/tmp/claude-501/-Users-zech--superconductor-worktre…"
+                "summary": "/private/tmp/claude-501/-Users-adam--superconductor-worktre…"
               },
               "model": "claude-haiku-4-5-20251001",
               "result": "2",
@@ -76,7 +76,7 @@
               "label": "char-counter",
               "last_tool": {
                 "name": "Read",
-                "summary": "/private/tmp/claude-501/-Users-zech--superconductor-worktre…"
+                "summary": "/private/tmp/claude-501/-Users-adam--superconductor-worktre…"
               },
               "model": "claude-haiku-4-5-20251001",
               "result": "4",
@@ -97,7 +97,7 @@
               "label": "summarizer",
               "last_tool": {
                 "name": "Read",
-                "summary": "/private/tmp/claude-501/-Users-zech--superconductor-worktre…"
+                "summary": "/private/tmp/claude-501/-Users-adam--superconductor-worktre…"
               },
               "model": "claude-haiku-4-5-20251001",
               "result": "The README.md file contains only \"hi\" — there are no statistics to summarize.",

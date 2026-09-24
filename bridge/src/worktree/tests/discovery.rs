@@ -11,8 +11,8 @@ use std::path::PathBuf;
 
 #[test]
 fn external_worktree_id_is_stable_and_prefixed() {
-    let a = PathBuf::from("/Users/zech/Projects/8ly/Build");
-    let b = PathBuf::from("/Users/zech/Projects/8ly/Build-hotfix");
+    let a = PathBuf::from("/home/user/Projects/example/Build");
+    let b = PathBuf::from("/home/user/Projects/example/Build-hotfix");
 
     let id_a1 = external_worktree_id(&a);
     let id_a2 = external_worktree_id(&a);

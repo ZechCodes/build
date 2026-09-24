@@ -10,7 +10,7 @@ use super::tracker::tracked;
 use super::*;
 use crate::mcp::BridgeAction;
 
-/// Zech's own example, as a device would hold it.
+/// The maintainer's own example, as a device would hold it.
 fn declare_models(state: &mut AppState) {
     let set = state.handle(req(
         "settings.set",
@@ -191,7 +191,7 @@ fn an_explicit_model_overrides_the_role_and_the_effort_is_always_the_callers() {
 
 /// A model this bridge's catalog has never heard of is NOT refused: the user
 /// may be naming one newer than the bridge, and the lookup exists so an agent
-/// can honour that (Zech, 23:34Z: "Don't gate").
+/// can honour that (the maintainer, 23:34Z: "Don't gate").
 #[test]
 fn a_model_the_catalog_does_not_know_is_still_accepted() {
     let tmp = tempfile::tempdir().unwrap();

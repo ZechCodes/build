@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
-// #119, the cause Zech saw: pushes arriving faster than an `issues.list` round
-// trip. Each push used to start a fresh read and drop every answer a newer read
-// had overtaken, so while the agents kept commenting no answer ever landed and
-// a Done issue stayed under "Needs you". Real pane and cache; the push is the
-// pane's own registration, fired the way core/changeEvents.js fires it.
+// #119, the cause the maintainer saw: pushes arriving faster than an
+// `issues.list` round trip. Each push used to start a fresh read and drop every
+// answer a newer read had overtaken, so while the agents kept commenting no
+// answer ever landed and a Done issue stayed under "Needs you". Real pane and
+// cache; the push is the pane's own registration, fired the way
+// core/changeEvents.js fires it.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, issue } from "./trackerWireFixture.js";

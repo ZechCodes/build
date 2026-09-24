@@ -2,8 +2,8 @@
 // #52: the quiet rows are ONE list — a notice, an issue action, a tool call,
 // and a folded run of tool calls.
 //
-// Zech: "Activity entries should be styled like the notification entries …
-// just same padding so they all group nicely together."
+// The maintainer: "Activity entries should be styled like the notification
+// entries … just same padding so they all group nicely together."
 //
 // They were not. Measured in a browser at 390px, the notice and action lines
 // were 19px tall and sat 4px apart; the tool-call row was 28px tall — two

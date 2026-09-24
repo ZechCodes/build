@@ -1,10 +1,10 @@
 // What an agent is carrying on the issue board, as one of its SURFACES.
 //
-// Not a block in the conversation any more (#34). Zech, on the #14 entry as it
-// rolled: "Right now the in review issues on an agent are just noise taking up
-// space on the chat. I had envisioned the issues activity to be the same UX as
-// agents/workflows/tasks/shells. So it's only visible when the user wants it
-// to be and there's a clear pattern for done work."
+// Not a block in the conversation any more (#34). The maintainer, on the #14
+// entry as it rolled: "Right now the in review issues on an agent are just
+// noise taking up space on the chat. I had envisioned the issues activity to be
+// the same UX as agents/workflows/tasks/shells. So it's only visible when the
+// user wants it to be and there's a clear pattern for done work."
 //
 // So this file no longer draws anything. It supplies rows, and the surfaces
 // layer draws them behind a pill like every other kind — which also gets the

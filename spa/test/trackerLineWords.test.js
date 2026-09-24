@@ -1,8 +1,8 @@
 // The words an issue line says: what was done, and who did it (#40).
 //
-// Zech, on the rolled build: the rows read "commented_on #39" and "created #39"
-// with no actor, and the project's own agent came out as "Agent 01M2" because
-// it is not a workspace agent and the feed has no label for it.
+// The maintainer, on the rolled build: the rows read "commented_on #39" and
+// "created #39" with no actor, and the project's own agent came out as "Agent
+// 01M2" because it is not a workspace agent and the feed has no label for it.
 //
 // One table for both lines — the notice (#38) and the agent's own action line
 // (#18) — because the same verb reaching a reader two ways with two spellings
@@ -102,7 +102,7 @@ describe("who did it", () => {
   });
 
   it("takes a name the bridge already wrote", () => {
-    expect(actorName("Zech")).toBe("Zech");
+    expect(actorName("Ada")).toBe("Ada");
   });
 
   it("says nothing for nothing", () => {

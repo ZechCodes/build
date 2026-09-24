@@ -57,8 +57,8 @@ describe("the line", () => {
       .toBe("#14 commented on");
   });
 
-  // Zech's four, plus the rest of the board's verbs. A bare token and a past
-  // tense both read, because the bridge may send either.
+  // The maintainer's four, plus the rest of the board's verbs. A bare token and
+  // a past tense both read, because the bridge may send either.
   it("renders each action", () => {
     const said = (name) => paint([acted({ action: name })]).textContent.replace(/\s+/g, " ").trim().replace(/^#\d+\s*/, "");
     // The wire says `update`; a reader calls it an edit (#40).
@@ -70,8 +70,8 @@ describe("the line", () => {
     expect(said("closed")).toBe("closed");
   });
 
-  // Zech, 21:19Z: "Use 'Created #X {title}'". A creation is the one action
-  // whose news is the title, so it reads verb first and keeps the title.
+  // The maintainer, 21:19Z: "Use 'Created #X {title}'". A creation is the one
+  // action whose news is the title, so it reads verb first and keeps the title.
   it("reads a creation verb first, with the title", () => {
     const text = (over) => paint([acted(over)]).textContent.replace(/\s+/g, " ").trim();
     expect(text({ action: "created", title: "Ghost rows survive" })).toBe("Created #14 Ghost rows survive");

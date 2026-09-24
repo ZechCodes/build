@@ -230,11 +230,11 @@ describe("terminal session handoff after a bridge restart", () => {
     }
   });
 
-  // The churn as Zech saw it, and as the compose stack reproduces it: a bridge
-  // that does not answer in three seconds over a path the browser's own ICE is
-  // still holding open. An application ping measures the path AND the daemon
-  // behind it; ICE measures the path, with consent checks of its own. So ICE's
-  // word outranks the silence, and the peer stands.
+  // The churn as the maintainer saw it, and as the compose stack reproduces it:
+  // a bridge that does not answer in three seconds over a path the browser's
+  // own ICE is still holding open. An application ping measures the path AND
+  // the daemon behind it; ICE measures the path, with consent checks of its
+  // own. So ICE's word outranks the silence, and the peer stands.
   it("keeps a peer ICE is still holding, however long the bridge takes to answer", async () => {
     vi.useFakeTimers();
     try {

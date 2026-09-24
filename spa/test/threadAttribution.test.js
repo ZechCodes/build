@@ -369,10 +369,10 @@ describe("a notice Build wrote", () => {
 
   const message = () => document.querySelector(".thread-message");
 
-  // #42. It used to wear the bubble and say "from Build" above it. Zech:
-  // "notifications are a single line left aligned" — a restart notice that
-  // says "assume nothing you were doing finished" reads very differently when
-  // it looks like the reader typed it.
+  // #42. It used to wear the bubble and say "from Build" above it. The
+  // maintainer: "notifications are a single line left aligned" — a restart
+  // notice that says "assume nothing you were doing finished" reads very
+  // differently when it looks like the reader typed it.
   it("is one quiet line, not a bubble", () => {
     document.body.innerHTML = notice();
 

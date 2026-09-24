@@ -1,9 +1,9 @@
 /** @vitest-environment jsdom */
 // A tracking notice as one line (#38).
 //
-// Zech, with a screenshot of a project-agent conversation: "Tracking notices
-// come in looking like user messages (same color and on the right). They
-// should be a single line 'X did Y on Z' deep linking."
+// The maintainer, with a screenshot of a project-agent conversation: "Tracking
+// notices come in looking like user messages (same color and on the right).
+// They should be a single line 'X did Y on Z' deep linking."
 //
 // On the wire a notice IS a message on the user's side, so the two marks
 // together are what tell it apart. Everything below is about the line it draws
@@ -56,13 +56,13 @@ describe("the line, from the structured field", () => {
   const stated = (over = {}) =>
     notice({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented", comment_id: "ic-9", ...over } });
 
-  // #49. Zech: "Relevant info is getting pushed out of view … Move what
-  // happened first and don't show the issue title."
+  // #49. The maintainer: "Relevant info is getting pushed out of view … Move
+  // what happened first and don't show the issue title."
   it("reads number, action, then who did it — and no title", () => {
     expect(text(stated())).toBe("#32 commented on by Agent 01M2");
   });
 
-  // Zech, 21:15Z: "What does 'moved by' mean? Moved where?" A move's
+  // The maintainer, 21:15Z: "What does 'moved by' mean? Moved where?" A move's
   // destination is its own field on the notice, and the line must say it.
   it("says where a move went, from the notice's own field", () => {
     expect(text(stated({ action: "moved", from: "in_progress", to: "in_review" }))).toBe("#32 moved to In review by Agent 01M2");
@@ -168,8 +168,9 @@ describe("the row, in the timeline", () => {
     return document.querySelector(".thread-message");
   };
 
-  // The whole of Zech's report. A notice is a message on the user's side, so
-  // drawn as one it wore his colour, sat on his side, and claimed he wrote it.
+  // The whole of the maintainer's report. A notice is a message on the user's
+  // side, so drawn as one it wore their colour, sat on their side, and claimed
+  // they wrote it.
   it("is not a user bubble", () => {
     const row = paint([item()]);
     expect(row.classList.contains("thread-notice")).toBe(true);
@@ -198,8 +199,8 @@ describe("the row, in the timeline", () => {
     expect(row.textContent).not.toContain("this reproduces on a phone too");
   });
 
-  // Zech asked for "X did Y", and X has to be a name he recognises. The names
-  // come off the feed, so the timeline is handed them.
+  // The maintainer asked for "X did Y", and X has to be a name they recognise.
+  // The names come off the feed, so the timeline is handed them.
   it("names the agent the way the rest of the project names it", () => {
     document.body.innerHTML = threadHtml(
       { id: "conversation-3", items: [item({ issue_notice: { actor: "agent-01M2XXGQ", action: "commented" } })] },
@@ -242,11 +243,11 @@ describe("the row, in the timeline", () => {
   });
 });
 
-// #40. Zech, on the rolled build: "There's a lot of space on the left of the
-// issue notifications, there's a lot of space between them, and they're not
-// one line." All three are structural, so all three are asserted structurally
-// here — and then measured for real in a browser, which is the only place the
-// first and third can actually be seen.
+// #40. The maintainer, on the rolled build: "There's a lot of space on the left
+// of the issue notifications, there's a lot of space between them, and they're
+// not one line." All three are structural, so all three are asserted
+// structurally here — and then measured for real in a browser, which is the
+// only place the first and third can actually be seen.
 describe("the shape of the row", () => {
   const notice_ = (over = {}) => ({ type: "message", data: { id: "m-n", sequence: 9, ...notice(over) } });
   const action_ = (over = {}) => ({
@@ -274,9 +275,9 @@ describe("the shape of the row", () => {
   // page the link opens, and it stays as hover text where length costs
   // nothing.
   it("leads with the number and carries no title on the line", () => {
-    // A creation is the one exception: it reads "Created #39 A title" (Zech,
-    // 21:19Z), covered in trackerActionLine.test.js. Every other verb leads
-    // with the number.
+    // A creation is the one exception: it reads "Created #39 A title" (the
+    // maintainer, 21:19Z), covered in trackerActionLine.test.js. Every other
+    // verb leads with the number.
     for (const row of [said(notice_()), said(action_({ action: "commented" }))]) {
       const line = row.querySelector("a, span");
       expect(line.firstElementChild.classList.contains("thread-issue-number")).toBe(true);
@@ -312,7 +313,8 @@ describe("the shape of the row", () => {
     expect(shell).toContain("--thread-gap:20px");
   });
 
-  // The actor Zech saw as "Agent 01M2": Build's own agent for the project.
+  // The actor the maintainer saw as "Agent 01M2": Build's own agent for the
+  // project.
   it("names the project's agent after its project", () => {
     document.body.innerHTML = threadHtml(
       { id: "c-3", items: [notice_({ issue_notice: { actor: "project-01M2SCB", action: "commented" } })] },

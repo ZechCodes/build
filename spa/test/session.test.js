@@ -454,8 +454,8 @@ describe("a session whose path has silently died", () => {
   };
 
   /** A call that waits out its whole path deadline with nothing coming back —
-   *  the shape of Zech's post: it reached the bridge, and the receipt did not
-   *  reach him. */
+   *  the shape of the maintainer's post: it reached the bridge, and the
+   *  receipt did not reach them. */
   const deadlineOn = async (session, method = "thread.post") => {
     const failed = session.call(method, {}, DEFAULT_RPC_TIMEOUT_MS).catch((error) => error);
     await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS);
@@ -488,7 +488,7 @@ describe("a session whose path has silently died", () => {
 
   it("ends the session when the ping goes unanswered, though ICE still says connected", async () => {
     await onFakeTime(async ({ session, peer, events }) => {
-      peer.frames.connected = true; // the ring is showing connected, as Zech's was
+      peer.frames.connected = true; // the ring is showing connected, as the maintainer's was
       await deadlineOn(session);
       await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
 

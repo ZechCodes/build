@@ -32,7 +32,7 @@
 // bug WAS the cascade.
 
 import { existsSync, readFileSync } from "node:fs";
-import { chromium } from "/home/zech/.local/share/mise/installs/npm-playwright/1.63.0/node_modules/playwright/index.mjs";
+import { chromium } from "playwright";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 
@@ -106,11 +106,11 @@ async function measure(width, label) {
       host.innerHTML = new DOMParser().parseFromString(html, "text/html").querySelector(".thread-items").innerHTML;
       const timeline = host.getBoundingClientRect();
       const box = (el) => el.getBoundingClientRect();
-      // #52: an activity row is one of these rows too — Zech asked for them to
-      // group with the notice lines, so the measurement asks about them all
-      // together rather than about the issue lines alone. One selector, the
-      // class the rows themselves are styled through, so a row the product
-      // starts drawing is a row this measures without being told.
+      // #52: an activity row is one of these rows too — the maintainer asked
+      // for them to group with the notice lines, so the measurement asks about
+      // them all together rather than about the issue lines alone. One
+      // selector, the class the rows themselves are styled through, so a row
+      // the product starts drawing is a row this measures without being told.
       const lines = [...host.querySelectorAll(".thread-quiet-row")];
       const messages = [...host.querySelectorAll(".thread-message:not(.thread-quiet-row)")];
       const isRow = (el) => el.classList.contains("thread-quiet-row");

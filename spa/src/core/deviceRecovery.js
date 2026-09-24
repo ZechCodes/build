@@ -2,11 +2,12 @@
  *
  *  The ceiling is ten seconds, not thirty. A phone is the device this ladder is
  *  really for, and a phone's failures are almost never the machine being
- *  unreachable — they are the phone itself having been asleep. Zech's had climbed
- *  to the old thirty-second step across two earlier failures and was still there
- *  when he picked it up, so waking the screen bought a half-minute of nothing
- *  (issue #60). Ten seconds is still a real back-off for a machine that is
- *  genuinely gone, and a tenth of the wait for the case that actually happens. */
+ *  unreachable — they are the phone itself having been asleep. The maintainer's
+ *  had climbed to the old thirty-second step across two earlier failures and
+ *  was still there when they picked it up, so waking the screen bought a
+ *  half-minute of nothing (issue #60). Ten seconds is still a real back-off for
+ *  a machine that is genuinely gone, and a tenth of the wait for the case that
+ *  actually happens. */
 const BACKOFF_MS = [2000, 4000, 8000, 10000];
 const JITTER_FRACTION = 0.1;
 

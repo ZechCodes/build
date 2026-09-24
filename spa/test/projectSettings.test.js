@@ -17,7 +17,7 @@ const PROJECT = {
   name: "build",
   path: "/Users/z/Projects/build",
   base_branch: "main",
-  remote: "git@github.com:8ly/build.git",
+  remote: "git@github.com:example/build.git",
 };
 
 beforeEach(async () => {
@@ -80,12 +80,12 @@ describe("openProjectSettings", () => {
     openProjectSettings(PROJECT.project_id, { callRpc: vi.fn(() => new Promise(() => {})), deviceId: "dev-1" });
     await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
     document.querySelector("#psaddremote").click();
-    document.querySelector("#psremoteurl").value = "git@github.com:8ly/draft.git";
+    document.querySelector("#psremoteurl").value = "git@github.com:example/draft.git";
     document.querySelector("#pssourcelabel").value = "draft";
     document.querySelector("#pssourcelabel").focus();
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
     await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("renamed"));
-    expect(document.querySelector("#psremoteurl").value).toBe("git@github.com:8ly/draft.git");
+    expect(document.querySelector("#psremoteurl").value).toBe("git@github.com:example/draft.git");
     expect(document.querySelector("#pssourcelabel").value).toBe("draft");
     expect(document.activeElement).toBe(document.querySelector("#pssourcelabel"));
   });
@@ -127,7 +127,7 @@ describe("openProjectSettings", () => {
     expect(sheet.querySelector("#psproject").value).toBe("build");
     expect(sheet.querySelector("#pspath").value).toBe("/Users/z/Projects/build");
     expect(sheet.querySelector("#psbranch").value).toBe("main");
-    expect(sheet.querySelector("#psremote").value).toBe("git@github.com:8ly/build.git");
+    expect(sheet.querySelector("#psremote").value).toBe("git@github.com:example/build.git");
     expect(sheet.querySelector("#psproject").readOnly).toBe(true);
     expect(sheet.querySelector("#pspath").readOnly).toBe(true);
     expect(sheet.querySelector("#psbranch").readOnly).toBe(true);
@@ -141,12 +141,12 @@ describe("openProjectSettings", () => {
     const callRpc = vi.fn().mockResolvedValue({ projects: [PROJECT] });
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
-    document.getElementById("psremote").value = "git@github.com:8ly/other.git";
+    document.getElementById("psremote").value = "git@github.com:example/other.git";
     document.getElementById("pssave").click();
     await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
     expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
       project_id: "proj-1",
-      url: "git@github.com:8ly/other.git",
+      url: "git@github.com:example/other.git",
     });
   });
 
@@ -156,12 +156,12 @@ describe("openProjectSettings", () => {
     );
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psremote")).toBeTruthy());
-    document.getElementById("psremote").value = "git@github.com:8ly/other.git";
+    document.getElementById("psremote").value = "git@github.com:example/other.git";
     document.getElementById("pssave").click();
     await vi.waitFor(() => expect(document.querySelector("#scrim").classList.contains("show")).toBe(false));
     expect(callRpc).toHaveBeenCalledWith("project.set_remote", {
       project_id: "proj-1",
-      url: "git@github.com:8ly/other.git",
+      url: "git@github.com:example/other.git",
     });
     expect(document.getElementById("scrim").classList.contains("show")).toBe(false);
   });
@@ -413,14 +413,14 @@ describe("project sources", () => {
     openProjectSettings("proj-1", { callRpc });
     await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
     document.getElementById("psaddremote").click();
-    document.getElementById("psremoteurl").value = "git@github.com:8ly/tokens.git";
+    document.getElementById("psremoteurl").value = "git@github.com:example/tokens.git";
     document.getElementById("pssourcelabel").value = "tokens";
     document.getElementById("pssourceadd").click();
-    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.add_source", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.add_source", expect.objectContaining({ remote: "git@github.com:example/tokens.git" })));
 
     expect(callRpc).toHaveBeenCalledWith("project.add_source", {
       project_id: "proj-1",
-      remote: "git@github.com:8ly/tokens.git",
+      remote: "git@github.com:example/tokens.git",
       name: "tokens",
     });
   });

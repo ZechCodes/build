@@ -1,6 +1,6 @@
 // The Issues tab's chrome: the header and the filter bar, mounted ONCE.
 //
-// Zech, #43: "The inputs/selects really shouldn't be redrawing ever." They do
+// #43: "The inputs/selects really shouldn't be redrawing ever." They do
 // not. Every control here is made when the tab mounts and is the same DOM node
 // for the life of the pane — through a push, a feed move, a re-read, a view
 // switch and a filter change. Nothing in a paint can take the reader's focus,

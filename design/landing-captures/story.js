@@ -3,7 +3,7 @@
 // data, shaped the way the SPA's own renderers read it.
 
 export const PROJECT = { id: "project-build", name: "build", projectKey: "workshop/project-build" };
-export const DEVICE = "zech-mbp";
+export const DEVICE = "dev-mbp";
 export const DIRECTORY = "build-app";
 export const BRANCH = "build/archive-search";
 

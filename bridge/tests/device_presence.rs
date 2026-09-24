@@ -3,7 +3,7 @@
 //! It is read as "I can dial this machine", and until this landed it answered
 //! "the daemon process is running": the heartbeat went to the api over its own
 //! HTTPS connection and knew nothing about the relay socket a browser actually
-//! finds the device on. On 2026-09-19 one of Zech's machines had its relay
+//! finds the device on. On 2026-09-19 a user's machine had its relay
 //! socket severed at 18:54:03Z and did not get another until 20:38:15Z, yet its
 //! `last_seen_at` advanced to 19:37:18Z — forty-three minutes of a device the
 //! api called online that no browser could open a session to, and twelve dials

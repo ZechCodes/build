@@ -226,9 +226,10 @@ describe("directPairWorthTrying", () => {
   ];
 
   it("is true when a direct pair has already succeeded beside the relay one we are on", () => {
-    // Zech's case exactly: both pairs are viable on the same Wi-Fi and the relay
-    // one merely answered first. The browser has already PROVEN the direct pair
-    // works, which is what makes an ICE restart worth the disturbance.
+    // The maintainer's case exactly: both pairs are viable on the same Wi-Fi
+    // and the relay one merely answered first. The browser has already PROVEN
+    // the direct pair works, which is what makes an ICE restart worth the
+    // disturbance.
     const stats = [
       pair("relayed", { nominated: true }),
       ...candidates("relayed", "relay", "host"),

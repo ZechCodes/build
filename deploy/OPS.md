@@ -47,6 +47,70 @@ when no terminal panes are mounted. A terminal ping timeout can close the shared
 peer without an earlier ICE failure; correlate terminal diagnostics as well as
 peer state changes when investigating a five-second drop.
 
+## Priority: the bridge, the user's apps, the agents
+
+The bridge relays the user's live phone session, so it has to answer while the
+agents it spawns saturate the machine, and the user's own apps have to stay
+usable too. Under contention the order is **bridge > user's apps > agents**.
+
+On Linux, with a user systemd:
+
+| cgroup | CPUWeight | memory |
+| --- | --- | --- |
+| `build-bridge.service` (the bridge) | 500 | no limit |
+| the user's apps (`app.slice` scopes and services) | 100, systemd's default | no limit |
+| `app-build-agents.slice` (every agent the bridge spawns) | 20 | `MemoryHigh` = 75 % of RAM, whole MiB (`98304M` on 128 GiB) |
+
+Weights only arbitrate between sibling cgroups. Every agent used to run inside
+`build-bridge.service`'s own cgroup, so a weight on the bridge unit ranked the
+bridge *plus its agents* against the user's apps and never protected the bridge
+from its own children. With the agents in their own slice, the bridge, the
+user's apps and the agents are siblings under `app.slice`. One catch: a slice's
+name is its path, so `app-build-agents.slice` sits inside `app-build.slice`, and
+`app-build.slice` is the sibling that competes in `app.slice`. The installer
+therefore sets `CPUWeight=20` on `app-build.slice` as well.
+
+`build-bridge install-service` writes `CPUWeight=500` into the unit and runs
+`systemctl --user set-property` on both slices (persistent drop-ins under
+`~/.config/systemd/user.control/`). A set-property that fails (an older systemd,
+a machine without user slices) prints one stderr line, and the install carries
+on: the bridge still works, but its agents keep the default priority.
+`uninstall-service` leaves the slice settings in place, because a reinstalled
+bridge's agents use them again.
+
+There is no `MemoryMax` anywhere: nothing is killed. Above `MemoryHigh` the
+kernel slows the agents' allocations and reclaims their memory, page cache
+first, before it touches the bridge or the user's apps.
+
+Where there is no user systemd (macOS, containers), the bridge falls back to
+`nice 10` on each child's process group. On macOS the LaunchAgent is
+`ProcessType=Interactive`. `Background` is launchd's throttled class, with CPU
+and I/O deprioritised behind everything the user does. The bridge relays the
+user's live session, so it gets the class launchd gives an app with a UI.
+
+Check a machine:
+
+```bash
+systemctl --user show app-build-agents.slice -p CPUWeight,MemoryHigh   # 20, 75 % of RAM
+systemctl --user show app-build.slice -p CPUWeight                     # 20
+systemctl --user show build-bridge.service -p CPUWeight,DropInPaths    # 500, no user.control drop-in
+systemd-cgls --user   # agents under app-build.slice/app-build-agents.slice, not build-bridge.service
+```
+
+**Roll note.** `systemctl --user set-property build-bridge.service CPUWeight=…`
+writes a drop-in, `~/.config/systemd/user.control/build-bridge.service.d/50-CPUWeight.conf`
+(with `--runtime`, the same path under `/run/user/$UID/systemd/`), and a
+drop-in overrides the unit file's `CPUWeight=500`. On a machine that ever ran
+one, do this at roll time:
+
+```bash
+rm ~/.config/systemd/user.control/build-bridge.service.d/50-CPUWeight.conf
+# or reset it instead: systemctl --user set-property build-bridge.service CPUWeight=500
+systemctl --user daemon-reload
+```
+
+`DropInPaths` above lists every drop-in still in force.
+
 ## Monthly — Cloudflare TURN usage
 
 Cloudflare TURN is free to 1000 GB of egress to clients per month and $0.05
@@ -115,7 +179,7 @@ either.
    export BUILD_ICE_SERVERS_JSON="$(cd skriftapp && uv run --frozen python -c \
      'import os,json; from buildapp.ice_servers import ice_servers; \
       print(json.dumps(ice_servers(os.environ["CF_TURN_KEY_ID"], os.environ["CF_TURN_KEY_API_TOKEN"])))')"
-   (cd bridge && cargo test --test rtc_peer a_browser_that_can_only_relay -- --nocapture)
+   (cd bridge && nice -n 10 cargo test --test rtc_peer a_browser_that_can_only_relay -- --nocapture)
    ```
 
    Without the variable the test skips, which is how CI runs it.

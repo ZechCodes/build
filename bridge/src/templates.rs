@@ -602,7 +602,7 @@ mod tests {
             !project.contains("phase"),
             "a project agent runs no phases: {project}"
         );
-        assert!(project.contains("You are not in the project"), "{project}");
+        assert!(project.contains("You have no checkout"), "{project}");
     }
 
     /// The project agent orchestrates: work that touches files is placed on a
@@ -618,13 +618,14 @@ mod tests {
             },
         ));
         assert!(
-            project.contains("you are its orchestrator"),
+            project.contains("its orchestrator and chief of staff, standing in for the user"),
             "the agent is told what it is for: {project}"
         );
         for sentence in [
-            "Work that touches files is not yours to do — it is yours to place.",
-            "Split what is independent.",
-            "Do not do the work in your own words.",
+            "delegated, never done here",
+            "file it as an issue and assign it",
+            "The issue is the record",
+            "Independent work goes out in parallel",
         ] {
             assert!(
                 project.contains(sentence),
@@ -635,40 +636,26 @@ mod tests {
             "`create_workspace`",
             "`add_workspace_agent`",
             "`message_workspace_agent`",
+            "`create_issue`",
+            "`assign_issue`",
+            "`compact_agent`",
+            "`compact_self`",
         ] {
-            assert!(
-                project.contains(tool),
-                "{tool} is how work is placed: {project}"
-            );
-        }
-        // Rule 1: significant work is handed over as an issue, not as a
-        // message — the project agent's own words for it.
-        assert!(
-            project.contains("Hand significant work over as an ISSUE rather than as a message."),
-            "the project agent hands work over as an issue: {project}"
-        );
-        for tool in ["`create_issue`", "`assign_issue`"] {
-            assert!(
-                project.contains(tool),
-                "{tool} is how significant work is handed over: {project}"
-            );
-        }
-        for tool in ["`compact_agent`", "`compact_self`"] {
             assert!(
                 project.contains(tool),
                 "the inventory names every tool the surface has, {tool} too: {project}"
             );
         }
         assert!(
-            project.contains("Beyond the issue tools below there are no others"),
-            "the inventory cannot end before the eight tools appended under it: {project}"
+            project.contains("Your tools: the issue tools below;"),
+            "the inventory cannot leave out the tools appended under it: {project}"
         );
 
         // Every rule the surface had before orchestration arrived is still here.
         for kept in [
-            "scratch space Build hands you",
-            "you cannot change a file",
-            "Removing anything that is not cannot be undone, so it is the user's call.",
+            "this directory is scratch",
+            "cannot change a file",
+            "Deleting a workspace destroys whatever in it is not committed and pushed",
             "Call `set_topic` first",
             "`Working`",
             "`Waiting`",
@@ -753,13 +740,18 @@ mod tests {
     }
 
     /// The project agent is told about both ways of addressing an agent, and
-    /// that neither reaches the user or itself.
+    /// that neither reaches the user.
     #[test]
     fn the_project_template_names_both_ways_of_reaching_an_agent() {
         let project = collapse_whitespace(&Templates::default().project_agent);
-        assert!(project.contains("`message_agent`"), "{project}");
-        assert!(project.contains("`message_workspace_agent`"), "{project}");
-        assert!(project.contains("cannot message yourself"), "{project}");
+        assert!(
+            project.contains("`message_workspace_agent` and `message_agent`"),
+            "{project}"
+        );
+        assert!(
+            project.contains("A reply to an agent is a `message_agent` send"),
+            "{project}"
+        );
     }
 
     /// The project agent reads the context line on what agents send it, and
@@ -770,72 +762,72 @@ mod tests {
     fn the_project_template_says_to_compact_or_replace_a_full_agent_before_its_next_issue() {
         let project = collapse_whitespace(&Templates::default().project_agent);
         for words in [
-            "how full its context is",
-            "before you hand a long-running agent its next issue",
+            "how full their context is",
+            "before handing a long-running agent its next issue",
             "`compact_agent`",
-            "what the next issue needs kept",
-            "resume notes",
+            "naming what to keep",
+            "the issue's notes",
             "fresh agent",
         ] {
             assert!(project.contains(words), "{words} missing from {project}");
         }
     }
 
-    /// Every template that has `message_agent` says the same two things: a
-    /// reply to an agent is a send, and ending a turn reports to the user and
-    /// reaches nobody. An agent that was asked for something answers it and
-    /// then tells the user what it did rather than saying it twice — except the
-    /// project agent, which notes the decision on the issue and tells the user
-    /// nothing unless the call was theirs (#152).
+    /// Every template that has `message_agent` says a reply to an agent is a
+    /// send and that ending a turn reports to the user and reaches nobody. The
+    /// coding templates say it in the shared note, and add that an agent asked
+    /// for something answers it and then tells the user briefly; the project
+    /// agent says it in its own words, and keeps its answers off the thread
+    /// unless the call was the user's (#152).
     #[test]
     fn every_template_with_message_agent_says_a_reply_is_a_send() {
         let t = Templates::default();
         for (name, template) in templates_that_reach_another_agent(&t) {
             let text = collapse_whitespace(template);
-            for sentence in [
-                "A reply to an agent is only ever a `message_agent` send.",
-                "`post_thread_message` reports to the user and reaches no agent",
-            ] {
+            let sentences: &[&str] = if name == "project_agent" {
+                &[
+                    "`post_thread_message` is the only thing the user sees, and it reaches no agent.",
+                    "A reply to an agent is a `message_agent` send",
+                    "Nothing is forwarded",
+                ]
+            } else {
+                &[
+                    "A reply to an agent is only ever a `message_agent` send.",
+                    "`post_thread_message` reports to the user and reaches no agent",
+                    "report to the user briefly",
+                ]
+            };
+            for sentence in sentences {
                 assert!(text.contains(sentence), "{name} does not say it: {text}");
             }
-            let answered = if name == "project_agent" {
-                "note on the issue what you decided. The thread gets no copy of what you sent."
-            } else {
-                "report to the user briefly"
-            };
-            assert!(text.contains(answered), "{name} does not say it: {text}");
         }
     }
 
-    /// The project agent's playbook (#152): one briefing on an ask, then only
-    /// outcomes and the user's own calls; progress lives on the issue, the
-    /// mundane calls are made and recorded there, pipelines are handed off,
-    /// and `Working` is the exception rather than a progress feed.
+    /// The project agent's playbook (#152), carried by its role rather than
+    /// prescribed step by step: an orchestrator and chief of staff that places
+    /// work, decides the routine and brings the user only outcomes and their
+    /// own calls. What the role cannot imply is pinned: what a decision of the
+    /// user's is, and what each status is for. The old progress-feed wording
+    /// stays gone.
     #[test]
     fn the_project_template_reports_only_outcomes_and_the_users_calls() {
         let project = collapse_whitespace(&Templates::default().project_agent);
-        for sentence in [
-            "Tests, builds, gates, merges, rolls and deploys are never yours to run",
-            "You stand in for the user.",
-            "what is done, and what needs them.",
-            "goes on the issue it belongs to with `comment_issue`",
-            "never send the user a message that asks nothing and reports no outcome.",
-            "When the user asks for work, send one briefing, as `Complete`, once it is placed",
-            "who is on it and on what model",
-            "Then send only outcomes.",
-            "`Complete` when the work has rolled or the question is answered",
-            "only when a call is the user's to make: something that cannot be undone, something the user will see, or a matter of taste.",
-            "One question per message, with the options and your recommendation",
-            "Outcomes that land close together go out as one message.",
-            "Everything else, decide for the user.",
-            "note on the issue what you decided and why, so it can be audited.",
-            "A question from the user is the one piece of work that is yours",
-            "`Working` only as the exception",
-            "never as a progress report.",
+        for words in [
+            "orchestrator",
+            "chief of staff",
+            "standing in for the user",
+            "You place work, decide the routine yourself",
+            "only outcomes and the calls that are theirs",
+            "when it cannot be undone, is visible to them, or is a matter of taste",
+            "That briefing, sent as `Complete`",
+            "An outcome is `Complete`",
+            "send it as `Waiting`",
+            "`Working` is only for",
+            "`Blocked` for when you cannot go on without them",
         ] {
             assert!(
-                project.contains(sentence),
-                "the playbook no longer says, verbatim: {sentence}\n\nthe template says: {project}"
+                project.contains(words),
+                "the playbook no longer says: {words}\n\nthe template says: {project}"
             );
         }
         for feed in [

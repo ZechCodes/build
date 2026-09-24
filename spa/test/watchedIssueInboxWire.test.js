@@ -117,28 +117,52 @@ afterAll(() => {
   modules?.deviceContexts.resetDeviceContexts();
 });
 
+const detailReads = (issueId) =>
+  asked.filter((one) => one.method === "issues.get" && one.params.issue_id === issueId).length;
+
+/** Reach a step that should draw no row, and hold that until the issue's own
+ *  record has been read again: a row the new timeline would add is added by
+ *  then, so its absence means something. */
+async function reachQuietly(step, issueId) {
+  const before = detailReads(issueId);
+  await reach(step);
+  await vi.waitFor(() => expect(detailReads(issueId)).toBeGreaterThan(before), WAIT);
+  expect(rowsNamed(issueId)).toHaveLength(0);
+}
+
 describe("a watched issue in the inbox, over the real wire", () => {
-  it("appears when an agent moves it to In review, naming why, and leaves when it moves to Done", async () => {
-    const { issue_id: issueId, steps: [filed, inReview, done] } = wire.review;
+  it("names the narrow Needs you rule in the greeting (#144)", () => {
+    expect(wire.greeting.capabilities).toContain("issues.commentUserNotifies");
+  });
+
+  it("stays out while agents move it to In review, appears once it is assigned to the user, leaves at Done", async () => {
+    const { issue_id: issueId, steps: [filed, inReview, assigned, done] } = wire.review;
     // Filed and watched, in Backlog: nothing for the user yet.
     expect(filed.list.issues.find((one) => one.id === issueId)).toMatchObject({ watched: true, status: "backlog" });
     expect(rowFor(issueId)).toBe(null);
 
+    // In review between agents is not the user's (#144).
     await reach(inReview);
-    await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("In review");
-    const number = inReview.get.issue.number;
-    expect(rowFor(issueId).querySelector(".stitle").textContent).toBe(`#${number} ${inReview.get.issue.title}`);
+    expect(rowsNamed(issueId)).toHaveLength(0);
+
+    await reach(assigned);
+    await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Assigned to you");
+    const number = assigned.get.issue.number;
+    expect(rowFor(issueId).querySelector(".stitle").textContent).toBe(`#${number} ${assigned.get.issue.title}`);
 
     await reach(done);
     await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);
   });
 
-  it("appears when an agent comments, and leaves once the comment is read", async () => {
-    const { issue_id: issueId, steps: [, commented, read] } = wire.comment;
+  it("stays out for agents' own comments, appears when an agent asks the user, and leaves once it is read", async () => {
+    const { issue_id: issueId, steps: [, chatter, commented, read] } = wire.comment;
     expect(rowFor(issueId)).toBe(null);
+
+    await reachQuietly(chatter, issueId);
 
     await reach(commented);
     await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("New comment");
+    // The question counts; the agents' own comment before it does not.
     expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
 
     await reach(read);

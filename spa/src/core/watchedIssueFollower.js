@@ -17,6 +17,7 @@ import { carriesWatching } from "./trackerWatch.js";
 import { isFinished } from "./trackerAgentIssues.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
+import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { watchedIssueEntries } from "./watchedIssueRows.js";
 
 const followsDetail = (issue) => issue?.watched === true && !isFinished(issue);
@@ -27,32 +28,37 @@ const callOn = (deviceId) => (method, params) => {
   return context ? context.rpc(method, params) : Promise.reject(new Error("This machine is not connected."));
 };
 
-/** One project's list and the details of its open watched issues. */
+/** One project's list and the details of its open watched issues, and the
+ *  Needs you rule its machine's issues are read by (core/needsYouRule.js). */
 function followProject(project, onChange) {
   const { deviceId, id: projectId } = project;
   let issues = [];
+  let askedOnly = false;
   let reads = 0;
   let disposed = false;
   const details = createTrackerIssueDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange });
 
   async function reread() {
     const read = ++reads;
-    const record = await readIssuesRecord(deviceId, projectId);
+    const [record, rule] = await Promise.all([readIssuesRecord(deviceId, projectId), readNeedsYouRule(deviceId)]);
     if (disposed || read !== reads) return;
     issues = record?.issues || [];
+    askedOnly = rule;
     onChange();
     await details.updateIssues(issues.filter(followsDetail));
   }
 
   const unsubscribe = subscribeCache(issuesAddress(deviceId, projectId), () => void reread());
+  const unsubscribeRule = subscribeCache(needsYouRuleAddress(deviceId), () => void reread());
   void reread();
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: contextFor(deviceId)?.session || null,
-    source: () => ({ project, issues, details: details.read() }),
+    source: () => ({ project, issues, details: details.read(), askedOnly }),
     dispose() {
       disposed = true;
       unsubscribe();
+      unsubscribeRule();
       details.dispose();
     },
   };

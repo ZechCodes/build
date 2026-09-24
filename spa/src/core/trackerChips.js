@@ -49,9 +49,21 @@ export const closedChipHtml = (state) =>
   state === "closed" ? `<span class="issue-closed">${esc(stateLabel(state))}</span>` : "";
 
 /** The column an issue stands in. A chip and not a dot, because a column is a
- *  word — "In review" says something "amber" cannot. */
-export const statusChipHtml = (columns, status) =>
-  `<span class="issue-status">${esc(columnName(columns, status))}</span>`;
+ *  word — "In review" says something "amber" cannot. `withWhom` follows it
+ *  when the column is waiting on somebody. */
+export const statusChipHtml = (columns, status, withWhom = "") =>
+  `<span class="issue-status">${esc(columnName(columns, status))}${withWhom ? ` · ${esc(withWhom)}` : ""}</span>`;
+
+/**
+ * Who an issue in review is with (#144): "you", or the reviewer's name, from
+ * the cached assignee. An issue in review is assigned to whoever is reviewing
+ * it, so the column alone does not say it is waiting on the user. Nothing for
+ * any other column, or for an issue nobody holds.
+ */
+export const reviewerWords = (issue, reading) => {
+  if (issue?.status !== "in_review" || !issue.assignee) return "";
+  return issue.assignee.kind === "user" ? "you" : actorName(issue.assignee, reading);
+};
 
 /** Its labels, in the order the record carries them. Free strings the user
  *  typed, so every one of them is escaped and none of them is interpreted. */

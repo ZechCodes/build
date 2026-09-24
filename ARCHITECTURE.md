@@ -542,6 +542,11 @@ refuses when that device cannot answer.
   greeting flags. New features get a name, never a legacy row.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- A flag that changes what a view draws is written to the cache at the
+  greeting and read from there, so a cold mount draws what it will keep:
+  `issues.commentUserNotifies` becomes the per-device Needs you rule in
+  `spa/src/core/needsYouRule.js`, read by the Issues tab and the inbox's
+  watched issues.
 - A session is adopted before it is greeted, so `canAnswer` is true before the
   greeting's verdict. Each greeting, including a re-greeting on a new carrier
   or a restored path (`greetLiveBridge` in `spa/src/connection.js`), gets its

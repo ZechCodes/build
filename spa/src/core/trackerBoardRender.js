@@ -18,7 +18,9 @@
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
-import { assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, stateDotHtml } from "./trackerChips.js";
+import {
+  assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, reviewerWords, stateDotHtml, statusChipHtml,
+} from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
 
 /** What the keyboard is told, once per board rather than once per card. */
@@ -36,12 +38,15 @@ export const issueCardHtml = (issue, { columns, href, ...context }) => {
   const reading = { ...context, identities: issue.identities || {} };
   const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
   const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">${assigneeHref ? "Change" : assigneeHtml(issue.assignee, reading)}</button>`;
+  // The column already says In review; the card says who it is with (#144).
+  const withWhom = reviewerWords(issue, reading);
   return (
   `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
     <div class="issue-card-head">${stateDotHtml(issue.state)}${numberHtml(issue)}${priorityChipHtml(issue.priority)}</div>
     <a class="issue-card-title" href="${esc(href(issue))}">${esc(issue.title)}</a>
+    ${withWhom ? `<div class="issue-card-status">${statusChipHtml(columns, issue.status, withWhom)}</div>` : ""}
     ${issue.labels?.length ? `<div class="issue-card-labels">${labelsHtml(issue.labels)}</div>` : ""}
     ${assigneeHref
       ? `<span class="issue-assignee-entry"><a class="issue-assignee-link" href="${esc(assigneeHref)}">${assigneeHtml(issue.assignee, reading)}</a>${assignButton}</span>`

@@ -1,9 +1,10 @@
 // Watched issues as inbox rows (#125), as a pure model.
 //
 // A watched issue is a row only while there is something in it for the user:
-// it is in review, an agent has said something they have not read, or it is
-// assigned to them — the Issues tab's "Needs you" rules
-// (core/trackerAttentionModel.js). When the reason goes, so does the row, and
+// it is assigned to them, or an agent mentioned or asked them in a comment
+// they have not read — the Issues tab's "Needs you" rules
+// (core/trackerAttentionModel.js, which also keeps the earlier rule for a
+// bridge that cannot say which comments asked). When the reason goes, so does the row, and
 // nothing that is Done or closed is ever one.
 //
 // Read from the cached issue records, never the board feed's `tracker_issue`
@@ -14,7 +15,7 @@
 // cache and core/inboxView.js paints these beside the workspace rows.
 
 import { TRACKER_ISSUE, entryKeyOf } from "./inbox.js";
-import { ATTENTION_REASONS, unreadAgentComments, watchedIssueReasons } from "./trackerAttentionModel.js";
+import { ATTENTION_REASONS, unreadAsks, watchedIssueReasons } from "./trackerAttentionModel.js";
 
 /** Why the row is there, in the inbox's words. */
 const REASON_WORDS = Object.freeze({
@@ -43,7 +44,7 @@ const NOT_A_CHECKOUT = Object.freeze({
   warnings: [],
 });
 
-function toEntry(project, issue, detail, reasons) {
+function toEntry(project, issue, detail, reasons, askedOnly) {
   const facts = reasons.map((reason) => REASON_WORDS[reason]).join(" · ");
   const changedMs = ms(issue.updated_at);
   return {
@@ -65,7 +66,7 @@ function toEntry(project, issue, detail, reasons) {
     state: "unread",
     reason: facts,
     facts,
-    unreadCount: unreadAgentComments(issue, detail).length,
+    unreadCount: unreadAsks(issue, detail, askedOnly).length,
     route: { name: "trackerIssue", deviceId: project.deviceId, projectId: project.id, issueId: issue.id },
     anchorMs: changedMs,
     lastActivityMs: changedMs,
@@ -77,17 +78,18 @@ const byChange = (left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs 
 
 /**
  * The rows, from each followed project's cached records: `sources` is
- * `[{ project, issues, details }]`, where `project` is the feed's project
- * (`id`, `deviceId`, `projectKey`, `name`), `issues` the cached `issues.list`
- * and `details` the cached `issues.get` answers by issue id.
+ * `[{ project, issues, details, askedOnly }]`, where `project` is the feed's
+ * project (`id`, `deviceId`, `projectKey`, `name`), `issues` the cached
+ * `issues.list`, `details` the cached `issues.get` answers by issue id, and
+ * `askedOnly` the machine's cached Needs you rule (core/needsYouRule.js).
  */
 export function watchedIssueEntries(sources = []) {
   const entries = [];
-  for (const { project, issues = [], details = new Map() } of sources) {
+  for (const { project, issues = [], details = new Map(), askedOnly = false } of sources) {
     for (const issue of issues) {
       const detail = details.get(issue.id) || null;
-      const reasons = watchedIssueReasons(issue, detail);
-      if (reasons.length) entries.push(toEntry(project, issue, detail, reasons));
+      const reasons = watchedIssueReasons(issue, detail, askedOnly);
+      if (reasons.length) entries.push(toEntry(project, issue, detail, reasons, askedOnly));
     }
   }
   return entries.sort(byChange);

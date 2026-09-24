@@ -2,6 +2,14 @@
 // Feed rows say which agents are working and which watched issues are in the
 // user's inbox; a cached issue detail supplies comments and the read mark.
 // This module neither reads the bridge nor decides when a cache record loads.
+//
+// Two rules for what needs the user, chosen by `askedOnly` (#144). A bridge
+// that keeps `notify_user` on comments (`issues.commentUserNotifies`) gets the
+// narrow one: assigned to the user, or an unread agent comment that mentioned
+// or asked them. The In review column alone no longer counts, because agents
+// review each other's work there. Against an older bridge, which cannot say
+// which comments asked, the earlier rule stands: In review, or any unread
+// agent comment on a watched issue.
 
 import { entityIdOf } from "./entityId.js";
 import { isFinished } from "./trackerAgentIssues.js";
@@ -34,6 +42,7 @@ const orderedId = (id) => String(id || "").split("-", 2).at(-1);
 const afterMark = (id, mark) => !mark || orderedId(id) > orderedId(mark);
 
 const isAgentComment = (entry) => entry?.type === "comment" && entry.author?.kind === "agent";
+const asksTheUser = (entry) => entry.mentions_user === true || entry.notifies_user === true;
 
 /** The agent comments the user has not read, from the cached timeline. The
  *  read mark is the newer of the detail's and the list's: a read on another
@@ -45,13 +54,19 @@ export function unreadAgentComments(issue, detail) {
   return detail.timeline.filter((entry) => isAgentComment(entry) && afterMark(entry.id, mark));
 }
 
+/** The unread agent comments that count toward Needs you: under the narrow
+ *  rule only those that mentioned or asked the user, otherwise all of them. */
+export const unreadAsks = (issue, detail, askedOnly = false) => {
+  const unread = unreadAgentComments(issue, detail);
+  return askedOnly ? unread.filter(asksTheUser) : unread;
+};
+
 /** A cached inbox row is proof the user is watching the issue. Its unread
  *  count alone may be an event such as a move, so prefer the cached timeline
- *  when there is one and require an unread agent comment there. The bridge
- *  does not persist `notify_user` on comments; it turns on issue.watched. */
-export function hasUnreadInboxComment(issue, detail, inboxRow) {
+ *  when there is one and require an unread agent comment there. */
+export function hasUnreadInboxComment(issue, detail, inboxRow, askedOnly = false) {
   if (!inboxRow || inboxRow.done_until_next === true || !(Number(inboxRow.unread) > 0)) return false;
-  return unreadAgentComments(issue, detail).length > 0;
+  return unreadAsks(issue, detail, askedOnly).length > 0;
 }
 
 /** An agent's digest on a project-scoped feed row. The map is keyed by agent
@@ -89,30 +104,32 @@ const workingAgentOf = (assignee, workingAgents, projectAgent) => {
   return assignee?.kind === "agent" ? workingAgents.get(assignee.agent_id) || null : null;
 };
 
-const reasonsOf = (issue, hasUnreadComment) => {
+const reasonsOf = (issue, hasUnreadComment, askedOnly) => {
   if (isFinished(issue)) return [];
   const reasons = [];
-  if (issue?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
+  if (!askedOnly && issue?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
   if (hasUnreadComment) reasons.push(ATTENTION_REASONS.inbox);
   if (issue?.assignee?.kind === "user") reasons.push(ATTENTION_REASONS.assigned);
   return reasons;
 };
 
-const attentionReasonsOf = (issue, detail, inboxRow) =>
-  reasonsOf(issue, hasUnreadInboxComment(issue, detail, inboxRow));
+const attentionReasonsOf = (issue, detail, inboxRow, askedOnly) =>
+  reasonsOf(issue, hasUnreadInboxComment(issue, detail, inboxRow, askedOnly), askedOnly);
 
 /** Why a watched issue is in the inbox (#125): the same reasons as Needs you,
  *  read from the cached issue records alone. The issue's own `watched` is the
  *  watch, so no feed row is consulted. None for an issue nobody watches. */
-export const watchedIssueReasons = (issue, detail) =>
-  issue?.watched === true ? reasonsOf(issue, unreadAgentComments(issue, detail).length > 0) : [];
+export const watchedIssueReasons = (issue, detail, askedOnly = false) =>
+  issue?.watched === true ? reasonsOf(issue, unreadAsks(issue, detail, askedOnly).length > 0, askedOnly) : [];
 
 /** One issue's attention, with every reason available to a Dashboard row.
  *  Working wins for list placement, but the reasons are retained so the
  *  Dashboard can still explain what needs the user's look. */
-export function issueAttention(issue, { workingAgents = new Map(), projectAgent = null, detail = null, inboxRow = null } = {}) {
+export function issueAttention(issue, {
+  workingAgents = new Map(), projectAgent = null, detail = null, inboxRow = null, askedOnly = false,
+} = {}) {
   const workingAgent = workingAgentOf(issue?.assignee, workingAgents, projectAgent);
-  const reasons = attentionReasonsOf(issue, detail, inboxRow);
+  const reasons = attentionReasonsOf(issue, detail, inboxRow, askedOnly);
   return { workingAgent, needsYou: reasons.length > 0, reasons, reason: reasons[0] || null };
 }
 
@@ -126,7 +143,7 @@ const attentionGroupOf = (attention) =>
 /** Stable partition of the list's existing order. `detailById` contains the
  *  cached `{issue,timeline}` records, keyed by issue id; it may be incomplete
  *  while an issue page has never been opened. */
-export function attentionGroups(issues, { feed = null, projectKey = "", detailById = new Map() } = {}) {
+export function attentionGroups(issues, { feed = null, projectKey = "", detailById = new Map(), askedOnly = false } = {}) {
   const groups = { [WORKING_GROUP]: [], [NEEDS_YOU_GROUP]: [], [REST_GROUP]: [], attentionById: new Map() };
   const workingAgents = workingAgentsOf(feed, projectKey);
   const projectAgent = workingProjectAgentOf(feed, projectKey);
@@ -138,6 +155,7 @@ export function attentionGroups(issues, { feed = null, projectKey = "", detailBy
       projectAgent,
       detail,
       inboxRow: inboxRows.get(issue.id) || null,
+      askedOnly,
     });
     groups.attentionById.set(issue.id, attention);
     groups[attentionGroupOf(attention)].push(issue);

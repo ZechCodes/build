@@ -177,6 +177,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       attachments: names.has("issues.attachments"),
       watching: names.has("issues.watching"),
       doneSinceLeft: names.has("issues.doneSinceLeft"),
+      commentUserNotifies: names.has("issues.commentUserNotifies"),
     },
     conversations: { settings: names.has("conversations.settings") },
     messages: { context: names.has("messages.context") },

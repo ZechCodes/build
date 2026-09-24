@@ -37,6 +37,32 @@ describe("which watched issues are rows", () => {
   });
 });
 
+describe("which watched issues are rows by the narrow rule (#144)", () => {
+  const agent = { kind: "agent", agent_id: "a1" };
+  const narrow = (issues, details) => watchedIssueEntries([{ ...source(issues, details), askedOnly: true }]);
+
+  it("leaves out one only in review, and one with only the agents' own comments", () => {
+    const review = watched({ id: "i-review", number: 1, status: "in_review", assignee: agent });
+    const chatter = watched({ id: "i-chatter", number: 2, read_through: "ie-01" });
+    const details = new Map([[chatter.id, issueDetail(chatter, [comment({ id: "ic-02", author: agent })])]]);
+    expect(narrow([review, chatter], details)).toEqual([]);
+  });
+
+  it("lists one assigned to the user, and one an agent asked, counting only the asks", () => {
+    const mine = watched({ id: "i-mine", number: 1, status: "in_review", assignee: { kind: "user" } });
+    const asked = watched({ id: "i-asked", number: 2, read_through: "ie-01" });
+    const timeline = [
+      comment({ id: "ic-02", author: agent }),
+      comment({ id: "ic-03", author: agent, notifies_user: true }),
+    ];
+    const listed = narrow([mine, asked], new Map([[asked.id, issueDetail(asked, timeline)]]));
+    expect(listed.map((row) => [row.issueId, row.facts, row.unreadCount])).toEqual([
+      ["i-mine", "Assigned to you", 0],
+      ["i-asked", "New comment", 1],
+    ]);
+  });
+});
+
 describe("what a row says", () => {
   it("is named by number and title, says every reason, and opens the issue", () => {
     const one = watched({ id: "i-7", number: 7, title: "Wire 1.22", status: "in_review", assignee: { kind: "user" } });

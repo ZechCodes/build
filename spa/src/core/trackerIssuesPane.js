@@ -48,6 +48,7 @@ import { paintGroupedIssueRows, paintIssueBoard } from "./trackerIssuesBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
 import { dashboardSections, doneSessionStart, doneSinceCutoff } from "./trackerDashboardModel.js";
 import { readUserSession, userSessionAddress, writeUserSession } from "./userSessionCache.js";
+import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
@@ -85,6 +86,7 @@ export function mountIssuesPane(host, options) {
     queryAt: 0,
     wholeAt: 0,
     userSession: null, // the bridge's, from the device's cache
+    askedOnly: false, // the device's cached Needs you rule (#144)
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
   const uiSnapshot = () => ({
@@ -226,7 +228,7 @@ export function mountIssuesPane(host, options) {
   let activity;
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
-      feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(),
+      feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(), askedOnly: state.askedOnly,
     });
     let remaining = state.visibleCount;
     return groupLabels.map(([id, title]) => {
@@ -248,6 +250,7 @@ export function mountIssuesPane(host, options) {
         activityByAgent: activity?.read(),
         doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession) : null,
         sessionStartedMs: carriesDoneSinceLeft() ? doneSessionStart(state.userSession) : null,
+        askedOnly: state.askedOnly,
         columns: state.columns,
       }),
     },
@@ -379,6 +382,18 @@ export function mountIssuesPane(host, options) {
   }
   const userSessionWatcher = subscribeCache(userSessionAddress(state.deviceId), () => {
     void paintUserSession();
+  });
+
+  /** Which Needs you rule this machine's issues are read by. Read before the
+   *  first paint, so a cold open draws the Needs you it will keep. */
+  async function readRule() {
+    const askedOnly = await readNeedsYouRule(state.deviceId);
+    if (state.disposed || askedOnly === state.askedOnly) return false;
+    state.askedOnly = askedOnly;
+    return true;
+  }
+  const ruleWatcher = subscribeCache(needsYouRuleAddress(state.deviceId), () => {
+    void readRule().then((changed) => changed && paint());
   });
 
   details = createTrackerIssueDetailsFeed({
@@ -654,7 +669,7 @@ export function mountIssuesPane(host, options) {
 
   // ---- lifecycle -----------------------------------------------------------
 
-  void uiRecord.ready.then(() => {
+  void Promise.all([uiRecord.ready, readRule()]).then(() => {
     if (state.disposed) return;
     paint();
     watchQuery();
@@ -690,6 +705,7 @@ export function mountIssuesPane(host, options) {
       watcher.dispose();
       wholeListWatcher?.();
       userSessionWatcher?.();
+      ruleWatcher?.();
       details.dispose();
       activity.dispose();
       queryUnsubscribe?.();

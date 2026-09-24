@@ -5,6 +5,7 @@ import {
   attentionReasonLabel,
   hasUnreadInboxComment,
   issueAttention,
+  unreadAsks,
   watchedIssueReasons,
 } from "../src/core/trackerAttentionModel.js";
 
@@ -146,5 +147,43 @@ describe("issue list attention groups", () => {
     expect(grouped.working).toEqual([one]);
     expect(grouped.needsYou).toEqual([]);
     expect(grouped.attentionById.get(one.id).reasons).toEqual([ATTENTION_REASONS.inReview]);
+  });
+});
+
+describe("Needs you by the narrow rule (#144)", () => {
+  const asks = (id, fields) => ({ ...comment(id, "agent", "A question"), ...fields });
+
+  it("leaves the In review column out, and keeps an issue assigned to the user", () => {
+    const review = issue("review", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-astra" } });
+    expect(issueAttention(review, { askedOnly: true }).reasons).toEqual([]);
+    const mine = issue("mine", { status: "in_review", assignee: { kind: "user" } });
+    expect(issueAttention(mine, { askedOnly: true }).reasons).toEqual([ATTENTION_REASONS.assigned]);
+  });
+
+  it("counts an unread agent comment only when it mentioned or asked the user", () => {
+    const one = issue("watched", { watched: true, read_through: "ie-01" });
+    const chatter = detail(one, [comment("ic-02", "agent", "Rebased on main.")]);
+    expect(watchedIssueReasons(one, chatter, true)).toEqual([]);
+    expect(hasUnreadInboxComment(one, chatter, inbox(one.id), true)).toBe(false);
+    for (const flag of [{ mentions_user: true }, { notifies_user: true }]) {
+      const asked = detail(one, [comment("ic-02", "agent", "Rebased."), asks("ic-03", flag)]);
+      expect(watchedIssueReasons(one, asked, true)).toEqual([ATTENTION_REASONS.inbox]);
+      expect(issueAttention(one, { detail: asked, inboxRow: inbox(one.id), askedOnly: true }).reasons)
+        .toEqual([ATTENTION_REASONS.inbox]);
+      expect(unreadAsks(one, asked, true)).toHaveLength(1);
+    }
+  });
+
+  it("stops counting a question once it is read", () => {
+    const one = issue("answered", { watched: true, read_through: "ic-03" });
+    expect(watchedIssueReasons(one, detail(one, [asks("ic-03", { notifies_user: true })]), true)).toEqual([]);
+  });
+
+  it("keeps the earlier rule by default, for a bridge that cannot say which comments asked", () => {
+    const one = issue("older", { watched: true, status: "in_review", read_through: "ie-01" });
+    const chatter = detail(one, [comment("ic-02", "agent", "Rebased on main.")]);
+    expect(watchedIssueReasons(one, chatter)).toEqual([ATTENTION_REASONS.inReview, ATTENTION_REASONS.inbox]);
+    expect(attentionGroups([one], { detailById: new Map([[one.id, chatter]]) }).needsYou).toEqual([one]);
+    expect(attentionGroups([one], { detailById: new Map([[one.id, chatter]]), askedOnly: true }).needsYou).toEqual([]);
   });
 });

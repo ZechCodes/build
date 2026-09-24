@@ -414,7 +414,9 @@ touch data without polling for it: the persistence debounce in
 before writing it to IndexedDB, and the `run.adopt` re-asks in
 `spa/src/core/adoption.js`, which ask again every `ADOPT_REASK_MS` (2 s), at
 most `ADOPT_REASK_LIMIT` (30) times, while the bridge is still adopting a
-checkout. The rest are the boot retry and cosmetic clocks.
+checkout. The cross-tab sync-lock fallback (`LOCK_WAIT_MS` in
+`spa/src/core/cacheSync.js`) is another, listed under Current exceptions below.
+Others include the boot retry and cosmetic clocks.
 
 **Current exceptions.** These describe today's code, not the rule. Don't copy
 them into new code; each is a candidate to bring under the rule.

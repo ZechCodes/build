@@ -517,4 +517,11 @@ see [`deploy/README.md`](deploy/README.md). Production deploy:
 
 ## License
 
-MIT (bridge / web client). The E2EE transport is published separately for auditability.
+Copyright (C) 2026 Zech Zimmerman
+
+Build is licensed under the [GNU Affero General Public License v3.0
+only](LICENSE) (`AGPL-3.0-only`). You are free to use, modify and self-host it.
+If you run a modified version as a network service, you must offer its source
+to the service's users under the same license. Commercial licensing is
+available from the maintainer. The E2EE transport is published separately for
+auditability, under its own license.

@@ -3,7 +3,7 @@ name = "build-bridge"
 version = "0.2.1"
 edition = "2021"
 description = "Build device daemon: worktrees, full-PTY harnesses, scoped conversation MCP tools, git-diff watcher, task lifecycle."
-license = "MIT"
+license = "AGPL-3.0-only"
 
 [[bin]]
 name = "build-bridge"

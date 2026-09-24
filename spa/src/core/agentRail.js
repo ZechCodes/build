@@ -188,6 +188,12 @@ const PANEL_SUBJECT = "conversation";
 const POPOVER_CLASS = "rail-popover";
 const COLLAPSED_CLASS = "rail-collapsed";
 const ANCHOR_PROPERTY = "--rail-anchor";
+/** Every control on the strip that selects something: the bubbles, the `+`
+ *  and the chat overview's — not the line under the project's agent. */
+const STRIP_BUTTONS = ".rail-strip > [data-bubble]";
+/** The panel while it shows the chat overview rather than a conversation. */
+const OVERVIEW_BODY = "overview";
+const OVERVIEW_PANEL = `#rail-panel[data-body="${OVERVIEW_BODY}"]`;
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_STATUS_ID = "rail-status";
 const RAIL_STATUS_LEAD_ID = "rail-status-lead";
@@ -493,14 +499,14 @@ export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says
   // nothing and is pressed by nobody, so it is not a button.
   if (bubble.type === "separator") return `<div class="rail-sep" role="separator"></div>`;
-  // The chat overview's control: a bare icon right after the `+`, not a
-  // bubble — it stands for no conversation (#117).
+  // The chat overview's control: a bare icon right after the `+` (#117), but
+  // selected, opened and pointed at exactly as a bubble is (#148).
   // Each says what it opens, and whether it has, in its markup: the strip is
   // repainted on every push, and markup that left these to syncPopover had them
   // stripped and written back each time.
-  if (bubble.type === "overview") return `<button type="button" class="rail-overview-toggle" data-bubble="overview"
+  if (bubble.type === "overview") return `<button type="button" class="rail-overview-toggle${bubble.active ? " active" : ""}" data-bubble="overview"
     title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}"
-    aria-expanded="${Boolean(bubble.active)}" aria-controls="rail-overview">${ICON_CHAT_OVERVIEW}</button>`;
+    aria-expanded="${Boolean(bubble.expanded)}" aria-controls="rail-panel">${ICON_CHAT_OVERVIEW}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
@@ -745,7 +751,14 @@ export function mountAgentRail(host, context) {
   // an unpinned card the reader had open. A press that crosses the line is a
   // press on another conversation's bubble, so it leaves the panel exactly
   // where pressing a bubble below the line leaves it — out.
-  const stand = (standing, alongside, { panelOpen = null } = {}) => {
+  // A swap is a press on the other side's bubble, so it names what it selects;
+  // the first stand opens on whatever the reader left this rail on.
+  // Which kind of thing is selected — an agent or the overview — is the
+  // page's too (#148): both sides remember it under the page's key, so an
+  // overview opened on the project's side is the overview a fresh mount of
+  // this page comes back to.
+  const pageKey = createAgentRailContext(context).key;
+  const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
       ...standing,
@@ -753,9 +766,11 @@ export function mountAgentRail(host, context) {
       // still a workspace. Overview breadth belongs to the page, not the
       // conversation selected on its strip.
       overviewPageKind: context.kind,
+      pageKey,
       payload: payloads.get(standing.kind) || null,
       alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
       panelOpen,
+      selectedKind,
     }, swap);
   };
   const swap = {
@@ -770,10 +785,11 @@ export function mountAgentRail(host, context) {
     },
     toProject: (entityId, openAgentId = null) => {
       known = { ...known, entityId };
-      stand(projectSide(openAgentId), workItemContext(context, known), { panelOpen: true });
+      stand(projectSide(openAgentId), workItemContext(context, known), { panelOpen: true, selectedKind: "agent" });
     },
     toWorkItem: (openAgentId, { adding = false } = {}) => {
-      stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(), { panelOpen: true });
+      stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(),
+        { panelOpen: true, selectedKind: adding ? "add" : "agent" });
     },
   };
   // The agent a URL named, where one did: the rail comes up on that
@@ -865,6 +881,15 @@ const openingAgentId = (context, railView, agents) => {
   return agents.length ? selectAgentId(agents, remembered) : remembered;
 };
 
+/** Which of the rail's one selection this mount opens on (#148): what a swap
+ *  pressed, the `+` or the agent a URL named, else the one this page was left
+ *  on — an open overview included, so a remount never trades it for a chat. */
+const openingKind = (context, pageView) => {
+  if (context.selectedKind) return context.selectedKind;
+  if (context.addingAgent === true) return "add";
+  return context.openAgentId ? "agent" : pageView.selectedKind();
+};
+
 /** Whether the panel comes up on screen.
  *
  *  An unpinned rail has no composer to focus at all — the human just cut this
@@ -910,6 +935,9 @@ function mountRailOnContext(host, context, swap) {
     subscribeOptimistic,
   } = chatRepository.optimisticStore();
   const railView = chatRepository.railView(key);
+  // Where the kind of selection is kept: the page's view, which is this rail's
+  // own unless it stands on the project's side of a workspace page.
+  const pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
   const selection = context.selection || createAgentSelection();
   // What the side this mount stands on was last read to be, where a swap put
   // this rail here holding it. The strip paints its agents — their unread,
@@ -964,7 +992,6 @@ function mountRailOnContext(host, context, swap) {
   let panelVisible = panelStartsOut(context, pinned);
   let pinChoicePending = false;
   let pinnedKnown = false;
-  let overviewVisible = false;
   // Which chat overview is open (#117): the project's, with every workspace in
   // it, or one workspace's. It opens as the page's own and moves only when the
   // reader moves it; the choice is cached per page so a remount — a swap to the
@@ -1005,10 +1032,15 @@ function mountRailOnContext(host, context, swap) {
   let titleMotion = null;
   const transientThreadCache = createThreadCache();
   let threadCache = transientThreadCache;
-  // Choosing the next agent's harness, with the chooser in the panel. Entered
-  // by the strip's `+`, left by the send that creates the agent or by opening
-  // any existing bubble.
-  let addingAgent = context.addingAgent === true;
+  // The rail's one selection (#148): `selectedId` says whose conversation, and
+  // this says whether the panel shows it, the `+`'s chooser (left by the send
+  // that creates the agent), or the chat overview. Every bubble on the strip
+  // selects and toggles the same way (`pressBubble`).
+  // What this mount opens on is remembered as it opens: a swap's press
+  // selects as surely as a press below the line does.
+  let selectedKind = openingKind(context, pageView);
+  pageView.chooseKind(selectedKind);
+  const addingAgent = () => selectedKind === "add";
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
   let olderItemsAwaitingPaint = false;
@@ -1126,7 +1158,6 @@ function mountRailOnContext(host, context, swap) {
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
   let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
   let panelMotion = null;
-  let overviewMotion = null;
 
 
   const agentIdOf = (agent) => agent.id;
@@ -1147,6 +1178,12 @@ function mountRailOnContext(host, context, swap) {
     const current = watchStateFor(context, agentOf(selectedId));
     if (current) watchSwitch.settle(current);
     else watchState = null;
+  };
+  /** Which kind of selection the panel shows, remembered with the rail's view
+   *  so a remount comes back to it (#148). */
+  const selectKind = (kind) => {
+    selectedKind = kind;
+    pageView.chooseKind(kind);
   };
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
@@ -1652,7 +1689,7 @@ function mountRailOnContext(host, context, swap) {
       name: projectName || projectAgent.projectId,
       entityId: projectOwner,
       agents: onProjectAgentRail ? visibleAgents() : alongsideEntity.agents,
-      active: onProjectAgentRail,
+      active: onProjectAgentRail && selectedKind === "agent",
     };
 
   // ---- painting -------------------------------------------------------------
@@ -1724,7 +1761,7 @@ function mountRailOnContext(host, context, swap) {
   };
   const dropFilesOnBubble = (type, agentId, files) => {
     droppedFiles = files;
-    if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
+    if (type === "agent" && agentId && !isSelected({ kind: "agent", agentId })) {
       openAgent(agentId);
       paint();
       refresh();
@@ -1751,7 +1788,6 @@ function mountRailOnContext(host, context, swap) {
     const agentId = button.dataset.overviewAgent;
     const source = button.dataset.overviewSource;
     const workspaceId = button.dataset.overviewWorkspace;
-    leaveOverview();
     if (source === "workspace" && workspaceId) {
       go({ name: "workspace", deviceId: context.deviceId, projectId, workspaceId, tab: "changes", agent: agentId });
       return;
@@ -1766,9 +1802,8 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const openOverviewAdd = (workspaceId) => {
-    leaveOverview();
     if (workspaceId === context.workspaceId && !onProjectAgentRail) {
-      pressAddBubble();
+      openNewAgent();
       return;
     }
     if (workspaceId === alongside?.workspaceId && onProjectAgentRail && swap) {
@@ -1781,7 +1816,7 @@ function mountRailOnContext(host, context, swap) {
   const paintOverviewRows = (read) => {
     overviewRead = read;
     const list = host.querySelector(".rail-overview-list");
-    if (!overviewVisible || !list) return;
+    if (!list) return;
     const markup = overviewHtml(read.rows, { showProjectAgents: !!projectId, scope: overviewScope, workspaces: read.workspaces });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
@@ -1797,7 +1832,7 @@ function mountRailOnContext(host, context, swap) {
   /** The head's way out to the project's overview, there only while the
    *  overview is one workspace's. */
   const syncOverviewHead = () => {
-    const head = host.querySelector("#rail-overview .rail-head");
+    const head = host.querySelector(`${OVERVIEW_PANEL} .rail-head`);
     if (!head) return;
     const wanted = overviewScope.kind === "workspace";
     const present = head.querySelector(".rail-overview-up");
@@ -1823,28 +1858,34 @@ function mountRailOnContext(host, context, swap) {
     overviewScope = scope;
     void overviewScopeRecord.write(scope);
     showOverviewScope();
-    host.querySelector("#rail-overview .rail-overview-list")?.focus();
+    host.querySelector(".rail-overview-list")?.focus();
   };
 
-  const paintOverviewFrame = (strip) => {
-    host.classList.toggle("rail-overview", overviewVisible || !!host.querySelector("#rail-overview"));
-    if (!overviewVisible || host.querySelector("#rail-overview")) return;
-    const content = document.createElement("section");
-    content.id = "rail-overview";
-    content.className = "rail-overview-content";
-    content.setAttribute("aria-label", "Chat overview");
-    content.innerHTML = `${panelHeadHtml("Agents", "chat", { hasTerminal: false, showHarnessIcon: false, pinned })}<div class="rail-overview-list" tabindex="-1"></div>`;
-    host.insertBefore(content, strip);
-    syncOverviewHead();
-    content.querySelector(`.${PIN_CLASS}`).onclick = () => overviewMotion.run({
-      panel: content, direction: pinned ? "popover" : "pinned",
-      apply: () => { void setPinned(!pinned); },
-    });
+  /** The overview as the one panel's body (#148): a head that says "Agents"
+   *  with only the pin, over the rows last read, which its own read then moves.
+   *  Built once per visit; the conversation's body is rebuilt on the way back. */
+  const paintOverviewPanel = () => {
+    const panel = host.querySelector("#rail-panel");
+    if (!panel) return;
+    if (panel.dataset.body !== OVERVIEW_BODY) {
+      disposeTitleMotion();
+      disposeTui();
+      releaseConversationChrome();
+      closeSurfaceOverlay();
+      leaveUnreadMarker();
+      panel.innerHTML = `${panelHeadHtml("Agents", "chat", { hasTerminal: false, showHarnessIcon: false, pinned })}<div class="rail-overview-list" tabindex="-1"></div>`;
+      Object.assign(panel.dataset, { body: OVERVIEW_BODY, head: "", title: "", conversation: "" });
+      wireHead(panel);
+      syncOverviewHead();
+      paintOverviewRows(overviewRead);
+    }
+    syncPinButton(panel.querySelector(`.${PIN_CLASS}`), { subject: PANEL_SUBJECT, pinned });
   };
 
-  const syncOverviewPin = () => {
-    const button = host.querySelector(`#rail-overview .${PIN_CLASS}`);
-    if (button) syncPinButton(button, { subject: PANEL_SUBJECT, pinned });
+  /** The overview reads only while it is what the panel is showing. */
+  const syncOverviewRead = () => {
+    if (panelVisible && selectedKind === "overview") overview.open();
+    else overview.close();
   };
 
   const paint = () => {
@@ -1859,21 +1900,19 @@ function mountRailOnContext(host, context, swap) {
       // Below the line are the work item's agents, whichever side of the swap
       // this rail is standing on.
       agents: onProjectAgentRail ? alongsideEntity.agents : visibleAgents(),
-      selectedId, kind: below.kind, chatCapable: below.chatCapable !== false,
-      addingAgent,
+      selectedId, selectedKind, kind: below.kind, chatCapable: below.chatCapable !== false,
       canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
       projectName,
     });
-    const opened = (bubble) => ({ ...bubble, expanded: panelVisible && !overviewVisible && Boolean(bubble.active) });
-    paintStrip(strip, [...bubbles.map(opened), { type: "overview", id: "", title: overviewVisible ? "Close chat overview" : "Chat overview",
-      active: overviewVisible, label: "", unread: 0, working: false }]);
+    const overviewBubble = { type: "overview", id: "", title: "Chat overview",
+      active: selectedKind === "overview", label: "", unread: 0, working: false };
+    const opened = (bubble) => ({ ...bubble, expanded: panelVisible && Boolean(bubble.active) });
+    paintStrip(strip, [...bubbles, overviewBubble].map(opened));
     // The strip is useful immediately; the panel waits for its cached pin
     // choice so a remount never flashes the wrong layout or creates a panel
     // that then has to be discarded.
     if (!pinnedKnown) return;
-    paintOverviewFrame(strip);
-    syncOverviewPin();
     let panel = host.querySelector("#rail-panel");
     if (panelOut() && !panel) {
       panel = document.createElement("div");
@@ -1883,6 +1922,7 @@ function mountRailOnContext(host, context, swap) {
     }
     if (panelOut()) paintPanel();
     syncPopover();
+    syncOverviewRead();
   };
 
   // ---- docked, or a card on the strip ---------------------------------------
@@ -1891,8 +1931,8 @@ function mountRailOnContext(host, context, swap) {
    *  panel's edge to point there — down the panel on a desktop, across its foot
    *  on a phone, because that is which way the strip runs. */
   const anchorPopover = (panel, showing) => {
-    const bubble = showing ? host.querySelector(".rail-bubble.active") : null;
-    setData(panel, "anchor", bubble?.dataset.agent || "");
+    const bubble = showing ? activeBubble() : null;
+    setData(panel, "anchor", bubble ? bubble.dataset.agent || bubble.dataset.bubble : "");
     if (!bubble) return panel.style.removeProperty(ANCHOR_PROPERTY);
     const box = bubble.getBoundingClientRect();
     const frame = panel.getBoundingClientRect();
@@ -1902,6 +1942,8 @@ function mountRailOnContext(host, context, swap) {
     panel.style.setProperty(ANCHOR_PROPERTY, `${Math.round(offset)}px`);
   };
 
+  const activeBubble = () => host.querySelector(`${STRIP_BUTTONS}.active`);
+
   const syncPopover = () => {
     const card = !pinned;
     host.classList.toggle("rail-unpinned", !pinned);
@@ -1909,20 +1951,14 @@ function mountRailOnContext(host, context, swap) {
     host.classList.toggle(POPOVER_CLASS, card);
     const panel = host.querySelector("#rail-panel");
     if (panel) {
-      setAttr(panel, "aria-hidden", !panelVisible || overviewVisible);
-      panel.toggleAttribute("inert", !panelVisible || overviewVisible);
+      setAttr(panel, "aria-hidden", !panelVisible);
+      panel.toggleAttribute("inert", !panelVisible);
       anchorPopover(panel, card);
     }
-    host.querySelectorAll(".rail-bubble").forEach((bubble) => {
-      const expanded = panelVisible && !overviewVisible && bubble.classList.contains("active");
-      setAttr(bubble, "aria-expanded", expanded);
+    host.querySelectorAll(STRIP_BUTTONS).forEach((bubble) => {
+      setAttr(bubble, "aria-expanded", panelVisible && bubble.classList.contains("active"));
       setAttr(bubble, "aria-controls", "rail-panel");
     });
-    const toggle = host.querySelector(".rail-overview-toggle");
-    if (toggle) {
-      setAttr(toggle, "aria-expanded", overviewVisible);
-      setAttr(toggle, "aria-controls", "rail-overview");
-    }
   };
 
   /** Dock the panel, or let it go. Unpinning leaves the conversation on screen
@@ -1932,8 +1968,6 @@ function mountRailOnContext(host, context, swap) {
     pinChoicePending = true;
     return pinnedRecord.write({ pinned: on });
   };
-
-  const activeBubble = () => host.querySelector(".rail-bubble.active");
 
   /** Collapse the live panel without changing its docked/card preference. */
   const closePanel = ({ restoreFocus = false } = {}) => {
@@ -1956,13 +1990,12 @@ function mountRailOnContext(host, context, swap) {
   /** Outside press, Escape and navigation put an unpinned card away without
    * changing the remembered pin preference. */
   const dismissPopover = ({ restoreFocus = false } = {}) => {
-    if (pinned || !panelVisible || overviewVisible) return;
+    if (pinned || !panelVisible) return;
     closePanel({ restoreFocus });
   };
 
   const dismissOnEscape = (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
-    if (overviewVisible) { leaveOverview(); paint(); return; }
     dismissPopover({ restoreFocus: true });
   };
 
@@ -1975,13 +2008,13 @@ function mountRailOnContext(host, context, swap) {
   const shownPanelMode = () => (!agentInFocus() || !agentHasTerminal(agentInFocus()) ? "chat" : mode);
 
   const rememberedConversationIsLoading = () =>
-    !addingAgent && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
+    selectedKind === "agent" && !!selectedId && !isProvisionalKey(selectedId) && !agentInFocus();
 
   const conversationIsUnselected = () =>
     !visibleAgents().length && (!selectedId || isProvisionalKey(selectedId));
 
   const panelBodyIdentity = () => {
-    if (addingAgent) return "new";
+    if (addingAgent()) return "new";
     // Every existing agent uses the same mounted conversation frame. Moving
     // between bubbles changes what the shared thread painter reconciles into
     // that frame; it is not a reason to tear the whole panel down first.
@@ -2052,7 +2085,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   // eslint-disable-next-line complexity -- ratchet: this callback is at 16, cap 10 — reduce it, then drop this line
-  const paintPanel = () => {
+  const paintConversationPanel = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
@@ -2079,7 +2112,7 @@ function mountRailOnContext(host, context, swap) {
     // than rewritten, so the agent beside it that does have a terminal is still
     // where the human left it.
     const shownMode = shownPanelMode();
-    if (shownMode !== "chat" || addingAgent || rememberedConversationIsLoading()) leaveUnreadMarker();
+    if (shownMode !== "chat" || addingAgent() || rememberedConversationIsLoading()) leaveUnreadMarker();
     // Structural head changes replace its controls; a topic change keeps this
     // head mounted and moves only its title below — so the head is fingerprinted
     // by WHICH agent it is open on rather than by what that agent is called.
@@ -2092,7 +2125,7 @@ function mountRailOnContext(host, context, swap) {
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
-    const wantedConversation = shownMode === "chat" && !addingAgent && !rememberedConversationIsLoading()
+    const wantedConversation = shownMode === "chat" && !addingAgent() && !rememberedConversationIsLoading()
       ? conversationKey()
       : "";
     const conversationChanged = panel.dataset.conversation !== wantedConversation;
@@ -2173,6 +2206,9 @@ function mountRailOnContext(host, context, swap) {
     }
     usageLimitBanner.sync();
   };
+
+  /** The panel, painted for whatever the rail has selected. */
+  const paintPanel = () => (selectedKind === "overview" ? paintOverviewPanel() : paintConversationPanel());
 
   const wireHead = (panel) => {
     const tuiToggle = panel.querySelector(".rail-tui");
@@ -2606,7 +2642,7 @@ function mountRailOnContext(host, context, swap) {
       body.innerHTML = '<div class="rail-chat-loading">This workspace does not have an agent conversation yet.</div>';
       return;
     }
-    if (conversationIsUnselected() || addingAgent) {
+    if (conversationIsUnselected() || addingAgent()) {
       paintNewAgent(body);
       syncComposer();
       syncSurfaces();
@@ -2658,7 +2694,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const composerPlaceholder = () =>
-    visibleAgents().length && !addingAgent ? "Send a message to this agent…" : "Send a message to start an agent here…";
+    visibleAgents().length && !addingAgent() ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
@@ -2696,10 +2732,10 @@ function mountRailOnContext(host, context, swap) {
   /// take the draft and the focus with it, mid-sentence. (The placeholder
   /// cannot move under a poll: it says whether there is an agent to talk to,
   /// and gaining one rebuilds the panel around a conversation.)
-  /** The agent the panel is about — none while the chooser is up, whatever
-   *  bubble is technically still selected behind it. */
+  /** The agent the panel is about — none while the chooser or the overview is
+   *  up, whatever bubble is technically still selected behind it. */
   const agentInFocus = () => {
-    if (addingAgent) return null;
+    if (selectedKind !== "agent") return null;
     return entity.executionContext?.agent || agentOf(selectedId);
   };
 
@@ -3149,7 +3185,8 @@ function mountRailOnContext(host, context, swap) {
 
   const repaintComposerFromDraft = () => {
     const panel = host.querySelector("#rail-panel");
-    if (!panel) return;
+    // The overview has no composer; the draft waits for the next `+`.
+    if (!panel || selectedKind === "overview") return;
     panel.dataset.body = "";
     paintPanel();
   };
@@ -3196,7 +3233,7 @@ function mountRailOnContext(host, context, swap) {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
     const selectedBeforeCreate = selectedId;
-    const addingBeforeCreate = addingAgent;
+    const kindBeforeCreate = selectedKind;
     const choice = submission.creationChoice;
     const provisionalAgent = {
       id: provisionalAgentId,
@@ -3211,7 +3248,7 @@ function mountRailOnContext(host, context, swap) {
       has_terminal: false,
     };
     const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, submission.message);
-    addingAgent = false;
+    selectKind("agent");
     openConversation(provisionalAgentId);
     adoptPanelBody();
     let messageDelivered = false;
@@ -3245,18 +3282,26 @@ function mountRailOnContext(host, context, swap) {
       await wakeAgent(addressedSubmission);
     };
 
+    // The agent that failed to exist leaves the id under the selection, and
+    // takes the panel back only where the panel still shows it. A reader who
+    // selected something else meanwhile keeps it — the overview included, which
+    // kept the provisional id underneath (#148). Says whether it was shown.
+    const leaveProvisional = () => {
+      const shown = selectedKind === "agent" && selectedId === provisionalAgentId;
+      if (selectedId === provisionalAgentId) chooseAgent(selectedBeforeCreate);
+      return shown;
+    };
     const onRevert = (error) => {
       if (operationIsUncertain(error)) {
         controller.recordOperationFailure(submission, error);
-        if (selectedId === provisionalAgentId) {
-          chooseAgent(selectedBeforeCreate);
-          addingAgent = true;
+        if (leaveProvisional()) {
+          selectKind("add");
           paint();
         }
         return;
       }
-      if (isProvisionalKey(selectedId)) {
-        addingAgent = addingBeforeCreate;
+      if (leaveProvisional()) {
+        selectKind(kindBeforeCreate);
         openConversation(selectedBeforeCreate);
       }
       if (messageDelivered) return;
@@ -3432,63 +3477,28 @@ function mountRailOnContext(host, context, swap) {
     }
   };
 
-  const leaveOverview = () => {
-    if (!overviewVisible) return;
-    const content = host.querySelector("#rail-overview");
-    overviewVisible = false;
-    overview.close();
-    overviewMotion.setVisible({ panel: content, visible: false, apply: () => {
-      content?.setAttribute("aria-hidden", "true");
-      content?.setAttribute("inert", "");
-      paint();
-    }, onFinish: () => {
-      content?.remove();
-      paint();
-    } });
-  };
+  /** What pressing a bubble selects. The ghost, and the project's own bubble
+   *  on the project's rail, stand for the conversation the rail is on. */
+  const pressedSelection = (type, agentId) => ({
+    kind: type === "add" || type === "overview" ? type : "agent",
+    agentId: type === "agent" ? agentId : selectedId,
+  });
 
-  const pressStripControl = (type) => {
-    if (type === "overview") {
-      if (overviewVisible) leaveOverview();
-      else {
-        host.querySelector("#rail-overview")?.remove();
-        overviewVisible = true;
-        paint();
-        overview.open();
-        overviewMotion.setVisible({ panel: host.querySelector("#rail-overview"), visible: true,
-          opening: true, apply: () => {
-            host.querySelector("#rail-overview")?.setAttribute("aria-hidden", "false");
-            host.querySelector("#rail-overview")?.removeAttribute("inert");
-            syncPopover();
-          } });
-      }
-      return true;
-    }
-    return false;
-  };
+  const isSelected = ({ kind, agentId }) =>
+    kind === selectedKind && (kind !== "agent" || agentId === selectedId);
 
+  /** Every bubble toggles the same way (#148): pressing the selected one puts
+   *  the panel away, or brings it back on the same selection, whichever way it
+   *  is on the screen; pressing another selects it and shows the panel. */
   const pressBubble = (type, agentId) => {
-    if (pressStripControl(type)) return;
-    leaveOverview();
     const swapping = swapForPress(type, agentId);
     if (swapping) {
       swapping();
       return;
     }
-    if (type === "add") {
-      pressAddBubble();
-      return;
-    }
-    if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
-      openAgent(agentId);
-      // The other conversation is on disk already: the paint opens its record
-      // and draws it, with no round trip between the press and the words.
-      paint();
-      return;
-    }
-    // The bubble already open is the way back out: press it again to put the
-    // panel away, whichever way it is on the screen.
-    if (panelOut()) closePanel({ restoreFocus: true });
+    const pressed = pressedSelection(type, agentId);
+    if (!isSelected(pressed)) select(pressed);
+    else if (panelOut()) closePanel({ restoreFocus: true });
     else showPanel();
   };
 
@@ -3506,7 +3516,7 @@ function mountRailOnContext(host, context, swap) {
 
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
-    addingAgent = false; // opening a real conversation ends the chooser
+    selectKind("agent"); // opening a real conversation ends the chooser
     openConversation(agentId);
     showPanel();
   };
@@ -3518,20 +3528,37 @@ function mountRailOnContext(host, context, swap) {
    *  The preference is a record and the offer is where it clamps: a browser
    *  that stored the carrier no surface offers any more creates the agent every
    *  other surface would have created. */
-  const pressAddBubble = () => {
+  const openNewAgent = () => {
     if (!entity.entityId) return;
-    addingAgent = !addingAgent;
-    if (addingAgent) {
-      // The browser's stored harness preference seeds the chooser's highlight,
-      // clamped to the offer — the record the silent + used to spend outright.
-      // The human now sees the choice before anything is created; the send is
-      // what creates, exactly as it does on a branch with no agents at all.
-      seedNewAgentDefaults();
-      showPanel();
-      disposeTui();
-    }
+    selectKind("add");
+    // The browser's stored harness preference seeds the chooser's highlight,
+    // clamped to the offer — the record the silent + used to spend outright.
+    // The human now sees the choice before anything is created; the send is
+    // what creates, exactly as it does on a branch with no agents at all.
+    seedNewAgentDefaults();
+    showPanel();
+    disposeTui();
     paint();
   };
+
+  /** The chat overview, in the panel every conversation is shown in. */
+  const openOverview = () => {
+    selectKind("overview");
+    showPanel();
+    paint();
+  };
+
+  const selectors = {
+    agent: ({ agentId }) => {
+      openAgent(agentId);
+      // The other conversation is on disk already: the paint opens its record
+      // and draws it, with no round trip between the press and the words.
+      paint();
+    },
+    add: openNewAgent,
+    overview: openOverview,
+  };
+  const select = (pressed) => selectors[pressed.kind](pressed);
 
   /**
    * Take the open agent back off the branch.
@@ -3702,7 +3729,7 @@ function mountRailOnContext(host, context, swap) {
   statusTicker = setInterval(paintRailStatus, 1000);
   // A harness out of usage on this machine (#58): a strip at the top of the
   // conversation, counting down to its reset, whichever agent is open.
-  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector("#rail-panel"), context.deviceId);
+  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector(`#rail-panel:not([data-body="${OVERVIEW_BODY}"])`), context.deviceId);
   const visibilityChanged = () => {
     if (document.hidden) leaveUnreadMarker();
     else paintChat();
@@ -3714,7 +3741,6 @@ function mountRailOnContext(host, context, swap) {
   window.addEventListener("hashchange", dismissPopover);
   const cancelPanelMotion = () => panelMotion.cancel();
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
-  overviewMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
 
   return {
@@ -3725,7 +3751,6 @@ function mountRailOnContext(host, context, swap) {
      *  docked the chat on a desktop would otherwise never get it out of the
      *  way on a phone. The preference itself is left exactly as it was. */
     collapse() {
-      if (overviewVisible) { leaveOverview(); paint(); }
       closePanel();
     },
     dispose() {
@@ -3740,7 +3765,6 @@ function mountRailOnContext(host, context, swap) {
       document.removeEventListener("visibilitychange", visibilityChanged);
       stopWaitingForReader();
       panelMotion.cancel();
-      overviewMotion.cancel();
       unwatchCache();
       clearInterval(statusTicker);
       statusTicker = null;

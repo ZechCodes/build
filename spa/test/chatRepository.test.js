@@ -36,6 +36,7 @@ describe("chat controller ownership", () => {
     provisional.setProvisionalChoice({ provider: "codex", model: "gpt-5", effort: "high" });
     const view = first.railView("branch:p1:main");
     view.chooseAgent("agent-1");
+    view.chooseKind("overview");
     view.setPanelMode("console");
 
     const reloaded = createChatRepository(options);
@@ -44,7 +45,12 @@ describe("chat controller ownership", () => {
       attachments: [{ path: "uploads/a.png" }],
     });
     expect(reloaded.railView("branch:p1:main").selectedAgentId()).toBe("agent-1");
+    expect(reloaded.railView("branch:p1:main").selectedKind()).toBe("overview");
     expect(reloaded.railView("branch:p1:main").panelMode()).toBe("console");
+    expect(reloaded.railView("branch:p1:other").selectedKind()).toBe("agent");
+    // The chooser is not somewhere to come back to: the conversation behind it is.
+    reloaded.railView("branch:p1:other").chooseKind("add");
+    expect(createChatRepository(options).railView("branch:p1:other").selectedKind()).toBe("agent");
     expect(reloaded.provisional("new-agent", {
       entityId: "run-1",
       conversationId: "conversation-1",

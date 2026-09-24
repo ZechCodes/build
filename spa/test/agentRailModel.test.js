@@ -205,8 +205,16 @@ describe("the bubble strip", () => {
     expect(types("issue")).not.toContain("add");
   });
 
+  it("marks no bubble of its own while the chat overview is the selection", () => {
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace", selectedKind: "overview" });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.active])).toEqual([
+      ["agent", false],
+      ["add", false],
+    ]);
+  });
+
   it("marks the add bubble as the open conversation", () => {
-    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace", addingAgent: true });
+    const bubbles = railBubbles({ agents: [agent()], selectedId: "ag-1", kind: "workspace", selectedKind: "add" });
     expect(bubbles.map((bubble) => [bubble.type, bubble.active])).toEqual([
       ["agent", false],
       ["add", true],

@@ -7,6 +7,13 @@ import { selectAdapter } from "./bridgeApi/index.js";
 
 const EMPTY_DRAFT = Object.freeze({ body: "", attachments: [] });
 export const CHAT_LOCAL_STATE_PREFIX = "build.chat.v1:";
+/** What a rail comes back to on a remount (#148): an agent's conversation or
+ *  the chat overview. The `+`'s chooser is where a draft waits rather than a
+ *  place to return to, so a rail left on it comes back to the conversation
+ *  behind it — the draft is still there on the next press. */
+const REMEMBERED_RAIL_SELECTIONS = new Set(["agent", "overview"]);
+const rememberedRailSelection = (kind) => (REMEMBERED_RAIL_SELECTIONS.has(kind) ? kind : "agent");
+
 const OPERATION_STATES = new Set(["queued", "claimed", "delivered", "uncertain"]);
 const REQUIRED_OPERATION_RECEIPT_FIELDS = [
   "operation_id",
@@ -930,6 +937,7 @@ export function createChatRepository({
         const saved = localState.railViews[key] || {};
         state = {
           selectedAgentId: typeof saved.selectedAgentId === "string" ? saved.selectedAgentId : null,
+          selectedKind: rememberedRailSelection(saved.selectedKind),
           panelMode: saved.panelMode === "console" ? "console" : "chat",
         };
         railViews.set(key, state);
@@ -942,6 +950,8 @@ export function createChatRepository({
       return Object.freeze({
         selectedAgentId: () => state.selectedAgentId,
         chooseAgent: (agentId) => { state.selectedAgentId = agentId || null; persist(); },
+        selectedKind: () => state.selectedKind,
+        chooseKind: (kind) => { state.selectedKind = rememberedRailSelection(kind); persist(); },
         panelMode: () => state.panelMode,
         setPanelMode: (mode) => { state.panelMode = mode; persist(); },
       });

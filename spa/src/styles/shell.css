@@ -748,18 +748,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   width:calc(var(--agent-panel) + var(--agent-strip));
   transition:width 240ms cubic-bezier(.2,.8,.2,1); }
 #agent-rail.rail-unpinned, #agent-rail.rail-collapsed { width:var(--agent-strip); }
-/* The overview takes the conversation's own room. It stays in the rail's
-   grid track, so the work to its left remains visible and receives input. */
-#agent-rail.rail-overview { z-index:45; }
-#agent-rail.rail-overview:not(.rail-popover) { width:calc(var(--agent-panel) + var(--agent-strip)); }
-#agent-rail.rail-overview .rail-panel { display:none; }
-.rail-overview-content { position:relative; display:flex; flex:1 1 auto; flex-direction:column;
-  min-width:0; min-height:0; border-radius:10px; background:var(--panel);
-  opacity:1; transform:none; transform-origin:center right;
-  transition:opacity 160ms cubic-bezier(.2,.8,.2,1), transform 160ms cubic-bezier(.2,.8,.2,1); }
-.rail-overview-content[aria-hidden="true"], .rail-overview-content.rail-panel-opening {
-  opacity:0; transform:translateX(10px) scale(.985); pointer-events:none; }
-.rail-overview-content.rail-panel-concealed { visibility:hidden; }
+/* The chat overview is a body of the one panel (#148), shown and laid out
+   exactly as a conversation is: the list takes the room the timeline would. */
 .rail-overview-list { display:flex; flex:1 1 auto; flex-direction:column; gap:20px;
   min-height:0; overflow-y:auto; padding:calc(var(--surface-head) + 16px) 16px 18px; }
 .rail-overview-section { display:flex; flex-direction:column; gap:8px; }
@@ -788,16 +778,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .rail-overview-state { color:var(--accent); font-size:11px; font-weight:650; }
 .rail-overview-empty { color:var(--dim); }
-/* Away from its dock, the overview has exactly the same card bounds as the
-   conversation popover. The rail still costs the work only the strip's width. */
-#agent-rail.rail-overview.rail-popover .rail-overview-content {
-  position:absolute; z-index:36; top:10px; bottom:10px; right:var(--agent-strip);
-  width:var(--agent-panel); flex:none; border:1px solid var(--line3, var(--line));
-  box-shadow:0 18px 48px var(--shadow); }
-#agent-rail[data-panel-transition="popover"][data-panel-transition-phase="layout"] .rail-overview-content {
-  border:0; box-shadow:none; }
-#agent-rail[data-panel-transition="pinned"][data-panel-transition-phase="layout"] .rail-overview-content {
-  border:1px solid var(--line3, var(--line)); box-shadow:0 18px 48px var(--shadow); }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
 /* The foot of the column is the connection icon's (spa/src/styles.css), so the
@@ -836,12 +816,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
 /* The chat overview's control (#117): right after the `+`, and a bare icon —
    no face, no ring, no slab — because it is not a conversation. The box stays
-   bubble-sized so the strip's rhythm and the press target do not shrink. */
+   bubble-sized so the strip's rhythm and the press target do not shrink. It is
+   selected as a bubble is (#148), and says so in the accent a bubble's ring
+   wears. */
 .rail-overview-toggle { flex:none; display:grid; place-items:center; width:32px; height:32px;
   padding:0; border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer;
   -webkit-tap-highlight-color:transparent; }
 .rail-overview-toggle:hover { color:var(--ink); }
-.rail-overview-toggle[aria-expanded="true"] { color:var(--accent); }
+.rail-overview-toggle.active { color:var(--accent); }
 .rail-overview-toggle:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .rail-overview-toggle svg { display:block; width:19px; height:19px; }
 /* The project's agent is not one of this work item's: it wears the project's
@@ -941,7 +923,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   background:var(--panel); box-shadow:0 18px 48px var(--shadow); }
 @media (prefers-reduced-motion: reduce) {
   #agent-rail, .rail-panel { transition:none; }
-  .rail-overview-content { transition:none; }
 }
 /* The notch rides the bubble: core/agentRail.js measures whichever bubble is
    open and writes --rail-anchor, the offset along the panel's edge that points
@@ -1372,19 +1353,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
     flex-direction:row; align-items:center; gap:10px; padding:0 44px 0 10px;
     border:0; background:var(--panel); border-radius:10px;
     overflow-x:auto; overflow-y:hidden; }
-  #agent-rail.rail-overview { position:absolute; left:0; right:0;
-    top:var(--toolbar-h); bottom:var(--console-space); width:auto; margin:0;
-    pointer-events:none; }
-  #agent-rail.rail-overview:not(.rail-popover) { width:auto; }
-  #agent-rail.rail-overview .rail-strip { bottom:0; pointer-events:auto; }
-  #agent-rail.rail-overview .rail-overview-content { position:absolute;
-    top:0; bottom:var(--agent-strip); left:0; right:0; width:auto; flex:none;
-    pointer-events:auto; }
-  #agent-rail.rail-overview .rail-overview-content[aria-hidden="true"] { pointer-events:none; }
-  .rail-overview-content.rail-panel-opening { transform:translateY(10px) scale(.985); }
-  #agent-rail.rail-overview.rail-popover .rail-overview-content {
-    top:auto; bottom:calc(var(--agent-strip) + 8px); left:6px; right:6px;
-    width:auto; height:min(62vh, calc(100% - var(--agent-strip) - 26px)); }
   /* The strip runs across the foot here, so the line under the project's agent
      is a rule beside it rather than under it. */
   .rail-sep { width:1px; height:16px; }

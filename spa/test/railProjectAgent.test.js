@@ -259,6 +259,91 @@ describe("pressing the project's agent", () => {
   });
 });
 
+// #148: the overview is one selection among the bubbles on either side of the
+// line, and pressing across the line from it lands on that bubble's
+// conversation rather than on an overview the other side was once left on.
+describe("the chat overview beside the project's agent", () => {
+  const overviewControl = () => host().querySelector('[data-bubble="overview"]');
+  const active = () => strip().filter((element) => element.classList.contains("active"))
+    .map((element) => element.dataset.bubble);
+
+  it("is the only thing selected while it is open on the project's side", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+    overviewControl().click();
+    await flush();
+
+    expect(active()).toEqual(["overview"]);
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(panelIsOpen()).toBe(true);
+  });
+
+  it("gives way to the conversation of a bubble pressed across the line, with the panel still out", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+    overviewControl().click();
+    await flush();
+
+    agentBubble("wa-1").click();
+    await flush();
+    expect(active()).toEqual(["agent"]);
+    expect(headWho()).toBe("Fix login redirect");
+    expect(panelIsOpen()).toBe(true);
+
+    projectBubble().click();
+    await flush();
+    expect(active()).toEqual(["project"]);
+    expect(headWho()).toBe("Sort the workspaces");
+    expect(panelIsOpen()).toBe(true);
+
+    // The press below the line selected a chat, and the page remembers that:
+    // a fresh mount comes back on a conversation, not the overview left
+    // before the presses.
+    agentBubble("wa-1").click();
+    await flush();
+    rail.dispose();
+    await mountWorkspaceRail();
+    expect(active()).toEqual(["agent"]);
+    expect(panel().dataset.body).not.toBe("overview");
+  });
+
+  it("comes back on a fresh mount of the workspace's page after opening on the project's side", async () => {
+    await mountWorkspaceRail();
+    projectBubble().click();
+    await flush();
+    overviewControl().click();
+    await flush();
+    expect(active()).toEqual(["overview"]);
+
+    rail.dispose();
+    await mountWorkspaceRail();
+
+    expect(active()).toEqual(["overview"]);
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(panel().dataset.body).toBe("overview");
+  });
+
+  it("is not brought back once a swap across the line selected a chat", async () => {
+    await mountWorkspaceRail();
+    overviewControl().click();
+    await flush();
+    projectBubble().click();
+    await flush();
+    expect(active()).toEqual(["project"]);
+    agentBubble("wa-1").click();
+    await flush();
+    expect(active()).toEqual(["agent"]);
+
+    rail.dispose();
+    await mountWorkspaceRail();
+
+    expect(active()).toEqual(["agent"]);
+    expect(panel().dataset.body).not.toBe("overview");
+  });
+});
+
 // The + below the line adds an agent to the WORKSPACE, and the workspace is
 // still under the rule while the panel is on the project's conversation: "when
 // I'm in a workspace and open the project agent conversation, the + to create

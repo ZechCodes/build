@@ -18,6 +18,7 @@ import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 import { deviceSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
 import { mountBridgeUpdatePanel } from "../core/bridgeUpdatePanel.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
   let device = App.devices.find((item) => item.id === deviceId);
@@ -31,12 +32,12 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     <div class="board-head"><div><h1 id="device-settings-title">${esc(device.name)} settings</h1><p>The projects this machine holds, and how agents run on it.</p></div></div>
     <div class="panel">
       <h3>Device name</h3>
-      <form id="device-name-form">
-        <div class="field"><label for="device-name">Name</label>
-        <div class="projfolder"><input id="device-name" name="name" value="${esc(device.name)}" maxlength="255" required>
+      <form id="device-label-form">
+        <div class="field"><label for="device-label">Name</label>
+        <div class="projfolder"><input id="device-label" ${fieldTraits("line")} value="${esc(device.name)}" maxlength="255" required>
           <button class="btn" type="submit">Save</button></div>
         </div>
-        <p id="device-name-status" role="status" aria-live="polite"></p>
+        <p id="device-label-status" role="status" aria-live="polite"></p>
       </form>
     </div>
     <div id="device-projects-panel"></div>
@@ -60,9 +61,9 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   const change = root.querySelector("#device-projects-change");
   const status = root.querySelector("#device-settings-status");
   const retry = root.querySelector("#device-settings-retry");
-  const nameForm = root.querySelector("#device-name-form");
-  const nameInput = root.querySelector("#device-name");
-  const nameStatus = root.querySelector("#device-name-status");
+  const nameForm = root.querySelector("#device-label-form");
+  const nameInput = root.querySelector("#device-label");
+  const nameStatus = root.querySelector("#device-label-status");
   const nameTitle = root.querySelector("#device-settings-title");
   const projectsDeviceName = root.querySelector("#device-projects-device-name");
   const deactivate = root.querySelector("#device-deactivate");

@@ -81,13 +81,13 @@ describe("openProjectSettings", () => {
     await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
     document.querySelector("#psaddremote").click();
     document.querySelector("#psremoteurl").value = "git@github.com:8ly/draft.git";
-    document.querySelector("#pssourcename").value = "draft";
-    document.querySelector("#pssourcename").focus();
+    document.querySelector("#pssourcelabel").value = "draft";
+    document.querySelector("#pssourcelabel").focus();
     await writeCached(projectSettingsAddress("dev-1", PROJECT.project_id), { ...PROJECT, name: "renamed" });
     await vi.waitFor(() => expect(document.querySelector("#psname").value).toBe("renamed"));
     expect(document.querySelector("#psremoteurl").value).toBe("git@github.com:8ly/draft.git");
-    expect(document.querySelector("#pssourcename").value).toBe("draft");
-    expect(document.activeElement).toBe(document.querySelector("#pssourcename"));
+    expect(document.querySelector("#pssourcelabel").value).toBe("draft");
+    expect(document.activeElement).toBe(document.querySelector("#pssourcelabel"));
   });
 
   it("keeps the folder browser open through a project record announcement", async () => {
@@ -408,7 +408,7 @@ describe("project sources", () => {
     await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
     document.getElementById("psaddremote").click();
     document.getElementById("psremoteurl").value = "git@github.com:8ly/tokens.git";
-    document.getElementById("pssourcename").value = "tokens";
+    document.getElementById("pssourcelabel").value = "tokens";
     document.getElementById("pssourceadd").click();
     await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("project.add_source", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
 

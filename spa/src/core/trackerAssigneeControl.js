@@ -15,6 +15,7 @@ import { esc } from "./text.js";
 import { NO_AGENT_CHOICE, agentChoicePanelHtml, agentChoiceParams, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { isolationOptionsHtml } from "./isolation.js";
 import { WORKSPACE_FORM, assignParams, optionWaitsOnAWorkspace } from "./trackerAssignee.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** Nothing chosen: the control opens on whatever the caller says is current. */
 export const emptyAssigneeDraft = (optionId = "none") => ({
@@ -48,8 +49,8 @@ function optionsHtml(options, chosen) {
 /** The new-workspace form's own two fields. A blank name means the issue's
  *  title and "Inherit project setting" means no isolation is sent at all, so
  *  neither is a required field and neither is prefilled with a guess. */
-const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-name">Workspace name</label>
-  <input id="${esc(prefix)}-name" type="text" autocomplete="off" placeholder="The issue's title" value="${esc(draft.name)}" />
+const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-workspace">Workspace name</label>
+  <input id="${esc(prefix)}-workspace" type="text" ${fieldTraits("identifier")} placeholder="The issue's title" value="${esc(draft.name)}" />
   <label class="create-label" for="${esc(prefix)}-isolation">Isolation</label>
   <select id="${esc(prefix)}-isolation">${isolationOptionsHtml(draft.isolation, null, { inheritLabel: "Inherit project setting" })}</select>`;
 
@@ -80,7 +81,7 @@ export function readAssigneeDraft(root, draft, prefix) {
   return {
     ...draft,
     optionId: valueOf(root, `${prefix}-assignee`) || draft.optionId,
-    name: valueOf(root, `${prefix}-name`),
+    name: valueOf(root, `${prefix}-workspace`),
     isolation: valueOf(root, `${prefix}-isolation`),
   };
 }
@@ -98,7 +99,7 @@ export function wireAssigneeControl(root, draft, { prefix, onDraft }) {
   if (!control) return;
   control.querySelector("[data-assignee-select]").onchange = () =>
     onDraft({ ...readAssigneeDraft(root, draft, prefix), choiceOpen: draft.choiceOpen });
-  const name = root.querySelector(`#${prefix}-name`);
+  const name = root.querySelector(`#${prefix}-workspace`);
   if (name) name.oninput = () => onDraft(readAssigneeDraft(root, draft, prefix));
   const isolation = root.querySelector(`#${prefix}-isolation`);
   if (isolation) isolation.onchange = () => onDraft(readAssigneeDraft(root, draft, prefix));

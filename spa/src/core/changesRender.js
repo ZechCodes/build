@@ -17,6 +17,7 @@ import { esc, humanAge } from "./text.js";
 import { lineRangeSuffix } from "./anchors.js";
 import { uncommittedTotals, hasUncommittedChanges } from "./changesModel.js";
 import { diffSortHtml } from "./diffSort.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const TRUNCATED_NOTICE = '<div class="ftrunc">diff truncated at 1 MiB — the counts above are exact</div>';
 
@@ -146,7 +147,7 @@ export function commentTrayHtml(comments) {
  *  its own below the scroller because the stack is long enough to lose it. */
 export function docCommentTrayHtml(comments, { generalDraft = "" } = {}) {
   return `<div class="plan-feedback csfeedback"><div class="cslist">${pendingCommentRowsHtml(comments)}</div>
-    <textarea class="csgeneral plan-general" placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
+    <textarea class="csgeneral plan-general" ${fieldTraits("prose")} placeholder="Add a general comment about these changes…">${esc(generalDraft)}</textarea></div>
     <div class="actionbar"><span class="hint cshint"></span><div class="right csactions"></div></div>`;
 }
 

@@ -45,6 +45,7 @@ import { captureRecordAddress } from "./captureRecords.js";
 import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import "../styles/shell.css";
+import { fieldTraits } from "./fieldTraits.js";
 
 const CHOICE_PREFIX = "compose-choice";
 
@@ -281,7 +282,7 @@ function advancedHtml() {
     <select id="compose-project">${projectOptions || '<option value="">No projects on this device</option>'}</select>
     <div class="compose-kinds"><button class="btn mini primary" type="button" data-compose-kind="branch">Branch</button></div>
     <label for="compose-branch">Branch</label>
-           <input id="compose-branch" type="text" class="path" list="compose-branches" autocomplete="off"
+           <input id="compose-branch" type="text" class="path" list="compose-branches" ${fieldTraits("identifier")}
              placeholder="a new branch, named after what you said" value="${esc(box.branch)}" />
            <datalist id="compose-branches">${branches
              .map((branch) => `<option value="${esc(branch)}"></option>`)

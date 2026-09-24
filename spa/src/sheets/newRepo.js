@@ -4,6 +4,7 @@ import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
 import { readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -37,7 +38,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     else onDone?.(project);
   };
   const remember = () => {
-    if (sheet.querySelector("#nrname")) draft.name = $("#nrname").value;
+    if (sheet.querySelector("#nrproject")) draft.name = $("#nrproject").value;
     saveDraft(true);
   };
   const uniqueName = (value, except) => {
@@ -73,9 +74,9 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     }
   };
   const sourceHtml = (source, index) => `<fieldset data-source-row="${source.id}" style="border:1px solid var(--line);border-radius:8px;margin:10px 0;padding:10px"><legend>Folder ${index + 1}</legend>
-    ${source.kind === "remote" ? `<div class="field"><label for="nrsource-${source.id}">Git remote URL</label><input id="nrsource-${source.id}" data-source-value="${source.id}" value="${esc(source.remote)}" placeholder="git@github.com:org/repo.git"></div>` : `<div class="field"><span id="nrsource-label-${source.id}">Selected folder</span><div class="browse-path" aria-labelledby="nrsource-label-${source.id}">${source.path ? esc(source.path) : "No folder selected"}</div><button class="btn" type="button" data-choose-source="${source.id}">Choose folder…</button></div>`}
-    <div class="field"><label for="nrmount-${source.id}">Folder name</label><input id="nrmount-${source.id}" data-source-name="${source.id}" value="${esc(source.name)}"></div>
-    <div class="field"><label for="nrbranch-${source.id}">Base branch (optional)</label><input id="nrbranch-${source.id}" data-source-branch="${source.id}" value="${esc(source.base_branch)}" placeholder="main"></div>
+    ${source.kind === "remote" ? `<div class="field"><label for="nrsource-${source.id}">Git remote URL</label><input id="nrsource-${source.id}" data-source-value="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.remote)}" placeholder="git@github.com:org/repo.git"></div>` : `<div class="field"><span id="nrsource-label-${source.id}">Selected folder</span><div class="browse-path" aria-labelledby="nrsource-label-${source.id}">${source.path ? esc(source.path) : "No folder selected"}</div><button class="btn" type="button" data-choose-source="${source.id}">Choose folder…</button></div>`}
+    <div class="field"><label for="nrmount-${source.id}">Folder name</label><input id="nrmount-${source.id}" data-source-name="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.name)}"></div>
+    <div class="field"><label for="nrbranch-${source.id}">Base branch (optional)</label><input id="nrbranch-${source.id}" data-source-branch="${source.id}" ${fieldTraits("identifier")} value="${esc(source.base_branch)}" placeholder="main"></div>
     <button class="btn" type="button" data-remove-source="${source.id}" aria-label="Remove folder ${index + 1}">Remove</button></fieldset>`;
   const sourceError = (source, names) => {
     if (!source[source.kind].trim()) return [source.kind === "remote" ? "Enter a Git remote URL." : "Choose a folder.", source.kind === "remote" ? `#nrsource-${source.id}` : `[data-choose-source="${source.id}"]`];
@@ -88,7 +89,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const invalidSource = () => {
     if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
-    if (!draft.name.trim()) return ["Enter a project name.", "#nrname"];
+    if (!draft.name.trim()) return ["Enter a project name.", "#nrproject"];
     const names = new Set();
     for (const source of draft.sources) {
       const error = sourceError(source, names);
@@ -160,7 +161,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const subtitle = target ? `Enter a name to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
       ${selector}
-      <div class="field"><label for="nrname">Project name</label><input id="nrname" required value="${esc(draft.name)}"></div>
+      <div class="field"><label for="nrproject">Project name</label><input id="nrproject" ${fieldTraits("line", "go")} required value="${esc(draft.name)}"></div>
       <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders (optional)</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
     $("#nrcancel").onclick = close;
@@ -190,8 +191,8 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     sheet.querySelectorAll("[data-choose-source]").forEach((button) => button.onclick = () => void browseFor(Number(button.dataset.chooseSource)));
     sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); saveDraft(); paint(); $("#nraddfolder").focus(); });
     $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: draft.name.trim(), ...(sources.length ? { sources } : {}) }; void submit(params); };
-    $("#nrname").oninput = () => { draft.name = $("#nrname").value; saveDraft(true); };
-    if (firstPaint) $("#nrname").focus();
+    $("#nrproject").oninput = () => { draft.name = $("#nrproject").value; saveDraft(true); };
+    if (firstPaint) $("#nrproject").focus();
     else if (focused) sheet.querySelector(`#${focused}`)?.focus();
     firstPaint = false;
   };

@@ -553,7 +553,7 @@ describe("the workspace settings cog", () => {
     cog().click();
     await flush();
     expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
-    expect(document.getElementById("wsname").value).toBe("payment-work");
+    expect(document.getElementById("wslabel").value).toBe("payment-work");
     document.getElementById("wscancel").click();
   });
 });

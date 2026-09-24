@@ -57,8 +57,8 @@ const CATALOG = {
 const $ = (selector) => document.querySelector(selector);
 const shown = () => document.getElementById("scrim").classList.contains("show");
 const type = (value) => {
-  $("#wsname").value = value;
-  $("#wsname").dispatchEvent(new Event("input"));
+  $("#wslabel").value = value;
+  $("#wslabel").dispatchEvent(new Event("input"));
 };
 const pick = (selector, value) => {
   $(selector).value = value;
@@ -88,11 +88,11 @@ describe("the workspace settings sheet", () => {
     await writeCached(address, { name: "cached rename", directory: { kind: "remote", remote: "git@example.com:team/repo.git", name: "repo", path: "" } });
     const pending = vi.fn(() => new Promise(() => {}));
     open({ callRpc: pending });
-    await vi.waitFor(() => expect($("#wsname").value).toBe("cached rename"));
+    await vi.waitFor(() => expect($("#wslabel").value).toBe("cached rename"));
     await vi.waitFor(() => expect($("#wsdirremote")?.value).toBe("git@example.com:team/repo.git"));
     expect(pending).toHaveBeenCalledWith("workspace.get", { workspace_id: WORKSPACE.id });
     await writeCached(address, { name: "external rename", directory: { kind: "remote", remote: "git@example.com:team/other.git", name: "other", path: "" } });
-    await vi.waitFor(() => expect($("#wsname").value).toBe("external rename"));
+    await vi.waitFor(() => expect($("#wslabel").value).toBe("external rename"));
     expect($("#wsdirremote").value).toBe("git@example.com:team/other.git");
     type("my unsent rename");
     await vi.waitFor(async () => expect((await readCached(address))?.value.name).toBe("my unsent rename"));
@@ -124,7 +124,7 @@ describe("the workspace settings sheet", () => {
         : provider),
     });
     await vi.waitFor(() => expect($("#wsdefmodel-claude_adk").textContent).toContain("Claude New"));
-    expect($("#wsname").value).toBe("unsaved name");
+    expect($("#wslabel").value).toBe("unsaved name");
     expect(document.activeElement).toBe($("#wsdefmodel-claude_adk"));
 
     pick("#wsdefmodel-claude_adk", "claude-opus-5");
@@ -163,7 +163,7 @@ describe("the workspace settings sheet", () => {
 
     expect(shown()).toBe(true);
     expect($("#sheet .settings-sheet-header h3").textContent).toBe("Workspace settings");
-    expect($("#wsname").value).toBe("payment-work");
+    expect($("#wslabel").value).toBe("payment-work");
     expect($("#wssave").disabled).toBe(true);
 
     type("payments");
@@ -378,7 +378,7 @@ describe("workspace directories", () => {
     await vi.waitFor(() => expect($("#wsdiradd")).toBeTruthy());
     pick("#wsdiradd", "remote");
     $("#wsdirremote").value = "git@github.com:8ly/tokens.git";
-    $("#wsdirname").value = "tokens";
+    $("#wsdirlabel").value = "tokens";
     $("#wsdiraddgo").click();
     await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", expect.objectContaining({ remote: "git@github.com:8ly/tokens.git" })));
     expect(callRpc).toHaveBeenCalledWith("workspace.add_directory", {

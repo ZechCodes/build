@@ -22,6 +22,7 @@ import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateDotHtml } 
 import { composerPartIds } from "./composer.js";
 import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP } from "./icons.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 /** The head: what the issue is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board.
@@ -154,7 +155,7 @@ const commentAttachHtml = () => `<div class="composer-bar">
 const canComment = (draft, busy, hasFiles) => !busy && (Boolean(draft.trim()) || hasFiles);
 
 const commentFieldHtml = (draft, busy) =>
-  `<textarea id="${COMMENT_INPUT_ID}" rows="3" placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>`;
+  `<textarea id="${COMMENT_INPUT_ID}" rows="3" ${fieldTraits("prose")} placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>`;
 
 /// The box, wrapped or bare. A bridge that cannot carry files gets exactly the
 /// box it always had — the same element, unwrapped — so gating the paperclip
@@ -226,7 +227,7 @@ export function issueRailHtml(issue, context) {
   return `<aside class="issue-rail" aria-label="About this issue">
     ${stateControlHtml(issue, busy)}
     ${railSection("Column", selectRow("issue-status", "Column", columnOptionsHtml(columns, issue.status), busy))}
-    ${railSection("Labels", `<input id="issue-labels" type="text" autocomplete="off" placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
+    ${railSection("Labels", `<input id="issue-labels" type="text" ${fieldTraits("identifier")} placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
       <p class="sub">Comma separated. Enter saves.</p>`)}
     ${railSection("Priority", selectRow("issue-priority", "Priority", priorityOptionsHtml(issue.priority), busy))}
     ${railSection("Assignee", `${assigneeLink

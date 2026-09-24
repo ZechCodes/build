@@ -5,6 +5,7 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { settingsSheetHtml } from "./settingsSheet.js";
+import { fieldTraits } from "../core/fieldTraits.js";
 
 export function openAddDevice(onDone) {
   const sheet = $("#sheet");
@@ -13,7 +14,7 @@ export function openAddDevice(onDone) {
     title: "Add a device",
     subtitleHtml: "Enter the pairing code your bridge printed on startup.",
     bodyHtml: `
-    <input id="paircode" placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
+    <input id="paircode" ${fieldTraits("code")} placeholder="e.g. WXYZ-4F2K" style="text-transform:uppercase" />
     <div class="row"><button class="btn" id="pcancel" style="margin-left:auto">Cancel</button>
       <button class="btn primary" id="plookup">Look up</button></div>
     <div id="pairbox"></div>

@@ -22,6 +22,7 @@ import {
   readAssigneeDraft,
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
+import { fieldTraits } from "./fieldTraits.js";
 
 const PREFIX = "issue-assign";
 
@@ -57,7 +58,7 @@ export function assigneePickerBodyHtml(state) {
     <p class="sub create-hint">${esc(state.issue.title || "")}</p>
     ${assigneeControlHtml(state.options, state.draft, { prefix: PREFIX, catalog: state.catalog })}
     <label class="create-label" for="${PREFIX}-note">Note <span class="sub">(delivered with the issue, not stored on it)</span></label>
-    <textarea id="${PREFIX}-note" rows="2" placeholder="Anything the issue itself does not say">${esc(state.note)}</textarea>
+    <textarea id="${PREFIX}-note" rows="2" ${fieldTraits("prose")} placeholder="Anything the issue itself does not say">${esc(state.note)}</textarea>
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
     ${waitingHtml(state)}
     <div class="row create-row">

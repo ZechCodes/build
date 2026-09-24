@@ -161,6 +161,18 @@ describe("the slice a conversation is drawn from", () => {
     for (const item of pending.slice(2)) expect(built.entries.some((entry) => entry.item?.data.operation_id === item.data.operation_id)).toBe(true);
   });
 
+  it("keeps hidden acknowledgements hidden while showing genuinely new real appends", () => {
+    const slice = createTimelineSlice({ size: 3 });
+    let items = Array.from({ length: 8 }, (_, i) => provisionalThreadItem({ operationId: `send-${i}` }));
+    paint(items, slice);
+    items = acknowledgeProvisionalItem(items, "send-0", 1);
+    const acknowledged = paint(items, slice);
+    expect(drawnKeys(acknowledged)).toHaveLength(3);
+    expect(drawnKeys(acknowledged)).not.toContain("1");
+    items = mergeThreadItems(items, [said(2)]);
+    expect(drawnKeys(paint(items, slice))).toContain("2");
+  });
+
   it("keeps every drawn pending row when acknowledgements reorder them", () => {
     const slice = createTimelineSlice({ size: 3 });
     let items = Array.from({ length: 8 }, (_, i) => provisionalThreadItem({ operationId: `send-${i}` }));

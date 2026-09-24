@@ -2519,6 +2519,11 @@ describe("the conversation panel", () => {
         calls.push({ method, params });
         return new Promise(() => {});
       }
+      if (method === "thread.post") {
+        calls.push({ method, params });
+        // Each accepted send has its own sequence, as on the real bridge.
+        return { posted_sequence: 6 + callsTo("thread.post").length };
+      }
       return answering(method, params);
     });
 

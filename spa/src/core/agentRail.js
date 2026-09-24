@@ -1058,6 +1058,8 @@ function mountRailOnContext(host, context, swap) {
   let reportedRead = 0; // how far this panel has told the daemon it read
   let reportedFloor = null; // and how much of the conversation it held saying so
   let paintedChat = null; // what the timeline in the panel was drawn from
+  let paintedChatContent = null; // drawn rows, including same-cursor edits
+  let paintedChatItemCount = 0;
   let paintedDigests = []; // the run totals that timeline was drawn with
   let paintedEntryKeyOf = () => null; // which of its entries draws a sequence
   // How much of the held conversation the timeline draws (#158): the newest
@@ -1095,9 +1097,10 @@ function mountRailOnContext(host, context, swap) {
     onThreadSeeded: (seededFor) => {
       if (disposed) return;
       threadAgentId = seededFor;
-      // A record rewrite can edit a drawn row or settle a provisional send
-      // without changing its cursor or item count. Reconcile that fresh cache.
-      paintedChat = null;
+      // Edits and local delivery changes can keep the same cursor/count.
+      // Compare only the drawn tail, preserving the unchanged-record fast path.
+      if (paintedChat !== null && loadedConversationItems().length === paintedChatItemCount
+        && paintedChatContent !== drawnChatContent()) paintedChat = null;
       paintChat();
       // The line above the composer is drawn from the conversation too — what
       // the agent is doing, and what started it — so a window arriving moves
@@ -2569,6 +2572,15 @@ function mountRailOnContext(host, context, swap) {
 
   const threadItems = (thread) => (thread && thread.items) || [];
 
+  const drawnChatContent = () => {
+    const floor = timelineSlice.drawnFloor();
+    const drawn = loadedConversationItems().filter((item) => {
+      const sequence = Number(item.data?.sequence ?? NaN);
+      return floor === null || !Number.isFinite(sequence) || sequence >= floor;
+    });
+    return JSON.stringify(drawn);
+  };
+
   /** Where this rail is standing, for the links a message from another agent
    *  carries: the machine the conversation is held on, and the project whose
    *  page it is on — a workspace route is written from both, and the sender
@@ -2693,6 +2705,8 @@ function mountRailOnContext(host, context, swap) {
     // Taken after the slice settles, so the floor it settled on is not news to
     // the next tick.
     paintedChat = chatFingerprintOf(thread, agentLabel);
+    paintedChatItemCount = held.length;
+    paintedChatContent = drawnChatContent();
     // No composer in here: the box is pinned below this scroller, so what the
     // poll repaints is the timeline and only the timeline.
     timedPaint("chat", () => {

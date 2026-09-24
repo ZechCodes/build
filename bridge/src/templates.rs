@@ -622,10 +622,12 @@ mod tests {
             "the agent is told what it is for: {project}"
         );
         for sentence in [
-            "delegated, never done here",
-            "file it as an issue and assign it",
+            "are delegated through assigned issues",
+            "assigning one cuts the workspace and starts the agent",
             "The issue is the record",
-            "Independent work goes out in parallel",
+            "Parallelize independent work in separate workspaces",
+            "give shared files one writer",
+            "Your reach ends at this project, and you cannot read an agent's conversation.",
         ] {
             assert!(
                 project.contains(sentence),
@@ -818,12 +820,13 @@ mod tests {
             "standing in for the user",
             "You place work, decide the routine yourself",
             "only outcomes and the calls that are theirs",
-            "when it cannot be undone, is visible to them, or is a matter of taste",
-            "That briefing, sent as `Complete`",
-            "An outcome is `Complete`",
-            "send it as `Waiting`",
+            "one briefing as `Complete`",
+            "Report outcomes as `Complete`",
+            "Bring unresolved choices about irreversible actions, user-facing behavior or taste to the user as `Waiting`",
+            "one question with the options and your recommendation",
+            "Everything else stays on the issue.",
             "`Working` is only for",
-            "`Blocked` for when you cannot go on without them",
+            "`Blocked` for when you cannot proceed",
         ] {
             assert!(
                 project.contains(words),

@@ -30,7 +30,17 @@ function fieldTags() {
   });
 }
 
-const declares = (tag, attribute) => tag.includes("${fieldTraits(") || new RegExp(`\\s${attribute}="[^"]+"`).test(tag);
+/** Whether a tag sets `attribute` to a non-empty value, either through
+ *  fieldTraits or written out. A match must follow whitespace, so
+ *  `aria-autocomplete` does not count as `autocomplete`. */
+function declares(tag, attribute) {
+  if (tag.includes("${fieldTraits(")) return true;
+  const opener = `${attribute}="`;
+  for (let at = tag.indexOf(opener); at !== -1; at = tag.indexOf(opener, at + 1)) {
+    if (/\s/.test(tag[at - 1]) && tag[at + opener.length] !== '"') return true;
+  }
+  return false;
+}
 
 /** The literal part of a field's id and name: `${…}` pieces are filled at run
  *  time from callers that are checked where they render. */

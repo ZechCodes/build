@@ -19,6 +19,10 @@ use async_trait::async_trait;
 const DEFAULT_REPO: &str = "ZechCodes/build-releases";
 const COSIGN_VERSION: &str = "v3.1.3";
 const COSIGN_ISSUER: &str = "https://token.actions.githubusercontent.com";
+/// The repositories whose release workflow may sign a bridge release: the
+/// current name and the name it is being renamed to. Each is matched as an
+/// exact certificate identity, never a pattern.
+const RELEASE_REPOSITORIES: [&str; 2] = ["ZechCodes/build-web", "ZechCodes/build"];
 const MAX_ARCHIVE: usize = 128 * 1024 * 1024;
 const MAX_MANIFEST: usize = 1024 * 1024;
 const MAX_COSIGN: usize = 160 * 1024 * 1024;
@@ -174,10 +178,17 @@ fn verify_signature(cosign: &Path, sums: &Path, bundle: &Path, tag: &str) -> Res
     if !tag.starts_with("bridge-v") || semver::Version::parse(&tag[8..]).is_err() {
         return Err("invalid release tag".into());
     }
-    let identity = format!(
-        "https://github.com/ZechCodes/build-web/.github/workflows/release.yml@refs/tags/{tag}"
-    );
-    verify_signature_with_identity(cosign, sums, bundle, &identity, COSIGN_ISSUER)
+    let mut result = Err("no release identity".to_string());
+    for repository in RELEASE_REPOSITORIES {
+        let identity = format!(
+            "https://github.com/{repository}/.github/workflows/release.yml@refs/tags/{tag}"
+        );
+        result = verify_signature_with_identity(cosign, sums, bundle, &identity, COSIGN_ISSUER);
+        if result.is_ok() {
+            break;
+        }
+    }
+    result
 }
 
 fn verify_signature_with_identity(

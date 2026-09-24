@@ -29,7 +29,7 @@ env:
   # contract's home for it; these two are this workflow's single copy, used by
   # the self-verification, quoted in the release notes, and checked against
   # install.sh in the `version` job so the two homes cannot drift apart.
-  COSIGN_IDENTITY_REGEXP: '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
+  COSIGN_IDENTITY_REGEXP: '^https://github\.com/ZechCodes/(build-web|build)/\.github/workflows/release\.yml@refs/tags/bridge-v'
   COSIGN_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:

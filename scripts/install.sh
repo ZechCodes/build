@@ -18,7 +18,7 @@
 set -eu
 
 DEFAULT_REPO="ZechCodes/build-releases"
-COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v'
+COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/(build-web|build)/\.github/workflows/release\.yml@refs/tags/bridge-v'
 COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 ASSET_PREFIX="build-bridge-"
 CHECKSUMS="SHA256SUMS"

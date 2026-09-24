@@ -6,7 +6,7 @@
 set -eu
 
 DEFAULT_REPO="ZechCodes/build-releases"
-COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/build-web/\.github/workflows/release-desktop\.yml@refs/tags/desktop-v'
+COSIGN_IDENTITY_REGEXP='^https://github\.com/ZechCodes/(build-web|build)/\.github/workflows/release-desktop\.yml@refs/tags/desktop-v'
 COSIGN_ISSUER='https://token.actions.githubusercontent.com'
 
 say() { printf '%s\n' "$*" >&2; }

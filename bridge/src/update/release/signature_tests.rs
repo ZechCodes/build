@@ -178,32 +178,91 @@ fn production_identity_rejects_an_authentic_other_project_bundle() {
     assert!(verify_signature(&cosign, &sums, &bundle, "bridge-v0.2.0").is_err());
 }
 
-fn rejecting_verifier(dir: &Path) -> PathBuf {
-    let script = dir.join("rejecting-verifier");
+/// A stand-in cosign that appends each invocation's arguments to `args`, one
+/// invocation per block, and accepts only a certificate identity equal to
+/// `accepted` (the fifth argument: `verify-blob --bundle <b>
+/// --certificate-identity <identity>`).
+fn recording_verifier(dir: &Path, accepted: &str) -> PathBuf {
+    let script = dir.join("recording-verifier");
     fs::write(
         &script,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\nexit 1\n",
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$(dirname \"$0\")/args\"\n\
+             echo -- >> \"$(dirname \"$0\")/args\"\n\
+             [ \"$5\" = '{accepted}' ]\n"
+        ),
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
     script
 }
 
+fn identity_for(repository: &str, tag: &str) -> String {
+    format!("https://github.com/{repository}/.github/workflows/release.yml@refs/tags/{tag}")
+}
+
+fn invocations(dir: &Path) -> Vec<Vec<String>> {
+    let args = fs::read_to_string(dir.join("args")).unwrap_or_default();
+    args.split("--\n")
+        .filter(|block| !block.is_empty())
+        .map(|block| block.lines().map(str::to_string).collect())
+        .collect()
+}
+
 #[test]
-fn production_command_pins_exact_workflow_identity_and_issuer() {
+fn production_command_pins_exact_workflow_identities_and_issuer() {
     let temp = tempfile::tempdir().unwrap();
     let (sums, bundle) = fixture_files(temp.path());
-    let verifier = rejecting_verifier(temp.path());
+    let verifier = recording_verifier(temp.path(), "nobody");
     assert!(verify_signature(&verifier, &sums, &bundle, "bridge-v0.2.0").is_err());
-    let args = fs::read_to_string(temp.path().join("args")).unwrap();
-    assert_eq!(args.lines().collect::<Vec<_>>(), vec![
-        "verify-blob", "--bundle", bundle.to_str().unwrap(),
-        "--certificate-identity",
-        "https://github.com/ZechCodes/build-web/.github/workflows/release.yml@refs/tags/bridge-v0.2.0",
-        "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com",
-        sums.to_str().unwrap(),
-    ]);
+    let expected = |repository: &str| {
+        vec![
+            "verify-blob".to_string(),
+            "--bundle".into(),
+            bundle.to_str().unwrap().into(),
+            "--certificate-identity".into(),
+            identity_for(repository, "bridge-v0.2.0"),
+            "--certificate-oidc-issuer".into(),
+            "https://token.actions.githubusercontent.com".into(),
+            sums.to_str().unwrap().into(),
+        ]
+    };
+    assert_eq!(
+        invocations(temp.path()),
+        vec![expected("ZechCodes/build-web"), expected("ZechCodes/build")]
+    );
     assert!(verify_signature(&verifier, &sums, &bundle, "../other").is_err());
+}
+
+#[test]
+fn release_signed_from_either_repository_name_is_accepted() {
+    // The repository is being renamed from build-web to build; a release
+    // signed under either name must verify, each by its exact identity.
+    for repository in ["ZechCodes/build-web", "ZechCodes/build"] {
+        let temp = tempfile::tempdir().unwrap();
+        let (sums, bundle) = fixture_files(temp.path());
+        let verifier = recording_verifier(temp.path(), &identity_for(repository, "bridge-v0.2.0"));
+        verify_signature(&verifier, &sums, &bundle, "bridge-v0.2.0")
+            .unwrap_or_else(|e| panic!("{repository}: {e}"));
+    }
+}
+
+#[test]
+fn release_signed_by_another_owner_or_for_another_tag_is_rejected() {
+    for accepted in [
+        identity_for("SomeoneElse/build", "bridge-v0.2.0"),
+        identity_for("SomeoneElse/build-web", "bridge-v0.2.0"),
+        identity_for("ZechCodes/build", "bridge-v0.2.1"),
+        identity_for("ZechCodes/build-web", "bridge-v0.2.1"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let (sums, bundle) = fixture_files(temp.path());
+        let verifier = recording_verifier(temp.path(), &accepted);
+        assert!(
+            verify_signature(&verifier, &sums, &bundle, "bridge-v0.2.0").is_err(),
+            "{accepted} must not verify bridge-v0.2.0"
+        );
+    }
 }
 
 #[tokio::test]

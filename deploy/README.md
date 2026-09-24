@@ -221,9 +221,11 @@ library a download asks of its host.
 
 There is no signing key to rotate or lose: cosign signs with the OIDC token
 GitHub mints for the workflow, so the certificate's identity *is*
-`…/build-web/.github/workflows/release.yml@refs/tags/bridge-vX.Y.Z`. That string
-is what install.sh pins, which is why the workflow file's path may not move
-without updating both. The release refuses to build when they disagree: the
+`…/build-web/.github/workflows/release.yml@refs/tags/bridge-vX.Y.Z` (or
+`…/build/…` once the repository is renamed to `build`; both names are
+accepted). That identity is what install.sh and the bridge's updater pin,
+which is why the workflow file's path may not move without updating them. The
+release refuses to build when release.yml and install.sh disagree: the
 `version` job greps install.sh for the identity release.yml carries in its own
 `COSIGN_IDENTITY_REGEXP`.
 
@@ -256,7 +258,7 @@ Verifying by hand is the same two commands the script runs:
 sha256sum --check --ignore-missing SHA256SUMS
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity-regexp '^https://github\.com/ZechCodes/build-web/\.github/workflows/release\.yml@refs/tags/bridge-v' \
+  --certificate-identity-regexp '^https://github\.com/ZechCodes/(build-web|build)/\.github/workflows/release\.yml@refs/tags/bridge-v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
@@ -284,7 +286,8 @@ The public release also contains stable installer archive names:
 `build-desktop-macos-{arm64,x86_64}.zip` and
 `build-desktop-linux-{x86_64,aarch64}.tar.gz`, plus `SHA256SUMS` and
 `SHA256SUMS.sigstore.json`. The checksum signature pins
-`…/build-web/.github/workflows/release-desktop.yml@refs/tags/desktop-vX.Y.Z`.
+`…/build-web/.github/workflows/release-desktop.yml@refs/tags/desktop-vX.Y.Z`
+(or `…/build/…` after the rename).
 
 After publishing the versioned assets, the workflow updates `version.txt` in
 the `desktop-latest` channel release. Both desktop releases and the channel

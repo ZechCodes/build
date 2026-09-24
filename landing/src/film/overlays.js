@@ -124,7 +124,7 @@ function screenCue(tl, screens, actId, time, device, name) {
 // arrives, matching the fixture under it, and goes as the act leaves.
 function visibilityBeats(tl, panels) {
   show(tl, panels.editor.state, at(1, 0.18), at(1, 0.21));
-  hide(tl, [panels.editor.state, panels.status.state], at(2, 0.9), at(3, 0));
+  hide(tl, panels.editor.state, at(2, 0.9), at(3, 0));
   show(tl, panels.issue.state, at(3, 0.18), at(3, 0.2));
   hide(tl, [panels.issue.state, panels.hole.state], at(3, 0.98), at(4, 0.01));
   show(tl, panels.team.state, at(4, 0), at(4, 0.01));
@@ -140,13 +140,15 @@ function visibilityBeats(tl, panels) {
 }
 
 // Act 1: the laptop has finished its push; a test types in, the gutter marks
-// both lines, the status bar ticks to "2 changes".
+// both lines, the file's head ticks to "2 changes". The chip is the editor
+// panel's own, so it leaves with the panel however fast the visitor scrolls.
 function editorBeats(tl, panels, { at, span }) {
   const editor = panels.editor;
-  const status = panels.status;
+  const status = editor.element.querySelector("[data-status-chip]");
   const lines = editor.element.querySelectorAll("[data-typed-line]");
   const typed = editor.element.querySelectorAll("[data-type]");
   gsap.set(lines, { "--mark": 0 });
+  gsap.set(status, { autoAlpha: 0 });
   caret(tl, editor.element, "1", at(1, 0.21), at(1, 0.43));
   typeInto(tl, typed[0], at(1, 0.22), at(1, 0.43));
   tl.to(lines[0], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.43));
@@ -154,7 +156,7 @@ function editorBeats(tl, panels, { at, span }) {
   typeInto(tl, typed[1], at(1, 0.45), at(1, 0.63));
   typeInto(tl, typed[2], at(1, 0.63), at(1, 0.65));
   tl.to([lines[1], lines[2]], { "--mark": 1, duration: span(1, 0, 0.02) }, at(1, 0.65));
-  show(tl, status.state, at(1, 0.66), at(1, 0.7));
+  show(tl, status, at(1, 0.66), at(1, 0.7));
 }
 
 // Act 2: the three captions arrive one at a time, then hold.
@@ -188,11 +190,12 @@ function issueBeats(tl, panels, { at, span }) {
   tl.to(branch, { autoAlpha: 1, height: "auto", duration: span(3, 0.58, 0.68), ease: "power2.out" }, at(3, 0.58));
 }
 
-// Leaving act 3: the branch folds away and the card drops into In progress.
+// Leaving act 3: the branch folds away and the card drops into In progress,
+// at the head of that column.
 function issueDeparture(tl, panels) {
   const branch = panels.issue.element.querySelector("[data-branch-line]");
   tl.to(branch, { autoAlpha: 0, height: 0, duration: 0.3, ease: "power2.in" }, 0);
-  tl.to(panels.issue.state, { lift: 0, x: 892, y: 362, duration: 0.8, ease: "power3.inOut" }, 0.15);
+  tl.to(panels.issue.state, { lift: 0, x: 928, y: 297, duration: 0.8, ease: "power3.inOut" }, 0.15);
 }
 
 // Act 4: two more agents join, Implement waits on a question the phone
@@ -215,15 +218,16 @@ function teamBeats(tl, panels, { at, span }, screens) {
   flip(tl, status, at(4, 0.8), { text: "Working", className: "waiting", off: true });
 }
 
-// The builder's canvas, in the panel's own pixels: nodes are 150 wide on a
-// 196 pitch four up and a 186 pitch five up, as the fixture draws them, and
-// an arrow sits in each gap.
-const NODE_WIDTH = 150;
-const NODE_HEIGHT = 125;
-const NODE_TOP = 282;
-const PALETTE_TEST = { x: -190, y: 85 };
-const FOUR_UP = [108, 304, 500, 696];
-const FIVE_UP = [28, 214, 400, 586, 772];
+// The builder's canvas, in the canvas's own pixels: nodes are 132 wide on a
+// 172 pitch four up, centred as the fixture draws them, and on a 160 pitch
+// five up; an arrow sits in each gap. The Test node starts over the palette's
+// "Test" item, shrunk.
+const NODE_WIDTH = 132;
+const NODE_HEIGHT = 112;
+const NODE_TOP = 193;
+const PALETTE_TEST = { x: -173, y: 44 };
+const FOUR_UP = [78, 250, 422, 594];
+const FIVE_UP = [16, 176, 336, 496, 656];
 const ARROW_WIDTH = 16;
 
 function arrowX(fromX, toX) {
@@ -343,8 +347,8 @@ function gitBeats(tl, panels, { at, span }) {
   // The message is complete; a beat to read it before the commit.
   press(tl, commitButton, at(6, 0.74), at(6, 0.78));
   tl.to(newCommit, { height: "auto", autoAlpha: 1, duration: span(6, 0.78, 0.84), ease: "power2.out" }, at(6, 0.78));
-  flip(tl, treeLabel, at(6, 0.79), { text: "Working tree" });
-  flip(tl, treeCount, at(6, 0.79), { text: "0" });
+  flip(tl, treeLabel, at(6, 0.79), { text: "Uncommitted" });
+  flip(tl, treeCount, at(6, 0.79), { text: "clean" });
   tl.to(changedFiles, { autoAlpha: 0, height: 0, paddingTop: 0, paddingBottom: 0, duration: span(6, 0.79, 0.83), ease: "power2.in" }, at(6, 0.79));
   show(tl, cleanTree, at(6, 0.82), at(6, 0.85));
 }

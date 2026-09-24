@@ -30,7 +30,10 @@ export function mountNewMessagesPill(scroller, { targetSelector }) {
     if (dock) dock.hidden = true;
     scrollWithin(scroller, line);
   };
+  // Safe to call again over a dock still standing: a surface that repaints
+  // only part of itself keeps the scroller's children, and with them the dock.
   const sync = () => {
+    dock?.remove();
     if (!target()) { dock = null; resizeObserver?.disconnect(); return; }
     dock = document.createElement("div");
     dock.className = "new-messages-dock";

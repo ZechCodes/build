@@ -976,3 +976,139 @@ describe("a read that fails because the session dropped", () => {
     expect(notifyError).toHaveBeenCalledWith("Could not read this issue", WENT);
   });
 });
+
+// #153: typing into the comment box made the page's scroll jump. Each
+// keystroke's draft write came back through the cache and repainted the whole
+// page, which stood up a new textarea under the reader's fingers. The box is
+// made once per mount and updated in place; nothing the reader typed moves the
+// scroller.
+describe("typing in the comment box", () => {
+  const settle = async () => {
+    await new Promise((done) => setTimeout(done, 250)); // past the draft's debounce
+    await flush();
+  };
+
+  /** Every write to the scroller's position, and every scrollTo on it. */
+  const watchScroller = () => {
+    const writes = [];
+    let top = 0;
+    Object.defineProperty(host, "scrollTop", {
+      configurable: true,
+      get: () => top,
+      set: (value) => { writes.push(value); top = value; },
+    });
+    host.scrollTo = vi.fn();
+    const windowScroll = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+    return { writes, scrollTo: host.scrollTo, windowScroll };
+  };
+
+  const typeKey = (field, key) => {
+    const at = field.selectionStart;
+    field.value = field.value.slice(0, at) + key + field.value.slice(field.selectionEnd);
+    field.setSelectionRange(at + 1, at + 1);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  it("keeps one textarea, its focus and its caret, and never moves the scroller", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    const scroller = watchScroller();
+
+    for (const key of "abc") {
+      typeKey(field, key);
+      await settle();
+      expect(host.querySelector("#issue-comment")).toBe(field);
+      expect(document.activeElement).toBe(field);
+    }
+
+    expect(field.value).toBe("abc");
+    expect(field.selectionStart).toBe(3);
+    expect(field.selectionEnd).toBe(3);
+    expect(scroller.writes).toEqual([]);
+    expect(scroller.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.windowScroll).not.toHaveBeenCalled();
+    scroller.windowScroll.mockRestore();
+  });
+
+  it("turns the send press on with the first character, without a repaint", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    const send = host.querySelector('.issue-composer button[type="submit"]');
+    expect(send.disabled).toBe(true);
+    typeKey(field, "a");
+    expect(send.disabled).toBe(false);
+    await settle();
+    expect(host.querySelector('.issue-composer button[type="submit"]')).toBe(send);
+  });
+
+  it("keeps the node, the draft and the caret when a comment is pushed mid-sentence", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    field.focus();
+    for (const key of "Half a") typeKey(field, key);
+    field.setSelectionRange(4, 4);
+    const scroller = watchScroller();
+
+    const pushed = [...TIMELINE, comment({ id: "ic-3", created_at: "2026-08-21T10:04:00Z", body: "Pushed while typing." })];
+    call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({}, pushed) : {}));
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await settle();
+
+    expect(host.textContent).toContain("Pushed while typing.");
+    expect(host.querySelector("#issue-comment")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("Half a");
+    expect(field.selectionStart).toBe(4);
+    expect(scroller.writes).toEqual([]);
+    scroller.windowScroll.mockRestore();
+  });
+
+  it("keeps the rows already on screen when a comment is pushed", async () => {
+    await mount();
+    await settle();
+    const rows = [...host.querySelectorAll(".issue-entry")];
+    const pushed = [...TIMELINE, comment({ id: "ic-3", created_at: "2026-08-21T10:04:00Z", body: "Pushed." })];
+    call.mockImplementation(async (method) => (method === "issues.get" ? answerFor({}, pushed) : {}));
+    watchers[0].onChanges([{ entity_id: "proj-1", issues: { issue_ids: ["issue-1"], truncated: false } }]);
+    await settle();
+    const after = [...host.querySelectorAll(".issue-entry")];
+    expect(after).toHaveLength(rows.length + 1);
+    rows.forEach((row, at) => expect(after[at]).toBe(row));
+    expect(after.at(-1).textContent).toContain("Pushed.");
+  });
+
+  it("clears the box after a send, and restores a saved draft on remount", async () => {
+    await mount();
+    await settle();
+    const field = host.querySelector("#issue-comment");
+    typeKey(field, "x");
+    await settle();
+    page.dispose();
+    await mount();
+    await settle();
+    expect(host.querySelector("#issue-comment").value).toBe("x");
+    const kept = host.querySelector("#issue-comment");
+    host.querySelector("[data-issue-composer]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await settle();
+    expect(listed("issues.comment")[0][1].body).toBe("x");
+    expect(host.querySelector("#issue-comment")).toBe(kept);
+    expect(kept.value).toBe("");
+    expect(kept.disabled).toBe(false);
+    expect(host.querySelector('.issue-composer button[type="submit"]').disabled).toBe(true);
+  });
+
+  it("keeps the timeline's nodes when only the draft changed", async () => {
+    await mount();
+    await settle();
+    const timeline = host.querySelector(".issue-timeline");
+    const head = host.querySelector(".issue-page-head");
+    typeKey(host.querySelector("#issue-comment"), "x");
+    await settle();
+    expect(host.querySelector(".issue-timeline")).toBe(timeline);
+    expect(host.querySelector(".issue-page-head")).toBe(head);
+  });
+});

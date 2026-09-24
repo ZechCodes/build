@@ -34,7 +34,15 @@ import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { issueLinkRows } from "./trackerLinks.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
-import { COMMENT_INPUT_ID, issueMissingHtml, issuePageHtml } from "./trackerIssueRender.js";
+import {
+  canComment,
+  COMMENT_INPUT_ID,
+  commentSendLabel,
+  ISSUE_PAGE_FRAME,
+  issueMissingHtml,
+  issuePageParts,
+} from "./trackerIssueRender.js";
+import { patchParts } from "./partPatch.js";
 import { referenceLinks } from "./referenceTargets.js";
 import { mountComposerAttachments } from "./composer.js";
 import { carriesIssueAttachments } from "./issueAttachments.js";
@@ -79,12 +87,11 @@ export function mountIssuePage(host, options) {
     issues: [],
     disposed: false,
     picker: null,
-    // The tray's entries are the VIEW's draft, not the DOM's: this page
-    // rewrites itself whole on a repaint, and an upload started before one
-    // has to settle into the tray after it.
+    // The tray's entries are the VIEW's draft, not the DOM's: a bridge that
+    // gains attachments stands up a new box, and an upload started before
+    // that has to settle into the tray after it.
     files: [],
   };
-  let pendingCommentText = null;
   const commentDraft = watchUiState(uiAddress({
     deviceId: state.deviceId,
     entityId: state.issueId,
@@ -93,7 +100,6 @@ export function mountIssuePage(host, options) {
     sub: state.projectId,
   }), (saved) => {
     if (typeof saved?.body !== "string" || state.disposed) return;
-    pendingCommentText = null;
     state.draft = saved.body;
     paint();
   }, { debounceMs: 180 });
@@ -196,83 +202,142 @@ export function mountIssuePage(host, options) {
 
   // ---- painting ------------------------------------------------------------
 
-  /** What the page last drew. A paint that would draw the same thing again
-   *  is skipped outright: the feed moves every time an agent's state does,
-   *  and a redraw that changes nothing on screen would still take the reader's
-   *  caret and scroll with it. */
-  let painted = null;
+  /** What the page last drew, part by part (core/partPatch.js). A repaint
+   *  replaces only the parts whose HTML changed: the feed moves every time an
+   *  agent's state does, a draft write comes back through the cache on every
+   *  pause in typing, and a part stood up again under the reader takes their
+   *  caret, and the height of every picture in it, with it (#153). */
+  const held = { main: new Map(), rail: new Map(), timeline: new Map() };
+  /** Whether the host holds the issue page's frame, or something else (the
+   *  missing notice, or nothing yet). */
+  let framed = false;
+  let unframed = null;
   let commentFocused = false;
+  let openedAtTop = false;
 
-  /** Where the reader is typing when the page is about to be redrawn: which
-   *  field, and where the caret is in it. A push, a feed move or a write's
-   *  own repaint must not take the caret away — it comes back to the same
-   *  place in the field the redraw stood up. */
+  /** Where the reader is typing when a part is about to be redrawn: which
+   *  field, and where the caret is in it. The rail is a part like any other,
+   *  and a push or a write's own repaint must not take the caret out of its
+   *  labels field — it comes back to the same place in the field the redraw
+   *  stood up. The comment box is never redrawn under the reader. */
   const fieldSnapshot = () => {
     const active = document.activeElement;
     if (!active?.id || !host.contains(active)) return null;
-    return { id: active.id, value: active.value, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
+    return { element: active, id: active.id, start: active.selectionStart, end: active.selectionEnd, scrollTop: active.scrollTop };
   };
   const restoreField = (snapshot) => {
-    const field = snapshot && host.querySelector(`#${snapshot.id}`);
+    if (!snapshot || snapshot.element.isConnected) return;
+    const field = host.querySelector(`#${snapshot.id}`);
     if (!field) return;
-    if (snapshot.id === COMMENT_INPUT_ID && pendingCommentText !== null) field.value = snapshot.value;
     field.focus({ preventScroll: true });
     if (typeof snapshot.start === "number" && field.setSelectionRange) field.setSelectionRange(snapshot.start, snapshot.end);
     field.scrollTop = snapshot.scrollTop;
   };
 
-  const pageHtml = () => {
-    if (!state.issue) return state.loaded ? issueMissingHtml() : "";
-    return issuePageHtml(state.issue, {
-      columns: state.columns,
-      agentLabels: agentLabels(groups()),
-      agentProviders: agentProviders(groups()),
-      agentGroups: groups(),
+  const pageContext = () => ({
+    columns: state.columns,
+    agentLabels: agentLabels(groups()),
+    agentProviders: agentProviders(groups()),
+    agentGroups: groups(),
+    workspaces: projectWorkspaces(),
+    identities: state.issue.identities || {},
+    deviceId: state.deviceId,
+    projectId: state.projectId,
+    projectName: projectName(state.feed(), state.projectKey),
+    refLinks: referenceLinks({
+      place: place(),
+      issues: state.issues,
       workspaces: projectWorkspaces(),
+      agentGroups: groups(),
       identities: state.issue.identities || {},
-      deviceId: state.deviceId,
-      projectId: state.projectId,
-      projectName: projectName(state.feed(), state.projectKey),
-      refLinks: referenceLinks({
-        place: place(),
-        issues: state.issues,
-        workspaces: projectWorkspaces(),
-        agentGroups: groups(),
-        identities: state.issue.identities || {},
-      }),
-      rows: state.rows,
-      unreadFrom,
-      links: issueLinkRows(state.issue, place(), state.feed()),
-      watch: watch?.state() || null,
-      draft: state.draft,
-      labelsDraft: state.labelsDraft,
-      busy: state.busy,
-      sending: state.sending,
-      // Asked at paint, never cached: a greeting lands after a page is on
-      // screen, and a paperclip that waited for the next navigation would be
-      // a capability nobody got the benefit of.
-      attachable: carriesIssueAttachments(state.deviceId),
-      hasFiles: state.files.length > 0,
-    });
+    }),
+    rows: state.rows,
+    unreadFrom,
+    links: issueLinkRows(state.issue, place(), state.feed()),
+    watch: watch?.state() || null,
+    draft: state.draft,
+    labelsDraft: state.labelsDraft,
+    busy: state.busy,
+    sending: state.sending,
+    // Asked at paint, never cached: a greeting lands after a page is on
+    // screen, and a paperclip that waited for the next navigation would be
+    // a capability nobody got the benefit of.
+    attachable: carriesIssueAttachments(state.deviceId),
+    hasFiles: state.files.length > 0,
+  });
+
+  /** Anything but an issue: the missing notice, or nothing while the first
+   *  read is out. */
+  const paintUnframed = (html) => {
+    if (!framed && html === unframed) return;
+    framed = false;
+    unframed = html;
+    Object.values(held).forEach((parts) => parts.clear());
+    host.innerHTML = html;
+    unreadPill.sync();
+    reads.mark(); // the host was just rewritten; the mark lives among its children
+  };
+
+  const frame = () => {
+    if (framed) return;
+    framed = true;
+    unframed = null;
+    Object.values(held).forEach((parts) => parts.clear());
+    host.innerHTML = ISSUE_PAGE_FRAME;
+    reads.mark();
   };
 
   const paint = () => {
     if (state.disposed) return;
-    const html = pageHtml();
-    if (html === painted) return;
+    if (!state.issue) return paintUnframed(state.loaded ? issueMissingHtml() : "");
+    const parts = issuePageParts(state.issue, pageContext());
     const typing = fieldSnapshot();
-    painted = html;
-    host.innerHTML = html;
-    if (state.issue) wire();
-    unreadPill.sync();
-    reads.mark(); // the host was just rewritten; the mark lives among its children
+    frame();
+    const main = host.querySelector(".issue-page-main");
+    const painted = new Set(patchParts(main, held.main, parts.main));
+    patchParts(main.parentElement, held.rail, parts.rail, { after: main }).forEach((name) => painted.add(name));
+    if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
+    wire(painted);
+    syncCommentBox();
+    if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
-    if (state.commentId) {
-      const found = focusIssueComment(host, state.commentId, { scroll: !commentFocused });
-      if (found) commentFocused = true;
-      else if (!commentFocused) host.scrollTop = 0;
-    }
+    markRoutedComment();
   };
+
+  /** The timeline's rows, patched inside the list the `timeline` part stood
+   *  up; a list just stood up holds none yet. Answers whether any row was
+   *  painted, which is what the wiring and the unread pill listen for. */
+  function patchTimeline(rows, newList) {
+    if (newList) held.timeline.clear();
+    const list = host.querySelector(".issue-timeline");
+    return Boolean(list) && patchParts(list, held.timeline, rows).length > 0;
+  }
+
+  /** The comment box's live state, set on the one box this mount made: its
+   *  draft, whether it is sending, and whether it can be sent. A value is
+   *  only written when it differs — the reader's own keystrokes come back
+   *  through the cache as the value already in the box — so a restored or
+   *  cleared draft lands and a typed one is never touched. */
+  function syncCommentBox() {
+    const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
+    const send = host.querySelector('[data-issue-composer] button[type="submit"]');
+    if (!field || !send) return;
+    if (field.value !== state.draft) field.value = state.draft;
+    field.disabled = state.sending;
+    send.disabled = !canComment(state.draft, state.sending, state.files.length > 0);
+    send.textContent = commentSendLabel(state.sending);
+  }
+
+  /** The comment a link routed to: marked on every paint that stood its row
+   *  up, scrolled to once, and the page opened at the top — once — while the
+   *  row is not there yet. */
+  function markRoutedComment() {
+    if (!state.commentId) return;
+    const found = focusIssueComment(host, state.commentId, { scroll: !commentFocused });
+    if (found) commentFocused = true;
+    else if (!commentFocused && !openedAtTop) host.scrollTop = 0;
+    openedAtTop = true;
+  }
 
   /** Take one cached `issues.get` record: the issue, its timeline, and the labels the
    *  rail's field opens on. A field the reader is mid-edit in is left alone —
@@ -471,9 +536,9 @@ export function mountIssuePage(host, options) {
     };
   }
 
-  /// The comment box's tray, remounted after each repaint over the entries the
-  /// view is holding — which is what lets an upload started before a repaint
-  /// settle into the tray after it.
+  /// The comment box's tray, mounted with the box over the entries the view is
+  /// holding — which is what lets an upload started before a new box was stood
+  /// up settle into the tray after it.
   let comments = null;
   function wireCommentAttachments(form) {
     if (!carriesIssueAttachments(state.deviceId)) {
@@ -504,8 +569,9 @@ export function mountIssuePage(host, options) {
     const field = host.querySelector(`#${COMMENT_INPUT_ID}`);
     wireCommentAttachments(form);
     field.oninput = () => {
-      pendingCommentText = field.value;
+      state.draft = field.value;
       commentDraft.schedule({ body: field.value });
+      syncCommentBox();
     };
     field.onkeydown = (event) => {
       if (event.isComposing || event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return;
@@ -539,11 +605,12 @@ export function mountIssuePage(host, options) {
   const wireAttachments = () =>
     wireThreadAttachments(host.querySelector(".issue-page-main"), attachmentBodies.load, attachmentState);
 
-  function wire() {
-    wireRail();
-    wireComposer();
-    wireAttachments();
-    wireWatch();
+  /** Wire what a paint stood up, and nothing it left alone. */
+  function wire(painted) {
+    if (painted.has("head")) wireWatch();
+    if (painted.has("rail")) wireRail();
+    if (painted.has("composer")) wireComposer();
+    if (["body", "attachments", "timeline"].some((part) => painted.has(part))) wireAttachments();
   }
 
   function wireWatch() {

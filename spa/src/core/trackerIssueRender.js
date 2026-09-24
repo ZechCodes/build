@@ -112,17 +112,30 @@ const eventHtml = (row, context) => `<li class="issue-entry issue-event">
     ${whenHtml(row)}
   </li>`;
 
+/** One row, with the unread divider ahead of it when the reader's new
+ *  activity starts there. */
+const timelineRowHtml = (row, context) => {
+  const line = context.unreadFrom != null && context.unreadFrom === issueUnreadKey(row.key)
+    ? '<li class="thread-unread-line issue-unread-line" role="separator"><span>New</span></li>' : "";
+  return line + (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context));
+};
+
+/** The timeline as its list and one part per row, keyed by the row's record,
+ *  for a page that patches rows (core/partPatch.js): a push adds its row and
+ *  leaves every row already on screen, pictures and all, where it was. */
+export function timelineParts(rows, context) {
+  if (!rows.length) return { frame: `<p class="empty issue-empty">Nothing has happened on this issue yet.</p>`, rows: [] };
+  return {
+    frame: '<ul class="issue-timeline"></ul>',
+    rows: rows.map((row) => ({ name: row.key, html: timelineRowHtml(row, context) })),
+  };
+}
+
 /** The timeline: comments and events interleaved, ascending, in the order the
  *  bridge answered them. Never re-sorted here — see core/trackerTimeline.js. */
 export function timelineHtml(rows, context) {
-  if (!rows.length) return `<p class="empty issue-empty">Nothing has happened on this issue yet.</p>`;
-  return `<ul class="issue-timeline">${rows
-    .map((row) => {
-      const line = context.unreadFrom != null && context.unreadFrom === issueUnreadKey(row.key)
-        ? '<li class="thread-unread-line issue-unread-line" role="separator"><span>New</span></li>' : "";
-      return line + (row.type === "comment" ? commentHtml(row, context) : eventHtml(row, context));
-    })
-    .join("")}</ul>`;
+  const { frame, rows: parts } = timelineParts(rows, context);
+  return parts.length ? frame.replace("</ul>", `${parts.map((part) => part.html).join("")}</ul>`) : frame;
 }
 
 /// The ids `mountComposerAttachments` reads on the comment box. The textarea
@@ -152,7 +165,10 @@ const commentAttachHtml = () => `<div class="composer-bar">
 
 /// Whether the send press can be pressed. A comment that is only a screenshot
 /// is a comment, so a tray with something in it is as good as a draft.
-const canComment = (draft, busy, hasFiles) => !busy && (Boolean(draft.trim()) || hasFiles);
+export const canComment = (draft, busy, hasFiles) => !busy && (Boolean(draft.trim()) || hasFiles);
+
+/// What the send press says.
+export const commentSendLabel = (busy) => (busy ? "sending…" : "Comment");
 
 const commentFieldHtml = (draft, busy) =>
   `<textarea id="${COMMENT_INPUT_ID}" rows="3" ${fieldTraits("prose")} placeholder="Comment on this issue"${busy ? " disabled" : ""}>${esc(draft)}</textarea>`;
@@ -173,7 +189,7 @@ export const composerHtml = (draft, busy, attachable = false, hasFiles = false) 
     <label class="sr-only" for="${COMMENT_INPUT_ID}">Comment on this issue</label>
     ${commentBoxHtml(draft, busy, attachable)}
     <div class="row issue-composer-row">
-      <button class="btn primary" type="submit"${canComment(draft, busy, hasFiles) ? "" : " disabled"}>${busy ? "sending…" : "Comment"}</button>
+      <button class="btn primary" type="submit"${canComment(draft, busy, hasFiles) ? "" : " disabled"}>${commentSendLabel(busy)}</button>
     </div>
   </form>`;
 
@@ -238,7 +254,39 @@ export function issueRailHtml(issue, context) {
   </aside>`;
 }
 
-/** The whole page. */
+/** The page's frame: the column the issue reads down, which the rail follows. */
+export const ISSUE_PAGE_FRAME = '<div class="issue-page"><div class="issue-page-main"></div></div>';
+
+/**
+ * The page as parts, in order, for a surface that repaints only the parts
+ * that changed (core/partPatch.js): `main` fills the frame's column, `rail`
+ * follows it, and `timeline` fills the list the `timeline` part stands up.
+ *
+ * The comment box is keyed by its shape alone. Its draft, whether it is
+ * sending and whether it can be sent are updated in place by the page, so a
+ * keystroke, a push or a send never stands up a new box under the reader
+ * (#153); only a bridge gaining or losing attachments does.
+ */
+export function issuePageParts(issue, context) {
+  const timeline = timelineParts(context.rows, context);
+  return {
+    main: [
+      { name: "head", html: issueHeadHtml(issue, context) },
+      { name: "body", html: issueBodyHtml(issue, context.refLinks) },
+      { name: "attachments", html: issueAttachmentsHtml(issue.attachments) },
+      { name: "timeline", html: timeline.frame },
+      {
+        name: "composer",
+        html: composerHtml(context.draft, context.sending, context.attachable, context.hasFiles),
+        key: context.attachable ? "attachable" : "plain",
+      },
+    ],
+    rail: [{ name: "rail", html: issueRailHtml(issue, context) }],
+    timeline: timeline.rows,
+  };
+}
+
+/** The whole page, as one string. */
 export function issuePageHtml(issue, context) {
   return `<div class="issue-page">
     <div class="issue-page-main">

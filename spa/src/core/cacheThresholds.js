@@ -13,6 +13,12 @@ export const LATEST_COMMITS = 20;
 /** Conversation items read when the cache holds no sequence to read after. */
 export const LATEST_THREAD_ITEMS = 100;
 
+/** The newest items of a held conversation read again when something under
+ *  the cursor changed while nobody was listening (#120): a delivery status, a
+ *  settled message, a tool call's answer. A change further up than this is
+ *  left as it was; the reader scrolling there reads it fresh. */
+export const REPAIRED_THREAD_ITEMS = 50;
+
 /** Unpushed commits whose patches are kept. */
 export const UNPUSHED_COMMITS_MAX = 20;
 

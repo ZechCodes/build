@@ -22,21 +22,27 @@ async function loadDevice(file) {
   return gltf.scene;
 }
 
-test("all exported devices carry the silver finish without a runtime override", async () => {
+test("all exported devices carry the satin silver finish without a runtime override", async () => {
   // Linear glTF values agreed for the #77 Blender fixture, independent of the
   // temporary runtime override so that override can be removed safely.
   const finish = {
-    SpaceBlackAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    SpaceBlackAluminum: [[0.65, 0.66, 0.68], 1, 0.45],
+    SatinLidAluminum: [[0.30, 0.31, 0.33], 1, 0.50],
     MachinedSpaceBlackEdge: [[0.72, 0.73, 0.75], 1, 0.20],
-    TrackpadSpaceBlack: [[0.52, 0.53, 0.55], 0.9, 0.26],
-    DeepBlueAluminum: [[0.60, 0.61, 0.63], 1, 0.34],
+    TrackpadSpaceBlack: [[0.50, 0.51, 0.53], 1, 0.32],
+    DeepBlueAluminum: [[0.65, 0.66, 0.68], 1, 0.45],
     DeepBlueMachinedEdge: [[0.72, 0.73, 0.75], 1, 0.20],
     DeepBlueCeramicShield: [[0.70, 0.71, 0.72], 0.15, 0.38],
     CameraRing: [[0.70, 0.71, 0.73], 1, 0.16],
   };
+  const satinMaterials = new Set(["SpaceBlackAluminum", "SatinLidAluminum", "TrackpadSpaceBlack", "DeepBlueAluminum"]);
   const seen = new Set();
   for (const file of ["laptop.glb", "laptop-low.glb", "tablet.glb", "phone.glb"]) {
     const scene = await loadDevice(file);
+    if (file.startsWith("laptop")) {
+      assert.equal(meshNamed(scene, "laptop_lid_shell").material.name, "SatinLidAluminum");
+      assert.equal(meshNamed(scene, "laptop_hardware").material.name, "SpaceBlackAluminum");
+    }
     let matched = 0;
     scene.traverse((node) => {
       if (!node.isMesh) return;
@@ -46,12 +52,15 @@ test("all exported devices carry the silver finish without a runtime override", 
         const actual = [...material.color.toArray(), material.metalness, material.roughness];
         const values = [...expected[0], expected[1], expected[2]];
         actual.forEach((value, index) => assert(Math.abs(value - values[index]) < 1e-6,
-          `${file}: ${material.name} silver component ${index}`));
+          `${file}: ${material.name} finish component ${index}`));
+        if (satinMaterials.has(material.name)) {
+          assert.equal(material.clearcoat ?? 0, 0, `${file}: ${material.name} coat weight`);
+        }
         seen.add(material.name);
         matched += 1;
       }
     });
-    assert(matched > 0, `${file}: silver materials were exported`);
+    assert(matched > 0, `${file}: finish materials were exported`);
   }
   assert.deepEqual([...seen].sort(), Object.keys(finish).sort());
 });

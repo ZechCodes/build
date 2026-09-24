@@ -2,18 +2,22 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   ACTS,
-  COPY_IN,
-  COPY_OUT,
+  ARRIVAL_TOLERANCE,
+  BEAT_SECONDS,
   SCENES,
   SCENE_SCREENS,
   SCREEN_CUES,
   TOTAL_TRAVEL,
   actAt,
   actStart,
+  arrivalAt,
   at,
+  between,
   entrancePose,
   fullPose,
   POSES,
+  TRAVEL,
+  restAt,
   sceneClock,
   sceneSeconds,
   span,
@@ -21,34 +25,57 @@ import {
 import { createScreenResolver, cueAt, upcomingCues } from "../../src/film/cues.js";
 
 describe("the film's clock", () => {
-  it("runs eight acts for about 930 viewport heights, in order", () => {
+  it("runs eight acts for 710 viewport heights, in order", () => {
     assert.equal(ACTS.length, 8);
     assert.deepEqual(ACTS.map((act) => act.id), [1, 2, 3, 4, 5, 6, 7, 8]);
-    assert.equal(TOTAL_TRAVEL, 930);
+    assert.equal(TOTAL_TRAVEL, 710);
     assert.equal(actStart(1), 0);
-    assert.equal(actStart(2), 110);
-    assert.equal(actStart(8), 840);
+    assert.equal(actStart(2), 50);
+    assert.equal(actStart(8), 650);
+  });
+
+  it("rests the hero at the top and every act the same distance after the last", () => {
+    assert.equal(restAt(1), 0);
+    for (const act of ACTS.slice(1)) {
+      assert.ok(Math.abs(restAt(act.id) - restAt(act.id - 1) - TRAVEL) < 1e-9, `act ${act.id}`);
+    }
+    assert.ok(restAt(8) < TOTAL_TRAVEL, "act 8 keeps a tail before the film lets go");
+  });
+
+  it("places a move between two resting points", () => {
+    assert.equal(between(1, 0), restAt(1));
+    assert.equal(between(1, 1), restAt(2));
+    assert.equal(between(3, 0.5), restAt(3) + TRAVEL / 2);
+    assert.throws(() => between(8, 0.5));
+  });
+
+  it("counts a resting point as reached a hair before it", () => {
+    assert.equal(arrivalAt(4), restAt(4) - ARRIVAL_TOLERANCE);
+    assert.ok(ARRIVAL_TOLERANCE < TRAVEL * 0.03, "an arrival never falls inside the previous act's leaving");
   });
 
   it("places a local beat inside its act", () => {
-    assert.equal(at(1, 0.5), 55);
-    assert.equal(at(3, 0.2), 224);
-    assert.equal(span(2, 0.25, 0.45), 18);
+    assert.equal(at(1, 0.5), 25);
+    assert.equal(at(3, 0.2), 170);
+    assert.equal(span(2, 0.25, 0.45), 20);
   });
 
   it("reads an act and local progress back from a position", () => {
     assert.deepEqual(actAt(0), { act: 1, local: 0 });
-    assert.deepEqual(actAt(150), { act: 2, local: 40 / 90 });
-    assert.deepEqual(actAt(930), { act: 8, local: 1 });
+    assert.deepEqual(actAt(90), { act: 2, local: 0.4 });
+    assert.deepEqual(actAt(710), { act: 8, local: 1 });
     assert.deepEqual(actAt(-5), { act: 1, local: 0 });
   });
 
-  it("keeps a hold in every act between the scene's arrival and the copy's exit", () => {
-    for (const act of ACTS) {
-      const arrive = SCENES[act.id]?.arrive ?? COPY_IN;
-      const hold = act.length * (COPY_OUT - arrive);
-      assert.ok(hold >= 55, `act ${act.id} holds ${hold} units after arrival`);
+  it("swaps each act's displays in the middle of the move into it", () => {
+    for (const act of ACTS.slice(1)) {
+      const middle = (restAt(act.id - 1) + restAt(act.id)) / 2;
+      assert.ok(Math.abs(at(act.id, 0) - middle) < 1e-9, `act ${act.id}`);
     }
+  });
+
+  it("gives every act the same beat", () => {
+    assert.equal(BEAT_SECONDS, 5);
   });
 
   it("orders each device's display cues by time", () => {
@@ -91,9 +118,9 @@ describe("a scene's clock", () => {
     assert.throws(() => sceneClock(8));
   });
 
-  it("arrives inside its act, before the copy leaves", () => {
+  it("writes every storyboard with room for its beats", () => {
     for (const [actId, scene] of Object.entries(SCENES)) {
-      assert.ok(scene.arrive > 0 && scene.arrive < COPY_OUT, `act ${actId}`);
+      assert.ok(scene.arrive > 0 && scene.arrive < 0.5, `act ${actId}`);
       assert.ok(scene.seconds > 0 && scene.seconds < 12, `act ${actId} runs ${scene.seconds}s`);
     }
   });
@@ -114,6 +141,18 @@ describe("poses", () => {
     const gap = POSES.phone[4].x - POSES.laptop[4].x;
     assert.ok(gap <= 32, `centres ${gap}% apart`);
     assert.ok(POSES.phone[4].x <= 70);
+  });
+
+  it("lines act 8's devices up side by side, clear of each other and the frame", () => {
+    const extent = (device) => [POSES[device][8].x - POSES[device][8].w / 2, POSES[device][8].x + POSES[device][8].w / 2];
+    const [laptop, tablet, phone] = ["laptop", "tablet", "phone"].map(extent);
+    assert.ok(tablet[0] - laptop[1] >= 1.5, `laptop to tablet ${tablet[0] - laptop[1]}%`);
+    assert.ok(phone[0] - tablet[1] >= 1.5, `tablet to phone ${phone[0] - tablet[1]}%`);
+    assert.ok(laptop[0] >= 40, "clear of the copy on the left");
+    assert.ok(phone[1] <= 97, "clear of the right edge");
+    // True physical scale, as DIRECTION.md's lineup has it.
+    assert.ok(Math.abs(POSES.tablet[8].w / POSES.laptop[8].w - 27.2 / 34) < 0.01);
+    assert.ok(Math.abs(POSES.phone[8].w / POSES.laptop[8].w - 8.5 / 34) < 0.01);
   });
 
   it("raises the hero a little above centre", () => {

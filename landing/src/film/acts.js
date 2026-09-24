@@ -2,27 +2,35 @@
 // where each device sits, which display it shows. GSAP and the stage read it;
 // nothing here touches the DOM.
 
-// Pinned travel per act in viewport heights, from DIRECTION.md §2 as amended
-// in round 2: scroll only moves the devices between acts, so each act keeps a
-// hold after its arrival where nothing on the wheel changes and an overscroll
-// does not pull the next act in.
+// Every act has one resting point: the scroll position where its devices
+// have arrived, its copy comes in and its beat plays. Scroll between two
+// resting points only moves the devices, and it is the same distance every
+// time, so the rhythm is learnable by the second act. `rest` is the resting
+// point's local position in the act; the hero rests at the top of the page
+// and act 8 keeps a short tail before the film lets go of the page.
+export const TRAVEL = 100;
 export const ACTS = Object.freeze([
-  { id: 1, length: 110, layout: "left" },
-  { id: 2, length: 90, layout: "left" },
-  { id: 3, length: 120, layout: "left" },
-  { id: 4, length: 120, layout: "top" },
-  { id: 5, length: 130, layout: "top" },
-  { id: 6, length: 120, layout: "top" },
-  { id: 7, length: 150, layout: "top" },
-  { id: 8, length: 90, layout: "left" },
+  { id: 1, length: 50, rest: 0, layout: "left" },
+  { id: 2, length: 100, rest: 0.5, layout: "left" },
+  { id: 3, length: 100, rest: 0.5, layout: "left" },
+  { id: 4, length: 100, rest: 0.5, layout: "top" },
+  { id: 5, length: 100, rest: 0.5, layout: "top" },
+  { id: 6, length: 100, rest: 0.5, layout: "top" },
+  { id: 7, length: 100, rest: 0.5, layout: "top" },
+  { id: 8, length: 60, rest: 50 / 60, layout: "left" },
 ]);
 
-// Where, in each act, the device has settled and what a person reads begins.
-// From there the act's scene runs on the clock, in seconds, not on the wheel:
-// a scene's `at(act, local)` maps the storyboard's local progress onto those
-// seconds so the beats keep the numbers DIRECTION.md gives them. A `hold`
-// ([local, seconds]) is reading time added after that beat, so something a
-// person has to read gets seconds of its own without slowing what came before.
+// Every beat runs this long from the copy's arrival and ends still: the
+// stillness is what says "scroll on". One ease drives each beat's clock, so
+// every act slows into its conclusion the same way.
+export const BEAT_SECONDS = 5;
+export const BEAT_EASE = "sine.out";
+
+// Each act's beat is a storyboard scene: `arrive` and the locals its beats
+// are written in come from DIRECTION.md, `seconds` and `holds` give their
+// proportions. The film plays every scene in BEAT_SECONDS whatever its
+// storyboard length. A `hold` ([local, seconds]) is reading time added after
+// that beat.
 export const SCENES = Object.freeze({
   1: { arrive: 0.2, seconds: 6 },
   2: { arrive: 0.22, seconds: 3.5 },
@@ -30,8 +38,8 @@ export const SCENES = Object.freeze({
   4: { arrive: 0.2, seconds: 9 },
   5: { arrive: 0.15, seconds: 9.5 },
   6: { arrive: 0.1, seconds: 8.5 },
-  // The finding and its evidence are open from .55; the hold gives them at
-  // least four seconds before the approval comes up at .66.
+  // The finding and its evidence are open from .55; the hold keeps them up
+  // for a larger share of the beat before the approval comes up at .66.
   7: { arrive: 0.25, seconds: 9.5, holds: [[0.6, 2.7]] },
 });
 
@@ -54,19 +62,18 @@ export function sceneClock(actId) {
   };
 }
 
-// A scene's whole length in seconds, holds included.
+// A scene's whole storyboard length in seconds, holds included.
 export function sceneSeconds(actId) {
   return sceneClock(actId).at(actId, 1);
 }
 
-// Where the copy of an act comes in and goes out, on the clock, as the
-// playhead crosses these; and where the next act's move begins. The copy's
-// exit is also where a close-up that lifted to reading size goes back: it
-// stays readable for as long as the visitor stays in the act.
-export const COPY_IN = 0.03;
-export const COPY_OUT = 0.86;
-
 export const TOTAL_TRAVEL = ACTS.reduce((total, act) => total + act.length, 0);
+
+function actOf(actId) {
+  const act = ACTS.find((candidate) => candidate.id === actId);
+  if (!act) throw new Error(`unknown act ${actId}`);
+  return act;
+}
 
 export function actStart(actId) {
   let start = 0;
@@ -78,9 +85,7 @@ export function actStart(actId) {
 }
 
 export function actLength(actId) {
-  const act = ACTS.find((candidate) => candidate.id === actId);
-  if (!act) throw new Error(`unknown act ${actId}`);
-  return act.length;
+  return actOf(actId).length;
 }
 
 // A timeline position: `local` is 0..1 progress within the act.
@@ -91,6 +96,26 @@ export function at(actId, local) {
 // A span's duration in timeline units.
 export function span(actId, fromLocal, toLocal) {
   return actLength(actId) * (toLocal - fromLocal);
+}
+
+// An act's resting point on the timeline.
+export function restAt(actId) {
+  return at(actId, actOf(actId).rest);
+}
+
+// A point in the move from act `fromAct`'s resting point to the next one's,
+// `fraction` 0..1 of the way.
+export function between(fromAct, fraction) {
+  if (fromAct >= ACTS.length) throw new Error(`act ${fromAct} has no next act`);
+  return restAt(fromAct) + (restAt(fromAct + 1) - restAt(fromAct)) * fraction;
+}
+
+// A resting point counts as reached a hair before it, since a scroll
+// position is whole pixels and the resting point need not be.
+export const ARRIVAL_TOLERANCE = 0.5;
+
+export function arrivalAt(actId) {
+  return restAt(actId) - ARRIVAL_TOLERANCE;
 }
 
 // Which act, and how far into it, a timeline position is.
@@ -125,16 +150,16 @@ export const POSES = Object.freeze({
     5: { x: 50, y: 66, w: 60, faceCamera: 0 },
     6: { x: 50, y: 62, w: 58, faceCamera: 0 },
     7: HOST,
-    8: { x: 53, y: 74, w: 30, yaw: 4, pitch: 8 },
+    8: { x: 53.75, y: 68, w: 24.5, yaw: 4, pitch: 8 },
   }),
   phone: Object.freeze({
     4: { x: 64, y: 65, w: 17, yaw: -12, pitch: 2, roll: -2 },
-    8: { x: 89, y: 78.5, w: 7.5, yaw: -10, pitch: 2 },
+    8: { x: 92.65, y: 72.5, w: 6.1, yaw: -10, pitch: 2 },
   }),
   tablet: Object.freeze({
     "7-arrive": { x: 66, y: 62, w: 54, yaw: -8, pitch: 3 },
     7: { x: 66, y: 62, w: 54, faceCamera: 0 },
-    8: { x: 75, y: 77, w: 24, yaw: -8, pitch: 3 },
+    8: { x: 77.8, y: 71, w: 19.6, yaw: -8, pitch: 3 },
   }),
 });
 

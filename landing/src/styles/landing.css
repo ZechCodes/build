@@ -164,6 +164,32 @@ html:not([data-mode="film"]) body {
   scroll-margin-top: 2rem;
 }
 
+/* The document's rhythm, the film's without the stage: the scroll eases onto
+   an act's start when the visitor stops near it, and the act's copy comes
+   in as the act reaches the upper part of the window. That arrival is the
+   cue to stop. main.js marks each act as it arrives, once; without script
+   the copy is simply there. */
+html:not([data-mode]) {
+  scroll-snap-type: y proximity;
+}
+
+html:not([data-mode]) .act {
+  scroll-snap-align: start;
+}
+
+html[data-js="ready"]:not([data-mode]) .act__copy > * {
+  transition: opacity 0.7s ease-out, transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+html[data-js="ready"]:not([data-mode]) .act__copy > :nth-child(2) { transition-delay: 60ms; }
+html[data-js="ready"]:not([data-mode]) .act__copy > :nth-child(3) { transition-delay: 120ms; }
+html[data-js="ready"]:not([data-mode]) .act__copy > :nth-child(n + 4) { transition-delay: 180ms; }
+
+html[data-js="ready"]:not([data-mode]) .act:not([data-arrived]) .act__copy > * {
+  opacity: 0;
+  transform: translateY(1.5rem);
+}
+
 .act:first-of-type {
   border-top: 0;
 }
@@ -678,5 +704,11 @@ pre .line-you {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Reduced motion keeps the copy's arrival as a plain fade: no movement. */
+  html[data-js="ready"]:not([data-mode]) .act__copy > * {
+    transition: opacity 0.5s ease-out !important;
+    transform: none !important;
   }
 }

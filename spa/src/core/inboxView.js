@@ -64,6 +64,9 @@ import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
 import { messageOf } from "./text.js";
+import { followWatchedIssues } from "./watchedIssueFollower.js";
+import { issuesAddress } from "./trackerCache.js";
+import { mergeCachedAtomically } from "./localCache.js";
 
 let items = [];
 let runs = [];
@@ -106,6 +109,24 @@ const writeFolds = () => foldRecord?.write({ entries: [...folds] });
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
 const workspacesBeingFinished = new Set();
+// The watched issues that need the user (#125), followed through the cache
+// while the rail is mounted.
+let watchedIssues = null;
+// Issues the user stopped watching from their row, by row key: null while the
+// unwatch is in flight, then the time the bridge stamped it. A list the sync
+// layer asked for before the unwatch landed still says watched and writes
+// that over the row's optimistic move, so the row stays away until the cached
+// list has moved past the unwatch — a watch made after it brings it back.
+const unwatched = new Map();
+const watchedIssueRows = () => (watchedIssues?.entries() || []).filter((entry) => !heldAway(entry));
+
+function heldAway(entry) {
+  if (!unwatched.has(entry.key)) return false;
+  const stampMs = unwatched.get(entry.key);
+  if (stampMs == null || entry.anchorMs == null || entry.anchorMs <= stampMs) return true;
+  unwatched.delete(entry.key);
+  return false;
+}
 
 
 /** A box in the list has the caret. The reconciler keeps a row that is still
@@ -128,7 +149,8 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const unread = watchedWorkspaceEntries(workspaces, projects, items, runs).filter((entry) => entry.state === "unread");
+  const unread = [...watchedIssueRows(), ...watchedWorkspaceEntries(workspaces, projects, items, runs)]
+    .filter((entry) => entry.state === "unread");
   publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
 }
 
@@ -159,14 +181,20 @@ export function setInboxView(next) {
 }
 
 function draw() {
+  watchedIssues?.follow(projects);
   publishAttentionCount();
   const list = $("#inbox-list");
   if (!list) return;
   // The captures first: they are the account's unfinished business and belong
   // to no project, so they stand above the workspace rows on the flat face and
-  // above the blocks on the other.
+  // above the blocks on the other. The watched issues asking for the user come
+  // next, and sit in their project's block on the projects face.
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  const shown = withDeviceNames([...captureEntries(rows), ...watchedWorkspaceEntries(workspaces, projects, rows, runs)]);
+  const shown = withDeviceNames([
+    ...captureEntries(rows),
+    ...watchedIssueRows(),
+    ...watchedWorkspaceEntries(workspaces, projects, rows, runs),
+  ]);
   list.onclick = onListClick;
   list.onkeydown = onCaptureKeydown;
   // A different face is a different list: the one is emptied for the other,
@@ -402,6 +430,7 @@ const ROW_CONTROLS = [
   ["data-workspace-done", (control) => finishWorkspace(entryOf(control.dataset.workspaceDone))],
   ["data-done", (control) => finishRow(control.dataset.done)],
   ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
+  ["data-unwatch", (control) => unwatchIssue(entryOf(control.dataset.unwatch))],
   ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
   ["data-menu", (control) => openMenu(control.dataset.menu)],
   // Recent is one disclosure, and pressing it is the user saying so — from then
@@ -594,6 +623,41 @@ async function toggleMute(entry) {
   });
 }
 
+/** Stop watching a watched issue's row (#125) — its Mute. The cached list
+ *  says so at once, which takes the row away and says the same on the Issues
+ *  tab; the push that follows the unwatch confirms it, and a refusal puts the
+ *  watch back. Until the list agrees the row is held away (`unwatched`). */
+async function unwatchIssue(entry) {
+  if (!entry) return;
+  closeMenu();
+  await optimisticVerb(entry, {
+    write: async () => {
+      unwatched.set(entry.key, null);
+      const undo = await markCachedWatch(entry, false);
+      return () => {
+        unwatched.delete(entry.key);
+        return undo();
+      };
+    },
+    call: async () => {
+      const answer = await verbCall(entry)("issues.unwatch", { issue_id: entry.issueId });
+      unwatched.set(entry.key, Date.parse(answer?.issue?.updated_at || "") || entry.anchorMs);
+    },
+    failureSummary: `Couldn't stop watching ${entry.name}`,
+  });
+}
+
+/** Set one issue's watch in its project's cached list; answers the undo. */
+async function markCachedWatch(entry, watched) {
+  const address = issuesAddress(entry.deviceId, entry.projectId);
+  const setWatched = (value) => mergeCachedAtomically(address, (held) => held && {
+    ...held,
+    issues: (held.issues || []).map((issue) => (issue.id === entry.issueId ? { ...issue, watched: value } : issue)),
+  });
+  await setWatched(watched);
+  return () => setWatched(!watched);
+}
+
 /** Move the row to Recent until a new user or agent message. Nothing is
  *  destroyed, nothing is silenced: for a row with a conversation the daemon
  *  remembers how far every agent conversation had got, and the next message
@@ -731,6 +795,8 @@ export function unmountInboxList() {
   foldRecord?.dispose();
   recentRecord?.dispose();
   menuRecord?.dispose();
+  watchedIssues?.dispose();
+  watchedIssues = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
   foldRecord = null;
   recentRecord = null;
@@ -763,6 +829,7 @@ export function mountInboxList() {
     draw();
   });
   initCaptureRows({ onChange: draw, entryOf });
+  watchedIssues = followWatchedIssues({ onChange: drawFromFeed });
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost
   // device holds and shutting the verbs that would have asked it.
@@ -782,6 +849,7 @@ export function mountInboxList() {
       const live = new Set([
         ...items.map(entryKeyOf),
         ...workspaces.map(workspaceEntryKey),
+        ...watchedIssueRows().map(keyOf),
       ]);
       for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
       const merged = mergedItems();

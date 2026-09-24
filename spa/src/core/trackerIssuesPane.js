@@ -248,6 +248,7 @@ export function mountIssuesPane(host, options) {
         activityByAgent: activity?.read(),
         doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession) : null,
         sessionStartedMs: carriesDoneSinceLeft() ? doneSessionStart(state.userSession) : null,
+        columns: state.columns,
       }),
     },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },

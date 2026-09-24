@@ -10,5 +10,8 @@ Issues and pull requests are welcome.
   full gate recipes, follow [`AGENTS.md`](AGENTS.md).
 - **Security problems** are reported privately; see [SECURITY.md](SECURITY.md).
 
-By contributing, you agree that your contributions are licensed under the
-project's [license](LICENSE) (AGPL-3.0-only).
+Pull requests need a signed [Contributor License Agreement](CLA.md). A bot
+asks on your first pull request; you sign once by replying with the comment it
+gives you, and the signature covers your later pull requests.
+
+The project is published under the [license](LICENSE) (AGPL-3.0-only).

@@ -19,6 +19,7 @@ import { notifyError } from "./notify.js";
 import {
   issuesAddress,
   issuesQueryAddress,
+  issuesQueryRecordAt,
   issuesRecord,
   issuesRecordAt,
   readIssuesQueryRecord,
@@ -28,7 +29,8 @@ import {
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
-import { deviceWatch } from "./deviceReconnect.js";
+import { trailingRead } from "./trailingRead.js";
+import { deviceSession, deviceWatch } from "./deviceReconnect.js";
 import {
   DEFAULT_FILTERS,
   filterIssues,
@@ -78,7 +80,9 @@ export function mountIssuesPane(host, options) {
     picker: null,
     composer: null,
     focusIssue: null,
-    readSerial: 0,
+    // When the cache took each list this pane can paint from (#119).
+    queryAt: 0,
+    wholeAt: 0,
   };
   const uiScope = { deviceId: state.deviceId, entityId: state.projectId, view: `issues:${state.projectKey || "project"}` };
   const uiSnapshot = () => ({
@@ -286,11 +290,23 @@ export function mountIssuesPane(host, options) {
   let querySerial = 0;
   let queryLoaded = false;
 
+  /** Whether the whole list landed no earlier than the filtered answer. The pass
+   *  behind this tab (core/cacheSync.js) pulls only the whole list, so after a
+   *  gap no push described, it is the newer news about these same issues and
+   *  the filters are applied to it locally, as before the first answer (#119). */
+  const wholeListIsNewer = () => state.wholeAt >= state.queryAt;
+
   async function paintFromQuery(params, serial = querySerial) {
-    const record = await readIssuesQueryRecord(state.deviceId, state.projectId, params);
+    const [record, at] = await Promise.all([
+      readIssuesQueryRecord(state.deviceId, state.projectId, params),
+      issuesQueryRecordAt(state.deviceId, state.projectId, params),
+    ]);
     if (state.disposed || serial !== querySerial || !record) return;
     queryLoaded = true;
-    state.unscopedShown = sortIssues(record.issues);
+    state.queryAt = at;
+    state.unscopedShown = wholeListIsNewer()
+      ? filterIssues(state.unscoped, shownFilters())
+      : sortIssues(record.issues);
     state.shown = kept(state.unscopedShown);
     details?.updateIssues(state.shown);
     // On a cold device the background whole-list pass may not have landed
@@ -329,7 +345,8 @@ export function mountIssuesPane(host, options) {
     state.unscoped = sortIssues(record.issues);
     state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);
-    if (!queryLoaded) {
+    state.wholeAt = at;
+    if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterIssues(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
     }
@@ -356,14 +373,22 @@ export function mountIssuesPane(host, options) {
    *  that mean something on a board are sent; the status is not. */
   const shownFilters = () => (state.view === BOARD_VIEW ? { ...state.filters, status: "" } : state.filters);
 
-  async function refresh() {
+  /** Read the list again. A busy project pushes every flush, so a read asked
+   *  for while one is out waits for it and runs once after it (#119): every
+   *  answer lands, and a push is never answered by a read begun before it. */
+  let listReads = null;
+  function refresh() {
+    listReads ||= trailingRead(readList, { generationOf: () => deviceSession(state.deviceId) });
+    return listReads();
+  }
+
+  async function readList() {
     if (state.disposed) return;
-    const serial = ++state.readSerial;
     const filters = shownFilters();
     try {
       const params = issueListParams(state.projectId, filters);
       const answer = await state.callRpc("issues.list", params);
-      if (state.disposed || serial !== state.readSerial) return;
+      if (state.disposed) return;
       const columns = state.columns;
       // The fetch is a writer only. The matching cache announcement above is
       // what re-reads this record and repaints the pane.

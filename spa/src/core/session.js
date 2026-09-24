@@ -18,9 +18,18 @@
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
+import { peerHeardAt } from "./pathLiveness.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 
 export { DEFAULT_RPC_TIMEOUT_MS };
+
+/** How long a restarted path has to show it carries this session (#123).
+ *
+ *  Longer than the probe's ping on purpose: a restart on a healthy path comes
+ *  back to whatever the bridge queued while it was down, and the pong waits
+ *  behind it — but any frame at all ends the wait. A path that carries nothing
+ *  for this long after its restart says `connected` is not this session's. */
+export const CARRY_CONFIRM_MS = 10000;
 
 /** Whether this rejection is the PATH's deadline: a frame that went out and was
  *  never acknowledged, which is the one failure that is about the wire rather
@@ -257,6 +266,41 @@ export async function openSession({
      */
     watchRecovery: (isRecovering) => {
       peerIsRecovering = typeof isRecovering === "function" ? isRecovering : () => false;
+    },
+
+    /**
+     * Does the channel this session rides carry it? Asked after an ICE restart
+     * reports `connected` (#123), because that word is ICE's and DTLS's: a
+     * bridge that restarted answers the restart's offer as a fresh session, and
+     * the browser's channels still read `open` from the association the old
+     * process took with it. Nothing crosses them.
+     *
+     * Asks again each time a ping goes unanswered: a path that has just come
+     * back can lose the first question into an association still being made.
+     * `true` once a ping is answered or any frame, or part of one, arrives
+     * after asking; `false` when neither happens inside `timeoutMs`, when the
+     * channel refuses the question outright, or when there is no channel. Severs
+     * nothing and never rejects: what a dead restart costs is the link's call,
+     * and the path probe's own verdict stays latched for real deadlines.
+     */
+    confirmCarried: async (timeoutMs = CARRY_CONFIRM_MS) => {
+      const riding = carrierSwitch.active();
+      const asked = Date.now();
+      const left = () => timeoutMs - (Date.now() - asked);
+      while (riding && !severed && left() > 0) {
+        try {
+          await rpc.call("ping", {}, { timeoutMs: Math.min(PING_TIMEOUT_MS, left()), carrier: riding });
+          return true;
+        } catch (error) {
+          // Any part counts, not only a whole frame: a restart that reaches
+          // the same bridge resumes what was in flight, and a large answer
+          // holds the pong behind it on the ordered channel. A part arriving
+          // after asking can only come from a process that reaches us.
+          if (peerHeardAt(rpc, riding) > asked) return true;
+          if (!error?.timedOut) return false;
+        }
+      }
+      return false;
     },
 
     /**

@@ -242,6 +242,7 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
     signal: (method, params) => failingAs("refused", session.call(method, params)),
     fetchIceServers: () => failingAs("ice-servers", fetchIceServers()),
     onPush: session.onPush,
+    confirmCarried: () => session.confirmCarried(),
     diagnosticId: `${deviceId}:${session.sessionId}`,
     onConnected: () => {
       restartLease?.release();
@@ -312,6 +313,9 @@ async function connectOverChannels(deviceId, attempt) {
     // would otherwise keep showing the old word until something unrelated
     // redrew it (#31).
     link.onPathChanged(announceDeviceTransport);
+    // And on every restart it begins and ends: a path being put right is a
+    // machine being reconnected to, and the ring says so (#123).
+    link.recovery.subscribe(announceDeviceTransport);
     if (!attempt.own(link, (owned) => owned.close())) {
       throw new Error(`connection attempt for ${deviceId} was cancelled`);
     }
@@ -770,6 +774,15 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   let initialGreeting = true;
   session.onCarrier(() => greetLiveBridge(context, {
     suppressFailure: !initialGreeting,
+    isAuthoritative: () => lifetime.current(),
+    lifetime,
+  }));
+  // A restart that put a failed path right may have landed on a bridge that
+  // restarted under it: that process answered the offer and carries this
+  // session's id and key, and holds nothing else — no greeting, so no
+  // subscriptions and no pushes (#123). The channel it rides has not changed,
+  // so no carrier change greets it; this does, and reads everything again.
+  link.onRestored(() => greetLiveBridge(context, {
     isAuthoritative: () => lifetime.current(),
     lifetime,
   }));

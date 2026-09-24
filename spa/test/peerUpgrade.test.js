@@ -208,6 +208,8 @@ const fakeLink = () => ({
   // Every real link tells its owner when the way it is carrying changes, so the
   // ring can redraw the word (core/peerLink.js, issue #31).
   onPathChanged: vi.fn(() => () => {}),
+  // And when a failed path carries again, so the session is greeted again (#123).
+  onRestored: vi.fn(() => () => {}),
   transportPath: () => null,
   close: vi.fn(),
 });

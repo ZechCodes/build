@@ -45,7 +45,7 @@ export function openCarrier({ socket, channel, sessionId, frames = peerFrames() 
  * its own consent checks.
  */
 export function peerFrames() {
-  return { at: 0, connected: false };
+  return { at: 0, partAt: 0, connected: false };
 }
 
 /** `WebSocket.OPEN`, as a number rather than as a global: this module is read
@@ -90,6 +90,7 @@ function carrierCore(frames) {
   return {
     deliver: (envelope) => {
       frames.at = Date.now();
+      frames.partAt = frames.at;
       for (const listener of [...envelopeListeners]) listener(envelope);
     },
     /** `reason` travels to the close listeners: a wire that was shut on
@@ -106,6 +107,9 @@ function carrierCore(frames) {
       onClose: subscribe(closeListeners),
       /** When a frame last arrived on any wire of this peer. */
       peerFrameAt: () => frames.at,
+      /** When any part of a frame last arrived: a large envelope crosses as
+       *  many, and a path still carrying one has not completed a frame yet. */
+      peerPartAt: () => frames.partAt || 0,
       /** Whether the browser's own ICE still holds this path open. */
       peerIsConnected: () => frames.connected === true,
     },
@@ -156,6 +160,9 @@ function channelCarrier(channel, frames) {
   channel.addEventListener("close", () => shutDown());
   channel.addEventListener("error", () => shutDown());
   channel.addEventListener("message", (event) => {
+    // Before reassembly: a part is proof this path reaches the peer even while
+    // the envelope it belongs to is still arriving (#123).
+    frames.partAt = Date.now();
     const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
     let envelope;
     try {

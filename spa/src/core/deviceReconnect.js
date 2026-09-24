@@ -64,6 +64,10 @@ export function onDeviceReachable(deviceId, fn) {
   return stop;
 }
 
+/** The session this machine is on right now, or null: what a read out on it
+ *  belongs to, so a read on the next session never waits behind it (#119). */
+export const deviceSession = (deviceId) => contextFor(deviceId)?.session ?? null;
+
 /** One machine as core/transientRead.js asks about it. */
 export const deviceWatch = (deviceId) => ({
   away: () => deviceIsAway(deviceId),

@@ -32,6 +32,7 @@ const pushed = async () => {
 };
 
 vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
   deviceWatch: () => ({ away: () => false, reconnecting: () => false, moved: () => () => {} }),
 }));
 

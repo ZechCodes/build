@@ -49,6 +49,7 @@ let away = true;
 let reconnecting = true;
 let movedListeners = new Set();
 vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
   deviceWatch: () => ({
     away: () => away,
     reconnecting: () => reconnecting,

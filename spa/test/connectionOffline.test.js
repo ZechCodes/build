@@ -180,6 +180,14 @@ function fakePeerLink(deviceId) {
     // Every real link tells its owner when the way it is carrying changes, so
     // the ring can redraw the word (core/peerLink.js, issue #31).
     onPathChanged: vi.fn(() => () => {}),
+    // A failed path put right by its restart, which may have landed on a
+    // bridge that restarted under it (#123).
+    restored: new Set(),
+    onRestored: vi.fn((fn) => {
+      link.restored.add(fn);
+      return () => link.restored.delete(fn);
+    }),
+    restore: () => link.restored.forEach((fn) => fn()),
     transportPath: () => null,
     close: vi.fn(),
   };
@@ -224,6 +232,9 @@ function fakeSession(deviceId, onLost = () => {}) {
     watchRecovery: vi.fn(),
     fireCarrier: () => carrierChanged(),
     reattachSignaling: vi.fn(async () => {}),
+    // Whether a restarted path carries this session (#123). The answer names
+    // the machine so a case can tell which session a link was handed.
+    confirmCarried: vi.fn(async () => `carried by ${deviceId}`),
     closed: false,
     close: vi.fn(() => {
       session.closed = true; // a session its client closed reports nothing more
@@ -390,6 +401,40 @@ describe("per-device connections", () => {
 
     expect(boardReads("dev-a")).toBeGreaterThan(0);
     expect(rendezvousFor.get("dev-a").close).toHaveBeenCalled();
+  });
+
+  // #123: an ICE restart can land on a bridge process that restarted under the
+  // session. It carries the same id and key and holds nothing else — no
+  // greeting, so no subscriptions and no pushes — and the channel it rides has
+  // not changed, so no carrier change greets it. The restored path does.
+  // (The greeting is what replays the subscriptions and refetches every
+  // surface: core/changeEvents.js greetBridge, tested there.)
+  it("greets the machine again when its failed path is restored", async () => {
+    await connectEveryDevice();
+    const session = lastSession("dev-a");
+    const hellos = () => session.call.mock.calls.filter(([method]) => method === "session.hello").length;
+    const greeted = hellos();
+    expect(greeted).toBeGreaterThan(0);
+
+    linksFor.get("dev-a").restore();
+    await flush();
+
+    await vi.waitFor(() => expect(hellos()).toBeGreaterThan(greeted));
+    expect(lastSession("dev-a")).toBe(session); // the same session, greeted again
+    expect(contextFor("dev-a").offline).toBe(false);
+  });
+
+  // The link only knows a restart landed on a dead process if it can ask the
+  // session. Without the question it takes every restart as carried.
+  it("hands each peer link its own session's carry check", async () => {
+    await connectEveryDevice();
+    const handed = wire.openPeerLink.mock.calls.map(([options]) => options.confirmCarried);
+    expect(handed.length).toBeGreaterThan(0);
+    expect(handed.every((ask) => typeof ask === "function")).toBe(true);
+    await expect(handed.at(-1)()).resolves.toMatch(/^carried by dev-/);
+    const asked = [...handedOut.values()].flat().filter((one) => one.confirmCarried.mock.calls.length > 0);
+    expect(asked).toHaveLength(1);
+    expect(await handed.at(-1)()).toBe(`carried by ${asked[0].deviceId}`);
   });
 
   it("closes a failed handoff instead of treating a network error as an old bridge", async () => {

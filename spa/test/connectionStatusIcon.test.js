@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const recovery = vi.hoisted(() => ({ states: [], listener: null }));
-const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map() }));
+const contexts = vi.hoisted(() => ({ live: [], listener: null, paths: new Map(), restoring: new Set() }));
 
 vi.mock("../src/connection.js", () => ({
   deviceRecoverySnapshot: () => recovery.states,
@@ -34,8 +34,8 @@ vi.mock("../src/core/deviceContexts.js", () => ({
   liveContexts: () => contexts.live.map((deviceId) => ({
     deviceId,
     // The peer link is what measured the path this machine is carrying on.
-    peerLink: contexts.paths.has(deviceId)
-      ? { transportPath: () => contexts.paths.get(deviceId) }
+    peerLink: contexts.paths.has(deviceId) || contexts.restoring.has(deviceId)
+      ? { transportPath: () => contexts.paths.get(deviceId) || null, restoring: () => contexts.restoring.has(deviceId) }
       : null,
   })),
   onDeviceStateChanged: (listener) => {
@@ -76,6 +76,7 @@ beforeEach(() => {
   App.devices = [{ id: "a", name: "Studio" }, { id: "b", name: "Laptop" }];
   contexts.live = ["a", "b"];
   contexts.paths = new Map();
+  contexts.restoring = new Set();
   recovery.states = [];
 });
 
@@ -156,6 +157,22 @@ describe("a machine being reconnected to", () => {
     recoveryMoved([]);
 
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  // #123: before this, a machine stuck restarting its path against a bridge
+  // that had restarted showed a green ring for as long as it stayed stuck.
+  it("radiates while a connected machine's path is being restored in place", () => {
+    mountConnectionStatus();
+    contexts.restoring = new Set(["a"]);
+    contexts.listener();
+
+    expect(icon().dataset.state).toBe("attempting");
+    expect(icon().getAttribute("aria-label")).toBe("Reconnecting to Studio");
+
+    contexts.restoring = new Set();
+    contexts.listener();
+    expect(icon().dataset.state).toBe("connected");
+    expect(centre().textContent).toBe("2");
   });
 
   it("hears the device list move as well as the supervisor", () => {

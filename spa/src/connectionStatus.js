@@ -51,6 +51,9 @@ function devicesNow() {
     id: device.id,
     name: device.name,
     live: live.has(device.id),
+    // Its link is putting a failed path right in place (#123): held, but not
+    // answering until the restart lands.
+    restoring: live.get(device.id)?.peerLink?.restoring?.() === true,
     // How that machine is carrying, as its own peer link measured it
     // (core/transportPath.js). Null until the first sample lands, which the
     // row says as the plain word.

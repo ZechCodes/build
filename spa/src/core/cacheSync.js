@@ -25,6 +25,7 @@
 // routed workspace's reads are foreground; everything else rides behind
 // whatever a surface is waiting on.
 
+import { trailingRead } from "./trailingRead.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { watchChanges } from "./changeEvents.js";
@@ -410,7 +411,7 @@ async function readProjectIssues(context, view) {
  *  back to phase 1's five (core/trackerModel.js). A bridge that serves no
  *  tracker at all refuses both and writes nothing, which is a cold Issues tab
  *  and never an error the reader sees. */
-async function readIssues(context, projectId) {
+async function readIssuesNow(context, projectId) {
   const answer = await ask(context, "issues.list", { project_id: projectId }, "background");
   if (!answer || !context.active()) return;
   const held = await readIssuesRecord(context.deviceId, projectId);
@@ -419,6 +420,20 @@ async function readIssues(context, projectId) {
     : (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
   if (!context.active()) return;
   await writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns));
+}
+
+/** One project's list read at a time on a session (#119). A push heard while
+ *  it is out is read once after it, under the newest context that asked. */
+const latestIssueReads = new Map();
+const issueReads = trailingRead((key) => {
+  const { context, projectId } = latestIssueReads.get(key);
+  return readIssuesNow(context, projectId);
+}, { generationOf: (key) => sessionOf(latestIssueReads.get(key).context.deviceId) });
+
+function readIssues(context, projectId) {
+  const key = JSON.stringify([context.deviceId, projectId]);
+  latestIssueReads.set(key, { context, projectId });
+  return issueReads(key);
 }
 
 /**
@@ -1216,8 +1231,12 @@ const applyTerminals = (context, entityId, terminals) =>
  *  and dropped altogether past 200 of them — so there is one answer either
  *  way, which is to read the project's list again. The entity here is a
  *  PROJECT, not a workspace: every other applier below is handed a board row's
- *  entity, and this one is handed the project the issues belong to. */
-const applyIssues = (context, projectId) => readIssues(context, projectId);
+ *  entity, and this one is handed the project the issues belong to. Not
+ *  awaited: a read folded behind one already out settles only after the read
+ *  that follows it, and the rest of the flush has nothing to wait for. */
+const applyIssues = (context, projectId) => {
+  void readIssues(context, projectId);
+};
 
 /** One writer per kind, in the order a reader would want them applied: what
  *  the row says, what was said in it, then the surfaces under it. */

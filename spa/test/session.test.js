@@ -2,7 +2,7 @@
 // peer connection and by nothing else (spec rules 1 and 2).
 
 import { describe, it, expect, vi } from "vitest";
-import { DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
+import { CARRY_CONFIRM_MS, DEFAULT_RPC_TIMEOUT_MS, openSession, replyOrNothing } from "../src/core/session.js";
 import { ANSWER_TIMEOUT_MS } from "../src/core/sessionRpc.js";
 import { PING_TIMEOUT_MS } from "../src/core/pathLiveness.js";
 import { PATH_PROBE_EVENT } from "../src/core/pathProbe.js";
@@ -40,8 +40,9 @@ function fakeCarrier({ sendFails = null } = {}) {
     // What a real carrier tells a liveness reader about the path under it
     // (core/carrier.js): when a frame last arrived on any channel of this peer,
     // and whether the browser's own ICE still holds it open.
-    frames: { at: 0, connected: false },
+    frames: { at: 0, partAt: 0, connected: false },
     peerFrameAt: () => carrier.frames.at,
+    peerPartAt: () => carrier.frames.partAt,
     peerIsConnected: () => carrier.frames.connected === true,
     send: async (envelope) => {
       if (sendFails) throw new Error(sendFails);
@@ -555,6 +556,99 @@ describe("a session whose path has silently died", () => {
       expect(peer.sent.map((sent) => sent.frameFields.payload.method)).toEqual(["thread.post"]);
       expect(events.lost).toBe(0);
     });
+  });
+});
+
+// ---- an ICE restart that reached a different bridge (#123) ------------------
+
+// After the bridge restarts, an ICE restart re-attaches this session to the NEW
+// bridge process: it mints the id afresh, ICE and DTLS connect, and the
+// browser's channels still read `open` from the dead process's association.
+// Nothing crosses them. Only an answer on the channel says the restart landed.
+describe("confirming a restarted path carries this session", () => {
+  const onFakeTime = async (body) => {
+    const stood = await carrying();
+    vi.useFakeTimers();
+    try {
+      return await body(stood);
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it("is carried when the ping on the channel is answered", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(replyTo(peer).method).toBe("ping");
+      answer(peer, {});
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  it("is carried when a frame arrives while the ping is behind a backlog", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(1);
+      peer.frames.at = Date.now();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  // A path that reaches the same bridge resumes whatever was in flight, and an
+  // answer too large to finish inside the window holds the pong behind it on
+  // the ordered channel. Its parts arriving is proof enough.
+  it("is carried while the pong is behind a large envelope still arriving", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(1);
+      peer.frames.partAt = Date.now();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  // A path that has just come back can lose the first question into an
+  // association still being made; the answer to a later one is as good.
+  it("asks again when a ping goes unanswered, and is carried by a later answer", async () => {
+    await onFakeTime(async ({ session, peer }) => {
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(PING_TIMEOUT_MS + 1);
+      const pings = peer.sent.filter((sent) => sent.frameFields.payload.method === "ping");
+      expect(pings).toHaveLength(2);
+      answer(peer, {});
+      expect(await confirmed).toBe(true);
+    });
+  });
+
+  it("is not carried when nothing comes back, however connected ICE says it is", async () => {
+    await onFakeTime(async ({ session, peer, events }) => {
+      peer.frames.connected = true;
+      peer.frames.at = Date.now(); // before the restart: says nothing about after it
+      await vi.advanceTimersByTimeAsync(1);
+      const confirmed = session.confirmCarried();
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(await confirmed).toBe(false);
+      // The verdict is the caller's to act on: asking severs nothing.
+      expect(events.lost).toBe(0);
+      // It kept asking for the whole window, and stopped at its end.
+      const pings = () => peer.sent.filter((sent) => sent.frameFields.payload.method === "ping").length;
+      expect(pings()).toBe(Math.ceil(CARRY_CONFIRM_MS / PING_TIMEOUT_MS));
+      await vi.advanceTimersByTimeAsync(CARRY_CONFIRM_MS);
+      expect(pings()).toBe(Math.ceil(CARRY_CONFIRM_MS / PING_TIMEOUT_MS));
+    });
+  });
+
+  it("is not carried when the channel refuses the question outright", async () => {
+    const stood = await opened();
+    await stood.session.peer(fakeCarrier({ sendFails: "the channel closed" }));
+    expect(await stood.session.confirmCarried()).toBe(false);
+  });
+
+  it("is not carried when the session has no channel to ask on", async () => {
+    const { session } = await opened();
+    expect(await session.confirmCarried()).toBe(false);
   });
 });
 

@@ -229,6 +229,23 @@ describe("what the inbox lists", () => {
     expect(html).toContain("data-menu");
   });
 
+  // An unread issue is not an agent that stopped: its dot stays grey and the
+  // badge carries the news. Agents keep amber for unread.
+  it("keeps an unread issue's dot grey while an unread agent row goes amber", () => {
+    const entries = listed([
+      issue({ unread: true, unread_count: 2, unread_reason: "comment" }),
+      branch({ unread: true, unread_count: 1, unread_reason: "done" }),
+    ]);
+    const issueEntry = entries.find((entry) => entry.kind === "issue");
+    const agentEntry = entries.find((entry) => entry.kind !== "issue");
+    expect(issueEntry.state).toBe("unread");
+    const issueHtml = inboxRowHtml(issueEntry, {});
+    expect(issueHtml).toContain("sdot-issue");
+    expect(issueHtml).not.toContain("sdot-unread");
+    expect(issueHtml).toContain('<span class="badge inbox-unread">2</span>');
+    expect(inboxRowHtml(agentEntry, {})).toContain("sdot sdot-unread");
+  });
+
   it("routes an issue to its own surface", () => {
     expect(entryRoute(issue())).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
   });

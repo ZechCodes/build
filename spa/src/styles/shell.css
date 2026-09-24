@@ -350,10 +350,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 
 /* The three states the dot says, in the inbox's own vocabulary: a pulse ONLY
    while an agent works, amber while something waits on you, quiet once read.
+   Issues never use amber: their dot is always the quiet grey, so an unread
+   issue cannot read as an agent that stopped (its badge carries the news).
    (sdot-pulse is defined beside the shared dot in styles.css.) */
 .sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
 .sdot-unread { background:var(--amber); }
-.sdot-inactive { background:var(--line); border:1px solid var(--dim); }
+.sdot-inactive, .sdot-issue { background:var(--line); border:1px solid var(--dim); }
 @media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
 
 /* Done and the ⋯ menu: overlaid on the row's top-right, present only while

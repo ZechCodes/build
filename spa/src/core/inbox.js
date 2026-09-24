@@ -954,6 +954,11 @@ function rowTooltip(entry) {
   return [entry.title, titleProject(entry), entry.reason].filter(Boolean).join(" — ");
 }
 
+/** The dot's state class. An issue is never an agent, so its dot stays grey in
+ *  every state: amber there would read as an agent that stopped. The unread
+ *  badge still says it has news. */
+const dotClass = (entry) => (entry.kind === "issue" ? "sdot-issue" : `sdot-${entry.state}`);
+
 /** One inbox row, in two lines: the state dot and what this is, with the unread
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
@@ -979,7 +984,7 @@ export function inboxRowHtml(entry, ui = {}) {
   return `<div class="${classes}" data-key="${esc(entry.key)}"${
     entry.entityId ? ` data-entity="${esc(entry.entityId)}"` : ""
   } title="${esc(rowTooltip(entry))}">
-    <span class="sdot sdot-${entry.state}" title="${entry.state}"></span>
+    <span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>

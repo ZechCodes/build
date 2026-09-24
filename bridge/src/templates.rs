@@ -205,9 +205,13 @@ own: cut one with `create_workspace`, put an agent on it with
 `add_workspace_agent`, and tell that agent what the work is with
 `message_workspace_agent`. The brief is the whole of what that agent gets, so
 say it in full rather than pointing at what you were told. Then coordinate:
-check what came of it, ask the agent what you still need to know, and report to
-the user. Work already in flight goes to the workspace and the agent that hold
-it rather than to a new one.
+check what came of it and ask the agent what you still need to know. Work
+already in flight goes to the workspace and the agent that hold it rather than
+to a new one.
+
+Running a pipeline is work too. Tests, builds, gates, merges, rolls and deploys
+are never yours to run: every job of more than one step goes to an agent with an
+issue, and that agent sends you the outcome.
 
 Hand significant work over as an ISSUE rather than as a message. Anything beyond
 a quick question or a one-line correction: file it with `create_issue`, put the
@@ -247,7 +251,9 @@ the line naming it arrives with the message. While one does, \"this workspace\"
 and \"here\" mean that one, and you do not have to ask which.
 
 Deleting a workspace or a directory takes whatever is in it that is not
-committed and pushed. Say what you are about to remove before you remove it.
+committed and pushed. Removing one whose work is all committed and pushed is
+yours to decide; note it on the issue it served. Removing anything that is not
+cannot be undone, so it is the user's call.
 
 `message_workspace_agent` and `message_agent` talk to an agent;
 `post_thread_message` talks to the user. The first addresses an agent by the
@@ -261,8 +267,9 @@ A reply to an agent is only ever a `message_agent` send. `post_thread_message`
 reports to the user and reaches no agent, so an agent you handed work to tells
 you nothing by finishing its turn: what reaches you is the message it writes
 you, and if you need to know where it got to, ask it. When one of them asks YOU
-for something, send the answer with `message_agent` first, then report to the
-user briefly — what you did, not a second copy of what you already sent.
+for something, answer it with `message_agent`. If the answer is a call that is
+the user's to make, ask the user first; otherwise decide, answer, and note on
+the issue what you decided. The thread gets no copy of what you sent.
 
 A message from one of your agents arrives with a line saying how full its context
 is, measured against where its chat compacts — \"Rail scroll is at 190k of 200k
@@ -274,10 +281,41 @@ needs kept — the files, decisions and open questions it will build on. When th
 resume notes on the issue already say everything the next piece needs, start a
 fresh agent on it instead.
 
+You stand in for the user. They read this thread for two things: what is done,
+and what needs them. Everything else — progress, review rounds, gate results,
+retries — goes on the issue it belongs to with `comment_issue`, where it is on
+record for anyone who wants it and in nobody's way. Never send the user a
+message that asks nothing and reports no outcome.
+
+When the user asks for work, send one briefing once it is placed: the issue, who
+is on it and on what model, what they were told in a line, and what the user
+will hear next and roughly when. That briefing is the last they hear of it until
+there is an outcome.
+
+Then send only outcomes. `Complete` when the work has rolled or the question is
+answered: the sha or the answer, and one line of what changed. `Waiting` or
+`Blocked` only when a call is the user's to make: something that cannot be
+undone, something the user will see, or a matter of taste. One question per
+message, with the options and your recommendation, so the reply can be one
+word. Outcomes that land close together go out as one message.
+
+Everything else, decide for the user. Which agent reviews, how many review
+rounds, when to escalate after repeat failures, whether to retry, when a
+workspace is cleaned up, which model takes which role: make the call, act on
+it, and note on the issue what you decided and why, so it can be audited. Ask
+only for the calls above.
+
+A question from the user is the one piece of work that is yours: answer it
+yourself, directly and completely, from the issues, the workspaces and what the
+agents tell you. When the answer needs a file read closely, ask the agent that
+holds it.
+
 Call `set_topic` first with what this conversation is about, in 2-4 words. The
 user sees only what you send with `post_thread_message`, and every call carries a
-status: `Working` while you keep reading, `Waiting` when you need the user,
-`Blocked` when you cannot proceed, and `Complete` when you have answered.";
+status: `Complete` for an outcome or an answer, `Waiting` when the next step is
+the user's call, `Blocked` when you cannot proceed without them, and `Working`
+only as the exception — a long read still going on a question the user asked
+directly — never as a progress report.";
 
 /// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
@@ -1039,7 +1077,7 @@ mod tests {
         for kept in [
             "scratch space Build hands you",
             "you cannot change a file",
-            "Say what you are about to remove before you remove it.",
+            "Removing anything that is not cannot be undone, so it is the user's call.",
             "Call `set_topic` first",
             "`Working`",
             "`Waiting`",
@@ -1152,10 +1190,12 @@ mod tests {
         }
     }
 
-    /// Every template that has `message_agent` says the same three things: a
-    /// reply to an agent is a send, ending a turn reports to the user and
-    /// reaches nobody, and an agent that was asked for something answers it and
-    /// then tells the user what it did rather than saying it twice.
+    /// Every template that has `message_agent` says the same two things: a
+    /// reply to an agent is a send, and ending a turn reports to the user and
+    /// reaches nobody. An agent that was asked for something answers it and
+    /// then tells the user what it did rather than saying it twice — except the
+    /// project agent, which notes the decision on the issue and tells the user
+    /// nothing unless the call was theirs (#152).
     #[test]
     fn every_template_with_message_agent_says_a_reply_is_a_send() {
         let t = Templates::default();
@@ -1164,10 +1204,58 @@ mod tests {
             for sentence in [
                 "A reply to an agent is only ever a `message_agent` send.",
                 "`post_thread_message` reports to the user and reaches no agent",
-                "report to the user briefly",
             ] {
                 assert!(text.contains(sentence), "{name} does not say it: {text}");
             }
+            let answered = if name == "project_agent" {
+                "note on the issue what you decided. The thread gets no copy of what you sent."
+            } else {
+                "report to the user briefly"
+            };
+            assert!(text.contains(answered), "{name} does not say it: {text}");
+        }
+    }
+
+    /// The project agent's playbook (#152): one briefing on an ask, then only
+    /// outcomes and the user's own calls; progress lives on the issue, the
+    /// mundane calls are made and recorded there, pipelines are handed off,
+    /// and `Working` is the exception rather than a progress feed.
+    #[test]
+    fn the_project_template_reports_only_outcomes_and_the_users_calls() {
+        let project = collapse_whitespace(&Templates::default().project_agent);
+        for sentence in [
+            "Tests, builds, gates, merges, rolls and deploys are never yours to run",
+            "You stand in for the user.",
+            "what is done, and what needs them.",
+            "goes on the issue it belongs to with `comment_issue`",
+            "Never send the user a message that asks nothing and reports no outcome.",
+            "When the user asks for work, send one briefing once it is placed",
+            "who is on it and on what model",
+            "Then send only outcomes.",
+            "`Complete` when the work has rolled or the question is answered",
+            "only when a call is the user's to make: something that cannot be undone, something the user will see, or a matter of taste.",
+            "One question per message, with the options and your recommendation",
+            "Outcomes that land close together go out as one message.",
+            "Everything else, decide for the user.",
+            "note on the issue what you decided and why, so it can be audited.",
+            "A question from the user is the one piece of work that is yours",
+            "`Working` only as the exception",
+            "never as a progress report.",
+        ] {
+            assert!(
+                project.contains(sentence),
+                "the playbook no longer says, verbatim: {sentence}\n\nthe template says: {project}"
+            );
+        }
+        for feed in [
+            "`Working` while you keep reading",
+            "and report to the user.",
+            "Say what you are about to remove before you remove it.",
+        ] {
+            assert!(
+                !project.contains(feed),
+                "the project agent is told to narrate again: {feed}"
+            );
         }
     }
 

@@ -413,9 +413,11 @@ async fn a_closed_session_hears_no_more_changes() {
         created_at: String::new(),
         payload: Value::Null,
     };
+    let peers = state.lock().unwrap().peers_slot();
     assert_eq!(
         dispatch_frame(
             &state,
+            &peers,
             SessionSender::detached("browser"),
             close,
             FrameClock::new().frame("close")

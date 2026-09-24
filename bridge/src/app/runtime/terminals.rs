@@ -208,6 +208,7 @@ pub(in crate::app) fn shell_harness_spec(shell: &str) -> HarnessSpec {
         .arg("-i")
         .arg("-l")
         .env("TERM", "xterm-256color")
+        .as_terminal()
 }
 
 pub(in crate::app) fn terminal_size(cols: u16, rows: u16) -> PtySize {
@@ -626,7 +627,7 @@ impl AppState {
     /// agent key and leaves with the spawn that inherits it, the agent's
     /// retirement, or the reaper.
     pub(in crate::app) fn drop_session(&mut self, session_id: &str) {
-        self.peers.end_session(session_id);
+        self.peers().end_session(session_id);
         for screen in self.session_registry.screen_handles() {
             screen.detach(session_id);
         }

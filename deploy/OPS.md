@@ -59,16 +59,16 @@ On Linux, with a user systemd:
 | --- | --- | --- |
 | `build-bridge.service` (the bridge) | 500 | no limit |
 | the user's apps (`app.slice` scopes and services) | 100, systemd's default | no limit |
-| `app-build-agents.slice` (every agent the bridge spawns) | 20 | `MemoryHigh` = 75 % of RAM, whole MiB (`98304M` on 128 GiB) |
+| `app-build_agents.slice` (every agent the bridge spawns) | 20 | `MemoryHigh` = 75 % of RAM, whole MiB (`98304M` on 128 GiB) |
 
 Weights only arbitrate between sibling cgroups. Every agent used to run inside
 `build-bridge.service`'s own cgroup, so a weight on the bridge unit ranked the
 bridge *plus its agents* against the user's apps and never protected the bridge
 from its own children. With the agents in their own slice, the bridge, the
 user's apps and the agents are siblings under `app.slice`. One catch: a slice's
-name is its path, so `app-build-agents.slice` sits inside `app-build.slice`, and
-`app-build.slice` is the sibling that competes in `app.slice`. The installer
-therefore sets `CPUWeight=20` on `app-build.slice` as well.
+name is its path, dash by dash: `app-build_agents.slice` is a direct child of
+`app.slice`, the level the bridge's unit and the user's apps are ranked at. (A
+name with a second dash would nest one level down and rank against nothing.)
 
 `build-bridge install-service` writes `CPUWeight=500` into the unit and runs
 `systemctl --user set-property` on both slices (persistent drop-ins under
@@ -91,10 +91,9 @@ user's live session, so it gets the class launchd gives an app with a UI.
 Check a machine:
 
 ```bash
-systemctl --user show app-build-agents.slice -p CPUWeight,MemoryHigh   # 20, 75 % of RAM
-systemctl --user show app-build.slice -p CPUWeight                     # 20
+systemctl --user show app-build_agents.slice -p CPUWeight,MemoryHigh   # 20, 75 % of RAM
 systemctl --user show build-bridge.service -p CPUWeight,DropInPaths    # 500, no user.control drop-in
-systemd-cgls --user   # agents under app-build.slice/app-build-agents.slice, not build-bridge.service
+systemd-cgls --user   # agents under app.slice/app-build_agents.slice, not build-bridge.service
 ```
 
 **Roll note.** `systemctl --user set-property build-bridge.service CPUWeight=…`

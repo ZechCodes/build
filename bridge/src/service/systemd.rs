@@ -12,19 +12,7 @@ use super::{ServiceConfig, ServiceContext, ServiceManager, ShellCommand};
 /// The unit's name — how the operator addresses it with `systemctl --user`.
 pub const UNIT_NAME: &str = "build-bridge.service";
 
-/// The slice the daemon spawns every agent into. Its weight and memory ceiling
-/// put the agents behind the bridge and the user's apps (deploy/OPS.md,
-/// "Priority").
-pub const AGENTS_SLICE: &str = "app-build-agents.slice";
-
-/// Where systemd puts [`AGENTS_SLICE`]: a slice's name is its path, so
-/// `app-build-agents.slice` lives in `app-build.slice`, which lives in
-/// `app.slice` beside this unit and the user's apps. Weights only arbitrate
-/// between siblings, so this is the slice that competes with them.
-const AGENTS_PARENT_SLICE: &str = "app-build.slice";
-
-/// The agents' CPU share, against the bridge's 500 and a user app's 100.
-const AGENTS_CPU_WEIGHT: &str = "CPUWeight=20";
+use crate::priority::slice_property_arguments;
 
 /// Said on stderr when a slice property does not take.
 const AGENTS_SLICE_NOT_SET: &str =
@@ -111,7 +99,7 @@ impl ServiceManager for Systemd {
     /// starts, so the first agent it spawns already runs behind the user's
     /// apps; the ceiling is sized from this machine's RAM.
     fn activate(&self, _ctx: &ServiceContext, _unit_path: &Path) -> Vec<ShellCommand> {
-        activation_commands(read_mem_total_kib())
+        activation_commands(crate::priority::physical_memory_bytes())
     }
 
     /// Both tolerated: uninstalling a unit that was never enabled still has to
@@ -133,67 +121,25 @@ impl ServiceManager for Systemd {
 /// The slice properties are best effort: an older systemd, or a machine
 /// without user slices, still gets a working bridge, told why its agents are
 /// not deprioritised.
-fn activation_commands(mem_total_kib: Option<u64>) -> Vec<ShellCommand> {
+fn activation_commands(mem_total_bytes: Option<u64>) -> Vec<ShellCommand> {
     vec![
         ShellCommand::required("systemctl", &["--user", "daemon-reload"]),
-        agents_parent_priority(),
-        agents_slice_priority(mem_total_kib),
+        agents_slice_priority(mem_total_bytes),
         ShellCommand::required("systemctl", &["--user", "enable", "--now", UNIT_NAME]),
     ]
 }
 
-/// The weight that ranks the agents against the bridge and the user's apps,
-/// set where it counts: on their sibling in `app.slice`.
-fn agents_parent_priority() -> ShellCommand {
-    ShellCommand::best_effort(
-        "systemctl",
-        &[
-            "--user",
-            "set-property",
-            AGENTS_PARENT_SLICE,
-            AGENTS_CPU_WEIGHT,
-        ],
-        AGENTS_SLICE_NOT_SET,
-    )
-}
-
-/// The agents' own slice: the same weight, and a `MemoryHigh` of 75 % of RAM.
-/// No `MemoryMax`: nothing is killed; above the ceiling the kernel reclaims
-/// the agents' memory, page cache first. A ceiling that rounds to 0 MiB is
-/// left off rather than throttle every agent to a halt.
-fn agents_slice_priority(mem_total_kib: Option<u64>) -> ShellCommand {
-    let memory_high = mem_total_kib
-        .map(agents_memory_high)
-        .filter(|bytes| *bytes > 0)
-        .map(|bytes| format!("MemoryHigh={}M", bytes / MIB));
-    let mut args = vec!["--user", "set-property", AGENTS_SLICE, AGENTS_CPU_WEIGHT];
-    args.extend(memory_high.as_deref());
+/// The agents' slice, persistently: the weight that ranks every agent behind
+/// the bridge and the user's apps, and a `MemoryHigh` of 75 % of RAM. No
+/// `MemoryMax`: nothing is killed; above the ceiling the kernel reclaims the
+/// agents' memory, page cache first. The numbers and the arguments are
+/// `crate::priority`'s, which the daemon also applies for one boot at every
+/// start; this is the copy that survives a reboot. A ceiling that rounds to
+/// 0 MiB is left off rather than throttle every agent to a halt.
+fn agents_slice_priority(mem_total_bytes: Option<u64>) -> ShellCommand {
+    let args = slice_property_arguments(mem_total_bytes.filter(|bytes| *bytes >= MIB), false);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     ShellCommand::best_effort("systemctl", &args, AGENTS_SLICE_NOT_SET)
-}
-
-/// The agents' `MemoryHigh` in bytes: 75 % of `MemTotal` (KiB), rounded down
-/// to a whole MiB.
-fn agents_memory_high(mem_total_kib: u64) -> u64 {
-    (mem_total_kib.saturating_mul(3) / 4 / 1024).saturating_mul(MIB)
-}
-
-/// This machine's physical RAM, as `/proc/meminfo` reports it.
-fn read_mem_total_kib() -> Option<u64> {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .as_deref()
-        .and_then(parse_mem_total_kib)
-}
-
-/// `MemTotal:  131072000 kB` → `131072000`.
-fn parse_mem_total_kib(meminfo: &str) -> Option<u64> {
-    meminfo
-        .lines()
-        .find_map(|line| line.strip_prefix("MemTotal:"))?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
 }
 
 #[cfg(test)]
@@ -313,26 +259,21 @@ mod tests {
         );
     }
 
-    /// A 128 GiB machine as `/proc/meminfo` reports it: 134217728 kB.
-    const MEM_128_GIB_KIB: u64 = 128 * 1024 * 1024;
+    /// A 128 GiB machine.
+    const MEM_128_GIB: u64 = 128 * 1024 * 1024 * 1024;
 
     #[test]
     fn activation_reloads_weights_the_agents_slice_then_enables_now() {
         assert_eq!(
-            activation_commands(Some(MEM_128_GIB_KIB)),
+            activation_commands(Some(MEM_128_GIB)),
             vec![
                 ShellCommand::required("systemctl", &["--user", "daemon-reload"]),
-                ShellCommand::best_effort(
-                    "systemctl",
-                    &["--user", "set-property", "app-build.slice", "CPUWeight=20"],
-                    AGENTS_SLICE_NOT_SET,
-                ),
                 ShellCommand::best_effort(
                     "systemctl",
                     &[
                         "--user",
                         "set-property",
-                        "app-build-agents.slice",
+                        "app-build_agents.slice",
                         "CPUWeight=20",
                         "MemoryHigh=98304M",
                     ],
@@ -354,7 +295,7 @@ mod tests {
 
         assert_eq!(
             Systemd.activate(&ctx, &unit),
-            activation_commands(read_mem_total_kib())
+            activation_commands(crate::priority::physical_memory_bytes())
         );
     }
 
@@ -362,26 +303,24 @@ mod tests {
     /// reported and survived: the bridge itself is still a working install.
     #[test]
     fn the_agents_slice_is_best_effort_and_says_so_when_it_fails() {
-        for command in [
-            agents_parent_priority(),
-            agents_slice_priority(Some(MEM_128_GIB_KIB)),
-        ] {
-            assert!(command.tolerate_failure);
-            assert!(command.failure_note.is_some());
-        }
+        let command = agents_slice_priority(Some(MEM_128_GIB));
+        assert!(command.tolerate_failure);
+        assert!(command.failure_note.is_some());
     }
 
-    /// A slice's name is its path: `a-b-c.slice` lives in `a-b.slice`. The
-    /// weight that ranks the agents against the bridge and the user's apps
-    /// has to be on the slice that is their sibling in `app.slice`.
+    /// A slice's name is its path, dash by dash: the agents' slice has to be
+    /// a direct child of `app.slice`, the level the bridge's unit and the
+    /// user's apps are ranked at, or its weight ranks it against nothing.
     #[test]
-    fn the_parent_slice_is_the_agents_slice_one_level_up() {
-        let (parent, _) = AGENTS_SLICE
-            .strip_suffix(".slice")
-            .and_then(|name| name.rsplit_once('-'))
-            .expect("the agents' slice is nested");
-        assert_eq!(format!("{parent}.slice"), AGENTS_PARENT_SLICE);
-        assert_eq!(AGENTS_PARENT_SLICE, "app-build.slice");
+    fn the_agents_slice_is_a_direct_child_of_app_slice() {
+        let slice = crate::priority::AGENTS_SLICE;
+        let name = slice.strip_suffix(".slice").expect("a slice");
+        assert_eq!(
+            name.matches('-').count(),
+            1,
+            "{slice} nests deeper than app.slice"
+        );
+        assert!(name.starts_with("app-"), "{slice} is not under app.slice");
     }
 
     /// Without a readable MemTotal the slice still gets its CPU weight; no
@@ -393,21 +332,10 @@ mod tests {
             vec![
                 "--user",
                 "set-property",
-                "app-build-agents.slice",
+                "app-build_agents.slice",
                 "CPUWeight=20"
             ]
         );
-    }
-
-    /// 75 % of physical RAM, in bytes, rounded down to a whole MiB.
-    #[test]
-    fn agents_memory_high_is_three_quarters_of_ram_in_whole_mib() {
-        assert_eq!(agents_memory_high(MEM_128_GIB_KIB), 98_304 * MIB);
-        // 32594520 kB (a "32 GB" box) × 3/4 = 24445890 KiB = 23872.9 MiB.
-        assert_eq!(agents_memory_high(32_594_520), 23_872 * MIB);
-        // 4097 KiB × 3/4 = 3072.75 KiB: 3 MiB, the fraction dropped.
-        assert_eq!(agents_memory_high(4_097), 3 * MIB);
-        assert_eq!(agents_memory_high(0), 0);
     }
 
     /// A MemoryHigh that rounds to 0 would throttle every agent to a halt, so a
@@ -420,17 +348,7 @@ mod tests {
             .any(|arg| arg.starts_with("MemoryHigh=")));
     }
 
-    #[test]
-    fn mem_total_is_read_from_proc_meminfo() {
-        let meminfo = "MemTotal:       131072000 kB\n\
-                       MemFree:         1024000 kB\n\
-                       MemAvailable:   65536000 kB\n";
-        assert_eq!(parse_mem_total_kib(meminfo), Some(131_072_000));
-        assert_eq!(parse_mem_total_kib("MemFree: 12 kB\n"), None);
-        assert_eq!(parse_mem_total_kib("MemTotal: lots kB\n"), None);
-    }
-
-    /// Uninstall leaves `app-build-agents.slice` weighted: nothing here resets
+    /// Uninstall leaves `app-build_agents.slice` weighted: nothing here resets
     /// it, and a reinstalled bridge's agents run under it again.
     #[test]
     fn deactivation_disables_now_then_reloads_and_tolerates_failure() {

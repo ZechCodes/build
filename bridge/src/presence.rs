@@ -176,7 +176,7 @@ async fn keep_running<Start, Work>(
             }
         };
         running.abort();
-        eprintln!("presence: the {what} {fault}; starting another");
+        crate::logline::say(format!("presence: the {what} {fault}; starting another"));
     }
 }
 
@@ -243,7 +243,7 @@ impl Beat {
                 continue;
             }
             if let Err(error) = self.send().await {
-                eprintln!("presence: heartbeat dropped: {error}");
+                crate::logline::say(format!("presence: heartbeat dropped: {error}"));
             }
         }
     }

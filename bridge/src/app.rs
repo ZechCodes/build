@@ -70,7 +70,7 @@ pub(crate) use self::rpc::pong;
 pub(in crate::app) use self::rpc::{
     entity_ids_of, err, optional_nonempty_string, require_array, require_str, require_value,
 };
-pub(in crate::app) use self::rtc::{rtc_close, rtc_ice, rtc_offer};
+pub(in crate::app) use self::rtc::{rtc_close, rtc_ice, rtc_offer, PeersSlot};
 #[cfg(test)]
 pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_issue;
 pub(in crate::app) use self::runs::reporting::{
@@ -472,7 +472,7 @@ pub struct AppState {
     /// nothing here until a browser offers; a bridge with no peer transport
     /// built in refuses every offer and its clients keep working over the relay
     /// carrier.
-    peers: Arc<SessionPeers>,
+    peers: Arc<PeersSlot>,
     /// Push invalidation: every browser session that asked to be told when
     /// state moves, and the changes waiting to reach them.
     ///
@@ -622,7 +622,7 @@ impl AppState {
             resume_id_probe: default_resume_id_probe(),
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
-            peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
+            peers: PeersSlot::new(SessionPeers::with_factory(Arc::new(NoPeerFactory))),
             changes,
             watchers,
             facts_handle,

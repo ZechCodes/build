@@ -113,14 +113,56 @@ pub trait SessionPeerFactory: Send + Sync {
 pub struct SessionPeers {
     factory: Arc<dyn SessionPeerFactory>,
     peers: Mutex<HashMap<String, Arc<dyn SessionPeer>>>,
+    /// The runtime every peer's work is driven on: the daemon's liveness
+    /// runtime (`crate::liveness`), so a peer's channels and its close never
+    /// share a worker with a task that takes the app lock. `None` drives on
+    /// whatever runtime the caller is in — the tests, which have one runtime.
+    driver: Option<tokio::runtime::Handle>,
 }
 
 impl SessionPeers {
     pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self> {
+        Self::with_factory_on(factory, None)
+    }
+
+    /// Peers whose work runs on `driver`.
+    pub fn with_factory_on(
+        factory: Arc<dyn SessionPeerFactory>,
+        driver: Option<tokio::runtime::Handle>,
+    ) -> Arc<Self> {
         Arc::new(SessionPeers {
             factory,
             peers: Mutex::new(HashMap::new()),
+            driver,
         })
+    }
+
+    /// Finish one peer-connection call where a frame handler can wait for it.
+    /// Handlers run on the runtime's blocking pool (`carrier::dispatch`), so
+    /// the peer's async work is finished here rather than outliving the reply
+    /// the client is waiting for — the one place that happens. Driven on the
+    /// liveness runtime when there is one: everything the future spawns (the
+    /// peer's driver, its channels' pumps) lands there.
+    fn awaited<T>(&self, work: impl std::future::Future<Output = T>) -> T {
+        match &self.driver {
+            Some(driver) => driver.block_on(work),
+            None => tokio::runtime::Handle::current().block_on(work),
+        }
+    }
+
+    /// Run `work` on the peers' runtime without waiting for it.
+    fn spawn_off<F>(&self, work: F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        match &self.driver {
+            Some(driver) => {
+                driver.spawn(work);
+            }
+            None => {
+                tokio::spawn(work);
+            }
+        }
     }
 
     /// Answer this session's offer, opening its peer if this is the first one.
@@ -137,12 +179,12 @@ impl SessionPeers {
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
         let (peer, opened_by_this_offer) = self.riding_or_opened(session_id)?;
-        match awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
+        match self.awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
             Ok(answer) => Ok(answer),
             Err(refused) => {
                 if opened_by_this_offer {
                     if let Some(unusable) = self.take(session_id) {
-                        awaited(unusable.close());
+                        self.awaited(unusable.close());
                     }
                 }
                 Err(refused)
@@ -161,7 +203,7 @@ impl SessionPeers {
             .get(session_id)
             .cloned()
             .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
-        awaited(peer.add_remote_candidate(candidate))
+        self.awaited(peer.add_remote_candidate(candidate))
     }
 
     /// The browser gave up on the peer carrier: tear this session's peer down
@@ -171,7 +213,7 @@ impl SessionPeers {
         let peer = self
             .take(session_id)
             .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
-        awaited(peer.close());
+        self.awaited(peer.close());
         Ok(())
     }
 
@@ -182,7 +224,7 @@ impl SessionPeers {
     pub fn end_session(&self, session_id: &str) {
         if let Some(peer) = self.take(session_id) {
             diagnostic(session_id, "session_ended_closing_peer");
-            tokio::spawn(async move { peer.close().await });
+            self.spawn_off(async move { peer.close().await });
         }
     }
 
@@ -209,7 +251,7 @@ impl SessionPeers {
         };
         match won_the_race {
             Some(peer) => {
-                awaited(opened.close());
+                self.awaited(opened.close());
                 Ok((peer, false))
             }
             None => Ok((opened, true)),
@@ -229,14 +271,6 @@ impl SessionPeers {
     }
 }
 
-/// Finish one peer-connection call where a frame handler can wait for it.
-/// Handlers run on the runtime's blocking pool (`carrier::dispatch`), so the
-/// peer's async work is finished here rather than outliving the reply the
-/// client is waiting for — the one place that happens.
-fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Handle::current().block_on(work)
-}
-
 /// A bridge with no peer transport built in. Every offer is refused, and a
 /// refused offer is the end of the road: the client has no data path to this
 /// device (rule 3) and blocks it, rather than falling back to a relay that
@@ -254,6 +288,12 @@ impl SessionPeerFactory for NoPeerFactory {
 pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
     signaling.push(json!({ "type": "rtc.ice", "candidate": candidate }))
 }
+
+/// How many reactor threads carry every peer's driver between them. Two: a
+/// device carries a few sessions, each a trickle of consent checks and
+/// whatever the channels move, and the second thread is so one session's
+/// burst is not the other's stall.
+const REACTOR_THREADS: usize = 2;
 
 /// How many bytes a channel may hold undelivered before it stops taking more
 /// (spec §Backpressure). The peer connection owns the waiting: a send past this
@@ -464,7 +504,15 @@ impl WebrtcPeer {
                     .with_setting_engine(self.policy.setting_engine(multicast_dns))
                     .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
                     .with_handler(events.clone())
-                    .with_udp_addrs(udp_addrs.clone());
+                    .with_udp_addrs(udp_addrs.clone())
+                    // The driver — the UDP sockets, ICE's checks and consent,
+                    // DTLS, SCTP's timers — on the crate's own reactor
+                    // threads, off every runtime the daemon parks (issue
+                    // #128). Handlers are the callbacks above: a line to
+                    // stderr and a candidate encrypted and queued, nothing
+                    // that blocks.
+                    .with_dedicated_reactor_thread(true)
+                    .with_reactor_pool_size(REACTOR_THREADS);
                 async move { attempt.build().await }
             })
             .await?,
@@ -711,6 +759,12 @@ struct GathererLog;
 /// client they allocate through.
 const GATHERER_LOG_TARGETS: [&str; 2] = ["webrtc::peer_connection::transports", "rtc_turn"];
 
+/// How often one kind of gatherer complaint is written.
+const GATHERER_LOG_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+
+static GATHERER_LINES: crate::logline::Throttle =
+    crate::logline::Throttle::new(GATHERER_LOG_WINDOW);
+
 impl log::Log for GathererLog {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
         metadata.level() <= log::Level::Warn
@@ -720,14 +774,22 @@ impl log::Log for GathererLog {
     }
 
     fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            eprintln!(
-                "rtc: {} {}: {}",
-                record.level(),
-                record.target(),
-                record.args()
-            );
+        if !self.enabled(record.metadata()) {
+            return;
         }
+        // One line per kind per window: Cloudflare answered 8,000 `ChannelBind
+        // 400`s in one evening, each its own transaction id, and the session
+        // lines between them were unreadable.
+        let message = record.args().to_string();
+        let Some(suppressed) = GATHERER_LINES.admit(&crate::logline::key_of(&message)) else {
+            return;
+        };
+        crate::logline::say(format!(
+            "rtc: {} {}: {message}{}",
+            record.level(),
+            record.target(),
+            crate::logline::suppressed_suffix(suppressed, GATHERER_LOG_WINDOW)
+        ));
     }
 
     fn flush(&self) {}

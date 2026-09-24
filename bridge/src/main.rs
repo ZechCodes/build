@@ -58,8 +58,10 @@ use build_bridge::backoff::Backoff;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
+use build_bridge::liveness::LivenessRuntime;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
+use build_bridge::priority::ChildPlacement;
 use build_bridge::reachability::Reachability;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
@@ -165,6 +167,7 @@ async fn serve() {
     // the peer transport (DTLS) all run on the one provider this installs.
     relay::install_crypto_provider();
     adopt_login_path();
+    place_children();
     // A power loss can remove the helper's transient service while leaving a
     // candidate that fails before full app construction. Relaunch recovery as
     // early as possible so that candidate cannot strand its prior binary.
@@ -222,6 +225,34 @@ fn configure_updates(app: AppState, runtime: &RuntimePaths) -> Result<AppState, 
     let service = UpdateService::new(config, Arc::new(backend))
         .map_err(|error| format!("cannot load bridge update state: {error}"))?;
     Ok(app.with_update_service(Arc::new(service)))
+}
+
+/// Decide where this daemon's children run (`crate::priority`): in transient
+/// scopes of their own where the user's systemd answers, niced everywhere. Said
+/// once at start, because it is the fact that explains every later `top`.
+fn place_children() {
+    let (placement, reason) = ChildPlacement::resolve(|key| std::env::var(key).ok());
+    let scoped = placement.is_scoped();
+    placement.install();
+    if !scoped {
+        eprintln!(
+            "children: nice {} only ({reason})",
+            build_bridge::priority::CHILD_NICE
+        );
+        return;
+    }
+    match build_bridge::priority::apply_slice_properties_for_this_boot(|key| {
+        std::env::var(key).ok()
+    }) {
+        Ok(applied) => eprintln!(
+            "children: {reason}, nice {}; {applied} (this boot)",
+            build_bridge::priority::CHILD_NICE
+        ),
+        Err(error) => eprintln!(
+            "children: {reason}, nice {}; slice properties not applied: {error}",
+            build_bridge::priority::CHILD_NICE
+        ),
+    }
 }
 
 fn adopt_login_path() {
@@ -524,7 +555,17 @@ async fn run_daemon(
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
     spawn_update_heartbeat(home_dir(), app.clone());
-    let _presence_beats = PresenceReporter::start(&runtime.config.api_url, &identity, &reachable);
+    // The runtime the relay socket, the presence beat and every peer's
+    // channels run on: threads that never take the app lock, so a handler
+    // holding it for a minute slows answers and severs nothing (issue #128).
+    let liveness = match LivenessRuntime::start() {
+        Ok(liveness) => liveness,
+        Err(error) => exit_startup(error),
+    };
+    let _presence_beats = {
+        let _on_liveness = liveness.handle().enter();
+        PresenceReporter::start(&runtime.config.api_url, &identity, &reachable)
+    };
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on. The peer's channels deliver through this same intake, so a session
@@ -532,10 +573,10 @@ async fn run_daemon(
     let intake = FrameIntake::with_ledger(handler, transport_keypair, ledger);
     // The peer transport a browser upgrades to. It is built last because it is
     // built from the intake, which runs the app's own handler.
-    app.lock().unwrap().set_peer_factory(WebrtcPeerFactory::new(
-        intake.clone(),
-        runtime.ice_policy.clone(),
-    ));
+    app.lock().unwrap().set_peer_factory_on(
+        WebrtcPeerFactory::new(intake.clone(), runtime.ice_policy.clone()),
+        Some(liveness.handle()),
+    );
 
     // While a candidate binary is on probation, its task-store copy may be
     // restored. Keep it off the relay until the helper commits: no browser or
@@ -561,47 +602,61 @@ async fn run_daemon(
     // a bridge no browser can reach is one whose agents work in the dark.
     spawn_resume_after_restart(app.clone(), runtime.tasks_dir.clone(), reachable.clone());
 
-    // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
-    // become a tight reconnect loop hammering the server. A connection that lasted
-    // long enough to be "clean" resets the delay, so a brief blip still recovers
-    // fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
-    let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+    // The relay socket, redialled for as long as the daemon runs, on the
+    // liveness runtime. The main thread waits for the signal that ends the
+    // daemon; the socket task is aborted then, which is the socket generation
+    // ending the way every other end does (`relay::RelayConnection`'s drop).
+    let relay_socket = liveness.spawn(relay_forever(
+        runtime.device_url.clone(),
+        identity.clone(),
+        intake.clone(),
+        reachable.clone(),
+    ));
     let mut going_down = shutdown_signals();
-    loop {
-        let connected_at = std::time::Instant::now();
-        tokio::select! {
-            // Biased so a SIGTERM that lands while the relay future is also
-            // ready is still the branch taken: systemd is about to send
-            // SIGKILL, and one more reconnect is worth nothing next to the
-            // roster.
-            biased;
-            () = going_down.recv() => break,
-            outcome = relay::run(&runtime.device_url, &identity, intake.clone(), &reachable) => {
-                match outcome {
-                    Ok(()) => eprintln!(
-                        "relay disconnected; reconnecting in {}s",
-                        backoff.current().as_secs()
-                    ),
-                    Err(e) => eprintln!(
-                        "relay error: {e}; reconnecting in {}s",
-                        backoff.current().as_secs()
-                    ),
-                }
-            }
-        }
-        backoff.note_session(connected_at.elapsed());
-        tokio::select! {
-            biased;
-            () = going_down.recv() => break,
-            () = tokio::time::sleep(backoff.current()) => {}
-        }
-        backoff.increase();
+    tokio::select! {
+        // Biased so a SIGTERM that lands while the relay task is also ready
+        // is still the branch taken: systemd is about to send SIGKILL, and
+        // one more reconnect is worth nothing next to the roster.
+        biased;
+        () = going_down.recv() => {}
+        _ = relay_socket => {}
     }
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
     eprintln!("bridge: shutting down");
     AppState::record_resume_roster(&app, &runtime.tasks_dir, env!("CARGO_PKG_VERSION"));
+}
+
+/// Hold a relay socket open, and redial whenever it ends.
+///
+/// Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
+/// become a tight reconnect loop hammering the server. A connection that lasted
+/// long enough to be "clean" resets the delay, so a brief blip still recovers
+/// fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
+async fn relay_forever(
+    device_url: String,
+    identity: DeviceIdentity,
+    intake: Arc<FrameIntake>,
+    reachable: Reachability,
+) {
+    let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+    loop {
+        let connected_at = std::time::Instant::now();
+        match relay::run(&device_url, &identity, intake.clone(), &reachable).await {
+            Ok(()) => build_bridge::logline::say(format!(
+                "relay disconnected; reconnecting in {}s",
+                backoff.current().as_secs()
+            )),
+            Err(e) => build_bridge::logline::say(format!(
+                "relay error: {e}; reconnecting in {}s",
+                backoff.current().as_secs()
+            )),
+        }
+        backoff.note_session(connected_at.elapsed());
+        tokio::time::sleep(backoff.current()).await;
+        backoff.increase();
+    }
 }
 
 /// A receiver that fires once the operating system asks this daemon to stop.

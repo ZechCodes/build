@@ -10,8 +10,10 @@ pub(in crate::app::tests) fn frame_on_a_thread(
     let (answered, answers) = std::sync::mpsc::channel();
     let state = Arc::clone(state);
     std::thread::spawn(move || {
+        let peers = state.lock().unwrap().peers_slot();
         let response = dispatch_frame(
             &state,
+            &peers,
             SessionSender::detached(session_id),
             req(method, params),
             FrameClock::new().frame(method),
@@ -472,8 +474,10 @@ fn a_git_mutation_whose_run_vanished_mid_work_drops_its_cache_write() {
     std::fs::write(worktree.join("staged.txt"), "work\n").unwrap();
     let state = app.shared();
 
+    let peers = state.lock().unwrap().peers_slot();
     let staged = dispatch_frame(
         &state,
+        &peers,
         SessionSender::detached("s-stage"),
         req(
             "git.stage",
@@ -494,8 +498,10 @@ fn a_git_mutation_whose_run_vanished_mid_work_drops_its_cache_write() {
     );
     gate_handle.wait_for_arrival();
     // The run leaves the board while the commit is still running.
+    let peers = state.lock().unwrap().peers_slot();
     let released = dispatch_frame(
         &state,
+        &peers,
         SessionSender::detached("s-release"),
         req("run.release", json!({ "run_id": run_id })),
         FrameClock::new().frame("run.release"),

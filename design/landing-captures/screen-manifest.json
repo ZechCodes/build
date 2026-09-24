@@ -1,10 +1,10 @@
 {
   "version": 2,
   "fixture": {
-    "project": "Build",
-    "workspace": "Launch",
-    "directories": ["build-app", "build-bridge", "notes"],
-    "conversation": "Fixing archive button",
+    "project": "build",
+    "workspace": "archive-search",
+    "directories": ["build-app"],
+    "conversation": "Implement",
     "demonstrationOnly": true,
     "systemClock": "9:41"
   },
@@ -64,20 +64,17 @@
     }
   },
   "states": [
-    { "id": "ui01", "order": 1, "checkpoint": "delegated", "timer": "03:42", "description": "Prepared archive request, Claude Code selected, and three primary agents running." },
-    { "id": "ui02", "order": 2, "checkpoint": "handoff", "timer": "03:43", "description": "Launch workspace inbox row with aggregate Git counts and unread attention." },
-    { "id": "ui03-question", "order": 3, "checkpoint": "question", "timer": "03:44", "description": "Agent asks whether archived items should remain in search." },
-    { "id": "ui03-answer", "order": 4, "checkpoint": "answer", "timer": "03:44", "description": "User answers: Yes. Label them clearly." },
-    { "id": "ui03-resumed", "order": 5, "checkpoint": "resumed", "timer": "03:44", "description": "Claude Code resumes implementation with the decision." },
-    { "id": "ui04", "order": 6, "checkpoint": "overview", "timer": "03:44", "description": "Two sub-agents, one three-step workflow, and two shell sessions." },
-    { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Coherent archive diff, archived-label test evidence, and explicit approval control." },
-    { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "Confirmed merged state after approval." },
-    { "id": "ui10-editor", "order": 10, "checkpoint": "editor", "timer": "03:45", "description": "Editor before the archive change, with file tree, collapsed terminal, one working agent, and machine label." },
-    { "id": "ui12-issues", "order": 12, "checkpoint": "issues", "timer": "03:46", "description": "Issue board with Make archived items searchable ready and unassigned." },
-    { "id": "ui13-team", "order": 13, "checkpoint": "team", "timer": "03:47", "description": "Three agents working in copy-on-write archive workspaces with a focused test running." },
-    { "id": "ui14-git", "order": 14, "checkpoint": "git", "timer": "03:49", "description": "Git panel and editor diff on build/archive-search with two modified files." },
-    { "id": "ui15-triage", "order": 15, "checkpoint": "triage", "timer": "03:50", "description": "Review triage with one expanded search behavior decision and passing test evidence." },
-    { "id": "ui16-builder", "order": 16, "checkpoint": "builder", "timer": "03:48", "description": "Workflow builder with Implement, Review, You decide, and Merge on one path." }
+    { "id": "ui03-question", "order": 3, "checkpoint": "question", "timer": "03:44", "description": "Phone, the Implement conversation pinned: the agent asks whether archived items should stay in search." },
+    { "id": "ui03-answer", "order": 4, "checkpoint": "answer", "timer": "03:44", "description": "The same conversation with the answer: Yes. Label them clearly." },
+    { "id": "ui03-resumed", "order": 5, "checkpoint": "resumed", "timer": "03:44", "description": "Implement resumes with the decision." },
+    { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Tablet review triage (not in the app yet) with the finding open and Approve for merge." },
+    { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "After the merge: the Changes view on laptop and phone, the approved triage on the tablet." },
+    { "id": "ui10-editor", "order": 10, "checkpoint": "editor", "timer": "03:45", "description": "Files view in archive-search with archive.test.ts open in Source, agent rail folded to its strip." },
+    { "id": "ui12-issues", "order": 12, "checkpoint": "issues", "timer": "03:46", "description": "Issues board with Make archived items searchable in Ready, unassigned." },
+    { "id": "ui13-team", "order": 13, "checkpoint": "team", "timer": "03:47", "description": "Issue #78 with the chat overview listing Implement, Review and Audit edge cases in their workspaces." },
+    { "id": "ui14-git", "order": 14, "checkpoint": "git", "timer": "03:49", "description": "Changes view on build/archive-search with two uncommitted files and the commit box." },
+    { "id": "ui15-triage", "order": 15, "checkpoint": "triage", "timer": "03:50", "description": "Tablet review triage (not in the app yet), drawn as a workspace tab beside Changes and Files." },
+    { "id": "ui16-builder", "order": 16, "checkpoint": "builder", "timer": "03:48", "description": "Workflow builder (not in the app yet), drawn as a third project page beside Issues and Workspaces." }
   ],
   "filePatterns": {
     "appOnly": "{state}-{desktop|tablet|mobile}.{png|webp}",
@@ -94,5 +91,5 @@
     "https://www.apple.com/ipad-pro/specs/",
     "https://www.apple.com/iphone-17-pro/specs/"
   ],
-  "provenance": "Deterministic marketing fixture composed with current SPA renderers and original capture-only system chrome; it is not a live-host capture."
+  "provenance": "Deterministic marketing fixture written in the SPA's own markup and laid out by its shipped stylesheets, with original capture-only system chrome; it is not a live-host capture."
 }

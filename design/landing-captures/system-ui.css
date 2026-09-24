@@ -236,7 +236,3 @@
 .iphone-home-safe { position: absolute; z-index: 6; inset: auto 0 0; height: 34px; background: rgba(7,21,27,.98); }
 .iphone-home-safe .home-indicator { width: 134px; height: 5px; bottom: 8px; }
 
-@media (max-width: 500px) {
-  .iphone-app-host .app { grid-template-rows: 50px minmax(0,1fr) 44px; }
-  .iphone-app-host .statusbar { font-size: 9px; }
-}

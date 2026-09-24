@@ -156,6 +156,7 @@
   margin-top: 0;
 }
 
+
 /* --- the close-ups ------------------------------------------------------ */
 
 /* Out of sight until the film places them: before its module runs, a panel
@@ -165,6 +166,9 @@
   visibility: hidden;
 }
 
+/* Each close-up redraws a region of an app screen, so it uses the app's
+   geometry and type scale, measured from the textures in
+   design/landing-captures, and the app's dark palette. */
 .panel {
   --lift: 0;
   position: absolute;
@@ -174,19 +178,26 @@
   will-change: transform;
   font-family: var(--text);
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.55;
   color: #e5f1f2;
-  --app-bg: rgb(4, 12, 19);
-  --app-panel: rgb(6, 18, 23);
-  --app-card: rgb(12, 27, 33);
+  --app-bg: #040d12;
+  --app-panel: #0b1b22;
+  --app-panel2: #10262f;
   --app-line: #1b3640;
-  --app-line2: #31505a;
+  --app-line2: #17323c;
   --app-ink2: #9db2b8;
   --app-dim: #839ea7;
   --app-green: #54e8a2;
-  --app-red: #ff7083;
+  --app-red: #ff5c72;
   --app-amber: #ffd447;
+  --app-amber-bg: #2b2210;
+  --app-accent-soft: #123b29;
   --app-accent-ink: #062719;
+  --diff-hunk: #1c2028;
+  --diff-add: #103b29;
+  --diff-add-ink: #b9f4cf;
+  --diff-del: #2a1620;
+  --diff-del-ink: #ffc3cd;
 }
 
 .panel .mark {
@@ -195,20 +206,18 @@
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
-  margin-right: 8px;
+  margin-right: 6px;
   vertical-align: middle;
 }
 
 .panel .eyebrow {
   font-family: var(--mono);
   font-size: 11px;
-  letter-spacing: 0.12em;
+  font-weight: 650;
+  line-height: 15.4px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--app-dim);
-}
-
-.panel .eyebrow.spaced {
-  margin-top: 22px;
 }
 
 /* What the fixture under a panel does not have arrives with the lift. */
@@ -243,139 +252,255 @@
   50% { background: transparent; }
 }
 
-.ed-tabs {
-  display: flex;
-  height: 40px;
-  background: rgb(5, 15, 21);
-  border-bottom: 1px solid var(--app-line);
+.panel .git-button {
+  --pressed: 0;
+  padding: 4px 9px;
+  border: 1px solid var(--app-line);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) calc(var(--pressed) * 25%), var(--app-panel));
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18.6px;
+  color: #e5f1f2;
+}
+
+.panel .git-button.primary {
+  padding: 8px 14px;
+  border-color: var(--accent);
+  background: var(--accent);
+  font-size: 14px;
+  line-height: 21.7px;
+  color: var(--app-accent-ink);
+  filter: brightness(calc(1 - var(--pressed) * 0.2));
+}
+
+/* A diff, row for row as the app draws it: two line-number gutters and the
+   code, on the add, remove and hunk fills. --lit marks a hunk's gutter. */
+.diff-code {
+  --lit: 0;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 20px;
+  box-shadow: inset 3px 0 0 rgba(81, 255, 180, var(--lit));
+}
+
+.diff-code > div {
+  display: flex;
+  height: 20px;
+  overflow: hidden;
+  white-space: pre;
+}
+
+.diff-code i {
+  flex: 0 0 31px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  background: var(--app-panel);
+  font-style: normal;
+  text-align: right;
+  color: var(--app-dim);
+}
+
+.diff-code span {
+  flex: 1;
+  padding: 0 8px;
+}
+
+.diff-code .hunk span {
+  background: var(--diff-hunk);
+  color: var(--accent);
+}
+
+.diff-code .added span {
+  background: var(--diff-add);
+  color: var(--diff-add-ink);
+}
+
+.diff-code .removed span {
+  background: var(--diff-del);
+  color: var(--diff-del-ink);
+}
+
+.diff-code .human span {
+  color: #e5f1f2;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* --- act 1: the Files view's source pane -------------------------------- */
+
+.panel--editor {
+  background: var(--app-panel);
+  overflow: hidden;
+}
+
+.file-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 51.6px;
+  box-sizing: border-box;
+  padding: 9px 12px 16px;
+  font-size: 12px;
+  line-height: 18.6px;
+}
+
+.file-path,
+.file-size {
+  font-family: var(--mono);
+}
+
+.file-path {
+  flex: 1;
   color: var(--app-ink2);
 }
 
-.ed-tabs span {
-  padding: 0 20px;
-  line-height: 40px;
-  border-right: 1px solid var(--app-line);
+.file-size {
+  position: relative;
+  color: var(--app-dim);
 }
 
-.ed-tabs .active {
+.file-modes {
+  display: flex;
+  gap: 4px;
+}
+
+.file-modes span {
+  padding: 3px 8px;
+  border: 1px solid var(--app-line);
+  border-radius: 7px;
   color: #e5f1f2;
-  box-shadow: inset 0 2px 0 var(--accent);
 }
 
-.ed-code {
-  padding: 30px 0 0;
+.file-modes .on {
+  border-color: var(--accent);
+  background: var(--app-accent-soft);
+  color: var(--accent);
+}
+
+/* The hero laptop is pushed in but still at about half scale: the typed
+   test is set larger than the app's code (12.5px) so it reads. */
+.panel--editor .ed-code {
+  margin: 8.4px 14px 0;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 17px;
 }
 
-.ed-code > div {
+.panel--editor .ed-code > div {
   display: flex;
   align-items: center;
-  height: 26px;
-  padding-right: 16px;
+  height: 30px;
   white-space: pre;
   --mark: 0;
   box-shadow: inset 3px 0 0 rgba(81, 255, 180, var(--mark));
   background: rgba(81, 255, 180, calc(var(--mark) * 0.07));
 }
 
-.ed-code i {
-  flex: 0 0 44px;
-  margin-right: 24px;
-  text-align: right;
+.panel--editor .ed-code i {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 34px;
+  box-sizing: border-box;
+  padding: 0 10px 0 4px;
+  margin-right: 8px;
+  background: var(--app-panel2);
   font-style: normal;
   color: var(--app-dim);
-}
-
-.ed-code .removed {
-  background: rgba(255, 112, 131, 0.12);
-  color: var(--app-red);
-}
-
-.ed-code .added {
-  background: rgba(84, 232, 162, 0.1);
-  color: var(--app-green);
-}
-
-.ed-code .human {
-  color: #e5f1f2;
-  overflow: hidden;
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.diff-code {
-  padding-top: 20px;
-  --lit: 0;
-  box-shadow: inset 3px 0 0 rgba(81, 255, 180, var(--lit));
-}
-
-.panel--editor {
-  background: var(--app-bg);
-  overflow: hidden;
-}
-
-/* The hero laptop is pushed in but still at about two thirds scale: the
-   typed test is set larger than the texture's code so it reads. */
-.panel--editor .ed-code {
-  font-size: 17px;
-}
-
-.panel--editor .ed-code > div {
-  height: 32px;
 }
 
 .panel--editor .caret {
   height: 19px;
 }
 
-.panel--status {
-  background: rgb(14, 26, 33);
-  display: flex;
-  align-items: center;
-  padding-left: 4px;
-}
-
+/* Over the file's size, on the head's own fill. */
 .status-chip {
+  position: absolute;
+  right: 0;
+  top: 0;
+  padding-left: 12px;
+  background: var(--app-panel);
   font-family: var(--mono);
   font-size: 11px;
+  white-space: nowrap;
   color: var(--accent);
 }
 
+/* --- act 3: the board card ------------------------------------------------ */
+
 .panel--hole {
-  background: rgb(6, 17, 22);
+  background: var(--app-panel2);
 }
 
 .issue-card {
-  min-height: 95px;
-  padding: 14px 12px 12px;
-  background: var(--app-card);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
+  min-height: 128px;
+  padding: 9px 10px;
   box-sizing: border-box;
+  border: 1px solid var(--app-line2);
+  border-radius: 10px;
+  background: var(--app-panel);
+  box-shadow: 0 0 0 1px rgba(81, 255, 180, var(--lift)), 0 18px 40px rgba(0, 0, 0, calc(var(--lift) * 0.45));
 }
 
-.issue-card small {
+.issue-card-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-family: var(--mono);
-  font-size: 11px;
+  gap: 8px;
+  height: 21.7px;
   color: var(--app-dim);
 }
 
-.issue-card small em {
-  font-style: normal;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #123b29;
-  color: var(--accent);
+.issue-card .state-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-green);
 }
 
+.issue-card .priority {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--app-amber-bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15.5px;
+  text-transform: uppercase;
+  color: var(--app-amber);
+}
+
+.issue-card strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 550;
+  line-height: 18.9px;
+}
+
+.issue-card-labels {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 17px;
+}
+
+.issue-card .label {
+  padding: 1px 8px;
+  border: 1px solid var(--app-line2);
+  border-radius: 999px;
+  background: var(--app-line2);
+  color: var(--app-ink2);
+}
+
+/* The column it stands in, which the board says by where the card is: the
+   close-up says it in words once the card leaves the board. */
 .column-chip {
   display: grid;
   margin-left: auto;
+  opacity: var(--lift);
 }
 
 .column-chip span {
@@ -389,19 +514,12 @@
   color: var(--accent);
 }
 
-.issue-card strong {
-  display: block;
-  margin-top: 6px;
-  font-size: 14px;
-  font-weight: 500;
-}
-
 .issue-card .assignee {
   display: grid;
-  margin-top: 8px;
-  font-family: var(--mono);
+  margin: 6px 0 0;
+  padding: 7px 7px;
   font-size: 11px;
-  color: var(--app-ink2);
+  line-height: 14px;
 }
 
 .issue-card .assignee span {
@@ -409,141 +527,198 @@
   white-space: nowrap;
 }
 
+.issue-card [data-assignee="none"] {
+  font-style: italic;
+  color: var(--app-dim);
+}
+
 .issue-card [data-assignee="agent"] {
-  color: #e5f1f2;
+  color: var(--app-ink2);
 }
 
 .branch-line {
   display: block;
-  margin-top: 10px;
+  margin-top: 4px;
   overflow: hidden;
   font-family: var(--mono);
   font-size: 11px;
   color: var(--accent);
 }
 
+/* --- act 4: the chat overview in the agent rail -------------------------- */
+
 .panel--team {
-  background: var(--app-bg);
-  padding: 30px 50px 0 54px;
+  padding: 0 16px;
   box-sizing: border-box;
+  border-radius: 10px;
+  background: var(--app-panel);
+  overflow: hidden;
 }
 
-.team-summary {
+.panel--team .rail-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--app-line);
+  gap: 8px;
+  height: 46px;
+  margin: 0 -16px 16px;
+  padding: 0 16px;
 }
 
-.team-summary .presence {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
+.panel--team .rail-head strong {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 650;
 }
 
-.team-summary strong {
-  font-size: 30px;
-  font-weight: 500;
+.panel--team .rail-head b {
+  font-weight: 650;
 }
 
-.team-summary p {
-  margin-left: auto;
-  font-size: 16px;
+.panel--team .pin {
+  display: grid;
+  width: 31px;
+  place-items: center;
+  margin-right: 17px;
+}
+
+.panel svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: var(--app-ink2);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.overview-section {
+  margin-bottom: 20px;
+}
+
+.overview-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.overview-section .add {
+  font-size: 20px;
+  font-weight: 400;
   color: var(--app-ink2);
 }
 
-.team-row {
-  padding: 18px 4px;
-  border-bottom: 1px solid var(--app-line);
+.overview-row {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-line);
+  border-radius: 10px;
+  background: var(--app-panel2);
 }
 
-.team-row > div {
+.overview-row > div {
   display: flex;
   align-items: center;
 }
 
-.team-row strong {
-  font-size: 21px;
-  font-weight: 500;
+.overview-row strong {
+  flex: 1;
+  font-weight: 650;
 }
 
-.team-row > div > span {
-  margin-left: auto;
-  font-size: 16px;
+.overview-row > div > span {
+  font-size: 11px;
+  font-weight: 650;
   color: var(--accent);
 }
 
-.team-row > div > span.waiting {
+.overview-row > div > span.waiting {
   color: var(--app-amber);
 }
 
-.team-meta {
-  margin-top: 6px;
-  padding-left: 16px;
-  font-size: 15px;
+.overview-row p {
+  margin: 4px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--app-ink2);
 }
 
-.team-meta code {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 15px;
-}
-
-.panel--builder,
-.panel--git {
-  display: grid;
-  background: var(--app-bg);
-  overflow: hidden;
-}
+/* --- act 5: the workflow builder ---------------------------------------- */
 
 .panel--builder {
-  grid-template-columns: 205px minmax(0, 1fr);
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 4px 18px 18px;
+  box-sizing: border-box;
+  background: var(--app-panel);
+  overflow: hidden;
 }
 
 .palette {
-  padding: 20px 12px;
-  background: var(--app-panel);
-  border-right: 1px solid var(--app-line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--app-line);
+  border-radius: 10px;
+  background: var(--app-panel2);
+}
+
+.palette .eyebrow {
+  margin-bottom: 4px;
 }
 
 .palette-item {
-  margin-top: 10px;
-  padding: 9px 14px;
+  padding: 8px 10px;
   border: 1px solid var(--app-line);
-  border-radius: 6px;
-  background: var(--app-card);
-  font-size: 13px;
+  border-radius: 8px;
+  background: var(--app-panel);
+  font-size: 12.5px;
+  line-height: 19.4px;
   color: var(--app-ink2);
 }
 
-.palette .eyebrow + .palette-item {
-  margin-top: 16px;
-}
-
+/* The canvas's dots fade to plain as the panel lifts. */
 .canvas {
   position: relative;
-  background-color: rgb(4, 12, 19);
+  height: 500px;
+  box-sizing: border-box;
+  border: 1px solid var(--app-line);
+  border-radius: 10px;
+  background-color: var(--app-panel);
   overflow: hidden;
 }
 
-/* The fixture's dotted canvas, fading to plain as the panel lifts. */
 .canvas::before {
   content: "";
   position: absolute;
   inset: 0;
-  background-image: radial-gradient(#13303a 1px, transparent 1.5px);
-  background-size: 32px 32px;
-  background-position: 16px 16px;
+  background: radial-gradient(circle, rgba(49, 80, 90, 0.55) 1px, transparent 1.2px) 0 0 / 18px 18px;
   opacity: calc(1 - var(--lift));
+}
+
+.canvas-label {
+  position: absolute;
+  left: 16px;
+  top: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-dim);
 }
 
 .canvas .machine-line {
   position: absolute;
-  right: 22px;
-  top: 22px;
+  right: 16px;
+  top: 12px;
 }
 
 /* The handoff runs the path as a highlight: each step's outline and the
@@ -556,20 +731,11 @@
   top: 0;
   width: 16px;
   margin-top: -11px;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--accent);
+  font-size: 14px;
+  line-height: 21.7px;
+  color: color-mix(in srgb, var(--accent) calc(var(--pulse) * 100%), var(--app-dim));
   text-align: center;
   opacity: calc(1 - 0.5 * var(--lift) * (1 - var(--pulse)));
-}
-
-.canvas-label {
-  position: absolute;
-  left: 22px;
-  top: 22px;
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--app-dim);
 }
 
 .node {
@@ -577,59 +743,62 @@
   position: absolute;
   left: 0;
   top: 0;
-  width: 150px;
-  min-height: 125px;
-  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 132px;
+  height: 112px;
+  padding: 11px 12px;
   box-sizing: border-box;
   border: 1px solid var(--app-line);
-  border-radius: 8px;
-  background: var(--app-card);
+  border-radius: 10px;
+  background: var(--app-panel2);
   box-shadow: inset 0 0 0 1px rgba(81, 255, 180, var(--pulse));
 }
 
 .node small {
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: 11px;
+  line-height: normal;
   color: var(--app-dim);
 }
 
 .node strong {
-  display: block;
-  margin-top: 8px;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 700;
+  line-height: 21.7px;
 }
 
 .node span {
-  display: block;
-  margin-top: 4px;
   font-size: 12px;
+  line-height: 18.6px;
   color: var(--app-ink2);
 }
 
 .node em {
-  display: block;
-  margin-top: 14px;
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 600;
+  margin-top: auto;
+  font-size: 11px;
   font-style: normal;
+  line-height: 17px;
   white-space: nowrap;
-  color: var(--app-ink2);
-}
-
-.node.done,
-.node.gate em {
-  color: var(--accent);
+  color: var(--app-dim);
 }
 
 .node.done {
-  border-color: var(--accent);
-  color: #e5f1f2;
+  border-color: #35866c;
 }
 
 .node.done em {
-  color: var(--accent);
+  color: var(--app-green);
+}
+
+.node.gate {
+  border-style: dashed;
+  border-color: #8d8543;
+}
+
+.node.gate em {
+  color: var(--app-amber);
 }
 
 .node.test {
@@ -661,13 +830,14 @@
 }
 
 .node.waiting {
-  border-color: var(--accent);
+  border: 1px solid var(--accent);
 }
 
 .canvas-caption {
   position: absolute;
-  left: 22px;
-  bottom: 22px;
+  left: 16px;
+  bottom: 14px;
+  margin: 0;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--app-ink2);
@@ -678,71 +848,129 @@
   color: var(--accent);
 }
 
-.panel--git {
-  grid-template-columns: 304px minmax(0, 1fr);
-}
+/* --- act 6: the Changes view ---------------------------------------------- */
 
-.git-side {
-  padding: 20px 14px;
+.panel--git {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
   background: var(--app-panel);
-  border-right: 1px solid var(--app-line);
   overflow: hidden;
 }
 
-.branch-chip {
-  margin-top: 10px;
-  padding: 8px 12px;
-  border: 1px solid var(--app-line);
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--accent);
+.git-side {
+  background: var(--app-panel2);
+  overflow: hidden;
 }
 
-.ws-path {
-  display: block;
-  margin-top: 8px;
+.ref-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  margin: 6px 18px;
+  padding: 0 8px;
+  border: 1px solid var(--app-line);
+  border-radius: 7px;
+  background: var(--app-panel);
+  box-shadow: 0 0 0 6px #0c1e26, 0 -6px 0 6px #0c1e26;
+}
+
+.ref-kind {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-ink2);
+}
+
+.ref-name {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.ref-caret {
+  font-size: 13px;
+}
+
+.ref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 40px;
+  margin-bottom: 4px;
+  padding: 0 13px 0 18px;
+  box-sizing: border-box;
+}
+
+.ref-row strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ref-row span {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--app-dim);
 }
 
-.commit-line {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 37px;
-  overflow: hidden;
-  font-size: 12px;
+.ref-row.sel {
+  background: var(--app-accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.commit-line span {
-  color: var(--app-line2);
-}
-
-.commit-line.active span,
-.commit-line.new span {
+.ref-row.sel strong {
   color: var(--accent);
 }
 
-.commit-line strong {
-  flex: 1;
-  font-weight: 500;
+.commits-head {
+  height: 41px;
+  padding: 18px 13px 6px 18px;
+  box-sizing: border-box;
+  background: var(--app-panel);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 17px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-dim);
+}
+
+/* The padding is the row's inside, so a row folded to no height is gone. */
+.commit-row {
+  overflow: hidden;
+}
+
+.commit-row > div {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 13px 10px 18px;
+}
+
+.commit-row strong {
+  font-size: 12.5px;
+  font-weight: 400;
+  line-height: 19.4px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.commit-line.main strong {
-  color: var(--app-ink2);
-}
-
-.commit-line small {
-  font-size: 10px;
+.commit-row span {
+  font-size: 11px;
+  line-height: 17px;
   color: var(--app-dim);
 }
 
-.commit-line small.you,
+.commit-row code {
+  font-family: var(--mono);
+}
+
+.commit-row.new strong {
+  color: var(--accent);
+}
+
+.commit-row .you,
 .author-chip.you,
 .approved i {
   padding: 1px 8px;
@@ -750,122 +978,250 @@
   background: var(--accent);
   color: var(--app-accent-ink);
   font-style: normal;
-  font-weight: 500;
+  font-weight: 600;
 }
 
-.tree-head {
+.git-detail {
   display: flex;
-  justify-content: space-between;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 18px;
+  overflow: hidden;
 }
 
-.changed-file {
-  padding: 6px 10px;
-  border-radius: 6px;
-  overflow: hidden;
+.git-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28.6px;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.git-toolbar .stat {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+.git-verb {
+  padding: 4px 9px;
+  border: 1px solid var(--app-line);
+  border-radius: 9px;
+  background: var(--app-panel);
+  line-height: 18.6px;
+}
+
+.git-verb i {
+  margin-left: 10px;
+  padding-left: 9px;
+  border-left: 1px solid var(--app-line);
+  font-style: normal;
+  font-size: 10px;
+}
+
+.git-toolbar .machine-line {
+  margin-left: auto;
+}
+
+.panel .add {
+  color: var(--app-green);
+}
+
+.panel .del {
+  color: var(--app-red);
+}
+
+.diff-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  margin-top: 29.4px;
   font-family: var(--mono);
   font-size: 12px;
   color: var(--app-ink2);
 }
 
-.changed-file.clean {
+.diff-bar > span:first-child {
+  flex: 1;
+}
+
+.diff-bar .sort {
+  font-family: var(--text);
+  font-size: 11.5px;
   color: var(--app-dim);
 }
 
-.changed-file.active {
-  background: rgba(81, 255, 180, 0.08);
-  color: var(--accent);
-}
-
-.git-button {
-  --pressed: 0;
-  margin-top: 12px;
-  padding: 7px 12px;
-  border: 1px solid var(--app-line2);
-  border-radius: 6px;
-  background: rgba(81, 255, 180, calc(var(--pressed) * 0.25));
-  font: inherit;
-  font-size: 12px;
-  color: #e5f1f2;
-}
-
-.git-button.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--app-accent-ink);
-  filter: brightness(calc(1 - var(--pressed) * 0.2));
-}
-
-.commit-box {
-  margin-top: 12px;
-}
-
-.commit-input {
-  display: block;
-  min-height: 34px;
-  padding: 7px 10px;
+.diff-bar .sort i {
+  display: inline-block;
+  width: 136px;
+  margin-left: 6px;
+  padding: 4px 7px;
+  box-sizing: border-box;
   border: 1px solid var(--app-line);
   border-radius: 6px;
-  box-sizing: border-box;
-  font-family: var(--mono);
-  font-size: 12px;
+  font-style: normal;
+  color: var(--app-ink2);
 }
 
-.git-editor {
+/* The gap above a file is its own padding, so a committed file folds away
+   whole. */
+.diff-file {
+  padding-top: 12px;
+  overflow: hidden;
+}
+
+.diff-file + .diff-file {
+  padding-top: 14px;
+}
+
+.diff-card {
+  border-radius: 11px;
+  background: var(--app-panel2);
   overflow: hidden;
 }
 
 .diff-title {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--app-line);
+  gap: 8px;
+  height: 43px;
+  padding: 0 10px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 11px;
 }
 
-.diff-title .add {
-  color: var(--app-green);
+.diff-title .select {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  margin: 0 7px 0 0;
+  border: 1px solid var(--app-dim);
+  border-radius: 2px;
 }
 
-.diff-title .del {
-  color: var(--app-red);
+.diff-title .edited {
+  margin-left: 6px;
+  color: var(--app-dim);
+}
+
+.diff-title .file-actions {
+  display: flex;
+  gap: 12px;
+  margin-left: 8px;
+}
+
+.diff-title strong {
+  margin-right: auto;
+  font-size: 12.5px;
+  font-weight: 400;
+}
+
+.diff-title .badge {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--app-accent-soft);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
 }
 
 .author-chip {
-  margin-left: auto;
-  padding: 2px 10px;
+  padding: 1px 8px;
   border-radius: 999px;
   font-family: var(--text);
   font-size: 11px;
 }
 
 .author-chip.agent {
-  border: 1px solid var(--app-line2);
+  border: 1px solid var(--app-line);
   color: var(--app-ink2);
 }
 
-.ed-tabs .machine-line {
-  margin-left: auto;
-  border-right: 0;
+.clean-tree {
+  padding: 40px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--app-dim);
 }
 
+.commit-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: auto -18px 0;
+  padding: 12px 18px 14px;
+}
+
+.commit-input {
+  flex: 1;
+  min-height: 37px;
+  padding: 9px 11px;
+  box-sizing: border-box;
+  border: 1px solid var(--app-line);
+  border-radius: 10px;
+  background: var(--app-panel2);
+  font-size: 13px;
+  line-height: 18.85px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.commit-input .placeholder {
+  color: var(--app-dim);
+}
+
+.commit-input:has(b:not(:empty)) .placeholder {
+  display: none;
+}
+
+.commit-box .git-button.primary {
+  display: grid;
+  min-width: 95.8px;
+  border-radius: 9px 0 0 9px;
+}
+
+.commit-box .caret-half {
+  margin-left: -8px;
+  padding: 8px 12px;
+  border-radius: 0 9px 9px 0;
+  border-left-color: rgba(6, 39, 25, 0.3);
+}
+
+/* The app's box offers Comment first and Commit under its caret; the close-up
+   has already chosen Commit by the time it is read. */
+.commit-box .verb-rest,
+.commit-box .verb-lift {
+  grid-area: 1 / 1;
+}
+
+.commit-box .verb-rest {
+  opacity: calc(1 - var(--lift));
+}
+
+.commit-box .verb-lift {
+  opacity: var(--lift);
+}
+
+/* --- act 7: the review triage on the tablet --------------------------------- */
+
 /* The review reads at close-up size: its lines grow with the lift, from the
-   fixture's sizes to at least 14 CSS pixels at 1024 wide. */
+   app's sizes to larger ones at reading distance. */
 .panel--review {
   overflow: hidden;
 }
 
 .review-body {
-  min-height: 505px;
-  padding: 26px 60px;
+  min-height: 490px;
+  padding: 16px 18px;
   box-sizing: border-box;
-  background: var(--app-bg);
+  background: var(--app-panel);
 }
 
 .review-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
 }
 
@@ -873,84 +1229,113 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 8px;
+  gap: 6px;
 }
 
 .review-head .kicker {
   margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.16em;
-  color: var(--accent);
-}
-
-.review-head h1 {
-  margin-top: 6px;
-  font-size: 26px;
-  font-weight: 500;
-  letter-spacing: -0.01em;
-}
-
-.pill {
-  padding: 4px 12px;
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  font-size: 12px;
-  color: var(--accent);
-}
-
-.pill.done {
-  background: var(--accent);
-  color: var(--app-accent-ink);
-}
-
-.triage-row {
-  margin-top: 10px;
-  border: 1px solid var(--app-line);
-  border-radius: 10px;
-  background: rgb(8, 20, 28);
-  overflow: hidden;
-}
-
-.triage-row.expanded {
-  border-color: var(--accent);
-}
-
-.triage-row header {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px 20px;
-}
-
-.triage-row .chevron {
-  color: var(--app-dim);
-}
-
-.triage-row small {
   font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.12em;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 15.4px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--app-dim);
 }
 
+.review-head h1 {
+  margin: 2px 0 0;
+  font-size: calc(20px + 4px * var(--lift));
+  font-weight: 700;
+  line-height: 1.55;
+  letter-spacing: -0.01em;
+}
+
+.pill {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--app-amber-bg);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-amber);
+}
+
+.pill.done {
+  background: #103b29;
+  color: var(--app-green);
+}
+
+.triage-list {
+  margin-top: 14px;
+  border: 1px solid var(--app-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* A row's padding and rule are its inside, so a row folded to no height
+   leaves nothing behind. */
+.triage-row {
+  background: var(--app-panel);
+  overflow: hidden;
+}
+
+.triage-inner {
+  padding: 12px 14px;
+}
+
+.triage-row + .triage-row .triage-inner {
+  border-top: 1px solid var(--app-line);
+}
+
+.triage-row.expanded {
+  background: var(--app-panel2);
+}
+
+.triage-row header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.triage-row header > div {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.triage-row .chevron {
+  width: 12px;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--app-dim);
+}
+
+.triage-row small {
+  font-size: calc(11px + 3px * var(--lift));
+  line-height: 1.55;
+  color: var(--app-dim);
+}
+
 .triage-row strong {
-  display: block;
-  margin-top: 4px;
-  font-size: calc(15px + 6px * var(--lift));
-  font-weight: 500;
+  font-size: calc(13px + 5px * var(--lift));
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.triage-row code {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: normal;
+  color: var(--app-ink2);
 }
 
 .triage-row .dot {
   width: 8px;
   height: 8px;
-  margin-left: auto;
+  margin-top: 6px;
   border-radius: 50%;
-  background: var(--accent);
-}
-
-.triage-row header > span:last-child {
-  margin-left: auto;
+  background: var(--app-amber);
 }
 
 .triage-row .count {
@@ -958,32 +1343,42 @@
 }
 
 .triage-row .summary {
-  padding: 0 20px 10px 54px;
-  font-size: calc(13px + 5px * var(--lift));
+  margin: 8px 0 0 22px;
+  font-size: calc(13px + 4px * var(--lift));
+  line-height: 1.55;
   color: var(--app-ink2);
 }
 
 .triage-row .evidence {
-  padding: 0 20px 14px 54px;
+  margin: 4px 0 0 22px;
   font-family: var(--mono);
-  font-size: calc(11px + 8px * var(--lift));
-  color: var(--accent);
+  font-size: calc(11.5px + 3.5px * var(--lift));
+  line-height: 1.55;
+  color: var(--app-green);
 }
 
+/* The document's finding card shares the name and has always worn this
+   padding; the close-up sets its own. */
 .finding {
   padding: 0 20px 16px 54px;
   overflow: hidden;
 }
 
-.finding .diff-code {
-  padding: 8px 0;
-  border-radius: 6px;
-  background: var(--app-bg);
-  font-size: calc(13px + 6px * var(--lift));
+.panel .finding {
+  padding: 0 0 0 22px;
 }
 
-.finding .diff-code > div {
-  height: calc(26px + 6px * var(--lift));
+.panel .finding .diff-code {
+  margin-top: 10px;
+  border-radius: 11px;
+  background: var(--app-panel2);
+  overflow: hidden;
+  font-size: calc(12px + 3px * var(--lift));
+}
+
+.panel .finding .diff-code > div {
+  height: calc(20px + 4px * var(--lift));
+  line-height: calc(20px + 4px * var(--lift));
 }
 
 .approval {
@@ -993,12 +1388,12 @@
   margin-top: 10px;
 }
 
-.approval .git-button {
-  margin-top: 0;
-  font-size: calc(12px + 4px * var(--lift));
+.approval .git-button.primary {
+  font-size: calc(14px + 2px * var(--lift));
 }
 
 .approved {
-  font-size: calc(13px + 4px * var(--lift));
-  color: var(--accent);
+  font-size: calc(12.5px + 3.5px * var(--lift));
+  font-weight: 600;
+  color: var(--app-green);
 }

@@ -54,6 +54,7 @@ in this document, "plan" means the legacy flow and "issue" means the tracker's.
 | `created_by` | actor | Who filed it. |
 | `created_at`, `updated_at` | RFC 3339 UTC | |
 | `closed_at` | RFC 3339 UTC \| `null` | Set when `state` becomes `closed`, cleared on reopen. |
+| `done_at` | RFC 3339 UTC, absent | When the issue last moved into Done, while it is there; absent anywhere else. Stamped by the move (or by filing it in Done) and cleared when it leaves. An issue written before the field existed gets it from its timeline's latest move into Done the next time `issues.list` or `issues.get` reads it, and keeps it. Announced as `issues.doneSinceLeft`. |
 
 ### Comment
 
@@ -175,7 +176,7 @@ move together, and the new fixtures' `since` equals that number.
 
 | Verb | Params | Result |
 | --- | --- | --- |
-| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue]}` |
+| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue], user_session}` — see [The user's session](#the-users-session) |
 | `issues.get` | `{issue_id}` | `{issue, timeline: [TimelineEntry]}` |
 | `issues.create` | `{project_id, title, body?, status?, labels?, priority?, assignee?, links?}` | `{issue, dispatch}` |
 | `issues.update` | `{issue_id, title?, body?, labels?, priority?, status?, state?}` | `{issue}` |
@@ -861,6 +862,84 @@ what an issue page's timeline sentences should use as well.)
 
 `session.hello` states `"issues": { "attachments": true, "watching": true }`, so
 a client gates its inbox on the capability rather than on a version compare.
+
+## The user's session
+
+The dashboard's Done section is "Done since you left" (#106): every issue in
+Done whose `done_at` is at or after the moment the user left. The bridge keeps
+one device-wide summary of the user's session and `issues.list` carries it
+beside the issues, so the section paints from the cached list and needs no
+cached timelines.
+
+```json
+"user_session": {
+  "session_started_ms": 1758272400000,
+  "last_activity_ms": 1758276720000,
+  "previous_session_ended_ms": 1758218400000,
+  "gap_ms": 21600000,
+  "now_ms": 1758277020000
+}
+```
+
+`now_ms` is the bridge's clock when it answered. A client reads from it
+whether the user was away AT THAT ANSWER (`last_activity_ms` a gap or more
+before it), and nothing more: it never adds the time since, and never reads its
+own clock, which may be hours out. Time passing since an answer says nothing
+about the user, who may have been busy on another client all along.
+
+- **Activity** is the user acting: the client verbs in
+  `rpc::USER_ACTIVITY_VERBS`, which are messages, issue writes, read marks
+  (`issues.read_through`, `entity.seen`), Resume, Stop and opening a terminal
+  (`agent.start`, `agent.interrupt`, `term.create`, stamped where the frame is
+  dispatched because they bypass `dispatch`), and the other user-initiated
+  writes. Refusals are not activity. Reads, subscriptions, acks, resizes and
+  re-attaches are not in it, and neither is `term.input`, which a terminal
+  also sends by itself. Agents act through MCP and never reach it.
+- **Arriving** is activity too: `user.present` (no params; answers
+  `{user_session}`) records it on the bridge's clock. The client sends it to
+  every connected bridge that announces `issues.doneSinceLeft` when the app
+  opens in a focused window, when the window is focused again (or its tab
+  shown while focused), on a pointer, key or wheel input, and on navigation;
+  at most once a minute per bridge (`spa/src/core/userPresence.js`). A
+  reconnect, a list read or a push is never an arrival, and an arrival a
+  bridge could not be told of is dropped after two minutes, so a bridge that
+  reconnects at 3am is not told the user arrived at 3am. A send that waited on
+  the bridge's greeting checks again when the greeting settles: still fresh,
+  and the window still visible and focused.
+- **Automatic read marks** (a chat or issue page marking what arrives on
+  screen, rather than the user sending, moving or opening something) are sent
+  only while the document is visible and focused (`document.hasFocus()`). A
+  window left showing a chat overnight neither reads the user's messages for
+  them nor keeps their session alive; when focus returns, what is on screen is
+  marked then (`spa/src/core/readerPresence.js`).
+- **A session** ends after `gap_ms` (6 hours) without activity. The update is
+  #98's session function with that gap; when a new session starts,
+  `previous_session_ended_ms` becomes the old `last_activity_ms`.
+- **Pushed** when a new session starts: an `issues` change on every project
+  (empty `issue_ids`), so every client re-reads a list and its session. A
+  laptop holding the old session does not infer an absence the user spent on
+  their phone. Activity inside a session pushes nothing, because nothing a
+  client decides depends on it: a client infers no silence from a snapshot
+  aging, so a laptop that last read at 09:00 still lists the overnight work at
+  15:00 while the user spent the day on their phone.
+- **Stored** as one `meta` row, rewritten on each change. The row is
+  authoritative for the interval it covers, since much of what made it (read
+  marks, which keep only their latest) is not in the store to replay; a boot
+  starts from it and folds only the stored user actions after its last
+  activity (issue events and comments by the user, messages the user sent),
+  which are what a failed write missed. A store with no row (a bridge from
+  before this shipped) replays them all.
+- **Cutoff** (client): `previous_session_ended_ms`. If the answer itself
+  shows the user away (a list read that landed before the arrival did),
+  `last_activity_ms`, unless that silence was already longer than 96 hours,
+  when nothing is listed until the arrival is recorded. If there is no
+  earlier session, or it ended more than 96 hours before this one started, the
+  cutoff is this session's start: a blank slate that fills as work finishes.
+  The cap measures the absence, not the time since it, so a three-day weekend
+  stays listed all through the day back.
+
+Clients gate on the `issues.doneSinceLeft` capability name; without it the
+section stays "Done", the last 24 hours read from cached timelines.
 
 ## Push
 

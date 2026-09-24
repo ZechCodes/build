@@ -77,7 +77,7 @@ const NO_CAPABILITIES = Object.freeze({
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
-  issues: Object.freeze({ attachments: false, watching: false, context: false }),
+  issues: Object.freeze({ attachments: false, watching: false, context: false, doneSinceLeft: false }),
   conversations: Object.freeze({ settings: false }),
   messages: Object.freeze({ context: false }),
   threads: Object.freeze({ postOperations: false }),

@@ -8,15 +8,23 @@ import { esc } from "./text.js";
 const SECTIONS = [
   { id: "needsYou", title: "Needs you", empty: "Nothing needs your look right now." },
   { id: "inProgress", title: "In progress", empty: "No agent is working on an issue." },
-  { id: "doneToday", title: "Done", empty: "Nothing moved to Done in the last 24 hours." },
+  { id: "done", title: "Done", empty: "Nothing moved to Done in the last 24 hours." },
 ];
+/** Done on a bridge that knows when the user was last here. */
+const DONE_SINCE_LEFT = {
+  id: "done",
+  title: "Done since you left",
+  empty: "Nothing has moved to Done since you left.",
+};
+const sectionsFor = (context) =>
+  context.doneSinceLeft ? SECTIONS.map((section) => (section.id === "done" ? DONE_SINCE_LEFT : section)) : SECTIONS;
 export const DEFAULT_DASHBOARD_TAB = SECTIONS[0].id;
 export const dashboardTabIds = SECTIONS.map((section) => section.id);
 
 const secondaryText = {
   inProgress: (entry) => [entry.agentName, entry.activity].filter(Boolean).join(" · "),
   needsYou: (entry) => (entry.reasonLabels || []).join(" · "),
-  doneToday: (entry) => entry.sha ? `Commit ${entry.sha.slice(0, 12)}` : "Moved to Done",
+  done: (entry) => entry.sha ? `Commit ${entry.sha.slice(0, 12)}` : "Moved to Done",
 };
 
 const dashboardRowHtml = (entry, context, section) => {
@@ -33,9 +41,10 @@ const dashboardRowHtml = (entry, context, section) => {
 /** One selected section, from cached records only. The Dashboard's links are
  *  the same issue routes as List and Board, including inside a workspace. */
 export function paintIssueDashboard(body, sections, context) {
-  const selected = SECTIONS.find((section) => section.id === context.dashboardTab) || SECTIONS[0];
+  const shown = sectionsFor(context);
+  const selected = shown.find((section) => section.id === context.dashboardTab) || shown[0];
   const entries = sections[selected.id] || [];
-  const tabs = SECTIONS.map((section) => `<button type="button" class="issue-dashboard-tab" role="tab"
+  const tabs = shown.map((section) => `<button type="button" class="issue-dashboard-tab" role="tab"
     id="issue-dashboard-tab-${section.id}" data-dashboard-tab="${section.id}"
     aria-controls="issue-dashboard-panel" aria-selected="${section.id === selected.id}"
     tabindex="${section.id === selected.id ? 0 : -1}"><span>${section.title}</span><span class="issue-dashboard-count">${(sections[section.id] || []).length}</span></button>`).join("");

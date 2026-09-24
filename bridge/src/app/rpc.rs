@@ -41,6 +41,101 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("thread.post", "entity_id"),
 ];
 
+/// The verbs that are the user acting, for the user's session (spec: Issues
+/// dashboard → Done since you left). Broader than [`INTERACTION_VERBS`]: that
+/// table decides which entity rises in the rail, this one only whether the
+/// user was here. Reading counts, so the read marks are in it.
+///
+/// A list and not "every write", because some writes a client makes on its
+/// own — acks, resizes, subscriptions, re-attaching after a reconnect — and a
+/// tab left open overnight must not keep a session alive. `term.input` stays
+/// out for the same reason: a terminal answers a program's queries by itself.
+///
+/// `agent.start`, `agent.interrupt` and `term.create` are answered outside
+/// `dispatch` ([`session_scoped`]), so [`dispatch_frame`] stamps those itself.
+/// `user.present` is not listed: it records the arrival and answers the
+/// session in one step.
+pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
+    "agent.add",
+    "agent.choose",
+    "agent.interrupt",
+    "agent.remove",
+    "agent.start",
+    "branch.dispatch",
+    "branch.finish",
+    "bridge.install_update",
+    "capture.answer",
+    "capture.cancel",
+    "capture.create",
+    "capture.reroute",
+    "conversation.settings",
+    "conversation.unwatch",
+    "conversation.watch",
+    "entity.dismiss",
+    "entity.mute",
+    "entity.seen",
+    "fs.mkdir",
+    "fs.write",
+    "git.branch_delete",
+    "git.checkout",
+    "git.checkout_ref",
+    "git.commit",
+    "git.discard",
+    "git.fetch",
+    "git.merge_abort",
+    "git.pull",
+    "git.push",
+    "git.stage",
+    "git.stash",
+    "git.stash_pop",
+    "git.unstage",
+    "issues.assign",
+    "issues.attach",
+    "issues.close",
+    "issues.comment",
+    "issues.create",
+    "issues.dismiss",
+    "issues.link",
+    "issues.read_through",
+    "issues.reopen",
+    "issues.track",
+    "issues.untrack",
+    "issues.unwatch",
+    "issues.update",
+    "issues.watch",
+    "project.add",
+    "project.add_source",
+    "project.clone",
+    "project.create",
+    "project.delete",
+    "project.init_git",
+    "project.remove_source",
+    "project.set_isolation",
+    "project.set_remote",
+    "run.abandon",
+    "run.adopt",
+    "run.delete",
+    "run.finish",
+    "run.git_action",
+    "run.message",
+    "run.release",
+    "run.request_changes",
+    "settings.set",
+    "term.create",
+    "thread.attach",
+    "thread.post",
+    "workspace.add_directory",
+    "workspace.create",
+    "workspace.delete",
+    "workspace.finish",
+    "workspace.init_git",
+    "workspace.remove_directory",
+    "workspace.rename",
+    "workspace.retry",
+    "worktree.create",
+    "worktree.finish",
+];
+
 /// Dispatch one decrypted request frame. [`session_scoped`] answers the verbs
 /// that need the shared `Arc` (background producer/pump) or the caller's own
 /// `SessionSender` (somewhere to push live output to); [`routed`] answers
@@ -104,7 +199,7 @@ pub(in crate::app) fn dispatch_frame(
     };
 
     let result = match session_scoped(state, &sender, &method, &params, &timer) {
-        Some(outcome) => outcome.map_err(|error| {
+        Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer).map_err(|error| {
             if error == PROJECT_DELETION_IN_PROGRESS {
                 ApiError::unavailable(error)
             } else {
@@ -118,6 +213,22 @@ pub(in crate::app) fn dispatch_frame(
         }),
     };
     api::reply(id, result)
+}
+
+/// Resume, Stop and a new terminal are answered by [`session_scoped`] and
+/// never reach `dispatch`, whose stamp is the only other one; so a
+/// successful one is noted here. A refusal is not the user being here.
+fn noted_as_user_activity(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    outcome: Result<Value, String>,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    if outcome.is_ok() && USER_ACTIVITY_VERBS.contains(&method) {
+        let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
+        timer.lock(state).note_user_activity(now);
+    }
+    outcome
 }
 
 /// What a `ping` answers, wherever it is answered from.
@@ -594,6 +705,10 @@ impl AppState {
         }
         for id in touched {
             self.touch_attention(&id);
+        }
+        if USER_ACTIVITY_VERBS.contains(&method) {
+            let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
+            self.note_user_activity(now);
         }
     }
 }

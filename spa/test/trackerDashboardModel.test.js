@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { dashboardSections, doneMoveToday, latestCachedAgentActivity } from "../src/core/trackerDashboardModel.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  DONE_SINCE_CAP_MS, dashboardSections, doneMoveToday, doneSince, doneSinceCutoff, latestCachedAgentActivity, standingOf,
+} from "../src/core/trackerDashboardModel.js";
 
 const PROJECT = "device-1/proj-1";
 const NOW = Date.parse("2026-09-22T20:00:00Z");
@@ -69,7 +71,7 @@ describe("Dashboard cache projection", () => {
       [old.id, detail([move("2026-09-21T19:59:59Z")])],
       [movedAway.id, detail([move("2026-09-22T19:00:00Z"), move("2026-09-22T19:30:00Z", "in_review")])],
     ]);
-    expect(dashboardSections([today, old, unknown, movedAway], { detailById: details, nowMs: NOW }).doneToday)
+    expect(dashboardSections([today, old, unknown, movedAway], { detailById: details, nowMs: NOW }).done)
       .toEqual([{ issue: today, movedAt: "2026-09-22T19:00:00Z", sha: "def456" }]);
   });
 
@@ -79,5 +81,138 @@ describe("Dashboard cache projection", () => {
     expect(doneMoveToday(done, detail([move("2026-09-22T20:00:01Z")]), NOW)).toBeNull();
     expect(doneMoveToday(done, detail([move("invalid")]), NOW)).toBeNull();
     expect(doneMoveToday(done, null, NOW)).toBeNull();
+  });
+});
+
+describe("Done since you left", () => {
+  const HOUR = 60 * 60 * 1000;
+  const GAP = 6 * HOUR;
+  const at = (iso) => Date.parse(iso);
+  /** The bridge's summary as the cache holds it: `started`/`last` are this
+   *  session, `ended` the one before it, `bridgeNow` the bridge's clock when it
+   *  answered. */
+  const session = (started, last, ended = null, bridgeNow = last) => ({
+    session_started_ms: started, last_activity_ms: last, previous_session_ended_ms: ended, gap_ms: GAP,
+    now_ms: bridgeNow,
+  });
+  const cutoff = (summary) => doneSinceCutoff(summary);
+  const finished = (id, iso) => issue(id, { status: "done", done_at: iso });
+
+  it("reaches back over a 15 hour night, before and after the arrival is recorded", () => {
+    const leftAt = at("2026-09-21T18:00:00Z");
+    const walkIn = at("2026-09-22T09:00:00Z");
+    // A list read at the walk-in, before the arrival landed: the bridge still
+    // describes yesterday, and its clock says the silence is 15 hours long.
+    expect(cutoff(session(at("2026-09-21T09:00:00Z"), leftAt, null, walkIn))).toBe(leftAt);
+    // The arrival has started today's session on the bridge.
+    expect(cutoff(session(walkIn, walkIn, leftAt, walkIn + HOUR))).toBe(leftAt);
+  });
+
+  it("covers a weekend: Friday 18:00 to Monday 09:00 is 63 hours", () => {
+    const friday = at("2026-09-18T18:00:00Z");
+    const monday = at("2026-09-21T09:00:00Z");
+    expect(monday - friday).toBe(63 * HOUR);
+    expect(cutoff(session(friday - 9 * HOUR, friday, null, monday))).toBe(friday);
+    expect(cutoff(session(monday, monday + HOUR, friday, monday + 2 * HOUR))).toBe(friday);
+  });
+
+  it("covers a three-day weekend inside the 96 hour cap, all day long", () => {
+    const friday = at("2026-09-18T18:00:00Z");
+    const tuesday = at("2026-09-22T09:00:00Z");
+    expect(tuesday - friday).toBe(87 * HOUR);
+    expect(cutoff(session(friday - 9 * HOUR, friday, null, tuesday))).toBe(friday);
+    // Late on Tuesday it has been over 96 hours since Friday, but the absence
+    // was 87: the list does not empty halfway through the day back.
+    const evening = at("2026-09-22T20:00:00Z");
+    expect(evening - friday).toBeGreaterThan(DONE_SINCE_CAP_MS);
+    expect(cutoff(session(tuesday, evening - HOUR, friday, evening))).toBe(friday);
+  });
+
+  it("starts a week's vacation from a blank slate that fills with this session's work", () => {
+    const left = at("2026-09-11T18:00:00Z");
+    const back = at("2026-09-21T09:00:00Z");
+    // Walked in, the arrival not recorded yet: nothing is news.
+    expect(cutoff(session(left - HOUR, left, null, back))).toBe(Infinity);
+    const arrival = cutoff(session(back, back, left, back + HOUR));
+    expect(arrival).toBe(back);
+    const duringVacation = finished("vacation", "2026-09-15T12:00:00Z");
+    const thisMorning = finished("today", new Date(back + 30 * 60_000).toISOString());
+    expect(dashboardSections([duringVacation], { doneCutoffMs: arrival }).done).toEqual([]);
+    expect(dashboardSections([duringVacation, thisMorning], { doneCutoffMs: arrival }).done.map((entry) => entry.issue.id))
+      .toEqual(["today"]);
+  });
+
+  // The reviewer's case 3: after a vacation, enter at 09:00 and see a 10:00
+  // completion; a reload at 11:00 must still show it. The arrival is the
+  // bridge's, so the reload reads the same start.
+  it("keeps a recorded arrival across a reload hours later", () => {
+    const back = at("2026-09-21T09:00:00Z");
+    // The reload reads the list again at 11:00: the same session, answered later.
+    const reloaded = session(back, back + 90 * 60_000, at("2026-09-11T18:00:00Z"), back + 2 * HOUR);
+    expect(cutoff(reloaded)).toBe(back);
+    expect(doneSince(finished("ten", "2026-09-21T10:00:00Z"), cutoff(reloaded))).toBe("2026-09-21T10:00:00Z");
+  });
+
+  it("ends a session at exactly six hours of silence and not a millisecond before", () => {
+    const earlier = at("2026-09-21T09:00:00Z");
+    const last = at("2026-09-22T12:00:00Z");
+    const started = at("2026-09-22T08:00:00Z");
+    expect(cutoff(session(started, last, earlier, last + GAP))).toBe(last);
+    expect(cutoff(session(started, last, earlier, last + GAP - 1))).toBe(earlier);
+    expect(standingOf(session(started, last, earlier, last + GAP))).toBe("away");
+    expect(standingOf(session(started, last, earlier, last + GAP - 1))).toBe("here");
+  });
+
+  // The reviewer's case 2: nothing reads this device's clock, so a phone
+  // whose clock runs hours out sees what a laptop sees from the same records.
+  it("reads the silence off the bridge's answer and never this device's clock", () => {
+    const earlier = at("2026-09-21T18:00:00Z");
+    const last = at("2026-09-22T12:00:00Z");
+    const answered = session(at("2026-09-22T09:00:00Z"), last, earlier, last + HOUR);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(last + 30 * HOUR);
+      expect(cutoff(answered)).toBe(earlier);
+    } finally {
+      vi.useRealTimers();
+    }
+    // A record with no bridge clock infers no silence at all.
+    expect(cutoff({ ...answered, now_ms: null })).toBe(earlier);
+  });
+
+  // The reviewer's case: the laptop read the list at 09:00; the user kept
+  // working on the phone until 14:00, which moved nothing the laptop holds;
+  // the laptop repaints at 15:00. Six hours since the laptop's snapshot is not
+  // six hours of silence, and the overnight work must stay.
+  it("infers no silence from time passing since a snapshot another client may have kept alive", () => {
+    const yesterday18 = at("2026-09-21T18:00:00Z");
+    const nine = at("2026-09-22T09:00:00Z");
+    const snapshot = session(nine, nine, yesterday18, nine);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(at("2026-09-22T15:00:00Z"));
+      expect(cutoff(snapshot)).toBe(yesterday18);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(doneSince(finished("overnight", "2026-09-22T03:00:00Z"), cutoff(snapshot))).toBe("2026-09-22T03:00:00Z");
+  });
+
+  it("with no earlier session starts from this one, and with no activity at all shows nothing yet", () => {
+    const started = at("2026-09-22T08:00:00Z");
+    expect(cutoff(session(started, started + HOUR))).toBe(started);
+    expect(cutoff(session(null, null, null, NOW))).toBe(Infinity);
+    expect(doneSinceCutoff(null)).toBe(Infinity);
+  });
+
+  it("lists only issues in Done whose done_at is at or after the cutoff, from the list record alone", () => {
+    const from = at("2026-09-22T08:00:00Z");
+    expect(doneSince(finished("at", "2026-09-22T08:00:00Z"), from)).toBe("2026-09-22T08:00:00Z");
+    expect(doneSince(finished("before", "2026-09-22T07:59:59Z"), from)).toBeNull();
+    expect(doneSince(issue("moved-away", { status: "in_review", done_at: "2026-09-22T09:00:00Z" }), from)).toBeNull();
+    expect(doneSince(issue("never", { status: "done" }), from)).toBeNull();
+    // No timeline was needed: the details map is empty.
+    expect(dashboardSections([finished("x", "2026-09-22T09:00:00Z")], { doneCutoffMs: from }).done)
+      .toEqual([{ issue: finished("x", "2026-09-22T09:00:00Z"), movedAt: "2026-09-22T09:00:00Z", sha: null }]);
   });
 });

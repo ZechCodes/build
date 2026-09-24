@@ -2513,6 +2513,34 @@ describe("the conversation panel", () => {
     expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12);
   });
 
+  // A desktop left showing a chat overnight: visible, nobody at it. A mark
+  // would read Zech's messages for him and keep his session alive.
+  it("sends no read mark for a post arriving in a visible unfocused window, and sends it on focus", async () => {
+    const said = (count) => ({ run_id: "run-3", sessions: [], items: [
+      { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
+      { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
+    ].slice(0, count) });
+    payload = branchRow({ agents: [agent({ unread_count: 0, read_through_sequence: 1 })], run: { run_id: "run-3", thread: said(1) } });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    try {
+      await mount();
+      expect(document.hidden).toBe(false);
+
+      await pushRow(branchRow({
+        agents: [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 1 })],
+        run: { run_id: "run-3", thread: said(2) },
+      }));
+      await vi.waitFor(() => expect(panel().textContent).toContain("two"));
+      expect(markSeen).not.toHaveBeenCalled();
+
+      focused.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 2));
+    } finally {
+      focused.mockRestore();
+    }
+  });
+
   it("says nothing about reading a conversation with nothing waiting", async () => {
     await mount();
     expect(markSeen).not.toHaveBeenCalled();

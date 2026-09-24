@@ -8,7 +8,7 @@ use super::IssueWrite;
 use crate::app::{optional_nonempty_string, require_str};
 use crate::tracker::{
     column_names, normalize_labels, normalize_status, Actor, Assignee, Issue, IssueEventKind,
-    IssuePriority, IssueState, MAX_BODY_BYTES, MAX_TITLE_BYTES,
+    IssuePriority, IssueState, DONE_STATUS, MAX_BODY_BYTES, MAX_TITLE_BYTES,
 };
 use serde_json::{json, Value};
 
@@ -103,6 +103,9 @@ pub(super) fn drafted_issue(
     let mut issue = Issue::drafted(project_path, &title, created_by, now);
     issue.body = optional_body(params)?.unwrap_or_default();
     if let Some(status) = optional_status(params, "status")? {
+        if status == DONE_STATUS {
+            issue.done_at = Some(now.to_string());
+        }
         issue.status = status;
     }
     if let Some(labels) = optional_labels(params)? {
@@ -163,6 +166,7 @@ pub(super) fn move_to(
         payload.extend(extra.clone());
     }
     write.issue.status = status.to_string();
+    write.issue.done_at = (status == DONE_STATUS).then(|| now.to_string());
     write.event(actor, IssueEventKind::Moved, payload, now);
 }
 

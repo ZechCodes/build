@@ -236,6 +236,7 @@ impl AppState {
         self.recover_captures(captures)?;
         self.restore_plans_before_runs(plans, runs)?;
         self.rebuild_session_summaries()?;
+        self.rebuild_user_session()?;
         self.restore_operations(operations);
         self.seed_conversation_attention_sequences();
         self.seed_anchors_for_records_without_one();

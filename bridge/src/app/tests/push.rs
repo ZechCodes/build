@@ -46,7 +46,7 @@ pub(in crate::app::tests) async fn settled_pushes(
 
 /// Collect pushes until the assertion's actual condition arrives. A file
 /// watcher and a git scan can publish separate frames in either order.
-async fn pushes_until(
+pub(in crate::app::tests) async fn pushes_until(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
     session_key: &str,
     mut ready: impl FnMut(&[Value]) -> bool,

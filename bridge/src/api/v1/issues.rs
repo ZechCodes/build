@@ -361,6 +361,10 @@ pub struct IssueView {
     pub updated_at: String,
     /// `null` while the issue is open.
     pub closed_at: Option<String>,
+    /// When it last moved into Done, while it is there. Absent anywhere else,
+    /// and from a bridge that does not announce `issues.doneSinceLeft`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<String>,
 }
 
 /// One attachment as every ANSWER carries it — what `issues.attach` says it
@@ -392,6 +396,26 @@ pub struct IssueAttachmentBytes {
 pub struct IssuesList {
     pub project_id: String,
     pub issues: Vec<IssueView>,
+    /// The user's session on this bridge, device-wide rather than this
+    /// project's: what the dashboard's "Done since you left" measures from.
+    pub user_session: UserSessionView,
+}
+
+/// The user's session: epoch milliseconds, each `null` until there is one.
+/// Only the user's own actions move it; an agent never does.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UserSessionView {
+    /// The first action after the last silence of `gap_ms` or more.
+    pub session_started_ms: Option<i64>,
+    pub last_activity_ms: Option<i64>,
+    /// The last action before that silence: where "since you left" starts.
+    pub previous_session_ended_ms: Option<i64>,
+    /// The silence that ends a session.
+    pub gap_ms: i64,
+    /// This bridge's clock when it answered. A client measures silences
+    /// against this, plus the time since it arrived, and never against its
+    /// own clock.
+    pub now_ms: i64,
 }
 
 /// What every mutating verb answers: the issue as it now stands.

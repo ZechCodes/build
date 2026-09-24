@@ -62,6 +62,7 @@ mod migrations;
 mod operations;
 mod schema;
 mod tracker;
+mod user_session;
 
 #[cfg(test)]
 pub use conversations::items_decoded;

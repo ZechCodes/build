@@ -302,6 +302,10 @@ pub struct AppState {
     /// indexed messages after recovery; updated once per appended live message.
     session_summaries: HashMap<String, crate::session_summary::SessionSummary>,
     session_seen: HashMap<(String, String), u64>,
+    /// The user's own session, device-wide. Updated by the verbs that are the
+    /// user acting (`rpc::USER_ACTIVITY_VERBS`), persisted on every change, and
+    /// replayed with the stored actions at boot.
+    user_session: crate::session_summary::UserSession,
     /// Durable plan/run records under the bridge state dir, if persistence is
     /// enabled.
     store: Option<Store>,
@@ -577,6 +581,7 @@ impl AppState {
             runs: HashMap::new(),
             session_summaries: HashMap::new(),
             session_seen: HashMap::new(),
+            user_session: Default::default(),
             store: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),

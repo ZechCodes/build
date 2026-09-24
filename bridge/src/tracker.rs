@@ -344,6 +344,30 @@ pub struct Issue {
     pub updated_at: String,
     #[serde(default)]
     pub closed_at: Option<String>,
+    /// When this issue last moved into Done, while it is there. Cleared when
+    /// it leaves, so a reader never has to ask the status whether it counts.
+    /// Issues written before the field existed get it from their timeline the
+    /// next time they are listed ([`done_at_from_timeline`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<String>,
+}
+
+/// When an issue in Done got there: its latest move into Done, or when it was
+/// filed if it was filed there. `None` for an issue somewhere else.
+pub fn done_at_from_timeline(issue: &Issue, timeline: &[TimelineEntry]) -> Option<String> {
+    if issue.status != DONE_STATUS {
+        return None;
+    }
+    let moved = timeline.iter().rev().find_map(|entry| match entry {
+        TimelineEntry::Event(event)
+            if event.kind == IssueEventKind::Moved
+                && event.payload.get("to").and_then(Value::as_str) == Some(DONE_STATUS) =>
+        {
+            Some(event.at.clone())
+        }
+        _ => None,
+    });
+    Some(moved.unwrap_or_else(|| issue.created_at.clone()))
 }
 
 impl Issue {
@@ -428,6 +452,7 @@ impl Issue {
             created_at: now.to_string(),
             updated_at: now.to_string(),
             closed_at: None,
+            done_at: None,
         }
     }
 

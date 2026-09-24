@@ -31,6 +31,7 @@ import { subscribeCache } from "./localCache.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceWatch } from "./deviceReconnect.js";
+import { contextFor } from "./deviceContexts.js";
 import {
   DEFAULT_FILTERS,
   filterIssues,
@@ -378,7 +379,7 @@ export function mountIssuesPane(host, options) {
    *  answer lands, and a push is never answered by a read begun before it. */
   let listReads = null;
   function refresh() {
-    listReads ||= trailingRead(readList);
+    listReads ||= trailingRead(readList, { generationOf: () => contextFor(state.deviceId)?.session ?? null });
     return listReads();
   }
 

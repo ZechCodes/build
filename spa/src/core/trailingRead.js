@@ -9,18 +9,25 @@
 // same read is out is folded into ONE read after it, which starts once the
 // current answer has landed, so every answer lands and the last word is always
 // read after the last push.
+//
+// Folding is per session. A read out on a session that has since died may not
+// answer for a long time, and the new session's greeting asks for everything
+// again: that read starts at once rather than queueing behind the dead one.
 
 /**
- * Wrap `read(key)` so that, per key, at most one call is out at a time.
+ * Wrap `read(key)` so that, per key and per session, at most one call is out
+ * at a time.
  *
  * Asking while that key's read is out returns the read already out and marks
  * the key for one more run when it settles, however many times it was asked.
- * A read that threw still takes its trailing run.
+ * A read that threw still takes its trailing run. `generationOf(key)` names
+ * the session a read belongs to; asking under a different one starts a read of
+ * its own, and the older read settling afterwards starts nothing.
  */
-export function trailingRead(read) {
+export function trailingRead(read, { generationOf = () => null } = {}) {
   const out = new Map();
-  const run = (key) => {
-    const held = { again: false, done: null };
+  const run = (key, generation) => {
+    const held = { again: false, done: null, generation };
     out.set(key, held);
     let started;
     try {
@@ -29,14 +36,16 @@ export function trailingRead(read) {
       started = Promise.reject(error);
     }
     held.done = started.finally(() => {
-      if (held.again) void run(key).catch(() => {});
+      if (out.get(key) !== held) return; // overtaken by a newer session's read
+      if (held.again) void run(key, generationOf(key)).catch(() => {});
       else out.delete(key);
     });
     return held.done;
   };
   return (key = "") => {
+    const generation = generationOf(key);
     const held = out.get(key);
-    if (!held) return run(key);
+    if (!held || held.generation !== generation) return run(key, generation);
     held.again = true;
     return held.done;
   };

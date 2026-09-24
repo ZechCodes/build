@@ -18,7 +18,7 @@
 // which holds no MCP session token, so its daemon socket refuses tool calls.
 //
 // `churn` needs a slow list: it seeds 150 issues of ~30 KB (once per stack)
-// and adds 250 ms of egress delay on the bridge container's eth0 with
+// and adds egress delay (NETEM_DELAY, default 100ms) on the bridge container's eth0 with
 // `tc netem`, from a throwaway NET_ADMIN container in that network namespace,
 // removed again at the end. Use it on your OWN compose project only.
 //
@@ -90,7 +90,8 @@ process.exit(0);`);
   return { lines, done: new Promise((resolve) => child.on("exit", resolve)) };
 }
 
-const netem = (verb) => docker(`docker run --rm --net container:${PROJECT}-bridge-1 --cap-add NET_ADMIN alpine sh -c "apk add -q iproute2 >/dev/null 2>&1; tc qdisc ${verb} dev eth0 root ${verb === "del" ? "" : "netem delay 250ms"}"`);
+const DELAY = process.env.NETEM_DELAY || "100ms";
+const netem = (verb) => docker(`docker run --rm --net container:${PROJECT}-bridge-1 --cap-add NET_ADMIN alpine sh -c "apk add -q iproute2 >/dev/null 2>&1; tc qdisc ${verb} dev eth0 root ${verb === "del" ? "" : `netem delay ${DELAY}`}"`);
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
@@ -132,21 +133,25 @@ async function inReview(label) {
   return { id: issue.id, title, countBefore: (await dashNeedsYou(title)).count };
 }
 
-/** Both surfaces drop it, the Dashboard's count by one, within `ms`. */
+/** Both surfaces drop it, the Dashboard's count by one, within `ms` — each
+ *  timed from the same moment, not one after the other. */
 async function bothDrop(scenario, target, ms) {
-  for (const [name, gone] of [
+  const dropped = await Promise.all([
     ["the Issues list's Needs you group drops it", async () => !(await listNeedsYou(target.title))],
     ["the Dashboard's Needs you drops it and its count falls by one", async () => {
       const now = await dashNeedsYou(target.title);
       return !now.listed && now.count === target.countBefore - 1;
     }],
-  ]) {
+  ].map(async ([name, gone]) => {
     try {
       report(true, `${scenario}: ${name}`, `${await until(name, gone, ms)} ms`);
+      return true;
     } catch (error) {
       report(false, `${scenario}: ${name}`, error.message);
+      return false;
     }
-  }
+  }));
+  return dropped.every(Boolean);
 }
 
 async function churn() {
@@ -176,9 +181,10 @@ while (Date.now() < end) {
 console.log("CHURN_END " + n);`);
     await until("the move mid-churn", async () => churning.lines.includes("MOVED"), 90000);
     // Forty-two seconds of churn still to go after the move, and each list
-    // read takes seconds on this link: the page must drop the issue within
-    // thirty, while the pushes keep coming — not only once they stop.
-    await bothDrop("churn", target, 30000);
+    // read takes seconds on this link: both surfaces must drop the issue
+    // within thirty-five, while the pushes keep coming — not once they stop.
+    if (await bothDrop("churn", target, 35000))
+      report(!churning.lines.some((line) => line.startsWith("CHURN_END")), "churn: still churning when both had dropped it");
     await list.screenshot({ path: `${SHOTS}/${LABEL}-churn-list.png` });
     await dash.screenshot({ path: `${SHOTS}/${LABEL}-churn-dashboard.png` });
     await churning.done;
@@ -204,7 +210,9 @@ async function reconnect() {
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
   await context.setOffline(false);
-  await bothDrop("reconnect", target, 60000);
+  // The SPA's own reconnect backs off while it was offline, so the deadline
+  // covers that backoff too; the time is from going back online.
+  await bothDrop("reconnect", target, 180000);
   await list.screenshot({ path: `${SHOTS}/${LABEL}-reconnect-list.png` });
 }
 

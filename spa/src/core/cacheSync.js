@@ -422,13 +422,13 @@ async function readIssuesNow(context, projectId) {
   await writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns));
 }
 
-/** One project's list read at a time (#119). A push heard while it is out is
- *  read once after it, under the newest context that asked. */
+/** One project's list read at a time on a session (#119). A push heard while
+ *  it is out is read once after it, under the newest context that asked. */
 const latestIssueReads = new Map();
 const issueReads = trailingRead((key) => {
   const { context, projectId } = latestIssueReads.get(key);
   return readIssuesNow(context, projectId);
-});
+}, { generationOf: (key) => sessionOf(latestIssueReads.get(key).context.deviceId) });
 
 function readIssues(context, projectId) {
   const key = JSON.stringify([context.deviceId, projectId]);

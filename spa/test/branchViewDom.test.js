@@ -586,10 +586,10 @@ describe("a branch on another device", () => {
   });
 
   // The machine answered once and has since gone. Its context is still here —
-  // the drafts and cached reads on it survive the outage — but nothing can be
-  // read through it, so the surface says which machine is missing instead of
-  // standing a frame up over calls that will only be refused.
-  it("an offline route device renders the offline state naming that device", async () => {
+  // the drafts and cached reads on it survive the outage — so the surface
+  // stands up on what the records hold, as if it answered, and the strip over
+  // it says which machine is missing. Nothing is asked of it meanwhile.
+  it("an offline route device paints the surface and names that device over it", async () => {
     const { setContextOffline } = await import("../src/core/deviceContexts.js");
     App.devices = App.devices.map((device) => device.id === "dev-2" ? { ...device, status: "offline" } : device);
     setContextOffline("dev-2");
@@ -597,8 +597,8 @@ describe("a branch on another device", () => {
     await openBranch();
     await flush();
 
-    expect(document.getElementById("root").textContent).toContain("Desktop isn't connected");
-    expect(document.getElementById("tabbody")).toBeNull();
+    expect(document.querySelector("#root > .device-strip").textContent).toContain("Desktop isn't connected");
+    expect(document.getElementById("tabbody")).toBeTruthy();
     expect(theirCall).not.toHaveBeenCalled();
     expect(bridge.call).not.toHaveBeenCalled();
   });
@@ -622,11 +622,13 @@ describe("a branch on a device this client has not opened", () => {
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  // The reload case. Two machines answer on their own schedule, and the gate
-  // paints as soon as the first one lands: a link to the second paints the
-  // notice a beat before its machine is there. The notice is where the link
-  // waits, not where it ends — the surface stands itself up the moment that
-  // machine can answer, without the reader navigating away and back.
+  // The reload case, for a machine whose records are not on disk here. Two
+  // machines answer on their own schedule, and the gate paints as soon as the
+  // first one lands: a link to the second paints the notice a beat before its
+  // machine is there. The notice is where the link waits, not where it ends —
+  // the surface stands itself up the moment that machine can answer, without
+  // the reader navigating away and back. (A machine whose records ARE on disk
+  // paints from them straight away: renderFromCacheViews.test.js.)
   it("mounts the surface the moment the device lands", async () => {
     const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
     App.devices = [...App.devices, { id: "dev-3", name: "Laptop", status: "online" }];
@@ -637,11 +639,6 @@ describe("a branch on a device this client has not opened", () => {
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await cacheBoard({
-      deviceId: "dev-3",
-      items: [{ ...row, branch: "main", primary: true, worktree_id: null, run_id: "run-main" }],
-    });
-
     await openBranch();
     expect(document.getElementById("tabbody")).toBeNull();
 

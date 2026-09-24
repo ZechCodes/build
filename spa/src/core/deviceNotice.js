@@ -8,7 +8,8 @@ import { App, render } from "../app.js";
 import { deviceFrozenText, esc } from "./text.js";
 import { deviceAwayText } from "./deviceAway.js";
 import { deviceNameOf } from "./devicePolicy.js";
-import { canAnswer, contextFor, onDeviceStateChanged, routeContext } from "./deviceContexts.js";
+import { canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
+import { surfaceContext } from "./surfaceContext.js";
 import { connectDevice, deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
 
 /** What this client says about a machine it cannot reach, in the account's name
@@ -34,7 +35,8 @@ const recovering = (deviceId) => {
 
 /**
  * Stand the notice up where a surface would go, and take it down again the
- * moment its machine can answer.
+ * moment the surface has a machine to stand on (core/surfaceContext.js) — the
+ * one question every route surface asks before it paints.
  *
  * A link is not dead for naming a machine that is not here yet: the devices land
  * one at a time, so a reload paints on whichever answered first and the link's
@@ -46,7 +48,7 @@ const recovering = (deviceId) => {
  */
 export function mountDeviceNotice(root, deviceId) {
   const paint = () => {
-    if (canAnswer(routeContext(App.route))) return render();
+    if (surfaceContext(App.route)) return render();
     const context = contextFor(deviceId);
     const connecting = listedOnline(deviceId) && (!context?.blocked || recovering(deviceId));
     root.innerHTML = connecting

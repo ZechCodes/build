@@ -22,9 +22,9 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { canAnswer, routeContext } from "../core/deviceContexts.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { routeProjectKey } from "../core/deviceKey.js";
+import { surfaceContext } from "../core/surfaceContext.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 import { mountIssuePage } from "../core/trackerIssuePage.js";
 import { issueContextItem } from "../core/trackerViewingContext.js";
@@ -34,12 +34,12 @@ import "../styles/surfaces.css";
 export async function renderTrackerIssue() {
   const root = $("#root");
   const route = App.route;
-  const context = routeContext(route);
+  const context = surfaceContext(route);
   root.className = "surface";
-  // A machine that cannot answer — never opened here, or gone since — has
-  // nothing under this link to read or write, so the surface names it rather
-  // than standing a page up over calls that can only be refused.
-  if (!canAnswer(context)) {
+  // The surface paints what the records hold of this machine whether or not it
+  // can answer. Only a machine nothing here has ever held has nothing to paint:
+  // the notice names it, waits for it, and hands the link back when it lands.
+  if (!context) {
     mountDeviceNotice(root, route.deviceId);
     return;
   }

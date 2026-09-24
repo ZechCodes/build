@@ -50,7 +50,8 @@ export async function syncThreadWindow(request) {
   const page = await requestThreadPage(request, after);
   if (!page) return false;
   if (!requestIsActive(request)) return false;
-  await mergeCached(target, (current) => threadWindow(current, page, { newest: after > 0 }));
+  await mergeCached(target, (current) =>
+    requestIsActive(request) ? threadWindow(current, page, { newest: after > 0 }) : null);
   return true;
 }
 

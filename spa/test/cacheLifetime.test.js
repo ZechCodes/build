@@ -83,6 +83,28 @@ describe("the 72 h expiry", () => {
 });
 
 describe("done and deleted", () => {
+  it("keeps restored data when an old eviction finishes enumerating after its owner is gone", async () => {
+    const status = address("ws-1", "status");
+    await writeAt(status, { head: "old" }, NOW);
+    const originalAddresses = cache.cachedAddresses;
+    let release;
+    const enumeration = vi.spyOn(cache, "cachedAddresses").mockImplementation((scope) => {
+      enumeration.mockRestore();
+      return new Promise((resolve) => {
+        release = async () => resolve(await originalAddresses(scope));
+      });
+    });
+    let active = true;
+    const pending = lifetime.evictWorkspaceData("dev-1", "ws-1", () => active);
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+
+    active = false;
+    await cache.writeCached(status, { head: "restored" });
+    await release();
+    await pending;
+    expect((await cache.readCached(status))?.value).toEqual({ head: "restored" });
+  });
+
   it("drops every kind that workspace holds, however fresh, and leaves the row", async () => {
     const kinds = ["status", "log", "unpushed", "diff", "terminals", "console", "surfaces"];
     for (const kind of kinds) await writeAt(address("ws-1", kind), { kind }, NOW);

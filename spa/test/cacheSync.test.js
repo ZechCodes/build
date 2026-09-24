@@ -841,8 +841,10 @@ describe("a pass that is still out when the next session lands", () => {
   });
 
   it("starts a restored session's baseline when its old board read never answers", async () => {
-    const release = stallTheBoard();
-    board = [branchItem({ agents: [{ id: "ag-after" }] })];
+    const before = branchItem({ agents: [{ id: "ag-before" }] });
+    let release;
+    script["board.list"] = () => new Promise((resolve) => { release = () => resolve({ items: [before] }); });
+    board = [before];
     sync.startCacheSync();
     await settle();
     expect(calls("board.list")).toHaveLength(1);
@@ -850,6 +852,7 @@ describe("a pass that is still out when the next session lands", () => {
     // The restored greeting belongs to the same session. The old bridge's
     // board call is still out and may never answer at all.
     const session = contexts.get("dev-1").session;
+    board = [branchItem({ agents: [{ id: "ag-after" }] })];
     script = {};
     const refreshed = sync.syncRestoredDevice("dev-1", session);
     await refreshed;
@@ -860,6 +863,34 @@ describe("a pass that is still out when the next session lands", () => {
     release();
     await settle();
     expect((await read("run-1", "row"))?.value?.agents).toEqual([{ id: "ag-after" }]);
+  });
+
+  it("does not write an old agent surface after the restored pass observed a newer one", async () => {
+    const agent = (generation, goal) => ({
+      id: "ag-1", surface_session_generation: generation, surfaces: { goal },
+    });
+    board = [branchItem({ agents: [agent("gen-before", "before")] })];
+    const originalRead = cache.readCached;
+    let release;
+    const surfaceRead = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      if (address.kind === "surfaces" && address.entityId === "run-1") {
+        surfaceRead.mockRestore();
+        return new Promise((resolve) => { release = () => resolve(undefined); });
+      }
+      return originalRead(address);
+    });
+    sync.startCacheSync();
+    await settle();
+    expect(release).toBeTypeOf("function");
+
+    board = [branchItem({ agents: [agent("gen-after", "after")] })];
+    await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
+    await settle();
+    expect((await read("run-1", "surfaces", "ag-1"))?.value?.surfaces?.goal).toBe("after");
+
+    release();
+    await settle();
+    expect((await read("run-1", "surfaces", "ag-1"))?.value?.surfaces?.goal).toBe("after");
   });
 
   it("does not fold a restored issue list behind the old path's unanswered read", async () => {
@@ -920,6 +951,33 @@ describe("a pass that is still out when the next session lands", () => {
     release();
     await settle();
     expect((await read("run-1", "diff"))?.value?.diff_key).toBe("d1");
+  });
+
+  it("ignores an old status push paused before its row read when the restored baseline lands", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const heldRow = await read("run-1", "row");
+    const originalRead = cache.readCached;
+    let release;
+    const rowRead = vi.spyOn(cache, "readCached").mockImplementation((address) => {
+      if (address.entityId === "run-1" && address.kind === "row") {
+        rowRead.mockRestore();
+        return new Promise((resolve) => { release = () => resolve(heldRow); });
+      }
+      return originalRead(address);
+    });
+    const active = registeredWatchers.find((watcher) => watcher.id === "s-active" && !watcher.disposed);
+    active.onChanges([{ entity_id: "run-1", git: { status: { head: "old-push" } } }]);
+    await settle();
+    expect(release).toBeTypeOf("function");
+
+    script["git.status"] = () => ({ head: "restored-baseline", status_key: "restored" });
+    await sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
+    await settle();
+    expect((await read("run-1", "status"))?.value?.head).toBe("restored-baseline");
+
+    release();
+    await settle();
+    expect((await read("run-1", "status"))?.value?.head).toBe("restored-baseline");
   });
 
   // The greeting settles when the bridge answers, when the session dies, or

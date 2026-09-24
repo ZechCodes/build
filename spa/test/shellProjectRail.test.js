@@ -102,6 +102,45 @@ describe("the conversation a project page stands on", () => {
     expect(rail.dispose).toHaveBeenCalled();
   });
 
+  // A page can stand on a machine's records while that machine cannot answer
+  // (core/surfaceContext.js). Asking it for an owner then can only be refused,
+  // so the shell waits quietly — on the list, and on the machine — and asks
+  // the moment it can.
+  it("waits quietly for a machine that cannot answer, and asks it for the owner once it lands", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    await listProjects([{ project_id: "proj-1", name: "build" }]);
+    setContextOffline("dev-1");
+    standShell(route);
+    await flush();
+    expect(rpc).not.toHaveBeenCalled();
+    expect(notifyError).not.toHaveBeenCalled();
+    expect(mountAgentRail).not.toHaveBeenCalled();
+
+    adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+    await flush();
+
+    expect(rpc).toHaveBeenCalledWith("project.ensure_conversation", { project_id: "proj-1" });
+    expect(mountAgentRail).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail.mock.calls[0][1].entityId).toBe("run-minted");
+  });
+
+  it("stops waiting on the machine once the list names the owner first", async () => {
+    const { setContextOffline } = await import("../src/core/deviceContexts.js");
+    await listProjects([{ project_id: "proj-1", name: "build" }]);
+    setContextOffline("dev-1");
+    standShell(route);
+    await flush();
+
+    await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
+    await flush();
+    adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
+    await flush();
+
+    expect(rpc).not.toHaveBeenCalled();
+    expect(mountAgentRail).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail.mock.calls[0][1].entityId).toBe("run-7");
+  });
+
   it("stands nothing up when the reader left while the owner was being found", async () => {
     await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
     standShell(route);

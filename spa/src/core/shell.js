@@ -27,6 +27,7 @@ import { chatOverlaysPage } from "./railLayout.js";
 import { mountConsole } from "./console.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { surfaceContext } from "./surfaceContext.js";
+import { canAnswer, onDeviceStateChanged } from "./deviceContexts.js";
 import { deviceKey } from "./deviceKey.js";
 import { hashFromRoute } from "./router.js";
 import { notifyError } from "./notify.js";
@@ -233,7 +234,28 @@ async function standProjectRail(parts, context, mine) {
   // and its bubbles should wear its initial the moment they appear.
   const named = { ...parts, rail: { ...parts.rail, projectName: row?.name || "" } };
   if (ownerOf(row)) live.rail = mountRail({ ...named.rail, entityId: ownerOf(row) }, context);
-  else await standOnAnswer(named, context, mine);
+  else if (canAnswer(context)) await standOnAnswer(named, context, mine);
+  else live.rail = standWhenAsked(named, context, mine);
+}
+
+/** The rail over a machine that cannot be asked for an owner yet: whichever
+ *  comes first, the list naming one or the machine answering to mint one. A
+ *  question that can only be refused is not asked, and not toasted. */
+function standWhenAsked(parts, context, mine) {
+  const listed = standWhenListed(parts, context, mine);
+  const stopWaiting = onDeviceStateChanged(() => {
+    if (listed?.mounted() || generation !== mine) return stopWaiting();
+    if (!canAnswer(context)) return undefined;
+    stopWaiting();
+    listed?.dispose();
+    return void standOnAnswer(parts, context, mine);
+  });
+  return {
+    dispose() {
+      stopWaiting();
+      listed?.dispose();
+    },
+  };
 }
 
 /** The bridge's answer for a project the list names no owner for. A call that
@@ -268,6 +290,7 @@ function standWhenListed(parts, context, mine) {
   };
   unsubscribe = subscribeCache(address, () => void tryMount());
   return {
+    mounted: () => Boolean(rail),
     dispose() {
       unsubscribe?.();
       unsubscribe = null;

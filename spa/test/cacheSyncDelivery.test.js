@@ -251,9 +251,24 @@ describe("a pass racing the wire", () => {
   const subscribingBridge = () => {
     const held = new Set();
     const pending = new Map();
+    const overrides = new Map();
+    const gates = new Map();
     const wire = {
       held,
       during: (method, change) => pending.set(method, change),
+      /** Answer `method` this way from now on; a throw is a refusal. */
+      answering: (method, reply) => overrides.set(method, reply),
+      /** Hold every answer to `method` (the bridge still does the work) until
+       *  the returned function is called. */
+      hold: (method, match = () => true) => {
+        let open;
+        const opened = new Promise((done) => { open = done; });
+        gates.set(method, { opened, match });
+        return () => {
+          gates.delete(method);
+          open();
+        };
+      },
       /** What the bridge pushes for one entity's row: to `s-inbox`, if it is held. */
       pushRow: (entityId) => {
         if (!held.has("s-inbox")) return;
@@ -261,8 +276,18 @@ describe("a pass racing the wire", () => {
         changeEvents.dispatchChangeEvent({ type: "changes", subscription_id: "s-inbox", items: [{ entity_id: entityId, state }] }, "dev-1");
       },
     };
-    bridge.call = vi.fn(async (method, params) => {
+    const reply = async (method, params) => {
+      const answered = await respond(method, params);
+      const gate = gates.get(method);
+      if (gate?.match(params)) await gate.opened;
+      return answered;
+    };
+    const respond = async (method, params) => {
       if (method === "session.hello") return HELLO;
+      if (overrides.has(method)) {
+        const overridden = overrides.get(method)(params);
+        if (overridden !== undefined) return overridden;
+      }
       if (method === "changes.subscribe") held.add(params.subscription_id);
       if (method === "changes.unsubscribe") held.delete(params.subscription_id);
       if (method === "board.list") {
@@ -275,16 +300,39 @@ describe("a pass racing the wire", () => {
       pending.delete(method);
       change?.();
       return answer(method, params);
-    });
+    };
+    bridge.call = vi.fn(reply);
     return wire;
   };
+
+  /** The rail as the feed hands it out, read from the records the pass wrote. */
+  const watchFeed = async () => {
+    const feed = await import("../src/core/taskFeed.js");
+    let view = null;
+    const stop = feed.subscribeFeed((snapshot) => { view = snapshot; });
+    await feed.startFeed();
+    return {
+      agentsOf: (entityId) => view?.items.find((row) => row.run_id === entityId)?.agents.map((agent) => agent.id),
+      stop: () => { stop(); feed.stopFeed(); },
+    };
+  };
+
+  /** A git status the bridge answers from `head.now`. */
+  const movingHead = (wire) => {
+    const head = { now: "before" };
+    wire.answering("git.status", () => ({ head: head.now, status_key: head.now, files: [] }));
+    return head;
+  };
+  const headOf = async (entityId) => (await read(entityId, "status"))?.value.head;
+  const cacheSomething = () => cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [branchItem()] });
 
   const agentsOf = async (entityId) => (await read(entityId, "row"))?.value.agents.map((agent) => agent.id);
   const withAgents = (...ids) => branchItem({ agents: ids.map((id) => ({ id })) });
 
   const greet = () => changeEvents.greetBridge(bridge.call, { deviceId: "dev-1" });
 
-  it("asks for nothing until the bridge holds its subscriptions", async () => {
+  it("asks for nothing until the bridge holds its subscriptions, where there is something cached to show", async () => {
+    await cacheSomething();
     subscribingBridge();
     const heard = [];
     const answering = bridge.call;
@@ -326,6 +374,70 @@ describe("a pass racing the wire", () => {
     expect(await agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
   });
 
+  it("reads at once where the cache holds nothing, and again once its subscriptions land", async () => {
+    const wire = subscribingBridge();
+    const head = movingHead(wire);
+    await greet();
+    board = [branchItem()];
+    const answerSubscribes = wire.hold("changes.subscribe");
+    sync.startCacheSync();
+    await settle();
+
+    expect(calls("board.list")).toHaveLength(1);
+    expect(await headOf("run-1")).toBe("before");
+
+    // Changed before the bridge was recording anything for this device.
+    head.now = "after";
+    answerSubscribes();
+    await settle();
+
+    expect(await headOf("run-1")).toBe("after");
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
+  it("reads again once a refused subscription is taken on", async () => {
+    const wire = subscribingBridge();
+    const head = movingHead(wire);
+    let refusing = true;
+    wire.answering("changes.subscribe", (params) => {
+      if (refusing && params.subscription_id === "s-background") throw Object.assign(new Error("busy"), { code: "busy" });
+    });
+    await greet();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    expect(wire.held.has("s-background")).toBe(false);
+
+    head.now = "after";
+    refusing = false;
+    await flush([{ entity_id: "run-1", state: branchItem() }]); // any delivery asks for the diff again
+    expect(wire.held.has("s-background")).toBe(true);
+
+    expect(await headOf("run-1")).toBe("after");
+  });
+
+  it("reads again when a subscribe answer outlasts the wait", async () => {
+    await cacheSomething();
+    const wire = subscribingBridge();
+    const head = movingHead(wire);
+    await greet();
+    board = [branchItem()];
+    const answerInbox = wire.hold("changes.subscribe", (params) => params.subscription_id === "s-inbox");
+    sync.startCacheSync();
+    await settle();
+    expect(calls("board.list")).toHaveLength(0);
+
+    await new Promise((done) => setTimeout(done, sync.GREETING_WAIT_MS + 300));
+    await settle();
+    expect(calls("board.list")).toHaveLength(1);
+    // The git subscription is still queued behind the inbox's: nobody records this.
+    head.now = "after";
+    answerInbox();
+    await settle();
+
+    expect(await headOf("run-1")).toBe("after");
+  }, 30000);
+
   it("does not let the board it read overwrite a row pushed while the lists were out", async () => {
     const wire = subscribingBridge();
     await greet();
@@ -340,6 +452,86 @@ describe("a pass racing the wire", () => {
     await settle();
 
     expect(await agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
+  });
+
+  it("paints the row a push wrote while the lists were out, not the board's older copy", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [withAgents("ag-1")];
+    const answerProjects = wire.hold("project.list");
+    const rail = await watchFeed();
+    try {
+      sync.startCacheSync();
+      await settle();
+      board = [withAgents("ag-1", "ag-2")];
+      wire.pushRow("run-1");
+      await settle();
+      answerProjects();
+      await settle();
+
+      expect(rail.agentsOf("run-1")).toEqual(["ag-1", "ag-2"]);
+    } finally {
+      rail.stop();
+    }
+  });
+
+  it("paints the entity a push put back after taking it away while the lists were out", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [withAgents("ag-1")];
+    const answerProjects = wire.hold("project.list");
+    const rail = await watchFeed();
+    try {
+      sync.startCacheSync();
+      await settle();
+      await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
+      board = [withAgents("ag-2")];
+      wire.pushRow("run-1");
+      await settle();
+      answerProjects();
+      await settle();
+
+      expect(await agentsOf("run-1")).toEqual(["ag-2"]);
+      expect(rail.agentsOf("run-1")).toEqual(["ag-2"]);
+    } finally {
+      rail.stop();
+    }
+  });
+
+  it("writes nothing back under a workspace a push took away while the pass was reading it", async () => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [branchItem()];
+    const answerStatus = wire.hold("git.status");
+    sync.startCacheSync();
+    await settle();
+
+    await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
+    answerStatus();
+    await settle();
+
+    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+    expect(calls("fs.tree")).toHaveLength(0);
+  });
+
+  it("writes nothing back under a workspace a push took away while a pushed change was being read", async () => {
+    const wire = subscribingBridge();
+    wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
+    await greet();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, { file: { path: "src/a.js" }, openedAt: 1 });
+
+    // The reader's open file changed: its body is read again.
+    const answerFile = wire.hold("fs.read");
+    await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+    expect(calls("fs.read")).toHaveLength(1);
+    await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
+    answerFile();
+    await settle();
+
+    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
   });
 
   it("does not let the project list it read overwrite one a board item carried since", async () => {

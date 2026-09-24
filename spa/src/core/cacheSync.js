@@ -29,17 +29,19 @@
 //
 // The bridge starts a subscription empty and records a change only for the
 // subscriptions it holds when the change happens. So a pass takes its
-// subscriptions out, and waits for the bridge to hold them, before it asks
-// for anything: whatever changed before a read is in the read, and whatever
-// changes after it is pushed (#142). A push can then overtake the read it
-// followed, so a read never writes over a record a push wrote after it was
-// asked (core/pushFence.js).
+// subscriptions out before it asks for anything, and whatever changes after
+// the bridge holds them is pushed (#142). A subscription that lands after the
+// pass's reads were asked — a device with nothing cached reads at once, and a
+// subscribe can outlast the wait — leaves a gap behind it, so its landing is
+// followed by another pass (`subscriptionLanded`). A push can overtake the
+// read it followed, so a read never writes over a record a push wrote after it
+// was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
-import { forgetPushes, notePush, pushFence, pushedSince } from "./pushFence.js";
+import { onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
+import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -55,6 +57,7 @@ import {
   evictEntity,
   mergeCached,
   readCached,
+  updateCachedFeed,
   writeCached,
 } from "./localCache.js";
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
@@ -131,6 +134,7 @@ let releaseLock = null;
 let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
+let stopLandingWatch = null;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
@@ -293,7 +297,7 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
  *  rejects: a pass that threw is a pass that did not finish, and the caller's
  *  question is only ever whether it got all the way through. */
 function startPass(deviceId) {
-  const turn = { session: sessionOf(deviceId), superseded: false, done: null };
+  const turn = { session: sessionOf(deviceId), superseded: false, reading: false, done: null };
   turn.done = (async () => {
     try {
       return await orderedSync(deviceId, turn);
@@ -312,6 +316,10 @@ async function orderedSync(deviceId, turn) {
   if (!context) return false;
   await subscribeDevice(context);
   if (!context.active()) return false;
+  await heldBeforeReading(context);
+  if (!context.active()) return false;
+  readingSessions.set(deviceId, turn.session);
+  turn.reading = true;
   const passStartedAt = Date.now();
   const fence = pushFence();
   const view = await readLists(context, fence);
@@ -357,14 +365,24 @@ function settledWithin(promise, waitMs) {
 
 /** Every workspace in the pass's order — less any a push has taken off the
  *  board since the lists were read, which would only be read back into
- *  records nothing names. */
+ *  records nothing names. One the push takes away while it is being read
+ *  stops where it stands. */
 async function readWorkspaces(context, pass, fence) {
   for (const entityId of pass.order) {
     if (!context.active()) return;
-    if (pushedSince(addressOf(context, entityId, "row"), fence)?.removed) continue;
-    await syncWorkspace(context, entityId, pass.rows.get(entityId), entityId === pass.routed);
+    if (removedSince(addressOf(context, entityId, "row"), fence)) continue;
+    await syncWorkspace(whileOnBoard(context, entityId, fence), entityId, pass.rows.get(entityId), entityId === pass.routed);
   }
 }
+
+/** The context for one entity's records, stood down as well once a push takes
+ *  the entity off the board after the fence: a read already out when it went
+ *  writes nothing back under it, and nothing after that read is asked. Every
+ *  write here is behind `active()`, which is what makes this reach them all. */
+const whileOnBoard = (context, entityId, fence) => ({
+  ...context,
+  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence),
+});
 
 /** Step 1: the three lists, written as they land so the inbox paints before
  *  any workspace has been read. A device whose bridge does not serve
@@ -384,7 +402,13 @@ async function readLists(context, fence) {
 
 async function writeLists(context, view, fence) {
   if (!context.active()) return;
-  await writeCached(addressOf(context, "", "feed"), withoutPushedRemovals(context, view, fence), { observedFeedRows: true });
+  // Inside the feed's own transaction, so a push landing while it waits is
+  // still seen: the rows a push wrote since the fence are not this read's
+  // observation, and their own records paint over the board's older copy.
+  await updateCachedFeed(addressOf(context, "", "feed"), () => withoutPushedRemovals(context, view, fence), {
+    observedFeedRows: true,
+    supersededFeedRow: (row) => Boolean(entityIdOf(row) && pushedSince(addressOf(context, entityIdOf(row), "row"), fence)),
+  });
   for (const kind of ["projects", "workspaces"]) {
     if (!context.active()) return;
     if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind]);
@@ -1021,7 +1045,7 @@ const subscriptionShape = (deviceId) => ({
 });
 
 /** The three watchers, and the one that follows the reader — taken out before
- *  the pass reads, and answered once the bridge holds them.
+ *  the pass reads (`heldBeforeReading` says how long it waits for them).
  *
  *  The routed workspace is resolved again at the end of the pass rather than
  *  carried from here: a pass is six or eight reads per workspace long and the
@@ -1054,9 +1078,48 @@ async function subscribeDevice(context) {
     });
   }
   await refollowRoute(deviceId);
-  // Held on the bridge before the pass reads a thing (#142). Bounded like the
-  // greeting: a bridge that never answers a subscribe still gets its pass.
-  await settledWithin(subscriptionsSettledFor(deviceId), GREETING_WAIT_MS);
+}
+
+/**
+ * Held on the bridge before the pass reads a thing (#142) — where the reader
+ * has something cached to look at meanwhile. A device the cache holds nothing
+ * for reads at once: its reader sees nothing until it does, and a subscribe
+ * can take as long as any receipted call.
+ *
+ * The wait is bounded like the greeting and saves a pass; it does not close
+ * the gap. A subscription that lands after the reads were asked is what does
+ * that, whichever way the reads came to be first (`subscriptionLanded`).
+ */
+async function heldBeforeReading(context) {
+  if (!(await readCached(addressOf(context, "", "feed")))) return;
+  await settledWithin(subscriptionsSettledFor(context.deviceId), GREETING_WAIT_MS);
+}
+
+/** The subscriptions a pass stands on. The active one is a realtime copy of
+ *  part of the background one, so its landing late opens no gap. */
+const PASS_SUBSCRIPTIONS = new Set(["s-inbox", "s-background"]);
+
+/** Per device, the session a pass has started reading: the reads it asks are
+ *  covered by whatever the bridge held at the time, and no more. */
+const readingSessions = new Map();
+
+/** The bridge now holds a subscription a pass on this session read without:
+ *  whatever changed between that read and this answer was recorded for
+ *  nobody. Read again once the pass that is out, if one is, has finished — or
+ *  not at all where that pass has yet to ask for anything, since everything
+ *  it reads is read after this. */
+function subscriptionLanded(deviceId, subscriptionId) {
+  if (!holdingLock || !PASS_SUBSCRIPTIONS.has(subscriptionId)) return;
+  const session = sessionOf(deviceId);
+  if (session === null || readingSessions.get(deviceId) !== session) return;
+  const running = passes.get(deviceId);
+  if (running && !running.reading) return;
+  void readAgainAfter(deviceId, session);
+}
+
+async function readAgainAfter(deviceId, session) {
+  await passes.get(deviceId)?.done;
+  if (holdingLock && sessionOf(deviceId) === session) await syncDevice(deviceId);
 }
 
 /** The active subscription follows the reader: the workspace they are standing
@@ -1137,9 +1200,10 @@ async function applyItem(context, item) {
     await applyBoard(context, item.state || {});
     return;
   }
+  const scoped = whileOnBoard(context, entityId, pushFence());
   for (const [field, apply] of APPLIERS) {
-    if (!context.active()) return;
-    if (item[field]) await apply(context, entityId, item[field]);
+    if (!scoped.active()) return;
+    if (item[field]) await apply(scoped, entityId, item[field]);
   }
 }
 
@@ -1488,6 +1552,7 @@ function onVisibilityChange() {
 export function startCacheSync() {
   stopCacheSync();
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
+  stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
   if (typeof document !== "undefined" && !visibilityWired) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = true;
@@ -1498,6 +1563,8 @@ export function startCacheSync() {
 export function stopCacheSync() {
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
+  if (stopLandingWatch) stopLandingWatch();
+  stopLandingWatch = null;
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();
@@ -1506,6 +1573,7 @@ export function stopCacheSync() {
   subscriptions.clear();
   syncedSessions.clear();
   restoredScopes.clear();
+  readingSessions.clear();
   issueReadGenerations.clear();
   forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all

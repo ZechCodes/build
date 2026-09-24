@@ -62,6 +62,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
+  onSubscriptionHeld: () => () => {},
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);

@@ -325,8 +325,10 @@ export function readCachedMany(addresses) {
 
 /** Every feed write goes through this transaction. A local rewrite carries
  * surviving rows' observation times; a bridge board read explicitly replaces
- * them. An undo can merge into the current value inside the same transaction. */
-function writeFeed(address, update, observedFeedRows = false) {
+ * them, less any row it names as superseded — one a push wrote after the read
+ * was asked, whose own record is the newer word. An undo can merge into the
+ * current value inside the same transaction. */
+function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow } = {}) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -341,7 +343,8 @@ function writeFeed(address, update, observedFeedRows = false) {
         if (next == null) return;
         const at = Date.now();
         const order = nextWriteOrder();
-        const record = { at, order, value: feedWithObservations(next, previous, { at, order }, observedFeedRows) };
+        const stamp = { at, order };
+        const record = { at, order, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -357,7 +360,7 @@ function writeFeed(address, update, observedFeedRows = false) {
 /** Write one record, stamped with when. A local UI writer may also stamp its
  * owner and edit sequence for page-exit journal ordering. */
 export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
-  if (address.kind === "feed") return writeFeed(address, () => value, observedFeedRows);
+  if (address.kind === "feed") return writeFeed(address, () => value, { observedFeedRows });
   if (address.kind === "bridge-update") return writeBridgeUpdate(address, value);
   const key = recordKey(address);
   const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
@@ -434,9 +437,10 @@ export function writeCachedIfGeneration(address, value, generation) {
   return writeBridgeUpdate(address, value, generation);
 }
 
-/** Merge a local undo into the current feed inside the same transaction that
- * preserves its row observation times. Null leaves the feed untouched. */
-export const updateCachedFeed = (address, update) => writeFeed(address, update);
+/** Merge a local undo — or a board read racing the pushes — into the current
+ * feed inside the same transaction that preserves its row observation times.
+ * Null leaves the feed untouched. */
+export const updateCachedFeed = (address, update, options) => writeFeed(address, update, options);
 
 /** Replay one page-exit UI edit only if it is still the newest edit. The get
  * and conditional put share a readwrite transaction, so another tab cannot

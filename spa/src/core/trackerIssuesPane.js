@@ -246,7 +246,7 @@ export function mountIssuesPane(host, options) {
       entries: () => dashboardSections(state.shown, {
         feed: state.feed(), projectKey: state.projectKey, detailById: details.read(),
         activityByAgent: activity?.read(),
-        doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession, Date.now()) : null,
+        doneCutoffMs: carriesDoneSinceLeft() ? doneSinceCutoff(state.userSession) : null,
       }),
     },
     [LIST_VIEW]: { paint: paintGroupedIssueRows, entries: groupedRows, wire: wireRow },

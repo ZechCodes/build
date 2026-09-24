@@ -881,10 +881,11 @@ cached timelines.
 }
 ```
 
-`now_ms` is the bridge's clock when it answered. A client measures silences
-against it plus the time it has counted since, never against its own clock,
-which may be hours out; the cache holds it beside the session with the moment
-it was heard.
+`now_ms` is the bridge's clock when it answered. A client reads from it
+whether the user was away AT THAT ANSWER (`last_activity_ms` a gap or more
+before it), and nothing more: it never adds the time since, and never reads its
+own clock, which may be hours out. Time passing since an answer says nothing
+about the user, who may have been busy on another client all along.
 
 - **Activity** is the user acting: the client verbs in
   `rpc::USER_ACTIVITY_VERBS`, which are messages, issue writes, read marks
@@ -902,7 +903,9 @@ it was heard.
   at most once a minute per bridge (`spa/src/core/userPresence.js`). A
   reconnect, a list read or a push is never an arrival, and an arrival a
   bridge could not be told of is dropped after two minutes, so a bridge that
-  reconnects at 3am is not told the user arrived at 3am.
+  reconnects at 3am is not told the user arrived at 3am. A send that waited on
+  the bridge's greeting checks again when the greeting settles: still fresh,
+  and the window still visible and focused.
 - **Automatic read marks** (a chat or issue page marking what arrives on
   screen, rather than the user sending, moving or opening something) are sent
   only while the document is visible and focused (`document.hasFocus()`). A
@@ -915,7 +918,10 @@ it was heard.
 - **Pushed** when a new session starts: an `issues` change on every project
   (empty `issue_ids`), so every client re-reads a list and its session. A
   laptop holding the old session does not infer an absence the user spent on
-  their phone. Activity inside a session pushes nothing.
+  their phone. Activity inside a session pushes nothing, because nothing a
+  client decides depends on it: a client infers no silence from a snapshot
+  aging, so a laptop that last read at 09:00 still lists the overnight work at
+  15:00 while the user spent the day on their phone.
 - **Stored** as one `meta` row, rewritten on each change. The row is
   authoritative for the interval it covers, since much of what made it (read
   marks, which keep only their latest) is not in the store to replay; a boot
@@ -923,10 +929,10 @@ it was heard.
   activity (issue events and comments by the user, messages the user sent),
   which are what a failed write missed. A store with no row (a bridge from
   before this shipped) replays them all.
-- **Cutoff** (client): `previous_session_ended_ms`. If the bridge's clock says
-  the silence has not ended yet (a list read that landed before the arrival
-  did), `last_activity_ms`, unless that silence is already longer than 96
-  hours, when nothing is listed until the arrival is recorded. If there is no
+- **Cutoff** (client): `previous_session_ended_ms`. If the answer itself
+  shows the user away (a list read that landed before the arrival did),
+  `last_activity_ms`, unless that silence was already longer than 96 hours,
+  when nothing is listed until the arrival is recorded. If there is no
   earlier session, or it ended more than 96 hours before this one started, the
   cutoff is this session's start: a blank slate that fills as work finishes.
   The cap measures the absence, not the time since it, so a three-day weekend

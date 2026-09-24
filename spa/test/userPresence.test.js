@@ -30,8 +30,8 @@ const SESSION = {
   session_started_ms: 50, last_activity_ms: 50, previous_session_ended_ms: 10, gap_ms: 21_600_000, now_ms: 50,
 };
 let rpc;
-const connect = (deviceId = "dev-1") => {
-  contexts.push({ deviceId, rpc, greeted: Promise.resolve() });
+const connect = (deviceId = "dev-1", greeted = Promise.resolve()) => {
+  contexts.push({ deviceId, rpc, greeted });
   stateListeners.forEach((fn) => fn());
 };
 const sent = () => rpc.mock.calls.filter(([method]) => method === "user.present").length;
@@ -83,6 +83,32 @@ it("tells a bridge that connects soon after the arrival, and not one that reconn
   connect("dev-2");
   await Promise.resolve();
   expect(sent()).toBe(1);
+});
+
+// The reviewer's case: a focused arrival at 09:00 waits on a greeting that
+// only settles at 16:00 (a suspended tab), by when the window has lost focus.
+// Sending then would start a session at 16:00 that nobody began.
+it("sends nothing once the greeting it waited on settles after the arrival went stale", async () => {
+  let greet;
+  connect("dev-1", new Promise((settle) => { greet = settle; }));
+  startUserPresence();
+  vi.setSystemTime(Date.parse("2026-09-22T16:00:00Z"));
+  greet();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(sent()).toBe(0);
+
+  // Nor to a window nobody is at by then, however fresh the arrival.
+  contexts.length = 0;
+  vi.setSystemTime(Date.parse("2026-09-22T17:00:00Z"));
+  document.dispatchEvent(new Event("pointerdown"));
+  let greetAgain;
+  connect("dev-2", new Promise((settle) => { greetAgain = settle; }));
+  focused.mockReturnValue(false);
+  greetAgain();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(sent()).toBe(0);
 });
 
 it("tells each bridge at most once a minute however busy the pointer is", async () => {

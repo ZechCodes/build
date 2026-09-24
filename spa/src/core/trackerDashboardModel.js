@@ -64,10 +64,13 @@ export function doneMoveToday(issue, detail, nowMs) {
  * bridge (`user.present`), so normally the bridge has already started this
  * session and says where the last one ended.
  *
- * A silence the bridge has not seen end yet (this tab painted before the
- * arrival landed) counts from its last activity, measured on the BRIDGE's
- * clock: the `now_ms` it answered with plus the time since, never this
- * device's own clock, which may be hours out.
+ * A silence the bridge had already seen when it answered (a list read that
+ * landed before the arrival did) counts from its last activity. That is read
+ * off the answer alone: `now_ms`, the bridge's clock when it answered, against
+ * `last_activity_ms`. Nothing is inferred from time passing since the answer:
+ * the user may have been busy on another client all along, and that keeps the
+ * session going without moving anything this tab holds. Whatever does move it
+ * (a new session) is pushed.
  *
  * With no earlier session, or one that ended more than 96 hours before this
  * one started, the cutoff is this session's start: a blank slate that fills
@@ -76,8 +79,8 @@ export function doneMoveToday(issue, detail, nowMs) {
  * since it, so a long weekend does not vanish halfway through the day the
  * user comes back.
  */
-export function doneSinceCutoff(session, localNowMs) {
-  const { started, ended } = sessionAt(session, localNowMs);
+export function doneSinceCutoff(session) {
+  const { started, ended } = sessionAt(session);
   if (started === null) return ended ?? Infinity;
   return ended === null || started - ended > DONE_SINCE_CAP_MS ? started : ended;
 }
@@ -85,25 +88,25 @@ export function doneSinceCutoff(session, localNowMs) {
 const finite = (value) => (Number.isFinite(value) ? value : null);
 const gapOf = (session) => (session?.gap_ms > 0 ? session.gap_ms : USER_SESSION_GAP_MS);
 
-/** The bridge's clock now: what it said when it answered, plus the time this
- *  device has counted since. Null for a record that carries no clock. */
-export function bridgeNow(session, localNowMs) {
-  const said = finite(session?.now_ms);
-  const heard = finite(session?.received_ms);
-  if (said === null || heard === null || !Number.isFinite(localNowMs)) return null;
-  return said + Math.max(0, localNowMs - heard);
+/** Where the user stood when the bridge answered: `here` inside a session,
+ *  `away` in a silence of a gap or more, `gone` past the 96-hour cap, and
+ *  null with no activity to measure from. */
+export function standingOf(session) {
+  const last = finite(session?.last_activity_ms);
+  const now = finite(session?.now_ms);
+  if (last === null) return null;
+  if (now === null || now - last < gapOf(session)) return "here";
+  return now - last > DONE_SINCE_CAP_MS ? "gone" : "away";
 }
 
 /** This session's start and where the one before it ended. A silence the
- *  bridge has not seen end yet has no start: it ended at the last activity,
- *  unless it has run past the cap, which is a blank slate. */
-function sessionAt(session, localNowMs) {
-  const last = finite(session?.last_activity_ms);
-  const now = bridgeNow(session, localNowMs);
-  if (last === null) return { started: null, ended: null };
-  if (now !== null && now - last >= gapOf(session)) {
-    return { started: null, ended: now - last > DONE_SINCE_CAP_MS ? null : last };
-  }
+ *  bridge had seen has no start: it ended at the last activity, unless it had
+ *  run past the cap, which is a blank slate. */
+function sessionAt(session) {
+  const standing = standingOf(session);
+  if (standing === null || standing === "gone") return { started: null, ended: null };
+  const last = session.last_activity_ms;
+  if (standing === "away") return { started: null, ended: last };
   return { started: finite(session.session_started_ms) ?? last, ended: finite(session.previous_session_ended_ms) };
 }
 

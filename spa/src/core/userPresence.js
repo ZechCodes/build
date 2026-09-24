@@ -40,10 +40,13 @@ function arrived() {
   tellBridges();
 }
 
+/** Whether there is an arrival recent enough to tell anyone of. */
+const arrivalIsFresh = () => arrivedAt !== null && Date.now() - arrivedAt <= ARRIVAL_FRESH_MS;
+
 /** Tell every connected bridge that has not heard of the latest arrival. */
 function tellBridges() {
   const now = Date.now();
-  if (arrivedAt === null || now - arrivedAt > ARRIVAL_FRESH_MS) return;
+  if (!arrivalIsFresh()) return;
   for (const context of liveContexts()) {
     const last = told.get(context.deviceId);
     if (last !== undefined && (last >= arrivedAt || now - last < PRESENCE_EVERY_MS)) continue;
@@ -53,13 +56,15 @@ function tellBridges() {
 }
 
 /** Once the bridge has greeted (which says whether it records arrivals), tell
- *  it. The answer is the session the arrival left: written to the cache like
- *  any list read's, so the Dashboard repaints from it. A bridge that does not
- *  record them, or refuses, is asked again at the next arrival. */
+ *  it. The greeting can settle long after the arrival (a suspended tab), so
+ *  the arrival is checked again then: still fresh, and someone still at the
+ *  window. The answer is the session the arrival left: written to the cache
+ *  like any list read's, so the Dashboard repaints from it. A bridge that does
+ *  not record them, or refuses, is asked again at the next arrival. */
 async function tell(context, at) {
   await context.greeted;
   const forget = () => { if (told.get(context.deviceId) === at) told.delete(context.deviceId); };
-  if (!carriesPresence(context.deviceId)) return forget();
+  if (!arrivalIsFresh() || !readerIsHere() || !carriesPresence(context.deviceId)) return forget();
   const answer = await Promise.resolve()
     .then(() => context.rpc("user.present", {}))
     .catch(() => null);

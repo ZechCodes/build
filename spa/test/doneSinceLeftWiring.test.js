@@ -87,11 +87,12 @@ async function mountWith(hello) {
     return {};
   };
   await greetBridge(call, { deviceId: "dev-1", strict: true });
+  const projectId = answers.away.project_id;
   pane = mountIssuesPane(host, {
-    projectId: listed.project_id,
+    projectId,
     projectName: "Build",
     deviceId: "dev-1",
-    projectKey: `dev-1|${listed.project_id}`,
+    projectKey: `dev-1|${projectId}`,
     callRpc: call,
     catalog: () => ({ providers: [] }),
     refreshCatalog: async () => ({ providers: [] }),
@@ -126,6 +127,16 @@ it("shows work finished while the user was away, across their return on another 
   expect(pushed()).toBe(true);
   await vi.waitFor(async () => expect(await heldStart()).toBe(answers.back.user_session.session_started_ms));
   expect(doneRows()).toEqual([finished.id]);
+
+  // The user works on the phone for the next six hours, which moves nothing
+  // the laptop holds, and the laptop repaints from its cache before the bridge
+  // answers anything: six hours since its read is not six hours of silence.
+  vi.setSystemTime(Date.now() + 6 * HOUR_MS);
+  let answerLate;
+  listed = new Promise((answer) => { answerLate = answer; });
+  await remount();
+  await vi.waitFor(() => expect(doneRows()).toEqual([finished.id]));
+  answerLate(answers.back);
 
   // They comment on it, then leave for seven hours; the laptop reloads.
   listed = answers.commented;

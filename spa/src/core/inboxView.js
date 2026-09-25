@@ -37,7 +37,6 @@ import {
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchKeptNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
-import { bridgeAdapter } from "./changeEvents.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
 import { notifyError } from "./notify.js";
@@ -45,9 +44,9 @@ import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { indexRowsByEntity, markSeen, noteSelfAction } from "./inboxSeen.js";
-import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged } from "./deviceContexts.js";
+import { canAnswer, contextFor, deviceFeedView, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
 import { filterByDevice, onlyDeviceRows } from "./deviceFilter.js";
-import { creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
+import { awayRefusal, creationCall, paintDeviceState, verbCall } from "./inboxDevices.js";
 import { CAPTURE_CONTROLS, captureError, disposeCaptureRows, initCaptureRows, onCaptureKeydown, reroutePicker } from "./inboxCaptures.js";
 import { projectRoute } from "./projectModel.js";
 import { hideProject } from "./projectHide.js";
@@ -794,10 +793,7 @@ async function dismissEntry(entry) {
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   const call = verbCall(target, finishDoing(target));
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
-  else {
-    const params = { projectId: target.projectId, branch: target.branch, deletesBranch: confirmedDeletion(target) };
-    sayWhatStayed(target, await call("branch.finish", branchFinishParams(optionId, params)));
-  }
+  else sayWhatStayed(target, await sendBranchFinish(target, call, optionId));
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
@@ -818,16 +814,23 @@ function finishDoing(target) {
   return target.deletesBranch ? "delete this branch" : "remove this checkout";
 }
 
-/** The deletion the user confirmed, held to the bridge answering now: one
- *  that went back to keeping the branch is refused in words rather than sent
- *  a word it would drop. Before any greeting the cache's answer stands. */
-function confirmedDeletion(target) {
-  if (!target.deletesBranch) return false;
-  const live = bridgeAdapter(target.deviceId);
-  if (live && live.capabilities?.branches?.finishDelete !== true) {
-    throw new Error(branchDeleteTooOld(target.deviceName));
-  }
-  return true;
+/** Send Done's `branch.finish`. A deletion goes out only on the verdict of
+ *  the greeting the machine's current session is on (#87): the cache said the
+ *  bridge deletes when the confirmation was drawn, but a session adopted since
+ *  may be an older bridge whose hello has not answered, and it would drop the
+ *  word. So the send waits on that greeting, and a bridge that keeps the
+ *  branch is refused in words rather than sent a word it would drop. */
+async function sendBranchFinish(target, call, optionId) {
+  const send = (deletesBranch) =>
+    call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch, deletesBranch }));
+  if (!target.deletesBranch) return send(false);
+  const context = contextFor(target.deviceId);
+  const request = context && (await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.branches?.finishDelete !== true) throw new Error(branchDeleteTooOld(target.deviceName));
+    return send(true);
+  }));
+  if (!request) throw new Error(awayRefusal(finishDoing(target), context));
+  return request.sent;
 }
 
 async function finishEntry(entry) {

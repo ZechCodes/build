@@ -39,6 +39,10 @@ async function cacheBranchDelete(deviceId, deletes) {
   await writeCached(branchDeleteAddress(deviceId), { deletes });
 }
 
+/** The adapter a greeting installs on a machine whose bridge deletes the
+ *  branch on Done: what the deletion is sent on the verdict of (#87). */
+const DELETING_ADAPTER = { capabilities: { branches: { finishDelete: true } } };
+
 /** One pass of the sync layer, with the feed reading what it wrote. What
  *  `refreshFeed` did when the feed read the wire itself: the board, the two
  *  lists and a row per work item, on disk and delivered. */
@@ -162,7 +166,7 @@ beforeEach(async () => {
   });
   // Its bridge has greeted, the way connection.js leaves every machine it
   // lands: the feed reads no device before that greeting has settled.
-  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, {});
+  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, DELETING_ADAPTER);
   App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
@@ -464,7 +468,7 @@ describe("a branch on another device", () => {
     adoptBridgeSelection(
       adoptDeviceSession({ deviceId: "dev-2", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
       { major: 1, version: "1.0.0" },
-      {},
+      DELETING_ADAPTER,
     );
     App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "main", tab: "changes" };
     // This machine holds a `p1` of its own, and it is a plain folder: anything
@@ -664,7 +668,7 @@ describe("a branch on a device this client has not opened", () => {
     adoptBridgeSelection(
       adoptDeviceSession({ deviceId: "dev-3", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
       { major: 1, version: "1.0.0" },
-      {},
+      DELETING_ADAPTER,
     );
     await flush();
 

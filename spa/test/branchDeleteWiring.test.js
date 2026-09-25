@@ -3,9 +3,10 @@
 // greeting (fixtures/api/v1/session.hello.json, which bridge/tests pins to the
 // real reply) names `branches.finishDelete`; the real greeting path writes it
 // to the real cache; the mounted branch surface reads it there, promises the
-// deletion, and sends `action: "delete"` down the machine's own call. A
-// greeting without the name leaves a surface that says the bridge is too old
-// and sends no action for it to drop.
+// deletion, and sends `action: "delete"` down the machine's own call — on the
+// verdict of the greeting the machine's current session is on. A greeting
+// without the name leaves a surface that says the bridge is too old and sends
+// no action for it to drop.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -37,9 +38,19 @@ const branchRow = {
 
 let App;
 let call;
+let context;
 let stopShell;
 let resetDeviceContexts;
 let resetChangeEvents;
+
+/** A session on dev-1 whose every call is `call`, as a connection adopts it. */
+const sessionOnDevice = () => ({
+  deviceId: "dev-1",
+  call: (...args) => call(...args),
+  close: () => {},
+  peer: () => {},
+  onCarrier: () => {},
+});
 
 beforeEach(async () => {
   vi.resetModules();
@@ -49,7 +60,7 @@ beforeEach(async () => {
   ({ App } = await import("../src/app.js"));
   ({ resetChangeEvents } = await import("../src/core/changeEvents.js"));
   resetChangeEvents();
-  const { adoptBridgeSelection, adoptDeviceSession, ...contexts } = await import("../src/core/deviceContexts.js");
+  const { adoptDeviceSession, ...contexts } = await import("../src/core/deviceContexts.js");
   resetDeviceContexts = contexts.resetDeviceContexts;
   App.devices = [{ id: "dev-1", name: "studio", status: "online" }];
   const { DEVICES_ADDRESS, writeCached } = await import("../src/core/localCache.js");
@@ -57,14 +68,7 @@ beforeEach(async () => {
   await (await import("../src/devices.js")).readCachedDevices();
   App.selectedDeviceId = "dev-1";
   call = vi.fn(async () => ({}));
-  const context = adoptDeviceSession({
-    deviceId: "dev-1",
-    call: (...args) => call(...args),
-    close: () => {},
-    peer: () => {},
-    onCarrier: () => {},
-  });
-  adoptBridgeSelection(context, { major: 1, version: greeting.api_version }, {});
+  context = adoptDeviceSession(sessionOnDevice());
   App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
   let standShell;
@@ -82,12 +86,32 @@ afterEach(() => {
   App.viewDispose = null;
 });
 
+/** Greet the device's session the way connection.js does: this hello's own
+ *  greeting authority, the adapter it selects installed on the device's
+ *  context, then published to what reads capabilities. `hello` may be a
+ *  promise, held to keep the greeting pending. */
+async function greetSession(hello) {
+  const { adoptBridgeSelection, greetingInFlight } = await import("../src/core/deviceContexts.js");
+  const { greetBridge } = await import("../src/core/changeEvents.js");
+  const authority = greetingInFlight(context);
+  const rawCall = async (method) => (method === "session.hello" ? hello : {});
+  return greetBridge(rawCall, {
+    deviceId: "dev-1",
+    strict: true,
+    isCurrent: () => authority.current(),
+    install: (selection) => {
+      const adapter = selection.unsupported ? null : selection.create(rawCall);
+      adoptBridgeSelection(context, selection, adapter, authority);
+      return adapter;
+    },
+  });
+}
+
 /** Greet the bridge the way a connection does, then stand the surface on the
  *  cached row. */
 async function greetThenOpen(hello) {
-  const { greetBridge } = await import("../src/core/changeEvents.js");
   const { readBranchDelete } = await import("../src/core/branchDeleteSupport.js");
-  await greetBridge(async (method) => (method === "session.hello" ? hello : {}), { deviceId: "dev-1", strict: true });
+  await greetSession(hello);
   const expected = hello.capabilities.includes("branches.finishDelete");
   await vi.waitFor(async () => expect(await readBranchDelete("dev-1")).toBe(expected));
 
@@ -162,11 +186,43 @@ it("a bridge without the name is told nothing it would drop, and the user is tol
 });
 
 it("a deletion confirmed against the cache is refused in words when the bridge answering now keeps the branch", async () => {
-  const { greetBridge } = await import("../src/core/changeEvents.js");
-  await greetBridge(async (method) => (method === "session.hello" ? olderGreeting : {}), { deviceId: "dev-1", strict: true });
+  await greetSession(olderGreeting);
   const { finishWorkItem } = await import("../src/core/inboxView.js");
   await expect(
     finishWorkItem({ kind: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", deletesBranch: true, deviceName: "studio" }),
   ).rejects.toThrow("Build cannot delete the branch on studio: the bridge is too old.");
+  expect(call.mock.calls.some(([method]) => method === "branch.finish")).toBe(false);
+});
+
+// The cache said this machine deletes, and the confirmation promised it. Then
+// the machine came back on a new session to an older bridge whose hello has
+// not answered: the deletion waits on that greeting, and is refused in words
+// once it says the bridge keeps the branch — never sent for it to drop.
+it("a deletion waits for the current session's greeting, and an older bridge answering it is never sent the word", async () => {
+  await greetThenOpen(greeting);
+  const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
+  expect(adoptDeviceSession(sessionOnDevice())).toBe(context);
+  let answerHello;
+  const greeted = greetSession(new Promise((answer) => { answerHello = answer; }));
+
+  document.querySelector("#tb-verb .btn.mini:not(.caret)").click();
+  const scrim = await vi.waitFor(() => {
+    const found = document.getElementById("confirm-scrim");
+    expect(found).toBeTruthy();
+    return found;
+  });
+  expect(scrim.textContent).toContain("Done deletes the branch. This cannot be undone.");
+  scrim.querySelector("[data-confirm-ok]").click();
+  for (let index = 0; index < 12; index += 1) await flush();
+  expect(call.mock.calls.some(([method]) => method === "branch.finish")).toBe(false);
+
+  answerHello(olderGreeting);
+  await greeted;
+  const notice = await vi.waitFor(() => {
+    const found = document.querySelector("#notices .notice");
+    expect(found).toBeTruthy();
+    return found;
+  });
+  expect(notice.textContent).toContain("Build cannot delete the branch on studio: the bridge is too old.");
   expect(call.mock.calls.some(([method]) => method === "branch.finish")).toBe(false);
 });

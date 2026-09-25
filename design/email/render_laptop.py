@@ -8,11 +8,16 @@ Run with Blender 4.5 LTS from the repository root, opening the landing's device 
 It reuses the landing generator's studio, camera fit and screen mapping, writes one
 transparent PNG, and touches nothing the landing ships. `compose_laptop.py` turns that
 PNG into the hosted email image.
+
+The camera sits a little below the display's centre and the lid leans 4 degrees toward
+it, so the display faces the viewer and the keyboard deck is a thin foreshortened band
+(about a tenth of the image) instead of half of it, as the landing's hero camera shows it.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -23,6 +28,12 @@ import build_device_assets as devices  # noqa: E402
 
 #: Twice the email image's 1200 px width, so the compose step downsamples cleanly.
 RENDER_SIZE = (2400, 1560)
+#: In the generator's decimetres; the display's centre is about 1.1 above the desk.
+CAMERA = (0.0, -9.0, 0.5)
+TARGET = (0.0, 0.0, 1.1)
+LENS = 70
+#: The lid hinge's rotation: 0 stands the display upright, the landing's -15 leans it back.
+LID_ANGLE_DEG = 4.0
 
 
 def parse_args():
@@ -38,10 +49,8 @@ def main():
     laptop = bpy.data.collections["Laptop"]
     devices.set_screen_texture(bpy.data.materials["ScreenDesktop"], args.screen)
     devices.set_visible_collections(laptop)
-    devices.render(
-        args.out.resolve(), *RENDER_SIZE, devices.LAPTOP_RENDER_CAMERA,
-        devices.LAPTOP_RENDER_TARGET, devices.LAPTOP_RENDER_LENS, True,
-    )
+    bpy.data.objects["laptop_lid"].rotation_euler.x = math.radians(LID_ANGLE_DEG)
+    devices.render(args.out.resolve(), *RENDER_SIZE, CAMERA, TARGET, LENS, True)
 
 
 if __name__ == "__main__":

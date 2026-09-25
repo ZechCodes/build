@@ -441,8 +441,13 @@ In practice:
   under live workspaces (at most `RECENT_FILES`, five per workspace), after
   reading their threads. Its completion is remembered per device, session and
   restored path until sync stops: ordinary feed refreshes and visible-tab
-  passes add no body reads. Failed recovery body reads leave it pending; late
-  background subscription coverage starts a new recovery that the earlier
+  passes add no body reads. Recovery remembers each file separately: successful
+  reads stay settled while unknown failures get one retry on a later pass.
+  A definitive missing-file refusal, or a second failure, leaves the last cached
+  body in place and stops retrying until a matching files push or a new recovery.
+  A push renews only the named paths (all held paths if truncated), including
+  their retry budget; a pass cannot complete debt that a newer push reopened.
+  Late background subscription coverage starts a new recovery that the earlier
   pass cannot complete. A subsequent pass still waiting for coverage takes
   over that recovery before it reads. This repairs abandoned file refreshes
   and changes missed while away or across a reload. Only the newest read of each

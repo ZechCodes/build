@@ -592,12 +592,12 @@ describe("a pass racing the wire", () => {
     const wire = subscribingBridge();
     let fail = true;
     wire.answering("fs.read", ({ path }) => {
-      if (fail) throw new Error("offline");
+      if (fail && path === "src/0.js") throw new Error("offline");
       return { path, size: 3, content_b64: "bmV3" };
     });
     await greet();
     await cacheSomething();
-    await cacheBodies(1);
+    await cacheBodies(2);
     board = [branchItem()];
     sync.startCacheSync();
     await settle();
@@ -606,7 +606,151 @@ describe("a pass racing the wire", () => {
     await sync.syncDevice("dev-1");
     expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
     await sync.syncDevice("dev-1");
+    expect(calls("fs.read").map(([, params]) => params.path)).toEqual(["src/0.js", "src/1.js", "src/0.js"]);
+  });
+
+  it.each([
+    ["legacy missing file", () => Object.assign(new Error("No such file or directory (os error 2)"), { code: "internal_error" })],
+    ["not_found refusal", () => Object.assign(new Error("file was deleted"), { code: "not_found" })],
+  ])("settles a %s without re-reading healthy bodies on ordinary passes", async (_label, refusal) => {
+    const wire = subscribingBridge();
+    let missing = true;
+    wire.answering("fs.read", ({ path }) => {
+      if (missing && path === "src/0.js") throw refusal();
+      return { path, size: 3, content_b64: "bmV3" };
+    });
+    await greet();
+    await cacheSomething();
+    await cacheBodies(2);
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    const { refreshFeed } = await import("../src/core/taskFeed.js");
+    const counts = [calls("fs.read").length];
+    for (let pass = 0; pass < 3; pass += 1) {
+      await refreshFeed("dev-1");
+      counts.push(calls("fs.read").length);
+    }
+    expect(counts).toEqual([2, 2, 2, 2]);
+    expect((await read("run-1", "file", "src/1.js")).value.file.content_b64).toBe("bmV3");
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("b2xk");
+
+    sync.startCacheSync();
+    await settle();
+    await refreshFeed("dev-1");
+    expect(calls("fs.read")).toHaveLength(4);
+    missing = false;
+    await flush([{ entity_id: "run-1", files: { paths: ["src/0.js"] } }], "s-background");
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    await refreshFeed("dev-1");
+    expect(calls("fs.read")).toHaveLength(5);
+  });
+
+  it("bounds unknown file failures per path and renews their retry budget on push and hand-back", async () => {
+    const wire = subscribingBridge();
+    let fail = true;
+    wire.answering("fs.read", ({ path }) => {
+      if (fail && path === "src/0.js") throw new Error("offline");
+      return { path, size: 3, content_b64: "bmV3" };
+    });
+    await greet();
+    await cacheSomething();
+    await cacheBodies(2);
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    const { refreshFeed } = await import("../src/core/taskFeed.js");
+    const counts = [calls("fs.read").length];
+    for (let pass = 0; pass < 3; pass += 1) {
+      await refreshFeed("dev-1");
+      counts.push(calls("fs.read").length);
+    }
+    expect(counts).toEqual([2, 3, 3, 3]);
+    expect(calls("fs.read").filter(([, params]) => params.path === "src/1.js")).toHaveLength(1);
+
+    // A push renews this path's debt, including the retry if its read fails.
+    await flush([{ entity_id: "run-1", files: { paths: ["src/0.js"] } }], "s-background");
+    expect(calls("fs.read")).toHaveLength(4);
+    fail = false;
+    await refreshFeed("dev-1");
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    await refreshFeed("dev-1");
+    expect(calls("fs.read")).toHaveLength(5);
+
+    fail = true;
+    sync.startCacheSync();
+    await settle();
+    expect(calls("fs.read")).toHaveLength(7);
+    await refreshFeed("dev-1");
+    await refreshFeed("dev-1");
+    expect(calls("fs.read")).toHaveLength(8);
+  });
+
+  it.each(["during", "after"])("keeps a failed push's debt when it lands %s the pass's body read", async (stage) => {
+    const wire = subscribingBridge();
+    let fail = false;
+    wire.answering("fs.read", ({ path }) => {
+      if (fail) throw new Error("offline");
+      return { path, size: 3, content_b64: "bWlk" };
+    });
+    await greet();
+    await cacheSomething();
+    await cacheBodies(1);
+    board = [branchItem()];
+    let first = true;
+    const release = stage === "during" ? wire.hold("fs.read", () => {
+      const hold = first;
+      first = false;
+      return hold;
+    }) : wire.hold("run.diff");
+    sync.startCacheSync();
+    await settle();
+    expect(calls("fs.read")).toHaveLength(1);
+
+    fail = true;
+    await flush([{ entity_id: "run-1", files: { paths: ["src/0.js"] } }], "s-background");
     expect(calls("fs.read")).toHaveLength(2);
+    release();
+    await settle();
+    // The old answer/completion must not pay the newer push's recovery debt.
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64)
+      .toBe(stage === "during" ? "b2xk" : "bWlk");
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: "bmV3" }));
+    await sync.syncDevice("dev-1");
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    await sync.syncDevice("dev-1");
+    expect(calls("fs.read")).toHaveLength(3);
+  });
+
+  it("does not reopen a settled path when its superseded push reader finishes", async () => {
+    const wire = subscribingBridge();
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: "bWlk" }));
+    await greet();
+    await cacheSomething();
+    await cacheBodies(2);
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    let first = true;
+    const release = wire.hold("fs.read", () => {
+      const hold = first;
+      first = false;
+      return hold;
+    });
+    await flush([{ entity_id: "run-1", files: { paths: ["src/0.js"] } }], "s-background");
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: "bmV3" }));
+    await sync.syncDevice("dev-1");
+    release();
+    await settle();
+    expect(calls("fs.read")).toHaveLength(4);
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+
+    // Reopen a different path: the settled one must still be skipped.
+    wire.answering("fs.read", () => { throw new Error("offline"); });
+    await flush([{ entity_id: "run-1", files: { paths: ["src/1.js"] } }], "s-background");
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: "bmV3" }));
+    await sync.syncDevice("dev-1");
+    expect(calls("fs.read").slice(4).map(([, params]) => params.path)).toEqual(["src/1.js", "src/1.js"]);
   });
 
   it.each([false, true])("recovers bodies when background coverage lands after their baseline (pass still pending: %s)", async (pending) => {

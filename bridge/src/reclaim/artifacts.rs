@@ -32,6 +32,8 @@ const TRASH: [&str; 2] = [".build", "reclaim"];
 pub struct Artifact {
     /// Canonical: no component of it is a symlink.
     pub path: PathBuf,
+    /// The Git directory whose index and ignore rules made it build output.
+    pub repository: PathBuf,
     pub bytes: u64,
 }
 
@@ -85,6 +87,30 @@ fn holds_a_repository(directory: &Path) -> bool {
     std::fs::symlink_metadata(directory.join(".git")).is_ok()
 }
 
+/// Whether `artifact` is still build output, asked again of the disk and a
+/// freshly read index just before it is moved: still a real directory where
+/// it was, still ignored, nothing inside it tracked since (a `git add -f`),
+/// and no repository at its top. Cheap enough to ask under the app mutex:
+/// one index read and one ignore lookup.
+pub fn still_build_output(artifact: &Artifact) -> bool {
+    let Ok(relative) = artifact.path.strip_prefix(&artifact.repository) else {
+        return false;
+    };
+    let Ok(repo) = git2::Repository::open(&artifact.repository) else {
+        return false;
+    };
+    let Ok(index) = repo.index() else {
+        return false;
+    };
+    let tracked: Vec<PathBuf> = index
+        .iter()
+        .map(|entry| PathBuf::from(String::from_utf8_lossy(&entry.path).into_owned()))
+        .collect();
+    still_in_place(&artifact.path)
+        && !holds_a_repository(&artifact.path)
+        && is_build_output(&repo, relative, &tracked)
+}
+
 fn is_build_output(repo: &git2::Repository, relative: &Path, tracked: &[PathBuf]) -> bool {
     let named = relative
         .file_name()
@@ -95,10 +121,14 @@ fn is_build_output(repo: &git2::Repository, relative: &Path, tracked: &[PathBuf]
         && !tracked.iter().any(|path| path.starts_with(relative))
 }
 
-/// What one candidate holds, walked without following a symlink. `None` when
-/// a repository is somewhere inside it: whatever that repository has not
-/// pushed would go with it.
-pub fn inspect(directory: &Path, budget: &Budget) -> Result<Option<Artifact>, Unfinished> {
+/// What one candidate of `repository` holds, walked without following a
+/// symlink. `None` when a repository is somewhere inside it: whatever that
+/// repository has not pushed would go with it.
+pub fn inspect(
+    repository: &Path,
+    directory: &Path,
+    budget: &Budget,
+) -> Result<Option<Artifact>, Unfinished> {
     let mut bytes = 0;
     let mut pending = vec![directory.to_path_buf()];
     while let Some(path) = pending.pop() {
@@ -119,6 +149,7 @@ pub fn inspect(directory: &Path, budget: &Budget) -> Result<Option<Artifact>, Un
     }
     Ok(Some(Artifact {
         path: directory.to_path_buf(),
+        repository: repository.to_path_buf(),
         bytes,
     }))
 }

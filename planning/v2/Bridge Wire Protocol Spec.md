@@ -705,7 +705,13 @@ workspace. `workspace.reclaim` (`{ workspace_id }`, answered like
 `workspace.delete`) removes the workspace. It refuses with `conflict` and a
 sentence ("Build cannot reclaim quiet yet: it has uncommitted changes.") while
 anything holds it, and with `busy` while another removal or the reclaim
-service has the workspace. Issue timelines gain three event kinds:
+service has the workspace. While a workspace is reserved (measured again
+before its build output is moved, or before `workspace.reclaim` removes it),
+every verb that would write inside it answers `busy`: `term.create`, the
+`git.*` verbs that change a tree or its refs, `fs.write`, `fs.mkdir`,
+`thread.attach`, `run.git_action`, `workspace.finish`, `workspace.delete`,
+`workspace.rename`, `workspace.init_git` and the directory verbs. Reads are
+answered as usual. Issue timelines gain three event kinds:
 `workspace_idle` and `workspace_pruned`, both written by the new actor
 `{ "kind": "build" }`, and `workspace_reclaimed`, written by whoever reclaimed
 the workspace. Their payloads name the workspace (`workspace_id`,

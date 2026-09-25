@@ -447,9 +447,12 @@ pub struct AppState {
     /// Wakes the reclaim service early, when an issue linking a workspace
     /// finishes.
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
+    /// What the reclaim service runs under: its budgets, for
+    /// `workspace.reclaim` as much as for a sweep.
+    reclaim_policy: crate::reclaim::ReclaimPolicy,
     /// Workspaces the reclaim service or `workspace.reclaim` is between
     /// measuring and removing. While one is here, no agent turn is delivered
-    /// in it, no terminal opens in it, and nothing else removes it.
+    /// in it, and nothing Build does writes in it or removes it.
     reclaim_reserved: HashMap<String, workspaces::ReclaimReservation>,
     /// Set when the daemon is going down: a sweep still walking stops at its
     /// next entry.
@@ -636,6 +639,7 @@ impl AppState {
             workspace_lifecycle: HashMap::new(),
             reclaim_nudge: Default::default(),
             reclaim_reserved: HashMap::new(),
+            reclaim_policy: Default::default(),
             reclaim_stop: Default::default(),
             usage_limits: Default::default(),
             operation_ledger: Default::default(),

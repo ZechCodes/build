@@ -5,7 +5,8 @@
 //! wait on it. Under the mutex, the holds only the app state knows are read
 //! and the workspace is reserved, so nothing starts in it. With the mutex
 //! released, the Git state Done reads is measured. Under the mutex again, the
-//! reservation ends, every hold is read once more, and the removal is handed
+//! reservation ends, every hold is read once more, Git is given a last look,
+//! and the removal is handed
 //! to the drain the way `workspace.delete` hands it: every agent and terminal
 //! anywhere in the workspace stops first, and the files go only once they
 //! have.
@@ -16,7 +17,7 @@ use crate::reclaim::LinkedIssue;
 use crate::tracker::{Actor, IssueEventKind};
 use crate::workspace::Workspace;
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// The Git measurement, run with the mutex released, and the decision it
 /// feeds, made under it.
@@ -110,6 +111,9 @@ impl AppState {
                 holds.push(blocker);
             }
         }
+        if holds.is_empty() {
+            holds = self.last_look(&workspace);
+        }
         if !holds.is_empty() {
             return Err(reclaim_refusal(&workspace.name, &holds));
         }
@@ -118,6 +122,28 @@ impl AppState {
         self.workspace_lifecycle.remove(&workspace.id);
         self.persist_workspace_lifecycle();
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
+    }
+
+    /// Git read once more, under the mutex, just before the removal: a commit
+    /// or an edit that landed after the measurement, by anything Build did
+    /// not start, still holds the workspace. Bounded, because the mutex is
+    /// held: a workspace too slow to read in time is held as unmeasured.
+    fn last_look(&self, workspace: &Workspace) -> Vec<&'static str> {
+        let paths: Vec<_> = workspace
+            .directories
+            .iter()
+            .filter(|directory| directory.is_git)
+            .map(|directory| directory.path.clone())
+            .collect();
+        let budget = self
+            .reclaim_policy
+            .final_check_budget(Arc::clone(&self.reclaim_stop));
+        let git = crate::reclaim::measure_repositories(&paths, &budget);
+        let mut found = git.holds;
+        if git.unfinished {
+            found.push(crate::reclaim::HOLD_UNMEASURED);
+        }
+        found
     }
 
     /// The issues linking one workspace, or why they could not be read.

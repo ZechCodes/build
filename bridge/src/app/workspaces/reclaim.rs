@@ -17,16 +17,19 @@
 //! `BRIDGE_WORKSPACE_PRUNE` is on. When it runs, the workspace is reserved
 //! first: under the mutex, with every hold read fresh. While it is reserved no
 //! agent turn is delivered in it, no terminal opens in it and nothing else
-//! removes it. Then its Git state and activity are measured again with the
-//! mutex released, the holds are read once more under the mutex, and the build
-//! output is moved into the workspace's trash with one rename each before the
-//! reservation ends. The trash is emptied afterwards, off the mutex.
+//! removes it, and no Git verb, file write or directory change starts in it.
+//! Then its Git state and activity are measured again and its build output is
+//! inspected, with the mutex released. Under the mutex once more, the holds,
+//! the Git state and each directory are read a last time, and only then is the
+//! build output moved into the workspace's trash with one rename each, before
+//! the reservation ends. The trash is emptied afterwards, off the mutex.
 
 mod explicit;
 mod notice;
 
 use crate::app::{AppState, DeliveryRunner};
-use crate::reclaim::{artifacts, LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
+use crate::reclaim::artifacts::{self, Artifact};
+use crate::reclaim::{Budget, LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
 use crate::tracker::{Actor, Issue, IssueEventKind, IssueState};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
@@ -44,10 +47,6 @@ const NUDGE_SETTLE: Duration = Duration::from_secs(5);
 /// workspace is budgeted well under it; this only frees a workspace whose
 /// reserving thread died.
 const RESERVATION_LIMIT: Duration = Duration::from_secs(15 * 60);
-
-/// What a writer is told while a workspace is reserved.
-pub(in crate::app) const RESERVED_REFUSAL: &str =
-    "Build is measuring this workspace. Try again in a moment.";
 
 /// Where the service's own deliveries are charged on the frame clock.
 const SWEEP_METHOD: &str = "workspace.reclaim_sweep";
@@ -80,6 +79,16 @@ pub(in crate::app) fn reserved_holds(
         .any(|reservation| reservation.live() && root.starts_with(&reservation.root))
 }
 
+/// Where a prune stands, for a test racing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::app) enum PrunePhase {
+    /// Reserved, before Git and activity are measured again.
+    Reserved,
+    /// Measured again and the build output inspected, before the last look
+    /// and the move.
+    Inspected,
+}
+
 /// A workspace the project agent is about to hear about.
 struct Quiet {
     subject: Subject,
@@ -96,8 +105,11 @@ impl AppState {
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
     pub fn spawn_workspace_reclaim(state: Arc<Mutex<AppState>>, policy: ReclaimPolicy) -> Arc<AtomicBool> {
-        let stop = state.lock().unwrap().reclaim_stop.clone();
-        let nudge = state.lock().unwrap().reclaim_nudge.clone();
+        let (nudge, stop) = {
+            let mut app = state.lock().unwrap();
+            app.reclaim_policy = policy;
+            (app.reclaim_nudge.clone(), app.reclaim_stop.clone())
+        };
         tokio::spawn(async move {
             tokio::time::sleep(policy.first_sweep_after).await;
             loop {
@@ -135,14 +147,14 @@ impl AppState {
         Self::sweep_workspaces_racing(state, policy, now_ms, &|_| {});
     }
 
-    /// [`Self::sweep_workspaces`], with `racer` run after a workspace is
-    /// reserved for pruning and before it is measured again: where a test
-    /// starts an agent, reopens an issue or edits a file.
+    /// [`Self::sweep_workspaces`], with `racer` run at each [`PrunePhase`] of
+    /// a prune: where a test starts an agent, reopens an issue or edits a
+    /// file.
     pub(in crate::app) fn sweep_workspaces_racing(
         state: &Arc<Mutex<AppState>>,
         policy: &ReclaimPolicy,
         now_ms: i64,
-        racer: &dyn Fn(&Subject),
+        racer: &dyn Fn(PrunePhase),
     ) {
         let (subjects, stop) = {
             let app = state.lock().unwrap();
@@ -179,7 +191,7 @@ impl AppState {
         record: LifecycleRecord,
         now_ms: i64,
         policy: &ReclaimPolicy,
-        racer: &dyn Fn(&Subject),
+        racer: &dyn Fn(PrunePhase),
     ) -> LifecycleRecord {
         let Some(root) = subject.canonical_root() else {
             return record;
@@ -200,7 +212,7 @@ impl AppState {
             issues,
             ..subject.clone()
         };
-        racer(&subject);
+        racer(PrunePhase::Reserved);
         // Measured again now that nothing Build starts can touch it: an edit,
         // a commit or a push since the first measurement counts.
         let budget = policy.budget(Arc::clone(&stop));
@@ -210,21 +222,14 @@ impl AppState {
         } else {
             Vec::new()
         };
+        racer(PrunePhase::Inspected);
         let moved = {
             let mut app = state.lock().unwrap();
             let moved = if app.spoken_to_since(&subject, &mut fresh) {
                 Vec::new()
             } else {
-                match app.prune_holds(&subject.workspace_id, true) {
-                    Some((holds, _)) if !holds.is_empty() => {
-                        fresh.hold(&holds);
-                        Vec::new()
-                    }
-                    Some(_) if !artifacts.is_empty() => crate::reclaim::trash_of(&root)
-                        .map(|trash| artifacts::move_to_trash(&artifacts, &trash))
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                }
+                let last_look = policy.final_check_budget(Arc::clone(&stop));
+                app.move_build_output(&subject, &root, &artifacts, &mut fresh, &last_look)
             };
             app.release_reservation(&subject.workspace_id);
             moved
@@ -239,6 +244,48 @@ impl AppState {
         fresh.pruned_at_ms = Some(now_ms);
         subject.resize(&mut fresh, &budget);
         fresh
+    }
+
+    /// The last look, under the mutex and the reservation, and the move.
+    ///
+    /// The holds only the app state knows are read again. Then Git is read
+    /// again: inspecting build output can take minutes, and a commit, a
+    /// `git add -f` or an edit that landed meanwhile, by anything Build did
+    /// not start, is found here. Then each directory is asked again whether it
+    /// is still untracked, ignored build output. Anything found keeps every
+    /// directory where it is, and the verdict says why.
+    fn move_build_output(
+        &self,
+        subject: &Subject,
+        root: &Path,
+        artifacts: &[Artifact],
+        record: &mut LifecycleRecord,
+        last_look: &Budget,
+    ) -> Vec<Artifact> {
+        match self.prune_holds(&subject.workspace_id, true) {
+            Some((holds, _)) if holds.is_empty() => {}
+            Some((holds, _)) => {
+                record.hold(&holds);
+                return Vec::new();
+            }
+            None => return Vec::new(),
+        }
+        if artifacts.is_empty() || !subject.confirm_git(record, last_look) {
+            return Vec::new();
+        }
+        if let Some(changed) = artifacts
+            .iter()
+            .find(|artifact| !artifacts::still_build_output(artifact))
+        {
+            eprintln!(
+                "workspace reclaim: {} changed while it was inspected; nothing moved",
+                changed.path.display()
+            );
+            return Vec::new();
+        }
+        crate::reclaim::trash_of(root)
+            .map(|trash| artifacts::move_to_trash(artifacts, &trash))
+            .unwrap_or_default()
     }
 
     /// Whether somebody wrote to the workspace's conversation since `subject`
@@ -309,10 +356,13 @@ impl AppState {
             .is_some_and(ReclaimReservation::live)
     }
 
-    /// Refuse to start something new inside a reserved workspace.
-    pub(in crate::app) fn refuse_writers_while_reserved(&self, root: &Path) -> Result<(), String> {
-        if self.reclaim_reserved_at(root) {
-            return Err(RESERVED_REFUSAL.to_string());
+    /// Refuse to start something that writes inside a reserved workspace: a
+    /// terminal, a Git verb that changes the tree or its refs, a file write.
+    /// `path` is resolved through its links first, like the reserved root,
+    /// including a folder the write would make.
+    pub(in crate::app) fn refuse_writers_while_reserved(&self, path: &Path) -> Result<(), String> {
+        if self.reclaim_reserved_at(&crate::worktree::canonical_planned_path(path)) {
+            return Err(crate::reclaim::RESERVED.to_string());
         }
         Ok(())
     }

@@ -290,7 +290,7 @@ impl ApiError {
         if sentence.starts_with(crate::reclaim::REFUSAL) {
             return ApiError::conflict(message, None);
         }
-        if sentence == crate::reclaim::BUSY {
+        if sentence == crate::reclaim::BUSY || sentence == crate::reclaim::RESERVED {
             return ApiError::busy(message);
         }
         ApiError::internal(message)

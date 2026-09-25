@@ -213,6 +213,10 @@ pub(in crate::app) fn dispatch_frame(
         Some(outcome) => noted_as_user_activity(state, &method, outcome, &timer).map_err(|error| {
             if error == PROJECT_DELETION_IN_PROGRESS {
                 ApiError::unavailable(error)
+            } else if error == crate::reclaim::RESERVED {
+                // A terminal opening in a workspace the reclaim service has
+                // reserved: try again in a moment.
+                ApiError::busy(error)
             } else {
                 ApiError::from(error)
             }

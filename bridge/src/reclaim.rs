@@ -43,11 +43,17 @@ pub const DEFAULT_FIRST_SWEEP_AFTER: Duration = Duration::from_secs(120);
 pub const DEFAULT_MEASURE_ENTRIES: u64 = 2_000_000;
 /// How long measuring one workspace may take.
 pub const DEFAULT_MEASURE_TIME: Duration = Duration::from_secs(120);
+/// How long the last look at a workspace's Git state may take, just before
+/// its build output is moved. It is taken under the app mutex, so it is
+/// short: a workspace too slow to read in it keeps its build output.
+pub const DEFAULT_FINAL_CHECK_TIME: Duration = Duration::from_secs(5);
 
 /// How every refusal of `workspace.reclaim` begins.
 pub const REFUSAL: &str = "Build cannot reclaim ";
 /// What a removal is told while other files are being moved.
 pub const BUSY: &str = "another filesystem operation is still running";
+/// What anything that would write inside a reserved workspace is told.
+pub const RESERVED: &str = "Build is measuring this workspace. Try again in a moment.";
 
 /// A linked issue that is neither Done nor closed.
 pub const HOLD_ISSUE_OPEN: &str = "issue_open";
@@ -69,6 +75,7 @@ pub struct ReclaimPolicy {
     pub first_sweep_after: Duration,
     pub measure_entries: u64,
     pub measure_time: Duration,
+    pub final_check_time: Duration,
     /// Tier 1: drop a quiet, unheld workspace's build output. Off unless
     /// `BRIDGE_WORKSPACE_PRUNE` turns it on.
     pub prune: bool,
@@ -82,6 +89,7 @@ impl Default for ReclaimPolicy {
             first_sweep_after: DEFAULT_FIRST_SWEEP_AFTER,
             measure_entries: DEFAULT_MEASURE_ENTRIES,
             measure_time: DEFAULT_MEASURE_TIME,
+            final_check_time: DEFAULT_FINAL_CHECK_TIME,
             prune: false,
         }
     }
@@ -117,6 +125,11 @@ impl ReclaimPolicy {
     /// A fresh budget for measuring one workspace.
     pub fn budget(&self, stop: Arc<AtomicBool>) -> Budget {
         Budget::new(self.measure_entries, self.measure_time, stop)
+    }
+
+    /// A fresh budget for the last look before build output is moved.
+    pub fn final_check_budget(&self, stop: Arc<AtomicBool>) -> Budget {
+        Budget::new(self.measure_entries, self.final_check_time, stop)
     }
 }
 
@@ -297,6 +310,25 @@ impl Subject {
         }
     }
 
+    /// Read the Git state once more, as the last look before build output is
+    /// moved, and fold what it finds into `record`. Answers whether it still
+    /// finds nothing at stake: every tree clean, every commit pushed, and all
+    /// of it read within the budget.
+    pub fn confirm_git(&self, record: &mut LifecycleRecord, budget: &Budget) -> bool {
+        let git = measure_repositories(&self.repository_paths(), budget);
+        let mut found = git.holds.clone();
+        if git.unfinished {
+            found.push(HOLD_UNMEASURED);
+        }
+        if found.is_empty() {
+            return true;
+        }
+        record.dirty_files = git.dirty_files;
+        record.unpushed_commits = git.unpushed_commits;
+        record.hold(&found);
+        false
+    }
+
     /// The build output this workspace could lose, each directory inspected.
     ///
     /// Only what is inside the workspace counts: the root and every checkout
@@ -327,7 +359,7 @@ impl Subject {
         let mut found = Vec::new();
         for repository in repositories {
             for candidate in artifacts::find(&repository, budget)? {
-                if let Some(artifact) = artifacts::inspect(&candidate, budget)? {
+                if let Some(artifact) = artifacts::inspect(&repository, &candidate, budget)? {
                     found.push(artifact);
                 }
             }

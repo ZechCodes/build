@@ -178,6 +178,7 @@ impl AppState {
         if !is_single_component {
             return Err("name must be a single folder name".to_string());
         }
+        self.refuse_writers_while_reserved(&parent)?;
         let target = parent.join(name);
         std::fs::create_dir(&target)
             .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
@@ -257,6 +258,7 @@ impl AppState {
             return Err("replacement exceeds the 1048576-byte limit".to_string());
         }
 
+        self.refuse_writers_while_reserved(&root)?;
         let current = self.fs_read(params)?;
         if current.get("editable") != Some(&Value::Bool(true)) {
             return Err("file is not editable UTF-8 text".to_string());

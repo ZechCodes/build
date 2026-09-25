@@ -345,6 +345,7 @@ impl AppState {
             return Err("cleanup only applies to merge actions".to_string());
         }
         let bound = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        self.refuse_writers_while_reserved(&bound.worktree.path)?;
         let adopted = bound.adopted;
         // A merge lands the run's branch on the base branch through the
         // project's repository. For a run standing in that repository the

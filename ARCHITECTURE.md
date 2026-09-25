@@ -286,11 +286,15 @@ without waking their trackers.
 Dropping build output (tier 1) is off unless `BRIDGE_WORKSPACE_PRUNE` is set.
 When it is on and nothing holds an idle workspace, the sweep reserves the
 workspace under the lock (`reclaim_reserved`). While a workspace is reserved,
-the delivery queue holds every turn for an agent inside it, `term.create`
-refuses, and removals and directory changes answer `busy`. The sweep measures
-the Git state and activity again, reads the holds again under the lock, and
-renames each build output directory into the workspace's trash
-(`.build/reclaim`) before the reservation ends. Build output is an ignored,
+the delivery queue holds every turn for an agent inside it, and every bridge
+write inside it answers `busy`: `term.create`, the `git.*` verbs that change a
+tree or its refs, `fs.write`, `fs.mkdir`, attachments, `run.git_action`, Done,
+removals, renames and directory changes. The sweep measures the Git state and
+activity again and inspects the build output, with the lock released. Then,
+under the lock, it reads the holds, the Git state and each directory once
+more (still untracked and ignored, read from a fresh index), and renames each
+build output directory into the workspace's trash (`.build/reclaim`) before
+the reservation ends. Anything found keeps all of it. Build output is an ignored,
 untracked `node_modules`, `target`, `.venv` or `dist` inside one of the
 workspace's checkouts, reached without a symlink and holding no repository of
 its own (`bridge/src/reclaim/artifacts.rs`). The trash is emptied with the
@@ -301,7 +305,9 @@ project agent's `reclaim_workspace`, `app/workspaces/reclaim/explicit.rs`)
 refuses at once on the holds the app state knows, then reserves the workspace
 and measures Git off the lock. A deferred write-back can hand the drain
 another stage (`AppState::apply_deferred_stage`): once measured, reclaim reads
-every hold again under the lock, logs `workspace_reclaimed` on each linked
+every hold again under the lock, reads Git once more on a short budget (five
+seconds, `unmeasured` past it) so a commit that landed meanwhile still holds
+the workspace, logs `workspace_reclaimed` on each linked
 issue without waking its trackers, and removes the workspace through the same
 path as `workspace.delete`. That path stops every agent and terminal anywhere
 under the workspace root first. The verdicts persist in the store's `meta`

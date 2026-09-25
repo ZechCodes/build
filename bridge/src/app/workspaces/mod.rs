@@ -12,6 +12,8 @@ mod directories;
 mod git_initialization;
 mod reclaim;
 
+#[cfg(test)]
+pub(in crate::app) use reclaim::PrunePhase;
 pub(in crate::app) use reclaim::{reserved_holds, ReclaimReservation};
 
 struct WorkspaceCreateWork {
@@ -659,8 +661,11 @@ impl AppState {
     pub(crate) fn workspace_rename(&mut self, params: &Value) -> Result<Value, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         let name = require_str(params, "name")?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
-            return Err("another filesystem operation is still running".to_string());
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_reserved(&workspace_id)
+        {
+            return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
@@ -677,6 +682,9 @@ impl AppState {
             return Err("another filesystem operation is still running".to_string());
         }
         let workspace_id = require_str(params, "workspace_id")?;
+        if self.workspace_reserved(&workspace_id) {
+            return Err(crate::reclaim::BUSY.to_string());
+        }
         let workspace = self.workspaces.claim_retry(&workspace_id)?;
         if !workspace.managed {
             return Err("workspace.retry: adopted workspaces require no provisioning".to_string());

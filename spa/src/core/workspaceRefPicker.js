@@ -1,10 +1,20 @@
-import { esc } from "./text.js";
+import { appBehindMark, bridgeBehindMark, esc } from "./text.js";
 import { refLabel } from "./workspaceModel.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { contextFor, onDeviceStateChanged, whenGreeted } from "./deviceContexts.js";
+import { isTransientTransportError } from "./transientRead.js";
 
 const kindLabel = (kind) => kind === "tag" ? "Tags" : "Branches";
+
+/** A read refused because the machine cannot be asked right now, or died on the
+ *  wire, rather than one the bridge answered no. That is the device strip's
+ *  news, not the picker's: the cached refs stay on screen as they are, and the
+ *  next session reads again. */
+const BEHIND = new Set([appBehindMark, bridgeBehindMark]);
+const errorText = (error) => error?.message || String(error);
+const machineAway = (error) => isTransientTransportError(error) || BEHIND.has(errorText(error).trim());
 
 function syncBadge(ref) {
   const ahead = Number(ref.ahead) || 0;
@@ -52,6 +62,8 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   let loadRequest = 0;
   let readRequest = 0;
   let cacheWrites = 0;
+  let readFailed = false; // the last refs read did not land; the next session reads again
+  let readShown = false; // the status holds a read's refusal, not a checkout's
   const entityId = directoryCacheId(scope);
   const address = entityId ? cacheScope?.address({ entityId, kind: "refs" }) : null;
 
@@ -77,44 +89,86 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     search.placeholder = `Search ${kindLabel(kind).toLowerCase()}…`;
     renderRows();
   };
-  const readRecord = async () => {
-    if (!address) return;
-    const version = ++readRequest;
-    const record = await readCached(address);
-    if (disposed || version !== readRequest) return;
-    const listing = record?.value;
-    if (!listing) return;
+  const paintListing = (listing) => {
     refs = listing.refs || [];
     current = listing.current || refs.find((ref) => ref.current) || null;
     renderCurrent();
     renderRows();
     trigger.disabled = pending || refs.length === 0;
   };
+  const clearRead = () => {
+    if (!readShown) return;
+    readShown = false;
+    errorHost.textContent = "";
+    if (!refs.length) triggerName.textContent = "Loading refs…";
+  };
+  const readLanded = () => {
+    readFailed = false;
+    clearRead();
+  };
+  const readRefused = (error) => {
+    readFailed = true;
+    if (machineAway(error)) return;
+    if (!refs.length) triggerName.textContent = "Refs unavailable";
+    errorHost.textContent = errorText(error);
+    readShown = true;
+  };
+  const readRecord = async (written = false) => {
+    if (!address) return;
+    const version = ++readRequest;
+    const record = await readCached(address);
+    if (disposed || version !== readRequest) return;
+    const listing = record?.value;
+    if (!listing) return;
+    // A record written while mounted is a read that landed, whoever made it.
+    if (written) readLanded();
+    paintListing(listing);
+  };
   const unwatch = address ? subscribeCache(address, () => {
     cacheWrites += 1;
-    void readRecord();
+    void readRecord(true);
   }) : null;
+  const mayWrite = (before) => !pending && Boolean(address) && cacheScope.active?.() !== false && cacheWrites === before;
   const load = async () => {
     const request = ++loadRequest;
     const before = cacheWrites;
-    const answer = await callRpc("git.refs", scope);
-    if (disposed || request !== loadRequest || pending) return;
-    if (!address || cacheScope.active?.() === false || cacheWrites !== before) return;
-    await writeCached(address, answer);
+    try {
+      const answer = await callRpc("git.refs", scope);
+      if (disposed || request !== loadRequest) return;
+      readLanded();
+      if (mayWrite(before)) await writeCached(address, answer);
+    } catch (error) {
+      if (!disposed && request === loadRequest) readRefused(error);
+    }
   };
+  // A session adopted for this machine is the state change that retires what
+  // the last one failed to read: the diagnostic goes, and the new session is
+  // asked again once its greeting says it can be.
+  const deviceId = cacheScope?.deviceId || null;
+  let session = contextFor(deviceId)?.session || null;
+  const unwatchDevice = deviceId ? onDeviceStateChanged(() => {
+    const context = contextFor(deviceId);
+    const next = context?.session || null;
+    if (disposed || !next || next === session) return;
+    session = next;
+    if (!readFailed) return;
+    clearRead();
+    void whenGreeted(context, () => load());
+  }) : null;
   const checkout = async (fullRef) => {
     if (pending) return;
     pending = true;
     trigger.disabled = true;
     picker.classList.add("pending");
     errorHost.textContent = "";
+    readShown = false;
     try {
       await callRpc("git.checkout_ref", { ...scope, full_ref: fullRef });
       if (disposed) return;
       close();
       await onCheckout?.();
     } catch (error) {
-      if (!disposed) errorHost.textContent = error?.message || String(error);
+      if (!disposed) errorHost.textContent = errorText(error);
     } finally {
       pending = false;
       if (!disposed) {
@@ -131,7 +185,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
       search.value = "";
       renderRows();
       search.focus();
-      load().catch((error) => { if (!disposed) errorHost.textContent = error?.message || String(error); });
+      void load();
     }
   };
   picker.querySelectorAll("[data-ref-kind]").forEach((tab) => { tab.onclick = () => selectKind(tab.dataset.refKind); });
@@ -145,14 +199,11 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   document.addEventListener("pointerdown", outside);
   picker.addEventListener("keydown", keydown);
   void readRecord();
-  load().catch((error) => {
-    if (disposed) return;
-    if (!refs.length) triggerName.textContent = "Refs unavailable";
-    errorHost.textContent = error?.message || String(error);
-  });
+  void load();
   return { dispose() {
     disposed = true;
     unwatch?.();
+    unwatchDevice?.();
     document.removeEventListener("pointerdown", outside);
     picker.removeEventListener("keydown", keydown);
   } };

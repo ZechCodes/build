@@ -35,7 +35,7 @@ import {
   workspaceIsRecent,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
-import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
+import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchKeptNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
 import { bridgeAdapter } from "./changeEvents.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
@@ -796,13 +796,20 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
   else {
     const params = { projectId: target.projectId, branch: target.branch, deletesBranch: confirmedDeletion(target) };
-    await call("branch.finish", branchFinishParams(optionId, params));
+    sayWhatStayed(target, await call("branch.finish", branchFinishParams(optionId, params)));
   }
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
   // event naming the branch it lost is the whole point of it coming back.
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
+}
+
+/** The workspace is gone and the branch stayed: the bridge's reason, said
+ *  beside a removal that stands and is not undone. */
+function sayWhatStayed(target, answer) {
+  const kept = branchKeptNotice(target.branch, answer);
+  if (kept) notifyError(kept.summary, kept.detail);
 }
 
 /** What Done does, in the words a refusal names it by. */

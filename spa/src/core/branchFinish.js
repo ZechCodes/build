@@ -91,6 +91,18 @@ export function branchFinishFailureSummary(name) {
   return `Couldn't finish ${name || "this item"}`;
 }
 
+/** What Done says when the workspace went and the branch stayed (#87): the
+ *  bridge measured the branch again once the checkout was gone and kept it.
+ *  The removal stands, so this is said beside it, in the bridge's own
+ *  sentence. Null for every other answer. */
+export function branchKeptNotice(name, answer) {
+  if (answer?.branch_deleted !== false) return null;
+  return {
+    summary: `Removed the checkout of ${name || "this branch"}; the branch stays`,
+    detail: String(answer.branch_reason || ""),
+  };
+}
+
 /** The name the inbox is holding this branch's row under. A row with no entity
  *  of its own is named by its project, and a project is only named once the
  *  device is said with it — a `branch.get` answer is one device's and carries

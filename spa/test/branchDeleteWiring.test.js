@@ -133,6 +133,26 @@ it("a bridge announcing branches.finishDelete is promised the deletion and asked
   expect(params).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
 });
 
+// The bridge measured the branch again once the checkout was gone and kept
+// it: the workspace is gone and stays gone, and the user reads why the branch
+// did not go with it.
+it("a branch the bridge kept after the removal is said, and the removal stands", async () => {
+  const reason = "Build cannot delete the branch build/login: it gained commits while Build was deleting it.";
+  call = vi.fn(async (method) =>
+    method === "branch.finish" ? { complete: true, repositories: [], deleted: true, branch_deleted: false, branch_reason: reason } : {},
+  );
+  await greetThenOpen(greeting);
+  await pressDone();
+  const notice = await vi.waitFor(() => {
+    const found = document.querySelector("#notices .notice");
+    expect(found).toBeTruthy();
+    return found;
+  });
+  expect(notice.textContent).toContain("Removed the checkout of build/login; the branch stays");
+  expect(notice.textContent).toContain(reason);
+  expect(notice.textContent).not.toContain("Couldn't finish");
+});
+
 it("a bridge without the name is told nothing it would drop, and the user is told why", async () => {
   await greetThenOpen(olderGreeting);
   const { text, params } = await pressDone();

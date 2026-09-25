@@ -11,6 +11,7 @@ import {
   branchFinishFacts,
   branchFinishParams,
   branchInboxKey,
+  branchKeptNotice,
 } from "../src/core/branchFinish.js";
 import { entryKeyOf } from "../src/core/inbox.js";
 
@@ -93,6 +94,24 @@ describe("what Done sends", () => {
 
   it("refuses an option it has no action for", () => {
     expect(() => branchFinishParams("finish_cleanup", { projectId: "p1", branch: "b" })).toThrow(/unknown/);
+  });
+});
+
+// #87: the bridge measures the branch again once the checkout is gone, and a
+// branch that moved in between stays. The workspace is gone either way.
+describe("what Done says when the branch stayed", () => {
+  it("says the checkout went and the branch stayed, in the bridge's sentence", () => {
+    const reason = "Build cannot delete the branch build/login: it gained commits while Build was deleting it.";
+    expect(branchKeptNotice("build/login", { deleted: true, branch_deleted: false, branch_reason: reason })).toEqual({
+      summary: "Removed the checkout of build/login; the branch stays",
+      detail: reason,
+    });
+  });
+
+  it("says nothing when the branch went, or when nothing was asked of it", () => {
+    expect(branchKeptNotice("build/login", { deleted: true, branch_deleted: true })).toBe(null);
+    expect(branchKeptNotice("build/login", { deleted: true })).toBe(null);
+    expect(branchKeptNotice("build/login", undefined)).toBe(null);
   });
 });
 

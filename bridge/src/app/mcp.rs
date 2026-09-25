@@ -130,11 +130,14 @@ impl Turn {
     }
 
     fn give_back(&mut self) {
-        if self.permit.take().is_some() {
+        if let Some(permit) = self.permit.take() {
+            // Counted out while the permit is still held: dropped first, a
+            // waiter it wakes could count itself in before this one left.
             #[cfg(test)]
             self.plane
                 .at_the_lock
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            drop(permit);
         }
     }
 }

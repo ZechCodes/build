@@ -41,6 +41,17 @@ const verdict = {
   noticed_at_ms: 1_790_000_000_000,
 };
 
+/** A reclaimable workspace of `size` bytes (#167). */
+const reclaimableRow = (id, size) => ({
+  id,
+  workspace_id: id,
+  project_id: "p1",
+  name: id,
+  status: "ready",
+  directories: [{ source_id: "repo", branch: `build/${id}`, is_git: true }],
+  lifecycle: { ...verdict, reclaimable: true, holds: [], dirty_files: 0, size_bytes: size },
+});
+
 const ANSWERS = {
   "board.list": () => ({ items: [] }),
   "project.list": () => ({ projects: [{ project_id: "p1", name: "build" }] }),
@@ -53,7 +64,7 @@ const ANSWERS = {
       status: "ready",
       directories: [{ source_id: "repo", branch: "build/lifecycle", is_git: true }],
       lifecycle: verdict,
-    }],
+    }, reclaimableRow("ws-small", 1_000_000_000), reclaimableRow("ws-big", 9_000_000_000)],
   }),
 };
 
@@ -111,5 +122,24 @@ describe("a workspace's lifecycle, wire to row", () => {
       reclaimable: false,
       text: "Idle · 3 uncommitted files, a terminal open · 17.2 GB",
     });
+  });
+
+  // #167: the Reclaimable filter and the size column read the same cached
+  // rows, through the same feed, as the verdict line does.
+  it("narrows the project page to the reclaimable rows, largest first, with their sizes", async () => {
+    await feed.startFeed();
+    const arrived = snapshotWithWorkspace();
+    sync.startCacheSync();
+
+    const snapshot = await arrived;
+
+    const { projectPageModel, workspaceListing, RECLAIMABLE_WORKSPACES } = await import("../src/core/projectPageModel.js");
+    const page = projectPageModel(snapshot, { name: "project", deviceId: "dev-1", projectId: "p1" });
+    const listing = workspaceListing(page, RECLAIMABLE_WORKSPACES);
+    expect(listing.rows.map((row) => [row.workspaceId, row.sizeText])).toEqual([
+      ["ws-big", "9.0 GB"],
+      ["ws-small", "1.0 GB"],
+    ]);
+    expect(listing.reclaimableCount).toBe(2);
   });
 });

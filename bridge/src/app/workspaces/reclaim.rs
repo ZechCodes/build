@@ -13,8 +13,10 @@
 //! it. `workspace.reclaim` is the explicit removal the agent or the user calls
 //! (`reclaim/explicit.rs`).
 //!
-//! Dropping a quiet workspace's build output (tier 1) is off unless
-//! `BRIDGE_WORKSPACE_PRUNE` is on. When it runs, the workspace is reserved
+//! Dropping a quiet workspace's build output (tier 1) is off unless the
+//! device's `workspace_prune` setting or `BRIDGE_WORKSPACE_PRUNE` turns it on;
+//! the idle threshold is `workspace_idle_secs` or `BRIDGE_WORKSPACE_IDLE_SECS`,
+//! the variable winning where it is set (#167). Each sweep reads them afresh. When it runs, the workspace is reserved
 //! first: under the mutex, with every hold read fresh. While it is reserved no
 //! agent turn is delivered in it, no terminal opens in it and nothing else
 //! removes it, and no Git verb, file write or directory change starts in it.
@@ -136,8 +138,10 @@ impl AppState {
             tokio::time::sleep(policy.first_sweep_after).await;
             loop {
                 let swept = Arc::clone(&state);
-                let policy_now = policy.clone();
                 let sweep = tokio::task::spawn_blocking(move || {
+                    // The device's settings as they stand now: a change in
+                    // Settings takes effect on the next sweep.
+                    let policy_now = swept.lock().unwrap().reclaim_policy_now();
                     AppState::sweep_workspaces(&swept, &policy_now, now_ms());
                     // The notices the sweep queued.
                     AppState::deliver_after_sweep(&swept);
@@ -377,6 +381,13 @@ impl AppState {
         }
         let clock = Arc::clone(&state.lock().unwrap().frame_clock);
         DeliveryRunner::drain(state, &clock.frame(SWEEP_METHOD));
+    }
+
+    /// What a sweep runs under now: the service's policy, with the device's
+    /// idle threshold and prune switch over it wherever the environment did
+    /// not set them (#167).
+    pub(in crate::app) fn reclaim_policy_now(&self) -> ReclaimPolicy {
+        self.reclaim_policy.with_settings(&self.reclaim_settings)
     }
 
     /// Ask for a sweep soon: an issue linked to a workspace just finished, so
@@ -643,7 +654,12 @@ impl AppState {
                 continue;
             }
             if record.pruned_at_ms == Some(now_ms) {
-                self.note_on_linked_issues(&subject, IssueEventKind::WorkspacePruned, &record);
+                self.note_on_linked_issues(
+                    &subject,
+                    IssueEventKind::WorkspacePruned,
+                    &record,
+                    policy,
+                );
             }
             let due = record.notice_due(now_ms, policy);
             if due != NoticeDue::No {
@@ -691,6 +707,7 @@ impl AppState {
                     &quiet.subject,
                     IssueEventKind::WorkspaceIdle,
                     &quiet.record,
+                    policy,
                 );
             }
             if let Some(record) = self
@@ -723,9 +740,12 @@ impl AppState {
         subject: &Subject,
         kind: IssueEventKind,
         record: &LifecycleRecord,
+        policy: &ReclaimPolicy,
     ) {
         let payload = json!({
             "workspace_id": subject.workspace_id,
+            // What "quiet" meant when this was written: Settings can move it.
+            "idle_after_secs": policy.idle_after.as_secs(),
             "workspace_name": subject.name,
             "last_activity_ms": record.last_activity_ms,
             "reclaimable": record.reclaimable,

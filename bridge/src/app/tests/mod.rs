@@ -235,6 +235,7 @@ mod usage_limits;
 mod user_session;
 mod workflow;
 mod workspace_reclaim;
+mod workspace_reclaim_branches;
 mod workspace_reclaim_final_budget;
 mod workspace_reclaim_races;
 mod workspaces;

@@ -706,3 +706,93 @@ fn compact_above_tokens_defaults_sets_and_survives_a_reload() {
     let off = reloaded.handle(req("settings.set", json!({ "compact_above_tokens": 0 })));
     assert_eq!(off["result"]["compact_above_tokens"], 0, "0 turns it off");
 }
+
+/// The workspace lifecycle's two device settings (#167): the idle threshold
+/// and the prune switch. 24 h and off until the device says otherwise; what
+/// it says outlives a restart and is what the reclaim service sweeps by.
+#[test]
+fn workspace_lifecycle_settings_default_set_and_survive_a_reload() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let open = || {
+        AppState::new_unrooted(tmp.path().join("wt"), "main", true, "/tmp/test-mcp.sock")
+            .with_config(&cfg)
+            .unwrap()
+    };
+    {
+        let mut state = open();
+        let settings = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["workspace_idle_secs"], 86_400, "{settings:?}");
+        assert_eq!(settings["workspace_prune"], false, "{settings:?}");
+        assert_eq!(settings["workspace_pinned"], json!([]), "{settings:?}");
+
+        for refused in [
+            json!({ "workspace_idle_secs": 0 }),
+            json!({ "workspace_idle_secs": "a day" }),
+            json!({ "workspace_idle_secs": -5 }),
+            json!({ "workspace_prune": "yes" }),
+        ] {
+            let answer = state.handle(req("settings.set", refused.clone()));
+            assert_eq!(answer["ok"], false, "{refused:?} → {answer:?}");
+            assert_eq!(answer["error_code"], "invalid_params", "{answer:?}");
+        }
+        assert_eq!(
+            state.handle(req("settings.set", json!({ "workspace_idle_secs": 0 })))["error"],
+            "workspace_idle_secs must be a whole number of seconds above 0."
+        );
+
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "workspace_idle_secs": 7200, "workspace_prune": true }),
+        ));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["workspace_idle_secs"], 7200);
+        assert_eq!(set["result"]["workspace_prune"], true);
+        let policy = state.reclaim_policy_now();
+        assert_eq!(policy.idle_after, std::time::Duration::from_secs(7200));
+        assert!(policy.prune);
+    }
+    let mut reloaded = open();
+    let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+    assert_eq!(settings["workspace_idle_secs"], 7200, "{settings:?}");
+    assert_eq!(settings["workspace_prune"], true, "{settings:?}");
+}
+
+/// `BRIDGE_WORKSPACE_IDLE_SECS` and `BRIDGE_WORKSPACE_PRUNE` stay overrides:
+/// a set variable is what the machine does and what it reports, the answer
+/// names the setting it pins, and a set still records the device's choice
+/// for the day the variable goes.
+#[test]
+fn an_environment_variable_pins_its_workspace_setting() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state =
+        AppState::new_unrooted(tmp.path().join("wt"), "main", true, "/tmp/test-mcp.sock")
+            .with_config(tmp.path().join("config.json"))
+            .unwrap();
+    state.reclaim_policy = crate::reclaim::ReclaimPolicy::from_vars(|name| {
+        (name == "BRIDGE_WORKSPACE_IDLE_SECS").then(|| "3600".to_string())
+    });
+
+    let set = state.handle(req(
+        "settings.set",
+        json!({ "workspace_idle_secs": 7200, "workspace_prune": true }),
+    ));
+
+    assert_eq!(set["ok"], true, "{set:?}");
+    assert_eq!(set["result"]["workspace_idle_secs"], 3600, "{set:?}");
+    assert_eq!(set["result"]["workspace_prune"], true, "{set:?}");
+    assert_eq!(
+        set["result"]["workspace_pinned"],
+        json!(["workspace_idle_secs"])
+    );
+    assert_eq!(
+        state.reclaim_policy_now().idle_after,
+        std::time::Duration::from_secs(3600)
+    );
+    state.reclaim_policy = crate::reclaim::ReclaimPolicy::default();
+    assert_eq!(
+        state.handle(req("settings.get", json!({})))["result"]["workspace_idle_secs"],
+        7200,
+        "the device's choice, once nothing pins it"
+    );
+}

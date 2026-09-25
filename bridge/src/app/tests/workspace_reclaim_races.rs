@@ -768,10 +768,9 @@ fn reclaim_measures_off_the_lock_and_holds_the_workspace_meanwhile() {
             DeferredNext::Answered(answer) => answer,
             DeferredNext::Again(_) => panic!("a third stage"),
         };
-    assert_eq!(
-        answered.unwrap(),
-        json!({ "workspace_id": ws, "deleted": true })
-    );
+    let answered = answered.unwrap();
+    assert_eq!(answered["workspace_id"], ws.as_str());
+    assert_eq!(answered["deleted"], true);
     assert!(!root.exists());
 }
 

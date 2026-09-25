@@ -80,10 +80,27 @@ const linkChange = (payload) => {
   return named ? `linked ${named}` : "linked this";
 };
 
-/** Done deleted the branch the issue's work was on (#87). */
+/** Done deleted the branch the issue's work was on (#87), or a reclaim did
+ *  (#167, `reclaimed`). */
+/** The branch, and the repository it was in when the event names one: a
+ *  reclaim over several sources says which (#167). */
+const repositoryNamed = (payload) => {
+  const name = String(payload.repository || "").replace(/\/+$/, "").split("/").pop();
+  return name ? ` in ${name}` : "";
+};
+const branchNamed = (payload) =>
+  `${payload.branch ? `branch ${payload.branch}` : "the branch"}${repositoryNamed(payload)}`;
 const branchDeletedSentence = (payload) => {
-  const sentence = `deleted ${payload.branch ? `branch ${payload.branch}` : "the branch"} when the workspace was finished`;
+  const when = payload.reclaimed ? "reclaimed" : "finished";
+  const sentence = `deleted ${branchNamed(payload)} when the workspace was ${when}`;
   return payload.reason ? `${sentence}; ${payload.reason}` : sentence;
+};
+
+/** A reclaim left the branch where it was, and the bridge's sentence says
+ *  why (#167). */
+const branchKeptSentence = (payload) => {
+  const sentence = `kept ${branchNamed(payload)} when the workspace was reclaimed`;
+  return payload.reason ? `${sentence}. ${payload.reason}` : sentence;
 };
 
 const closedSentence = (payload) =>
@@ -100,6 +117,17 @@ const movedSentence = (payload, columns) => {
 /** What the workspace reclaim service (#135) recorded about a workspace this
  *  issue links: it went quiet, its build output was dropped, it was reclaimed. */
 const workspaceNamed = (payload) => `workspace ${payload.workspace_name || payload.workspace_id || ""}`.trim();
+/** The idle threshold a `workspace_idle` was written under (#167), in the
+ *  largest whole unit: "a day", "6 hours", "90 minutes". Events from before
+ *  it was a setting carry none, and were a day. */
+const QUIET_UNITS = [[86_400, "a day", "days"], [3600, "an hour", "hours"], [60, "a minute", "minutes"]];
+const quietFor = (seconds) => {
+  const secs = Number(seconds);
+  if (!Number.isFinite(secs) || secs <= 0) return "a day";
+  const [size, one, many] = QUIET_UNITS.find(([unit]) => secs % unit === 0) || [1, "a second", "seconds"];
+  const count = secs / size;
+  return count === 1 ? one : `${count} ${many}`;
+};
 const reclaimedSentence = (payload) => {
   const size = payload.size_bytes ? ` (${humanBytes(payload.size_bytes)})` : "";
   return `reclaimed ${workspaceNamed(payload)}${size}`;
@@ -116,7 +144,9 @@ const SENTENCES = Object.freeze({
   reopened: () => "reopened this",
   dispatched: () => "started an agent on this",
   branch_deleted: (payload) => branchDeletedSentence(payload),
-  workspace_idle: (payload) => `noted ${workspaceNamed(payload)} has had no activity for a day`,
+  branch_kept: branchKeptSentence,
+  workspace_idle: (payload) =>
+    `noted ${workspaceNamed(payload)} has had no activity for ${quietFor(payload.idle_after_secs)}`,
   workspace_pruned: (payload) =>
     `dropped ${humanBytes(payload.pruned_bytes)} of build output from ${workspaceNamed(payload)}`,
   workspace_reclaimed: reclaimedSentence,

@@ -23,12 +23,18 @@
 //! does, so the checkouts are read again immediately before it and once more
 //! after it; a checkout that moved onto the branch in between gets the branch
 //! back at the same commit.
+//!
+//! `workspace.reclaim` takes the branch each of the workspace's directories
+//! carries the same way (#167), measured only in the drain, once the checkout
+//! is gone: nobody asked for these branches by name, so one that has to stay
+//! never holds the reclaim up. It stays, and each issue linking the workspace
+//! or the branch records why (`branch_kept`).
 
 mod checkouts;
 mod defaults;
 
 use crate::git_process::{run_git, GitError};
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, WorkspaceDirectory};
 use std::path::PathBuf;
 
 /// The `branch.finish` action that deletes the branch as well.
@@ -72,6 +78,8 @@ enum Moment {
 pub(in crate::app) struct BranchDeletion {
     /// The source repository the branch lives in.
     repo: PathBuf,
+    /// The project source that repository is, as the workspace names it.
+    source_id: String,
     branch: String,
     /// The checkout Done removes. It holding the branch is not a refusal.
     checkout: PathBuf,
@@ -92,22 +100,61 @@ impl BranchDeletion {
             .directories
             .iter()
             .filter(|directory| directory.is_git && directory.branch.as_deref() == Some(branch))
-            .map(|directory| Self {
-                repo: directory.source_path.clone(),
-                branch: branch.to_string(),
-                checkout: directory.path.clone(),
-                defaults: defaults
-                    .iter()
-                    .chain(std::iter::once(&directory.base_branch))
-                    .filter(|name| !name.is_empty())
-                    .cloned()
-                    .collect(),
+            .map(|directory| Self::in_directory(directory, branch, defaults))
+            .collect()
+    }
+
+    /// The branch each Git directory of `workspace` carries: what a reclaim
+    /// takes with it. A detached checkout carries none.
+    pub(in crate::app) fn every_branch_of(workspace: &Workspace, defaults: &[String]) -> Vec<Self> {
+        workspace
+            .directories
+            .iter()
+            .filter(|directory| directory.is_git)
+            .filter_map(|directory| {
+                let branch = directory.branch.as_deref()?;
+                Some(Self::in_directory(directory, branch, defaults))
             })
             .collect()
     }
 
+    fn in_directory(directory: &WorkspaceDirectory, branch: &str, defaults: &[String]) -> Self {
+        Self {
+            repo: directory.source_path.clone(),
+            source_id: directory.source_id.clone(),
+            branch: branch.to_string(),
+            checkout: directory.path.clone(),
+            defaults: defaults
+                .iter()
+                .chain(std::iter::once(&directory.base_branch))
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .collect(),
+        }
+    }
+
     pub(in crate::app) fn branch(&self) -> &str {
         &self.branch
+    }
+
+    pub(in crate::app) fn repo(&self) -> &std::path::Path {
+        &self.repo
+    }
+
+    pub(in crate::app) fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// One branch in one repository, for a test of what is said about it.
+    #[cfg(test)]
+    pub(in crate::app) fn for_tests(repo: &std::path::Path, source_id: &str, branch: &str) -> Self {
+        Self {
+            repo: repo.to_path_buf(),
+            source_id: source_id.to_string(),
+            branch: branch.to_string(),
+            checkout: repo.join("gone"),
+            defaults: Vec::new(),
+        }
     }
 
     /// Why this branch cannot be deleted, as a sentence, or `None`.
@@ -146,12 +193,16 @@ impl BranchDeletion {
     /// Delete the branch once Done's checkout is gone, measured again first.
     /// A branch already gone is deleted.
     pub(in crate::app) fn delete(&self) -> Result<(), BranchDeleteFailure> {
-        match self
-            .measure(Moment::AfterRemoval)
-            .map_err(BranchDeleteFailure::Refused)?
-        {
-            Some(tip) => self.delete_at(&tip),
-            None => Ok(()),
+        self.delete_present().unwrap_or(Ok(()))
+    }
+
+    /// [`Self::delete`], with `None` for a branch that was already gone, so
+    /// nothing is said about deleting what was not there.
+    fn delete_present(&self) -> Option<Result<(), BranchDeleteFailure>> {
+        match self.measure(Moment::AfterRemoval) {
+            Err(reason) => Some(Err(BranchDeleteFailure::Refused(reason))),
+            Ok(None) => None,
+            Ok(Some(tip)) => Some(self.delete_at(&tip)),
         }
     }
 
@@ -284,6 +335,18 @@ pub(in crate::app) fn delete_all(deletions: &[BranchDeletion]) -> Result<(), Bra
     deletions.iter().try_for_each(BranchDeletion::delete)
 }
 
+/// Delete each branch on its own, one repository's refusal leaving the
+/// others to go, and say how each went, beside the deletion it was, so the
+/// repository stays named. A branch already gone says nothing.
+pub(in crate::app) fn delete_each(
+    deletions: &[BranchDeletion],
+) -> Vec<(&BranchDeletion, Result<(), BranchDeleteFailure>)> {
+    deletions
+        .iter()
+        .filter_map(|deletion| Some((deletion, deletion.delete_present()?)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +356,7 @@ mod tests {
     fn deletion(repo: &Path, branch: &str, checkout: &Path) -> BranchDeletion {
         BranchDeletion {
             repo: repo.to_path_buf(),
+            source_id: "source-1".to_string(),
             branch: branch.to_string(),
             checkout: checkout.to_path_buf(),
             defaults: Vec::new(),

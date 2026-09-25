@@ -625,7 +625,12 @@ impl AppState {
             registry_root: self.workspaces.root().to_path_buf(),
             branches,
         };
-        self.remove_workspace(&workspace, params, Some(finishing), boundary)?;
+        self.remove_workspace(
+            &workspace,
+            params,
+            deletion::Removal::Finish(finishing),
+            boundary,
+        )?;
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 

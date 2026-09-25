@@ -16,7 +16,7 @@ import { workspaceEntries } from "./inbox.js";
 import { workspaceProjectBlocks } from "./inboxProjects.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { workspaceStatusText } from "./workspaceModel.js";
-import { lifecycleView } from "./workspaceLifecycle.js";
+import { humanBytes, lifecycleView } from "./workspaceLifecycle.js";
 
 /** The branch a workspace is standing on: the first of its sources that is on
  *  one. A workspace holds several checkouts and the row is one line, so the
@@ -24,8 +24,16 @@ import { lifecycleView } from "./workspaceLifecycle.js";
 const branchOf = (workspace) =>
   (workspace?.directories || []).map((directory) => directory.branch).find(Boolean) || "";
 
+/** What the reclaim service last measured the workspace at, or null before it
+ *  has (#167). */
+const sizeOf = (workspace) => {
+  const bytes = workspace?.lifecycle?.size_bytes;
+  return Number.isFinite(bytes) ? bytes : null;
+};
+
 /** One workspace as the page lists it: the rail's row, plus what that workspace
- *  is standing on, how its checkout is doing, and whether it can be reclaimed. */
+ *  is standing on, how its checkout is doing, whether it can be reclaimed, and
+ *  what it weighs. */
 const pageRow = (entry, workspace) => ({
   key: entry.key,
   workspaceId: entry.workspaceId,
@@ -41,6 +49,8 @@ const pageRow = (entry, workspace) => ({
   statusText: workspaceStatusText(workspace),
   // The reclaim service's verdict (#135): null until it has one worth saying.
   lifecycle: lifecycleView(workspace?.lifecycle),
+  sizeBytes: sizeOf(workspace),
+  sizeText: sizeOf(workspace) === null ? "" : humanBytes(sizeOf(workspace)),
 });
 
 /** The one project block the rail would paint for this project, or null when no
@@ -82,5 +92,30 @@ export function projectPageModel(feed, route) {
     rows,
     unreadCount: rows.reduce((total, row) => total + row.unreadCount, 0),
     empty: rows.length === 0,
+  };
+}
+
+/** The Workspaces tab's two filters (#167): every workspace, or only those the
+ *  reclaim service found nothing holding. */
+export const ALL_WORKSPACES = "all";
+export const RECLAIMABLE_WORKSPACES = "reclaimable";
+
+const largestFirst = (left, right) => (right.sizeBytes ?? -1) - (left.sizeBytes ?? -1);
+
+/**
+ * The rows one filter shows. Every workspace keeps the rail's order, so the
+ * page and the rail still read as one list; the reclaimable ones come largest
+ * first, because that is the order a cleanup wants them in. An unknown filter
+ * is every workspace.
+ */
+export function workspaceListing(page, filter) {
+  const reclaimable = page.rows.filter((row) => row.lifecycle?.reclaimable === true);
+  const narrowed = filter === RECLAIMABLE_WORKSPACES;
+  const rows = narrowed ? [...reclaimable].sort(largestFirst) : page.rows;
+  return {
+    filter: narrowed ? RECLAIMABLE_WORKSPACES : ALL_WORKSPACES,
+    rows,
+    empty: rows.length === 0,
+    reclaimableCount: reclaimable.length,
   };
 }

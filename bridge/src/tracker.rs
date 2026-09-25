@@ -529,6 +529,10 @@ pub enum IssueEventKind {
     /// Done took the local branch the issue's work was on. The payload names
     /// the branch and the workspace that was finished.
     BranchDeleted,
+    /// A reclaim left the local branch its workspace carried, because it
+    /// could not safely go (#167). The payload names the branch and the
+    /// workspace, and says why in `reason`.
+    BranchKept,
     /// A linked workspace went a day without activity and the project agent
     /// was told (#135). Written by Build, once per quiet stretch.
     WorkspaceIdle,
@@ -555,6 +559,7 @@ impl IssueEventKind {
             IssueEventKind::Watched => "watched",
             IssueEventKind::Unwatched => "unwatched",
             IssueEventKind::BranchDeleted => "branch_deleted",
+            IssueEventKind::BranchKept => "branch_kept",
             IssueEventKind::WorkspaceIdle => "workspace_idle",
             IssueEventKind::WorkspacePruned => "workspace_pruned",
             IssueEventKind::WorkspaceReclaimed => "workspace_reclaimed",

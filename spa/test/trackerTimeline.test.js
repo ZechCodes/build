@@ -127,11 +127,40 @@ describe("what an event says", () => {
       .toContain("restore failed at abc");
   });
 
+  // #167: a reclaim takes the workspace's branch where that is safe, and says
+  // why it stayed where it was not.
+  it("says what a reclaim did with the workspace's branch", () => {
+    expect(sentenceOf("branch_deleted", { branch: "build/login", reclaimed: true }))
+      .toBe("deleted branch build/login when the workspace was reclaimed");
+    expect(sentenceOf("branch_kept", {
+      branch: "build/login",
+      reclaimed: true,
+      reason: "Build cannot delete the branch build/login: it has commits no remote has.",
+    })).toBe("kept branch build/login when the workspace was reclaimed. Build cannot delete the branch build/login: it has commits no remote has.");
+    expect(sentenceOf("branch_kept", {})).toBe("kept the branch when the workspace was reclaimed");
+    // A workspace over several repositories: which one it happened in.
+    expect(sentenceOf("branch_deleted", { branch: "build/x", reclaimed: true, repository: "/home/ada/code/assets" }))
+      .toBe("deleted branch build/x in assets when the workspace was reclaimed");
+    expect(sentenceOf("branch_kept", { branch: "build/x", reclaimed: true, repository: "/home/ada/code/build/", reason: "Why." }))
+      .toBe("kept branch build/x in build when the workspace was reclaimed. Why.");
+  });
+
   // The reclaim service (#135) records a linked workspace going quiet, losing
   // its build output, and being reclaimed.
   it("says what became of a linked workspace", () => {
     expect(sentenceOf("workspace_idle", { workspace_name: "quiet" }))
       .toBe("noted workspace quiet has had no activity for a day");
+    // #167: the threshold is a setting, and the event says which it was.
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 86_400 }))
+      .toBe("noted workspace quiet has had no activity for a day");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 6 * 3600 }))
+      .toBe("noted workspace quiet has had no activity for 6 hours");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 3 * 86_400 }))
+      .toBe("noted workspace quiet has had no activity for 3 days");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 3600 }))
+      .toBe("noted workspace quiet has had no activity for an hour");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 90 * 60 }))
+      .toBe("noted workspace quiet has had no activity for 90 minutes");
     expect(sentenceOf("workspace_pruned", { workspace_name: "quiet", pruned_bytes: 12_000_000_000 }))
       .toBe("dropped 12.0 GB of build output from workspace quiet");
     expect(sentenceOf("workspace_reclaimed", { workspace_name: "quiet", size_bytes: 640_000_000 }))

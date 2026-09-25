@@ -181,6 +181,32 @@ impl AppState {
         }
     }
 
+    /// Every issue of the project that links the workspace or the branch,
+    /// open or closed. None when the project's issues cannot be read.
+    pub(in crate::app) fn issues_linking_workspace_or_branch(
+        &self,
+        project_id: &str,
+        workspace_id: &str,
+        branch: &str,
+    ) -> Vec<Issue> {
+        let Ok(project_path) = self.tracker_project_path(project_id) else {
+            return Vec::new();
+        };
+        self.tracker_store()
+            .and_then(|store| {
+                store
+                    .list_tracker_issues(&project_path, IssueFilter::default())
+                    .stored()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|issue| {
+                issue.links.links_workspace(workspace_id)
+                    || issue.links.branches.iter().any(|linked| linked == branch)
+            })
+            .collect()
+    }
+
     /// Done deleted `branch` along with the workspace: say so on every issue
     /// that links either, open or already closed by that same Done, so the
     /// timeline says where the branch went.
@@ -193,22 +219,8 @@ impl AppState {
         branch: &str,
         reason: Option<&str>,
     ) {
-        let Ok(project_path) = self.tracker_project_path(project_id) else {
-            return;
-        };
-        let issues = self.tracker_store().and_then(|store| {
-            store
-                .list_tracker_issues(&project_path, IssueFilter::default())
-                .stored()
-        });
-        let Ok(issues) = issues else {
-            return;
-        };
         let now = crate::store::now_rfc3339();
-        for issue in issues.into_iter().filter(|issue| {
-            issue.links.links_workspace(workspace_id)
-                || issue.links.branches.iter().any(|linked| linked == branch)
-        }) {
+        for issue in self.issues_linking_workspace_or_branch(project_id, workspace_id, branch) {
             let mut write = IssueWrite::by(Actor::User, issue);
             write.event(
                 &Actor::User,

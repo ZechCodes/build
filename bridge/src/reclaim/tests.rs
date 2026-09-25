@@ -407,6 +407,48 @@ fn pruning_is_off_unless_switched_on() {
     assert!(!off.prune);
 }
 
+/// The device's settings (#167) move the idle threshold and the prune switch,
+/// except where the environment set them: the variable pins its value.
+#[test]
+fn settings_move_the_policy_except_where_the_environment_pinned_it() {
+    let chosen = ReclaimSettings {
+        idle_after_secs: Some(7200),
+        prune: Some(true),
+    };
+    let unpinned = ReclaimPolicy::from_vars(|_| None);
+    assert_eq!(unpinned.pinned(), Vec::<&str>::new());
+    let moved = unpinned.with_settings(&chosen);
+    assert_eq!(moved.idle_after, std::time::Duration::from_secs(7200));
+    assert!(moved.prune);
+    assert_eq!(
+        unpinned.with_settings(&ReclaimSettings::default()),
+        unpinned,
+        "nothing chosen changes nothing"
+    );
+
+    let pinned = ReclaimPolicy::from_vars(|name| match name {
+        "BRIDGE_WORKSPACE_IDLE_SECS" => Some("3600".to_string()),
+        "BRIDGE_WORKSPACE_PRUNE" => Some("0".to_string()),
+        _ => None,
+    });
+    assert_eq!(
+        pinned.pinned(),
+        vec!["workspace_idle_secs", "workspace_prune"]
+    );
+    let kept = pinned.with_settings(&chosen);
+    assert_eq!(kept.idle_after, std::time::Duration::from_secs(3600));
+    assert!(!kept.prune);
+
+    let unreadable = ReclaimPolicy::from_vars(|name| {
+        (name == "BRIDGE_WORKSPACE_IDLE_SECS").then(|| "soon".to_string())
+    });
+    assert_eq!(
+        unreadable.pinned(),
+        Vec::<&str>::new(),
+        "a value the bridge cannot read pins nothing"
+    );
+}
+
 /// Activity is somebody's files. Git's own bookkeeping, Build's per-agent
 /// configuration, the manifest and build output are not.
 #[test]

@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.24.0";
+pub const API_VERSION: &str = "1.25.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -69,9 +69,11 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "requests.receipts",
     "settings.projectAgent",
     "settings.roleModels",
+    "settings.workspaceLifecycle",
     "threads.newestDeltaPagination",
     "threads.postOperations",
     "workspaces.lifecycle",
+    "workspaces.reclaimBranches",
 ];
 
 /// Everything this bridge can serve on a session, as exact method names and

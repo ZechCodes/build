@@ -38,6 +38,9 @@ impl AppState {
             "role_models": self.role_models,
             "watch_agent_filed_issues": self.watch_agent_filed_issues,
             "compact_above_tokens": self.compact_above_tokens,
+            // Absent until the device chooses: `null` leaves the default.
+            "workspace_idle_secs": self.reclaim_settings.idle_after_secs,
+            "workspace_prune": self.reclaim_settings.prune,
             "agent_modes": self.agent_modes,
             "isolation": isolation,
             "router_model": self.router_choice,

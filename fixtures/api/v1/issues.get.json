@@ -113,6 +113,26 @@
           "compact_at": 200000,
           "at": "2026-09-19T10:10:40Z"
         }
+      },
+      {
+        "type": "event",
+        "id": "ie-01K5ZQ8M4T0J7WQ2R6X3YB9C4G",
+        "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "at": "2026-09-19T11:00:00Z",
+        "actor": {
+          "kind": "user"
+        },
+        "kind": "branch_kept",
+        "payload": {
+          "source_id": "source-1",
+          "repository": "/home/ada/code/build",
+          "branch": "build/kanban-drag",
+          "outcome": "kept",
+          "reason": "Build cannot delete the branch build/kanban-drag: it has commits no remote has.",
+          "workspace_id": "ws-3f2a91c4",
+          "workspace_name": "kanban-drag",
+          "reclaimed": true
+        }
       }
     ]
   },

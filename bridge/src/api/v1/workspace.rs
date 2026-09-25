@@ -348,6 +348,28 @@ pub struct WorkspaceDetail {
 pub struct WorkspaceDeleteResult {
     pub workspace_id: String,
     pub deleted: bool,
+    /// `workspace.reclaim` only (1.25.0, `workspaces.reclaimBranches`): what
+    /// became of the local branch each checkout carried, one entry per
+    /// repository. A branch already gone has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branches: Option<Vec<ReclaimedBranch>>,
+}
+
+/// One branch a reclaim took, in one repository.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReclaimedBranch {
+    /// The project source the repository is.
+    pub source_id: String,
+    /// The source repository the branch lived in.
+    pub repository: String,
+    pub branch: String,
+    /// `deleted`, `kept`, or `restore_failed`: a checkout moved onto the
+    /// branch while it was deleted and putting it back failed, so the ref is
+    /// gone and `reason` names the commit.
+    pub outcome: String,
+    /// Why it stayed, or why it could not be put back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// The conversation owner a workspace has, or the one it just minted.

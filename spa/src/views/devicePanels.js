@@ -15,6 +15,7 @@ import { DEVICE_ISOLATION, isolationPanelHtml, mountIsolation } from "../core/is
 import { mountProjectAgentSetting, projectAgentPanelHtml } from "../core/projectAgentSetting.js";
 import { agentRolesPanelHtml, mountAgentRoles } from "../core/agentRolesPanel.js";
 import { mountWatchSetting, watchSettingPanelHtml } from "../core/watchSetting.js";
+import { mountWorkspaceLifecycleSetting, workspaceLifecyclePanelHtml } from "../core/workspaceLifecycleSetting.js";
 
 /** The panels this machine's bridge owns: each states its own markup and mounts
  *  itself on the page's connection, so they are stood up in one pass. */
@@ -27,6 +28,9 @@ const BRIDGE_PANELS = [
   // Whether this machine watches what its agents file (#65). The bridge holds
   // it because the bridge is what decides, at the moment an agent files.
   { html: watchSettingPanelHtml, mount: mountWatchSetting },
+  // When a workspace is quiet, and whether quiet ones lose their build output
+  // (#167). The reclaim service acts on them with no browser open.
+  { html: workspaceLifecyclePanelHtml, mount: mountWorkspaceLifecycleSetting },
 ];
 
 /** The account's copy of what this machine offers is what these panels have

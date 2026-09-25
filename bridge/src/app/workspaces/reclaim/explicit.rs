@@ -12,9 +12,13 @@
 //! and the removal is handed
 //! to the drain the way `workspace.delete` hands it: every agent and terminal
 //! anywhere in the workspace stops first, and the files go only once they
-//! have.
+//! have. Once the checkouts are gone, the drain takes the branch each of them
+//! carried, under Done's branch rules (`branch_delete`), and each linked
+//! issue records what became of it (#167).
 
 use crate::app::git::deferred::DeferredGitWork;
+use crate::app::workspaces::branch_delete::BranchDeletion;
+use crate::app::workspaces::deletion::{Reclaiming, Removal};
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{Budget, LinkedIssue, ReclaimPolicy};
@@ -143,7 +147,21 @@ impl AppState {
             return Err(reclaim_refusal(&workspace.name, &holds));
         }
         self.log_reclaim(&workspace, &issues.unwrap_or_default(), actor);
-        self.remove_workspace(&workspace, params, None, boundary.clone())?;
+        // The branches are measured and deleted in the drain, once the
+        // checkouts are gone; nothing about them is read under the mutex.
+        let reclaiming = Reclaiming {
+            actor: actor.clone(),
+            branches: BranchDeletion::every_branch_of(
+                &workspace,
+                &self.default_branches(&workspace.project_id),
+            ),
+        };
+        self.remove_workspace(
+            &workspace,
+            params,
+            Removal::Reclaim(reclaiming),
+            boundary.clone(),
+        )?;
         self.workspace_lifecycle.remove(&workspace.id);
         self.persist_workspace_lifecycle();
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))

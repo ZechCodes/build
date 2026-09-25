@@ -253,6 +253,14 @@
    inset, since a page is not a rail and pays its gutter itself. */
 .project-page { height:100%; overflow:auto; padding:var(--pane-gutter) 0; }
 .project-rows { padding:0 var(--pane-gutter); }
+/* All or only the reclaimable ones (#167), above the rows; the chosen one
+   wears the Issues tab's active view. */
+.project-filters { display:flex; gap:4px; padding:0 var(--pane-gutter) 10px; }
+.project-filter.active { background:var(--accent-soft); border-color:var(--accent-soft); color:var(--accent); }
+.project-filter-empty { margin:0; padding:0 var(--pane-gutter); color:var(--dim); font-size:12.5px; }
+/* What a workspace weighs, as a column: right-aligned figures of one width, so
+   a list sorted by it reads down one edge. Empty until the service measures. */
+.project-size { flex:none; align-self:center; min-width:5.5em; text-align:right; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums; }
 /* A row on a page is a link, not a rail entry: it carries no menu, so the
    right-hand gutter the rail keeps for one is the page's own inset. */
 .project-page .inbox-entry { cursor:pointer; }

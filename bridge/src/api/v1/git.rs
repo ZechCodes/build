@@ -139,6 +139,12 @@ pub struct ScopeParams {
     /// One directory of that workspace. Requires `workspace_id` beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
+    /// The conversation the client files this directory under: the SPA sends
+    /// a workspace's `entity_id` with its first git directory. It does not
+    /// pick the checkout; after a mutating verb the drain notes it changed,
+    /// beside the ids above (`entity_ids_of` in `app/rpc.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
 }
 
 /// The scope of a verb that addresses the repository's branches rather than
@@ -1107,4 +1113,62 @@ fn issue_stage_diff(
     params: IssueStageDiffParams,
 ) -> Result<Answer<StageDiffResult>, ApiError> {
     answer(app.issue_stage_diff(&params.wire()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::methods;
+    use serde_json::json;
+
+    /// The SPA's workspace directory scope names the directory's conversation
+    /// beside the workspace pair, and a mutating verb's drain notes that
+    /// entity changed (`entity_ids_of`). Every scoped verb the Changes and
+    /// Files panes call takes it.
+    #[test]
+    fn a_workspace_directory_scope_may_name_its_conversation() {
+        let scope = json!({
+            "workspace_id": "ws-3f2a91c4",
+            "source_id": "source-1",
+            "entity_id": "run-7",
+        });
+        let calls = [
+            ("git.status", json!({})),
+            ("git.log", json!({ "limit": 20 })),
+            ("git.show", json!({ "hash": "9f3c1a0b" })),
+            ("git.unpushed", json!({ "patch": false })),
+            ("git.changeset_diff", json!({ "paths": ["src/main.rs"] })),
+            ("git.diff", json!({ "paths": ["src/main.rs"] })),
+            ("git.stage", json!({ "paths": ["src/main.rs"] })),
+            ("git.discard", json!({ "paths": ["src/main.rs"] })),
+            ("git.commit", json!({ "message": "Fix" })),
+            ("git.fetch", json!({})),
+            ("git.pull", json!({ "mode": "ff" })),
+            ("git.push", json!({})),
+            ("git.stash", json!({})),
+            ("git.stash_pop", json!({})),
+            ("git.merge_abort", json!({})),
+            ("git.refs", json!({})),
+            ("git.checkout_ref", json!({ "full_ref": "refs/heads/main" })),
+            ("fs.tree", json!({})),
+            ("fs.read", json!({ "path": "README.md" })),
+            (
+                "fs.write",
+                json!({ "path": "README.md", "expected_revision": "r1", "content_b64": "" }),
+            ),
+        ];
+        for (method, own) in calls {
+            let (_, handler) = methods()
+                .iter()
+                .find(|(name, _)| *name == method)
+                .unwrap_or_else(|| panic!("{method} is not a git-family verb"));
+            let mut params = scope.clone();
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(own.as_object().unwrap().clone());
+            handler
+                .parse_params(&params)
+                .unwrap_or_else(|error| panic!("{method}: {error}"));
+        }
+    }
 }

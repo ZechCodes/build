@@ -30,6 +30,85 @@ pub(in crate::app) enum AddressedSession {
 /// gets a name of its own rather than borrowing one from the wire.
 pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 
+/// How many agents' control frames may be at the app mutex at once.
+///
+/// Every tool call takes the lock, and off the workers nothing else limits how
+/// many wait for it together: a dozen busy agents would stand a dozen deep in
+/// front of every frame the user is waiting on. At this many at a time, the
+/// user's frame waits behind two agents' holds at most; the rest take their
+/// turn on the runtime, asleep, holding no thread.
+pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
+
+/// What every control stream shares: the clock its frames are timed by, and
+/// the turns they take at the app mutex.
+pub(in crate::app) struct ControlPlane {
+    clock: Arc<FrameClock>,
+    turns: tokio::sync::Semaphore,
+    #[cfg(test)]
+    at_the_lock: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    most_at_the_lock: std::sync::atomic::AtomicUsize,
+}
+
+impl ControlPlane {
+    pub(in crate::app) fn new(clock: Arc<FrameClock>) -> Arc<ControlPlane> {
+        Arc::new(ControlPlane {
+            clock,
+            turns: tokio::sync::Semaphore::new(CONTROL_FRAMES_AT_THE_LOCK),
+            #[cfg(test)]
+            at_the_lock: Default::default(),
+            #[cfg(test)]
+            most_at_the_lock: Default::default(),
+        })
+    }
+
+    /// Answer one frame on the blocking pool, once it is this frame's turn.
+    /// The frame is timed from its arrival, so the wait for a turn counts
+    /// against it the way a queued RPC's wait does.
+    #[cfg(unix)]
+    async fn answer(&self, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
+        let timer = self.clock.frame(MCP_CONTROL_METHOD);
+        let _turn = self
+            .turns
+            .acquire()
+            .await
+            .expect("the control plane's turns are never closed");
+        #[cfg(test)]
+        let _at_the_lock = AtTheLock::arrive(self);
+        answer_off_the_workers(state, frame, timer).await
+    }
+
+    /// The most control frames that have been at the lock at once.
+    #[cfg(test)]
+    pub(in crate::app) fn most_at_the_lock(&self) -> usize {
+        self.most_at_the_lock
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// One control frame counted at the lock until it drops.
+#[cfg(test)]
+struct AtTheLock<'a>(&'a ControlPlane);
+
+#[cfg(test)]
+impl<'a> AtTheLock<'a> {
+    fn arrive(plane: &'a ControlPlane) -> AtTheLock<'a> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let now = plane.at_the_lock.fetch_add(1, SeqCst) + 1;
+        plane.most_at_the_lock.fetch_max(now, SeqCst);
+        AtTheLock(plane)
+    }
+}
+
+#[cfg(test)]
+impl Drop for AtTheLock<'_> {
+    fn drop(&mut self) {
+        self.0
+            .at_the_lock
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Resolve a control frame only when it carries the current per-session
 /// capability, returning the AGENT that sent it. The token is never included in
 /// errors or logs.
@@ -87,9 +166,11 @@ pub(in crate::app) async fn serve_done_listener(
     state: Arc<Mutex<AppState>>,
     listener: tokio::net::UnixListener,
 ) {
-    let clock = {
+    let plane = {
         let state = Arc::clone(&state);
-        off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await
+        ControlPlane::new(
+            off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await,
+        )
     };
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
@@ -100,7 +181,7 @@ pub(in crate::app) async fn serve_done_listener(
                 tokio::spawn(handle_done_stream(
                     Arc::clone(&state),
                     stream,
-                    Arc::clone(&clock),
+                    Arc::clone(&plane),
                 ));
             }
             Err(error) => {
@@ -117,7 +198,7 @@ pub(in crate::app) async fn serve_done_listener(
 pub(in crate::app) async fn handle_done_stream(
     state: Arc<Mutex<AppState>>,
     stream: tokio::net::UnixStream,
-    clock: Arc<FrameClock>,
+    plane: Arc<ControlPlane>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(read_half).lines();
@@ -125,8 +206,7 @@ pub(in crate::app) async fn handle_done_stream(
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        let timer = clock.frame(MCP_CONTROL_METHOD);
-        if let Some(response) = answer_off_the_workers(Arc::clone(&state), frame, timer).await {
+        if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
             let _ = write_half.write_all(response.to_string().as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;

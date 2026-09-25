@@ -183,35 +183,95 @@ async fn the_update_check_waits_for_the_app_mutex_off_the_workers() {
     the_worker_naps_on_time_while_the_lock_is_held(&state, || {}).await;
 }
 
+/// One agent's end of the control socket, the daemon's end served the way
+/// `serve_done_listener` serves it.
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn an_agents_tool_call_waits_for_the_app_mutex_off_the_workers() {
-    use std::io::Write;
-
-    let dir = tempfile::tempdir().unwrap();
-    let state = unrooted_state(dir.path());
-    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let (mut agent, daemon) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+fn an_agent_on(
+    state: &Arc<Mutex<AppState>>,
+    plane: &Arc<crate::app::mcp::ControlPlane>,
+) -> std::os::unix::net::UnixStream {
+    let (agent, daemon) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
     daemon
         .set_nonblocking(true)
         .expect("the daemon's end is async");
     tokio::spawn(crate::app::mcp::handle_done_stream(
-        Arc::clone(&state),
+        Arc::clone(state),
         tokio::net::UnixStream::from_std(daemon).expect("the daemon's end joins the runtime"),
-        clock,
+        Arc::clone(plane),
     ));
+    agent
+}
+
+#[cfg(unix)]
+fn a_tool_call(agent: &mut std::os::unix::net::UnixStream) {
+    use std::io::Write;
     let frame = json!({
         "task_id": "run-tool",
         "session_token": "not-the-token",
         "request": { "action": "read_unread_messages" },
     });
+    agent
+        .write_all(format!("{frame}\n").as_bytes())
+        .expect("the frame is written");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn an_agents_tool_call_waits_for_the_app_mutex_off_the_workers() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = unrooted_state(dir.path());
+    let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+    let mut agent = an_agent_on(&state, &plane);
+
+    the_worker_naps_on_time_while_the_lock_is_held(&state, || a_tool_call(&mut agent)).await;
+}
+
+/// Off the workers, every agent's tool call could wait at the app mutex at
+/// once — and a frame the user is waiting on would then queue behind all of
+/// them. The agents take turns instead: a dozen calls made while the lock is
+/// held are all answered, parking no worker, with no more than
+/// [`CONTROL_FRAMES_AT_THE_LOCK`] of them at the lock at a time.
+///
+/// [`CONTROL_FRAMES_AT_THE_LOCK`]: crate::app::mcp::CONTROL_FRAMES_AT_THE_LOCK
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_dozen_agents_tool_calls_take_turns_at_the_app_mutex() {
+    use std::io::BufRead;
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = unrooted_state(dir.path());
+    let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
+    let mut agents: Vec<_> = (0..12).map(|_| an_agent_on(&state, &plane)).collect();
 
     the_worker_naps_on_time_while_the_lock_is_held(&state, || {
-        agent
-            .write_all(format!("{frame}\n").as_bytes())
-            .expect("the frame is written");
+        agents.iter_mut().for_each(a_tool_call);
     })
     .await;
+    let answered = tokio::task::spawn_blocking(move || {
+        agents
+            .into_iter()
+            .map(|agent| {
+                agent
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("a read timeout");
+                let mut answer = String::new();
+                std::io::BufReader::new(agent)
+                    .read_line(&mut answer)
+                    .expect("the agent is answered");
+                answer
+            })
+            .filter(|answer| answer.contains("unauthorized"))
+            .count()
+    })
+    .await
+    .expect("the answers were read");
+
+    assert_eq!(answered, 12, "every agent's call is answered");
+    let most = plane.most_at_the_lock();
+    assert!(
+        (1..=crate::app::mcp::CONTROL_FRAMES_AT_THE_LOCK).contains(&most),
+        "{most} control frames were at the app mutex at once"
+    );
 }
 
 /// A job whose decide phase is immediate, so its apply phase falls due inside

@@ -228,6 +228,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       serial = Math.max(0, ...draft.sources.map((source) => Number(source.id) || 0));
       selectedDeviceId = restoredDeviceId;
       paint();
+      askForRepos();
       if (JSON.stringify(saved) !== JSON.stringify(draftSnapshot())) void draftRecord.write(draftSnapshot());
     },
     { debounceMs: 180 },

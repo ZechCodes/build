@@ -7,7 +7,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let openNewRepo, writeCached, readCached, greetBridge, githubReposAddress;
+let openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
 
 const REPOS = [
   { name_with_owner: "zech/build", description: "Agentic IDE", ssh_url: "git@github.com:zech/build.git", url: "https://github.com/zech/build", private: true, pushed_at: "2026-09-24T22:00:00Z" },
@@ -28,7 +28,8 @@ const deskCall = ({ repos = REPOS, refuse = null } = {}) => vi.fn(async (method)
   return { project_id: "desk-project" };
 });
 
-const open = (call) => openNewRepo(vi.fn(), { devices: [{ id: "desk", name: "Desktop" }], defaultDeviceId: "desk", callRpcFor: () => call });
+const open = (call, { defaultDeviceId = "desk" } = {}) => openNewRepo(vi.fn(), { devices: [{ id: "desk", name: "Desktop" }], defaultDeviceId, callRpcFor: () => call });
+const reposCalls = (call) => call.mock.calls.filter(([method]) => method === "github.repos");
 const addRemote = () => {
   document.querySelector("#nraddremote").click();
   return [...document.querySelectorAll("[data-source-value]")].at(-1);
@@ -52,9 +53,10 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ openNewRepo } = await import("../src/sheets/newRepo.js"));
-  ({ writeCached, readCached } = await import("../src/core/localCache.js"));
+  ({ writeCached, readCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
+  ({ uiAddress } = await import("../src/core/localUiState.js"));
   ({ greetBridge } = await import("../src/core/changeEvents.js"));
-  ({ githubReposAddress } = await import("../src/core/githubRepos.js"));
+  ({ githubReposAddress, startGithubRepos } = await import("../src/core/githubRepos.js"));
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
@@ -180,4 +182,55 @@ it("a bridge without the capability is never asked, and the field stays as it wa
   expect(input.hasAttribute("role")).toBe(false);
   expect(options()).toEqual([]);
   expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
+});
+
+it("a cached list paints on the picker's first paint once the app has read the machine's record", async () => {
+  await greet(["github.repos"]);
+  await writeCached(DEVICES_ADDRESS, [{ id: "desk", name: "Desktop" }]);
+  await cacheList({ repos: REPOS, refusal: "" });
+  await startGithubRepos();
+  // The machine never answers: everything painted below is the cache's.
+  const call = vi.fn(() => new Promise(() => {}));
+  open(call);
+  const input = addRemote();
+  expect(input.getAttribute("role")).toBe("combobox");
+  type(input, "bot");
+  expect(options()).toEqual(["smarter-dev/bot"]);
+});
+
+it("reopening from a saved draft asks the machine the draft restores", async () => {
+  await greet(["github.repos"]);
+  await writeCached(uiAddress({ view: "new-project", kind: "draft" }), { name: "saved", sources: [], selectedDeviceId: "desk" });
+  const call = deskCall();
+  open(call, { defaultDeviceId: null });
+  await vi.waitFor(() => expect(document.querySelector("#nrdevice").value).toBe("desk"));
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS));
+});
+
+it("a bridge that greets without the capability leaves a plain field even over a cached list", async () => {
+  await greet([]);
+  await cacheList({ repos: REPOS, refusal: "" });
+  const call = deskCall();
+  open(call);
+  const input = addRemote();
+  // Past every cache read and write the opening started.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(input.hasAttribute("role")).toBe(false);
+  type(input, "bot");
+  expect(options()).toEqual([]);
+  expect(key(input, "ArrowDown").defaultPrevented).toBe(false);
+  expect(reposCalls(call)).toHaveLength(0);
+  expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
+});
+
+it("a machine that has not greeted yet still searches the list it cached", async () => {
+  await cacheList({ repos: REPOS, refusal: "" });
+  const call = deskCall();
+  open(call);
+  const input = addRemote();
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  expect(reposCalls(call)).toHaveLength(0);
+  expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
 });

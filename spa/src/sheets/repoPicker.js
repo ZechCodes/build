@@ -46,6 +46,8 @@ export function attachRepoPicker(input, deviceId) {
 
   const plain = () => {
     for (const name of ["role", "aria-autocomplete", "aria-expanded", "aria-controls", "aria-activedescendant"]) input.removeAttribute(name);
+    state.matches = [];
+    list.replaceChildren();
     list.hidden = true;
   };
   const combobox = () => {

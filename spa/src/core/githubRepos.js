@@ -8,11 +8,17 @@
 // to the cache and every picker over that device redraws from it.
 //
 // The record is `{ repos, refusal }`: the last list the machine answered, or
-// `null` when it never has, and the sentence its last refusal said. A refusal
-// never takes a list away — a stale list still searches.
+// `null` when it has none to search, and the sentence its last refusal said. A
+// refusal never takes a list away — a stale list still searches. A bridge that
+// greets without github.repos does: that machine has nothing to search now, and
+// its fields go back to plain ones.
+//
+// Every machine the account lists has its record read when the app starts
+// (`startGithubRepos`), so a sheet opened later paints the list in the same
+// turn it mounts rather than after a read of its own.
 
-import { bridgeCapabilities } from "./changeEvents.js";
-import { mergeCached, readCached, subscribeCache } from "./localCache.js";
+import { bridgeAdapter, bridgeCapabilities } from "./changeEvents.js";
+import { DEVICES_ADDRESS, mergeCached, readCached, subscribeCache } from "./localCache.js";
 
 export const githubReposAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "github-repos" });
 
@@ -22,11 +28,18 @@ export const PICKER_ROWS = 8;
 /**
  * Ask `deviceId` for its repositories once, through the caller the sheet
  * already holds for that machine, and cache the answer. A bridge that does
- * not announce github.repos is never asked. Nothing is thrown: the cache is
- * where the outcome goes, and the picker paints it.
+ * not announce github.repos is never asked, and a list an earlier bridge on
+ * that machine answered is dropped; a machine that has not greeted yet keeps
+ * what it had. Nothing is thrown: the cache is where the outcome goes, and the
+ * picker paints it.
  */
 export async function refreshGithubRepos(deviceId, call) {
-  if (!deviceId || !bridgeCapabilities(deviceId).github?.repos) return;
+  if (!deviceId) return;
+  if (!bridgeCapabilities(deviceId).github?.repos) {
+    if (!bridgeAdapter(deviceId)) return;
+    await mergeCached(githubReposAddress(deviceId), (held) => (held?.repos || held?.refusal ? { repos: null, refusal: "" } : null));
+    return;
+  }
   let next;
   try {
     const answer = await call("github.repos");
@@ -41,13 +54,31 @@ export async function refreshGithubRepos(deviceId, call) {
 
 // ---------------------------------------------------------------- held ---
 
-/** What each device's record last read as, so a picker mounted on a repaint
- *  paints in the same turn instead of after a cache read. */
+/** What each device's record last read as, so a picker paints in the same turn
+ *  it mounts instead of after a cache read. */
 const held = new Map();
 const watchers = new Map();
+let unwatchDevices = null;
 
 /** The device's record as last read, or null before the first read lands. */
 export const heldGithubRepos = (deviceId) => held.get(deviceId) ?? null;
+
+/** Read every known machine's record and keep it read. Answers when each has
+ *  been read once. Starting again is starting once. */
+export function startGithubRepos() {
+  unwatchDevices ||= subscribeCache(DEVICES_ADDRESS, () => void keepKnownDevices());
+  return keepKnownDevices();
+}
+
+async function keepKnownDevices() {
+  const devices = (await readCached(DEVICES_ADDRESS))?.value;
+  const ids = Array.isArray(devices) ? devices.map((device) => device?.id).filter(Boolean) : [];
+  await Promise.all(ids.map((deviceId) => {
+    const watcher = watchers.get(deviceId) || startWatching(deviceId);
+    watcher.kept = true;
+    return watcher.read;
+  }));
+}
 
 /** Hear every change to `deviceId`'s record. Answers the way to stop. One cache
  *  subscription serves every picker over the same machine. */
@@ -56,7 +87,7 @@ export function watchGithubRepos(deviceId, listener) {
   watcher.listeners.add(listener);
   return () => {
     watcher.listeners.delete(listener);
-    if (watcher.listeners.size) return;
+    if (watcher.listeners.size || watcher.kept) return;
     watcher.unsubscribe();
     watchers.delete(deviceId);
   };
@@ -64,7 +95,7 @@ export function watchGithubRepos(deviceId, listener) {
 
 function startWatching(deviceId) {
   const address = githubReposAddress(deviceId);
-  const watcher = { listeners: new Set(), unsubscribe: null };
+  const watcher = { listeners: new Set(), unsubscribe: null, kept: false, read: null };
   const reread = async () => {
     const record = await readCached(address);
     held.set(deviceId, record?.value ?? null);
@@ -72,7 +103,7 @@ function startWatching(deviceId) {
   };
   watcher.unsubscribe = subscribeCache(address, () => void reread());
   watchers.set(deviceId, watcher);
-  void reread();
+  watcher.read = reread();
   return watcher;
 }
 

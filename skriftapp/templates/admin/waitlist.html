@@ -6,10 +6,14 @@
 {% block admin_content %}
 <style>
     .waitlist-confirm::backdrop { background: rgba(0, 0, 0, 0.6); }
-    .waitlist-confirm-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+    .waitlist-confirm-actions { display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center; margin-top: 1rem; }
     .waitlist-confirm-actions form { margin: 0; }
     .waitlist-search { display: flex; gap: 0.5rem; align-items: center; margin: 0; }
-    .waitlist-search input { margin: 0; }
+    /* skrift.css spaces every form's submit button from the field above it
+       (form button[type="submit"]); these sit beside theirs instead. */
+    .waitlist-search input,
+    form.waitlist-search button[type="submit"],
+    .waitlist-confirm-actions form button[type="submit"] { margin: 0; }
 </style>
 <div class="sk-admin-header">
     <hgroup>

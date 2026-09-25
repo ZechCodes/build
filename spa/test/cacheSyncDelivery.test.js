@@ -534,6 +534,76 @@ describe("a pass racing the wire", () => {
     expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
   });
 
+  it.each([false, true])("recovers a pushed file read for a live entity across hand-back (replacement answers early: %s)", async (answersEarly) => {
+    const wire = subscribingBridge();
+    wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
+    await greet();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    const address = { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" };
+    await cache.writeCached(address, { file: { path: "src/a.js", size: 3, content_b64: "b2xk" }, openedAt: 1 });
+
+    let heldFirst = false;
+    const answerFile = wire.hold("fs.read", () => {
+      if (answersEarly && heldFirst) return false;
+      heldFirst = true;
+      return true;
+    });
+    await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+    expect(calls("fs.read")).toHaveLength(1);
+    // Same device, session and live entity. The old answer must land or have
+    // a replacement reader; cancelling it alone strands the cached body.
+    sync.startCacheSync();
+    await settle();
+    expect(calls("board.list")).toHaveLength(2);
+    if (answersEarly) {
+      expect(calls("fs.read")).toHaveLength(2);
+      expect((await cache.readCached(address)).value.file.content_b64).toBe("bmV3");
+    }
+    answerFile();
+    await settle();
+
+    expect((await cache.readCached(address)).value).toEqual({
+      file: { path: "src/a.js", size: 3, content_b64: "bmV3" }, openedAt: 1,
+    });
+  });
+
+  it.each(["src/a.js", "src/b.js"])("keeps a newer pushed body when a pass is reading %s", async (pushedPath) => {
+    const wire = subscribingBridge();
+    await greet();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    const address = (path) => ({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: path });
+    for (const path of ["src/a.js", "src/b.js"]) {
+      await cache.writeCached(address(path), { file: { path, size: 3, content_b64: "b2xk" }, openedAt: 1 });
+    }
+    let answerOld;
+    const old = new Promise((resolve) => { answerOld = resolve; });
+    let first = true;
+    wire.answering("fs.read", ({ path }) => {
+      if (first) {
+        first = false;
+        return old;
+      }
+      return { path, size: 3, content_b64: "bmV3" };
+    });
+
+    const pass = sync.syncDevice("dev-1");
+    await settle();
+    expect(calls("fs.read")).toHaveLength(1);
+    await flush([{ entity_id: "run-1", files: { paths: [pushedPath] } }], "s-background");
+    expect((await cache.readCached(address(pushedPath))).value.file.content_b64).toBe("bmV3");
+    answerOld({ path: "src/a.js", size: 3, content_b64: "bWlk" });
+    expect(await pass).toBe(true);
+
+    // Same-path push wins; a different path must not cancel A's refresh.
+    expect((await cache.readCached(address("src/a.js"))).value.file.content_b64)
+      .toBe(pushedPath === "src/a.js" ? "bmV3" : "bWlk");
+    expect((await cache.readCached(address("src/b.js"))).value.file.content_b64).toBe("bmV3");
+  });
+
   it("writes nothing back from a push read the sync layer stood down under", async () => {
     const wire = subscribingBridge();
     wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
@@ -556,6 +626,7 @@ describe("a pass racing the wire", () => {
     await settle();
 
     expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+    expect(calls("fs.read")).toHaveLength(1);
   });
 
   it("does not let the project list it read overwrite one a board item carried since", async () => {

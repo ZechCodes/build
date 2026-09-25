@@ -710,12 +710,12 @@ describe("applying one item", () => {
   });
 
   it("re-reads a held body a files item names, and writes what came back", async () => {
+    await boot([branchItem()]);
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
       { file: { path: "src/a.js", size: 5, content_b64: "b2xk" }, openedAt: 1 },
     );
     script["fs.read"] = (params) => ({ path: params.path, size: 6, content_b64: "bmV3" });
-    await boot([branchItem()]);
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
     expect(calls("fs.read").map(([, params]) => params.path)).toEqual(["src/a.js"]);
@@ -731,12 +731,12 @@ describe("applying one item", () => {
   // file that has since moved, so leaving it would serve the reader a body from
   // before the growth, with no round trip and nothing saying so.
   it("drops a held body the re-read came back too big to keep", async () => {
+    await boot([branchItem()]);
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
       { file: { path: "src/a.js", size: 900_000, content_b64: "b2xk" }, openedAt: 1 },
     );
     script["fs.read"] = (params) => ({ path: params.path, size: 2_000_000, truncated: true, content_b64: "bmV3" });
-    await boot([branchItem()]);
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
     expect(calls("fs.read")).toHaveLength(1);
@@ -746,12 +746,12 @@ describe("applying one item", () => {
   // A machine that stopped answering has said nothing about the file, and the
   // body held is the last one anybody saw.
   it("keeps a held body when the re-read answers nothing at all", async () => {
+    await boot([branchItem()]);
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
       { file: { path: "src/a.js", size: 5, content_b64: "b2xk" }, openedAt: 1 },
     );
     script["fs.read"] = () => Promise.reject(new Error("unreachable"));
-    await boot([branchItem()]);
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
     expect((await read("run-1", "file", "src/a.js")).value.file.content_b64).toBe("b2xk");

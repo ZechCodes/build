@@ -144,6 +144,7 @@ const syncedSessions = new Map(); // deviceId → the session its last pass ran 
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
+const fileReads = new Map(); // file address → the newest reader allowed to write its body
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -737,6 +738,10 @@ async function syncWorkspace(context, entityId, row, routed) {
   const log = scope ? await syncCommits(context, entityId, scope, priority) : null;
   await syncThreads(context, entityId, row, priority);
   if (!scope) return;
+  // A previous lifetime's file refresh may never land. Every pass takes over
+  // the held bodies, including after reload or a hand-back to another tab.
+  // At most RECENT_FILES per workspace; threads stay ahead of these bodies.
+  await rereadHeldFiles(context, entityId, scope);
   await syncPatches(context, entityId, scope, unpushedCommits(log), priority);
   await syncWorkingDiff(context, entityId, row, priority);
 }
@@ -1436,8 +1441,10 @@ async function applyFiles(context, entityId, files) {
  *  the reader is already looking at, and never of a file nobody has opened.
  *
  *  A truncated list says "the tree moved" rather than which paths did, so
- *  every held body is re-read. There are at most `RECENT_FILES` of them. */
-async function rereadHeldFiles(context, entityId, scope, files) {
+ *  every held body is re-read. An ordered pass does the same without a push:
+ *  a held body says what to refresh, even when the previous reader was stood
+ *  down or the tab reloaded. There are at most `RECENT_FILES` of them. */
+async function rereadHeldFiles(context, entityId, scope, files = { truncated: true }) {
   const held = await cachedSubKeys(context.deviceId, entityId, FILE_RECORD_KIND);
   const named = new Set(files.paths || []);
   const stale = files.truncated ? held : held.filter((path) => named.has(path));
@@ -1448,8 +1455,22 @@ async function rereadHeldFiles(context, entityId, scope, files) {
 }
 
 async function rereadFile(context, entityId, scope, path) {
+  const key = JSON.stringify([context.deviceId, entityId, path]);
+  const reader = {};
+  fileReads.set(key, reader);
+  try {
+    await readFileBody({ ...context, active: () => context.active() && fileReads.get(key) === reader }, entityId, scope, path);
+  } finally {
+    if (fileReads.get(key) === reader) fileReads.delete(key);
+  }
+}
+
+/** Passes and pushes can read the same body concurrently. Only its newest
+ *  reader may write; a different file's refresh cannot supersede this one. */
+async function readFileBody(context, entityId, scope, path) {
   const address = addressOf(context, entityId, FILE_RECORD_KIND, path);
   const openedAt = (await readCached(address))?.value?.openedAt;
+  if (!context.active()) return;
   const file = await ask(context, "fs.read", { ...scope, path }, "background");
   if (!context.active()) return;
   // A read that answered nothing is a file that moved out from under the
@@ -1583,6 +1604,7 @@ export function stopCacheSync() {
   issueReadGenerations.clear();
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;
+  fileReads.clear();
   forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.

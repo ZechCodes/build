@@ -64,6 +64,10 @@ vi.mock("../src/core/platform.js", () => ({ currentPlatformKey: () => "macos-arm
 vi.mock("../src/app.js", () => ({
   App,
   render: (...args) => render(...args),
+  // The gate's hand-back. Whether a page already standing on the route is kept
+  // is app.js's to say (reconnectKeepsRouteWire.test.js); here nothing is
+  // mounted, so the hand-back is the route being built.
+  renderUnlessStanding: (...args) => render(...args),
   unmountView: (...args) => unmountView(...args),
 }));
 vi.mock("../src/core/taskFeed.js", () => ({

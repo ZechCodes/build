@@ -16,7 +16,7 @@ import {
   esc,
   waitingForDeviceText,
 } from "../core/text.js";
-import { App, render, unmountView } from "../app.js";
+import { App, render, renderUnlessStanding, unmountView } from "../app.js";
 import { connectDevice, openDeviceSessions, securityStopText, stopWatchingForWake, watchForWake } from "../connection.js";
 import { deviceAwayText, deviceAwayWord } from "../core/deviceAway.js";
 import {
@@ -45,11 +45,14 @@ let cacheReadersUp = false;
 
 // The gate screens are self-contained — body.gated hides the inbox rail (and
 // its reopen toggle), the toolbar, the agent rail and the console via CSS while
-// they own #root.
+// they own #root. A screen that takes #root takes it from the mounted view, so
+// the view goes with it: the hand-back builds the route again only when
+// nothing is standing there (app.js renderUnlessStanding).
 function setGate(on) {
   App.gated = on;
   document.body.classList.toggle("gated", on);
   if (on) {
+    unmountView();
     $("#devpick").hidden = true;
     cacheReadersUp = false;
     stopFeed(); // no session to poll — the inbox is hidden while gated
@@ -164,7 +167,9 @@ async function connectToApp(asked) {
   handBackToReader();
   initInboxRail();
   initToolbar();
-  render(); // the hash route survives the gate, so deep links land where they point
+  // The hash route survives the gate, so deep links land where they point; a
+  // route the cache already painted is left standing (#170).
+  renderUnlessStanding();
   // Last, because it reads the account as it starts listening: the machine that
   // answered may have greeted a bridge no adapter here speaks to while the app
   // was coming up, and the page it has earned is the version gate this stands.
@@ -259,7 +264,6 @@ function holdForDevices() {
   holding = true;
   const behind = gatedContext();
   if (behind) {
-    unmountView();
     showVersionGate(behind);
     return;
   }
@@ -283,12 +287,17 @@ const holdIsOnScreen = () => Boolean($("#waitlist") || gatedDeviceId || (shellIs
 /** A machine answered: the reader gets the route they were standing on back,
  *  with the feed reading that machine again. The hold stopped the feed, so this
  *  starts it — the device that just landed is live by the time this runs, and
- *  its own joinFeed finds it already polling. */
+ *  its own joinFeed finds it already polling.
+ *
+ *  A page the hold kept (a painted shell wearing the picker's mark) is the
+ *  route already, and stays: a reconnect is not a navigation, and the page
+ *  repaints when the cache it reads is written (#170). A page a gate screen
+ *  took is built again. */
 function leaveHold() {
   if (!holding) return;
   stopWatchingForOnline();
   handBackToReader();
-  render();
+  renderUnlessStanding();
 }
 
 /** Stop the waiting screen's poll. Every way back into the app runs this: a
@@ -517,7 +526,6 @@ const waitingText = (devices) => WAITING_TEXT[waitingSituation(devices)](devices
 
 function renderWaiting(devices) {
   if (keepPaintedShell()) return;
-  unmountView();
   setGate(true);
   $("#root").innerHTML = `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
@@ -592,7 +600,7 @@ function enterShellWhileRecovering() {
   startCacheReaders();
   initInboxRail();
   initToolbar();
-  render();
+  renderUnlessStanding();
   holdAppWhileNoDeviceAnswers();
 }
 

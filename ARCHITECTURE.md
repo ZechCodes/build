@@ -607,6 +607,15 @@ In practice:
   `diff`, the files root listing, and `terminals`.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
+- **A reconnect keeps the route** (#170). The gate (`spa/src/views/gate.js`)
+  hands the app back through `renderUnlessStanding()` in `spa/src/app.js`,
+  which leaves the page in `#root` as it is (nodes, scroll, focus) when it was
+  built for this route over the device context that is still the registry's.
+  The sessions and subscriptions re-attach under it, and it repaints when a
+  cache write announces. It is built again only when nothing stands there:
+  a gate screen took `#root` (the version gates, the waiting and onboarding
+  screens unmount the view as they take it), the account changed, or the
+  route's machine was retired since (`deviceContextIdentity`).
 - **Route surfaces** (branch, issue, tracker issue, project, workspace) and the
   shell's rail and console stand on `surfaceContext(route)`
   (`spa/src/core/surfaceContext.js`): the device's context, or a session-less

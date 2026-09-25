@@ -242,29 +242,75 @@ impl Beat {
             if !self.reachable.is_reachable() {
                 continue;
             }
-            if let Err(error) = self.send().await {
-                crate::logline::say(format!("presence: heartbeat dropped: {error}"));
+            if let Err(dropped) = self.send().await {
+                // A refusal that passes — the api between two pods, a busy
+                // one, none at all — is asked again soon, not a whole
+                // interval later (#131).
+                let again = dropped.passes.then(|| interval / RETRIES_PER_INTERVAL);
+                if let Some(soon) = again {
+                    ticker.reset_after(soon);
+                }
+                crate::logline::say(format!(
+                    "presence: heartbeat dropped: {}{}",
+                    dropped.reason,
+                    again.map_or_else(String::new, |soon| format!(
+                        "; again in {}s",
+                        soon.as_secs()
+                    ))
+                ));
             }
         }
     }
 
-    async fn send(&self) -> Result<(), String> {
+    async fn send(&self) -> Result<(), Dropped> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| Dropped::for_good(e.to_string()))?
             .as_secs() as i64;
-        let beat = build_heartbeat(&self.identity, timestamp)?;
+        let beat = build_heartbeat(&self.identity, timestamp).map_err(Dropped::for_good)?;
         let response = self
             .client
             .post(&self.url)
             .json(&beat)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("api refused the heartbeat: {}", response.status()))
+            .map_err(|e| Dropped::in_passing(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let reason = format!("api refused the heartbeat: {status}");
+        // The ingress's 404 while the api's one pod is replaced (a deploy, every
+        // time), a rate limit, a server error: nothing about this device.
+        let passes = status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error();
+        Err(Dropped { reason, passes })
+    }
+}
+
+/// How many times a beat that failed in passing is tried within one interval:
+/// every five seconds at the daemon's thirty.
+const RETRIES_PER_INTERVAL: u32 = 6;
+
+/// A beat that did not land, and whether trying again soon could land it.
+struct Dropped {
+    reason: String,
+    passes: bool,
+}
+
+impl Dropped {
+    fn in_passing(reason: String) -> Dropped {
+        Dropped {
+            reason,
+            passes: true,
+        }
+    }
+
+    fn for_good(reason: String) -> Dropped {
+        Dropped {
+            reason,
+            passes: false,
         }
     }
 }

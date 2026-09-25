@@ -260,3 +260,61 @@ async fn the_beats_follow_the_relay_socket_away_and_back() {
         "the socket coming back is the device coming back, with no restart in between"
     );
 }
+
+/// Every deploy of the api leaves its one pod replaced with nothing behind the
+/// ingress for half a minute, and the ingress answers that gap with a 404
+/// (#131: the 211 refused beats of one evening, each some seconds after a
+/// rollout). A beat refused for a reason that passes — the ingress's 404, a
+/// 429, a 5xx, no answer at all — is tried again a sixth of an interval
+/// later, not a whole interval: at 30 s, a device stays online through the
+/// gap rather than spending a third of its 90 s window on one lost beat.
+#[tokio::test]
+async fn a_beat_refused_in_passing_is_tried_again_soon() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(404))
+        .up_to_n_times(1)
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_secs(3));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let beats = received(&api, 0).await;
+    beating.abort();
+
+    assert_eq!(
+        beats.len(),
+        2,
+        "the 404 was followed well inside the 3 s interval: {beats:?}"
+    );
+}
+
+/// A beat the api refuses on its merits — a device it does not know, a
+/// signature it will not take — is not asked again early: the answer would
+/// be the same.
+#[tokio::test]
+async fn a_beat_refused_on_its_merits_waits_the_interval() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_secs(3));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let beats = received(&api, 0).await;
+    beating.abort();
+
+    assert_eq!(beats.len(), 1, "one beat, then the interval: {beats:?}");
+}

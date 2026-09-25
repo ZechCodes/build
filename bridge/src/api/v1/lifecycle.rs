@@ -1298,8 +1298,12 @@ pub struct BranchDispatchParams {
 pub struct BranchFinishParams {
     pub project_id: String,
     pub branch: String,
-    /// `delete` (what Done means, and the default), `cleanup`, `push`, or
-    /// `merge`.
+    /// `delete` also deletes the local branch, once the workspace is gone
+    /// (announced as `branches.finishDelete` since 1.24.0). Refused before
+    /// anything is removed when the branch is checked out somewhere else or
+    /// has commits no remote has. Absent, or any other word (`cleanup`,
+    /// `push`, `merge` from older clients), is Done alone: the workspace goes
+    /// and the branch stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
     /// Leave the issue this branch implemented alone, whichever way the
@@ -1554,6 +1558,15 @@ pub struct WorkspaceFinishResult {
     /// do not.
     #[serde(default)]
     pub deleted: bool,
+    /// Whether the local branch went too. Present only on a `branch.finish`
+    /// that asked for `action: "delete"` (since 1.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_deleted: Option<bool>,
+    /// Why the branch stayed, as a sentence: it was measured again once the
+    /// checkout was gone and something had moved onto it since the click.
+    /// Absent when it went.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_reason: Option<String>,
 }
 
 /// Somebody else's adoption of this checkout is already in flight. The asker
@@ -1637,10 +1650,12 @@ fn refine(error: ApiError) -> ApiError {
 const BUSY: [&str; 2] = ["wait for that to finish", "wait for that to complete"];
 
 /// The request was legible and the state said no.
-const CONFLICT: [&str; 11] = [
+const CONFLICT: [&str; 12] = [
     // Done, refused because the work is still only in the workspace, or
-    // because the checkout is not Build's to remove.
+    // because the checkout is not Build's to remove, or because the branch it
+    // was asked to delete is still in use or holds the only copy of work.
     "workspace.finish is not available yet",
+    "Build cannot delete the branch",
     "Build cannot remove an adopted checkout",
     "Cannot delete a workspace",
     "illegal run transition",

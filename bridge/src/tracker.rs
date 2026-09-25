@@ -521,6 +521,9 @@ pub enum IssueEventKind {
     /// timeline that called both the same would be hiding which happened.
     Watched,
     Unwatched,
+    /// Done took the local branch the issue's work was on. The payload names
+    /// the branch and the workspace that was finished.
+    BranchDeleted,
 }
 
 impl IssueEventKind {
@@ -539,6 +542,7 @@ impl IssueEventKind {
             IssueEventKind::Untracked => "untracked",
             IssueEventKind::Watched => "watched",
             IssueEventKind::Unwatched => "unwatched",
+            IssueEventKind::BranchDeleted => "branch_deleted",
         }
     }
 }

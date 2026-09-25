@@ -46,6 +46,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 pub const FEATURE_CAPABILITIES: &[&str] = &[
     "agents.names",
     "board.usageLimits",
+    "branches.finishDelete",
     "changes.bodies",
     "changes.subscriptions",
     "conversations.settings",

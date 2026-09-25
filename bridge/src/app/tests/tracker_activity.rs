@@ -1032,3 +1032,45 @@ fn a_report_on_a_turn_no_assignment_started_moves_nothing() {
         "no assignment started that turn, so nothing moved: {read:?}"
     );
 }
+
+/// Done that deleted the branch says so on the issue it closed: the timeline
+/// names the branch that went, beside the close.
+#[test]
+fn done_with_delete_logs_the_deleted_branch_on_the_linked_issue() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "delete branch");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let id = issue_id(&filed(&mut state, &project_id, "implemented on a branch"));
+    let untouched = issue_id(&filed(&mut state, &project_id, "somewhere else"));
+    let linked = state.handle(req(
+        "issues.link",
+        json!({ "issue_id": id, "workspace_id": ws }),
+    ));
+    assert_eq!(linked["ok"], true, "{linked:?}");
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["branch_deleted"], true, "{finished:?}");
+
+    let timeline =
+        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"].clone();
+    let logged = timeline
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == "branch_deleted")
+        .unwrap_or_else(|| panic!("the deletion is on the issue: {timeline:?}"));
+    assert_eq!(logged["payload"]["branch"], branch.as_str());
+    assert_eq!(logged["payload"]["workspace_id"], ws.as_str());
+    assert!(event_kinds(&mut state, &id).contains(&"closed".to_string()));
+    assert!(!event_kinds(&mut state, &untouched).contains(&"branch_deleted".to_string()));
+}

@@ -20,6 +20,7 @@
       "branch.dispatch",
       "branch.finish",
       "branch.get",
+      "branches.finishDelete",
       "bridge.check_update",
       "bridge.install_update",
       "bridge.stats",

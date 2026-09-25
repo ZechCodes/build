@@ -534,6 +534,30 @@ describe("a pass racing the wire", () => {
     expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
   });
 
+  it("writes nothing back from a push read the sync layer stood down under", async () => {
+    const wire = subscribingBridge();
+    wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
+    await greet();
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, { file: { path: "src/a.js" }, openedAt: 1 });
+
+    const answerFile = wire.hold("fs.read");
+    await flush([{ entity_id: "run-1", files: { paths: ["src/a.js"] } }], "s-background");
+    expect(calls("fs.read")).toHaveLength(1);
+    await flush([{ entity_id: "board", state: { revision: 1, removed: ["run-1"] } }]);
+    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+    // Hand-back: the same device and session, a fresh sync layer.
+    board = [];
+    sync.startCacheSync();
+    await settle();
+    answerFile();
+    await settle();
+
+    expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
+  });
+
   it("does not let the project list it read overwrite one a board item carried since", async () => {
     const wire = subscribingBridge();
     await greet();

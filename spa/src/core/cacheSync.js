@@ -135,6 +135,11 @@ let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
 let stopLandingWatch = null;
+// Counts the times the sync layer stood down. Every read and push applier
+// belongs to the one it started under, and stops writing when that ends —
+// including across a restart on the same device and session, which would
+// otherwise hand work that predates it a fresh set of fences.
+let lifetime = 0;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
@@ -160,11 +165,12 @@ const syncContext = (context, turn = null) => {
   if (!context) return null;
   const session = context.session;
   const requestScope = requestScopeOf(context);
+  const startedIn = lifetime;
   return {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
-    active: () => context.active() && context.session === session
+    active: () => context.active() && context.session === session && startedIn === lifetime
       && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
 };
@@ -1575,6 +1581,8 @@ export function stopCacheSync() {
   restoredScopes.clear();
   readingSessions.clear();
   issueReadGenerations.clear();
+  // Everything still out stands down before the fences it was held to go.
+  lifetime += 1;
   forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.

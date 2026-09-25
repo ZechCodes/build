@@ -792,7 +792,7 @@ async function dismissEntry(entry) {
  *  refused for the state of the work — what the destruction costs came down
  *  with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
-  const call = verbCall(target, target.kind === "issue" ? "archive this issue" : "finish this branch");
+  const call = verbCall(target, finishDoing(target));
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
   else {
     const params = { projectId: target.projectId, branch: target.branch, deletesBranch: confirmedDeletion(target) };
@@ -803,6 +803,12 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   // behind is NOT: it comes back to the inbox asking for somebody, and the
   // event naming the branch it lost is the whole point of it coming back.
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
+}
+
+/** What Done does, in the words a refusal names it by. */
+function finishDoing(target) {
+  if (target.kind === "issue") return "archive this issue";
+  return target.deletesBranch ? "delete this branch" : "remove this checkout";
 }
 
 /** The deletion the user confirmed, held to the bridge answering now: one

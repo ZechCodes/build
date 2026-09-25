@@ -251,8 +251,10 @@ describe("a press on a machine that is away", () => {
     await expect(finishWorkItem({ kind: "issue", deviceId: DEVICE, issueId: "issue-7" })).rejects.toThrow(
       "Build cannot archive this issue because this machine is away.",
     );
+    // #87: this machine's bridge keeps the branch, so Done there removes only
+    // the checkout, and the refusal names that.
     await expect(finishWorkItem({ kind: "branch", deviceId: DEVICE, projectId: PROJECT, branch: "fix" })).rejects.toThrow(
-      "Build cannot delete this branch because this machine is away.",
+      "Build cannot remove this checkout because this machine is away.",
     );
     expect(sentVerbs()).toEqual([]);
   });

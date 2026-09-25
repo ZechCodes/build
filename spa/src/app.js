@@ -309,6 +309,7 @@ export function unmountView() {
   disposeFocus = null;
   App.routeLeaveGuard = null;
   mountedRoute = null;
+  mountedIdentity = null;
   if (App.poll) {
     App.poll.dispose();
     App.poll = null;

@@ -130,12 +130,12 @@ pub struct IssuesListParams {
     /// One label, matched the way labels are deduped: case-insensitively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// At most this many issues, 1 to 500 (1.24, `issues.listPaged`). Absent
+    /// At most this many issues, 1 to 500 (1.25.0, `issues.listPaged`). Absent
     /// is the whole list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u64>,
     /// Where the page starts: a `next_cursor` an earlier page of the SAME
-    /// filter answered (1.24). Absent is the top of the list.
+    /// filter answered (1.25.0). Absent is the top of the list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
 }
@@ -408,7 +408,7 @@ pub struct IssuesList {
     /// project's: what the dashboard's "Done since you left" measures from.
     pub user_session: UserSessionView,
     /// Where the next page starts, handed back as `cursor` with the same
-    /// filter (1.24). Present only on a page with more rows after it.
+    /// filter (1.25.0). Present only on a page with more rows after it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
 }

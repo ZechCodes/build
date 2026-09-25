@@ -199,7 +199,7 @@ Notes on each:
   live inside the record and are applied to each row as that read goes. All four
   are params of the verb either way — a client sends them rather than filtering
   what it was given.
-- **Paging `issues.list`** (1.24, announced as `issues.listPaged`, #85). `limit`
+- **Paging `issues.list`** (1.25.0, announced as `issues.listPaged`, #85). `limit`
   (1 to 500) answers at most that many issues, and `next_cursor` is present only
   when more follow. Handing it back as `cursor` with the same filter answers the
   issues numbered below the last one the page answered, so an issue filed while

@@ -86,6 +86,16 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
+  it("dates the issues.list paging fields at 1.25.0 while keeping the original verb's arrival", () => {
+    const listing = methodFixtures.find(({ body }) => body.method === "issues.list").body;
+    expect(listing.since).toBe("1.3.0");
+    expect(listing.paging).toEqual({
+      since: "1.25.0",
+      params: ["limit", "cursor"],
+      fields: ["next_cursor"],
+    });
+  });
+
   it("was introduced within this adapter's major, no later than current", () => {
     // The adapter's floor is where it stops serving OLD bridges; a verb that
     // predates the floor is still one it speaks. What must hold is the major.

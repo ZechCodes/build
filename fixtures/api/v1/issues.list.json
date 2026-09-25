@@ -77,6 +77,11 @@
       "now_ms": 1758277020000
     }
   },
+  "paging": {
+    "since": "1.25.0",
+    "params": ["limit", "cursor"],
+    "fields": ["next_cursor"]
+  },
   "examples": [
     {
       "params": {

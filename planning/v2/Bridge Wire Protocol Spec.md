@@ -702,7 +702,7 @@ Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.
 
-`issues.listPaged` (since 1.24.0, #85) announces `limit` and `cursor` on
+`issues.listPaged` (since 1.25.0, #85) announces `limit` and `cursor` on
 `issues.list` and `next_cursor` in its answer. `limit` is 1 to 500 and asks for
 at most that many issues, in the list's own order (number descending); absent,
 the list is whole, as it always was. A page with more after it carries
@@ -821,8 +821,7 @@ other names announce support for clients that choose to consume them:
 | `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
 | `settings.workspaceLifecycle` | `workspace_idle_secs`, `workspace_prune` and `workspace_pinned` on `settings.*` | 1.25.0 |
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
-| `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.24.0 |
-
+| `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

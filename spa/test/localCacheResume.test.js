@@ -107,6 +107,25 @@ describe("a connection lost across a resume", () => {
     expect(cacheEvents()[0]).toMatchObject({ reason: "transaction-failed", error: "UnknownError" });
   });
 
+  it("rides out the error real WebKit raised when its storage process died under a transaction", async () => {
+    // Playwright WebKit, the network process killed with reads and writes in
+    // flight: the old cache matched only "connection … lost" and stood down on
+    // this at once, answering nothing to every later read.
+    await cache.writeCached(address, { head: "stored" });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let failed = false;
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw new DOMException("An internal error was encountered in the Indexed Database server", "UnknownError");
+      }
+      return originalTransaction.apply(this, args);
+    });
+    expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+    expect(cache.cacheHealth().state).toBe("ready");
+    expect(eventNames()).toEqual(["cache-connection-lost", "cache-recovered"]);
+  });
+
   it("rests when every open fails, keeps readers waiting, and answers them when the rest is over", async () => {
     await cache.writeCached(address, { head: "stored" });
     const originalTransaction = IDBDatabase.prototype.transaction;

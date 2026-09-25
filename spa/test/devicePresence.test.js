@@ -4,7 +4,8 @@
 // poll is what re-reads it — every 15 s while the app is open, and at once when
 // the tab comes back to the front.
 //
-// Two things follow every read: a machine that is online and has no live
+// Three things follow every read: a machine this client holds that the account
+// no longer has at all is retired, a machine that is online and has no live
 // session is opened (that is how a late device joins, and how one that came
 // back is taken up again), and a machine this client holds that the account no
 // longer lists online is marked away.
@@ -16,6 +17,7 @@ vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 const connection = vi.hoisted(() => ({
   openDeviceSessions: vi.fn(() => ({ first: Promise.resolve(null), settled: Promise.resolve([]) })),
   deviceWentAway: vi.fn(),
+  retireDevice: vi.fn(),
   syncHome: vi.fn(),
   syncDeviceRecoveryPresence: vi.fn(),
 }));
@@ -34,7 +36,7 @@ vi.mock("../src/connection.js", () => ({
   chooseCreationDevice: () => {},
   connectDevice: () => Promise.resolve(null),
   goOffline: () => {},
-  retireDevice: () => {},
+  retireDevice: (...args) => connection.retireDevice(...args),
   openDeviceSettingsSession: async () => ({}),
   forgetHomeFollow: () => {},
   forgetRendezvousSockets: () => {},
@@ -65,6 +67,7 @@ beforeEach(() => {
   account.fetchDevices.mockImplementation(async () => listed);
   connection.openDeviceSessions.mockClear();
   connection.deviceWentAway.mockClear();
+  connection.retireDevice.mockClear();
   connection.syncHome.mockClear();
   connection.syncDeviceRecoveryPresence.mockClear();
 });
@@ -169,14 +172,67 @@ describe("the presence poll", () => {
     expect(connection.deviceWentAway.mock.calls).toEqual([["dev-b"]]);
   });
 
-  it("marks a machine away when the account stops listing it at all", async () => {
+  // Listed offline is away; not listed at all is gone (#141). The account let
+  // the machine go, so it is retired as an explicit removal retires it.
+  it("retires a machine the account stops listing at all, rather than marking it away", async () => {
+    adoptDeviceSession(fakeSession("dev-a"));
     adoptDeviceSession(fakeSession("dev-c"));
     listed = [online("dev-a")];
     watchPresence();
 
     await vi.advanceTimersByTimeAsync(15000);
 
-    expect(connection.deviceWentAway.mock.calls).toEqual([["dev-c"]]);
+    expect(connection.retireDevice.mock.calls).toEqual([["dev-c"]]);
+    expect(connection.deviceWentAway).not.toHaveBeenCalled();
+  });
+
+  // A machine this client learned of while the read was in flight — paired in
+  // another tab, which wrote the list — may be newer than the answer, which
+  // was asked before anything here knew of it. The next read decides.
+  it("does not retire a machine that turned up while the read was in flight", async () => {
+    let answer;
+    account.fetchDevices.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = (await import("../src/devices.js")).readPresence();
+    adoptDeviceSession(fakeSession("dev-c"));
+
+    answer([online("dev-a")]);
+    await pending;
+
+    expect(connection.retireDevice).not.toHaveBeenCalled();
+  });
+
+  // Another tab's write is a projection of disk, not a read of the account:
+  // a list that lands over this one still naming the machine keeps it.
+  it("does not retire a machine the committed list still names", async () => {
+    const { DEVICES_ADDRESS, subscribeCache, writeCached } = await import("../src/core/localCache.js");
+    adoptDeviceSession(fakeSession("dev-c"));
+    listed = [online("dev-a")];
+    const stop = subscribeCache(DEVICES_ADDRESS, () => {
+      stop(); // this read's own write, and the other tab's lands right after it
+      void writeCached(DEVICES_ADDRESS, [online("dev-a"), online("dev-c")]);
+    });
+    const { readPresence } = await import("../src/devices.js");
+
+    await readPresence();
+
+    expect(App.devices.map((device) => device.id)).toContain("dev-c");
+    expect(connection.retireDevice).not.toHaveBeenCalled();
+  });
+
+  it("retires nothing on a read that fails or is superseded", async () => {
+    adoptDeviceSession(fakeSession("dev-c"));
+    const { readPresence } = await import("../src/devices.js");
+    account.fetchDevices.mockRejectedValueOnce(new Error("api unavailable"));
+    await readPresence();
+
+    let answer;
+    account.fetchDevices.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    const pending = readPresence();
+    stopWatchingPresence();
+    answer([]);
+    await pending;
+
+    expect(connection.retireDevice).not.toHaveBeenCalled();
   });
 
   it("says nothing about a machine the account still calls online", async () => {
@@ -211,5 +267,14 @@ describe("the presence poll", () => {
 
     expect(connection.deviceWentAway).not.toHaveBeenCalled();
     expect(connection.openDeviceSessions).not.toHaveBeenCalled();
+  });
+
+  it("retires nothing on a refresh either: the account list is read, not acted on", async () => {
+    adoptDeviceSession(fakeSession("dev-c"));
+    listed = [];
+
+    await refreshDevices();
+
+    expect(connection.retireDevice).not.toHaveBeenCalled();
   });
 });

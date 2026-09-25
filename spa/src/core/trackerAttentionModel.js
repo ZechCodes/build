@@ -116,11 +116,12 @@ const reasonsOf = (issue, hasUnreadComment, askedOnly) => {
 
 /** Whether an unread comment puts the issue in Needs you. The narrow rule reads
  *  the cached issue and timeline alone, as the inbox does: the board's feed row
- *  is only re-read with the board, so its unread count can still say nothing
- *  new long after an `issues` push has cached the comment that asked. The
- *  watch is the issue's own, or the feed row's proof of one. */
+ *  is only re-read with the board, so it can still count nothing unread long
+ *  after an `issues` push cached the comment that asked, and still be there
+ *  long after Stop watching cached `watched: false`. A bridge that announces
+ *  the rule always says `watched`, so the issue's own is the watch. */
 const hasUnreadAsk = (issue, detail, inboxRow, askedOnly) => (askedOnly
-  ? (issue?.watched === true || Boolean(inboxRow)) && unreadAsks(issue, detail, true).length > 0
+  ? issue?.watched === true && unreadAsks(issue, detail, true).length > 0
   : hasUnreadInboxComment(issue, detail, inboxRow));
 
 const attentionReasonsOf = (issue, detail, inboxRow, askedOnly) =>

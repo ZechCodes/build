@@ -188,9 +188,16 @@ describe("Needs you by the narrow rule (#144)", () => {
     const feed = { items: [inbox(one.id, { unread: 0 })] };
     expect(attentionGroups([one], { feed, projectKey: PROJECT, detailById: new Map([[one.id, asked]]), askedOnly: true })
       .needsYou).toEqual([one]);
-    // Not watched, and no feed row to say it is: not the user's business.
+    // Not watched: not the user's business, and a board row from before Stop
+    // watching does not say otherwise. The cached issue is the watch.
     const unwatched = { ...one, watched: false };
-    expect(issueAttention(unwatched, { detail: detail(unwatched, asked.timeline), askedOnly: true }).reasons).toEqual([]);
+    for (const inboxRow of [null, inbox(one.id, { unread: 0 }), inbox(one.id, { unread: 1 })]) {
+      expect(issueAttention(unwatched, { detail: detail(unwatched, asked.timeline), inboxRow, askedOnly: true }).reasons)
+        .toEqual([]);
+    }
+    expect(attentionGroups([unwatched], {
+      feed, projectKey: PROJECT, detailById: new Map([[one.id, detail(unwatched, asked.timeline)]]), askedOnly: true,
+    }).needsYou).toEqual([]);
   });
 
   it("stops counting a question once it is read", () => {

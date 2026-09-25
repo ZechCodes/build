@@ -278,6 +278,9 @@ const untilWake = (ms) => Promise.race([new Promise((resolve) => wakeWaiters.pus
 function wake(reason) {
   if (reason === "visible" || reason === "pageshow") {
     lastShownAt = Date.now();
+    // A resumed page reopens at the front of the backoff, not after the delay
+    // the outage had reached while it slept.
+    if (outage) outage.attempts = 0;
     const shown = shownWaiters;
     shownWaiters = [];
     release(shown);

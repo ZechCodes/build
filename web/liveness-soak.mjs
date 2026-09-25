@@ -352,10 +352,12 @@ async function probeStats(session) {
   probe.finalStats = await session.call("bridge.stats", {}).catch((error) => ({ error: error.message }));
 }
 
-/** The per-verb frame table from the run's last `bridge.stats`, slowest first. */
+/** The per-verb frame table from the run's last `bridge.stats`, slowest first,
+ * with each verb's hold of the app lock where the bridge reports it. */
 function statsTable() {
   const methods = Object.entries(probe.finalStats?.methods || {}).sort(([, a], [, b]) => b.max_ms - a.max_ms);
-  return methods.slice(0, 12).map(([name, m]) => `  ${name.padEnd(24)} n=${m.served} p50=${m.p50_ms} p95=${m.p95_ms} max=${m.max_ms} ms`).join("\n");
+  const held = (m) => (m.held_p99_ms === undefined ? "" : `  held p99=${m.held_p99_ms} max=${m.held_max_ms}`);
+  return methods.slice(0, 16).map(([name, m]) => `  ${name.padEnd(24)} n=${m.served} p50=${m.p50_ms} p95=${m.p95_ms} max=${m.max_ms} ms${held(m)}`).join("\n");
 }
 
 // ── the soak ─────────────────────────────────────────────────────────────────

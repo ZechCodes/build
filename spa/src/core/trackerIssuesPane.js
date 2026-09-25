@@ -453,9 +453,13 @@ export function mountIssuesPane(host, options) {
 
   /** The same read a page at a time, from a bridge that pages it (#85). Each
    *  page is laid over the records the whole answer would have replaced, for
-   *  the numbers it answers for, and the pane repaints from each. */
+   *  the numbers it answers for, and the pane repaints from each. A walk
+   *  belongs to the session it began on: once the device reconnects, a page
+   *  that session asked for is neither written nor followed, and the new
+   *  session's read (#119) walks the list again. */
   async function readListPages(params, filters) {
     const { deviceId, projectId } = state;
+    const session = deviceSession(deviceId);
     const addresses = [issuesQueryAddress(deviceId, projectId, params)];
     if (!narrowsTheRead(filters)) addresses.push(issuesAddress(deviceId, projectId));
     await pullIssuePages({
@@ -463,7 +467,7 @@ export function mountIssuesPane(host, options) {
       deviceId,
       projectId,
       params,
-      active: () => !state.disposed,
+      active: () => !state.disposed && deviceSession(deviceId) === session,
       fold: (stretch, page) => Promise.all([
         ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
         writeUserSession(deviceId, page),

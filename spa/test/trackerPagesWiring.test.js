@@ -294,6 +294,29 @@ describe("a tracker synced from a bridge that pages", () => {
     expect(numbers(await heldList())).toEqual(everyNumber);
   });
 
+  it("stops the Issues tab's page walk when the device's session is replaced", async () => {
+    await boot(PAGING_GREETING);
+    await settle();
+    // The tab's second page is held: asked on this session, answered later.
+    holdNext = (params) => params.cursor === cursorFor(151);
+    await mountPane();
+    await vi.waitFor(() => expect(held).not.toBeNull());
+    const olderPage = trackerCache.issuesPageAddress("dev-1", "p1", held.params);
+    await cache.deleteCached([olderPage]);
+
+    // The device reconnects: a new session replaces the one that asked.
+    registerDevice("dev-1");
+    const olderAnswer = held;
+    held = null;
+    bridge.call.mockClear();
+    olderAnswer.release();
+    await settle();
+
+    // The old session's answer is not written, and no page after it asked.
+    expect(await cache.readCached(olderPage)).toBeUndefined();
+    expect(lists()).toEqual([]);
+  });
+
   it("pulls the whole list in one read from a bridge that does not page", async () => {
     await boot(WHOLE_GREETING);
     await settle();

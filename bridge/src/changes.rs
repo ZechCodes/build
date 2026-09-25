@@ -378,18 +378,70 @@ pub enum WatchState {
     Polled,
 }
 
+/// The kinds a `changes.subscribe` names, as the words it sent. The verb
+/// reads them as words before it reads them as kinds, so its refusal can name
+/// every one this bridge does not know rather than the first serde met.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct KindNames(Vec<String>);
+
+impl KindNames {
+    /// The kinds these name, or every name that is not one — in the order
+    /// asked, each once.
+    pub fn known(&self) -> Result<KindSet, Vec<String>> {
+        let mut kinds = KindSet::default();
+        let mut unknown: Vec<String> = Vec::new();
+        for name in &self.0 {
+            match Kind::ALL.into_iter().find(|kind| kind.as_str() == name) {
+                Some(kind) => {
+                    kinds.insert(kind);
+                }
+                None if !unknown.contains(name) => unknown.push(name.clone()),
+                None => {}
+            }
+        }
+        if unknown.is_empty() {
+            Ok(kinds)
+        } else {
+            Err(unknown)
+        }
+    }
+}
+
+impl<'a> FromIterator<&'a str> for KindNames {
+    fn from_iter<I: IntoIterator<Item = &'a str>>(names: I) -> KindNames {
+        KindNames(names.into_iter().map(str::to_string).collect())
+    }
+}
+
 /// One subscription, exactly as `changes.subscribe` states it and
-/// `changes.list` answers it.
+/// `changes.list` answers it. `K` is how its kinds are held: a [`KindSet`]
+/// once read, [`KindNames`] while the verb is still reading them.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-pub struct SubscriptionSpec {
+pub struct SubscriptionSpec<K = KindSet> {
     #[serde(rename = "subscription_id")]
     pub id: String,
     pub scope: Scope,
-    pub kinds: KindSet,
+    pub kinds: K,
     #[serde(default)]
     pub mode: Mode,
     #[serde(default)]
     pub priority: Priority,
+}
+
+impl SubscriptionSpec<KindNames> {
+    /// The same spec with its kinds read, or every name among them that is
+    /// not a kind this bridge knows.
+    pub fn known(self) -> Result<SubscriptionSpec, Vec<String>> {
+        let kinds = self.kinds.known()?;
+        Ok(SubscriptionSpec {
+            id: self.id,
+            scope: self.scope,
+            kinds,
+            mode: self.mode,
+            priority: self.priority,
+        })
+    }
 }
 
 /// What [`ChangeBus::subscribe`] answers.
@@ -3005,12 +3057,12 @@ mod subscriptions {
             "the refusal names the kind it did not know: {refused}"
         );
 
-        // And it survives to the CLIENT. `api::v1::parse_params` rewrites only
-        // the missing-field case and passes everything else through, so the
-        // refusal a browser reads names the unknown kind AND lists the ones
-        // this bridge serves. A client can therefore drop the kind it was
-        // refused for and re-subscribe with the rest, rather than having to
-        // treat every refusal as fatal.
+        // And the type's refusal survives the facade: `api::v1::parse_params`
+        // rewrites only the missing-field case and passes everything else
+        // through, naming the unknown kind AND the ones this bridge serves.
+        // `changes.subscribe` itself reads its kinds as `KindNames` first, so
+        // its refusal names EVERY unknown kind in `details.kinds` and a client
+        // drops them and re-subscribes with the rest (api/v1/changes.rs).
         let wire = crate::api::v1::parse_params::<SubscriptionSpec>(&json!({
             "subscription_id": "s-inbox",
             "scope": { "kind": "entity", "id": "proj-1" },

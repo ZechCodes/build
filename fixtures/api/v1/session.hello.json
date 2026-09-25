@@ -33,6 +33,7 @@
       "capture.reroute",
       "changes.bodies",
       "changes.list",
+      "changes.refusedKinds",
       "changes.subscribe",
       "changes.subscriptions",
       "changes.unsubscribe",

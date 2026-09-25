@@ -48,6 +48,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "board.usageLimits",
     "branches.finishDelete",
     "changes.bodies",
+    "changes.refusedKinds",
     "changes.subscriptions",
     "conversations.settings",
     "diffs.perFile",

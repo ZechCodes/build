@@ -211,8 +211,8 @@ runtime that starts them.
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
   `1.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
-  `workspaces.lifecycle` shares this release with `params.strict`;
-  `branches.finishDelete` will join it from #87.
+  `workspaces.lifecycle` shares this release with `params.strict`,
+  `branches.finishDelete` and `changes.refusedKinds`.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -228,9 +228,15 @@ runtime that starts them.
 - A top-level param a v1 verb's params type does not declare is refused, never
   dropped: `invalid_params`, `unknown param: <name>`, with `details.params`
   listing every one (`parse_params` in `bridge/src/api/v1/mod.rs`; announced
-  as `params.strict` since 1.24.0). It is the same answer an unknown kind
-  gets from `changes.subscribe`. So a new param is announced like any other
-  addition, and a client sends it only to a bridge whose greeting names it.
+  as `params.strict` since 1.24.0). So a new param is announced like any
+  other addition, and a client sends it only to a bridge whose greeting names
+  it.
+- An unknown push kind refuses the whole `changes.subscribe` the same way:
+  `invalid_params`, "Build cannot subscribe to <kind>: this bridge does not
+  know it.", with `details.kinds` listing every unknown one (`known_kinds` in
+  `bridge/src/api/v1/changes.rs`; announced as `changes.refusedKinds` since
+  1.24.0). The SPA drops those kinds and re-subscribes once without them
+  (`addDesired` in `spa/src/core/changeEvents.js`).
   Nested objects keep their own rules: a message context item's unknown
   field is still ignored, and its unknown kind refused.
 - `PROTOCOL_VERSION` in `bridge/src/transport.rs` is a different number: the

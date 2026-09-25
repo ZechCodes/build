@@ -134,6 +134,14 @@ Reply: `{"subscription_id", "watch": "live" | "polled"}`. `polled` means a
 worktree in scope could not get a filesystem watcher (step 1.2) and its
 `git`/`files` kinds come from the TTL refresh instead.
 
+A kind this bridge does not know refuses the whole subscription with
+`invalid_params`, `error: "Build cannot subscribe to <kind>: this bridge does
+not know it."` ("<a> and <b> … them" for several), and `details: { "kinds":
+[<kind>, …] }` naming every unknown kind in the order asked (since 1.24.0,
+announced as `changes.refusedKinds`). Nothing of the refused request is
+subscribed. A client drops the named kinds and re-subscribes once with the
+rest; it still asks only for the kinds the greeting advertises.
+
 `changes.unsubscribe {subscription_id}` → `{"ok": true}`.
 `changes.list` → the session's subscriptions, for the SPA's reconnect diff
 and for `bridge.stats`.
@@ -733,6 +741,7 @@ other names announce support for clients that choose to consume them:
 | `params.strict` | A v1 verb refuses a top-level param its type does not declare (`invalid_params`, `unknown param: <name>`) | 1.24.0 |
 | `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
 | `branches.finishDelete` | `branch.finish` accepts `action: "delete"` to finish the workspace and delete its local branch | 1.24.0 |
+| `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

@@ -202,3 +202,76 @@ fn a_long_list_answers_what_each_issue_answers_alone() {
     assert_eq!(labelled.as_array().unwrap().len(), ISSUES / 5);
     assert_eq!(labelled, labelled_alone);
 }
+
+/// Naming an agent no live roster holds reads the stored runs and plans. The
+/// list read them once per call (#128), but then cloned every stored run's
+/// roster — each agent's conversation tail — for every such agent it named:
+/// 450 ms held per `issues.list` on a real store (#131). An agent is found in
+/// the stored records without copying a conversation, so a list naming twelve
+/// hundred of them over eight departed runs holds the lock for about as long
+/// as reading those records once takes.
+#[test]
+fn naming_many_departed_agents_copies_no_conversation() {
+    const DEPARTED: usize = 8;
+    const GHOSTS: usize = 1200;
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let departed: Vec<String> = (0..DEPARTED)
+        .map(|n| departed_with_a_long_conversation(&mut state, &project_id, n))
+        .collect();
+    for batch in 0..GHOSTS / 8 {
+        let id = filed(&mut state, &project_id, &format!("ghosts {batch}"))["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let store = state.tracker_store().unwrap();
+        let mut issue = store.load_tracker_issue(&id).unwrap().unwrap();
+        issue.body = (0..8)
+            .map(|n| format!("@agent:agent-ghost-{} ", batch * 8 + n))
+            .collect::<String>()
+            + &format!("and @agent:{}", departed[batch % DEPARTED]);
+        issue.identities.clear();
+        store.save_tracker_issue_activity(&issue, &[], &[]).unwrap();
+    }
+
+    let started = std::time::Instant::now();
+    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let held = started.elapsed();
+
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    let rows = listed["result"]["issues"].as_array().unwrap();
+    assert!(rows.iter().enumerate().all(|(index, row)| {
+        let batch = GHOSTS / 8 - 1 - index;
+        row["identities"][&departed[batch % DEPARTED]]["name"] == "Historian"
+    }));
+    assert!(
+        held < Duration::from_millis(500),
+        "issues.list held the lock {held:?} to name {GHOSTS} agents nobody holds"
+    );
+}
+
+/// An agent named "Historian" whose run has left the live roster, with a
+/// conversation tail as long as the store keeps.
+fn departed_with_a_long_conversation(state: &mut AppState, project_id: &str, n: usize) -> String {
+    let (entity_id, agent_id) = agent_on_checkout(state, project_id, &format!("history-{n}"));
+    state
+        .set_agent_name(&entity_id, &agent_id, "Historian")
+        .unwrap();
+    let mut active = state.runs.remove(&entity_id).unwrap();
+    let thread = &mut active.agents.by_id_mut(&agent_id).unwrap().thread;
+    for item in 0..250 {
+        thread.push_event(
+            crate::thread::ThreadEventKind::Narration,
+            Some(format!(
+                "narration {item}: {}",
+                "a long-winded agent. ".repeat(8)
+            )),
+            None,
+            None,
+            now_rfc3339(),
+        );
+    }
+    state.persist_run_record(&entity_id, &active).unwrap();
+    agent_id
+}

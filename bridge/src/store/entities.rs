@@ -179,6 +179,16 @@ impl PersistedPlan {
             &self.created_at,
         )
     }
+
+    /// Who [`roster`](Self::roster) would restore, without their conversations.
+    pub fn members(&self) -> Vec<crate::agent::RosterMember> {
+        AgentRoster::restored_members(
+            &self.id,
+            &self.agents,
+            &self.legacy_thread,
+            &self.model_choice(),
+        )
+    }
 }
 
 impl PersistedRun {
@@ -198,6 +208,16 @@ impl PersistedRun {
             self.legacy_thread.clone(),
             self.model_choice(),
             &self.created_at,
+        )
+    }
+
+    /// Who [`roster`](Self::roster) would restore, without their conversations.
+    pub fn members(&self) -> Vec<crate::agent::RosterMember> {
+        AgentRoster::restored_members(
+            &self.id,
+            &self.agents,
+            &self.legacy_thread,
+            &self.model_choice(),
         )
     }
 }

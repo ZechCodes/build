@@ -416,6 +416,16 @@ impl Agent {
 
 /// An entity's agents, in rail order — possibly none of them.
 ///
+/// One agent of a stored record as a name to show: who it was, never what it
+/// said. See [`AgentRoster::restored_members`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterMember {
+    pub id: String,
+    pub name: Option<String>,
+    pub ordinal: u32,
+    pub provider: crate::models::AgentProvider,
+}
+
 /// A branch starts with no agents and may be emptied back to none; an issue
 /// always holds exactly one. The agent at index 0 is the PRIMARY: the one
 /// entity-level events speak to, and the one a verb that names no agent means.
@@ -492,6 +502,37 @@ impl AgentRoster {
             }
         }
         AgentRoster { agents }
+    }
+
+    /// Who [`restore`](Self::restore) would say this record's agents are —
+    /// id, name, rail position, provider — without cloning a conversation.
+    ///
+    /// Restoring moves the entity's model choice onto an agent that predates
+    /// agent-owned settings only where the providers already agree, so the
+    /// provider an agent had stored is the one it restores with.
+    pub fn restored_members(
+        owner_id: &str,
+        agents: &[Agent],
+        legacy: &Thread,
+        choice: &ModelChoice,
+    ) -> Vec<RosterMember> {
+        if agents.is_empty() && !legacy.is_empty() {
+            return vec![RosterMember {
+                id: derived_agent_id(owner_id),
+                name: None,
+                ordinal: 1,
+                provider: choice.provider,
+            }];
+        }
+        agents
+            .iter()
+            .map(|agent| RosterMember {
+                id: agent.id.clone(),
+                name: agent.name.clone(),
+                ordinal: agent.ordinal,
+                provider: agent.choice.provider,
+            })
+            .collect()
     }
 
     /// The agent at index 0 — the one entity-level events speak to and the one

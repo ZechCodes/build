@@ -33,19 +33,42 @@ describe("what the line says", () => {
       .toBe("Working.");
   });
 
-  it("says it is reconnecting, since when, and the error", () => {
-    expect(cacheHealthText({ state: "recovering", since: AT, error: "UnknownError", message: "Connection to Indexed Database server lost" }))
-      .toBe("Reconnecting since 13:43:02. UnknownError: Connection to Indexed Database server lost");
+  it("says it is reconnecting and since when, without the browser's message", () => {
+    // WebKit's message ends "Refresh the page to try again", which is exactly
+    // what nobody should have to do; it stays in the Diagnostics dump.
+    expect(cacheHealthText({
+      state: "recovering", since: AT, error: "UnknownError",
+      message: "Connection to Indexed Database server lost. Refresh the page to try again",
+    })).toBe("Reconnecting since 13:43:02.");
   });
 
   it("says it is waiting to try again", () => {
     expect(cacheHealthText({ state: "resting", since: AT, error: "UnknownError", message: "" }))
-      .toBe("Not answering since 13:43:02. Trying again when the app is next opened, or in a moment. UnknownError");
+      .toBe("Not answering since 13:43:02. Trying again when the app is next opened, or in a moment.");
   });
 
-  it("says it stood down, why, and what brings it back", () => {
-    expect(cacheHealthText({ state: "stood-down", at: AT, error: "QuotaExceededError", message: "The quota has been exceeded." }))
-      .toBe("Off for this session since 13:43:02. QuotaExceededError: The quota has been exceeded. Reload to turn it back on.");
+  const stoodDown = (reason, error, message = "") => cacheHealthText({ state: "stood-down", at: AT, reason, error, message });
+
+  it("says it stood down after failing to open for too long, and that a reload tries again", () => {
+    expect(stoodDown("persistent", "UnknownError", "Error creating or migrating Records table in database"))
+      .toBe("Off for this session since 13:43:02: it kept failing to open. Reload to try again.");
+  });
+
+  it("says a private window refused it, without promising a reload helps", () => {
+    for (const error of ["InvalidStateError", "SecurityError"]) {
+      expect(stoodDown("open-failed", error, "The operation is insecure."))
+        .toBe("Off for this session since 13:43:02: this browser refused to open it, as a private window does. Nothing is kept between visits.");
+    }
+  });
+
+  it("says a newer version changed it", () => {
+    expect(stoodDown("open-failed", "VersionError"))
+      .toBe("Off for this session since 13:43:02: a newer version of Build has changed it. Reload to use that version.");
+  });
+
+  it("says the browser refused it for any other reason", () => {
+    expect(stoodDown("open-failed", "NotFoundError")).toBe("Off for this session since 13:43:02: this browser refused to open it. Reload to try again.");
+    expect(stoodDown("transaction-failed", "NotFoundError")).toBe("Off for this session since 13:43:02: this browser refused to use it. Reload to try again.");
   });
 
   it("says it is waiting for another tab", () => {
@@ -75,12 +98,12 @@ describe("the line on the page", () => {
 
     health = { state: "recovering", since: AT, error: "UnknownError", message: "" };
     vi.advanceTimersByTime(1000);
-    expect(text()).toBe("Reconnecting since 13:43:02. UnknownError");
+    expect(text()).toBe("Reconnecting since 13:43:02.");
 
     dispose();
     health = { state: "absent" };
     vi.advanceTimersByTime(5000);
-    expect(text()).toBe("Reconnecting since 13:43:02. UnknownError");
+    expect(text()).toBe("Reconnecting since 13:43:02.");
   });
 
   it("does nothing on a page without the line", () => {

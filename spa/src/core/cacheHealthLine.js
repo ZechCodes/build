@@ -16,37 +16,46 @@ import { formatDiagnosticTime } from "./connectionDiagnosticsModel.js";
 /// to look from a reconnect to this line.
 const POLL_MS = 1000;
 
-const errorText = ({ error, message } = {}) => (message ? `${error}: ${message}` : error || "");
-
-/// A sentence ends once: an error message that already has its full stop keeps it.
-const asSentence = (text) => (text && !/[.!?]$/.test(text) ? `${text}.` : text);
-
 const seconds = (ms) => `${(Math.max(0, Number(ms) || 0) / 1000).toFixed(1)} s`;
 
-/// Why the cache stood down, where there is something truer to say than the
-/// browser's error: what it was and what brings it back.
-const STOOD_DOWN_BECAUSE = Object.freeze({
-  blocked: "another tab with an older version of Build kept it closed. Close that tab and reload to turn it back on.",
-});
+/// The line says what happened in words, never the browser's own message: the
+/// message can contradict how Build works ("Refresh the page to try again"),
+/// and the error behind every state is in the Diagnostics dump above.
+const PRIVATE_WINDOW_ERRORS = new Set(["InvalidStateError", "SecurityError"]);
 
-/// One sentence per state. Polymorphic on the state's name rather than a chain
-/// of conditions: each state says its own thing.
+/// Why an open failed for good, by the error it failed with.
+const openFailedBecause = ({ error }) => {
+  if (error === "VersionError") return "a newer version of Build has changed it. Reload to use that version.";
+  if (PRIVATE_WINDOW_ERRORS.has(error)) return "this browser refused to open it, as a private window does. Nothing is kept between visits.";
+  return "this browser refused to open it. Reload to try again.";
+};
+
+/// Why the cache stood down, by the reason it gave: what it was, and what
+/// brings it back.
+const STOOD_DOWN_BECAUSE = Object.freeze({
+  blocked: () => "another tab with an older version of Build kept it closed. Close that tab and reload to turn it back on.",
+  persistent: () => "it kept failing to open. Reload to try again.",
+  "open-failed": openFailedBecause,
+  "transaction-failed": () => "this browser refused to use it. Reload to try again.",
+});
+const standDownText = (health) => (STOOD_DOWN_BECAUSE[health.reason] || (() => "Reload to turn it back on."))(health);
+
 /// A write refused for want of space is the one refusal somebody can act on.
 const refusedText = (refused) => (refused?.error === "QuotaExceededError"
   ? ` At ${formatDiagnosticTime(refused.at)} a write was not kept because this browser's storage for Build was full.`
   : "");
 
+/// One sentence per state. Polymorphic on the state's name rather than a chain
+/// of conditions: each state says its own thing.
 const SAYS = Object.freeze({
   ready: ({ lastRecovery, lastRefused }) => (lastRecovery
     ? `Working. Reconnected at ${formatDiagnosticTime(lastRecovery.at)} after ${seconds(lastRecovery.afterMs)}.`
     : "Working.") + refusedText(lastRefused),
-  recovering: (health) => `Reconnecting since ${formatDiagnosticTime(health.since)}. ${errorText(health)}`.trim(),
+  recovering: (health) => `Reconnecting since ${formatDiagnosticTime(health.since)}.`,
   resting: (health) =>
-    `Not answering since ${formatDiagnosticTime(health.since)}. Trying again when the app is next opened, or in a moment. ${errorText(health)}`.trim(),
+    `Not answering since ${formatDiagnosticTime(health.since)}. Trying again when the app is next opened, or in a moment.`,
   blocked: (health) => `Waiting since ${formatDiagnosticTime(health.since)} for another tab with an older version of Build to close.`,
-  "stood-down": (health) => (STOOD_DOWN_BECAUSE[health.reason]
-    ? `Off for this session since ${formatDiagnosticTime(health.at)}: ${STOOD_DOWN_BECAUSE[health.reason]}`
-    : `Off for this session since ${formatDiagnosticTime(health.at)}. ${asSentence(errorText(health))} Reload to turn it back on.`),
+  "stood-down": (health) => `Off for this session since ${formatDiagnosticTime(health.at)}: ${standDownText(health)}`,
   absent: () => "This browser has no IndexedDB, so nothing is kept between visits.",
 });
 

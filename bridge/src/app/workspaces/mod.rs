@@ -6,6 +6,7 @@ use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+mod branch_delete;
 mod deletion;
 mod directories;
 mod git_initialization;
@@ -583,6 +584,18 @@ impl AppState {
     /// what was finished is written on the way out; the live record and the
     /// files do not come back. Recovery is pulling the remote.
     pub(crate) fn workspace_finish(&mut self, params: &Value) -> Result<Value, String> {
+        self.finish_workspace(params, None)
+    }
+
+    /// Done, taking the local branch `delete_branch` with it when named. A
+    /// branch that cannot go refuses the whole Done before anything is
+    /// touched, so the user never loses the workspace and keeps the branch
+    /// they asked to lose.
+    fn finish_workspace(
+        &mut self,
+        params: &Value,
+        delete_branch: Option<&str>,
+    ) -> Result<Value, String> {
         let workspace = self.workspace_to_remove(params)?;
         if workspace.status != crate::workspace::WorkspaceStatus::Ready {
             return Err(
@@ -595,8 +608,18 @@ impl AppState {
         if !blockers.is_empty() {
             return Err(crate::workspace::finish_refusal(&blockers));
         }
-        let registry_root = self.workspaces.root().to_path_buf();
-        self.remove_workspace(&workspace, params, Some(registry_root))?;
+        let defaults = self.default_branches(&workspace.project_id);
+        let branches = delete_branch
+            .map(|branch| branch_delete::BranchDeletion::of(&workspace, branch, &defaults))
+            .unwrap_or_default();
+        if let Some(refusal) = branch_delete::first_refusal(&branches) {
+            return Err(refusal);
+        }
+        let finishing = deletion::Finishing {
+            registry_root: self.workspaces.root().to_path_buf(),
+            branches,
+        };
+        self.remove_workspace(&workspace, params, Some(finishing))?;
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
@@ -679,9 +702,26 @@ impl AppState {
         Ok(json!({ "workspace_id": workspace_id, "pending": true }))
     }
 
+    /// The branches a project is configured to build on: its own base and
+    /// each source's. Done never deletes one.
+    fn default_branches(&self, project_id: &str) -> Vec<String> {
+        self.project(project_id)
+            .map(|project| {
+                std::iter::once(&project.base_branch)
+                    .chain(project.sources.iter().map(|source| &source.base_branch))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Compatibility entry for the old finish routes. It resolves their
     /// branch/run/worktree identity to the adopted single-directory workspace
     /// and then uses the same non-destructive push completion flow.
+    ///
+    /// `branch.finish` with `action: "delete"` also deletes the local branch
+    /// it resolved the workspace by (`branch_delete`); any other action, or
+    /// none, keeps it.
     pub(crate) fn workspace_finish_legacy(&mut self, params: &Value) -> Result<Value, String> {
         self.adopt_legacy_workspaces();
         if params.get("workspace_id").is_some() {
@@ -726,7 +766,12 @@ impl AppState {
             })
             .map(|workspace| workspace.id.clone())
             .ok_or_else(|| "finish: no matching workspace".to_string())?;
-        self.workspace_finish(&json!({ "workspace_id": workspace_id }))
+        let deleting =
+            params.get("action").and_then(Value::as_str) == Some(branch_delete::DELETE_ACTION);
+        self.finish_workspace(
+            &json!({ "workspace_id": workspace_id }),
+            branch.filter(|_| deleting),
+        )
     }
 
     /// Resolve a directory selected in a workspace. Both ids are stable and

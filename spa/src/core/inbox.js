@@ -1149,23 +1149,44 @@ export function captureRowHtml(entry, ui = {}) {
  *  naming the branch it lost. */
 export function branchDoneConfirm(entry) {
   const name = entry.branch || "this checkout";
-  const actions = [`Delete branch ${name}`, "Remove its checkout", "Take its conversation off the inbox"];
+  const words = entry.deletesBranch ? branchDeletedWords(name) : branchKeptWords(name, entry.deviceName);
+  const actions = [...words.actions, "Take its conversation off the inbox"];
   if (entry.issueId) {
     actions.push(
-      entry.merged
-        ? "Archive the issue it implements, with its stage plans"
-        : `Return the issue it implements to the inbox, noting that ${name} was deleted`,
+      entry.merged ? "Archive the issue it implements, with its stage plans" : words.issueReturned,
     );
   }
   return {
     title: `Done with ${name}?`,
-    intro: "Done deletes the branch. This cannot be undone.",
+    intro: words.intro,
     warnings: entry.warnings || [],
     actions,
-    confirmLabel: "Delete",
+    confirmLabel: words.confirmLabel,
     danger: true,
   };
 }
+
+/** What Done says on a machine whose bridge keeps the branch. */
+export const branchDeleteTooOld = (machine) =>
+  `Build cannot delete the branch on ${machine || "its machine"}: the bridge is too old.`;
+
+/** Done on a bridge that deletes the branch (`branches.finishDelete`). */
+const branchDeletedWords = (name) => ({
+  intro: "Done deletes the branch. This cannot be undone.",
+  actions: [`Delete branch ${name}`, "Remove its checkout"],
+  issueReturned: `Return the issue it implements to the inbox, noting that ${name} was deleted`,
+  confirmLabel: "Delete",
+});
+
+/** Done on an older bridge, which removes the checkout and keeps the branch
+ *  whatever it is asked (#87): the confirmation says so, and promises no
+ *  deletion. */
+const branchKeptWords = (name, machine) => ({
+  intro: `${branchDeleteTooOld(machine)} Done removes its checkout and keeps the branch.`,
+  actions: ["Remove its checkout"],
+  issueReturned: "Return the issue it implements to the inbox",
+  confirmLabel: "Remove",
+});
 
 /** Done on an issue: it goes to the archive, where it can be read again. */
 export function issueDoneConfirm(entry) {

@@ -644,7 +644,8 @@ Issues spec), `messages.issueNotices`, `board.usageLimits`,
 `issues.agentIdentities`, `issues.attachmentChunks`,
 `issues.commentUserNotifies` (`notifies_user` on issue comments, and the
 narrower "needs you" rule it makes possible; see the Issues spec), and
-`params.strict` (an undeclared param is refused; step 2.2). The method registry
+`params.strict` (an undeclared param is refused; step 2.2), and
+`branches.finishDelete` (`branch.finish` honours `action: "delete"`). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -659,6 +660,34 @@ organisation whose listing fails is left out. When `gh` is missing, signed out,
 slow or failing, the refusal's `error` is a sentence the UI shows as is
 ("Build cannot list GitHub repositories on <machine> because gh is not
 installed."). The bridge keeps nothing: the SPA caches and searches the list.
+
+`branch.finish` with `action: "delete"` (since 1.24.0, announced as
+`branches.finishDelete`) is Done and then deletes the local branch the finish
+resolved the workspace by, in each source repository its directories carry it
+in. It is refused before anything is removed (`conflict`, "Build cannot delete
+the branch <name>: it is a default branch." for `main`, `master`, the branch a
+remote's `HEAD` names or the project's base, "…: it is checked out at <path>."
+— or being rebased or bisected there — or "…: it has commits no remote has.")
+and measured again once the checkout is gone, when each remote is also asked
+which branch its `HEAD` names, since what the repository remembers of it can
+be missing or stale ("…: Build could not confirm it is not the remote's
+default branch." when one cannot be asked). The delete names the commit
+those checks passed, so a branch that gained commits in between is kept, and
+the checkouts are read again immediately before and after it, so a checkout
+that moved onto the branch keeps it. A branch that stayed then is
+`branch_deleted: false` with `branch_reason`, beside the workspace's removal,
+which stands. Success adds `branch_deleted: true` to the answer and a
+`branch_deleted` event (payload `branch`, `workspace_id`) to every issue
+linking the workspace or the branch. If a checkout moves onto the branch
+between the last check and the atomic delete, Build restores the measured tip
+with a create-only ref write. It retries once when a failed write leaves the
+ref absent. If the ref is still absent, `branch_deleted: true` carries
+`branch_reason` with the measured commit, repository and checkout details;
+the linked `branch_deleted` event carries the same `reason`. A concurrent
+ref at a newer commit is left untouched and reported as a refusal.
+Absent or any other action keeps the branch. A bridge that does not announce
+the name keeps the branch whatever the action says, so a client must not
+promise the deletion to one.
 
 The names in the table below describe additions to existing verbs, so the
 verb names alone cannot establish whether a bridge provides them. They are

@@ -1,6 +1,7 @@
 use super::*;
 
 mod adopted_checkouts;
+mod branch_delete;
 mod conversation_git;
 mod directories;
 mod git_init_deferred;

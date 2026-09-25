@@ -11,6 +11,7 @@ import {
   branchFinishFacts,
   branchFinishParams,
   branchInboxKey,
+  branchFinishNotice,
 } from "../src/core/branchFinish.js";
 import { entryKeyOf } from "../src/core/inbox.js";
 
@@ -57,24 +58,75 @@ describe("whether a branch can be closed out here", () => {
   });
 
   it("offers exactly one behavior: delete, named after the branch it deletes", () => {
+    const [only] = branchCloseout(branchRow(), { deletesBranch: true }).options;
+    expect(only.label).toBe("Done");
+    expect(only.menuLabel).toBe("Done — delete the branch");
+    expect(only.description).toBe("delete branch build/login and its checkout");
+    expect(only.danger).toBe(true);
+  });
+
+  // #87: a bridge without `branches.finishDelete` keeps the branch whatever it
+  // is sent, so the option promises only the checkout.
+  it("promises no deletion where the bridge keeps the branch", () => {
     const [only] = branchCloseout(branchRow()).options;
     expect(only.label).toBe("Done");
-    expect(only.description).toContain("build/login");
-    expect(only.danger).toBe(true);
+    expect(only.menuLabel).toBe("Done — remove the checkout");
+    expect(only.description).toBe("remove the checkout of build/login; the branch stays");
+    expect(`${only.menuLabel} ${only.description} ${only.busyLabel}`).not.toMatch(/delet/);
   });
 });
 
 describe("what Done sends", () => {
-  it("deletes the branch", () => {
-    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" })).toEqual({
+  it("deletes the branch where the bridge deletes it", () => {
+    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login", deletesBranch: true })).toEqual({
       project_id: "p1",
       branch: "build/login",
       action: "delete",
     });
   });
 
+  it("sends no action to a bridge that would drop it", () => {
+    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" })).toEqual({
+      project_id: "p1",
+      branch: "build/login",
+    });
+  });
+
   it("refuses an option it has no action for", () => {
     expect(() => branchFinishParams("finish_cleanup", { projectId: "p1", branch: "b" })).toThrow(/unknown/);
+  });
+});
+
+// #87: the bridge measures the branch again once the checkout is gone, and a
+// branch that moved in between stays. The workspace is gone either way.
+describe("what Done says when the branch stayed", () => {
+  it("says the checkout went and the branch stayed, in the bridge's sentence", () => {
+    const reason = "Build cannot delete the branch build/login: it gained commits while Build was deleting it.";
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: false, branch_reason: reason })).toEqual({
+      summary: "Removed the checkout of build/login; the branch stays",
+      detail: reason,
+    });
+  });
+
+  it("says nothing when the branch went, or when nothing was asked of it", () => {
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: true })).toBe(null);
+    expect(branchFinishNotice("build/login", { deleted: true })).toBe(null);
+    expect(branchFinishNotice("build/login", undefined)).toBe(null);
+  });
+
+  it("still says the branch stayed when an older partial reply omits its reason", () => {
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: false })).toEqual({
+      summary: "Removed the checkout of build/login; the branch stays",
+      detail: "",
+    });
+  });
+
+  it("reports a failed restore without claiming the branch stayed", () => {
+    const reason = "Build could not restore branch build/login at abc in /repo after it was deleted.";
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: true, branch_reason: reason })).toEqual({
+      summary: "Removed the checkout of build/login; branch recovery failed",
+      detail: reason,
+    });
   });
 });
 
@@ -103,11 +155,30 @@ describe("the facts Done speaks about", () => {
 });
 
 describe("what the confirmation promises", () => {
+  const deleting = (row) => ({ ...branchFinishFacts(row, "build/login"), deletesBranch: true });
+
   it("outlines the deletion, as the destructive verb it is", () => {
-    const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
+    const plan = branchFinishConfirm(deleting(branchRow()));
+    expect(plan.intro).toBe("Done deletes the branch. This cannot be undone.");
     expect(plan.actions[0]).toBe("Delete branch build/login");
     expect(plan.danger).toBe(true);
     expect(plan.confirmLabel).toBe("Delete");
+  });
+
+  it("says the bridge is too old, and promises only the checkout, where it keeps the branch", () => {
+    const plan = branchFinishConfirm({
+      ...branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"),
+      deviceName: "studio",
+    });
+    expect(plan.intro).toBe(
+      "Build cannot delete the branch on studio: the bridge is too old. Done removes its checkout and keeps the branch.",
+    );
+    expect(plan.actions).toEqual([
+      "Remove its checkout",
+      "Take its conversation off the inbox",
+      "Return the issue it implements to the inbox",
+    ]);
+    expect(plan.confirmLabel).toBe("Remove");
   });
 
   it("carries what the bridge says the deletion would cost", () => {
@@ -127,8 +198,8 @@ describe("what the confirmation promises", () => {
   // Deleting an unmerged branch hands its issue back to the inbox; merging
   // first files the issue away with it. The outline says which, before the click.
   it("says where the issue it implements ends up", () => {
-    const back = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"));
-    expect(back.actions.join(" ")).toContain("Return the issue");
+    const back = branchFinishConfirm(deleting(branchRow({ issue_id: "issue-1" })));
+    expect(back.actions.join(" ")).toContain("Return the issue it implements to the inbox, noting that build/login was deleted");
 
     const archived = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1", state: "merged" }), "build/login"));
     expect(archived.actions.join(" ")).toContain("Archive the issue");

@@ -6,6 +6,13 @@
 // to go on carrying, which is the one thing Done is supposed to end — so this is
 // one verb with one behavior.
 //
+// Deleting the branch is the bridge's to do, and only a bridge announcing
+// `branches.finishDelete` does it (#87); an older one removes the checkout and
+// keeps the branch whatever it is sent. So every function here that promises
+// or asks for the deletion takes `deletesBranch` — what the cache holds for
+// that machine (core/branchDeleteSupport.js) — and on an older bridge the
+// options and the params say only what will really happen.
+//
 // What the deletion would cost travels with the row as `finish.warnings`
 // (uncommitted work, commits the remote does not have, commits the base branch
 // does not have), and the confirmation puts those above the outline of what
@@ -26,26 +33,34 @@ import { branchDoneConfirm, entryKeyOf } from "./inbox.js";
 
 export const BRANCH_DONE_OPTION = "finish_delete";
 
-/** The `branch.finish` action each option sends. `delete` takes the branch with
- *  the checkout, which is what Done means. */
+/** The `branch.finish` action each option sends where the bridge deletes the
+ *  branch. `delete` takes the branch with the checkout, which is what Done
+ *  means. */
 const BRANCH_FINISH_ACTION = {
   [BRANCH_DONE_OPTION]: "delete",
 };
 
+/** The verb's option, by whether the bridge deletes the branch. The
+ *  description carries the raw branch name and is escaped by the split
+ *  button. */
+const DONE_OPTION = {
+  deletes: (branch) => ({
+    menuLabel: "Done — delete the branch",
+    description: `delete branch ${branch || "this checkout"} and its checkout`,
+    busyLabel: "deleting…",
+  }),
+  keeps: (branch) => ({
+    menuLabel: "Done — remove the checkout",
+    description: `remove the checkout of ${branch || "this branch"}; the branch stays`,
+    busyLabel: "removing…",
+  }),
+};
+
 /** The verb's options. One behavior, so the split button renders a plain
- *  button; the description carries the raw branch name and is escaped by the
- *  split button. */
-function branchFinishOptions(branch) {
-  return [
-    {
-      id: BRANCH_DONE_OPTION,
-      label: "Done",
-      menuLabel: "Done — delete the branch",
-      description: `delete branch ${branch || "this checkout"} and its checkout`,
-      busyLabel: "deleting…",
-      danger: true,
-    },
-  ];
+ *  button. */
+function branchFinishOptions(branch, deletesBranch) {
+  const words = DONE_OPTION[deletesBranch ? "deletes" : "keeps"](branch);
+  return [{ id: BRANCH_DONE_OPTION, label: "Done", ...words, danger: true }];
 }
 
 /**
@@ -57,22 +72,36 @@ function branchFinishOptions(branch) {
  * structural fact, never a judgement about the state of the work, so a shown
  * control is always ready to press.
  */
-export function branchCloseout(row) {
+export function branchCloseout(row, { deletesBranch = false } = {}) {
   const hidden = { shown: false, options: [] };
   if (!row || !row.can_finish) return hidden;
   if (!row.run_id && !row.worktree_id) return hidden;
-  return { shown: true, options: branchFinishOptions(row.branch) };
+  return { shown: true, options: branchFinishOptions(row.branch, deletesBranch) };
 }
 
-/** The `branch.finish` params one option sends. */
-export function branchFinishParams(optionId, { projectId, branch }) {
+/** The `branch.finish` params one option sends. The action goes only to a
+ *  bridge that deletes the branch: an older one would take it and drop it. */
+export function branchFinishParams(optionId, { projectId, branch, deletesBranch = false }) {
   const action = BRANCH_FINISH_ACTION[optionId];
   if (!action) throw new Error(`unknown branch finish option: ${optionId}`);
-  return { project_id: projectId, branch, action };
+  return deletesBranch ? { project_id: projectId, branch, action } : { project_id: projectId, branch };
 }
 
 export function branchFinishFailureSummary(name) {
   return `Couldn't finish ${name || "this item"}`;
+}
+
+/** A post-removal branch outcome that needs a lasting notice. A refusal kept
+ *  the branch; a recovery warning means the checkout went but restoration
+ *  failed, so its summary must never claim the branch stayed. */
+export function branchFinishNotice(name, answer) {
+  if (answer?.branch_deleted !== false && !answer?.branch_reason) return null;
+  return {
+    summary: answer.branch_deleted === true
+      ? `Removed the checkout of ${name || "this branch"}; branch recovery failed`
+      : `Removed the checkout of ${name || "this branch"}; the branch stays`,
+    detail: String(answer.branch_reason || ""),
+  };
 }
 
 /** The name the inbox is holding this branch's row under. A row with no entity

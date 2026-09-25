@@ -14,6 +14,7 @@
 //! removal itself runs off the mutex through the deferred drain, because
 //! unregistering worktrees and walking a tree away are both unbounded.
 
+use super::branch_delete::{self, BranchDeletion};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
 use crate::workspace::{Workspace, WorkspaceStatus};
@@ -33,9 +34,17 @@ pub(super) struct DeleteWorkspaceFiles {
     /// workspace owned, and anything adopted below it.
     run_ids: Vec<String>,
     /// Set when this removal is a Done: the workspace to write into the
-    /// registry's history before its files go, and the registry to write it
-    /// to. A plain delete is not history and records nothing.
-    finish: Option<(PathBuf, Workspace)>,
+    /// registry's history before its files go, the registry to write it to,
+    /// and the branches it takes with it. A plain delete is not history and
+    /// records nothing.
+    finish: Option<(Finishing, Workspace)>,
+}
+
+/// What a Done does beyond a delete: where it writes the record of what it
+/// finished, and the local branches it deletes once the checkouts are gone.
+pub(super) struct Finishing {
+    pub(super) registry_root: PathBuf,
+    pub(super) branches: Vec<BranchDeletion>,
 }
 
 impl DeferredGitWork for DeleteWorkspaceFiles {
@@ -45,9 +54,9 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
         // work was left. It measures the Git work once more here, off the
         // mutex, so nothing that landed since the click is deleted unseen.
         let finished = match &self.finish {
-            Some((registry_root, workspace)) => {
+            Some((finishing, workspace)) => {
                 let mut workspace = workspace.clone();
-                let registry = crate::workspace::WorkspaceRegistry::load(registry_root)?;
+                let registry = crate::workspace::WorkspaceRegistry::load(&finishing.registry_root)?;
                 Some(registry.record_finished(&mut workspace)?)
             }
             None => None,
@@ -83,13 +92,17 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
                 ))
             }
         }
-        match finished {
-            Some(finished) => Ok(json!({
-                "complete": finished.complete,
-                "repositories": finished.repositories,
-                "deleted": true,
-            })),
-            None => Ok(json!({ "workspace_id": self.workspace_id, "deleted": true })),
+        match (finished, &self.finish) {
+            (Some(finished), Some((finishing, _))) => {
+                let mut answer = json!({
+                    "complete": finished.complete,
+                    "repositories": finished.repositories,
+                    "deleted": true,
+                });
+                note_branch_outcome(&mut answer, &finishing.branches);
+                Ok(answer)
+            }
+            _ => Ok(json!({ "workspace_id": self.workspace_id, "deleted": true })),
         }
     }
 
@@ -107,7 +120,35 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
         app.complete_workspace_delete(&self.workspace_id, &self.run_ids)?;
+        if result["branch_deleted"] == true {
+            if let Some((finishing, workspace)) = &self.finish {
+                for branch in finishing.branches.iter().map(BranchDeletion::branch) {
+                    app.note_branch_deleted(
+                        &workspace.project_id,
+                        &self.workspace_id,
+                        branch,
+                        result["branch_reason"].as_str(),
+                    );
+                }
+            }
+        }
         Ok(result)
+    }
+}
+
+/// Delete the branches a Done was asked to take, now the checkouts holding
+/// them are gone, and say how that went beside the rest of the answer. Only a
+/// Done that was asked says anything about a branch.
+fn note_branch_outcome(answer: &mut Value, branches: &[BranchDeletion]) {
+    if branches.is_empty() {
+        return;
+    }
+    match branch_delete::delete_all(branches) {
+        Ok(()) => answer["branch_deleted"] = json!(true),
+        Err(failure) => {
+            answer["branch_deleted"] = json!(failure.recovery_failed());
+            answer["branch_reason"] = json!(failure.reason());
+        }
     }
 }
 
@@ -151,13 +192,14 @@ impl AppState {
     }
 
     /// Stop everything standing in this workspace and hand its removal to the
-    /// drain. `finish` carries the registry root when the removal is a Done,
-    /// which writes the record of what was finished on the way out.
+    /// drain. `finish` is set when the removal is a Done, which writes the
+    /// record of what was finished on the way out and deletes the branches it
+    /// was asked to.
     pub(super) fn remove_workspace(
         &mut self,
         workspace: &Workspace,
         params: &Value,
-        finish: Option<PathBuf>,
+        finish: Option<Finishing>,
     ) -> Result<(), String> {
         self.preserve_project_issue_identities(&workspace.project_id)?;
         // Done closes linked open issues only after identity preservation
@@ -179,7 +221,7 @@ impl AppState {
                 retirements,
                 checkouts: checkouts_of(workspace),
                 run_ids,
-                finish: finish.map(|registry_root| (registry_root, workspace.clone())),
+                finish: finish.map(|finishing| (finishing, workspace.clone())),
             }),
             params: params.clone(),
             invalidates: true,

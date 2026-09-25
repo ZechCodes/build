@@ -7,7 +7,8 @@
 //!
 //! 1. **An agent holding a dispatched issue reports Complete.** The issue
 //!    moves to In review.
-//! 2. **A workspace an issue links is finished.** The issue closes.
+//! 2. **A workspace an issue links is finished.** The issue closes, and when
+//!    Done deleted the branch too, the issue's timeline says which.
 //!
 //! Neither moves the inbox anchor or crosses a dismissal line. They are the
 //! work happening, not somebody speaking to the human.
@@ -176,6 +177,52 @@ impl AppState {
             );
             if let Err(error) = self.commit_issue_write(project_id, write, &now) {
                 eprintln!("close issue for finished workspace {workspace_id}: {error}");
+            }
+        }
+    }
+
+    /// Done deleted `branch` along with the workspace: say so on every issue
+    /// that links either, open or already closed by that same Done, so the
+    /// timeline says where the branch went.
+    ///
+    /// Quiet about its own failure: the branch is gone either way.
+    pub(in crate::app) fn note_branch_deleted(
+        &mut self,
+        project_id: &str,
+        workspace_id: &str,
+        branch: &str,
+        reason: Option<&str>,
+    ) {
+        let Ok(project_path) = self.tracker_project_path(project_id) else {
+            return;
+        };
+        let issues = self.tracker_store().and_then(|store| {
+            store
+                .list_tracker_issues(&project_path, IssueFilter::default())
+                .stored()
+        });
+        let Ok(issues) = issues else {
+            return;
+        };
+        let now = crate::store::now_rfc3339();
+        for issue in issues.into_iter().filter(|issue| {
+            issue.links.links_workspace(workspace_id)
+                || issue.links.branches.iter().any(|linked| linked == branch)
+        }) {
+            let mut write = IssueWrite::by(Actor::User, issue);
+            write.event(
+                &Actor::User,
+                IssueEventKind::BranchDeleted,
+                match reason {
+                    Some(reason) => {
+                        json!({ "branch": branch, "workspace_id": workspace_id, "reason": reason })
+                    }
+                    None => json!({ "branch": branch, "workspace_id": workspace_id }),
+                },
+                &now,
+            );
+            if let Err(error) = self.commit_issue_write(project_id, write, &now) {
+                eprintln!("note deleted branch {branch} on its issue: {error}");
             }
         }
     }

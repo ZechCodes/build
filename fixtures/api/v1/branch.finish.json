@@ -4,7 +4,7 @@
   "params": {
     "project_id": "proj-1",
     "branch": "build/wire",
-    "action": "merge"
+    "action": "delete"
   },
   "result": {
     "complete": true,
@@ -18,7 +18,8 @@
         "pushed": true
       }
     ],
-    "deleted": true
+    "deleted": true,
+    "branch_deleted": true
   },
   "errors": [
     "not_found",

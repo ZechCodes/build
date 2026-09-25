@@ -261,6 +261,9 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
         | IssueEventKind::Untracked
         | IssueEventKind::Watched
         | IssueEventKind::Unwatched => None,
+        // The issue's own state says what Done did to it; the branch going
+        // with it is a record, not news to wake anyone for.
+        IssueEventKind::BranchDeleted => None,
     })
 }
 
@@ -325,7 +328,8 @@ pub(in crate::app) fn notice_of_entry(
                 IssueEventKind::Tracked
                 | IssueEventKind::Untracked
                 | IssueEventKind::Watched
-                | IssueEventKind::Unwatched => None,
+                | IssueEventKind::Unwatched
+                | IssueEventKind::BranchDeleted => None,
             }
         }
     }

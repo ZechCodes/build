@@ -66,6 +66,7 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
 import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
+import { rememberBranchDelete } from "./branchDeleteSupport.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -85,6 +86,7 @@ const NO_CAPABILITIES = Object.freeze({
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
   threads: Object.freeze({ postOperations: false }),
+  branches: Object.freeze({ finishDelete: false }),
 });
 
 // Event mode is a fact about one bridge, so it is held per device: one machine
@@ -856,6 +858,8 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   if (!state.adapter) return abandonBridge(state);
   // Into the cache, where the views that draw Needs you read it (#144).
   void rememberNeedsYouRule(deviceId, state.adapter.capabilities);
+  // And whether Done there deletes the branch (#87).
+  void rememberBranchDelete(deviceId, state.adapter.capabilities);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

@@ -582,7 +582,11 @@ refuses when that device cannot answer.
   greeting and read from there, so a cold mount draws what it will keep:
   `issues.commentUserNotifies` becomes the per-device Needs you rule in
   `spa/src/core/needsYouRule.js`, read by the Issues tab and the inbox's
-  watched issues.
+  watched issues; `branches.finishDelete` becomes whether Done deletes the
+  branch on that machine in `spa/src/core/branchDeleteSupport.js`, read by the
+  branch surface's Done and the inbox row's. What the cache says draws the
+  confirmation; the deletion itself is sent through `whenGreeted`, on the
+  adapter the current session's greeting installed.
 - A session is adopted before it is greeted, so `canAnswer` is true before the
   greeting's verdict. Each greeting, including a re-greeting on a new carrier
   or a restored path (`greetLiveBridge` in `spa/src/connection.js`), gets its

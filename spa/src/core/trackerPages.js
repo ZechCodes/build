@@ -193,7 +193,9 @@ async function foldLandedPage({ sub, page, place, read, fold }) {
   const next = nextCursorOf(page, place.cursor);
   const own = { read: page.read_order, readAt: userSessionOf(page)?.now_ms ?? null };
   const stretch = { ...stretchOf(page, place, own, next), pullRead: place.pullRead ?? read };
-  if (coversNumbers(stretch)) await fold(stretch, page);
+  // An exhausted or refused canonical write did not lay this stretch. Keep
+  // its cursor out of the walk so a later page cannot conceal the gap.
+  if (coversNumbers(stretch) && await fold(stretch, page) === false) return null;
   return {
     sub,
     cursor: next,

@@ -468,10 +468,13 @@ export function mountIssuesPane(host, options) {
       projectId,
       params,
       active: () => !state.disposed && deviceSession(deviceId) === session,
-      fold: (stretch, page) => Promise.all([
-        ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
-        writeUserSession(deviceId, page),
-      ]),
+      fold: async (stretch, page) => {
+        const committed = await Promise.all([
+          ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
+          writeUserSession(deviceId, page),
+        ]);
+        return committed.slice(0, addresses.length).every(Boolean);
+      },
     });
   }
 

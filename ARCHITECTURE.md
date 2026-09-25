@@ -640,7 +640,9 @@ In practice:
   is asked, from a count shared by all tabs in the cache. Each page notes the
   stretch of issue numbers it had the say on beside the list record, written
   in the same transaction as that list record (`spa/src/core/issueReadOrder.js`,
-  `mergeCachedTogether`): a page yields every row a read asked after it had
+  `mergeCachedTogether`). That joint write waits through transient cache
+  recovery before the walk advances; a refused fold stops the walk without
+  advancing its cursor. A page yields every row a read asked after it had
   the say on, in any tab, present or absent, so an older page neither brings
   back an issue a newer read took off the list nor overwrites a newer copy
   with the same `updated_at`. A page answers for its own rows

@@ -598,11 +598,12 @@ async function readIssuePagesNow(context, projectId) {
     active: () => context.active(),
     fold: async (stretch, page) => {
       columns ||= await projectColumns(context, projectId);
-      if (!context.active()) return;
-      await Promise.all([
+      if (!context.active()) return false;
+      const [folded] = await Promise.all([
         foldIssuesPage(issuesAddress(deviceId, projectId), stretch, () => columns),
         writeUserSession(deviceId, page),
       ]);
+      return folded;
     },
   });
 }

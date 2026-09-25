@@ -552,12 +552,12 @@ async function attemptOperation(mode, run) {
  *  A read is never answered "nothing" because the database was away: one
  *  whose attempts all failed waits for the next wake and asks again, until it
  *  is answered or the cache stands down — which a failure that outlasts the
- *  weather makes it do (`outlasted`). A write whose attempts all failed
- *  fails alone; the pull that carried it asks again from its own cursor. */
-async function transact(mode, run) {
+ *  weather makes it do (`outlasted`). Most writes fail alone after a round;
+ *  only callers whose result cannot be skipped opt into waiting as reads do. */
+async function transact(mode, run, waitForRecovery = mode === "readonly") {
   for (;;) {
     const outcome = await attemptOperation(mode, run);
-    if (!outcome.exhausted || mode !== "readonly") return outcome;
+    if (!outcome.exhausted || !waitForRecovery) return outcome;
     await untilWake(timing.restMs);
   }
 }
@@ -570,7 +570,8 @@ const inStore = (mode, run) => transact(mode, run).then((done) => done.result);
  *  database that is away, would otherwise send every subscriber to re-read a
  *  record that was never written and blank a surface that was painting the
  *  right thing a frame earlier. */
-const wroteStore = (run) => transact("readwrite", run).then((done) => done.committed);
+const wroteStore = (run, waitForRecovery = false) =>
+  transact("readwrite", run, waitForRecovery).then((done) => done.committed);
 
 /** The record key. Every part is URI-encoded so a separator inside a branch
  *  name, path, or hash cannot make one record's key a prefix of another's. */
@@ -859,6 +860,21 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
 /** The merges in flight, one queue per record key. */
 const merges = new Map();
 
+/** Joint merges waiting through a lost connection keep their order per key
+ * in this tab. Each retry re-reads current records, including other tabs'
+ * writes and plain writes, so merge callbacks must reconcile those values. */
+const recoveringWrites = new Map();
+function inRecoveryWriteOrder(keys, run) {
+  const prior = Promise.all(keys.map((key) => recoveringWrites.get(key)));
+  const running = prior.then(run);
+  const settled = running.catch(() => {});
+  for (const key of keys) recoveringWrites.set(key, settled);
+  void settled.then(() => {
+    for (const key of keys) if (recoveringWrites.get(key) === settled) recoveringWrites.delete(key);
+  });
+  return running;
+}
+
 /**
  * Read a record, put something into it, and write it back — one writer at a
  * time under that address.
@@ -919,6 +935,10 @@ export function mergeCachedAtomically(address, merge) {
  * tab nor a failed write can land one without the other. */
 export function mergeCachedTogether(addresses, merge) {
   const keys = addresses.map(recordKey);
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge));
+}
+
+function mergeTogetherInStore(addresses, keys, merge) {
   let changed = [];
   return wroteStore((store) => {
     changed = [];
@@ -946,7 +966,7 @@ export function mergeCachedTogether(addresses, merge) {
       };
     });
     return null;
-  }).then((committed) => {
+  }, true).then((committed) => {
     if (committed) for (const key of changed) announce(partsOfKey(key));
     return Boolean(committed && changed.length);
   });

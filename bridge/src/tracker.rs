@@ -160,14 +160,19 @@ impl IssuePriority {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Actor {
     User,
-    Agent { agent_id: String },
+    Agent {
+        agent_id: String,
+    },
+    /// Build itself, for what the bridge records without being asked: a
+    /// workspace going quiet, its build output being dropped (#135).
+    Build,
 }
 
 impl Actor {
     /// The agent that acted, when one did rather than the human.
     pub fn agent_id(&self) -> Option<&str> {
         match self {
-            Actor::User => None,
+            Actor::User | Actor::Build => None,
             Actor::Agent { agent_id } => Some(agent_id),
         }
     }
@@ -524,6 +529,13 @@ pub enum IssueEventKind {
     /// Done took the local branch the issue's work was on. The payload names
     /// the branch and the workspace that was finished.
     BranchDeleted,
+    /// A linked workspace went a day without activity and the project agent
+    /// was told (#135). Written by Build, once per quiet stretch.
+    WorkspaceIdle,
+    /// Build dropped a quiet linked workspace's build output (#135).
+    WorkspacePruned,
+    /// A linked workspace was reclaimed: removed through `workspace.reclaim`.
+    WorkspaceReclaimed,
 }
 
 impl IssueEventKind {
@@ -543,6 +555,9 @@ impl IssueEventKind {
             IssueEventKind::Watched => "watched",
             IssueEventKind::Unwatched => "unwatched",
             IssueEventKind::BranchDeleted => "branch_deleted",
+            IssueEventKind::WorkspaceIdle => "workspace_idle",
+            IssueEventKind::WorkspacePruned => "workspace_pruned",
+            IssueEventKind::WorkspaceReclaimed => "workspace_reclaimed",
         }
     }
 }

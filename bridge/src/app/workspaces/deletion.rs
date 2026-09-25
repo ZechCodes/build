@@ -17,6 +17,7 @@
 use super::branch_delete::{self, BranchDeletion};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
+use crate::reclaim::containment::WorkspaceBoundary;
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct DeleteWorkspaceFiles {
     workspace_id: String,
     root: PathBuf,
+    boundary: WorkspaceBoundary,
     rift_root: PathBuf,
     retirements: Vec<crate::reaper::Retirement>,
     /// `(source repository, checkout inside the workspace)` per Git directory.
@@ -49,6 +51,12 @@ pub(super) struct Finishing {
 
 impl DeferredGitWork for DeleteWorkspaceFiles {
     fn run(&self, _: &Value) -> Result<Value, String> {
+        self.boundary.validate_removal().map_err(|error| {
+            format!(
+                "Workspace cleanup refused at {}: {error}. Retry the deletion",
+                self.root.display()
+            )
+        })?;
         // Done writes down what it finished before it removes anything: a
         // removal that fails halfway must not lose the record of where the
         // work was left. It measures the Git work once more here, off the
@@ -66,32 +74,93 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
                 return Err("Workspace cleanup stopped because a process did not exit; workspace files were preserved. Retry the deletion".into());
             }
         }
-        // Unregister before removing: a worktree walked away without telling
-        // its repository leaves an administrative record pointing at nothing,
-        // which makes the same name unusable next time.
+        self.boundary.validate_removal().map_err(|error| {
+            format!(
+                "Workspace cleanup refused at {}: {error}. Retry the deletion",
+                self.root.display()
+            )
+        })?;
+        // Capture the registered names while the workspace manifest still
+        // exists: managed mounts include the workspace name in that key.
+        let mut registrations = Vec::new();
         for (source, path) in &self.checkouts {
-            if path.exists() {
-                crate::worktree::WorktreeManager::new(source, path.parent().unwrap_or(path))
-                    .with_rift_registry_root(&self.rift_root)
-                    .remove_checkout(path)
-                    .map_err(|error| {
+            self.boundary.validate_removal().map_err(|error| {
+                format!(
+                    "Workspace cleanup refused at {}: {error}. Retry the deletion",
+                    self.root.display()
+                )
+            })?;
+            let name = crate::isolation::checkout_name(path)
+                .ok_or_else(|| "Workspace checkout has no registered name".to_string())?;
+            registrations.push((source.clone(), path.clone(), name));
+        }
+        // A missing source would make registration cleanup impossible after
+        // the files were gone, so open each source before the pinned removal.
+        let repositories = registrations
+            .iter()
+            .map(|(source, _, _)| {
+                git2::Repository::open(source).map_err(|error| {
+                    format!(
+                        "Workspace cleanup cannot open source {}: {error}. Retry the deletion",
+                        source.display()
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let guard = self.boundary.validate_removal().map_err(|error| {
+            format!(
+                "Workspace cleanup refused at {}: {error}. Retry the deletion",
+                self.root.display()
+            )
+        })?;
+        let budget = crate::reclaim::Budget::new(
+            u64::MAX,
+            std::time::Duration::from_secs(24 * 60 * 60),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        guard
+            .remove_contents_preserving_manifest(&budget)
+            .map_err(|error| {
+                format!(
+                    "Workspace cleanup failed at {}: {error}. Retry the deletion",
+                    self.root.display()
+                )
+            })?;
+        // The working trees are already gone through pinned descriptors. Let
+        // libgit2 remove only its own administrative files, then ask Rift to
+        // collect records whose directories have disappeared.
+        for ((_, path, name), repo) in registrations.iter().zip(&repositories) {
+            match repo.find_worktree(name) {
+                Ok(worktree) => {
+                    let mut options = git2::WorktreePruneOptions::new();
+                    options.valid(true).working_tree(false);
+                    worktree.prune(Some(&mut options)).map_err(|error| {
                         format!(
                             "Workspace cleanup failed at {}: {error}. Retry the deletion",
                             path.display()
                         )
                     })?;
+                }
+                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Workspace cleanup failed at {}: {error}. Retry the deletion",
+                        path.display()
+                    ))
+                }
             }
         }
-        match std::fs::remove_dir_all(&self.root) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Workspace cleanup failed at {}: {error}. Retry the deletion",
-                    self.root.display()
-                ))
-            }
+        for (source, path) in &self.checkouts {
+            crate::worktree::WorktreeManager::new(source, path.parent().unwrap_or(path))
+                .with_rift_registry_root(&self.rift_root)
+                .prune();
         }
+        guard.finish_remove_workspace(&budget).map_err(|error| {
+            format!(
+                "Workspace cleanup failed at {}: {error}. Retry the deletion",
+                self.root.display()
+            )
+        })?;
         match (finished, &self.finish) {
             (Some(finished), Some((finishing, _))) => {
                 let mut answer = json!({
@@ -161,7 +230,7 @@ impl AppState {
     /// a client reads the same value whichever half it sees.
     pub(crate) fn workspace_delete(&mut self, params: &Value) -> Result<Value, String> {
         let workspace = self.workspace_to_remove(params)?;
-        self.refuse_removing_what_is_not_builds(&workspace)?;
+        let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         if workspace.status == WorkspaceStatus::Provisioning {
             return Err(
                 "Wait for workspace provisioning to finish before deleting the workspace"
@@ -171,7 +240,7 @@ impl AppState {
         if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
             return Err("Stop running agents before deleting the workspace".to_string());
         }
-        self.remove_workspace(&workspace, params, None)?;
+        self.remove_workspace(&workspace, params, None, boundary)?;
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
     }
 
@@ -179,8 +248,13 @@ impl AppState {
     /// to remove it. Both `workspace.delete` and Done start here.
     pub(super) fn workspace_to_remove(&mut self, params: &Value) -> Result<Workspace, String> {
         let workspace_id = require_str(params, "workspace_id")?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
-            return Err("another filesystem operation is still running".to_string());
+        // A workspace `workspace.reclaim` or the reclaim service is measuring
+        // is theirs until they are done with it.
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_reserved(&workspace_id)
+        {
+            return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
@@ -200,6 +274,7 @@ impl AppState {
         workspace: &Workspace,
         params: &Value,
         finish: Option<Finishing>,
+        boundary: WorkspaceBoundary,
     ) -> Result<(), String> {
         self.preserve_project_issue_identities(&workspace.project_id)?;
         // Done closes linked open issues only after identity preservation
@@ -210,13 +285,18 @@ impl AppState {
         if finish.is_some() {
             self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
         }
-        let root = Self::canonical_root(&workspace.root);
+        let root = boundary
+            .validate_removal()
+            .map_err(|error| format!("Workspace root is outside managed storage: {error}"))?
+            .expected_root()
+            .to_path_buf();
         let run_ids = self.runs_under(&root);
         let retirements = self.retire_everything_at(&root);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteWorkspaceFiles {
                 workspace_id: workspace.id.clone(),
                 root: workspace.root.clone(),
+                boundary,
                 rift_root: self.project_worktrees_root(&workspace.project_id),
                 retirements,
                 checkouts: checkouts_of(workspace),
@@ -244,14 +324,30 @@ impl AppState {
     pub(super) fn refuse_removing_what_is_not_builds(
         &self,
         workspace: &Workspace,
-    ) -> Result<(), String> {
+    ) -> Result<WorkspaceBoundary, String> {
         if !workspace.managed {
             return Err(
                 "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted."
                     .to_string(),
             );
         }
-        let root = Self::canonical_root(&workspace.root);
+        let boundary = WorkspaceBoundary::new(
+            self.workspaces.storage_anchor(),
+            &workspace.root,
+            workspace
+                .directories
+                .iter()
+                .map(|directory| directory.path.clone())
+                .collect(),
+        )
+        .ok_or_else(|| "Cannot delete a workspace outside its managed storage".to_string())?;
+        let root = boundary
+            .validate_removal()
+            .map_err(|error| {
+                format!("Cannot delete a workspace outside its managed storage: {error}")
+            })?
+            .expected_root()
+            .to_path_buf();
         if self
             .projects
             .iter()
@@ -273,7 +369,7 @@ impl AppState {
                     .to_string(),
             );
         }
-        Ok(())
+        Ok(boundary)
     }
 
     /// The runs whose checkout stands inside `root`: the conversation the
@@ -287,16 +383,33 @@ impl AppState {
             .collect()
     }
 
-    /// Close every writer at this root — agents first (which also discards
-    /// their queued turns), then the terminal tabs — and hand back the reaps
-    /// to wait on off the mutex.
+    /// Close every writer at this root or anywhere below it — agents first
+    /// (which also discards their queued turns), then the terminal tabs — and
+    /// hand back the reaps to wait on off the mutex. Below it too: an agent or
+    /// a shell rooted in one of the workspace's checkouts is writing into the
+    /// files about to go.
     pub(super) fn retire_everything_at(&mut self, root: &Path) -> Vec<crate::reaper::Retirement> {
-        let mut retirements = self.retire_workspace_agents(root);
+        let mut roots: Vec<PathBuf> = self
+            .session_registry
+            .tab_keys()
+            .into_iter()
+            .map(|key| key.root)
+            .filter(|tab_root| tab_root.starts_with(root) && tab_root != root)
+            .collect();
+        roots.sort();
+        roots.dedup();
+        roots.insert(0, root.to_path_buf());
+        self.delivery_queue
+            .retain_queued(|turn| !turn.tab_key().root.starts_with(root));
+        let mut retirements = Vec::new();
+        for agents_root in &roots {
+            retirements.extend(self.retire_workspace_agents(agents_root));
+        }
         let keys: Vec<_> = self
             .session_registry
             .tab_keys()
             .into_iter()
-            .filter(|key| key.root == root)
+            .filter(|key| key.root.starts_with(root))
             .collect();
         for key in keys {
             if let Some(retirement) = self.retire_tab(&key, "closed") {
@@ -347,7 +460,9 @@ fn checkouts_of(workspace: &Workspace) -> Vec<(PathBuf, PathBuf)> {
         .directories
         .iter()
         .filter(|directory| {
-            directory.is_git && crate::isolation::Isolation::of(&directory.path).is_some()
+            directory.is_git
+                && (directory.effective_isolation.is_some()
+                    || crate::isolation::Isolation::of(&directory.path).is_some())
         })
         .map(|directory| (directory.source_path.clone(), directory.path.clone()))
         .collect()

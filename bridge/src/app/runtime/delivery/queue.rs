@@ -159,6 +159,13 @@ impl DeliveryQueue {
         self.agents_in_flight.keys().any(|key| key.root == root)
     }
 
+    /// A turn in flight for an agent at `root` or anywhere below it.
+    pub(in crate::app) fn has_in_flight_within(&self, root: &std::path::Path) -> bool {
+        self.agents_in_flight
+            .keys()
+            .any(|key| key.root.starts_with(root))
+    }
+
     pub(in crate::app) fn retain_queued(
         &mut self,
         mut keep: impl FnMut(&PendingAgentTurn) -> bool,

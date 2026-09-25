@@ -148,6 +148,23 @@ impl AppState {
         self.workspace_delete(&json!({ "workspace_id": workspace_id }))
     }
 
+    /// `reclaim_workspace` — remove one of this project's workspaces through
+    /// `workspace.reclaim`, holds and all, with the reclaim logged on its
+    /// issues under the calling agent's name.
+    pub(in crate::app) fn project_agent_reclaim_workspace(
+        &mut self,
+        owner_id: &str,
+        agent_id: &str,
+        workspace_id: &str,
+    ) -> Result<Value, String> {
+        let workspace = self.project_agent_workspace(owner_id, workspace_id)?;
+        self.refuse_removing_the_agents_own_ground(owner_id, &workspace)?;
+        let actor = crate::tracker::Actor::Agent {
+            agent_id: agent_id.to_string(),
+        };
+        self.workspace_reclaim(&json!({ "workspace_id": workspace_id }), &actor)
+    }
+
     /// `add_project_source` — one more folder on this agent's project, through
     /// `project.add_source`. The project id is the binding's; the call carries
     /// none, so there is none to disagree with.

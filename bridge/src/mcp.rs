@@ -256,6 +256,12 @@ pub enum BridgeAction {
     RemoveProjectSource {
         source_id: String,
     },
+    /// Remove a workspace whose work is somewhere else and whose issues are
+    /// finished (#135). Project only: what becomes of a quiet workspace is
+    /// the project agent's call.
+    ReclaimWorkspace {
+        workspace_id: String,
+    },
     /// One more directory in one of this project's workspaces. Project only.
     AddWorkspaceDirectory {
         workspace_id: String,
@@ -427,6 +433,7 @@ impl BridgeAction {
             BridgeAction::DeleteWorkspace { .. } => "delete_workspace",
             BridgeAction::AddProjectSource { .. } => "add_project_source",
             BridgeAction::RemoveProjectSource { .. } => "remove_project_source",
+            BridgeAction::ReclaimWorkspace { .. } => "reclaim_workspace",
             BridgeAction::AddWorkspaceDirectory { .. } => "add_workspace_directory",
             BridgeAction::RemoveWorkspaceDirectory { .. } => "remove_workspace_directory",
             // The issue tracker's twelve, on both working surfaces.
@@ -486,9 +493,9 @@ impl BridgeAction {
             // The folders a project is cut FROM stay with the project agent: an
             // agent in a checkout changes what its workspace holds, never what
             // the next workspace will be made of.
-            BridgeAction::AddProjectSource { .. } | BridgeAction::RemoveProjectSource { .. } => {
-                &[McpSurface::Project]
-            }
+            BridgeAction::AddProjectSource { .. }
+            | BridgeAction::RemoveProjectSource { .. }
+            | BridgeAction::ReclaimWorkspace { .. } => &[McpSurface::Project],
             // Compacting ANOTHER agent is staffing, which is the project
             // agent's business; every agent compacts itself.
             BridgeAction::CompactAgent { .. } => &[McpSurface::Project],
@@ -1465,6 +1472,16 @@ impl DoneServer {
                 },
                 "required": ["source_id"]
             }
+        }), json!({
+            "name": "reclaim_workspace",
+            "description": "Remove a workspace whose work is safe somewhere else: every commit is pushed, nothing is uncommitted, no agent is working in it, and every issue linked to it is Done or closed. Its agents and terminals stop, its checkouts are handed back, the folder goes, and each linked issue records the reclaim. Refused, with the reasons, while anything still holds it. That refusal is the difference from delete_workspace, which removes whatever is there.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "workspace_id": { "type": "string", "description": "From list_workspaces. A workspace outside your project is refused." }
+                },
+                "required": ["workspace_id"]
+            }
         }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
             "description": "Send a message to the user. This is the only way the user sees what you say. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
@@ -1601,6 +1618,10 @@ impl DoneServer {
             ),
             "remove_project_source" => match required_argument(params, "source_id") {
                 Ok(source_id) => acted(id, BridgeAction::RemoveProjectSource { source_id }),
+                Err(message) => refused(id, message),
+            },
+            "reclaim_workspace" => match required_argument(params, "workspace_id") {
+                Ok(workspace_id) => acted(id, BridgeAction::ReclaimWorkspace { workspace_id }),
                 Err(message) => refused(id, message),
             },
             "message_agent" => message_agent_action(id, params),
@@ -2930,6 +2951,7 @@ mod tests {
                 &[
                     "add_project_source",
                     "remove_project_source",
+                    "reclaim_workspace",
                     "compact_agent"
                 ][..],
                 &conversation[..],
@@ -2949,6 +2971,7 @@ mod tests {
         for project_only in [
             "add_project_source",
             "remove_project_source",
+            "reclaim_workspace",
             "compact_agent",
         ] {
             assert!(
@@ -3550,6 +3573,7 @@ mod tests {
             (project(), "list_projects"),
             (server(), "add_project_source"),
             (server(), "remove_project_source"),
+            (server(), "reclaim_workspace"),
             (router(), "list_workspace_agents"),
         ] {
             let refused = server.handle_message(&format!(

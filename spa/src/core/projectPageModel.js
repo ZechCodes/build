@@ -16,6 +16,7 @@ import { workspaceEntries } from "./inbox.js";
 import { workspaceProjectBlocks } from "./inboxProjects.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { workspaceStatusText } from "./workspaceModel.js";
+import { lifecycleView } from "./workspaceLifecycle.js";
 
 /** The branch a workspace is standing on: the first of its sources that is on
  *  one. A workspace holds several checkouts and the row is one line, so the
@@ -24,7 +25,7 @@ const branchOf = (workspace) =>
   (workspace?.directories || []).map((directory) => directory.branch).find(Boolean) || "";
 
 /** One workspace as the page lists it: the rail's row, plus what that workspace
- *  is standing on and how its checkout is doing. */
+ *  is standing on, how its checkout is doing, and whether it can be reclaimed. */
 const pageRow = (entry, workspace) => ({
   key: entry.key,
   workspaceId: entry.workspaceId,
@@ -38,6 +39,8 @@ const pageRow = (entry, workspace) => ({
   branch: branchOf(workspace),
   status: workspace?.status || "",
   statusText: workspaceStatusText(workspace),
+  // The reclaim service's verdict (#135): null until it has one worth saying.
+  lifecycle: lifecycleView(workspace?.lifecycle),
 });
 
 /** The one project block the rail would paint for this project, or null when no

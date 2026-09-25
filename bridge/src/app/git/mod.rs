@@ -436,7 +436,9 @@ impl AppState {
     /// itself to the drain, which makes it with the mutex released.
     ///
     /// `invalidates` says a successful call leaves the board's cached
-    /// summaries describing a tree that has since changed.
+    /// summaries describing a tree that has since changed. Those are the
+    /// verbs that write, and none of them starts in a workspace the reclaim
+    /// service has reserved.
     pub(in crate::app) fn defer_git(
         &mut self,
         params: &Value,
@@ -444,6 +446,9 @@ impl AppState {
         work: fn(&GitScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let scope = self.resolve_git_scope(params)?;
+        if invalidates {
+            self.refuse_writers_while_reserved(&scope.repo_path)?;
+        }
         Ok(self.defer_git_work(scope, work, params, invalidates))
     }
 
@@ -456,6 +461,9 @@ impl AppState {
         work: fn(&BranchScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let scope = self.resolve_branch_scope(params)?;
+        if invalidates {
+            self.refuse_writers_while_reserved(&scope.repo_path)?;
+        }
         Ok(self.defer_git_work(scope, work, params, invalidates))
     }
 
@@ -780,6 +788,8 @@ impl AppState {
 
     /// `git.branch_delete` — delete a local branch, then the fresh branch list.
     pub(crate) fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
+        let checkout = self.resolve_branch_scope(params)?;
+        self.refuse_writers_while_reserved(&checkout.repo_path)?;
         self.defer_branch_listing(params, false, |scope, params| {
             let branch = require_str(params, "branch")?;
             let force = params

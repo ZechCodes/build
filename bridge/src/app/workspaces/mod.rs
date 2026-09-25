@@ -10,6 +10,11 @@ mod branch_delete;
 mod deletion;
 mod directories;
 mod git_initialization;
+mod reclaim;
+
+#[cfg(test)]
+pub(in crate::app) use reclaim::PrunePhase;
+pub(in crate::app) use reclaim::{reserved_holds, ReclaimReservation};
 
 struct WorkspaceCreateWork {
     registry_root: PathBuf,
@@ -282,6 +287,7 @@ impl AppState {
                         .map(|id| self.conversation_activity_rows(id))
                         .unwrap_or_default());
                     value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
+                    value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
                     value
                 })
                 .collect::<Vec<_>>()
@@ -603,7 +609,7 @@ impl AppState {
                     .to_string(),
             );
         }
-        self.refuse_removing_what_is_not_builds(&workspace)?;
+        let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         let blockers = self.workspace_finish_blockers(&workspace);
         if !blockers.is_empty() {
             return Err(crate::workspace::finish_refusal(&blockers));
@@ -619,7 +625,7 @@ impl AppState {
             registry_root: self.workspaces.root().to_path_buf(),
             branches,
         };
-        self.remove_workspace(&workspace, params, Some(finishing))?;
+        self.remove_workspace(&workspace, params, Some(finishing), boundary)?;
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 
@@ -655,8 +661,11 @@ impl AppState {
     pub(crate) fn workspace_rename(&mut self, params: &Value) -> Result<Value, String> {
         let workspace_id = require_str(params, "workspace_id")?;
         let name = require_str(params, "name")?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
-            return Err("another filesystem operation is still running".to_string());
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_reserved(&workspace_id)
+        {
+            return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
@@ -673,6 +682,9 @@ impl AppState {
             return Err("another filesystem operation is still running".to_string());
         }
         let workspace_id = require_str(params, "workspace_id")?;
+        if self.workspace_reserved(&workspace_id) {
+            return Err(crate::reclaim::BUSY.to_string());
+        }
         let workspace = self.workspaces.claim_retry(&workspace_id)?;
         if !workspace.managed {
             return Err("workspace.retry: adopted workspaces require no provisioning".to_string());

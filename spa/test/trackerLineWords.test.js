@@ -83,6 +83,11 @@ describe("who did it", () => {
     expect(actorName("project-01M2SCB", { projectName: "wire-facade" })).toBe("wire-facade");
   });
 
+  // What the bridge records on its own (#135) is Build's doing, not the user's.
+  it("names Build when Build itself acted", () => {
+    expect(actorName({ kind: "build" })).toBe("Build");
+  });
+
   it("falls back to a name rather than an id when the project has none", () => {
     expect(actorName("project-01M2SCB")).toBe("Build");
     expect(actorName("project-01M2SCB", { projectName: "" })).toBe("Build");

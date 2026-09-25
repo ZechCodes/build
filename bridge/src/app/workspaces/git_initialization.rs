@@ -154,6 +154,9 @@ impl AppState {
         let workspace_id = require_str(params, "workspace_id")?;
         let source_id = require_str(params, "source_id")?;
         let targets = parse_git_init_targets(require_str(params, "target")?.as_str())?;
+        if self.workspace_reserved(&workspace_id) {
+            return Err(crate::reclaim::BUSY.to_string());
+        }
         let directory = self.resolve_workspace_directory(&workspace_id, &source_id)?;
         let workspace = self
             .workspaces

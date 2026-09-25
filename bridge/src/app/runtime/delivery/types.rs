@@ -1,3 +1,4 @@
+use crate::app::workspaces::reserved_holds;
 use crate::app::{AppState, SettlingHandle, Spawned, TabKey};
 use crate::models::ModelChoice;
 use crate::operation::OperationReceipt;
@@ -363,9 +364,13 @@ impl AppState {
         // make a request succeed before that reset.
         self.release_due_usage_limits();
         let pending_rows = &self.pending_rows;
-        let mut ready = self
-            .delivery_queue
-            .take_ready(|turn| pending_rows.iter().any(|row| row.entity_id == turn.owner));
+        let reserved = &self.reclaim_reserved;
+        // A turn for an agent inside a workspace the reclaim service or
+        // `workspace.reclaim` has reserved waits for the reservation to end.
+        let mut ready = self.delivery_queue.take_ready(|turn| {
+            pending_rows.iter().any(|row| row.entity_id == turn.owner)
+                || reserved_holds(reserved, &turn.root)
+        });
         for turn in &mut ready {
             self.forget_agent_start_error(&turn.owner, &turn.agent_id);
             if !turn.wants_catch_up {

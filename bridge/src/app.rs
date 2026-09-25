@@ -104,7 +104,7 @@ pub(in crate::app) use self::runtime::deferred::OffLockGateHandle;
 /// The `changes.*` verbs' off-lock half; see [`runtime::deferred::WatchAnswer`].
 pub(crate) use self::runtime::deferred::WatchAnswer;
 pub(in crate::app) use self::runtime::deferred::{
-    DeferredJob, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
+    DeferredJob, DeferredNext, DeferredRead, DeferredWork, OffLockJob, ProjectListRow, ReadSubject,
 };
 pub(in crate::app) use self::runtime::delivery::preflight::{
     chosen_option_id, deliver, NEW_THREAD_MESSAGES_PROMPT, WORKING_INDICATOR_NOTICE,
@@ -441,6 +441,22 @@ pub struct AppState {
     /// has been restarted is one whose agent is reading its conversation from
     /// the top anyway.
     reminded_holdings: HashMap<String, Vec<String>>,
+    /// What the workspace reclaim service last concluded about each workspace
+    /// (#135), by workspace id. Persisted in the store's `meta`.
+    workspace_lifecycle: HashMap<String, crate::reclaim::LifecycleRecord>,
+    /// Wakes the reclaim service early, when an issue linking a workspace
+    /// finishes.
+    reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
+    /// What the reclaim service runs under: its budgets, for
+    /// `workspace.reclaim` as much as for a sweep.
+    reclaim_policy: crate::reclaim::ReclaimPolicy,
+    /// Workspaces the reclaim service or `workspace.reclaim` is between
+    /// measuring and removing. While one is here, no agent turn is delivered
+    /// in it, and nothing Build does writes in it or removes it.
+    reclaim_reserved: HashMap<String, workspaces::ReclaimReservation>,
+    /// Set when the daemon is going down: a sweep still walking stops at its
+    /// next entry.
+    reclaim_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The harnesses out of usage on this device, and the agents whose turns
     /// stopped at a limit (issue #58). In memory: a restart resumes every live
     /// agent anyway, and one still limited says so again on its first turn.
@@ -620,6 +636,11 @@ impl AppState {
             compactions: Default::default(),
             dispatched_issue: HashMap::new(),
             reminded_holdings: HashMap::new(),
+            workspace_lifecycle: HashMap::new(),
+            reclaim_nudge: Default::default(),
+            reclaim_reserved: HashMap::new(),
+            reclaim_policy: Default::default(),
+            reclaim_stop: Default::default(),
             usage_limits: Default::default(),
             operation_ledger: Default::default(),
             self_handle: None,

@@ -70,6 +70,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.roleModels",
     "threads.newestDeltaPagination",
     "threads.postOperations",
+    "workspaces.lifecycle",
 ];
 
 /// Everything this bridge can serve on a session, as exact method names and
@@ -282,6 +283,15 @@ impl ApiError {
         }
         if sentence.starts_with(crate::github::REFUSAL) {
             return ApiError::unavailable(message);
+        }
+        // A refusal a deferred verb decided under the lock after its work ran
+        // off it: `workspace.reclaim` reads its holds again once Git is
+        // measured.
+        if sentence.starts_with(crate::reclaim::REFUSAL) {
+            return ApiError::conflict(message, None);
+        }
+        if sentence == crate::reclaim::BUSY || sentence == crate::reclaim::RESERVED {
+            return ApiError::busy(message);
         }
         ApiError::internal(message)
     }

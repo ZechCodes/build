@@ -50,6 +50,14 @@ pub(in crate::app) enum DeferredWork {
 /// dispatch time, when `R` is still known.
 pub(crate) type DeferredResultCheck = fn(&Value) -> Result<(), String>;
 
+/// What a drain does after writing one stage back.
+pub(in crate::app) enum DeferredNext {
+    /// The verb's answer.
+    Answered(Result<Value, String>),
+    /// Another stage to run off the lock.
+    Again(DeferredJob),
+}
+
 /// One verb's deferred work, with the type check its answer owes.
 ///
 /// The check rides ALONG with the work rather than being looked up when the
@@ -636,6 +644,31 @@ impl AppState {
         // an implementation that drifted from the type `api/v1` declares for
         // its verb — and reads as `internal` to the client.
         Self::checked_reply(method, check, applied)
+    }
+
+    /// [`AppState::apply_deferred`], and whatever the write-back handed on.
+    ///
+    /// A verb can take more than one trip off the lock: `workspace.reclaim`
+    /// measures Git off it, decides under it, and only then hands the removal
+    /// to the drain. Every drain runs the next stage the same way it ran the
+    /// first, until one answers.
+    pub(in crate::app) fn apply_deferred_stage(
+        &mut self,
+        method: &str,
+        params: &Value,
+        done: DeferredDone,
+    ) -> DeferredNext {
+        let applied = self.apply_deferred(method, params, done);
+        if applied.is_err() {
+            // A refused write-back hands nothing on.
+            self.deferred_work = None;
+            self.deferred_result_check = None;
+            return DeferredNext::Answered(applied);
+        }
+        match self.take_deferred() {
+            Some(next) => DeferredNext::Again(next),
+            None => DeferredNext::Answered(applied),
+        }
     }
 
     /// Hold a deferred reply to the result type its verb declares. Runs in

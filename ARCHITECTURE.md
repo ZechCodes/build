@@ -97,7 +97,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 | Checkouts | `worktree.rs` + `worktree/` (`WorktreeManager`), `isolation/` (git worktree, Rift, plain copy), `lifecycle/`, `watch.rs`, `diff.rs`, `gitgui/`, `git_process.rs` |
 | Agents | `harness/` (providers), `pty.rs`, `screen.rs`, `agent.rs`, `thread/`, `delivery.rs`, `reaper.rs`, `resume.rs`, `priority.rs`, `mcp.rs` + `mcp/` |
 | Work model | `orchestrator/`, `plan.rs`, `run.rs`, `branch.rs`, `capture.rs`, `router.rs`, `tracker.rs`, `attention.rs`, `operation.rs` |
-| Services | `update/` (self-update), `service/` (install), `notify.rs` (web push) |
+| Services | `update/` (self-update), `service/` (install), `notify.rs` (web push), `reclaim.rs` + `reclaim/` (workspace reclaim, run by `app/workspaces/reclaim.rs`) |
 
 ### RPC and push events
 
@@ -195,6 +195,8 @@ cannot starve the relay connection, the heartbeat or negotiation.
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
   `1.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `workspaces.lifecycle` shares this release with `params.strict`;
+  `branches.finishDelete` will join it from #87.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -260,6 +262,78 @@ A workspace brings together one checkout per project source. Its manifest is
 `bridge/src/app/workspaces/` and `bridge/src/lifecycle/`. Work branches are named
 `build/<slug>`. `bridge/src/watch.rs` runs one filesystem watcher per checkout,
 and those feed git and files changes into the `ChangeBus`.
+
+**Reclaim** (#135) is a service, not a verb. `AppState::spawn_workspace_reclaim`
+(`bridge/src/app/workspaces/reclaim.rs`) sweeps every managed workspace two
+minutes after startup, then every hour. It also sweeps five seconds after an
+issue that links a workspace moves to Done or closes. A sweep reads each
+workspace under the app lock, then measures it with the lock released
+(`bridge/src/reclaim.rs`: `Subject::measure`). The measure covers the newest
+activity (a conversation message, a commit, a file change outside `.git`,
+`.build` and build output), dirty and unpushed counts, and the linked issues.
+Every walk spends from one budget per workspace (2 million entries, two
+minutes, and the daemon's stop flag, `bridge/src/reclaim/budget.rs`). Git is
+read in a process of its own, `build-bridge measure-git`, one repository at a
+time (`bridge/src/reclaim/git_probe.rs`): libgit2's status, history walk and
+diff cannot be interrupted, so the service kills and reaps the reading when
+the budget runs out or the daemon stops. A measurement that runs out anywhere
+(a Git reading, the activity walk, the size walk, or a budget found spent at
+the end) is held as `unmeasured`: not idle, not reclaimable. A
+sweep then takes the lock again to write the verdict. `workspace.list` rows
+carry it as `lifecycle`. A workspace is idle after 24 h
+(`BRIDGE_WORKSPACE_IDLE_SECS`). What holds it: not ready, an agent working or a
+terminal open anywhere inside it, uncommitted or unpushed work, a plain
+directory, a linked issue not Done, or issues that could not be read.
+
+The registry anchors reclamation to its configured managed storage directory.
+Before measurement or cleanup, the workspace root and every manifest checkout
+must match the registered root identity and remain inside that boundary,
+without substituted symlinks. Reloads preserve the registered identity. Git readers
+start from a pinned checkout directory. Pruning and trash removal use directory
+descriptors, so replacing a pathname cannot redirect deletion into another
+tree. Explicit reclaim carries the same boundary through its deferred removal.
+An invalid boundary leaves the workspace unmeasured and preserves its files.
+
+Each project agent gets one notice per sweep naming its newly quiet
+workspaces, and the notice repeats daily while they stay quiet. The linked
+issues record `workspace_idle` and `workspace_pruned` as actor `build`,
+without waking their trackers.
+
+Dropping build output (tier 1) is off unless `BRIDGE_WORKSPACE_PRUNE` is set.
+When it is on and nothing holds an idle workspace, the sweep reserves the
+workspace under the lock (`reclaim_reserved`). While a workspace is reserved,
+the delivery queue holds every turn for an agent inside it, and every bridge
+write inside it answers `busy`: `term.create`, the `git.*` verbs that change a
+tree or its refs, `fs.write`, `fs.mkdir`, attachments, `run.git_action`, Done,
+removals, renames and directory changes. The sweep measures the Git state and
+activity again and inspects the build output, with the lock released. A final
+killable Git child reads one fresh index per repository and validates its
+candidates together. The five-second final budget includes that child, taking
+the lock again, cheap checks of holds, index and ignore-rule metadata, and
+candidate paths, and each rename into the workspace's trash (`.build/reclaim`). Deadline checks inside the loops
+stop further work, and any unfinished validation keeps the candidates and
+marks the verdict `unmeasured`. The reservation lasts through the moves.
+Configuration includes whose input files cannot be identified by libgit2's
+configuration API keep their build output. Build output is an ignored,
+untracked `node_modules`, `target`, `.venv` or `dist` inside one of the
+workspace's checkouts, reached without a symlink and holding no repository of
+its own (`bridge/src/reclaim/artifacts.rs`). The trash is emptied with the
+lock released.
+
+The bridge never removes a workspace on its own. `workspace.reclaim` (the
+project agent's `reclaim_workspace`, `app/workspaces/reclaim/explicit.rs`)
+refuses at once on the holds the app state knows, then reserves the workspace
+and measures Git off the lock. A deferred write-back can hand the drain
+another stage (`AppState::apply_deferred_stage`). The measurement is the
+sweep's, on the same budget and the same killable reading, so it has ended
+before the reservation's 15-minute backstop could. Once measured, reclaim reads
+every hold again under the lock, reads Git once more on a short budget (five
+seconds, `unmeasured` past it) so a commit that landed meanwhile still holds
+the workspace, logs `workspace_reclaimed` on each linked
+issue without waking its trackers, and removes the workspace through the same
+path as `workspace.delete`. That path stops every agent and terminal anywhere
+under the workspace root first. The verdicts persist in the store's `meta`
+table (`bridge/src/store/workspace_lifecycle.rs`).
 
 ### Harnesses and the agents' slice
 

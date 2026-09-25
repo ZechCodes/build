@@ -224,6 +224,9 @@ impl AppState {
             return Err("attachment is empty".to_string());
         }
         let homes = self.attachment_homes(&entity_id)?;
+        if let Some(worktree_home) = &homes.worktree {
+            self.refuse_writers_while_reserved(worktree_home)?;
+        }
         let name = sanitize_attachment_name(&filename);
         // Content-addressed, so re-sending the same screenshot costs one copy
         // rather than one per send, and the two homes agree on the leaf name —

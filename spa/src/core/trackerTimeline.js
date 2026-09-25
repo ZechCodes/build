@@ -14,6 +14,7 @@
 
 import { columnName } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
+import { humanBytes } from "./workspaceLifecycle.js";
 
 const COMMENT = "comment";
 const EVENT = "event";
@@ -96,6 +97,14 @@ const movedSentence = (payload, columns) => {
   return payload.by === "report" ? `${journey} on reporting Complete` : journey;
 };
 
+/** What the workspace reclaim service (#135) recorded about a workspace this
+ *  issue links: it went quiet, its build output was dropped, it was reclaimed. */
+const workspaceNamed = (payload) => `workspace ${payload.workspace_name || payload.workspace_id || ""}`.trim();
+const reclaimedSentence = (payload) => {
+  const size = payload.size_bytes ? ` (${humanBytes(payload.size_bytes)})` : "";
+  return `reclaimed ${workspaceNamed(payload)}${size}`;
+};
+
 const SENTENCES = Object.freeze({
   created: () => "filed this",
   assigned: (payload, _columns, reading) => `assigned this to ${actorName(payload.assignee, reading) || "nobody"}`,
@@ -107,6 +116,10 @@ const SENTENCES = Object.freeze({
   reopened: () => "reopened this",
   dispatched: () => "started an agent on this",
   branch_deleted: (payload) => branchDeletedSentence(payload),
+  workspace_idle: (payload) => `noted ${workspaceNamed(payload)} has had no activity for a day`,
+  workspace_pruned: (payload) =>
+    `dropped ${humanBytes(payload.pruned_bytes)} of build output from ${workspaceNamed(payload)}`,
+  workspace_reclaimed: reclaimedSentence,
 });
 
 /**

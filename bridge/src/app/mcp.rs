@@ -1,4 +1,6 @@
-use crate::app::{apply_thread_action, AppState, DeferredJob, DeliveryRunner, SessionRegistry};
+use crate::app::{
+    apply_thread_action, AppState, DeferredJob, DeferredNext, DeliveryRunner, SessionRegistry,
+};
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
 use crate::timing::{FrameClock, FrameTimer};
@@ -51,14 +53,20 @@ pub(in crate::app) fn authenticated_mcp_owner<'a>(
 pub(in crate::app) async fn apply_off_the_socket(
     state: &Arc<Mutex<AppState>>,
     timer: &FrameTimer,
-    deferred: DeferredJob,
+    mut deferred: DeferredJob,
 ) -> Result<Value, String> {
-    let done = tokio::task::spawn_blocking(move || deferred.run())
-        .await
-        .expect("the lifecycle job panicked");
-    timer
-        .lock(state)
-        .apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+    loop {
+        let done = tokio::task::spawn_blocking(move || deferred.run())
+            .await
+            .expect("the lifecycle job panicked");
+        match timer
+            .lock(state)
+            .apply_deferred_stage(MCP_CONTROL_METHOD, &Value::Null, done)
+        {
+            DeferredNext::Answered(answer) => return answer,
+            DeferredNext::Again(next) => deferred = next,
+        }
+    }
 }
 
 pub(in crate::app) fn bind_done_listener(
@@ -370,12 +378,15 @@ impl AppState {
         action: BridgeAction,
     ) -> Result<Value, String> {
         let (answered, deferred) = self.agent_action_deferring(entity_id, agent_id, action);
-        match deferred {
-            Some(deferred) => {
-                let done = deferred.run();
-                self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+        let Some(mut deferred) = deferred else {
+            return answered;
+        };
+        loop {
+            let done = deferred.run();
+            match self.apply_deferred_stage(MCP_CONTROL_METHOD, &Value::Null, done) {
+                DeferredNext::Answered(answer) => return answer,
+                DeferredNext::Again(next) => deferred = next,
             }
-            None => answered,
         }
     }
 
@@ -461,6 +472,9 @@ impl AppState {
             ),
             BridgeAction::RemoveProjectSource { source_id } => {
                 self.project_agent_remove_project_source(entity_id, source_id)
+            }
+            BridgeAction::ReclaimWorkspace { workspace_id } => {
+                self.project_agent_reclaim_workspace(entity_id, agent_id, workspace_id)
             }
             BridgeAction::AddWorkspaceDirectory {
                 workspace_id,

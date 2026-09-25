@@ -41,7 +41,30 @@
         "entity_id": "run-8c41d2f0",
         "conversations": [{"conversation_id": "agent-2"}],
         "session_started_ms": 1789826400000,
-        "last_activity_ms": 1789826700000
+        "last_activity_ms": 1789826700000,
+        "lifecycle": {
+          "measured_at_ms": 1789916700000,
+          "last_activity_ms": 1789826700000,
+          "idle": true,
+          "reclaimable": false,
+          "holds": ["unpushed", "plain_directory"],
+          "issues": [
+            {
+              "issue_id": "issue-01J8Z3Q6W8K4M2N5P7R9T1V3X5",
+              "number": 135,
+              "title": "Workspace lifecycle",
+              "status": "done",
+              "state": "open"
+            }
+          ],
+          "dirty_files": 0,
+          "unpushed_commits": 2,
+          "behind_commits": 0,
+          "size_bytes": 17179869184,
+          "pruned_bytes": 0,
+          "pruned_at_ms": null,
+          "noticed_at_ms": 1789916700000
+        }
       },
       {
         "id": "legacy-proj-1",

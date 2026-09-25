@@ -498,3 +498,67 @@ fn a_corrupt_issue_row_names_itself_rather_than_vanishing() {
         "the refusal names the row: {refused}"
     );
 }
+
+/// A list page reads no row it throws away in SQL (#85): whatever the list
+/// is narrowed by, every column is an equality of the index seek in front of
+/// `number`, so the scan bound on a page bounds the whole read. Narrowed by
+/// state and status through an index on only one of them, a page of the
+/// closed issues in a column full of open ones would step over every open
+/// one before finding nothing.
+#[test]
+fn every_list_page_seeks_straight_to_the_rows_it_may_answer() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let connection = store.connection();
+    let filters = [
+        (IssueFilter::default(), vec![]),
+        (
+            IssueFilter {
+                state: Some(IssueState::Closed),
+                status: None,
+            },
+            vec!["state=?"],
+        ),
+        (
+            IssueFilter {
+                state: None,
+                status: Some("backlog"),
+            },
+            vec!["status=?"],
+        ),
+        (
+            IssueFilter {
+                state: Some(IssueState::Closed),
+                status: Some("backlog"),
+            },
+            vec!["state=?", "status=?"],
+        ),
+    ];
+    for (filter, narrowed) in filters {
+        for below in [None, Some(40)] {
+            let (statement, _) = crate::store::tracker::stretch_query(PROJECT, filter, below);
+            let plan = super::support::query_plan(&connection, &statement);
+            let seek = plan
+                .iter()
+                .find(|step| step.contains("SEARCH tracker_issues USING"))
+                .unwrap_or_else(|| panic!("{statement} does not seek: {plan:?}"));
+            let mut constraints = vec!["project_key=?"];
+            constraints.extend(narrowed.iter());
+            if below.is_some() {
+                constraints.push("number<?");
+            }
+            for constraint in constraints {
+                assert!(
+                    seek.contains(constraint),
+                    "{statement} reads rows it throws away, {constraint} is not in the seek: {plan:?}"
+                );
+            }
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.contains("SCAN") || step.contains("TEMP B-TREE")),
+                "{statement} walks or sorts the list: {plan:?}"
+            );
+        }
+    }
+}

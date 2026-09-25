@@ -250,6 +250,17 @@ impl AssigneeFilter {
             AssigneeFilter::Exactly(wanted) => issue.assignee.as_ref() == Some(wanted),
         }
     }
+
+    /// The filter as one value, the same however it was spelled on the wire:
+    /// what a list cursor is made over.
+    pub(super) fn key(&self) -> Value {
+        match self {
+            AssigneeFilter::Unfiltered => Value::Null,
+            AssigneeFilter::Unassigned => Value::from("none"),
+            AssigneeFilter::Assigned => Value::from("any"),
+            AssigneeFilter::Exactly(wanted) => serde_json::to_value(wanted).unwrap_or_default(),
+        }
+    }
 }
 
 pub(super) fn optional_assignee_filter(params: &Value) -> Result<AssigneeFilter, String> {

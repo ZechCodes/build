@@ -81,6 +81,7 @@ const NO_CAPABILITIES = Object.freeze({
   diffs: Object.freeze({ perFile: false }),
   issues: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
+    listPaged: false,
   }),
   conversations: Object.freeze({ settings: false }),
   github: Object.freeze({ repos: false }),

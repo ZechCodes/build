@@ -213,7 +213,9 @@ runtime that starts them.
   `1.25.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0 adds
-  `workspaces.reclaimBranches` and `settings.workspaceLifecycle`.
+  `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
+  `issues.listPaged` (`limit`/`cursor` on `issues.list`,
+  `bridge/src/app/tracker/pages.rs`).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -624,6 +626,36 @@ In practice:
   stands in only for a machine nothing here has ever held.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
+- **Paged issue lists.** From a bridge announcing `issues.listPaged`, the sync
+  pass and the Issues tab pull `issues.list` a page at a time
+  (`spa/src/core/trackerPages.js`): each page read is written under its own
+  address (its filter, cursor, limit and read number) with that read number
+  in its body. The page is read back and laid over the list using its own read
+  number and cursor. A completed walk removes only older pages of its filter,
+  leaving newer reads alone even when they are still awaiting readback. Each
+  page updates the list record for exactly the numbers it answers for, so the
+  tab fills in page by page. A page can be short or empty and still name the
+  next (under a label or assignee the bridge reads a bounded stretch per page);
+  the pull walks on until no next is named. Every read takes a number, as it
+  is asked, from a count shared by all tabs in the cache. Allocation waits
+  through transient cache recovery; a refused counter write stops the read
+  instead of inventing a tab-local number while shared storage is usable.
+  Each page notes the stretch of issue numbers it had the say on beside the
+  list record, written in the same transaction as that list record
+  (`spa/src/core/issueReadOrder.js`,
+  `mergeCachedTogether`). That joint write waits through transient cache
+  recovery before the walk advances; a refused fold stops the walk without
+  advancing its cursor. A page yields every row a read asked after it had
+  the say on, in any tab, present or absent, so an older page neither brings
+  back an issue a newer read took off the list nor overwrites a newer copy
+  with the same `updated_at`. A page answers for its own rows
+  and below with its own read; the numbers between the last row the walk laid
+  and a page's first keep the older read of the pages that read past them,
+  since the cursor does not say how far the page before read. For writers
+  that are not page reads (a whole list from an older bridge, an issue filed
+  here) the timestamps stand in: a held row written after the page's copy of
+  it, or one the page does not name that was written after the page was
+  read, keeps its place. An older bridge is read whole, as before.
 
 No timer polls the bridge for data. The data timers are the device presence
 poll against skriftapp and the served-version check. The transport has its own:

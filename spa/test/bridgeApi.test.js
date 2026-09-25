@@ -89,7 +89,7 @@ describe("adapter selection", () => {
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
-      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
+      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
       github: { repos: false },
@@ -203,7 +203,7 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
-        issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
+        issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
         conversations: { settings: false },
         github: { repos: false },
         messages: { context: false },
@@ -273,7 +273,7 @@ describe("named capabilities", () => {
     expect(flags({
       ...namedGreeting(features),
       changes: { subscriptions: false }, requests: { priority: false },
-      errors: { codes: false }, issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
+      errors: { codes: false }, issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
     })).toEqual(features);
   });
 
@@ -422,5 +422,13 @@ describe("github.repos", () => {
     expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: [] }).github.repos).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "1.21.0" }).github.repos).toBe(false);
+  });
+});
+
+describe("issues.listPaged", () => {
+  it("is on only when the greeting names it, never inferred from a minor (#85)", () => {
+    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.listPaged"] }).issues.listPaged).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.list"] }).issues.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).issues.listPaged).toBe(false);
   });
 });

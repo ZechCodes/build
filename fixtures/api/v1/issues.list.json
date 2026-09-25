@@ -77,6 +77,137 @@
       "now_ms": 1758277020000
     }
   },
+  "paging": {
+    "since": "1.25.0",
+    "params": ["limit", "cursor"],
+    "fields": ["next_cursor"]
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "state": "open",
+        "limit": 1
+      },
+      "result": {
+        "project_id": "proj-1",
+        "issues": [
+          {
+            "id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "project_id": "proj-1",
+            "number": 12,
+            "title": "Kanban drag does not persist",
+            "body": "Dragging a card to In review puts it back on the next paint.",
+            "state": "open",
+            "status": "in_progress",
+            "labels": [
+              "bug",
+              "ui"
+            ],
+            "priority": "high",
+            "assignee": {
+              "kind": "agent",
+              "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            },
+            "links": {
+              "workspace_ids": [
+                "ws-3f2a91c4"
+              ],
+              "branches": [
+                "build/issues-board"
+              ],
+              "commits": [
+                "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f"
+              ],
+              "conversation_ids": [
+                "run-5d90b1e7"
+              ],
+              "parent_issue_id": null
+            },
+            "trackers": [
+              "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+            ],
+            "identities": {
+              "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E": {
+                "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E",
+                "name": "Fix drag",
+                "ordinal": 1,
+                "workspace_id": "ws-3f2a91c4",
+                "workspace_name": "spa-flaky-tests",
+                "provider": "codex_app_server",
+                "available": true
+              }
+            },
+            "attachments": [],
+            "created_by": {
+              "kind": "user"
+            },
+            "created_at": "2026-09-19T09:00:00Z",
+            "updated_at": "2026-09-19T10:12:00Z",
+            "closed_at": null
+          }
+        ],
+        "user_session": {
+          "session_started_ms": 1758272400000,
+          "last_activity_ms": 1758276720000,
+          "previous_session_ended_ms": 1758218400000,
+          "gap_ms": 21600000,
+          "now_ms": 1758277020000
+        },
+        "next_cursor": "djE6MTI6M2I4ZjBkMmM2MWE5NGU1Nzo5YzRlMWE3YjNkMDVmMjY4"
+      }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "state": "open",
+        "limit": 1,
+        "cursor": "djE6MTI6M2I4ZjBkMmM2MWE5NGU1Nzo5YzRlMWE3YjNkMDVmMjY4"
+      },
+      "result": {
+        "project_id": "proj-1",
+        "issues": [
+          {
+            "id": "issue-01K5ZQ7X2P4N6R8T0V1W3Y5Z7A",
+            "project_id": "proj-1",
+            "number": 9,
+            "title": "Board columns forget their order",
+            "body": "Reordering columns does not survive a reload.",
+            "state": "open",
+            "status": "backlog",
+            "labels": [
+              "bug"
+            ],
+            "priority": "medium",
+            "assignee": null,
+            "links": {
+              "workspace_ids": [],
+              "branches": [],
+              "commits": [],
+              "conversation_ids": [],
+              "parent_issue_id": null
+            },
+            "trackers": [],
+            "identities": {},
+            "attachments": [],
+            "created_by": {
+              "kind": "user"
+            },
+            "created_at": "2026-09-18T15:40:00Z",
+            "updated_at": "2026-09-18T15:40:00Z",
+            "closed_at": null
+          }
+        ],
+        "user_session": {
+          "session_started_ms": 1758272400000,
+          "last_activity_ms": 1758276720000,
+          "previous_session_ended_ms": 1758218400000,
+          "gap_ms": 21600000,
+          "now_ms": 1758277020000
+        }
+      }
+    }
+  ],
   "errors": [
     "not_found",
     "invalid_params",

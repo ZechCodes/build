@@ -130,6 +130,14 @@ pub struct IssuesListParams {
     /// One label, matched the way labels are deduped: case-insensitively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// At most this many issues, 1 to 500 (1.25.0, `issues.listPaged`). Absent
+    /// is the whole list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    /// Where the page starts: a `next_cursor` an earlier page of the SAME
+    /// filter answered (1.25.0). Absent is the top of the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// One file, filed with an issue and BEFORE it.
@@ -399,6 +407,10 @@ pub struct IssuesList {
     /// The user's session on this bridge, device-wide rather than this
     /// project's: what the dashboard's "Done since you left" measures from.
     pub user_session: UserSessionView,
+    /// Where the next page starts, handed back as `cursor` with the same
+    /// filter (1.25.0). Present only on a page with more rows after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// The user's session: epoch milliseconds, each `null` until there is one.
@@ -546,7 +558,7 @@ const CONFLICT: [&str; 7] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 18] = [
+const INVALID: [&str; 22] = [
     "unknown assignee kind:",
     "assignee: name a kind",
     "assignee new_agent: name a",
@@ -566,6 +578,12 @@ const INVALID: [&str; 18] = [
     "attachments must be an array",
     "each attachment needs a path",
     "attachment is empty",
+    // A page of `issues.list`: a limit out of bounds, a cursor that is not
+    // one, and a cursor made for another filter.
+    "a page holds 1 to",
+    "Build cannot read this cursor",
+    "the cursor was made for a different filter",
+    "the cursor was made for another project or on another device",
 ];
 
 /// The store is not there, or a reference did not survive its fencing. Neither

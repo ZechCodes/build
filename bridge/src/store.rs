@@ -86,7 +86,7 @@ use schema::{
     THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL,
     THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
-pub use tracker::IssueFilter;
+pub use tracker::{IssueFilter, IssueSeek, IssueStretch};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]

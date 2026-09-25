@@ -61,7 +61,8 @@ import {
   writeCached,
 } from "./localCache.js";
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
-import { issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
+import { issuesAddress, issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
+import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
 import { writeUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
@@ -564,17 +565,47 @@ async function readProjectIssues(context, view) {
  *  tracker at all refuses both and writes nothing, which is a cold Issues tab
  *  and never an error the reader sees. */
 async function readIssuesNow(context, projectId) {
+  if (pagesIssues(context.deviceId)) return readIssuePagesNow(context, projectId);
   const answer = await ask(context, "issues.list", { project_id: projectId }, "background");
   if (!answer || !context.active()) return;
-  const held = await readIssuesRecord(context.deviceId, projectId);
-  const columns = held?.columns?.length
-    ? held.columns
-    : (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
+  const columns = await projectColumns(context, projectId);
   if (!context.active()) return;
   await Promise.all([
     writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns)),
     writeUserSession(context.deviceId, answer),
   ]);
+}
+
+/** The columns the cache holds for a project, or the bridge's the first time. */
+async function projectColumns(context, projectId) {
+  const held = await readIssuesRecord(context.deviceId, projectId);
+  if (held?.columns?.length) return held.columns;
+  return (await ask(context, "issues.columns", { project_id: projectId }, "background"))?.columns || [];
+}
+
+/** The same list, a page at a time from a bridge that pages it (#85): each
+ *  page lands in the cache and is laid over the held list for the numbers it
+ *  answers for, so the Issues tab fills in page by page, and a row something
+ *  newer wrote meanwhile keeps its place (core/trackerPages.js). */
+async function readIssuePagesNow(context, projectId) {
+  const deviceId = context.deviceId;
+  let columns = null;
+  await pullIssuePages({
+    ask: (params) => ask(context, "issues.list", params, "background"),
+    deviceId,
+    projectId,
+    params: { project_id: projectId },
+    active: () => context.active(),
+    fold: async (stretch, page) => {
+      columns ||= await projectColumns(context, projectId);
+      if (!context.active()) return false;
+      const [folded] = await Promise.all([
+        foldIssuesPage(issuesAddress(deviceId, projectId), stretch, () => columns),
+        writeUserSession(deviceId, page),
+      ]);
+      return folded;
+    },
+  });
 }
 
 /** One project's list read at a time on a session (#119). A push heard while

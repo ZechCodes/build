@@ -19,6 +19,7 @@ mod edits;
 mod identities;
 mod inbox;
 mod notices;
+mod pages;
 mod refs;
 mod reminder;
 mod said;
@@ -36,7 +37,7 @@ use identities::StoredRosters;
 pub(in crate::app) use views::{columns_json, issue_json, issue_with_timeline_json};
 
 use crate::app::{require_str, AppState};
-use crate::store::{IssueFilter, Store};
+use crate::store::{IssueFilter, IssueSeek, Store};
 use crate::tracker::{
     Actor, Issue, IssueComment, IssueEvent, IssueEventKind, IssueState, MAX_BODY_BYTES,
 };
@@ -109,35 +110,72 @@ impl AppState {
     /// `issues.list` — one project's issues, newest first.
     ///
     /// `state` and `status` narrow the store read; `assignee` and `label` are
-    /// applied to what it answers, because both live inside the record and
-    /// hoisting a label list would mean a join table phase 1 does not need.
+    /// applied to each row as it is read, because both live inside the record
+    /// and hoisting a label list would mean a join table phase 1 does not need.
     ///
     /// Every row is what `issues.get` says of that issue, gathered in bulk:
     /// the timelines in one read, and the store's agent records at most once.
     /// Read per issue, a long project's list held the app lock — and every
     /// other call behind it — for seconds (#128).
+    ///
+    /// With a `limit` it answers one page, and `next_cursor` while there is
+    /// another (#85, [`pages`]). Only the page's own timelines are read.
     pub(crate) fn issues_list(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project_path = self.tracker_project_path(&project_id)?;
         let state = edits::optional_state(params)?;
         let status = edits::optional_status(params, "status")?;
-        let issues = self
+        let assignee = edits::optional_assignee_filter(params)?;
+        let label = crate::app::optional_nonempty_string(params, "label")?;
+        let store_key = self.tracker_store()?.tracker_list_key().stored()?;
+        let page = pages::PageAsk::parse(
+            params,
+            &pages::ListOf {
+                store_key: &store_key,
+                project_path: &project_path,
+            },
+            &pages::ListFilter {
+                state,
+                status: status.as_deref(),
+                assignee: &assignee,
+                label,
+            },
+        )?;
+        let stretch = self
             .tracker_store()?
-            .list_tracker_issues(
+            .list_tracker_issues_below(
                 &project_path,
                 IssueFilter {
                     state,
                     status: status.as_deref(),
                 },
+                IssueSeek {
+                    below: page.below,
+                    take: page.rows_to_keep(),
+                    scan: page.rows_to_scan(),
+                },
+                |issue| assignee.matches(issue) && edits::carries_label(issue, label),
             )
             .stored()?;
-        let assignee = edits::optional_assignee_filter(params)?;
-        let label = crate::app::optional_nonempty_string(params, "label")?.map(str::to_string);
-        let issues: Vec<Issue> = issues
-            .into_iter()
-            .filter(|issue| assignee.matches(issue))
-            .filter(|issue| edits::carries_label(issue, label.as_deref()))
-            .collect();
+        let mut issues = stretch.issues;
+        let next_cursor = page.cut(&mut issues, stretch.scanned_to, |issue| issue.number);
+        let rows = self.listed_rows(&project_id, issues)?;
+        let mut answer = json!({
+            "project_id": project_id,
+            "issues": rows,
+            // Device-wide, and here because the Done section reads it beside
+            // the list: every push that moves an issue re-reads this answer,
+            // and a new session is pushed as one (`note_user_activity`).
+            "user_session": self.user_session_json(),
+        });
+        if let Some(next_cursor) = next_cursor {
+            answer["next_cursor"] = Value::from(next_cursor);
+        }
+        Ok(answer)
+    }
+
+    /// Each listed issue as `issues.get` says it, the timelines read in one go.
+    fn listed_rows(&mut self, project_id: &str, issues: Vec<Issue>) -> Result<Vec<Value>, String> {
         let ids: Vec<String> = issues.iter().map(|issue| issue.id.clone()).collect();
         let mut timelines = self
             .tracker_store()?
@@ -150,16 +188,9 @@ impl AppState {
             let issue = self.backfill_issue_identities(issue, &timeline, &rosters)?;
             let issue = self.backfill_done_at(issue, &timeline)?;
             let issue = self.issue_with_read_identities(issue, &timeline, &rosters);
-            rows.push(issue_json(&project_id, &issue));
+            rows.push(issue_json(project_id, &issue));
         }
-        Ok(json!({
-            "project_id": project_id,
-            "issues": rows,
-            // Device-wide, and here because the Done section reads it beside
-            // the list: every push that moves an issue re-reads this answer,
-            // and a new session is pushed as one (`note_user_activity`).
-            "user_session": self.user_session_json(),
-        }))
+        Ok(rows)
     }
 
     /// `issues.get` — one issue and its whole timeline.

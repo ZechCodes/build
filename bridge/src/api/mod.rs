@@ -60,6 +60,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "issues.commentUserNotifies",
     "issues.context",
     "issues.doneSinceLeft",
+    "issues.listPaged", // Since 1.25.0: limit/cursor and next_cursor on issues.list.
     "issues.watching",
     "messages.context",
     "messages.fromAgent",

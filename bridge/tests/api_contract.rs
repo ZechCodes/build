@@ -155,18 +155,34 @@ fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
         let Some(handler) = by_name.get(method.as_str()) else {
             continue; // legacy: tolerated until its family converts
         };
-        handler
-            .parse_params(&fixture["params"])
-            .unwrap_or_else(|e| panic!("{method}: params do not parse: {e}"));
-        let round_tripped = handler
-            .round_trip_result(&fixture["result"])
-            .unwrap_or_else(|e| panic!("{method}: result does not parse: {e}"));
-        assert_eq!(
-            serde_json::to_string(&round_tripped).unwrap(),
-            serde_json::to_string(&fixture["result"]).unwrap(),
-            "{method}: result changes shape through the typed result"
-        );
+        for (at, example) in examples_of(&fixture) {
+            let method = format!("{method}{at}");
+            handler
+                .parse_params(&example["params"])
+                .unwrap_or_else(|e| panic!("{method}: params do not parse: {e}"));
+            let round_tripped = handler
+                .round_trip_result(&example["result"])
+                .unwrap_or_else(|e| panic!("{method}: result does not parse: {e}"));
+            assert_eq!(
+                serde_json::to_string(&round_tripped).unwrap(),
+                serde_json::to_string(&example["result"]).unwrap(),
+                "{method}: result changes shape through the typed result"
+            );
+        }
     }
+}
+
+/// A fixture's own params and result, then each of its further `examples`
+/// (a paged `issues.list`, #85), named by where it sits in the file.
+fn examples_of(fixture: &Value) -> Vec<(String, &Value)> {
+    let further = fixture["examples"].as_array().into_iter().flatten();
+    std::iter::once((String::new(), fixture))
+        .chain(further.enumerate().map(|(index, example)| {
+            assert!(example["params"].is_object(), "examples[{index}]: params");
+            assert!(example.get("result").is_some(), "examples[{index}]: result");
+            (format!(" examples[{index}]"), example)
+        }))
+        .collect()
 }
 
 /// A param absent from a verb's declared shape cannot be swallowed: each

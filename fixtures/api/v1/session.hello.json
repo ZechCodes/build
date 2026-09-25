@@ -113,6 +113,7 @@
       "issues.get",
       "issues.link",
       "issues.list",
+      "issues.listPaged",
       "issues.read_through",
       "issues.reopen",
       "issues.track",

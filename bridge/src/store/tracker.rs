@@ -34,6 +34,32 @@ pub struct IssueFilter<'a> {
     pub status: Option<&'a str>,
 }
 
+/// The `meta` key under which this store keeps the key its list cursors are
+/// made under (#85). A `proj-N` id is minted per boot and a repository path
+/// can be tracked by two stores, so neither says which store a cursor came
+/// from; this key does.
+const LIST_KEY: &str = "tracker_list_key";
+
+/// Where a list read starts and how much of it to read: the issues numbered
+/// below `below`, at most `take` of them, out of at most `scan` rows read.
+/// The default is the whole list.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IssueSeek {
+    pub below: Option<u64>,
+    pub take: Option<usize>,
+    pub scan: Option<usize>,
+}
+
+/// One stretch of a list, newest first. `scanned_to` is set when the read
+/// stopped at its `scan` bound with rows still below: the number of the last
+/// row it read, which the next stretch starts below. What it kept may then
+/// be short of `take`, or nothing.
+#[derive(Debug, Default)]
+pub struct IssueStretch {
+    pub issues: Vec<Issue>,
+    pub scanned_to: Option<u64>,
+}
+
 impl IssueFilter<'_> {
     /// The `WHERE` tail this filter adds, and the values it binds after the
     /// project key. Built together so a clause can never outnumber its binds.
@@ -50,6 +76,40 @@ impl IssueFilter<'_> {
         }
         (sql, binds)
     }
+}
+
+/// The list read's statement and what it binds: one project's issues, those
+/// `filter` narrows to and numbered below `below`, newest first (#85).
+///
+/// Every column it narrows by is an equality in front of `number` in one of
+/// the list indexes (`schema.rs`), so SQLite seeks straight to the rows that
+/// qualify and reads none it throws away: the scan bound in
+/// `list_tracker_issues_below` then bounds the whole read, not only the rows
+/// it decodes.
+pub(crate) fn stretch_query(
+    project_path: &str,
+    filter: IssueFilter<'_>,
+    below: Option<u64>,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let (tail, binds) = filter.clause();
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_path.to_string())];
+    values.extend(
+        binds
+            .into_iter()
+            .map(|bind| Box::new(bind) as Box<dyn rusqlite::ToSql>),
+    );
+    let below = match below {
+        Some(number) => {
+            values.push(Box::new(i64::try_from(number).unwrap_or(i64::MAX)));
+            format!(" AND number < ?{}", values.len())
+        }
+        None => String::new(),
+    };
+    let sql = format!(
+        "SELECT id, number, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
+         ORDER BY number DESC"
+    );
+    (sql, values)
 }
 
 impl Store {
@@ -114,22 +174,72 @@ impl Store {
         project_path: &str,
         filter: IssueFilter<'_>,
     ) -> Result<Vec<Issue>, StoreError> {
-        let (tail, binds) = filter.clause();
-        let sql = format!(
-            "SELECT id, record FROM tracker_issues WHERE project_key = ?1{tail} \
-             ORDER BY number DESC"
-        );
+        self.list_tracker_issues_below(project_path, filter, IssueSeek::default(), |_| true)
+            .map(|stretch| stretch.issues)
+    }
+
+    /// One stretch of a project's list, newest first: the issues numbered
+    /// below `seek.below` that `keep` keeps, no more than `seek.take` of them,
+    /// out of no more than `seek.scan` rows read (#85).
+    ///
+    /// Read down the `(project, number)` index and stopped as soon as the
+    /// stretch is full or the scan bound is reached, so a page costs the rows
+    /// it answers and a bounded number `keep` passed over on the way, never
+    /// the whole project: a label nobody carries costs one bound's worth of
+    /// rows, not every issue. `keep` is the caller's half of the filter — an
+    /// assignee, a label — applied here so the stretch counts only what it
+    /// keeps.
+    pub fn list_tracker_issues_below(
+        &self,
+        project_path: &str,
+        filter: IssueFilter<'_>,
+        seek: IssueSeek,
+        mut keep: impl FnMut(&Issue) -> bool,
+    ) -> Result<IssueStretch, StoreError> {
+        let (sql, values) = stretch_query(project_path, filter, seek.below);
         let conn = self.connection();
         let mut statement = conn.prepare(&sql)?;
-        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&project_path];
-        values.extend(binds.iter().map(|bind| bind as &dyn rusqlite::ToSql));
-        let rows: Vec<(String, String)> = statement
-            .query_map(values.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        drop(statement);
-        rows.into_iter()
-            .map(|(id, raw)| decode(&raw, "tracker_issues", &id))
-            .collect()
+        let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
+        let mut stretch = IssueStretch::default();
+        let mut scanned = 0;
+        let mut last_read = None;
+        while seek.take.is_none_or(|take| stretch.issues.len() < take) {
+            let Some(row) = rows.next()? else { break };
+            // A row past the bound is only fetched, never decoded: it says
+            // there is more below, which is what the next stretch is for.
+            if seek.scan.is_some_and(|scan| scanned >= scan) {
+                stretch.scanned_to = last_read;
+                break;
+            }
+            scanned += 1;
+            let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            last_read = u64::try_from(number).ok();
+            let issue = decode(&raw, "tracker_issues", &id)?;
+            if keep(&issue) {
+                stretch.issues.push(issue);
+            }
+        }
+        Ok(stretch)
+    }
+
+    /// The key this store's list cursors are made under, minted the first
+    /// time one is asked for and kept for the life of the store (#85).
+    pub fn tracker_list_key(&self) -> Result<String, StoreError> {
+        let conn = self.connection();
+        let read = |conn: &rusqlite::Connection| {
+            conn.query_row("SELECT value FROM meta WHERE key = ?1", [LIST_KEY], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+        };
+        if let Some(key) = read(&conn)? {
+            return Ok(key);
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+            rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
+        )?;
+        Ok(read(&conn)?.unwrap_or_default())
     }
 
     /// One comment by its id, and the issue it is on.

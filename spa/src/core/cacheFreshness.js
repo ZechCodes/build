@@ -20,10 +20,14 @@ export const withCacheFreshness = (row, record) => {
 const rowIdentity = (row) => entityIdOf(row) || (row?.capture_id ? `capture:${row.capture_id}` : null)
   || (row?.branch ? `branch:${row.projectKey || row.project_id}:${row.branch}` : null);
 
+/** Never observed: any record of the row's own is fresher. */
+const UNOBSERVED = { at: 0, order: 0 };
+
 /** Called by the cache's one feed write path. A local edit or prune carries
  * each surviving row's observation, even when it changes non-roster fields.
- * A bridge board read explicitly marks its rows as newly observed. */
-export function feedWithObservations(next, oldRecord, stamp, newlyObserved = false) {
+ * A bridge board read explicitly marks its rows as newly observed — all but
+ * the ones it names superseded, which it did not observe as they stand. */
+export function feedWithObservations(next, oldRecord, stamp, newlyObserved = false, superseded = () => false) {
   const rowsFor = (field) => new Map((oldRecord?.value?.[field] || [])
     .map((row) => [rowIdentity(row), row]).filter(([key]) => key));
   const carry = (field) => {
@@ -34,7 +38,8 @@ export function feedWithObservations(next, oldRecord, stamp, newlyObserved = fal
       // An undo can put a row back after the prior feed write removed it. Its
       // own persisted observation travels with it even though the current
       // record no longer names it.
-      const observed = newlyObserved ? stamp : old ? freshnessOf(old, oldRecord) : incoming || stamp;
+      const observed = superseded(plain) ? UNOBSERVED
+        : newlyObserved ? stamp : old ? freshnessOf(old, oldRecord) : incoming || stamp;
       return { ...plain, [OBSERVED]: observed };
     });
   };

@@ -84,6 +84,16 @@ export async function mergeCached(address, merge) {
 // keeps those steps in one readwrite transaction across browser tabs.
 export const mergeCachedAtomically = mergeCached;
 
+// The feed's own write path. The rows' observation stamps it keeps are the
+// real cache's business (core/cacheFreshness.js); this double keeps none.
+export async function updateCachedFeed(address, update) {
+  const held = records.get(recordKey(address));
+  const next = update(held?.value, held);
+  if (next === undefined || next === null) return false;
+  await writeCached(address, next);
+  return true;
+}
+
 export async function evictEntity(deviceId, entityId) {
   for (const key of keysUnder({ deviceId, entityId })) records.delete(key);
   announce([encodeURIComponent(deviceId), encodeURIComponent(entityId)]);

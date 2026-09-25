@@ -3,14 +3,31 @@
 // The ordered cache pass and a surface opening a cold conversation both come
 // through here. That keeps the latest-window request, gap handling and cache
 // write identical; the surface only gives a cold read foreground priority.
+//
+// # What a forward read cannot see (#120)
+//
+// A forward read walks the conversation's own order: the items made after the
+// cursor. An item under the cursor that changed in place — a delivery status,
+// a settled message, a tool call's answer — is carried by a push while a
+// subscription is held, and by nothing while none is. So when the forward
+// page says the conversation's counter moved on something the page does not
+// carry, the recent items the record holds are read again and the changed
+// ones taken.
+//
+// The forward read moves the cursor past the evidence, so the debt is written
+// down in the same write: `repairThrough`, the counter a repair must read at or
+// past. It stays on the record until a repair has — through a failed repair, a
+// pass stood down under it, a reload.
 
-import { LATEST_THREAD_ITEMS } from "./cacheThresholds.js";
+import { LATEST_THREAD_ITEMS, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
 import { mergeCached, readCached } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
 import {
   THREAD_RECORD_KIND,
   isProvisionalItem,
+  latestItemSequence,
   mergeThreadItems,
+  threadItemKey,
   windowFromThreadPayload,
 } from "./thread.js";
 import { mergeActivityDigests } from "./activityDigest.js";
@@ -28,31 +45,122 @@ const threadTarget = (request) => request.address || {
 const requestPriority = (request) => request.priority === undefined ? "foreground" : request.priority;
 const requestIsActive = (request) => (request.active === undefined ? ALWAYS_ACTIVE : request.active)();
 
-async function requestThreadPage(request, after) {
+async function requestThreadPage(request, params) {
   try {
-    return await request.call(
-      "thread.page",
-      threadPageParams(request.entityId, request.agentId || "", after),
-      requestPriorityFields(requestPriority(request)),
-    );
+    return await request.call("thread.page", params, requestPriorityFields(requestPriority(request)));
   } catch {
     return null;
   }
 }
 
 /** One conversation, read forward from the sequence the cache holds — or the
- *  latest hundred where it holds none. */
+ *  latest hundred where it holds none — and its recent items read again where
+ *  that read says one of them changed. */
 export async function syncThreadWindow(request) {
   if (!validThreadRequest(request)) return false;
   const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  const page = await requestThreadPage(request, after);
+  const page = await requestThreadPage(request, threadPageParams(request.entityId, request.agentId || "", after));
   if (!page) return false;
   if (!requestIsActive(request)) return false;
+  const owed = changedUnderCursor(page, after) ? Number(page.thread_last_sequence) : 0;
   await mergeCached(target, (current) =>
-    requestIsActive(request) ? threadWindow(current, page, { newest: after > 0 }) : null);
+    requestIsActive(request) ? owingRepair(current, threadWindow(current, page, { newest: after > 0 }), owed) : null);
+  await repairRecentItems(request, target);
   return true;
+}
+
+/** The window the forward merge leaves, with the repair it owes written into
+ *  it — onto the window as it stood where the page added nothing to it. */
+function owingRepair(current, next, owed) {
+  const window = next || current;
+  if (!owed || !holdsAWindow(window)) return next;
+  return { ...window, repairThrough: Math.max(owed, Number(window.repairThrough || 0)) };
+}
+
+/**
+ * Whether something under the cursor changed in place: the conversation's
+ * counter moved past it on a value no item on the forward page wears.
+ *
+ * Every item made and every change in place takes the next value of one
+ * counter (bridge thread/conversation.rs `next`), and an unbroken forward page
+ * carries every item made past the cursor. So a value past the cursor that no
+ * item on it wears was taken by a change to an item under the cursor. An item
+ * changed twice leaves its first value unworn too, which costs a read and
+ * never misses one. A page that skipped a gap replaced the window whole, and
+ * a window that was never held has nothing to repair.
+ */
+function changedUnderCursor(page, after) {
+  if (!after || page.has_more === true) return false;
+  return Number(page.thread_last_sequence || 0) - after > valuesWornPast(page.items, after).size;
+}
+
+/** Every counter value past the cursor that an item wears. */
+function valuesWornPast(items, after) {
+  const worn = new Set();
+  for (const item of items || []) {
+    for (const value of [item?.data?.sequence, item?.data?.updated_sequence]) {
+      if (Number(value) > after) worn.add(Number(value));
+    }
+  }
+  return worn;
+}
+
+/** Where the record owes one: the newest items it holds, read again, and the
+ *  ones that changed taken. Nothing it does not hold is added and the cursor
+ *  does not move: the forward read owns both, and a repair that crossed a new
+ *  item on the wire must not carry the cursor past it. */
+async function repairRecentItems(request, target) {
+  const held = (await readCached(target))?.value;
+  if (!held?.repairThrough) return;
+  const floor = repairFloor(held);
+  if (floor === null || !requestIsActive(request)) return;
+  const page = await requestThreadPage(request, {
+    entity_id: request.entityId,
+    ...(request.agentId ? { agent_id: request.agentId } : {}),
+    after_sequence: floor,
+    limit: REPAIRED_THREAD_ITEMS,
+  });
+  if (!page || !requestIsActive(request)) return;
+  await mergeCached(target, (current) => requestIsActive(request) ? repairedThreadWindow(current, page) : null);
+}
+
+/** The sequence just under the newest items the record holds from the wire,
+ *  or null where it holds none. */
+function repairFloor(held) {
+  const recent = (held?.items || []).filter((item) => !isProvisionalItem(item)).slice(-REPAIRED_THREAD_ITEMS);
+  if (!recent.length) return null;
+  return Math.max(0, Number(recent[0].data?.sequence || 0) - 1);
+}
+
+/** The window with the items a repair page carries newer copies of, and its
+ *  debt paid where the page was read at or past it — or null where neither. */
+export function repairedThreadWindow(held, page) {
+  if (!holdsAWindow(held)) return null;
+  const newer = newerCopies(held.items, page?.items);
+  const paid = repaidBy(held, page);
+  if (!newer.length && !paid) return null;
+  const { repairThrough, ...window } = held;
+  return {
+    ...window,
+    ...(paid || !repairThrough ? {} : { repairThrough }),
+    items: newer.length ? mergeThreadItems(held.items, newer) : held.items,
+  };
+}
+
+/** Whether this page was read at or past the counter the record owes a
+ *  repair through. */
+const repaidBy = (held, page) =>
+  Boolean(held.repairThrough) && Number(page?.thread_last_sequence || 0) >= Number(held.repairThrough);
+
+/** The arrivals that are newer copies of items held. */
+function newerCopies(heldItems, arrived) {
+  const heldByKey = new Map(heldItems.map((item) => [threadItemKey(item), item]));
+  return (arrived || []).filter((item) => {
+    const copy = heldByKey.get(threadItemKey(item));
+    return copy && latestItemSequence(item) > latestItemSequence(copy);
+  });
 }
 
 export const threadPageParams = (entityId, agentId, after) => ({
@@ -116,6 +224,3 @@ const newestThreadWindow = (held, arrived, page) => {
 
 const highestCreationSequence = (items) =>
   (items || []).reduce((highest, item) => Math.max(highest, Number(item?.data?.sequence || 0)), 0);
-
-const latestItemSequence = (item) =>
-  Math.max(Number(item?.data?.sequence || 0), Number(item?.data?.updated_sequence || 0));

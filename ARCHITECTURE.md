@@ -433,6 +433,40 @@ In practice:
   of them. It holds three change subscriptions per device: `s-inbox`
   (realtime), `s-background` (git, files and shells on a 30 s cooldown) and
   `s-active` (the routed workspace, realtime).
+- **Reconnect catch-up.** The bridge starts a subscription empty and records a
+  change only for the subscriptions it holds when the change happens. So a pass
+  takes its subscriptions out before it reads anything, and where the cache has
+  something to show it waits (bounded) for the bridge to answer them. A device
+  with nothing cached reads at once. Either way, a subscription the bridge
+  takes on after a pass's reads were asked (`onSubscriptionHeld` in
+  `spa/src/core/changeEvents.js`) is followed by another pass. A push can
+  overtake a read, so a read never writes over a record a push wrote after the
+  read was asked, nor under an entity a push took off the board since
+  (`spa/src/core/pushFence.js`). A board read leaves a row a push wrote since
+  unobserved in the `feed`, so the row's own record paints. Stopping sync
+  permanently invalidates that lifetime's passes and push appliers, even on
+  the same session. The first recovery pass refreshes file bodies still cached
+  under live workspaces (at most `RECENT_FILES`, five per workspace), after
+  reading their threads. Its completion is remembered per device, session and
+  restored path until sync stops: ordinary feed refreshes and visible-tab
+  passes add no body reads. Recovery remembers each file separately: successful
+  reads stay settled while unknown failures get one retry on a later pass.
+  A definitive missing-file refusal, or a second failure, leaves the last cached
+  body in place and stops retrying until a matching files push or a new recovery.
+  A push renews only the named paths (all held paths if truncated), including
+  their retry budget; a pass cannot complete debt that a newer push reopened.
+  Late background subscription coverage starts a new recovery that the earlier
+  pass cannot complete. A subsequent pass still waiting for coverage takes
+  over that recovery before it reads. This repairs abandoned file refreshes
+  and changes missed while away or across a reload. Only the newest read of each
+  file may write its answer; removing an entity still invalidates all its readers.
+  A conversation's forward read (`syncThreadWindow` in
+  `spa/src/core/threadSync.js`) only
+  carries items made past the cursor. When its page shows the conversation's
+  counter moved on a value none of its items wears, an item under the cursor
+  changed in place. The record then owes a repair (`repairThrough`, written
+  with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
+  have been read again at or past that counter.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

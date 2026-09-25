@@ -24,11 +24,24 @@
 // and the reader's own workspace never waits behind eleven others. Only the
 // routed workspace's reads are foreground; everything else rides behind
 // whatever a surface is waiting on.
+//
+// # Subscribed before it reads
+//
+// The bridge starts a subscription empty and records a change only for the
+// subscriptions it holds when the change happens. So a pass takes its
+// subscriptions out before it asks for anything, and whatever changes after
+// the bridge holds them is pushed (#142). A subscription that lands after the
+// pass's reads were asked — a device with nothing cached reads at once, and a
+// subscribe can outlast the wait — leaves a gap behind it, so its landing is
+// followed by another pass (`subscriptionLanded`). A push can overtake the
+// read it followed, so a read never writes over a record a push wrote after it
+// was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { watchChanges } from "./changeEvents.js";
+import { onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
+import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
@@ -44,6 +57,7 @@ import {
   evictEntity,
   mergeCached,
   readCached,
+  updateCachedFeed,
   writeCached,
 } from "./localCache.js";
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
@@ -99,6 +113,7 @@ export const LOCK_WAIT_MS = 4000;
  *  stands down; the greeting landing announces the device, which asks again. */
 export const GREETING_WAIT_MS = 15000;
 const RESTORE_DRAIN_MS = 1000;
+const FILE_RECOVERY_FAILURES = 2;
 
 // The thresholds this layer is written against live in core/cacheThresholds.js
 // — a module that imports nothing, so the surfaces can read the same bounds
@@ -120,10 +135,18 @@ let releaseLock = null;
 let lockWait = null; // the bounded queue for the lock, while it is running
 let visibilityWired = false;
 let stopDeviceWatch = null;
+let stopLandingWatch = null;
+// Counts the times the sync layer stood down. Every read and push applier
+// belongs to the one it started under, and stops writing when that ends —
+// including across a restart on the same device and session, which would
+// otherwise hand work that predates it a fresh set of fences.
+let lifetime = 0;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
+const fileReads = new Map(); // file address → the newest reader allowed to write its body
+const fileRecoveries = new Map(); // deviceId → per-file recovery on this session and request scope
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -145,11 +168,12 @@ const syncContext = (context, turn = null) => {
   if (!context) return null;
   const session = context.session;
   const requestScope = requestScopeOf(context);
+  const startedIn = lifetime;
   return {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
-    active: () => context.active() && context.session === session
+    active: () => context.active() && context.session === session && startedIn === lifetime
       && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
 };
@@ -168,6 +192,17 @@ async function ask(context, method, params, priority) {
   } catch {
     return null;
   }
+}
+
+/** A whole shape read off the wire, written where it belongs unless a push
+ *  wrote that record after the read was asked: the push is the newer word
+ *  (core/pushFence.js). Answers what was read, written or not. */
+async function readWhole(context, address, request, shape = (answer) => answer) {
+  const fence = pushFence();
+  const answer = await ask(context, request.method, request.params, request.priority);
+  if (!answer || answer.unchanged || !context.active()) return answer;
+  if (!pushedSince(address, fence)) await writeCached(address, shape(answer));
+  return answer;
 }
 
 /** The git scope a feed row's checkout answers under — the same derivation the
@@ -203,16 +238,16 @@ function dirsOf(paths) {
 // ─── The ordered sync ────────────────────────────────────────────────────────
 
 /**
- * One device's whole pass: lists, then every workspace worth reading in the
- * order the reader will want them, then the lifetime rules, then the three
- * subscriptions.
+ * One device's whole pass: the three subscriptions, then the lists, then every
+ * workspace worth reading in the order the reader will want them, then the
+ * lifetime rules.
  *
  * Re-entrant by device and no more: a tab that comes back while a pass is
  * running does not start a second one, and another device's pass is another
  * device's business.
  *
- * Answers whether the pass got all the way to the subscriptions — what the
- * caller needs to know to decide whether this session has been read at all.
+ * Answers whether the pass got all the way through — what the caller needs to
+ * know to decide whether this session has been read at all.
  */
 export async function syncDevice(deviceId) {
   if (!holdingLock) return false;
@@ -271,7 +306,7 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
  *  rejects: a pass that threw is a pass that did not finish, and the caller's
  *  question is only ever whether it got all the way through. */
 function startPass(deviceId) {
-  const turn = { session: sessionOf(deviceId), superseded: false, done: null };
+  const turn = { session: sessionOf(deviceId), superseded: false, reading: false, done: null };
   turn.done = (async () => {
     try {
       return await orderedSync(deviceId, turn);
@@ -288,17 +323,42 @@ function startPass(deviceId) {
 async function orderedSync(deviceId, turn) {
   const context = await greetedContext(deviceId, turn);
   if (!context) return false;
+  await subscribeDevice(context);
+  if (!context.active()) return false;
+  await heldBeforeReading(context);
+  if (!context.active()) return false;
+  const recovery = fileRecoveryFor(context, turn.session);
+  const recoveryRevision = recovery.revision;
+  context.fileRecovery = recovery;
+  context.recoverFiles = !recovery.complete;
+  readingSessions.set(deviceId, turn.session);
+  turn.reading = true;
   const passStartedAt = Date.now();
-  const view = await readLists(context);
+  const fence = pushFence();
+  const view = await readLists(context, fence);
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
-  await readWorkspaces(context, pass);
+  const filesRecovered = await readWorkspaces(context, pass, fence);
   await readProjectIssues(context, view);
-  await evictRowsThatAreOver(context, view);
-  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt);
+  await evictRowsThatAreOver(context, view, fence);
+  await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
-  await subscribeDevice(context);
+  if (filesRecovered && fileRecoveries.get(deviceId) === recovery && recovery.revision === recoveryRevision) recovery.complete = true;
+  // The reader may have walked off while the pass read, and on a cold cache
+  // the workspace they stand in had no row to resolve until the lists landed.
+  await refollowRoute(deviceId);
   return true;
+}
+
+/** Recovery belongs to a sync lifetime, session and restored path. Ordinary
+ *  passes share its completed token; a failed pass cannot complete it. */
+function fileRecoveryFor(context, session) {
+  let recovery = fileRecoveries.get(context.deviceId);
+  if (recovery?.session !== session || recovery?.requestScope !== context.requestScope) {
+    recovery = { session, requestScope: context.requestScope, complete: false, revision: 0, files: new Map() };
+    fileRecoveries.set(context.deviceId, recovery);
+  }
+  return recovery;
 }
 
 /** This device, once its bridge has said what it speaks. A bridge says which
@@ -328,17 +388,34 @@ function settledWithin(promise, waitMs) {
   ]).finally(() => clearTimeout(timer));
 }
 
-async function readWorkspaces(context, pass) {
+/** Every workspace in the pass's order — less any a push has taken off the
+ *  board since the lists were read, which would only be read back into
+ *  records nothing names. One the push takes away while it is being read
+ *  stops where it stands. */
+async function readWorkspaces(context, pass, fence) {
+  let filesRecovered = true;
   for (const entityId of pass.order) {
     if (!context.active()) return;
-    await syncWorkspace(context, entityId, pass.rows.get(entityId), entityId === pass.routed);
+    if (removedSince(addressOf(context, entityId, "row"), fence)) continue;
+    const recovered = await syncWorkspace(whileOnBoard(context, entityId, fence), entityId, pass.rows.get(entityId), entityId === pass.routed);
+    filesRecovered = recovered && filesRecovered;
   }
+  return filesRecovered;
 }
+
+/** The context for one entity's records, stood down as well once a push takes
+ *  the entity off the board after the fence: a read already out when it went
+ *  writes nothing back under it, and nothing after that read is asked. Every
+ *  write here is behind `active()`, which is what makes this reach them all. */
+const whileOnBoard = (context, entityId, fence) => ({
+  ...context,
+  active: () => context.active() && !removedSince(addressOf(context, entityId, "row"), fence),
+});
 
 /** Step 1: the three lists, written as they land so the inbox paints before
  *  any workspace has been read. A device whose bridge does not serve
  *  workspaces still has a board. */
-async function readLists(context) {
+async function readLists(context, fence) {
   const [board, projects, workspaces] = await Promise.all([
     ask(context, "board.list", {}, "background"),
     ask(context, "project.list", {}, "background"),
@@ -347,24 +424,50 @@ async function readLists(context) {
   if (!board || !projects || !context.active()) return null;
   await writeUsageLimits(context.deviceId, board.usage_limits);
   const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
-  await writeLists(context, view);
+  await writeLists(context, view, fence);
   return view;
 }
 
-async function writeLists(context, view) {
+async function writeLists(context, view, fence) {
   if (!context.active()) return;
-  await writeCached(addressOf(context, "", "feed"), view, { observedFeedRows: true });
-  if (!context.active()) return;
-  await writeSessionList(context, "projects", view.projects);
-  if (!context.active()) return;
-  await writeSessionList(context, "workspaces", view.workspaces);
+  // Inside the feed's own transaction, so a push landing while it waits is
+  // still seen: the rows a push wrote since the fence are not this read's
+  // observation, and their own records paint over the board's older copy.
+  await updateCachedFeed(addressOf(context, "", "feed"), () => withoutPushedRemovals(context, view, fence), {
+    observedFeedRows: true,
+    supersededFeedRow: (row) => Boolean(entityIdOf(row) && pushedSince(addressOf(context, entityIdOf(row), "row"), fence)),
+  });
+  for (const kind of ["projects", "workspaces"]) {
+    if (!context.active()) return;
+    if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind]);
+  }
   for (const row of view.items || []) {
     if (!context.active()) return;
-    const entityId = entityIdOf(row);
-    if (!entityId) continue;
-    await writeCached(addressOf(context, entityId, "row"), row);
-    await writeSurfaces(context, entityId, row.agents);
+    await writeListedRow(context, row, fence);
   }
+}
+
+/** One row as the board listed it — unless a push has written or removed it
+ *  since the board was asked, which is the newer word. */
+async function writeListedRow(context, row, fence) {
+  const entityId = entityIdOf(row);
+  if (!entityId || pushedSince(addressOf(context, entityId, "row"), fence)) return;
+  await writeCached(addressOf(context, entityId, "row"), row);
+  await writeSurfaces(context, entityId, row.agents);
+}
+
+/** The snapshot without the entities a push said left after it was asked for:
+ *  written back, the board's older word would put their rows on the rail
+ *  again. */
+function withoutPushedRemovals(context, view, fence) {
+  const gone = new Set();
+  for (const field of BOARD_COLLECTIONS) {
+    for (const row of view[field] || []) {
+      const entityId = entityIdOf(row);
+      if (entityId && pushedSince(addressOf(context, entityId, "row"), fence)?.removed) gone.add(entityId);
+    }
+  }
+  return gone.size ? withoutEntities(view, gone) : view;
 }
 
 /**
@@ -553,37 +656,47 @@ async function recentStillHoldingData(context, items, seen) {
  *  The push that said so evicts it as it lands — but a tab that was not open
  *  to hear it boots to a board that already says the row is over, and the rule
  *  has to hold there too. */
-async function evictRowsThatAreOver(context, view) {
+async function evictRowsThatAreOver(context, view, fence) {
   for (const row of view.items || []) {
     if (!context.active()) return;
     const entityId = entityIdOf(row);
-    if (entityId && isFinishedState(row.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
+    if (!entityId || !isFinishedState(row.state)) continue;
+    // A push since the board was read is the row's newer word, and its own
+    // applier evicted the data if that word was "over".
+    if (pushedSince(addressOf(context, entityId, "row"), fence)) continue;
+    await evictWorkspaceData(context.deviceId, entityId, context.active);
   }
 }
 
 /** Step 4, the other half: an entity the board has stopped naming altogether
  *  is gone — the row is the board's to list and the board's to remove, so the
  *  row goes with the data. Another device's records are another device's
- *  business. */
-async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt) {
+ *  business, and an entity a push named after the board was read is one the
+ *  board had not heard of yet. */
+async function dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence) {
   const named = entitiesTheBoardNames(view);
   const visible = new Set((view.items || []).map(entityIdOf));
   const hiddenRuns = new Set((view.runs || []).map(entityIdOf).filter((id) => id && !visible.has(id)));
+  const pushedRow = (entityId) => pushedSince(addressOf(context, entityId, "row"), fence);
   for (const cachedId of await cachedEntityIds(context.deviceId)) {
     if (!context.active()) return;
     if (!named.has(cachedId)) {
-      await dropUnnamedEntity(context, cachedId);
+      if (!pushedRow(cachedId)) await dropUnnamedEntity(context, cachedId);
     } else if (hiddenRuns.has(cachedId)) {
-      // Keep the live conversation's records, but remove an older inbox row:
-      // `taskFeed` appends standalone row records to the board's `items`, and
-      // an unwatched run is deliberately absent from that list. A state push
-      // after this pass began owns a newer row and must not be erased.
-      const address = addressOf(context, cachedId, "row");
-      const row = await readCached(address);
-      if (!context.active()) return;
-      if (row && row.at < passStartedAt) await deleteCached([address]);
+      await dropOlderHiddenRow(context, cachedId, passStartedAt);
     }
   }
+}
+
+/** Keep the live conversation's records, but remove an older inbox row:
+ *  `taskFeed` appends standalone row records to the board's `items`, and an
+ *  unwatched run is deliberately absent from that list. A state push after
+ *  this pass began owns a newer row and must not be erased. */
+async function dropOlderHiddenRow(context, entityId, passStartedAt) {
+  const address = addressOf(context, entityId, "row");
+  const row = await readCached(address);
+  if (!context.active()) return;
+  if (row && row.at < passStartedAt) await deleteCached([address]);
 }
 
 const entitiesTheBoardNames = (view) => {
@@ -645,9 +758,14 @@ async function syncWorkspace(context, entityId, row, routed) {
   await syncTerminals(context, entityId, row, priority);
   const log = scope ? await syncCommits(context, entityId, scope, priority) : null;
   await syncThreads(context, entityId, row, priority);
-  if (!scope) return;
+  if (!scope) return true;
+  // A previous lifetime's file refresh may never land. Recovery takes over
+  // the held bodies once; ordinary passes on this session leave them alone.
+  // At most RECENT_FILES per workspace; threads stay ahead of these bodies.
+  const filesRecovered = !context.recoverFiles || await rereadHeldFiles(context, entityId, scope);
   await syncPatches(context, entityId, scope, unpushedCommits(log), priority);
   await syncWorkingDiff(context, entityId, row, priority);
+  return filesRecovered;
 }
 
 /** The status, asked conditionally: the `status_key` the cache holds is the
@@ -656,9 +774,7 @@ async function syncWorkspace(context, entityId, row, routed) {
 async function syncStatus(context, entityId, scope, priority) {
   const held = await heldValue(context, entityId, "status");
   const params = held?.status_key ? { ...scope, if_status_key: held.status_key } : scope;
-  const answer = await ask(context, "git.status", params, priority);
-  if (!answer || answer.unchanged || !context.active()) return;
-  await writeCached(addressOf(context, entityId, "status"), answer);
+  await readWhole(context, addressOf(context, entityId, "status"), { method: "git.status", params, priority });
 }
 
 /** The top-level listing always — the Files tab's first paint — plus whichever
@@ -672,11 +788,11 @@ async function syncTrees(context, entityId, scope, priority) {
 async function listTrees(context, entityId, scope, paths, priority) {
   for (const path of paths) {
     if (!context.active()) return;
-    const listing = await ask(context, "fs.tree", { ...scope, path }, priority);
-    if (!listing || !context.active()) continue;
-    await writeCached(
+    await readWhole(
+      context,
       addressOf(context, entityId, "tree", path),
-      { path: listing.path || "", entries: listing.entries || [] },
+      { method: "fs.tree", params: { ...scope, path }, priority },
+      (listing) => ({ path: listing.path || "", entries: listing.entries || [] }),
     );
   }
 }
@@ -684,9 +800,12 @@ async function listTrees(context, entityId, scope, paths, priority) {
 async function syncTerminals(context, entityId, row, priority) {
   const scope = terminalScopeOf(row);
   if (!scope) return;
-  const answer = await ask(context, "term.list", scope, priority);
-  if (!answer || !context.active()) return;
-  await writeCached(addressOf(context, entityId, "terminals"), { tabs: answer.terminals || [] });
+  await readWhole(
+    context,
+    addressOf(context, entityId, "terminals"),
+    { method: "term.list", params: scope, priority },
+    (answer) => ({ tabs: answer.terminals || [] }),
+  );
 }
 
 /** The two commit lists, answered whole. The commit record is handed back: the
@@ -802,10 +921,12 @@ async function syncUnpushed(context, entityId, scope, priority) {
   // deletes it on arrival — and asking for it anyway put most of a megabyte on
   // the wire for every cold pass. A reader opening the review asks for the
   // body itself, from the pane, uncapped.
-  const answer = await ask(context, "git.unpushed", { ...scope, patch: false }, priority);
-  if (!answer || !context.active()) return null;
-  await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(answer));
-  return answer;
+  return readWhole(
+    context,
+    addressOf(context, entityId, "unpushed"),
+    { method: "git.unpushed", params: { ...scope, patch: false }, priority },
+    unpushedRecord,
+  );
 }
 
 /** The patches behind the unpushed commits: the first twenty, and only the
@@ -939,7 +1060,7 @@ async function syncThread(context, entityId, agent, priority) {
   });
 }
 
-// ─── Step 5: the three subscriptions ─────────────────────────────────────────
+// ─── Step 0: the three subscriptions ─────────────────────────────────────────
 //
 // `s-inbox` carries every workspace's state and conversation in realtime —
 // that is the inbox, and it is what the reader is looking at whatever page
@@ -956,12 +1077,13 @@ const subscriptionShape = (deviceId) => ({
   onChanges: (items) => void applyChanges(items, deviceId),
 });
 
-/** The three watchers, and the one that follows the reader.
+/** The three watchers, and the one that follows the reader — taken out before
+ *  the pass reads (`heldBeforeReading` says how long it waits for them).
  *
- *  The routed workspace is resolved here rather than carried from the top of
- *  the pass: a pass is six or eight reads per workspace long and the reader
- *  walks off mid-way through it. Standing the active subscription up on where
- *  they were when it started would leave the workspace on screen with no
+ *  The routed workspace is resolved again at the end of the pass rather than
+ *  carried from here: a pass is six or eight reads per workspace long and the
+ *  reader walks off mid-way through it. Standing the active subscription up on
+ *  where they were when it started would leave the workspace on screen with no
  *  realtime watcher at all. */
 async function subscribeDevice(context) {
   const deviceId = context.deviceId;
@@ -991,6 +1113,52 @@ async function subscribeDevice(context) {
   await refollowRoute(deviceId);
 }
 
+/**
+ * Held on the bridge before the pass reads a thing (#142) — where the reader
+ * has something cached to look at meanwhile. A device the cache holds nothing
+ * for reads at once: its reader sees nothing until it does, and a subscribe
+ * can take as long as any receipted call.
+ *
+ * The wait is bounded like the greeting and saves a pass; it does not close
+ * the gap. A subscription that lands after the reads were asked is what does
+ * that, whichever way the reads came to be first (`subscriptionLanded`).
+ */
+async function heldBeforeReading(context) {
+  if (!(await readCached(addressOf(context, "", "feed")))) return;
+  await settledWithin(subscriptionsSettledFor(context.deviceId), GREETING_WAIT_MS);
+}
+
+/** The subscriptions a pass stands on. The active one is a realtime copy of
+ *  part of the background one, so its landing late opens no gap. */
+const PASS_SUBSCRIPTIONS = new Set(["s-inbox", "s-background"]);
+
+/** Per device, the session a pass has started reading: the reads it asks are
+ *  covered by whatever the bridge held at the time, and no more. */
+const readingSessions = new Map();
+
+/** The bridge now holds a subscription a pass on this session read without:
+ *  whatever changed between that read and this answer was recorded for
+ *  nobody. Read again once the pass that is out, if one is, has finished — or
+ *  not at all where that pass has yet to ask for anything, since everything
+ *  it reads is read after this. */
+function subscriptionLanded(deviceId, subscriptionId) {
+  if (!holdingLock || !PASS_SUBSCRIPTIONS.has(subscriptionId)) return;
+  const session = sessionOf(deviceId);
+  if (session === null || readingSessions.get(deviceId) !== session) return;
+  // File bodies read before background coverage can have missed a change.
+  // Invalidate even while a subsequent pass waits for coverage: that pass
+  // must take over recovery instead of trusting the earlier completed token.
+  if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
+  const running = passes.get(deviceId);
+  if (running && !running.reading) return;
+  void readAgainAfter(deviceId, session);
+}
+
+async function readAgainAfter(deviceId, session) {
+  await passes.get(deviceId)?.done;
+  if (holdingLock && sessionOf(deviceId) === session) await syncDevice(deviceId);
+}
+
 /** The active subscription follows the reader: the workspace they are standing
  *  in is watched in realtime, and the one they left falls back to the
  *  background tier's cooldown. A route that names no workspace on this device
@@ -1017,9 +1185,9 @@ function followRoutedEntity(deviceId, entityId) {
  *  (app.js `standOn`), so a move within a surface counts the same as a
  *  navigation: both can change which workspace is on screen.
  *
- *  A device whose pass has not reached its subscriptions yet is not here to be
- *  told, and does not need to be: that pass resolves the route for itself when
- *  it gets there. */
+ *  A device whose pass has not taken its subscriptions out yet is not here to
+ *  be told, and does not need to be: that pass resolves the route for itself
+ *  when it does, and again when it ends. */
 export function routeChanged() {
   if (!holdingLock) return;
   for (const deviceId of [...subscriptions.keys()]) void refollowRoute(deviceId);
@@ -1046,6 +1214,13 @@ async function writeSessionList(context, kind, incoming) {
   await replaceSessionList(addressOf(context, "", kind), kind, incoming);
 }
 
+/** A record as a push carries it, marked so a read that was already out when
+ *  it landed does not write its older answer over it. */
+function writePushed(address, value) {
+  notePush(address);
+  return writeCached(address, value);
+}
+
 async function applyChanges(items, deviceId) {
   const context = syncContext(contextFor(deviceId));
   if (!context || !holdingLock) return;
@@ -1062,9 +1237,10 @@ async function applyItem(context, item) {
     await applyBoard(context, item.state || {});
     return;
   }
+  const scoped = whileOnBoard(context, entityId, pushFence());
   for (const [field, apply] of APPLIERS) {
-    if (!context.active()) return;
-    if (item[field]) await apply(context, entityId, item[field]);
+    if (!scoped.active()) return;
+    if (item[field]) await apply(scoped, entityId, item[field]);
   }
 }
 
@@ -1080,6 +1256,7 @@ async function applyBoard(context, state) {
   if (removed.length) await dropRemovedRows(context, removed);
   if (!context.active()) return;
   if (state.projects) {
+    notePush(addressOf(context, "", "projects"));
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)));
   }
   if (!context.active()) return;
@@ -1090,6 +1267,7 @@ async function applyBoard(context, state) {
     // the cache holds rather than losing its Done until the next whole read.
     const summaries = workspaceSummaries(await heldValue(context, "", "workspaces"));
     if (!context.active()) return;
+    notePush(addressOf(context, "", "workspaces"));
     await writeSessionList(context, "workspaces", state.workspaces.map((workspace) =>
       stampWorkspace(workspace, context.deviceId, workspace.work_summary === undefined ? summaries : [])));
   }
@@ -1116,6 +1294,7 @@ const BOARD_COLLECTIONS = FEED_COLLECTIONS.filter((field) => field !== "projects
  * own removal.
  */
 async function dropRemovedRows(context, removed) {
+  for (const entityId of removed) notePush(addressOf(context, entityId, "row"), { removed: true });
   const gone = new Set(removed);
   const record = await readCached(addressOf(context, "", "feed"));
   if (!context.active()) return;
@@ -1149,7 +1328,7 @@ const isFeedRow = (state) => typeof state?.kind === "string" && state.kind !== "
  *  is over takes the workspace's data with it — nobody is coming back to it. */
 async function applyState(context, entityId, state) {
   if (!isFeedRow(state)) return;
-  await writeCached(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
+  await writePushed(addressOf(context, entityId, "row"), stampRow(state, context.deviceId));
   if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
   if (!context.active()) return;
@@ -1222,14 +1401,14 @@ async function applyThreadTip(context, entityId, tip) {
 async function applyGit(context, entityId, git) {
   const row = await heldValue(context, entityId, "row");
   if (!context.active()) return;
-  if (git.status) await writeCached(addressOf(context, entityId, "status"), git.status);
+  if (git.status) await writePushed(addressOf(context, entityId, "status"), git.status);
   if (!context.active()) return;
   if (git.log) {
     await mergeCached(addressOf(context, entityId, "log"), (current) =>
       context.active() ? windowedLog(current, git.log) : null);
   }
   if (!context.active()) return;
-  if (git.unpushed) await writeCached(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
+  if (git.unpushed) await writePushed(addressOf(context, entityId, "unpushed"), unpushedRecord(git.unpushed));
   if (!context.active()) return;
   if (git.diff) await writePushedDiff(context, entityId, git.diff, row);
   if (!context.active()) return;
@@ -1268,7 +1447,7 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
  *  not "these paths". */
 async function applyFiles(context, entityId, files) {
   if (files.root) {
-    await writeCached(
+    await writePushed(
       addressOf(context, entityId, "tree", files.root.path || ""),
       { path: files.root.path || "", entries: files.root.entries || [] },
     );
@@ -1288,26 +1467,98 @@ async function applyFiles(context, entityId, files) {
  *  the reader is already looking at, and never of a file nobody has opened.
  *
  *  A truncated list says "the tree moved" rather than which paths did, so
- *  every held body is re-read. There are at most `RECENT_FILES` of them. */
-async function rereadHeldFiles(context, entityId, scope, files) {
+ *  every held body is re-read. A recovery pass does the same without a push:
+ *  a held body says what to refresh, even when the previous reader was stood
+ *  down or the tab reloaded. There are at most `RECENT_FILES` of them. */
+async function rereadHeldFiles(context, entityId, scope, files = null) {
   const held = await cachedSubKeys(context.deviceId, entityId, FILE_RECORD_KIND);
-  const named = new Set(files.paths || []);
-  const stale = files.truncated ? held : held.filter((path) => named.has(path));
+  if (!context.active()) return false;
+  const named = new Set(files?.paths || []);
+  const stale = !files || files.truncated ? held : held.filter((path) => named.has(path));
+  const recovery = heldFileRecovery(context, entityId, held);
+  let recovered = true;
   for (const path of stale) {
-    if (!context.active()) return;
-    await rereadFile(context, entityId, scope, path);
+    if (!context.active()) return false;
+    const refreshed = await recoverFile(context, entityId, scope, path, recovery, Boolean(files));
+    recovered = refreshed && recovered;
   }
+  return recovered;
+}
+
+/** Opening other files evicts old bodies. Their retry bookkeeping must follow
+ *  that same bound, and an evicted path's old reader cannot recreate its debt. */
+function heldFileRecovery(context, entityId, held) {
+  const recovery = context.fileRecovery || fileRecoveries.get(context.deviceId);
+  for (const key of recovery?.files.keys() || []) {
+    const [, entity, path] = JSON.parse(key);
+    if (entity === entityId && !held.includes(path)) recovery.files.delete(key);
+  }
+  return recovery;
+}
+
+/** Success and permanent refusal settle only this path. An unknown failure
+ *  gets one retry on a later pass, then rests until a push or a new recovery.
+ *  A push replaces the obligation so an older reader cannot settle it, and
+ *  changes the revision so a pass cannot overlook debt reopened behind it. */
+async function recoverFile(context, entityId, scope, path, recovery, pushed) {
+  const key = JSON.stringify([context.deviceId, entityId, path]);
+  const state = fileRecoveryState(recovery, key, pushed);
+  if (state?.settled) return true;
+  const outcome = await rereadFile(context, entityId, scope, path);
+  if (!state) return outcome === "settled";
+  if (!context.active() || fileRecoveries.get(context.deviceId) !== recovery || recovery.files.get(key) !== state) return false;
+  if (outcome === "cancelled") return state.settled;
+  if (outcome === "failed") state.failures += 1;
+  state.settled = outcome === "settled" || state.failures >= FILE_RECOVERY_FAILURES;
+  return state.settled;
+}
+
+function fileRecoveryState(recovery, key, pushed) {
+  if (!recovery) return null;
+  let state = recovery.files.get(key);
+  if (!state || pushed) {
+    state = { failures: 0, settled: false };
+    recovery.files.set(key, state);
+    recovery.complete = false;
+    if (pushed) recovery.revision += 1;
+  }
+  return state;
 }
 
 async function rereadFile(context, entityId, scope, path) {
+  const key = JSON.stringify([context.deviceId, entityId, path]);
+  const reader = {};
+  fileReads.set(key, reader);
+  const reading = { ...context, active: () => context.active() && fileReads.get(key) === reader };
+  try {
+    return await readFileBody(reading, entityId, scope, path);
+  } catch (error) {
+    if (!reading.active()) return "cancelled";
+    return missingFile(error) ? "settled" : "failed";
+  } finally {
+    if (fileReads.get(key) === reader) fileReads.delete(key);
+  }
+}
+
+// Current bridges can wrap the OS's ENOENT in an internal refusal. Preserve
+// that specific legacy message as well as the typed not_found code; generic
+// internal/offline errors still owe a retry. Neither case deletes cached text.
+const missingFile = (error) => error?.code === "not_found" || error?.error_code === "not_found"
+  || /\bENOENT\b|\bNo such file or directory\b/i.test(error?.message || "");
+
+/** Passes and pushes can read the same body concurrently. Only its newest
+ *  reader may write; a different file's refresh cannot supersede this one. */
+async function readFileBody(context, entityId, scope, path) {
   const address = addressOf(context, entityId, FILE_RECORD_KIND, path);
   const openedAt = (await readCached(address))?.value?.openedAt;
-  const file = await ask(context, "fs.read", { ...scope, path }, "background");
-  if (!context.active()) return;
+  if (!context.active()) return "cancelled";
+  // Unlike ask(), keep the refusal so recovery can distinguish a missing file.
+  const file = await context.call("fs.read", { ...scope, path }, requestPriorityFields("background"));
+  if (!context.active()) return "cancelled";
   // A read that answered nothing is a file that moved out from under the
   // reader, or a machine that stopped answering. The body held is the last one
   // anybody saw; a delete here would blank an open preview on a hiccup.
-  if (!file) return;
+  if (!file) return "failed";
   // A body the cache may not keep — grown past the cap, or answered truncated —
   // takes the record with it. The rule is about what may be STORED; the record
   // is of a file that has since moved, and leaving it would hand the reader the
@@ -1315,10 +1566,11 @@ async function rereadFile(context, entityId, scope, path) {
   // nothing saying so.
   const kept = await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
   if (!kept) await deleteCached([addressOf(context, entityId, FILE_RECORD_KIND, path)]);
+  return context.active() ? "settled" : "cancelled";
 }
 
 const applyTerminals = (context, entityId, terminals) =>
-  writeCached(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
+  writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });
 
 /** `issues`: which issues of this project moved. Content-free beyond the ids —
  *  and dropped altogether past 200 of them — so there is one answer either
@@ -1391,11 +1643,10 @@ function considerDevices() {
 }
 
 /** A session is marked read before its pass runs, so two announcements in a
- *  row are one pass. A pass that did not finish takes the mark off again: the
- *  lists it stopped at are the step the subscriptions sit behind, so a session
- *  left marked on a stalled `board.list` would spend its whole life hearing
- *  nothing and reading nothing. Unmarked, the next thing the device announces
- *  asks again. */
+ *  row are one pass. A pass that did not finish takes the mark off again: a
+ *  session left marked on a stalled `board.list` would spend its whole life
+ *  hearing only what changed after it and never reading what it missed.
+ *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
   if (await syncDevice(deviceId)) return;
   if (syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
@@ -1411,6 +1662,7 @@ function onVisibilityChange() {
 export function startCacheSync() {
   stopCacheSync();
   stopDeviceWatch = onDeviceStateChanged(considerDevices);
+  stopLandingWatch = onSubscriptionHeld(subscriptionLanded);
   if (typeof document !== "undefined" && !visibilityWired) {
     document.addEventListener("visibilitychange", onVisibilityChange);
     visibilityWired = true;
@@ -1421,6 +1673,8 @@ export function startCacheSync() {
 export function stopCacheSync() {
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
+  if (stopLandingWatch) stopLandingWatch();
+  stopLandingWatch = null;
   for (const held of subscriptions.values()) {
     held.inbox.dispose();
     held.background.dispose();
@@ -1429,7 +1683,13 @@ export function stopCacheSync() {
   subscriptions.clear();
   syncedSessions.clear();
   restoredScopes.clear();
+  readingSessions.clear();
   issueReadGenerations.clear();
+  // Everything still out stands down before the fences it was held to go.
+  lifetime += 1;
+  fileReads.clear();
+  fileRecoveries.clear();
+  forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.
   for (const turn of passes.values()) turn.superseded = true;

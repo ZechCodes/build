@@ -354,9 +354,32 @@ async function addDesired(state, desired) {
     const wire = JSON.stringify(spec);
     if (state.live.get(id) === wire) continue;
     state.live.set(id, wire);
-    if (!keepGoingAfter(state, id, await askBridge(state, "changes.subscribe", spec))) return false;
+    const outcome = await askBridge(state, "changes.subscribe", spec);
+    if (outcome === CALL_DONE) announceHeld(state.deviceId, id);
+    if (!keepGoingAfter(state, id, outcome)) return false;
   }
   return true;
+}
+
+const heldListeners = new Set();
+
+/** Hear every subscription a bridge has just taken on — a subscribe or an
+ *  upsert it answered. It records changes from that answer on and not before,
+ *  so a read asked earlier than it can have missed some (core/cacheSync.js).
+ *  Answers the way to stop hearing. */
+export function onSubscriptionHeld(listener) {
+  heldListeners.add(listener);
+  return () => heldListeners.delete(listener);
+}
+
+function announceHeld(deviceId, subscriptionId) {
+  for (const listener of [...heldListeners]) {
+    try {
+      listener(deviceId, subscriptionId);
+    } catch (error) {
+      console.warn("a subscription listener threw:", error);
+    }
+  }
 }
 
 /** The diff for one device: what its bridge holds and nobody wants goes, what is
@@ -399,6 +422,19 @@ export async function subscriptionsSettled() {
     before = pendingChains();
     await Promise.all(before);
   } while (!sameChains(before, pendingChains()));
+}
+
+/** Resolves when one device's bridge has answered everything asked of it so
+ *  far — what a pass with something cached waits on before it reads, so a
+ *  change after the read is one the bridge pushes (#142). At once for a device
+ *  that was never greeted. */
+export async function subscriptionsSettledFor(deviceId) {
+  const state = bridgeFor(deviceId);
+  let settled = null;
+  while (state && settled !== state.chain) {
+    settled = state.chain;
+    await settled;
+  }
 }
 
 /** Run a watcher's refresh for an event, under the same visibility gate its

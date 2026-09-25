@@ -59,6 +59,10 @@ vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"] } }),
+  // A stand-in bridge holds whatever it is asked to at once
+  // (test/cacheSyncDelivery.test.js drives the real one).
+  subscriptionsSettledFor: async () => {},
+  onSubscriptionHeld: () => () => {},
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);
@@ -716,7 +720,9 @@ describe("when a pass runs", () => {
       throw new Error("the bridge was busy");
     };
     await boot([branchItem()]);
-    expect(registeredWatchers).toEqual([]);
+    // Subscribed before the lists were asked for (#142), so what changes from
+    // here on is heard while the session waits to be read again.
+    expect(registeredWatchers.map((watcher) => watcher.id)).toEqual(["s-inbox", "s-background"]);
 
     script = {};
     stateListeners.forEach((fn) => fn());

@@ -191,13 +191,24 @@ const standsInFor = (provisional, arrived) => {
   return sequence != null && arrived?.data?.sequence === sequence;
 };
 
+/** The newest counter value an item wears: the one it was made at, or the one
+ *  its latest change in place took (bridge `ThreadItem::latest_sequence`). */
+export const latestItemSequence = (item) =>
+  Math.max(Number(item?.data?.sequence || 0), Number(item?.data?.updated_sequence || 0));
+
+/** Whether an arriving copy of an item is older than the one held. A push and
+ *  a page can cross (#142): the page read before a change, the push after it,
+ *  and whichever lands second must not take the change back. */
+const olderThanHeld = (arrived, held) => !!held && latestItemSequence(arrived) < latestItemSequence(held);
+
 /**
  * The record's items after an arrival.
  *
  * Held by key, so a re-shipped item replaces the copy in hand rather than
- * doubling it, and a stand-in leaves as its own message arrives. Sorted by
- * sequence, because neither a push nor a page promises an order and the
- * reader's own message has no sequence to arrive in.
+ * doubling it — unless the copy in hand is the newer — and a stand-in leaves
+ * as its own message arrives. Sorted by sequence, because neither a push nor a
+ * page promises an order and the reader's own message has no sequence to
+ * arrive in.
  */
 export function mergeThreadItems(held = [], arriving = []) {
   const byKey = new Map(held.map((item) => [threadItemKey(item), item]));
@@ -205,7 +216,8 @@ export function mergeThreadItems(held = [], arriving = []) {
     for (const [key, item] of [...byKey]) {
       if (isProvisionalItem(item) && standsInFor(item, arrived)) byKey.delete(key);
     }
-    byKey.set(threadItemKey(arrived), arrived);
+    const key = threadItemKey(arrived);
+    if (!olderThanHeld(arrived, byKey.get(key))) byKey.set(key, arrived);
   }
   return [...byKey.values()].sort((one, other) => orderingSequence(one) - orderingSequence(other));
 }

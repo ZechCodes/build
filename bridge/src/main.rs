@@ -64,6 +64,7 @@ use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
 use build_bridge::reachability::Reachability;
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::resume::{promote_live_roster, shut_down, LiveRoster};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
@@ -531,7 +532,17 @@ async fn run_daemon(
         runtime.qa_agent,
         runtime.mcp_socket
     );
-    let app = app.shared();
+    // A live roster the last run left and no clean shutdown replaced is the
+    // roster this boot resumes from; it is renamed into place before the new
+    // run's live roster can overwrite it.
+    let tasks_dir = &runtime.tasks_dir;
+    if promote_live_roster(tasks_dir) {
+        eprintln!(
+            "resume: the last run ended without a clean shutdown; resuming from its live roster"
+        );
+    }
+    let live_roster = LiveRoster::start(tasks_dir, env!("CARGO_PKG_VERSION"));
+    let app = app.with_live_roster(live_roster.clone()).shared();
     let handler = AppState::handler(app.clone());
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
@@ -625,19 +636,22 @@ async fn run_daemon(
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
-    eprintln!("bridge: shutting down");
-    AppState::record_resume_roster(&app, &runtime.tasks_dir, env!("CARGO_PKG_VERSION"));
-    // Then the children: in scopes of their own they are no longer in this
-    // unit's cgroup for systemd to end, so they are ended here (and by the
-    // `BindsTo=` each scope carries, should this not run).
-    if let Some(stopped) = build_bridge::priority::stop_children() {
-        eprintln!("{stopped}");
-    }
-    // Then the transport: the socket task first, so the relay sees a close
-    // rather than a silence, then the runtime it ran on — stopped, not
-    // dropped, because this is a task of the main runtime (`liveness.rs`).
-    relay_socket.abort();
-    liveness.stop();
+    // It writes from the live roster's newest lists and never waits on the app
+    // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
+    shut_down(&live_roster, || {
+        // Then the children: in scopes of their own they are no longer in
+        // this unit's cgroup for systemd to end, so they are ended here (and
+        // by the `BindsTo=` each scope carries, should this not run).
+        if let Some(stopped) = build_bridge::priority::stop_children() {
+            eprintln!("{stopped}");
+        }
+        // Then the transport: the socket task first, so the relay sees a
+        // close rather than a silence, then the runtime it ran on — stopped,
+        // not dropped, because this is a task of the main runtime
+        // (`liveness.rs`).
+        relay_socket.abort();
+        liveness.stop();
+    });
 }
 
 /// Hold a relay socket open, and redial whenever it ends.

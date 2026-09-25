@@ -1,10 +1,12 @@
 //! Putting the agents back after the binary was rolled under them.
 //!
-//! Two halves, at the two ends of a restart. At shutdown
-//! [`AppState::resume_roster`] reads who was live or working off the agent
-//! records and hands it to [`crate::resume::ResumeRoster`]. At boot
-//! [`AppState::resume_recorded_agents`] reads that roster back, puts a notice
-//! from Build on each agent's conversation, and queues the same turn the
+//! Two halves, at the two ends of a restart. While the daemon runs,
+//! [`AppState::publish_live_roster_for`] hands who is working on an entity to
+//! the [`crate::resume::LiveRoster`] as each run and plan mutation settles,
+//! and the daemon's clean shutdown writes the last of those as the
+//! [`crate::resume::ResumeRoster`]. At boot [`AppState::resume_recorded_agents`]
+//! reads that roster back — or the live one, when no shutdown ran — puts a
+//! notice from Build on each agent's conversation, and queues the same turn the
 //! `agent.start` button queues — so the relaunch is the spawn path that already
 //! works, resume session id and all, rather than a second one to keep in step.
 
@@ -12,7 +14,7 @@ use crate::app::{
     AppState, DeliveryRunner, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT,
 };
 use crate::resume::{
-    clear_opt_out_file, restart_notice, resume_is_wanted, ResumeRoster, ResumingAgent,
+    clear_opt_out_file, restart_notice, resume_is_wanted, LiveRoster, ResumeRoster, ResumingAgent,
 };
 use crate::store::now_rfc3339;
 use std::path::Path;
@@ -23,25 +25,37 @@ use std::sync::{Arc, Mutex};
 const RESUME_METHOD: &str = "bridge.resume";
 
 impl AppState {
-    /// Write down who would have to come back, at the moment the daemon is
-    /// going down. The whole of the shutdown half.
-    ///
-    /// Silent about its own failure beyond a line on stderr: a roster that
-    /// could not be written costs the next boot its resume, and must not cost
-    /// this shutdown its exit — the harnesses are already dying and the store
-    /// is already durable.
-    pub fn record_resume_roster(state: &Arc<Mutex<AppState>>, dir: &Path, version: &str) {
-        if !resume_is_wanted(dir, |key| std::env::var(key).ok()) {
-            eprintln!("resume: opted out of this roll; recording nobody");
-            ResumeRoster::forget(dir);
-            return;
+    /// Keep `live` told who is working from here on, starting with who is
+    /// working now.
+    pub fn with_live_roster(mut self, live: LiveRoster) -> Self {
+        for (entity_id, roster) in self.resumable_rosters() {
+            live.set_entity(entity_id, agents_to_resume_on(entity_id, roster));
         }
-        let roster = state.lock().unwrap().resume_roster(version);
-        let count = roster.agents.len();
-        match roster.save(dir) {
-            Ok(()) if count == 0 => eprintln!("resume: no agent was working; recorded nobody"),
-            Ok(()) => eprintln!("resume: recorded {count} agent(s) to bring back"),
-            Err(error) => eprintln!("resume: could not record the roster: {error}"),
+        self.live_roster = Some(live);
+        self
+    }
+
+    /// Tell the live roster who on `entity_id` a crash would have to bring
+    /// back. Called with the app mutex held as each run and plan mutation
+    /// settles — turn starts and stops, spawns and retirements all land in
+    /// one — so it reads that one entity and hands its list over: the writing
+    /// is the roster's own thread's. One entity at a time, because a
+    /// transaction may have another checked out of the maps right now, and
+    /// that entity's list must stand as it last settled.
+    pub(in crate::app) fn publish_live_roster_for(&self, entity_id: &str) {
+        let Some(live) = &self.live_roster else {
+            return;
+        };
+        match self.entity_agents(entity_id) {
+            Ok(roster) => live.set_entity(entity_id, agents_to_resume_on(entity_id, roster)),
+            Err(_) => live.forget_entity(entity_id),
+        }
+    }
+
+    /// The entity has left the maps for good: nobody on it is resumed.
+    pub(in crate::app) fn forget_live_roster_entity(&self, entity_id: &str) {
+        if let Some(live) = &self.live_roster {
+            live.forget_entity(entity_id);
         }
     }
 
@@ -67,7 +81,7 @@ impl AppState {
         };
         let wanted = resume_is_wanted(dir, |key| std::env::var(key).ok());
         clear_opt_out_file(dir);
-        let Some(roster) = ResumeRoster::take(dir) else {
+        let Some(mut roster) = ResumeRoster::take(dir) else {
             return Vec::new();
         };
         if !wanted {
@@ -77,6 +91,7 @@ impl AppState {
             );
             return Vec::new();
         }
+        Self::drop_agents_whose_workspace_is_gone(state, &mut roster);
         let clock = Arc::clone(&state.lock().unwrap().frame_clock);
         let timer = clock.frame(RESUME_METHOD);
         let resumed = timer.lock(state).resume_recorded_agents(&roster, version);
@@ -91,37 +106,47 @@ impl AppState {
         resumed
     }
 
-    /// Who a restart would have to bring back: every agent that was live, and
-    /// every agent that was mid-turn.
-    ///
-    /// Both, because they are two different losses. A working agent loses a
-    /// turn nobody will finish. A live one loses a session the human was in the
-    /// middle of using, and finds an empty rail when they come back to it. An
-    /// agent that was idle is left alone — it was waiting for somebody to speak
-    /// before the roll and it can go on waiting after one.
-    pub(crate) fn resume_roster(&self, version: &str) -> ResumeRoster {
-        let mut agents = Vec::new();
-        for entity_id in self.resumable_entity_ids() {
-            let Ok(roster) = self.entity_agents(&entity_id) else {
-                continue;
-            };
-            for agent in roster.iter() {
-                let working = agent.working_since.is_some();
-                if !working && agent.state != crate::agent::AgentLifecycle::Live {
-                    continue;
-                }
-                agents.push(ResumingAgent {
-                    entity_id: entity_id.clone(),
-                    agent_id: agent.id.clone(),
-                    conversation_id: agent
-                        .conversation_id
-                        .clone()
-                        .unwrap_or_else(|| agent.id.clone()),
-                    resume_session_id: agent.resume_session_id.clone(),
-                    was_working: working,
-                });
+    /// Never resume an agent into a checkout that is not there: a workspace
+    /// deleted from disk while the daemon was down — or in the minutes a crash
+    /// left it down — would start a harness in a directory that does not
+    /// exist. The stored paths are copied under the mutex and looked for with
+    /// it released: nothing here touches the filesystem while it is held.
+    fn drop_agents_whose_workspace_is_gone(
+        state: &Arc<Mutex<AppState>>,
+        roster: &mut ResumeRoster,
+    ) {
+        let roots: Vec<_> = {
+            let app = state.lock().unwrap();
+            roster
+                .agents
+                .iter()
+                .map(|entry| app.stored_checkout(&entry.entity_id))
+                .collect()
+        };
+        let mut roots = roots.into_iter();
+        roster.agents.retain(|entry| {
+            let root = roots.next().flatten();
+            let standing = root.as_deref().is_some_and(Path::is_dir);
+            if !standing {
+                eprintln!(
+                    "resume: {} on {} was not brought back: its workspace is gone",
+                    entry.agent_id, entry.entity_id
+                );
             }
-        }
+            standing
+        });
+    }
+
+    /// Who a restart would have to bring back, as the roster that records it.
+    /// The daemon writes the live roster's copy of the list instead; this is
+    /// the same list read straight off the maps.
+    #[cfg(test)]
+    pub(crate) fn resume_roster(&self, version: &str) -> ResumeRoster {
+        let mut agents: Vec<ResumingAgent> = self
+            .resumable_rosters()
+            .flat_map(|(entity_id, roster)| agents_to_resume_on(entity_id, roster))
+            .collect();
+        agents.sort_by(|a, b| (&a.entity_id, &a.agent_id).cmp(&(&b.entity_id, &b.agent_id)));
         ResumeRoster {
             recorded_at: now_rfc3339(),
             version: version.to_string(),
@@ -129,11 +154,29 @@ impl AppState {
         }
     }
 
-    /// Every entity whose agents are worth recording: the runs and the plans,
+    /// Where an entity's agents run, exactly as it was stored: no
+    /// canonicalising, which would read the filesystem.
+    fn stored_checkout(&self, entity_id: &str) -> Option<std::path::PathBuf> {
+        if let Some(plan) = self.plans.get(entity_id) {
+            return plan
+                .workspace
+                .as_ref()
+                .map(|workspace| workspace.checkout.clone());
+        }
+        self.runs
+            .get(entity_id)
+            .map(|run| run.worktree.path.clone())
+    }
+
+    /// Every entity's agents worth recording: the runs and the plans,
     /// which between them own every conversation an agent can be on — a
     /// workspace's, a project's, and an issue's alike.
-    fn resumable_entity_ids(&self) -> Vec<String> {
-        self.runs.keys().chain(self.plans.keys()).cloned().collect()
+    fn resumable_rosters(
+        &self,
+    ) -> impl Iterator<Item = (&String, &crate::agent::AgentRoster)> + '_ {
+        let runs = self.runs.iter().map(|(id, run)| (id, &run.agents));
+        let plans = self.plans.iter().map(|(id, plan)| (id, &plan.agents));
+        runs.chain(plans)
     }
 
     /// Bring one roster's agents back, and tell each of them why it is awake.
@@ -207,4 +250,34 @@ impl AppState {
         self.touch_attention(&addressed.entity_id);
         Ok(())
     }
+}
+
+/// Who on one entity a restart would have to bring back: every agent that
+/// was live, and every agent that was mid-turn.
+///
+/// Both, because they are two different losses. A working agent loses a
+/// turn nobody will finish. A live one loses a session the human was in the
+/// middle of using, and finds an empty rail when they come back to it. An
+/// agent that was idle is left alone — it was waiting for somebody to speak
+/// before the roll and it can go on waiting after one.
+///
+/// In roster order, so an unchanged entity compares equal and costs the live
+/// roster no write.
+fn agents_to_resume_on(entity_id: &str, roster: &crate::agent::AgentRoster) -> Vec<ResumingAgent> {
+    roster
+        .iter()
+        .filter(|agent| {
+            agent.working_since.is_some() || agent.state == crate::agent::AgentLifecycle::Live
+        })
+        .map(|agent| ResumingAgent {
+            entity_id: entity_id.to_string(),
+            agent_id: agent.id.clone(),
+            conversation_id: agent
+                .conversation_id
+                .clone()
+                .unwrap_or_else(|| agent.id.clone()),
+            resume_session_id: agent.resume_session_id.clone(),
+            was_working: agent.working_since.is_some(),
+        })
+        .collect()
 }

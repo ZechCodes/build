@@ -7,7 +7,7 @@
 use super::project_agent::{added_project, rooted, workspace};
 use super::*;
 use crate::agent::AgentLifecycle;
-use crate::resume::{ResumeRoster, OPT_OUT_FILE};
+use crate::resume::{LiveRoster, ResumeRoster, LIVE_ROSTER_FILE, OPT_OUT_FILE};
 
 /// A project with one workspace, a conversation on it, and one agent standing
 /// in it. The shape every roll actually finds.
@@ -289,4 +289,228 @@ fn a_stale_roster_line_is_skipped_and_the_rest_still_come_back() {
     let resumed = state.resume_recorded_agents(&roster, "0.3.0");
     assert_eq!(resumed, vec![agent_id], "the live one still came back");
     assert_eq!(state.delivery_queue.queued_len(), 1);
+}
+
+/// The live roster's file, parsed, or `None` when there is none.
+fn live_roster_on_disk(state_root: &std::path::Path) -> Option<ResumeRoster> {
+    let raw = std::fs::read_to_string(state_root.join(LIVE_ROSTER_FILE)).ok()?;
+    Some(serde_json::from_str(&raw).expect("the live roster parses"))
+}
+
+/// Which agents the live roster's file names, sorted. Sorted because the
+/// file is in roster order, and two agents added in the same instant can
+/// hold ids whose order is not their roster order: these tests are about who
+/// is on it, not in what order.
+fn live_roster_ids(state_root: &std::path::Path) -> Vec<String> {
+    let mut ids: Vec<String> = live_roster_on_disk(state_root)
+        .map(|roster| {
+            roster
+                .agents
+                .into_iter()
+                .map(|agent| agent.agent_id)
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    ids
+}
+
+/// A turn starting puts the agent in the live roster and a turn stopping
+/// takes it out — through the same record the pumps write, with nothing
+/// written by the caller.
+#[test]
+fn a_turn_starting_and_stopping_rewrites_the_live_roster() {
+    let mut standing = standing();
+    let (state, state_root, run_id, agent_id) = standing.parts();
+    let live = LiveRoster::start(&state_root, "0.2.2");
+    state.live_roster = Some(live.clone());
+
+    state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+    live.settle();
+    let written = live_roster_on_disk(&state_root).expect("the turn start was written");
+    assert_eq!(written.agents.len(), 1, "{written:?}");
+    assert_eq!(written.agents[0].agent_id, agent_id);
+    assert_eq!(written.agents[0].entity_id, run_id);
+    assert!(written.agents[0].was_working);
+
+    state.record_agent_working_since(&run_id, &agent_id, None);
+    live.settle();
+    assert_eq!(
+        live_roster_on_disk(&state_root),
+        None,
+        "nobody is working, so there is nothing a crash would lose"
+    );
+}
+
+/// Retiring a working agent takes it out of the live roster: a crash after
+/// the retirement must not bring back an agent the human removed.
+#[test]
+fn a_retired_agent_leaves_the_live_roster() {
+    let mut standing = standing();
+    let (state, state_root, run_id, agent_id) = standing.parts();
+    let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+    let second = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let live = LiveRoster::start(&state_root, "0.2.2");
+    state.live_roster = Some(live.clone());
+
+    state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+    state.start_agent_working(&run_id, &second, "2026-09-25T02:00:00Z");
+    live.settle();
+    let mut both = vec![agent_id.clone(), second.clone()];
+    both.sort();
+    assert_eq!(live_roster_ids(&state_root), both);
+
+    let removed = state.handle(req(
+        "agent.remove",
+        json!({ "entity_id": run_id, "agent_id": second }),
+    ));
+    assert_eq!(removed["ok"], true, "{removed:?}");
+    live.settle();
+    assert_eq!(live_roster_ids(&state_root), vec![agent_id]);
+}
+
+/// The whole of a hard kill, end to end: an agent is mid-turn, the daemon
+/// dies without its shutdown running (the writer is never told to finish),
+/// and the next boot promotes the live roster and brings the agent back with
+/// Build's notice on its conversation.
+#[test]
+fn an_agent_working_at_a_hard_kill_is_brought_back_at_the_next_boot() {
+    let mut standing = standing();
+    {
+        let (state, state_root, run_id, agent_id) = standing.parts();
+        let live = LiveRoster::start(&state_root, "0.2.2");
+        state.live_roster = Some(live.clone());
+        set_state(state, &run_id, &agent_id, AgentLifecycle::Idle, false);
+        state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+        live.settle();
+        // SIGKILL: no `finish`, no roster proper.
+        state.live_roster = None;
+        assert!(!ResumeRoster::path(&state_root).exists());
+    }
+    let (shared, state_root, run_id, agent_id, _kept) = standing.shared();
+
+    assert!(crate::resume::promote_live_roster(&state_root));
+    let resumed = AppState::resume_after_restart(&shared, &state_root, "0.2.3");
+    assert_eq!(resumed, vec![agent_id.clone()]);
+    // The turn itself was queued and handed on by the boot's own drain; the
+    // notice it carries is what stays behind to read.
+    let mut app = shared.lock().unwrap();
+    let notice = build_said(&mut app, &run_id, &agent_id).expect("Build said something");
+    assert!(
+        notice["body"].as_str().unwrap().contains("cut short"),
+        "{notice}"
+    );
+}
+
+/// A workspace deleted from disk while the daemon was down is not resumed
+/// into: the harness would start in a directory that is not there.
+#[test]
+fn an_agent_whose_workspace_is_gone_is_not_brought_back() {
+    let mut standing = standing();
+    let checkout = {
+        let (state, state_root, run_id, agent_id) = standing.parts();
+        set_state(state, &run_id, &agent_id, AgentLifecycle::Live, true);
+        state.resume_roster("0.2.2").save(&state_root).unwrap();
+        state.entity_agent_root(&run_id).unwrap()
+    };
+    assert!(checkout.is_dir(), "{}", checkout.display());
+    std::fs::remove_dir_all(&checkout).unwrap();
+    let (shared, state_root, run_id, agent_id, _kept) = standing.shared();
+
+    let resumed = AppState::resume_after_restart(&shared, &state_root, "0.2.3");
+    assert!(resumed.is_empty(), "{resumed:?}");
+    let mut app = shared.lock().unwrap();
+    assert!(app.delivery_queue.queued_is_empty(), "nothing was queued");
+    assert_eq!(build_said(&mut app, &run_id, &agent_id), None);
+    assert!(
+        !ResumeRoster::path(&state_root).exists(),
+        "and the roster is consumed all the same"
+    );
+}
+
+/// What reaches disk is addresses. A conversation carrying a secret — as the
+/// human's message and as a path the agent read — contributes ids to the
+/// roster and not one word of what was said.
+#[test]
+fn the_live_roster_holds_ids_and_never_what_the_conversation_said() {
+    const SECRET: &str = "roster-canary-the-human-said-this-in-confidence";
+    let mut standing = standing();
+    let (state, state_root, run_id, agent_id) = standing.parts();
+    let posted = state.handle(req(
+        "thread.post",
+        json!({
+            "entity_id": run_id,
+            "agent_id": agent_id,
+            "body": format!("deploy with {SECRET} and tell nobody"),
+        }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let live = LiveRoster::start(&state_root, "0.2.2");
+    state.live_roster = Some(live.clone());
+    state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+    live.settle();
+
+    let raw = std::fs::read_to_string(state_root.join(LIVE_ROSTER_FILE)).unwrap();
+    assert!(!raw.contains(SECRET), "{raw}");
+    assert!(!raw.contains("tell nobody"), "{raw}");
+    let written: Value = serde_json::from_str(&raw).unwrap();
+    let agent = &written["agents"][0];
+    for (key, value) in agent.as_object().unwrap() {
+        match key.as_str() {
+            "entity_id" => assert_eq!(value, &json!(run_id)),
+            "agent_id" => assert_eq!(value, &json!(agent_id)),
+            "conversation_id" | "resume_session_id" => {
+                assert!(value.is_string() || value.is_null(), "{key}: {value}")
+            }
+            "was_working" => assert_eq!(value, &json!(true)),
+            other => panic!("the roster grew a field it must not carry: {other}"),
+        }
+    }
+
+    // And the roster proper the clean shutdown writes is the same record.
+    live.finish(true).unwrap();
+    let clean = std::fs::read_to_string(ResumeRoster::path(&state_root)).unwrap();
+    assert!(!clean.contains(SECRET), "{clean}");
+    assert!(!state_root.join(LIVE_ROSTER_FILE).exists());
+}
+
+/// A transaction checks out more than one entity — `run.stage_send_notes`
+/// takes the run and its plan, and finishes the plan first. An entity
+/// settling while another is checked out must not drop the checked-out one's
+/// agents from the live roster, not even for the one write the writer can
+/// land between the two finishes.
+#[test]
+fn an_entity_checked_out_by_a_transaction_keeps_its_agents_in_the_live_roster() {
+    let mut standing = standing();
+    let (state, state_root, run_id, agent_id) = standing.parts();
+    let project_id = state.project_of(&run_id).unwrap();
+    let other_workspace = workspace(state, &project_id, "the other work");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": other_workspace }),
+    ));
+    let other_run = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": other_run })));
+    let other_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let live = LiveRoster::start(&state_root, "0.2.2");
+    state.live_roster = Some(live.clone());
+    state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+    live.settle();
+    assert_eq!(live_roster_ids(&state_root), vec![agent_id.clone()]);
+
+    // The transaction: the run is out of the map while another entity settles.
+    let active = state.take_run(&run_id).unwrap();
+    state.start_agent_working(&other_run, &other_agent, "2026-09-25T02:01:00Z");
+    live.settle();
+    let mut both = vec![agent_id.clone(), other_agent.clone()];
+    both.sort();
+    assert_eq!(
+        live_roster_ids(&state_root),
+        both,
+        "the checked-out run's agent is still there"
+    );
+
+    state.finish_run_mutation(run_id.clone(), active).unwrap();
+    live.settle();
+    assert_eq!(live_roster_ids(&state_root), both);
 }

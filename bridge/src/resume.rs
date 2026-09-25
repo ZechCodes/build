@@ -11,12 +11,43 @@
 //! bridge, so a new table means the roll cannot be rolled back — and the roster
 //! is worth nothing the moment it has been read. A file the next boot consumes
 //! and deletes is the right durability for it.
+//!
+//! A shutdown that never runs — SIGKILL, a panic, the power going — writes no
+//! roster, so there is a second file: the [`LiveRoster`], rewritten whenever
+//! the set of working agents changes and removed only once a clean shutdown
+//! has written the roster proper. A boot that finds the live file and no
+//! roster promotes the one to the other ([`promote_live_roster`]), and resumes
+//! from it exactly as it would from a roll.
+//!
+//! Every change to either file — written, removed, renamed — is durable before
+//! the call that made it returns ([`disk`]): a power cut must never bring back
+//! a roster that had already been cleared or consumed.
+//!
+//! Both files hold ids and nothing else: which entity, which agent, which
+//! conversation, which harness session. No message, no prompt, no token.
 
+pub mod disk;
+mod live;
+
+pub use live::{shut_down, LiveRoster};
+
+use disk::{Disk, RealDisk};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// The roster, beside the store's database in the tasks directory.
 pub const ROSTER_FILE: &str = "resume-roster.json";
+
+/// The live roster: who is working right now, kept on disk for the shutdown
+/// that never happens. Beside the roster, and only ever renamed onto it.
+pub const LIVE_ROSTER_FILE: &str = "resume-roster.live.json";
+
+/// How long systemd waits after SIGTERM before it sends SIGKILL. The final
+/// write is one small file and an fsync, and nothing on the way to it waits
+/// for the app mutex; this is the headroom for a disk that is slow to sync
+/// and the scope stops after it, not an estimate of either. A SIGKILL past it
+/// still loses nothing the live roster did not already have on disk.
+pub const STOP_TIMEOUT_SECS: u64 = 30;
 
 /// The per-roll opt-out a script can drop next to it. Consumed at boot, so it
 /// silences exactly one restart and never the one after.
@@ -70,10 +101,15 @@ impl ResumeRoster {
     /// on the boot after this one, which is not a restart notice — it is a
     /// haunting.
     pub fn take(dir: &Path) -> Option<ResumeRoster> {
+        Self::take_on(&RealDisk, dir)
+    }
+
+    pub(crate) fn take_on(disk: &dyn Disk, dir: &Path) -> Option<ResumeRoster> {
         let path = Self::path(dir);
-        let raw = std::fs::read_to_string(&path).ok();
-        let _ = std::fs::remove_file(&path);
-        let raw = raw?;
+        let raw = disk.read(&path).ok()?;
+        if let Err(error) = disk::remove(disk, &path) {
+            eprintln!("resume: could not consume the roster ({error}); it may be read again");
+        }
         match serde_json::from_str(&raw) {
             Ok(roster) => Some(roster),
             Err(error) => {
@@ -92,20 +128,62 @@ impl ResumeRoster {
     /// down with every agent idle must not leave last week's roster to be read
     /// as this boot's.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
-        let path = Self::path(dir);
-        if self.agents.is_empty() {
-            let _ = std::fs::remove_file(&path);
-            return Ok(());
-        }
-        let body = serde_json::to_string_pretty(self)
-            .map_err(|error| format!("serialize the resume roster: {error}"))?;
-        std::fs::write(&path, body).map_err(|error| format!("write {}: {error}", path.display()))
+        self.save_on(&RealDisk, dir)
     }
 
-    /// Drop any roster without reading it — the opt-out's shutdown half.
-    pub fn forget(dir: &Path) {
-        let _ = std::fs::remove_file(Self::path(dir));
+    pub(crate) fn save_on(&self, disk: &dyn Disk, dir: &Path) -> Result<(), String> {
+        let path = Self::path(dir);
+        if self.agents.is_empty() {
+            return disk::remove(disk, &path);
+        }
+        disk::replace(disk, &path, &self.body()?)
     }
+
+    fn body(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| format!("serialize the resume roster: {error}"))
+    }
+
+    /// Drop any roster without reading it — the opt-out's shutdown half. The
+    /// live roster goes with it: an opted-out roll must not be resumed from
+    /// the file a crash would have been.
+    pub(crate) fn forget_on(disk: &dyn Disk, dir: &Path) -> Result<(), String> {
+        disk::remove(disk, &Self::path(dir))?;
+        disk::remove(disk, &live_path(dir))
+    }
+}
+
+pub(crate) fn live_path(dir: &Path) -> PathBuf {
+    dir.join(LIVE_ROSTER_FILE)
+}
+
+/// At boot, before anything can write the live roster again: a live roster
+/// with no roster beside it is what a death that ran no shutdown left, and it
+/// becomes the roster this boot resumes from. Renamed rather than read, so a
+/// boot that dies before it resumes anybody leaves the same roster for the
+/// boot after it.
+///
+/// A roster beside it wins: a clean shutdown wrote that one last, and the live
+/// file is what it had not yet removed. Returns whether a live roster was
+/// promoted, which is what the boot log says.
+pub fn promote_live_roster(dir: &Path) -> bool {
+    promote_live_roster_on(&RealDisk, dir).unwrap_or_else(|error| {
+        eprintln!("resume: could not promote the live roster: {error}");
+        false
+    })
+}
+
+pub(crate) fn promote_live_roster_on(disk: &dyn Disk, dir: &Path) -> Result<bool, String> {
+    let live = live_path(dir);
+    if !live.exists() {
+        return Ok(false);
+    }
+    if ResumeRoster::path(dir).exists() {
+        disk::remove(disk, &live)?;
+        return Ok(false);
+    }
+    disk::rename(disk, &live, &ResumeRoster::path(dir))?;
+    Ok(true)
 }
 
 /// Whether this roll resumes its agents. The default is yes; a deliberate
@@ -164,7 +242,6 @@ pub fn restart_notice(at: &str, version: &str, was_working: bool) -> String {
          what you were doing, ask."
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;

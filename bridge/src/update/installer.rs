@@ -823,6 +823,13 @@ fn service_command(job: &Job, action: &str) -> Result<(), String> {
     };
     let mut command = match std::env::consts::OS {
         "linux" => {
+            // Every start the helper makes has the bridge stopped: the moment
+            // a stop timeout the unit predates can be raised (`stop_timeout`).
+            if action == "start" {
+                if let Some(said) = stop_timeout::ensure(&job.home, &mut stop_timeout::Systemctl) {
+                    eprintln!("bridge update: {said}");
+                }
+            }
             let mut c = Command::new("systemctl");
             c.args(["--user", action, "build-bridge.service"]);
             c
@@ -1069,6 +1076,8 @@ fn sync_tree(dir: &Path) -> Result<(), String> {
     }
     sync_file(dir)
 }
+
+mod stop_timeout;
 
 #[cfg(test)]
 mod tests;

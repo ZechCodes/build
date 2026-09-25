@@ -373,6 +373,9 @@ pub struct AppState {
     /// git runs. Never persisted — everything one leaves behind on a crash is
     /// re-derived by the scan (see `Bridge Concurrency Primitives.md` §5).
     pending_rows: Vec<Arc<crate::lifecycle::PendingRow>>,
+    /// Where who is working goes, so a death that runs no shutdown still
+    /// leaves a roster to resume from. `None` outside the daemon.
+    live_roster: Option<crate::resume::LiveRoster>,
     /// Tests only: read every diff cache as aged out, so a stale-poll test does
     /// not have to sleep out a ten-second TTL.
     #[cfg(test)]
@@ -603,6 +606,7 @@ impl AppState {
             deferred_work: None,
             deferred_result_check: None,
             pending_rows: Vec::new(),
+            live_roster: None,
             #[cfg(test)]
             force_stale_diff_caches: false,
             #[cfg(test)]

@@ -11,7 +11,7 @@ from skrift.lib.email_backends import EmailBackend
 
 from buildapp import releases
 from buildapp.email_message import OutboundEmail, compose_email, deliver_emails
-from buildapp.email_template import LAPTOP_IMAGE, EmailAction, EmailStep, EmailSteps
+from buildapp.email_template import PHONE_TABLET_IMAGE, EmailAction, EmailStep, EmailSteps
 
 #: The install command and docs link name the public site, as the docs page does: the
 #: invitee installs from getbuild.ing whichever deployment sent the mail.
@@ -49,9 +49,9 @@ INVITE_CLOSING = (
 
 
 def build_invite_email(*, to: str, invite_url: str, public_base_url: str) -> OutboundEmail:
-    """Welcome, the app on a laptop, the one button, whose link it is, then how to get
-    from an account to a paired machine — the same three steps the app's first-run
-    screen walks."""
+    """Welcome, the app on a phone and a tablet, the one button, whose link it is, then
+    how to get from an account to a paired machine — the same three steps the app's
+    first-run screen walks."""
     return compose_email(
         to=to,
         subject=INVITE_SUBJECT,
@@ -60,7 +60,7 @@ def build_invite_email(*, to: str, invite_url: str, public_base_url: str) -> Out
         unsubscribe_url=None,
         one_click=False,
         public_base_url=public_base_url,
-        hero=LAPTOP_IMAGE,
+        hero=PHONE_TABLET_IMAGE,
         action=EmailAction(url=invite_url, label=INVITE_ACTION_LABEL),
         after_action=(
             INVITE_LINK_NOTE.format(email=to),

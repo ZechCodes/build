@@ -14,8 +14,8 @@ from litestar.testing import TestClient
 from buildapp.email_template import (
     EMAIL_ASSET_DIRECTORY,
     EMAIL_ASSET_PATH,
-    LAPTOP_IMAGE,
     MARK_IMAGE,
+    PHONE_TABLET_IMAGE,
     EmailImage,
 )
 from buildapp.landing_page import LANDING_DIR
@@ -23,9 +23,9 @@ from buildapp.root_controller import EMAIL_ASSET_CACHE_CONTROL, RootController
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMAIL_ASSETS = LANDING_DIR / EMAIL_ASSET_DIRECTORY
-#: The issue's budget for the laptop image; a mail client downloads it on every open.
+#: The issue's budget for the hero image; a mail client downloads it on every open.
 IMAGE_SIZE_LIMIT_BYTES = 250 * 1024
-HOSTED_FILES = (MARK_IMAGE.file, MARK_IMAGE.file_1x, LAPTOP_IMAGE.file)
+HOSTED_FILES = (MARK_IMAGE.file, MARK_IMAGE.file_1x, PHONE_TABLET_IMAGE.file)
 
 
 def png_size(path: Path) -> tuple[int, int]:
@@ -53,7 +53,7 @@ def test_other_landing_assets_keep_their_uncached_answer():
     assert "cache-control" not in response.headers
 
 
-@pytest.mark.parametrize("image", (MARK_IMAGE, LAPTOP_IMAGE))
+@pytest.mark.parametrize("image", (MARK_IMAGE, PHONE_TABLET_IMAGE))
 def test_each_image_file_is_at_least_twice_its_display_size_at_its_aspect(
     image: EmailImage,
 ):

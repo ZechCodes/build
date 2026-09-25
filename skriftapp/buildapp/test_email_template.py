@@ -33,10 +33,10 @@ from buildapp.email_template import (
     EMAIL_BRAND_FONT_SIZE_PX,
     EMAIL_BRAND_LETTER_SPACING,
     FOOTER_PREFIX,
-    LAPTOP_IMAGE,
     MARK_IMAGE,
     OUTLOOK_LAYOUT_CLOSER,
     OUTLOOK_LAYOUT_OPENER,
+    PHONE_TABLET_IMAGE,
     TEXT_BRAND_LINE,
     UNSUBSCRIBE_LINK_LABEL,
     TEXT_STEP_INDENT,
@@ -57,11 +57,11 @@ ACTION_LABEL = "ACCEPT INVITE"
 ACTION = EmailAction(url=ACTION_URL, label=ACTION_LABEL)
 MARK_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark.png"
 MARK_2X_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark@2x.png"
-LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/laptop.png"
+HERO_URL = f"{PUBLIC_BASE_URL}/landing/email/phone-tablet.png"
 #: Every px size an image adds: its width and height attributes, mirrored in its style.
 IMAGE_SIZES = {
     str(size)
-    for image in (MARK_IMAGE, LAPTOP_IMAGE)
+    for image in (MARK_IMAGE, PHONE_TABLET_IMAGE)
     for size in (image.width_px, image.height_px)
 }
 
@@ -146,10 +146,10 @@ def test_the_image_urls_follow_the_deployment_rather_than_a_fixed_host():
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
         public_base_url="https://staging.example.test",
-        hero=LAPTOP_IMAGE,
+        hero=PHONE_TABLET_IMAGE,
     )
     assert 'src="https://staging.example.test/landing/email/brand-mark@2x.png"' in html
-    assert 'src="https://staging.example.test/landing/email/laptop.png"' in html
+    assert 'src="https://staging.example.test/landing/email/phone-tablet.png"' in html
     assert PUBLIC_BASE_URL not in html
 
 
@@ -159,10 +159,10 @@ def test_a_base_url_with_a_trailing_slash_gives_no_double_slash():
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
         public_base_url=f"{PUBLIC_BASE_URL}/",
-        hero=LAPTOP_IMAGE,
+        hero=PHONE_TABLET_IMAGE,
     )
     assert f'src="{MARK_2X_URL}"' in html
-    assert f'src="{LAPTOP_URL}"' in html
+    assert f'src="{HERO_URL}"' in html
     assert f"{PUBLIC_BASE_URL}//" not in html
 
 
@@ -186,19 +186,19 @@ def test_a_hero_image_sits_under_the_copy_and_above_the_action():
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
         action=ACTION,
-        hero=LAPTOP_IMAGE,
+        hero=PHONE_TABLET_IMAGE,
     )
-    hero_tag = re.search(rf'<img[^>]*src="{re.escape(LAPTOP_URL)}"[^>]*>', html).group(0)
-    assert 'alt="Build on a laptop"' in hero_tag
-    assert f'width="{LAPTOP_IMAGE.width_px}"' in hero_tag
-    assert f'height="{LAPTOP_IMAGE.height_px}"' in hero_tag
-    assert LAPTOP_IMAGE.width_px == EMAIL_MAX_WIDTH_PX
-    assert html.index(PARAGRAPHS[-1]) < html.index(LAPTOP_URL) < html.index(ACTION_URL)
+    hero_tag = re.search(rf'<img[^>]*src="{re.escape(HERO_URL)}"[^>]*>', html).group(0)
+    assert 'alt="Build on a phone and a tablet"' in hero_tag
+    assert f'width="{PHONE_TABLET_IMAGE.width_px}"' in hero_tag
+    assert f'height="{PHONE_TABLET_IMAGE.height_px}"' in hero_tag
+    assert PHONE_TABLET_IMAGE.width_px == EMAIL_MAX_WIDTH_PX
+    assert html.index(PARAGRAPHS[-1]) < html.index(HERO_URL) < html.index(ACTION_URL)
     assert f"padding-bottom:{EMAIL_HERO_PADDING_BOTTOM_PX}px" in html
 
 
 def test_a_message_without_a_hero_carries_only_the_mark():
-    assert LAPTOP_URL not in render_html_body()
+    assert HERO_URL not in render_html_body()
     assert render_html_body() == render_email_html(
         heading=HEADING, paragraphs=PARAGRAPHS, unsubscribe_url=UNSUBSCRIBE_URL, hero=None
     )
@@ -212,14 +212,14 @@ def test_with_images_blocked_the_alt_texts_read_in_order():
         paragraphs=PARAGRAPHS,
         unsubscribe_url=None,
         action=ACTION,
-        hero=LAPTOP_IMAGE,
+        hero=PHONE_TABLET_IMAGE,
     )
     blocked = re.sub(r'<img[^>]*alt="([^"]*)"[^>]*>', r"[\1]", html)
     positions = [
         blocked.index("[Build]"),
         blocked.index(HEADING),
         blocked.index(PARAGRAPHS[-1]),
-        blocked.index("[Build on a laptop]"),
+        blocked.index("[Build on a phone and a tablet]"),
         blocked.index(ACTION_LABEL),
     ]
     assert positions == sorted(positions)

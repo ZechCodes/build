@@ -9,7 +9,7 @@ declares each image's display size.
 | --- | --- | --- |
 | `brand-mark.png` | 80 × 32 (1x, `srcset`) | `skriftapp/buildapp/landing/brand-mark.svg` |
 | `brand-mark@2x.png` | 80 × 32 (the `src`) | the same SVG |
-| `laptop.png` | 560 × 308, the layout's full width | `laptop-screen.png` on the landing's MacBook |
+| `phone-tablet.png` | 560 × 378, the layout's full width | `tablet-screen.png` and `phone-screen.png` on the landing's iPad and phone |
 
 The images are cached for a year under stable names. A replacement image may not show on a
 client that has already fetched the old one until that year runs out. If the change must reach
@@ -30,44 +30,47 @@ for scale in 1 2; do
 done
 ```
 
-## Laptop
+## Phone and tablet
 
-`laptop-screen.png` is the landing capture fixture's `ui14-git` scene: the Changes view of the
-demonstration workspace `archive-search`, at the MacBook profile (3024 × 1964, dark theme). The
-fixture draws the SPA's own markup with its shipped stylesheets, so this is the app as it currently
-renders. It uses only demonstration data, with the host named `dev-mbp` (see
-`design/landing-captures/README.md`).
+The invite's hero is the landing's iPad and phone, tipped away from each other. Both screens
+come from the landing capture fixture (`design/landing-captures/`), which draws the SPA's own
+markup with its shipped stylesheets, dark theme, with demonstration data only and the host
+named `dev-mbp` (see `design/landing-captures/README.md`):
 
-1. Capture the screen. Serve the repository root with Vite, then capture only this scene:
+- `tablet-screen.png`: the Changes view of the demonstration workspace `archive-search`
+  (`ui14-git`) at the iPad profile, 2420 × 1668.
+- `phone-screen.png`: the inbox, opened from its toggle as the app opens it at phone width,
+  over the Implement conversation (`ui03`, resumed) at the iPhone profile, 1320 × 2868.
+
+1. Capture the screens. Serve the repository root with Vite, then capture both. The script
+   writes only these two files, so the landing's masters and WebP files stay as they are:
 
    ```sh
    spa/node_modules/.bin/vite . --port 4178
-   CAPTURE_ORIGIN=http://localhost:4178 CAPTURE_SCENES=ui14-git CAPTURE_PROFILES=macbook \
-     CHROMIUM_PATH=/usr/bin/chromium node design/landing-captures/capture.mjs
-   cp design/landing-captures/masters/ui14-git-macbook.png design/email/laptop-screen.png
-   git checkout -- design/landing-captures skriftapp/buildapp/landing/assets/screens
+   CAPTURE_ORIGIN=http://localhost:4178 CHROMIUM_PATH=/usr/bin/chromium \
+     node design/email/capture_screens.mjs
    ```
 
-   The capture script also rewrites the landing's master, WebP and results file. The checkout
-   puts them back, so that an email change does not also change the landing.
-
-2. Render it on the landing's laptop. This opens `build-devices.blend` without saving it, and
-   uses the landing generator's studio lights, hero camera and screen mapping. It takes about 5 s:
+2. Render them on the landing's devices. This opens `build-devices.blend` without saving it,
+   and uses the landing generator's studio lights, camera fit and screen mapping. The tablet
+   stands left and the phone in front of its right edge; each turns 20° the opposite way
+   about the vertical axis, so the edges where they meet come forward. It takes about 5 s:
 
    ```sh
    blender --background design/landing/build-devices.blend \
-     --python design/email/render_laptop.py -- \
-     --screen design/email/laptop-screen.png --out /tmp/laptop-render.png
+     --python design/email/render_pair.py -- \
+     --tablet-screen design/email/tablet-screen.png \
+     --phone-screen design/email/phone-screen.png --out /tmp/pair-render.png
    ```
 
 3. Compose the email image. This crops the render to the hardware, lays it on the email's
-   `#030604` background, scales it to 1200 px wide and reduces it to a 256-colour palette
-   (about 170 KB; the budget is 250 KB):
+   `#030604` background, scales it to 1200 px wide and remaps it to a dithered 256-colour
+   palette (about 160 KB; the budget is 250 KB):
 
    ```sh
-   skriftapp/.venv/bin/python design/email/compose_laptop.py \
-     /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop.png
+   skriftapp/.venv/bin/python design/email/compose_hero.py \
+     /tmp/pair-render.png skriftapp/buildapp/landing/email/phone-tablet.png
    ```
 
-If the composed height changes, update `LAPTOP_IMAGE` in `email_template.py`.
+If the composed height changes, update `PHONE_TABLET_IMAGE` in `email_template.py`.
 `test_email_assets.py` fails when a file's aspect ratio no longer matches its declared size.

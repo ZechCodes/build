@@ -10,7 +10,7 @@ The tablet stands left and the phone in front of its right edge, overlapping it 
 Each turns the opposite way about the vertical axis, so the edges where they meet come
 forward and the outer edges fall back. It reuses the landing generator's studio, camera
 fit and screen mapping, writes one transparent PNG, and saves nothing back to the .blend.
-`compose_laptop.py` turns that PNG into the hosted email image.
+`compose_hero.py` turns that PNG into the hosted email image.
 """
 
 from __future__ import annotations

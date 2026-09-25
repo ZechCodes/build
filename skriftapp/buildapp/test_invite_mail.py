@@ -14,7 +14,7 @@ from buildapp.email_message import (
     LIST_UNSUBSCRIBE_HEADER,
     LIST_UNSUBSCRIBE_POST_HEADER,
 )
-from buildapp.email_template import LAPTOP_IMAGE
+from buildapp.email_template import PHONE_TABLET_IMAGE
 from buildapp.email_test_support import (
     PUBLIC_BASE_URL,
     FailingEmailBackend,
@@ -35,7 +35,7 @@ from buildapp.invite_mail import (
 
 INVITED = "invitee@example.com"
 INVITE_URL = "https://getbuild.ing/invite/inv_a-raw-token"
-LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/{LAPTOP_IMAGE.file}"
+HERO_URL = f"{PUBLIC_BASE_URL}/landing/email/{PHONE_TABLET_IMAGE.file}"
 
 
 def invite_email():
@@ -121,13 +121,13 @@ def test_the_html_part_carries_the_button_then_the_steps_in_order():
         assert f">{number}.</td>" in html
 
 
-def test_the_laptop_sits_between_the_intro_and_the_button():
+def test_the_devices_sit_between_the_intro_and_the_button():
     html = invite_email().html_body
-    assert f'alt="{LAPTOP_IMAGE.alt}"' in html
+    assert f'alt="{PHONE_TABLET_IMAGE.alt}"' in html
     positions = [
         html.index(INVITE_HEADING),
         html.index(escape(INVITE_PARAGRAPHS[0])),
-        html.index(LAPTOP_URL),
+        html.index(HERO_URL),
         html.index(f'href="{INVITE_URL}"'),
     ]
     assert positions == sorted(positions)

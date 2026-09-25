@@ -131,10 +131,10 @@ MARK_IMAGE = EmailImage(
     height_px=32,
     alt="Build",
 )
-#: The app on the landing's laptop, the full width of the layout. Rendered by
+#: The app on the landing's iPad and phone, the full width of the layout. Rendered by
 #: design/email/README.md.
-LAPTOP_IMAGE = EmailImage(
-    file="laptop.png", width_px=560, height_px=308, alt="Build on a laptop"
+PHONE_TABLET_IMAGE = EmailImage(
+    file="phone-tablet.png", width_px=560, height_px=378, alt="Build on a phone and a tablet"
 )
 #: The mark keeps its size; its alt text is the accent, as the wordmark it replaced was.
 MARK_STYLE = (

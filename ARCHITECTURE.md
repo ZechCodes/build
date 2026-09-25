@@ -631,7 +631,9 @@ In practice:
   (`spa/src/core/trackerPages.js`): each page is written under its own
   address (its filter, cursor and limit), read back, and laid over the list
   record for exactly the numbers it answers for, so the tab fills in page by
-  page. A held row written after the page's copy of it, or one the page does
+  page. A page can be short or empty and still name the next (under a label or
+  assignee the bridge reads a bounded stretch per page); the pull walks on
+  until no next is named. A held row written after the page's copy of it, or one the page does
   not name that was written after the page was read, keeps its place. An
   older bridge is read whole, as before.
 

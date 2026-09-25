@@ -62,24 +62,34 @@ export const foldIssuesPage = (address, stretch, columnsOf) =>
 
 const pageParams = (params, cursor, limit) => (cursor ? { ...params, limit, cursor } : { ...params, limit });
 
-/** The cursor to ask with next, or null when this page was the last. A cursor
- *  that does not move, or one beside an empty page, ends the pull rather than
- *  asking for the same page forever. */
+/** The cursor to ask with next, or null when this page was the last. A page
+ *  can be short, or empty, and still name the next: under a label or an
+ *  assignee the bridge reads a bounded stretch per page and answers what it
+ *  kept there. A cursor that does not move ends the pull rather than asking
+ *  for the same page forever. */
 function nextCursorOf(page, cursor) {
   const next = page?.next_cursor;
-  if (typeof next !== "string" || !next || next === cursor || !page.issues?.length) return null;
+  if (typeof next !== "string" || !next || next === cursor) return null;
   return next;
 }
 
+/** The numbers a page answers for: down to its last row, or, the last page,
+ *  everything below. A page with a next and no rows answers for none — the
+ *  cursor is opaque, so the page after it starts where the last row kept
+ *  left off, and answers for the numbers this one read past. */
 function stretchOf(page, above, next) {
   const issues = Array.isArray(page.issues) ? page.issues : [];
+  const last = issues.at(-1);
   return {
     issues,
     above,
-    through: next ? Number(issues.at(-1).number) : -Infinity,
+    through: next ? (last ? Number(last.number) : above) : -Infinity,
     readAt: userSessionOf(page)?.now_ms ?? null,
   };
 }
+
+/** Whether a stretch answers for any number, and so has anything to lay. */
+const coversNumbers = (stretch) => stretch.through < stretch.above;
 
 /** Write one page where it lives and answer what the cache now holds there. */
 async function landPage(deviceId, projectId, asked, answer) {
@@ -111,29 +121,36 @@ async function forgetOtherPages(deviceId, projectId, params, landed) {
   if (stale.length) await deleteCached(stale.map((sub) => ({ deviceId, entityId: projectId, kind: TRACKER_ISSUES_PAGE_KIND, sub })));
 }
 
+/** Ask for, land and fold the page at `place`, and answer where the next
+ *  starts (no cursor once this was the last), or null when the pull stops. */
+async function pullPage({ ask, deviceId, projectId, params, fold, active, limit }, { cursor, above }) {
+  const asked = pageParams(params, cursor, limit);
+  const answer = await ask(asked);
+  if (!answer || !active()) return null;
+  const { sub, page } = await landPage(deviceId, projectId, asked, answer);
+  if (!page || !active()) return null;
+  const next = nextCursorOf(page, cursor);
+  const stretch = stretchOf(page, above, next);
+  if (coversNumbers(stretch)) await fold(stretch, page);
+  return { sub, cursor: next, above: stretch.through };
+}
+
 /**
  * Pull one list page by page. `ask(params)` answers a page or null; each page
  * is written under its own address, read back, and handed to
  * `fold(stretch, page)` before the next is asked. Answers whether the pull
  * reached the last page. A caller that stops being `active` stops it.
  */
-export async function pullIssuePages({ ask, deviceId, projectId, params, fold, active = () => true, limit = ISSUE_PAGE_LIMIT }) {
+export async function pullIssuePages(pull) {
+  const walk = { active: () => true, limit: ISSUE_PAGE_LIMIT, ...pull };
   const landed = new Set();
-  let cursor = null;
-  let above = Infinity;
+  let place = { cursor: null, above: Infinity };
   do {
-    const asked = pageParams(params, cursor, limit);
-    const answer = await ask(asked);
-    if (!answer || !active()) return false;
-    const { sub, page } = await landPage(deviceId, projectId, asked, answer);
-    if (!page || !active()) return false;
-    landed.add(sub);
-    const next = nextCursorOf(page, cursor);
-    const stretch = stretchOf(page, above, next);
-    await fold(stretch, page);
-    [cursor, above] = [next, stretch.through];
-  } while (cursor && active());
-  if (!active()) return false;
-  await forgetOtherPages(deviceId, projectId, params, landed);
+    place = await pullPage(walk, place);
+    if (!place) return false;
+    landed.add(place.sub);
+  } while (place.cursor && walk.active());
+  if (!walk.active()) return false;
+  await forgetOtherPages(walk.deviceId, walk.projectId, walk.params, landed);
   return true;
 }

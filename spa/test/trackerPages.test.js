@@ -139,6 +139,26 @@ describe("pulling every page", () => {
     expect(fold).toHaveBeenCalledTimes(1);
   });
 
+  it("walks on past a short or empty page while the bridge names the next", async () => {
+    // A label few issues carry: the bridge reads a bounded stretch per page
+    // and answers what it kept there, short or nothing, with where to go on.
+    const answers = [
+      { issues: [issue(9)], next_cursor: "c6" },
+      { issues: [], next_cursor: "c3" },
+      { issues: [issue(2)] },
+    ];
+    const ask = vi.fn(async () => ({ project_id: "p1", ...answers.shift() }));
+    const folded = [];
+    expect(await pull(ask, async (stretch) => folded.push(stretch))).toBe(true);
+    expect(ask.mock.calls.map(([params]) => params.cursor)).toEqual([undefined, "c6", "c3"]);
+    // The empty page answers for no number: the next one starts where the
+    // last row kept left off, and lays itself over everything below that.
+    expect(folded.map((stretch) => [numbers(stretch.issues), stretch.above, stretch.through])).toEqual([
+      [[9], Infinity, 9],
+      [[2], 9, -Infinity],
+    ]);
+  });
+
   it("stops rather than loop on a cursor that does not move", async () => {
     const ask = vi.fn(async () => ({ issues: [issue(3)], next_cursor: "same" }));
     await pull(ask, async () => {});

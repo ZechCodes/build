@@ -3,10 +3,11 @@
 // Presence is the api's (spec rule 6): `GET /api/devices` is the only place a
 // machine's status comes from — the relay says nothing about which machines are
 // up — so this module re-reads it on a cadence while the app is open, and at
-// once when the tab comes back to the front. Two things follow every read: a
-// machine that is online with no live session is opened (a late device joining,
-// or one that came back), and a machine this client holds that the account no
-// longer lists online is marked away. A live connection failing is the other,
+// once when the tab comes back to the front. Three things follow every read: a
+// machine this client holds that the account no longer has at all is retired,
+// a machine that is online with no live session is opened (a late device
+// joining, or one that came back), and a machine this client holds that the
+// account no longer lists online is marked away. A live connection failing is the other,
 // faster signal, and it is the connection layer's (connection.js).
 
 import { $ } from "./dom.js";
@@ -20,7 +21,7 @@ import { goFromInbox, paintBridgeUpdateMark } from "./core/inboxShell.js";
 import { fetchDevices } from "./api.js";
 import { deviceNameOf } from "./core/devicePolicy.js";
 import { mountDeviceFilterCache, rememberDeviceFilter } from "./core/deviceFilter.js";
-import { deviceWentAway, openDeviceSessions, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
+import { deviceWentAway, openDeviceSessions, retireDevice, syncDeviceRecoveryPresence, syncHome } from "./connection.js";
 import { DEVICES_ADDRESS, readCached, subscribeCache, writeCached } from "./core/localCache.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 import { bridgeUpdateAvailable, bridgeUpdateStatus, onBridgeUpdatesChanged, trackBridgeUpdateDevices } from "./core/bridgeUpdates.js";
@@ -76,6 +77,14 @@ export function onDevicesChanged(listener) {
 }
 
 export async function refreshDevices() {
+  await pullAccountList();
+  return App.devices;
+}
+
+/** The one REST read of the account list: fetched, committed to its cache
+ *  record and taken back up. Answers what the api itself said, which is what
+ *  a presence read retires on; what surfaces paint is `App.devices`. */
+async function pullAccountList() {
   const generation = ++presenceGeneration;
   const accountEpoch = App.accountEpoch;
   const devices = await fetchDevices();
@@ -87,7 +96,7 @@ export async function refreshDevices() {
   // read said.
   await writeCached(DEVICES_ADDRESS, devices);
   await latestDeviceRead;
-  return App.devices;
+  return devices;
 }
 
 /** Commit an account action through the same record as presence reads. An
@@ -177,12 +186,16 @@ export function stopWatchingPresence() {
  * would empty the app. The next tick reads again.
  */
 export async function readPresence() {
+  // What this client held when it asked: an answer can only retire these.
+  const heldWhenAsked = new Set(knownContexts());
+  let listed;
   try {
-    await refreshDevices();
+    listed = await pullAccountList();
   } catch {
     return null;
   }
-  markWhatTheAccountNoLongerLists();
+  const retired = retireWhatTheAccountNoLongerHas(listed, heldWhenAsked);
+  markWhatTheAccountNoLongerLists(retired);
   openDeviceSessions(); // a late device, a machine that came back, one paired elsewhere
   // Which device is home is what these statuses say: the picked device dropping
   // hands home to the first that is still online, and its coming back takes it
@@ -191,10 +204,46 @@ export async function readPresence() {
   return App.devices;
 }
 
-/** Every machine this client is holding that the account no longer calls
- *  online: its bridge stopped saying it was there. */
-function markWhatTheAccountNoLongerLists() {
+/**
+ * Every machine this client held that the account has let go of, retired the
+ * way an explicit removal retires it (connection.js `retireDevice`): the dial
+ * called off, the peer and rendezvous closed, the context, its scope and its
+ * chat repository gone, and every surface over it told it has no machine.
+ *
+ * This read is the one authority on which machines the account HAS, and only
+ * about the machines held when it was asked:
+ * - `GET /api/devices` answers every approved device the account owns, whole
+ *   (no paging, no filter but approval), and this answer passed the generation
+ *   and account guards: nothing newer was asked, and it is this account's.
+ * - A machine is only ever learned of from an earlier api answer, so one held
+ *   when this was asked was approved before the api answered, and its absence
+ *   means it was revoked since. One that turned up while this was in flight
+ *   (paired in another tab, which wrote the list) may be newer than this
+ *   answer, so it waits for the next read.
+ * - The committed list has to agree: a list another tab wrote over this one,
+ *   still naming the machine, is not overruled here.
+ *
+ * Every other way the list changes — the cached record a mounting surface takes
+ * up, another tab's write, an eviction announcing no record — is a projection
+ * of disk that can be older than the account, so it only repaints; a read that
+ * fails or is superseded says nothing about any machine at all.
+ */
+function retireWhatTheAccountNoLongerHas(listed, heldWhenAsked) {
+  const named = new Set([...listed, ...App.devices].map((device) => device.id));
+  const retired = new Set();
   for (const context of knownContexts()) {
+    if (!heldWhenAsked.has(context) || named.has(context.deviceId)) continue;
+    retireDevice(context.deviceId);
+    retired.add(context.deviceId);
+  }
+  return retired;
+}
+
+/** Every machine this client is still holding that the account no longer calls
+ *  online: its bridge stopped saying it was there. */
+function markWhatTheAccountNoLongerLists(retired) {
+  for (const context of knownContexts()) {
+    if (retired.has(context.deviceId)) continue;
     const listedOnline = deviceFor(context.deviceId)?.status === "online";
     noteAccountPresence(context, listedOnline);
     if (!listedOnline) deviceWentAway(context.deviceId);

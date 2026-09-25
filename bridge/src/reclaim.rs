@@ -16,14 +16,18 @@
 
 pub mod artifacts;
 mod budget;
+pub mod containment;
 mod git_probe;
 mod measure;
 
 pub use budget::{Budget, Unfinished};
 pub use git_probe::{reading_line as git_reading_line, GitProbe};
+#[cfg(unix)]
+pub use measure::measure_repositories_pinned;
 pub use measure::{measure_repositories, newest_change_ms, RepositoryMeasure};
 
 use artifacts::Artifact;
+use containment::WorkspaceBoundary;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -255,6 +259,9 @@ pub struct Subject {
     pub project_id: String,
     pub name: String,
     pub root: PathBuf,
+    /// The registry's fixed managed-storage boundary and every manifest
+    /// checkout, including directories that are not Git repositories.
+    pub boundary: Option<WorkspaceBoundary>,
     /// `(path, branch)` of each Git directory.
     pub repositories: Vec<(PathBuf, Option<String>)>,
     /// Holds read under the mutex: an agent working, a linked issue still
@@ -275,14 +282,34 @@ impl Subject {
     /// activity walk, the size walk) or a budget found spent at the end
     /// holds the workspace as `unmeasured`: not idle, not reclaimable.
     pub fn measure(&self, now_ms: i64, policy: &ReclaimPolicy, budget: &Budget) -> LifecycleRecord {
-        let paths = self.repository_paths();
-        let git = measure_repositories(&paths, budget, &policy.git);
-        let changed = newest_change_ms(&self.root, budget);
+        let guard = self
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok());
+        if guard.is_none() {
+            let mut record = LifecycleRecord {
+                measured_at_ms: now_ms,
+                ..LifecycleRecord::default()
+            };
+            record.unmeasured();
+            return record;
+        }
+        let Some(repositories) = self.pinned_repositories(guard.as_ref().unwrap()) else {
+            let mut record = LifecycleRecord {
+                measured_at_ms: now_ms,
+                ..LifecycleRecord::default()
+            };
+            record.unmeasured();
+            return record;
+        };
+        let git = measure_repositories_pinned(&repositories, budget, &policy.git);
+        let changed = guard.as_ref().unwrap().newest_change_ms(budget);
+        let created = guard.as_ref().unwrap().manifest_created_ms();
         let last_activity_ms = [
             self.conversation_activity_ms,
             git.newest_commit_ms,
             changed.unwrap_or(None),
-            measure::created_ms(&self.root.join(crate::workspace::MANIFEST_FILE)),
+            created.ok(),
         ]
         .into_iter()
         .flatten()
@@ -305,7 +332,16 @@ impl Subject {
         let wants_size = record.idle
             && (record.size_bytes.is_none() || record.notice_due(now_ms, policy) != NoticeDue::No);
         let sized = !wants_size || self.resize(&mut record, budget);
-        if git.unfinished || changed.is_err() || !sized || budget.check().is_err() {
+        if git.unfinished
+            || changed.is_err()
+            || created.is_err()
+            || !sized
+            || budget.check().is_err()
+            || self
+                .boundary
+                .as_ref()
+                .is_none_or(|boundary| boundary.validate().is_err())
+        {
             record.unmeasured();
         }
         record
@@ -314,12 +350,24 @@ impl Subject {
     /// Measure the size on disk again. `false` when the budget ran out or the
     /// daemon stopped first; the last size is kept.
     pub fn resize(&self, record: &mut LifecycleRecord, budget: &Budget) -> bool {
-        match artifacts::size_on_disk(&self.root, budget) {
-            Ok(size) => {
+        let guard = self
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok());
+        if guard.is_none() {
+            return false;
+        }
+        match guard.as_ref().unwrap().size_on_disk(budget) {
+            Ok(size)
+                if self
+                    .boundary
+                    .as_ref()
+                    .is_some_and(|boundary| boundary.validate().is_ok()) =>
+            {
                 record.size_bytes = Some(size);
                 true
             }
-            Err(Unfinished) => false,
+            _ => false,
         }
     }
 
@@ -333,7 +381,19 @@ impl Subject {
         policy: &ReclaimPolicy,
         budget: &Budget,
     ) -> bool {
-        let git = measure_repositories(&self.repository_paths(), budget, &policy.git);
+        let guard = self
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok());
+        if guard.is_none() {
+            record.unmeasured();
+            return false;
+        }
+        let Some(repositories) = self.pinned_repositories(guard.as_ref().unwrap()) else {
+            record.unmeasured();
+            return false;
+        };
+        let git = measure_repositories_pinned(&repositories, budget, &policy.git);
         if git.unfinished {
             record.unmeasured();
             return false;
@@ -355,9 +415,13 @@ impl Subject {
     /// somebody else's. `Err` when the budget ran out first, and then nothing
     /// is removed.
     pub fn build_output(&self, budget: &Budget) -> Result<Vec<Artifact>, Unfinished> {
-        let Some(root) = self.canonical_root() else {
+        let Some(boundary) = self.boundary.as_ref() else {
             return Ok(Vec::new());
         };
+        let Ok(guard) = boundary.validate() else {
+            return Ok(Vec::new());
+        };
+        let root = guard.expected_root().to_path_buf();
         let mut repositories = Vec::new();
         for path in self.repository_paths() {
             match std::fs::canonicalize(&path) {
@@ -382,19 +446,41 @@ impl Subject {
                 }
             }
         }
+        if boundary.validate().is_err() {
+            return Ok(Vec::new());
+        }
         Ok(found)
     }
 
     /// The root with its links resolved: where the trash goes, and what every
     /// checkout has to be inside.
     pub fn canonical_root(&self) -> Option<PathBuf> {
-        std::fs::canonicalize(&self.root).ok()
+        self.boundary
+            .as_ref()?
+            .validate()
+            .ok()
+            .map(|guard| guard.expected_root().to_path_buf())
     }
 
     fn repository_paths(&self) -> Vec<PathBuf> {
         self.repositories
             .iter()
             .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    #[cfg(unix)]
+    pub fn pinned_repositories(
+        &self,
+        guard: &containment::ValidatedBoundary,
+    ) -> Option<Vec<(PathBuf, std::os::fd::OwnedFd)>> {
+        self.repository_paths()
+            .into_iter()
+            .map(|path| {
+                let relative = path.strip_prefix(&self.root).ok()?;
+                let canonical = guard.expected_root().join(relative);
+                Some((canonical.clone(), guard.open_checkout(&canonical).ok()?))
+            })
             .collect()
     }
 

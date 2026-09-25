@@ -195,6 +195,8 @@ cannot starve the relay connection, the heartbeat or negotiation.
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
   `1.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `workspaces.lifecycle` shares this release with `params.strict`;
+  `branches.finishDelete` will join it from #87.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -282,6 +284,15 @@ carry it as `lifecycle`. A workspace is idle after 24 h
 (`BRIDGE_WORKSPACE_IDLE_SECS`). What holds it: not ready, an agent working or a
 terminal open anywhere inside it, uncommitted or unpushed work, a plain
 directory, a linked issue not Done, or issues that could not be read.
+
+The registry anchors reclamation to its configured managed storage directory.
+Before measurement or cleanup, the workspace root and every manifest checkout
+must match the registered root identity and remain inside that boundary,
+without substituted symlinks. Reloads preserve the registered identity. Git readers
+start from a pinned checkout directory. Pruning and trash removal use directory
+descriptors, so replacing a pathname cannot redirect deletion into another
+tree. Explicit reclaim carries the same boundary through its deferred removal.
+An invalid boundary leaves the workspace unmeasured and preserves its files.
 
 Each project agent gets one notice per sweep naming its newly quiet
 workspaces, and the notice repeats daily while they stay quiet. The linked

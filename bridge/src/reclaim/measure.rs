@@ -3,6 +3,8 @@
 use super::artifacts::ARTIFACT_DIRS;
 use super::budget::{Budget, Unfinished};
 use super::git_probe::{GitProbe, GitReading};
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -39,6 +41,26 @@ pub fn measure_repositories(
     let mut measure = RepositoryMeasure::default();
     for repository in repositories {
         let Ok(reading) = probe.read(repository, budget) else {
+            measure.unfinished = true;
+            return measure;
+        };
+        measure.add(&reading);
+    }
+    measure.unfinished = budget.check().is_err();
+    measure
+}
+
+/// Read each checkout through a descriptor held below the managed root, so
+/// replacing its path cannot redirect the child to another repository.
+#[cfg(unix)]
+pub fn measure_repositories_pinned(
+    repositories: &[(PathBuf, OwnedFd)],
+    budget: &Budget,
+    probe: &GitProbe,
+) -> RepositoryMeasure {
+    let mut measure = RepositoryMeasure::default();
+    for (_, checkout) in repositories {
+        let Ok(reading) = probe.read_pinned(checkout.as_raw_fd(), budget) else {
             measure.unfinished = true;
             return measure;
         };
@@ -117,18 +139,6 @@ fn skipped_for_activity(name: &std::ffi::OsStr, parent: &Path, root: &Path) -> b
     NOT_ACTIVITY.contains(&name)
         || ARTIFACT_DIRS.contains(&name)
         || (parent == root && name == crate::workspace::MANIFEST_FILE)
-}
-
-/// When a file was made, falling back to when it was last written on a
-/// filesystem that does not keep birth times. The manifest is written when the
-/// workspace is made, so this is the workspace's own age.
-pub(super) fn created_ms(path: &Path) -> Option<i64> {
-    let metadata = std::fs::metadata(path).ok()?;
-    metadata
-        .created()
-        .or_else(|_| metadata.modified())
-        .ok()
-        .map(system_ms)
 }
 
 fn system_ms(at: SystemTime) -> i64 {

@@ -317,7 +317,21 @@ fn reclaim_refuses_while_an_issue_is_open_or_work_is_only_here() {
 fn reclaim_removes_the_workspace_and_logs_it_on_the_issue() {
     let (_tmp, state, _project, ws, issue) = linked_workspace();
     finish(&state, &issue);
-    let (root, _checkout) = root_and_checkout(&state, &ws);
+    let (root, checkout) = root_and_checkout(&state, &ws);
+    let source = state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&ws)
+        .unwrap()
+        .directories[0]
+        .source_path
+        .clone();
+    let name = crate::isolation::checkout_name(&checkout).unwrap();
+    assert!(git2::Repository::open(&source)
+        .unwrap()
+        .find_worktree(&name)
+        .is_ok());
 
     let reclaimed = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
 
@@ -327,6 +341,10 @@ fn reclaim_removes_the_workspace_and_logs_it_on_the_issue() {
         json!({ "workspace_id": ws, "deleted": true })
     );
     assert!(!root.exists());
+    assert!(git2::Repository::open(&source)
+        .unwrap()
+        .find_worktree(&name)
+        .is_err());
     let entries = timeline_kinds(&state, &issue);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "workspace_reclaimed");

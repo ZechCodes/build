@@ -36,10 +36,16 @@ fn found(subject: &Subject) -> Vec<PathBuf> {
 /// Measure, then drop what `build_output` finds the way the service does:
 /// moved into the trash, the trash emptied.
 fn prune(subject: &Subject) -> u64 {
-    let root = subject.canonical_root().unwrap();
+    let Some(guard) = subject
+        .boundary
+        .as_ref()
+        .and_then(|boundary| boundary.validate().ok())
+    else {
+        return 0;
+    };
     let artifacts = subject.build_output(&budget()).unwrap();
-    let moved = artifacts::move_to_trash(&artifacts, &trash_of(&root).unwrap());
-    artifacts::empty_trash(&root, &budget());
+    let moved = guard.move_to_trash(&artifacts);
+    guard.empty_trash(&budget());
     moved.iter().map(|artifact| artifact.bytes).sum()
 }
 
@@ -51,8 +57,9 @@ fn pushed_workspace() -> (tempfile::TempDir, PathBuf, PathBuf) {
     std::fs::write(source.join(".gitignore"), "node_modules/\ntarget\n").unwrap();
     git_in(&source, &["add", ".gitignore"]);
     git_in(&source, &["commit", "-m", "ignore build output"]);
-    let root = tmp.path().join("ws");
-    std::fs::create_dir(&root).unwrap();
+    let root = tmp.path().join("managed/proj-1/ws");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(crate::workspace::MANIFEST_FILE), b"{}").unwrap();
     let checkout = root.join("Build");
     git_in(
         tmp.path(),
@@ -71,11 +78,17 @@ fn fill(directory: &Path, bytes: usize) {
 }
 
 fn subject(root: &Path, checkout: &Path) -> Subject {
+    let anchor = containment::StorageAnchor::new(root.parent().unwrap().parent().unwrap());
+    anchor.capture_workspace(root).unwrap();
     Subject {
         workspace_id: "ws-1".into(),
         project_id: "proj-1".into(),
         name: "ws".into(),
         root: root.to_path_buf(),
+        boundary: Some(
+            containment::WorkspaceBoundary::new(anchor, root, vec![checkout.to_path_buf()])
+                .unwrap(),
+        ),
         repositories: vec![(checkout.to_path_buf(), Some("main".into()))],
         holds: Vec::new(),
         issues: Vec::new(),
@@ -270,8 +283,9 @@ fn five_thousand_files_over_a_tiny_budget_are_unmeasured() {
     }
     git_in(&source, &["add", "."]);
     git_in(&source, &["commit", "-q", "-m", "many files"]);
-    let root = tmp.path().join("ws");
-    std::fs::create_dir(&root).unwrap();
+    let root = tmp.path().join("managed/proj-1/ws");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join(crate::workspace::MANIFEST_FILE), b"{}").unwrap();
     let checkout = root.join("Build");
     git_in(
         tmp.path(),

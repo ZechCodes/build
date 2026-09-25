@@ -16,6 +16,7 @@
 
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
+use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{Budget, LinkedIssue, ReclaimPolicy};
 use crate::tracker::{Actor, IssueEventKind};
 use crate::workspace::Workspace;
@@ -27,6 +28,7 @@ use std::sync::{Arc, Mutex};
 /// feeds, made under it.
 struct MeasureBeforeReclaim {
     workspace: Workspace,
+    boundary: WorkspaceBoundary,
     actor: Actor,
     params: Value,
     policy: ReclaimPolicy,
@@ -38,7 +40,7 @@ struct MeasureBeforeReclaim {
 impl DeferredGitWork for MeasureBeforeReclaim {
     fn run(&self, _: &Value) -> Result<Value, String> {
         let budget = self.policy.budget(Arc::clone(&self.stop));
-        let blockers = git_holds(&self.workspace, &self.policy, &budget);
+        let blockers = git_holds(&self.workspace, &self.boundary, &self.policy, &budget);
         *self
             .measured
             .lock()
@@ -55,7 +57,13 @@ impl DeferredGitWork for MeasureBeforeReclaim {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        app.decide_reclaim(&self.workspace, &self.actor, &self.params, &measured)
+        app.decide_reclaim(
+            &self.workspace,
+            &self.boundary,
+            &self.actor,
+            &self.params,
+            &measured,
+        )
     }
 }
 
@@ -69,7 +77,7 @@ impl AppState {
         actor: &Actor,
     ) -> Result<Value, String> {
         let workspace = self.workspace_to_remove(params)?;
-        self.refuse_removing_what_is_not_builds(&workspace)?;
+        let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         let issues = self.issues_of_workspace(&workspace.id);
         let holds = self.live_holds(&workspace, &issues);
         if !holds.is_empty() {
@@ -80,6 +88,7 @@ impl AppState {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(MeasureBeforeReclaim {
                 workspace,
+                boundary,
                 actor: actor.clone(),
                 params: params.clone(),
                 policy: self.reclaim_policy.clone(),
@@ -99,6 +108,7 @@ impl AppState {
     fn decide_reclaim(
         &mut self,
         measured_workspace: &Workspace,
+        boundary: &WorkspaceBoundary,
         actor: &Actor,
         params: &Value,
         measured: &[&'static str],
@@ -113,6 +123,12 @@ impl AppState {
             return Err(crate::reclaim::BUSY.to_string());
         }
         self.refuse_removing_what_is_not_builds(&workspace)?;
+        if boundary.validate().is_err() {
+            return Err(reclaim_refusal(
+                &workspace.name,
+                &[crate::reclaim::HOLD_UNMEASURED],
+            ));
+        }
         let issues = self.issues_of_workspace(&workspace.id);
         let mut holds = self.live_holds(&workspace, &issues);
         for blocker in measured {
@@ -121,13 +137,13 @@ impl AppState {
             }
         }
         if holds.is_empty() {
-            holds = self.last_look(&workspace);
+            holds = self.last_look(&workspace, boundary);
         }
         if !holds.is_empty() {
             return Err(reclaim_refusal(&workspace.name, &holds));
         }
         self.log_reclaim(&workspace, &issues.unwrap_or_default(), actor);
-        self.remove_workspace(&workspace, params, None)?;
+        self.remove_workspace(&workspace, params, None, boundary.clone())?;
         self.workspace_lifecycle.remove(&workspace.id);
         self.persist_workspace_lifecycle();
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
@@ -137,11 +153,11 @@ impl AppState {
     /// or an edit that landed after the measurement, by anything Build did
     /// not start, still holds the workspace. Bounded, because the mutex is
     /// held: a workspace too slow to read in time is held as unmeasured.
-    fn last_look(&self, workspace: &Workspace) -> Vec<&'static str> {
+    fn last_look(&self, workspace: &Workspace, boundary: &WorkspaceBoundary) -> Vec<&'static str> {
         let budget = self
             .reclaim_policy
             .final_check_budget(Arc::clone(&self.reclaim_stop));
-        git_holds(workspace, &self.reclaim_policy, &budget)
+        git_holds(workspace, boundary, &self.reclaim_policy, &budget)
     }
 
     /// The issues linking one workspace, or why they could not be read.
@@ -183,14 +199,29 @@ impl AppState {
 /// `dirty`, `unpushed`, `unknown`, or `unmeasured` when the budget ran out or
 /// the daemon stopped before every one was read. The same reading the
 /// service's sweep takes.
-fn git_holds(workspace: &Workspace, policy: &ReclaimPolicy, budget: &Budget) -> Vec<&'static str> {
-    let paths: Vec<_> = workspace
+fn git_holds(
+    workspace: &Workspace,
+    boundary: &WorkspaceBoundary,
+    policy: &ReclaimPolicy,
+    budget: &Budget,
+) -> Vec<&'static str> {
+    let Ok(guard) = boundary.validate() else {
+        return vec![crate::reclaim::HOLD_UNMEASURED];
+    };
+    let Some(repositories): Option<Vec<_>> = workspace
         .directories
         .iter()
         .filter(|directory| directory.is_git)
-        .map(|directory| directory.path.clone())
-        .collect();
-    let git = crate::reclaim::measure_repositories(&paths, budget, &policy.git);
+        .map(|directory| {
+            let relative = directory.path.strip_prefix(&workspace.root).ok()?;
+            let path = guard.expected_root().join(relative);
+            Some((path.clone(), guard.open_checkout(&path).ok()?))
+        })
+        .collect()
+    else {
+        return vec![crate::reclaim::HOLD_UNMEASURED];
+    };
+    let git = crate::reclaim::measure_repositories_pinned(&repositories, budget, &policy.git);
     let mut found = git.holds;
     if git.unfinished {
         found.push(crate::reclaim::HOLD_UNMEASURED);

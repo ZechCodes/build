@@ -14,6 +14,8 @@ use super::budget::{Budget, Unfinished};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -87,14 +89,51 @@ impl GitProbe {
     /// reaped by then. A reading that could not be started, or said nothing
     /// Build understands, is a repository that could not be read.
     pub fn read(&self, repository: &Path, budget: &Budget) -> Result<GitReading, Unfinished> {
+        self.read_at(repository, None, budget)
+    }
+
+    /// Read through a checkout descriptor held below managed storage. The
+    /// child starts from that descriptor even if the workspace path changes.
+    #[cfg(unix)]
+    pub fn read_pinned(
+        &self,
+        checkout_fd: RawFd,
+        budget: &Budget,
+    ) -> Result<GitReading, Unfinished> {
+        self.read_at(Path::new("."), Some(checkout_fd), budget)
+    }
+
+    fn read_at(
+        &self,
+        repository: &Path,
+        #[cfg(unix)] checkout_fd: Option<RawFd>,
+        #[cfg(not(unix))] _checkout_fd: Option<()>,
+        budget: &Budget,
+    ) -> Result<GitReading, Unfinished> {
         budget.check()?;
-        let spawned = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(&self.args)
             .env(REPOSITORY_VAR, repository)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        if let Some(fd) = checkout_fd {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: pre_exec only calls async-signal-safe fchdir; the caller
+            // keeps the descriptor alive until spawn returns.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fchdir(fd) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+        }
+        let spawned = command.spawn();
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {

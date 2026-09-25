@@ -29,6 +29,7 @@ mod notice;
 
 use crate::app::{AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
+use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
 use crate::tracker::{Actor, Issue, IssueEventKind, IssueState};
 use crate::workspace::{Workspace, WorkspaceStatus};
@@ -171,8 +172,12 @@ impl AppState {
             }
             // Whatever an interrupted sweep left in the trash. Only ever what
             // Build moved there.
-            if let Some(root) = subject.canonical_root() {
-                artifacts::empty_trash(&root, &budget);
+            if let Some(guard) = subject
+                .boundary
+                .as_ref()
+                .and_then(|boundary| boundary.validate().ok())
+            {
+                guard.empty_trash(&budget);
             }
             let mut record = subject.measure(now_ms, policy, &budget);
             if policy.prune && record.idle && record.reclaimable {
@@ -197,6 +202,8 @@ impl AppState {
         racer: &dyn Fn(PrunePhase),
     ) -> LifecycleRecord {
         let Some(root) = subject.canonical_root() else {
+            let mut record = record;
+            record.unmeasured();
             return record;
         };
         let (stop, issues) = {
@@ -240,7 +247,13 @@ impl AppState {
         if moved.is_empty() {
             return fresh;
         }
-        artifacts::empty_trash(&root, &policy.budget(Arc::clone(&stop)));
+        if let Some(guard) = subject
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok())
+        {
+            guard.empty_trash(&policy.budget(Arc::clone(&stop)));
+        }
         fresh.pruned_bytes += moved.iter().map(|artifact| artifact.bytes).sum::<u64>();
         fresh.pruned_at_ms = Some(now_ms);
         if !subject.resize(&mut fresh, &policy.budget(stop)) {
@@ -266,6 +279,14 @@ impl AppState {
         policy: &ReclaimPolicy,
         stop: &Arc<AtomicBool>,
     ) -> Vec<Artifact> {
+        if subject
+            .boundary
+            .as_ref()
+            .is_none_or(|boundary| boundary.validate().is_err())
+        {
+            record.unmeasured();
+            return Vec::new();
+        }
         match self.prune_holds(&subject.workspace_id, true) {
             Some((holds, _)) if holds.is_empty() => {}
             Some((holds, _)) => {
@@ -294,9 +315,19 @@ impl AppState {
             record.unmeasured();
             return Vec::new();
         }
-        crate::reclaim::trash_of(root)
-            .map(|trash| artifacts::move_to_trash(artifacts, &trash))
-            .unwrap_or_default()
+        let Some(guard) = subject
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok())
+        else {
+            record.unmeasured();
+            return Vec::new();
+        };
+        if guard.expected_root() != root {
+            record.unmeasured();
+            return Vec::new();
+        }
+        guard.move_to_trash(artifacts)
     }
 
     /// Whether somebody wrote to the workspace's conversation since `subject`
@@ -450,6 +481,15 @@ impl AppState {
             project_id: workspace.project_id.clone(),
             name: workspace.name.clone(),
             root: workspace.root.clone(),
+            boundary: WorkspaceBoundary::new(
+                self.workspaces.storage_anchor(),
+                &workspace.root,
+                workspace
+                    .directories
+                    .iter()
+                    .map(|directory| directory.path.clone())
+                    .collect(),
+            ),
             repositories: workspace
                 .directories
                 .iter()

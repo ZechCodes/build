@@ -122,6 +122,7 @@ pub struct WorkspaceFinish {
 #[derive(Debug)]
 pub struct WorkspaceRegistry {
     root: PathBuf,
+    storage_anchor: crate::reclaim::containment::StorageAnchor,
     workspaces: HashMap<String, Workspace>,
 }
 
@@ -129,6 +130,7 @@ impl WorkspaceRegistry {
     pub fn load(root: impl Into<PathBuf>) -> Result<Self, String> {
         let root = root.into();
         let mut registry = Self {
+            storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
             root,
             workspaces: HashMap::new(),
         };
@@ -145,8 +147,10 @@ impl WorkspaceRegistry {
     }
 
     pub fn empty(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
         Self {
-            root: root.into(),
+            storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
+            root,
             workspaces: HashMap::new(),
         }
     }
@@ -195,6 +199,14 @@ impl WorkspaceRegistry {
                     &project_entry.path(),
                     &registry_root,
                 )?;
+                self.storage_anchor
+                    .capture_workspace(&workspace.root)
+                    .map_err(|error| {
+                        format!(
+                            "remember workspace root {}: {error}",
+                            workspace.root.display()
+                        )
+                    })?;
                 self.workspaces.insert(workspace.id.clone(), workspace);
             }
         }
@@ -333,6 +345,10 @@ impl WorkspaceRegistry {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn storage_anchor(&self) -> crate::reclaim::containment::StorageAnchor {
+        self.storage_anchor.clone()
     }
 
     pub fn get(&self, id: &str) -> Option<&Workspace> {
@@ -505,6 +521,7 @@ impl WorkspaceRegistry {
                 project_root.display()
             )
         })?;
+        self.storage_anchor.capture();
         // The name is user-facing text.  It must survive byte-for-byte in the
         // record, while only a bounded, portable derivative reaches a path.
         let root = create_unique_dir(&project_root, &crate::worktree::slugify(name))?;
@@ -512,6 +529,13 @@ impl WorkspaceRegistry {
             let _ = fs::remove_dir_all(&root);
             return Err(format!(
                 "mark pending workspace {}: {error}",
+                root.display()
+            ));
+        }
+        if let Err(error) = self.storage_anchor.register_workspace(&root) {
+            let _ = fs::remove_dir_all(&root);
+            return Err(format!(
+                "remember new workspace root {}: {error}",
                 root.display()
             ));
         }

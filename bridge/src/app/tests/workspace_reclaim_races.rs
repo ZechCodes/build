@@ -109,6 +109,97 @@ fn ready_to_prune() -> (
     (tmp, state, project_id, ws, issue, checkout, output)
 }
 
+#[test]
+fn a_redirected_managed_root_never_launches_a_probe_or_prunes_the_target() {
+    let (tmp, state, _project, ws, _issue, checkout, _output) = ready_to_prune();
+    let (root, _) = root_and_checkout(&state, &ws);
+    let source = state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&ws)
+        .unwrap()
+        .directories[0]
+        .source_path
+        .clone();
+    let saved = tmp.path().join("original-workspace");
+    std::fs::rename(&root, &saved).unwrap();
+    let outside = tmp.path().join("unrelated-clone");
+    std::fs::create_dir(&outside).unwrap();
+    let target_checkout = outside.join(checkout.file_name().unwrap());
+    git_in(
+        tmp.path(),
+        &[
+            "clone",
+            source.to_str().unwrap(),
+            target_checkout.to_str().unwrap(),
+        ],
+    );
+    let target_output = target_checkout.join("node_modules/pkg");
+    std::fs::create_dir_all(&target_output).unwrap();
+    std::fs::write(target_output.join("keep"), "keep").unwrap();
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+    let pid = tmp.path().join("probe.pid");
+    let policy = ReclaimPolicy {
+        git: GitProbe::command(
+            "/bin/sh",
+            &["-c", &format!("echo $$ > '{}'; exit 1", pid.display())],
+        ),
+        ..pruning()
+    };
+
+    AppState::sweep_workspaces(&state, &policy, now_ms());
+
+    assert!(!pid.exists(), "unsafe root reached Git measurement");
+    assert!(target_output.join("keep").exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+}
+
+#[test]
+fn a_redirected_checkout_never_launches_a_probe_or_prunes_the_target() {
+    let (tmp, state, _project, ws, _issue, checkout, _output) = ready_to_prune();
+    let outside = tmp.path().join("unrelated-clone");
+    std::fs::rename(&checkout, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &checkout).unwrap();
+    let pid = tmp.path().join("probe.pid");
+    let policy = ReclaimPolicy {
+        git: GitProbe::command(
+            "/bin/sh",
+            &["-c", &format!("echo $$ > '{}'; exit 1", pid.display())],
+        ),
+        ..pruning()
+    };
+
+    AppState::sweep_workspaces(&state, &policy, now_ms());
+
+    assert!(!pid.exists(), "unsafe checkout reached Git measurement");
+    assert!(outside.join("node_modules/pkg/index.js").exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+}
+
+#[test]
+fn a_root_redirected_after_inspection_keeps_its_build_output() {
+    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (root, _checkout) = root_and_checkout(&state, &ws);
+    let outside = tmp.path().join("unrelated-clone");
+    let redirected = std::cell::Cell::new(false);
+
+    AppState::sweep_workspaces_racing(
+        &state,
+        &pruning(),
+        now_ms(),
+        &at(PrunePhase::Inspected, || {
+            std::fs::rename(&root, &outside).unwrap();
+            std::os::unix::fs::symlink(&outside, &root).unwrap();
+            redirected.set(true);
+        }),
+    );
+
+    assert!(redirected.get());
+    assert!(outside.join(output.strip_prefix(&root).unwrap()).exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+}
+
 /// A message to the workspace's agent after the reservation: its turn waits
 /// until the reservation ends, and the workspace is no longer quiet, so
 /// nothing is pruned.
@@ -682,6 +773,124 @@ fn reclaim_measures_off_the_lock_and_holds_the_workspace_meanwhile() {
         json!({ "workspace_id": ws, "deleted": true })
     );
     assert!(!root.exists());
+}
+
+#[test]
+fn a_root_redirected_after_explicit_reclaim_decides_is_not_deleted() {
+    let (tmp, state, _project, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (root, checkout) = root_and_checkout(&state, &ws);
+    let params = json!({ "workspace_id": ws });
+    let (answered, deferred) = state
+        .lock()
+        .unwrap()
+        .dispatch_deferring("workspace.reclaim", &params);
+    assert!(answered.is_ok(), "{answered:?}");
+    let measured = deferred.unwrap().run();
+    let removing =
+        match state
+            .lock()
+            .unwrap()
+            .apply_deferred_stage("workspace.reclaim", &params, measured)
+        {
+            DeferredNext::Again(removing) => removing,
+            DeferredNext::Answered(answer) => panic!("reclaim did not reach deletion: {answer:?}"),
+        };
+    let outside = tmp.path().join("unrelated-clone");
+    std::fs::rename(&root, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+
+    let result = removing.run();
+    let settled = state
+        .lock()
+        .unwrap()
+        .apply_deferred_stage("workspace.reclaim", &params, result);
+    let DeferredNext::Answered(answer) = settled else {
+        panic!("a third stage");
+    };
+    assert!(answer.is_err(), "substituted root was removed");
+    assert!(outside.join(checkout.strip_prefix(&root).unwrap()).exists());
+}
+
+#[test]
+fn a_real_directory_replacing_the_root_after_measurement_is_refused() {
+    let (tmp, state, _project, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (root, checkout) = root_and_checkout(&state, &ws);
+    let params = json!({ "workspace_id": ws });
+    let (answered, deferred) = state
+        .lock()
+        .unwrap()
+        .dispatch_deferring("workspace.reclaim", &params);
+    assert!(answered.is_ok(), "{answered:?}");
+    let measured = deferred.unwrap().run();
+    let saved = tmp.path().join("original-workspace");
+    std::fs::rename(&root, &saved).unwrap();
+    let replacement = root.join(checkout.file_name().unwrap());
+    std::fs::create_dir_all(&replacement).unwrap();
+    std::fs::write(replacement.join("keep"), b"keep").unwrap();
+
+    let decided =
+        state
+            .lock()
+            .unwrap()
+            .apply_deferred_stage("workspace.reclaim", &params, measured);
+
+    let DeferredNext::Answered(answer) = decided else {
+        panic!("replacement reached removal");
+    };
+    assert!(answer.is_err());
+    assert!(replacement.join("keep").exists());
+    assert!(saved.join(checkout.file_name().unwrap()).exists());
+}
+
+#[test]
+fn a_real_directory_replacing_the_registered_root_before_a_sweep_is_refused() {
+    let (tmp, state, _project, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (root, checkout) = root_and_checkout(&state, &ws);
+    let source = state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&ws)
+        .unwrap()
+        .directories[0]
+        .source_path
+        .clone();
+    let saved = tmp.path().join("original-workspace");
+    std::fs::rename(&root, &saved).unwrap();
+    std::fs::create_dir(&root).unwrap();
+    std::fs::copy(
+        saved.join(crate::workspace::MANIFEST_FILE),
+        root.join(crate::workspace::MANIFEST_FILE),
+    )
+    .unwrap();
+    let replacement = root.join(checkout.file_name().unwrap());
+    git_in(
+        tmp.path(),
+        &[
+            "clone",
+            source.to_str().unwrap(),
+            replacement.to_str().unwrap(),
+        ],
+    );
+    let target_output = build_output_in(&replacement);
+    state.lock().unwrap().workspaces.reload().unwrap();
+
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+
+    assert!(
+        target_output.join("pkg/index.js").exists(),
+        "unrelated clone was pruned"
+    );
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+    let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+    assert_eq!(
+        refused["ok"], false,
+        "unrelated clone was accepted for reclaim"
+    );
+    assert!(target_output.join("pkg/index.js").exists());
 }
 
 /// A commit that lands after `workspace.reclaim` measured, by something Build

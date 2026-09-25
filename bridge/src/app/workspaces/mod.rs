@@ -609,7 +609,7 @@ impl AppState {
                     .to_string(),
             );
         }
-        self.refuse_removing_what_is_not_builds(&workspace)?;
+        let boundary = self.refuse_removing_what_is_not_builds(&workspace)?;
         let blockers = self.workspace_finish_blockers(&workspace);
         if !blockers.is_empty() {
             return Err(crate::workspace::finish_refusal(&blockers));
@@ -625,7 +625,7 @@ impl AppState {
             registry_root: self.workspaces.root().to_path_buf(),
             branches,
         };
-        self.remove_workspace(&workspace, params, Some(finishing))?;
+        self.remove_workspace(&workspace, params, Some(finishing), boundary)?;
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
 

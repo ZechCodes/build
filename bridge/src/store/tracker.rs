@@ -78,6 +78,40 @@ impl IssueFilter<'_> {
     }
 }
 
+/// The list read's statement and what it binds: one project's issues, those
+/// `filter` narrows to and numbered below `below`, newest first (#85).
+///
+/// Every column it narrows by is an equality in front of `number` in one of
+/// the list indexes (`schema.rs`), so SQLite seeks straight to the rows that
+/// qualify and reads none it throws away: the scan bound in
+/// `list_tracker_issues_below` then bounds the whole read, not only the rows
+/// it decodes.
+pub(crate) fn stretch_query(
+    project_path: &str,
+    filter: IssueFilter<'_>,
+    below: Option<u64>,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let (tail, binds) = filter.clause();
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_path.to_string())];
+    values.extend(
+        binds
+            .into_iter()
+            .map(|bind| Box::new(bind) as Box<dyn rusqlite::ToSql>),
+    );
+    let below = match below {
+        Some(number) => {
+            values.push(Box::new(i64::try_from(number).unwrap_or(i64::MAX)));
+            format!(" AND number < ?{}", values.len())
+        }
+        None => String::new(),
+    };
+    let sql = format!(
+        "SELECT id, number, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
+         ORDER BY number DESC"
+    );
+    (sql, values)
+}
+
 impl Store {
     /// File a new issue, minting its per-project number inside the same
     /// transaction as the insert, and write the events that explain it.
@@ -162,24 +196,7 @@ impl Store {
         seek: IssueSeek,
         mut keep: impl FnMut(&Issue) -> bool,
     ) -> Result<IssueStretch, StoreError> {
-        let (tail, binds) = filter.clause();
-        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_path.to_string())];
-        values.extend(
-            binds
-                .into_iter()
-                .map(|bind| Box::new(bind) as Box<dyn rusqlite::ToSql>),
-        );
-        let below = match seek.below {
-            Some(number) => {
-                values.push(Box::new(i64::try_from(number).unwrap_or(i64::MAX)));
-                format!(" AND number < ?{}", values.len())
-            }
-            None => String::new(),
-        };
-        let sql = format!(
-            "SELECT id, number, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
-             ORDER BY number DESC"
-        );
+        let (sql, values) = stretch_query(project_path, filter, seek.below);
         let conn = self.connection();
         let mut statement = conn.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;

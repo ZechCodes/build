@@ -54,6 +54,9 @@ NO_ONE = "—"
 REVOCABLE_STATES = frozenset({InviteState.OPEN, InviteState.REDEEMED})
 
 INVITE_SENT_MESSAGE = "Invite sent to {email}."
+INVITE_NOT_MAILED_MESSAGE = (
+    "Invite issued but the email did not send. Resend to try again."
+)
 INVITE_REFUSED_MESSAGE = "That is not an address we can send to."
 INVITE_REVOKED_MESSAGE = "Invite revoked."
 INVITE_MISSING_MESSAGE = "That invite no longer exists."
@@ -72,7 +75,6 @@ def build_invites_dashboard(
             {
                 "invite_id": str(invite.id),
                 "email": invite.email,
-                "state": state.value,
                 "status": invite_status(invite, now),
                 "invited_by": addresses.get(invite.invited_by) or NO_ONE,
                 "redeemed_by": addresses.get(invite.redeemed_by) or NO_ONE,
@@ -157,10 +159,10 @@ class InvitesAdminController(Controller):
             )
         except ValueError:
             return _flashed(request, INVITE_REFUSED_MESSAGE, ok=False)
-        await send_invite_email(
+        mailed = await send_invite_email(
             email_backend, invite.email, invites.invite_url(public_base_url, raw)
         )
-        return _flashed(request, INVITE_SENT_MESSAGE.format(email=invite.email), ok=True)
+        return _flashed(request, sent_message(invite.email, mailed), ok=mailed)
 
     @post(REVOKE_ROUTE_PATH, guards=[auth_guard, Permission("administrator")])
     async def revoke(
@@ -171,6 +173,12 @@ class InvitesAdminController(Controller):
         revoked = await invites.revoke_invite(db_session, invite_id, utc_now())
         message = INVITE_REVOKED_MESSAGE if revoked else INVITE_MISSING_MESSAGE
         return _flashed(request, message, ok=revoked is not None)
+
+
+def sent_message(email: str, mailed: bool) -> str:
+    """What the operator is told after a send: that it went, or that the invite exists
+    but its email did not — so they resend rather than assume it landed."""
+    return INVITE_SENT_MESSAGE.format(email=email) if mailed else INVITE_NOT_MAILED_MESSAGE
 
 
 def _flashed(request: Request, message: str, *, ok: bool) -> Redirect:

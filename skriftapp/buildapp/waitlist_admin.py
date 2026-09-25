@@ -38,7 +38,7 @@ from buildapp.invites_admin import (
     ADMIN_PREFIX,
     CSRF_REFUSED_MESSAGE,
     INVITE_REFUSED_MESSAGE,
-    INVITE_SENT_MESSAGE,
+    sent_message,
 )
 from buildapp.models import Invite, WaitlistSignup
 from buildapp.session_auth import session_user_id
@@ -190,11 +190,10 @@ class WaitlistAdminController(Controller):
             )
         except ValueError:
             return _flashed(request, INVITE_REFUSED_MESSAGE, back, ok=False)
-        await send_invite_email(
+        mailed = await send_invite_email(
             email_backend, invite.email, invites.invite_url(public_base_url, raw)
         )
-        message = INVITE_SENT_MESSAGE.format(email=invite.email)
-        return _flashed(request, message, back, ok=True)
+        return _flashed(request, sent_message(invite.email, mailed), back, ok=mailed)
 
 
 def waitlist_page_url(search: str) -> str:

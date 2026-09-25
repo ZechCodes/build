@@ -69,10 +69,11 @@ def build_invite_email(*, to: str, invite_url: str) -> OutboundEmail:
 
 async def send_invite_email(
     email_backend: EmailBackend, to: str, invite_url: str
-) -> None:
-    """Send the invite. Fail-soft, like every other send: the row is committed and the
-    operator holds the URL, so a dead SMTP server costs a log line, not the invite."""
-    await deliver_emails(
+) -> bool:
+    """Send the invite and answer whether it went out. Fail-soft, like every other
+    send: the row is committed, so a dead SMTP server costs a log line and a False —
+    the admin pages turn that into an error the operator can act on (Resend)."""
+    return await deliver_emails(
         email_backend, (build_invite_email(to=to, invite_url=invite_url),)
     )
 

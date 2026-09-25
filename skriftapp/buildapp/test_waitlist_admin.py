@@ -29,10 +29,18 @@ from buildapp.db_test_support import (
     sign_in,
     stored_invites,
 )
-from buildapp.email_test_support import email_settings
+from buildapp.email_test_support import (
+    FailingEmailBackend,
+    RecordingEmailBackend,
+    email_settings,
+)
 from buildapp.invite_mail import GETTING_STARTED, INVITE_SUBJECT
 from buildapp.invites import INVITE_PATH_PREFIX, INVITE_TTL, InviteState
-from buildapp.invites_admin import InvitesAdminController
+from buildapp.invites_admin import (
+    INVITE_NOT_MAILED_MESSAGE,
+    INVITE_SENT_MESSAGE,
+    InvitesAdminController,
+)
 from buildapp.models import Invite, WaitlistSignup
 from buildapp.waitlist_admin import (
     ADMIN_PREFIX,
@@ -396,3 +404,56 @@ def test_the_prefix_and_suffix_are_each_written_once():
     assert WaitlistAdminController.path == ADMIN_PREFIX
     assert WAITLIST_ADMIN_PATH == f"{ADMIN_PREFIX}{WAITLIST_PAGE_ROUTE_PATH}"
     assert SEND_PATH.startswith(f"{WAITLIST_ADMIN_PATH}/")
+
+
+def flashed(client: TestClient) -> list[tuple[str, str]]:
+    """The flashes the last request left for the page it redirected to."""
+    return [
+        (flash["type"], flash["message"])
+        for flash in client.get_session_data().get("flash_messages", [])
+    ]
+
+
+def live_invites(client: TestClient) -> list[Invite]:
+    now = datetime.now(timezone.utc)
+    return [
+        row
+        for row in stored_invites(client)
+        if invites.invite_state(row, now) is InviteState.OPEN
+    ]
+
+
+def test_a_send_that_went_out_says_so(admin_client):
+    press_send(admin_client)
+    assert flashed(admin_client) == [
+        ("success", INVITE_SENT_MESSAGE.format(email=SIGNED_UP_NORMALIZED))
+    ]
+
+
+def test_an_invite_whose_email_failed_says_so_and_stays_resendable(admin_client):
+    admin_client.app.state.email_backend = FailingEmailBackend()
+    press_send(admin_client)
+    assert flashed(admin_client) == [("error", INVITE_NOT_MAILED_MESSAGE)]
+    # The row reads Invited, so its button is Resend — the recovery the flash names.
+    assert len(live_invites(admin_client)) == 1
+
+
+def test_a_resend_whose_email_failed_says_so_and_a_later_resend_recovers(
+    admin_client,
+):
+    press_send(admin_client)
+    admin_client.app.state.email_backend = FailingEmailBackend()
+    press_send(admin_client)
+    assert flashed(admin_client)[-1] == ("error", INVITE_NOT_MAILED_MESSAGE)
+    assert len(live_invites(admin_client)) == 1
+
+    recovered = RecordingEmailBackend()
+    admin_client.app.state.email_backend = recovered
+    press_send(admin_client)
+    assert flashed(admin_client)[-1] == (
+        "success",
+        INVITE_SENT_MESSAGE.format(email=SIGNED_UP_NORMALIZED),
+    )
+    (sent,) = recovered.sent
+    assert open_link(admin_client, link_in(sent)) is InviteState.OPEN
+    assert len(live_invites(admin_client)) == 1

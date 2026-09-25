@@ -90,17 +90,22 @@ async def send_email_message(email_backend: EmailBackend, message: OutboundEmail
 
 async def deliver_emails(
     email_backend: EmailBackend, messages: tuple[OutboundEmail, ...]
-) -> None:
-    """Send each message, logging rather than raising on failure.
+) -> bool:
+    """Send each message, logging rather than raising on failure, and answer whether
+    every one went out.
 
     Deliberately fail-soft: this runs after the response has gone out and the row is
     committed, so a dead SMTP server must not lose the remaining messages — or surface
-    as an error the visitor already got a 200 instead of."""
+    as an error the visitor already got a 200 instead of. A caller still waiting on
+    the send (an operator's form) reads the answer and says so."""
+    delivered = True
     for message in messages:
         try:
             await send_email_message(email_backend, message)
         except Exception:
             logger.exception("email delivery failed for %s", message.to)
+            delivered = False
+    return delivered
 
 
 def resolve_public_base_url(settings: Settings) -> str:

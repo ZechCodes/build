@@ -135,14 +135,17 @@ def test_an_invite_carries_no_unsubscribe_because_it_is_not_a_mailing():
 
 def test_sending_delivers_the_invite_through_the_backend_it_was_handed():
     email_backend = RecordingEmailBackend()
-    asyncio.run(send_invite_email(email_backend, INVITED, INVITE_URL))
+    assert asyncio.run(send_invite_email(email_backend, INVITED, INVITE_URL)) is True
     assert [sent.to for sent in email_backend.sent] == [INVITED]
     assert email_backend.sent[0].subject == INVITE_SUBJECT
     assert INVITE_URL in email_backend.sent[0].text_body
 
 
-def test_a_send_that_fails_is_swallowed_so_the_invite_row_still_stands():
-    asyncio.run(send_invite_email(FailingEmailBackend(), INVITED, INVITE_URL))
+def test_a_send_that_fails_is_swallowed_and_reported_so_the_operator_can_resend():
+    assert (
+        asyncio.run(send_invite_email(FailingEmailBackend(), INVITED, INVITE_URL))
+        is False
+    )
 
 
 def test_the_task_is_the_same_send_deferred_until_after_the_response():

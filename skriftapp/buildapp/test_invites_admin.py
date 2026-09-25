@@ -25,11 +25,13 @@ from buildapp.db_test_support import (
     sign_in,
     stored_invites,
 )
-from buildapp.email_test_support import email_settings
+from buildapp.email_test_support import FailingEmailBackend, email_settings
 from buildapp.invites import EMAIL_FIELD, INVITE_TTL, InviteState
 from buildapp.invites_controller import InvitesController
 from buildapp.invites_admin import (
     ADMIN_PREFIX,
+    INVITE_NOT_MAILED_MESSAGE,
+    INVITE_SENT_MESSAGE,
     INVITES_ADMIN_PATH,
     INVITES_PAGE_ROUTE_PATH,
     REVOKE_LABEL,
@@ -113,7 +115,7 @@ def test_a_row_carries_the_state_word_and_the_address_that_sent_it():
         [invite(invited_by=inviter)], {inviter: INVITER_ADDRESS}, NOW
     )
     assert rows[0]["email"] == INVITED
-    assert rows[0]["state"] == InviteState.OPEN.value
+    assert rows[0]["status"].state is InviteState.OPEN
     assert rows[0]["invited_by"] == INVITER_ADDRESS
 
 
@@ -128,7 +130,7 @@ def test_a_redeemed_row_names_the_account_that_redeemed_it():
     rows = build_invites_dashboard(
         [invite(redeemed_by=redeemer, redeemed_at=NOW)], {redeemer: INVITED}, NOW
     )
-    assert rows[0]["state"] == InviteState.REDEEMED.value
+    assert rows[0]["status"].state is InviteState.REDEEMED
     assert rows[0]["redeemed_by"] == INVITED
     assert rows[0]["redeemed_at"] == NOW
 
@@ -143,7 +145,7 @@ def test_each_state_gets_its_word():
         {},
         NOW,
     )
-    assert [row["state"] for row in rows] == ["revoked", "expired", "open"]
+    assert [row["status"].label for row in rows] == ["Revoked", "Expired", "Invited"]
 
 
 def test_only_an_open_or_redeemed_invite_can_still_be_revoked():
@@ -285,3 +287,24 @@ def test_a_revoke_without_the_csrf_field_changes_nothing(admin_client):
         REVOKE_PATH.format(invite_id=issued.id), data={}, follow_redirects=False
     )
     assert stored_invites(admin_client)[0].revoked_at is None
+
+
+def flashed(client: TestClient) -> list[tuple[str, str]]:
+    return [
+        (flash["type"], flash["message"])
+        for flash in client.get_session_data().get("flash_messages", [])
+    ]
+
+
+def test_a_send_that_went_out_says_so(admin_client):
+    send_invite(admin_client, INVITED, **CSRF_BODY)
+    assert flashed(admin_client) == [
+        ("success", INVITE_SENT_MESSAGE.format(email=INVITED))
+    ]
+
+
+def test_a_send_whose_email_failed_says_so_and_keeps_the_invite(admin_client):
+    admin_client.app.state.email_backend = FailingEmailBackend()
+    send_invite(admin_client, INVITED, **CSRF_BODY)
+    assert flashed(admin_client) == [("error", INVITE_NOT_MAILED_MESSAGE)]
+    assert [row.email for row in stored_invites(admin_client)] == [INVITED]

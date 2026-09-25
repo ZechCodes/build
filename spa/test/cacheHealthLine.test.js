@@ -23,6 +23,16 @@ describe("what the line says", () => {
       .toBe("Working. Reconnected at 13:43:02 after 1.3 s.");
   });
 
+  it("says a write was not kept because storage was full", () => {
+    expect(cacheHealthText({ state: "ready", lastRecovery: null, lastRefused: { at: AT, error: "QuotaExceededError" } }))
+      .toBe("Working. At 13:43:02 a write was not kept because this browser's storage for Build was full.");
+  });
+
+  it("says nothing of a refused write that was not about space", () => {
+    expect(cacheHealthText({ state: "ready", lastRecovery: null, lastRefused: { at: AT, error: "DataCloneError" } }))
+      .toBe("Working.");
+  });
+
   it("says it is reconnecting, since when, and the error", () => {
     expect(cacheHealthText({ state: "recovering", since: AT, error: "UnknownError", message: "Connection to Indexed Database server lost" }))
       .toBe("Reconnecting since 13:43:02. UnknownError: Connection to Indexed Database server lost");

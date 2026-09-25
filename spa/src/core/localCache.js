@@ -64,13 +64,15 @@ const AT_INDEX = "at";
 // made once the database is back.
 //
 // Only an error no reopen can fix stands the cache down for the session: a
-// private window refusing IndexedDB, a full quota, a schema that is not ours.
+// private window refusing IndexedDB, a schema that is not ours.
 // So does one that outlasts the weather: a store the browser can never open
 // (Safari raises the same UnknownError for a corrupt one) fails every round,
 // and a page someone is looking at does not wait on it for ever — nor does a
 // page that has never opened it at all, whose boot paint is waiting.
-// A write the database refuses on its own account (a value it cannot clone, or
-// one that keeps failing while every other transaction commits) fails alone.
+// A write the database refuses on its own account (a value it cannot clone, one
+// that does not fit in a full quota, or one that keeps failing while every
+// other transaction commits) fails alone: the records already stored still
+// read, and the pull that carried it asks again.
 
 /** Set when the cache met an error no reopen can fix; it answers nothing for
  *  the rest of the session. */
@@ -119,8 +121,9 @@ export function setCacheRecoveryTiming(next) {
 /** Errors a reopen can outlive: the connection closed under a transaction, the
  *  browser aborted it, or the storage process went away and is coming back. */
 const TRANSIENT_ERRORS = new Set(["AbortError", "InvalidStateError", "TransactionInactiveError", "UnknownError", "TimeoutError"]);
-/** Errors that belong to one write rather than to the database. */
-const WRITE_ERRORS = new Set(["DataCloneError", "DataError"]);
+/** Errors that belong to one write rather than to the database. A full quota
+ *  refuses what does not fit; everything already stored still reads. */
+const WRITE_ERRORS = new Set(["DataCloneError", "DataError", "QuotaExceededError"]);
 
 /** Whose fault a failure was: the connection's (reopen and retry), the
  *  write's (fail it alone), or the database's (stand down). An open that
@@ -155,6 +158,8 @@ let restingUntil = 0;
 let restTimer = null;
 let stoodDown = null;
 let lastRecovery = null;
+/** The last write the database refused on its own account, or null. */
+let lastRefused = null;
 /** When the open now pending was blocked by another tab, or null. */
 let blockedSince = null;
 
@@ -184,7 +189,7 @@ export function cacheHealth() {
   if (typeof indexedDB === "undefined") return { state: "absent" };
   if (disabled) return { state: "stood-down", ...stoodDown };
   if (blockedSince) return { state: "blocked", since: blockedSince };
-  if (!outage) return { state: "ready", lastRecovery };
+  if (!outage) return { state: "ready", lastRecovery, lastRefused };
   return {
     state: Date.now() < restingUntil ? "resting" : "recovering",
     since: outage.since,
@@ -483,6 +488,7 @@ function settled(outcome) {
     return outcome;
   }
   if (outcome.fault === "write") {
+    lastRefused = { at: Date.now(), ...errorFields(outcome.error) };
     cacheEvent("cache-write-refused", errorFields(outcome.error));
     return outcome;
   }

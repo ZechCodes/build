@@ -330,15 +330,41 @@ describe("what a reopen cannot fix", () => {
     expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", error: "SecurityError" });
   });
 
-  it("stands down when the quota is full", async () => {
+});
+
+describe("a full quota", () => {
+  it("fails the write that did not fit alone, and keeps answering reads", async () => {
     await cache.writeCached(address, { head: "stored" });
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
+    const heard = [];
+    cache.subscribeCache(address, (changed) => heard.push(changed));
+    const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
       throw new DOMException("The quota has been exceeded.", "QuotaExceededError");
     });
-    expect(await cache.writeCached(address, { head: "too-big" })).toBeUndefined();
-    expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", reason: "transaction-failed", error: "QuotaExceededError" });
-    expect(await cache.readCached(address)).toBeUndefined();
+    await cache.writeCached(address, { head: "too-big" });
+    put.mockRestore();
+
+    expect(heard).toEqual([]);
+    expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+    expect(cache.cacheHealth()).toMatchObject({ state: "ready", lastRefused: { error: "QuotaExceededError", at: expect.any(Number) } });
+    expect(eventNames()).toEqual(["cache-write-refused"]);
+  });
+
+  it("fails it alone when the browser aborts the transaction for quota", async () => {
+    await cache.writeCached(address, { head: "stored" });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      const opened = originalTransaction.apply(this, args);
+      if (args[1] === "readwrite") {
+        Object.defineProperty(opened, "error", { get: () => new DOMException("The quota has been exceeded.", "QuotaExceededError") });
+        queueMicrotask(() => opened.abort());
+      }
+      return opened;
+    });
+    await cache.writeCached(address, { head: "too-big" });
+    transaction.mockRestore();
+
+    expect((await cache.readCached(address))?.value).toEqual({ head: "stored" });
+    expect(cache.cacheHealth().state).toBe("ready");
   });
 });
 

@@ -31,10 +31,15 @@ const STOOD_DOWN_BECAUSE = Object.freeze({
 
 /// One sentence per state. Polymorphic on the state's name rather than a chain
 /// of conditions: each state says its own thing.
+/// A write refused for want of space is the one refusal somebody can act on.
+const refusedText = (refused) => (refused?.error === "QuotaExceededError"
+  ? ` At ${formatDiagnosticTime(refused.at)} a write was not kept because this browser's storage for Build was full.`
+  : "");
+
 const SAYS = Object.freeze({
-  ready: ({ lastRecovery }) => (lastRecovery
+  ready: ({ lastRecovery, lastRefused }) => (lastRecovery
     ? `Working. Reconnected at ${formatDiagnosticTime(lastRecovery.at)} after ${seconds(lastRecovery.afterMs)}.`
-    : "Working."),
+    : "Working.") + refusedText(lastRefused),
   recovering: (health) => `Reconnecting since ${formatDiagnosticTime(health.since)}. ${errorText(health)}`.trim(),
   resting: (health) =>
     `Not answering since ${formatDiagnosticTime(health.since)}. Trying again when the app is next opened, or in a moment. ${errorText(health)}`.trim(),

@@ -632,6 +632,34 @@ describe("a pass racing the wire", () => {
     expect(calls("fs.read")).toHaveLength(recovered);
   });
 
+  it.each(["cold", "warm"])("recovers a %s baseline when background coverage lands while the next pass waits", async (baseline) => {
+    const wire = subscribingBridge();
+    let body = "b2xk";
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: body }));
+    await greet();
+    if (baseline === "warm") await cacheSomething();
+    await cacheBodies(1);
+    board = [branchItem()];
+    const answerSubscribe = wire.hold("changes.subscribe", ({ subscription_id }) => subscription_id === "s-background");
+    sync.startCacheSync();
+    // The warm baseline uses the real bounded subscription wait.
+    await vi.waitFor(() => expect(calls("fs.read")).toHaveLength(1), { timeout: sync.GREETING_WAIT_MS + 10_000 });
+    await settle();
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("b2xk");
+
+    body = "bmV3";
+    const waiting = sync.syncDevice("dev-1");
+    await settle();
+    expect(calls("board.list")).toHaveLength(1); // Waiting for coverage, before its reads.
+    answerSubscribe();
+    expect(await waiting).toBe(true);
+    expect(await sync.syncDevice("dev-1")).toBe(true);
+
+    expect(calls("board.list")).toHaveLength(3);
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    expect(calls("fs.read")).toHaveLength(2); // Third, ordinary pass adds no body read.
+  }, 40_000);
+
   it.each([false, true])("recovers a pushed file read for a live entity across hand-back (replacement answers early: %s)", async (answersEarly) => {
     const wire = subscribingBridge();
     wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));

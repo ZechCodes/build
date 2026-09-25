@@ -1142,11 +1142,12 @@ function subscriptionLanded(deviceId, subscriptionId) {
   if (!holdingLock || !PASS_SUBSCRIPTIONS.has(subscriptionId)) return;
   const session = sessionOf(deviceId);
   if (session === null || readingSessions.get(deviceId) !== session) return;
+  // File bodies read before background coverage can have missed a change.
+  // Invalidate even while a subsequent pass waits for coverage: that pass
+  // must take over recovery instead of trusting the earlier completed token.
+  if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
   const running = passes.get(deviceId);
   if (running && !running.reading) return;
-  // File bodies read before background coverage can have missed a change.
-  // Replace the token: the old pass cannot complete this new recovery.
-  if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
   void readAgainAfter(deviceId, session);
 }
 

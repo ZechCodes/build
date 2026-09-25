@@ -443,8 +443,9 @@ In practice:
   restored path until sync stops: ordinary feed refreshes and visible-tab
   passes add no body reads. Failed recovery body reads leave it pending; late
   background subscription coverage starts a new recovery that the earlier
-  pass cannot complete. This takes over abandoned file refreshes and repairs
-  changes missed while away or across a reload. Only the newest read of each
+  pass cannot complete. A subsequent pass still waiting for coverage takes
+  over that recovery before it reads. This repairs abandoned file refreshes
+  and changes missed while away or across a reload. Only the newest read of each
   file may write its answer; removing an entity still invalidates all its readers.
   A conversation's forward read (`syncThreadWindow` in
   `spa/src/core/threadSync.js`) only

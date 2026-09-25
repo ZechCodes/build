@@ -190,6 +190,95 @@ fn every_v1_verb_refuses_a_param_its_shape_does_not_declare() {
     }
 }
 
+// --------------------------------------------------- when a verb arrived ---
+
+/// `1.24.0` as `(1, 24, 0)`.
+fn version_parts(version: &str) -> (u64, u64, u64) {
+    let parts: Vec<u64> = version
+        .split('.')
+        .map(|part| part.parse().unwrap_or_else(|e| panic!("{version}: {e}")))
+        .collect();
+    assert_eq!(parts.len(), 3, "{version} is not major.minor.patch");
+    (parts[0], parts[1], parts[2])
+}
+
+fn string_set(manifest: &Value, key: &str) -> BTreeSet<String> {
+    manifest[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("manifest: {key} is a list"))
+        .iter()
+        .map(|name| name.as_str().expect("a name").to_string())
+        .collect()
+}
+
+/// The registry against the previous minor's manifest
+/// (`fixtures/api/verbs-<minor>.json`, written by
+/// `scripts/api-verbs-manifest.mjs`): a minor only adds, so everything the
+/// previous minor served and announced is still here; and every verb or
+/// capability it did not have declares, in its fixture, the release that
+/// introduced it. The SPA's `apiContract.test.js` holds the fixtures to the
+/// same manifest.
+#[test]
+fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
+    let (major, minor, _) = version_parts(API_VERSION);
+    let release = format!("{major}.{minor}.0");
+    let previous = format!("{major}.{}", minor - 1);
+    let manifest = read_json(&fixtures_root().join(format!("verbs-{previous}.json")));
+    let (manifest_major, manifest_minor, _) =
+        version_parts(manifest["api_version"].as_str().expect("api_version"));
+    assert_eq!((manifest_major, manifest_minor + 1), (major, minor));
+
+    let served: BTreeSet<&str> = v1::methods()
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(LEGACY_METHODS.iter().copied())
+        .chain(QA_METHODS.iter().copied())
+        .collect();
+    let announced: BTreeSet<&str> = capabilities(false).into_iter().collect();
+    let verbs_before = string_set(&manifest, "verbs");
+    let capabilities_before = string_set(&manifest, "capabilities");
+    for verb in &verbs_before {
+        assert!(
+            served.contains(verb.as_str()),
+            "{verb}: served at {previous}, gone at {API_VERSION}"
+        );
+    }
+    for capability in &capabilities_before {
+        assert!(
+            announced.contains(capability.as_str()),
+            "{capability}: announced at {previous}, gone at {API_VERSION}"
+        );
+    }
+
+    let fixtures: std::collections::BTreeMap<String, Value> =
+        method_fixtures().into_iter().collect();
+    let since = |method: &str| {
+        fixtures[method]["since"]
+            .as_str()
+            .expect("since")
+            .to_string()
+    };
+    for (method, _) in v1::methods() {
+        if !verbs_before.contains(*method) {
+            assert_eq!(since(method), release, "{method}: new since {previous}");
+        }
+    }
+    for capability in &announced {
+        if !fixtures.contains_key(*capability) {
+            continue; // a feature or a legacy verb: the SPA test covers these
+        }
+        let stated = since(capability);
+        if capabilities_before.contains(*capability) {
+            assert!(
+                version_parts(&stated) < version_parts(&release),
+                "{capability}: announced at {previous} but says since {stated}"
+            );
+        } else {
+            assert_eq!(stated, release, "{capability}: announced since {previous}");
+        }
+    }
+}
+
 // ------------------------------------------------------------- the pushes ---
 
 /// Every push the bridge sends on a session, as `fixtures/api/v1/events.json`

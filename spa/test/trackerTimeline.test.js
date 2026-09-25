@@ -118,6 +118,13 @@ describe("what an event says", () => {
     expect(sentenceOf("closed", {})).toBe("closed this");
   });
 
+  // #87: Done that deleted the branch says which, on every issue linking it.
+  it("says which branch Done deleted", () => {
+    expect(sentenceOf("branch_deleted", { branch: "build/login", workspace_id: "ws-1" }))
+      .toBe("deleted branch build/login when the workspace was finished");
+    expect(sentenceOf("branch_deleted", {})).toBe("deleted the branch when the workspace was finished");
+  });
+
   // A later minor adding a kind leaves a reader with a row they can recognize.
   it("says an unknown kind's own name rather than nothing", () => {
     expect(sentenceOf("pinned", {})).toBe("pinned");

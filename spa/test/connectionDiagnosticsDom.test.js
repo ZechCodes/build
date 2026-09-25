@@ -110,7 +110,7 @@ describe("the events on the page", () => {
     mount();
 
     const note = document.querySelector("#diagnostics").textContent;
-    expect(note).toContain("Timestamps and connection identifiers only");
+    expect(note).toContain("Timestamps, connection identifiers and the browser's storage errors only");
     expect(note).toContain("no message content, no keys");
   });
 });

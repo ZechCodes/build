@@ -22,7 +22,8 @@ Before refreshing a browser tab that lost its connection, run
 This returns the last 100 connection events, including negotiation, state changes,
 restart outcomes and deadlines. The history stays in that tab's memory and is
 cleared by a reload. It contains timestamps and connection identifiers, not SDP,
-candidate addresses, credentials or application content.
+candidate addresses, credentials or application content; the local cache's entries
+add the browser's own storage error names and messages.
 
 A tab whose screens went blank while its connections look healthy may have lost
 its local cache instead: `buildCacheHealth()` answers `ready`, `recovering`,

@@ -63,8 +63,11 @@ jobs:
           echo "releases_repo=${RELEASES_REPO}" >> "$GITHUB_OUTPUT"
           echo "releasing build-bridge ${version} to ${RELEASES_REPO}"
 
+      # Each script in the dialect its shebang names: the install scripts are
+      # `#!/bin/sh`, so they are held to POSIX sh, and the liveness gate is
+      # Bash and says so.
       - name: The install script is published verbatim, so it is linted first
-        run: shellcheck -s sh scripts/*.sh
+        run: shellcheck scripts/*.sh
 
       - name: The install script does what it promises
         run: scripts/test-install.sh

@@ -1208,3 +1208,72 @@ fn an_unreadable_capture_record_fails_fast() {
         Err(StoreError::Corrupt { .. })
     ));
 }
+
+/// A legacy delivery asks which of the human's messages are still waiting —
+/// not seen, carried by no operation, never sent or only queued — across the
+/// whole conversation, the part under the resident tail included (#131). The
+/// database answers it: a conversation of thousands of items decodes the
+/// waiting messages and nothing else.
+#[test]
+fn the_waiting_legacy_messages_decode_only_themselves() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).expect("store opens");
+    let mut record = run_record("run-1", None, NOW);
+    let thread = &mut record.agents[0].thread;
+    let mut waiting = Vec::new();
+    for (index, shape) in ["waits", "seen", "sent", "queued", "operation", "agent"]
+        .into_iter()
+        .cycle()
+        .take(60)
+        .enumerate()
+    {
+        if shape == "agent" {
+            thread.post_agent(format!("reply {index}"), None, NOW);
+        } else {
+            thread.post_user(format!("{shape} {index}"), None, NOW);
+        }
+        let Some(ThreadItem::Message(message)) = thread.items.last_mut() else {
+            unreachable!("a post appends a message");
+        };
+        match shape {
+            "seen" => message.seen_at = Some(NOW.into()),
+            "sent" => message.delivery_status = Some(crate::thread::MessageDeliveryStatus::Sent),
+            "queued" => {
+                message.delivery_status = Some(crate::thread::MessageDeliveryStatus::Queued)
+            }
+            "operation" => message.operation_id = Some(format!("op-{index}")),
+            _ => {}
+        }
+        if matches!(shape, "waits" | "queued") {
+            waiting.push(message.sequence);
+        }
+        for call in 0..80 {
+            thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}-{call}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+    }
+    store.save_run(&record).expect("the conversation saves");
+
+    let before = items_decoded();
+    let found = store
+        .waiting_legacy_messages(&record.agents[0].id)
+        .expect("the waiting messages read");
+    let decoded = items_decoded() - before;
+
+    let sequences: Vec<u64> = found.iter().map(|message| message.sequence).collect();
+    assert_eq!(
+        sequences, waiting,
+        "every waiting message, oldest first, and no other"
+    );
+    assert_eq!(
+        decoded,
+        waiting.len(),
+        "decoded {decoded} rows for {} waiting",
+        waiting.len()
+    );
+}

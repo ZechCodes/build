@@ -2,7 +2,7 @@
 
 use super::AppState;
 use crate::operation::OperationPayload;
-use crate::thread::{MessageDeliveryStatus, MessageRole, ThreadItem};
+use crate::thread::{MessageDeliveryStatus, Thread, ThreadItem, ThreadMessage};
 
 impl AppState {
     /// Apply an internal native-session receipt for an operationless turn.
@@ -68,24 +68,7 @@ impl AppState {
     ) -> Result<Option<OperationPayload>, String> {
         let address = self.resolve_conversation_address(owner_id, Some(agent_id))?;
         let thread = self.conversation_at(&address)?;
-        let messages = self
-            .whole_conversation(thread)?
-            .iter()
-            .filter_map(|item| match item {
-                ThreadItem::Message(message)
-                    if message.role == MessageRole::User
-                        && message.operation_id.is_none()
-                        && message.seen_at.is_none()
-                        && matches!(
-                            message.delivery_status,
-                            None | Some(MessageDeliveryStatus::Queued)
-                        ) =>
-                {
-                    Some(message.clone())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+        let messages = self.waiting_legacy_messages(thread)?;
         let Some(first) = messages.first() else {
             return Ok(None);
         };
@@ -102,6 +85,27 @@ impl AppState {
             ask_to_name: false,
             tells_sender_context: false,
         }))
+    }
+
+    /// Every message a legacy delivery still owes, from the whole
+    /// conversation: off the resident tail when that is all of it, and
+    /// otherwise asked of the store, which decodes only what waits.
+    fn waiting_legacy_messages(&self, thread: &Thread) -> Result<Vec<ThreadMessage>, String> {
+        if thread.total_item_count() == thread.items.len() as u64 {
+            return Ok(thread
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ThreadItem::Message(message) if message.awaits_legacy_delivery() => {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                })
+                .collect());
+        }
+        self.history_store()?
+            .waiting_legacy_messages(&thread.agent.id)
+            .map_err(|error| format!("conversation store: {error}"))
     }
 
     /// Record provider acceptance for the exact legacy message range rendered

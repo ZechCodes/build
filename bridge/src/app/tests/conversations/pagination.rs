@@ -1211,3 +1211,47 @@ fn the_forward_page_reaches_the_history_a_restart_never_loaded() {
         "the forward walk missed, repeated or reordered the stored history"
     );
 }
+
+/// A legacy delivery owes the agent every message still waiting, however far
+/// under the resident tail it sits, and finds them without reading the
+/// conversation whole: the delivery that did read it held the app mutex for
+/// every item of a ten-thousand-item conversation, every turn (#131).
+#[test]
+fn a_legacy_delivery_finds_its_messages_under_the_tail_without_reading_the_conversation() {
+    let (dir, repo) = init_repo();
+    let mut resident = qa_state(&repo, dir.path());
+    let (issue_id, _, _) = conversation_with_a_long_run(&mut resident, 3000);
+    let agent_id = primary_agent_id(&resident, &issue_id);
+    let owed = |state: &AppState| -> Vec<(u64, String)> {
+        state
+            .legacy_delivery_payload(&issue_id, &agent_id)
+            .expect("the payload reads")
+            .expect("the first messages still wait")
+            .messages
+            .iter()
+            .map(|message| (message.sequence, message.body.clone()))
+            .collect()
+    };
+    let from_memory = owed(&resident);
+
+    let reloaded = qa_state(&repo, dir.path());
+    let before = crate::store::items_decoded();
+    let from_store = owed(&reloaded);
+    let decoded = crate::store::items_decoded() - before;
+
+    assert_eq!(
+        from_memory,
+        vec![
+            (1, "trim the retry loop".to_string()),
+            (2, "go on then".to_string())
+        ]
+    );
+    assert_eq!(
+        from_store, from_memory,
+        "the same messages, under the tail or not"
+    );
+    assert_eq!(
+        decoded, 2,
+        "decoded {decoded} rows to find two waiting messages"
+    );
+}

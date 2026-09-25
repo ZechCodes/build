@@ -11,6 +11,7 @@ use crate::thread::run_items_shipped;
 use crate::thread::MessageRole;
 use crate::thread::PageCut;
 use crate::thread::ThreadItem;
+use crate::thread::ThreadMessage;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
@@ -267,7 +268,39 @@ impl Store {
         let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
         decode_thread_items(agent_id, rows)
     }
+    /// The human's messages a legacy delivery still owes the agent, across the
+    /// whole conversation, oldest first: what
+    /// [`ThreadMessage::awaits_legacy_delivery`] says of every stored message.
+    ///
+    /// The database picks them out of the message rows, so a delivery to a
+    /// conversation of ten thousand items decodes the handful that wait
+    /// rather than all ten thousand, under the app lock, every turn (#131).
+    pub fn waiting_legacy_messages(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<ThreadMessage>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(WAITING_LEGACY_MESSAGES_SQL)?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        Ok(decode_thread_items(agent_id, rows)?
+            .into_iter()
+            .filter_map(|item| match item {
+                ThreadItem::Message(message) if message.awaits_legacy_delivery() => Some(message),
+                _ => None,
+            })
+            .collect())
+    }
 }
+
+/// [`ThreadMessage::awaits_legacy_delivery`] as the database reads it, over
+/// the message rows of one conversation.
+const WAITING_LEGACY_MESSAGES_SQL: &str = "SELECT item FROM thread_items
+     WHERE agent_id = ?1 AND message = 1
+       AND json_extract(item, '$.data.role') = 'user'
+       AND json_extract(item, '$.data.operation_id') IS NULL
+       AND json_extract(item, '$.data.seen_at') IS NULL
+       AND IFNULL(json_extract(item, '$.data.delivery_status'), 'queued') = 'queued'
+     ORDER BY sequence";
 
 pub(super) fn read_thread_page(
     statement: &mut rusqlite::Statement<'_>,

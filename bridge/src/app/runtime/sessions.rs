@@ -231,6 +231,7 @@ impl Tab {
             session_instance: self.session_instance.clone(),
             screen: self.screen.clone(),
             output,
+            push_runtime: None,
         }
     }
 
@@ -335,6 +336,8 @@ pub(in crate::app) struct TabPumps {
     pub(in crate::app) session_instance: Option<SessionInstance>,
     pub(in crate::app) screen: Option<ScreenHandle>,
     pub(in crate::app) output: SessionOutput,
+    /// Where the byte pump paints; `None` is the runtime that starts it.
+    pub(in crate::app) push_runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

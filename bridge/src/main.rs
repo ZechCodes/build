@@ -58,7 +58,7 @@ use build_bridge::backoff::Backoff;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
-use build_bridge::liveness::LivenessRuntime;
+use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
@@ -67,7 +67,7 @@ use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::resume::{promote_live_roster, shut_down, LiveRoster};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
-use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
+use build_bridge::transport_ledger::{FanOutLedger, StderrLedger, SummaryLedger};
 use build_bridge::transport_report::TransportReporter;
 use build_bridge::update::{UpdateConfig, UpdateService};
 use build_bridge::{identity, pairing, service, transport};
@@ -545,7 +545,18 @@ async fn run_daemon(
         );
     }
     let live_roster = LiveRoster::start(tasks_dir, env!("CARGO_PKG_VERSION"));
-    let app = app.with_live_roster(live_roster.clone()).shared();
+    // What the bridge pushes to its clients — the change bus's flush, every
+    // terminal's paint — is serialized and encrypted per client, and runs on a
+    // runtime of its own, apart from the one that answers their requests
+    // (issue #131).
+    let push = match DedicatedRuntime::push() {
+        Ok(push) => push,
+        Err(error) => exit_startup(error),
+    };
+    let app = app
+        .with_live_roster(live_roster.clone())
+        .with_push_runtime(push.handle())
+        .shared();
     let handler = AppState::handler(app.clone());
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
@@ -553,6 +564,7 @@ async fn run_daemon(
     // content-free: a session id, a word, a candidate type.
     let ledger = FanOutLedger::new(vec![
         Arc::new(StderrLedger),
+        SummaryLedger::new(),
         TransportReporter::start(
             &runtime.config.api_url,
             &identity.device_id,
@@ -570,10 +582,12 @@ async fn run_daemon(
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
     spawn_update_heartbeat(home_dir(), app.clone());
+    // The service manager's stderr file, rotated rather than left to grow.
+    build_bridge::logfile::spawn_rotation();
     // The runtime the relay socket, the presence beat and every peer's
     // channels run on: threads that never take the app lock, so a handler
     // holding it for a minute slows answers and severs nothing (issue #128).
-    let liveness = match LivenessRuntime::start() {
+    let liveness = match DedicatedRuntime::liveness() {
         Ok(liveness) => liveness,
         Err(error) => exit_startup(error),
     };
@@ -609,14 +623,15 @@ async fn run_daemon(
         Duration::from_secs(5),
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
-    spawn_update_checks(app.clone());
+    AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
     // Measures every workspace and tells the project agent about quiet ones
     // (#135). It never removes a workspace; `workspace.reclaim` does. It drops
     // build output only when BRIDGE_WORKSPACE_PRUNE is on.
     let reclaim_stop = AppState::spawn_workspace_reclaim(
         app.clone(),
         build_bridge::reclaim::ReclaimPolicy::from_env(),
-    );
+    )
+    .await;
 
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed
@@ -663,6 +678,7 @@ async fn run_daemon(
         // (`liveness.rs`).
         relay_socket.abort();
         liveness.stop();
+        push.stop();
     });
 }
 
@@ -681,19 +697,11 @@ async fn relay_forever(
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&device_url, &identity, intake.clone(), &reachable).await {
-            Ok(()) => build_bridge::logline::say(format!(
-                "relay disconnected; reconnecting in {}s",
-                backoff.current().as_secs()
-            )),
-            Err(e) => build_bridge::logline::say(format!(
-                "relay error: {e}; reconnecting in {}s",
-                backoff.current().as_secs()
-            )),
-        }
+        let outcome = relay::run(&device_url, &identity, intake.clone(), &reachable).await;
         backoff.note_session(connected_at.elapsed());
-        tokio::time::sleep(backoff.current()).await;
-        backoff.increase();
+        let wait = relay::redial_wait(&outcome, &mut backoff);
+        relay::say_redial(&outcome, wait);
+        tokio::time::sleep(wait).await;
     }
 }
 
@@ -765,12 +773,17 @@ fn spawn_resume_after_restart(
                 WAIT_FOR_RELAY.as_secs()
             );
         }
-        let admission = {
-            app.lock()
+        // Read on the blocking pool: no runtime worker waits on the app mutex.
+        let reading = app.clone();
+        let admission = tokio::task::spawn_blocking(move || {
+            reading
+                .lock()
                 .unwrap()
                 .update_service()
                 .map(|service| service.admission())
-        };
+        })
+        .await
+        .expect("reading the update service panicked");
         // An unfinished helper may keep the gate closed beyond the relay
         // wait. Hold admission across the roster read so an idle handoff
         // cannot begin between the wake and the resumed turns.
@@ -796,24 +809,6 @@ async fn wait_for_update_probation(home: &std::path::Path) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-}
-
-fn spawn_update_checks(app: std::sync::Arc<std::sync::Mutex<AppState>>) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            let (service, working_agents) = {
-                let app = app.lock().unwrap();
-                (app.update_service(), app.update_has_working_agents())
-            };
-            if let Some(service) = service {
-                if let Err(error) = service.tick(working_agents).await {
-                    eprintln!("bridge update tick: {error}");
-                }
-            }
-        }
-    });
 }
 
 fn spawn_update_heartbeat(

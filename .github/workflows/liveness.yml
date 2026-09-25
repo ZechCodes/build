@@ -1,0 +1,38 @@
+name: Liveness soak (TURN)
+
+# The TURN soak as a gate (#131): ten minutes of one phone-shaped, TURN-only
+# session against the liveness compose stack while busy loops run in a
+# terminal and a reader hammers issues.list — any drop, any timeout, any ping
+# at 500 ms or over fails it — and, four minutes in, an ICE restart through the
+# real app in Chromium that has to land within 15 s on the relayed path.
+# scripts/liveness-gate.sh is the whole of it and runs the same on a laptop.
+#
+# release.yml calls this before a bridge release publishes; it can also be run
+# by hand against any ref.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    name: TURN soak, ten minutes, with an ICE restart
+    runs-on: ubuntu-latest
+    # The stack's images (a Rust release build among them) and ten minutes of
+    # soak, with room for a slow runner.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Soak
+        env:
+          LIVENESS_LOGS: ${{ runner.temp }}/liveness
+        run: scripts/liveness-gate.sh
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: liveness-logs
+          path: ${{ runner.temp }}/liveness

@@ -43,6 +43,9 @@ pub(in crate::app) struct SessionRegistry {
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
     next_terminal: u64,
+    /// Where the tabs' byte pumps paint: the daemon's push runtime, or — with
+    /// none set, as in the tests — whatever runtime starts them.
+    push_runtime: Option<tokio::runtime::Handle>,
 }
 
 /// A claimed spawn key. Runtime owns the RAII wrapper that settles this token
@@ -139,6 +142,19 @@ impl SessionRegistry {
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
             next_terminal: 1,
+            push_runtime: None,
+        }
+    }
+
+    pub(in crate::app) fn set_push_runtime(&mut self, runtime: tokio::runtime::Handle) {
+        self.push_runtime = Some(runtime);
+    }
+
+    /// A tab's pumps, told where to paint.
+    fn pumps_of(&self, tab: &Tab, output: SessionOutput) -> TabPumps {
+        TabPumps {
+            push_runtime: self.push_runtime.clone(),
+            ..tab.pumps(output)
         }
     }
 
@@ -190,7 +206,7 @@ impl SessionRegistry {
         tab: Tab,
         output: SessionOutput,
     ) -> TabPumps {
-        let pumps = tab.pumps(output);
+        let pumps = self.pumps_of(&tab, output);
         self.tabs.insert(key, tab);
         pumps
     }
@@ -680,7 +696,8 @@ impl SessionRegistry {
             .get_mut(key)
             .expect("the published tab remains present during one app acquisition");
         tab.session_instance = instance;
-        tab.pumps(output)
+        let tab = &self.tabs[key];
+        self.pumps_of(tab, output)
     }
 
     pub(in crate::app) fn retain_screen_for_replacement(

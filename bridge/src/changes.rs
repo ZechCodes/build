@@ -1886,7 +1886,14 @@ impl ChangeBus {
     /// built outside one (the synchronous unit tests) simply never flushes; see
     /// [`PENDING_KEY_CAP`].
     pub fn spawn_flusher(bus: Arc<Self>) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        ChangeBus::spawn_flusher_on(bus, None);
+    }
+
+    /// The same, on `runtime` — the daemon's push runtime, where serializing
+    /// and encrypting a frame per subscriber competes with nothing that
+    /// answers a request. `None` is the runtime this is called on.
+    pub fn spawn_flusher_on(bus: Arc<Self>, runtime: Option<tokio::runtime::Handle>) {
+        if let Some(handle) = runtime.or_else(|| tokio::runtime::Handle::try_current().ok()) {
             handle.spawn(ChangeBus::run(bus));
         }
     }
@@ -3913,5 +3920,72 @@ mod subscriptions {
             frames(drained(&mut rx, &key))[0]["items"][0]["state"],
             json!({ "revision": 2, "projects": [{ "project_id": "proj-1" }] })
         );
+    }
+
+    /// A flush serializes and encrypts every frame it owes, once per
+    /// subscriber, and a frame can be large: a checkout's status and log, its
+    /// root listing, the conversation tails (the diff body no longer rides,
+    /// only its size). That is CPU on whichever thread runs it, so the daemon
+    /// runs the flusher on its push runtime: the main runtime's only worker
+    /// still wakes a 10 ms nap on time through a flush that encrypts 8 MiB.
+    /// On the main runtime the same flush held that worker 2.3 s (#131).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_heavy_flush_encrypts_off_the_main_runtime() {
+        const SUBSCRIBERS: usize = 32;
+        let patch = "M src/lib.rs\n".repeat(20 * 1024);
+        let facts: FactsSource = Arc::new(move |requests: &[FactsRequest]| {
+            requests
+                .iter()
+                .map(|request| EntityFacts {
+                    entity_id: request.entity_id.clone(),
+                    status_key: Some("9f3c1a0b7e2d4c55".into()),
+                    status: Some(json!({ "files": patch })),
+                    ..EntityFacts::default()
+                })
+                .collect()
+        });
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(|| vec!["run-7".to_string()]),
+            facts,
+        );
+        let mut receivers: Vec<_> = (0..SUBSCRIBERS)
+            .map(|n| {
+                let (sender, rx, _) = SessionSender::observable(format!("s-{n}"));
+                bus.subscribe(
+                    &sender,
+                    spec(
+                        "s-focus",
+                        Scope::Entity("run-7".into()),
+                        Mode::Realtime,
+                        Priority::Foreground,
+                    ),
+                );
+                (sender, rx)
+            })
+            .collect();
+        let push = crate::liveness::DedicatedRuntime::push().unwrap();
+        ChangeBus::spawn_flusher_on(Arc::clone(&bus), Some(push.handle()));
+
+        bus.note_kind("run-7", Kind::Git);
+        let started = std::time::Instant::now();
+        let mut longest = Duration::ZERO;
+        let mut heard = 0;
+        while heard < SUBSCRIBERS && started.elapsed() < Duration::from_secs(20) {
+            let nap = std::time::Instant::now();
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            longest = longest.max(nap.elapsed());
+            heard = receivers
+                .iter_mut()
+                .filter(|(_, rx)| !rx.is_empty())
+                .count();
+        }
+
+        assert_eq!(heard, SUBSCRIBERS, "every subscriber was sent its frame");
+        assert!(
+            longest < Duration::from_millis(100),
+            "a 10 ms nap took {longest:?} while the flush encrypted: it ran on the main runtime"
+        );
+        push.stop();
     }
 }

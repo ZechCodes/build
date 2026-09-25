@@ -14,7 +14,9 @@ import yaml
 from skrift.config import RateLimitConfig
 from skrift.ratelimit import RateLimiter
 
+from buildapp.devices_controller import HEARTBEAT_ROUTE_PATH
 from buildapp.invites import INVITE_PATH_PREFIX
+from buildapp.transport_controller import REPORT_ROUTE_PATH
 from buildapp.waitlist_admin import SEND_PATH, WAITLIST_ADMIN_PATH
 from buildapp.waitlist_controller import JOIN_ROUTE_PATH
 
@@ -24,6 +26,11 @@ JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
 INVITE_OPEN_RATE_LIMIT_WINDOWS = [(30, 60.0)]
 LANDING_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
+# A bridge beats twice a minute, and a beat refused in passing is tried again
+# every five seconds (bridge/src/presence.rs): ten bridges behind one address
+# all redialing through an api deploy, or sixty of them beating steadily.
+BRIDGE_BEAT_RATE_LIMIT_WINDOWS = [(120, 60.0)]
+BRIDGE_REPORT_RATE_LIMIT_WINDOWS = [(240, 60.0)]
 INVITE_CONTROLLERS = (
     "buildapp.invites_controller:InvitesController",
     "buildapp.invites_admin:InvitesAdminController",
@@ -120,6 +127,33 @@ def test_landing_asset_budget_matches_only_static_gets(
         else [rate_limit.effective_default().pair]
     )
     assert policy.limits == expected_limits
+
+
+@pytest.mark.asyncio
+async def test_a_bridges_beats_and_reports_have_budgets_of_their_own():
+    """One home's address carries its bridges' heartbeats and transport reports
+    and the people there browsing, and all of it shared the 60/minute default:
+    14 beats refused 429 in one evening (#131). The device-signed posts count
+    against budgets of their own, so a household spending its default budget
+    leaves its bridges' beats untouched."""
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    beat_policy = rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "POST")
+    report_policy = rate_limit.resolve(REPORT_ROUTE_PATH, "POST")
+    default_policy = rate_limit.resolve("/api/devices", "GET")
+    limiter = RateLimiter(redis_client=None)
+    household = "203.0.113.9"
+
+    assert beat_policy.limits == BRIDGE_BEAT_RATE_LIMIT_WINDOWS
+    assert report_policy.limits == BRIDGE_REPORT_RATE_LIMIT_WINDOWS
+    assert len({beat_policy.name, report_policy.name, default_policy.name}) == 3
+
+    for _ in range(60):
+        assert (await limiter.check(default_policy.name, household, default_policy.limits)).allowed
+    assert not (await limiter.check(default_policy.name, household, default_policy.limits)).allowed
+    for _ in range(120):
+        assert (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
+    assert not (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
+    assert rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "GET").name == default_policy.name
 
 
 def test_the_waitlist_join_route_is_rate_limited_far_below_the_default():

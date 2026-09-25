@@ -46,7 +46,9 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 /// How many intervals the supervisor lets pass with no attempt at all before it
 /// replaces the beat. The same three the api's window is made of: a beat that
 /// has to be replaced is replaced before the device could go offline for want
-/// of it.
+/// of it. Counted from when the beat said it would next come round, less the
+/// one interval that is: a beat waiting out an api's `Retry-After` is not
+/// silent, it is on time.
 const MISSED_BEATS_BEFORE_REPLACING: u32 = 3;
 
 /// The path the beat is posted to.
@@ -117,7 +119,7 @@ impl PresenceReporter {
             identity: identity.clone(),
             client: beating_client(interval),
             reachable: reachable.clone(),
-            attempted: Arc::new(Mutex::new(Instant::now())),
+            due: Arc::new(Mutex::new(Instant::now() + interval)),
         };
         tokio::spawn(supervise(beat, interval))
     }
@@ -131,7 +133,7 @@ impl PresenceReporter {
 /// beat. Presence stopping is allowed to be news about the device; it is not
 /// allowed to be a permanent state of this daemon.
 async fn supervise(beat: Beat, interval: Duration) {
-    let quiet_for = interval * MISSED_BEATS_BEFORE_REPLACING;
+    let slack = interval * (MISSED_BEATS_BEFORE_REPLACING - 1);
     let watched = beat.clone();
     keep_running(
         "heartbeat",
@@ -140,10 +142,10 @@ async fn supervise(beat: Beat, interval: Duration) {
             let beat = beat.clone();
             // A new generation is not born quiet: the watchdog's clock starts
             // with it, not with whatever the last one left behind.
-            beat.attempt_noted();
+            beat.came_round(interval);
             beat.run(interval)
         },
-        move || watched.silent_for(quiet_for),
+        move || watched.overdue_by(slack),
     )
     .await
 }
@@ -206,23 +208,27 @@ struct Beat {
     /// loop: an unreachable device keeps ticking and starts beating again the
     /// moment its socket is back.
     reachable: Reachability,
-    /// When this beat last came round, beaten or skipped. The supervisor reads
-    /// it: a loop that has stopped ticking is as dead as one that has returned,
-    /// and from outside the two are the same silence.
-    attempted: Arc<Mutex<Instant>>,
+    /// When this beat said it would next come round, beaten or skipped: an
+    /// interval after it last did, or the end of the wait it chose after a
+    /// failure. The supervisor reads it: a loop that has stopped ticking is as
+    /// dead as one that has returned, and from outside the two are the same
+    /// silence — but a loop waiting out a `Retry-After` it was given is
+    /// neither, and is left to wait (#131 review).
+    due: Arc<Mutex<Instant>>,
 }
 
 impl Beat {
-    /// This beat came round. Recorded before the reachability check, because
-    /// what the supervisor watches for is the loop stopping, not the device
-    /// being away.
-    fn attempt_noted(&self) {
-        *self.attempted.lock().unwrap() = Instant::now();
+    /// This beat came round, and will again within `next_in`. Recorded before
+    /// the reachability check, because what the supervisor watches for is the
+    /// loop stopping, not the device being away.
+    fn came_round(&self, next_in: Duration) {
+        *self.due.lock().unwrap() = Instant::now() + next_in;
     }
 
-    /// Whether this beat has not come round for `quiet_for`.
-    fn silent_for(&self, quiet_for: Duration) -> bool {
-        self.attempted.lock().unwrap().elapsed() > quiet_for
+    /// Whether this beat is more than `slack` past when it said it would next
+    /// come round.
+    fn overdue_by(&self, slack: Duration) -> bool {
+        Instant::now() > *self.due.lock().unwrap() + slack
     }
 
     async fn run(self, interval: Duration) {
@@ -231,40 +237,181 @@ impl Beat {
         // laptop) must not become a burst of catch-up beats: the api would
         // refuse them as replays and learn nothing new.
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut retries = Retries::every(interval);
         loop {
             // The first tick is immediate, so the api knows within a second of
             // the relay authenticating this device that it is here.
             ticker.tick().await;
-            self.attempt_noted();
+            self.came_round(interval);
             // Silence is the whole report for a device nothing can reach: the
             // api needs no "offline" post, and one it could not act on from a
             // bridge with no way in is exactly the lie this loop used to tell.
             if !self.reachable.is_reachable() {
                 continue;
             }
-            if let Err(error) = self.send().await {
-                crate::logline::say(format!("presence: heartbeat dropped: {error}"));
+            match self.send().await {
+                Ok(()) => retries.landed(),
+                Err(dropped) => {
+                    // A refusal that passes — the api between two pods, a
+                    // busy one, none at all — is asked again soon rather than
+                    // a whole interval later, and less soon each time it is
+                    // refused again (#131).
+                    let again = dropped
+                        .passes
+                        .then(|| retries.after_failure(dropped.retry_after, jitter()));
+                    if !dropped.passes {
+                        retries.landed();
+                    }
+                    if let Some(again) = again {
+                        ticker.reset_after(again);
+                        self.came_round(again);
+                    }
+                    crate::logline::say(format!(
+                        "presence: heartbeat dropped: {}{}",
+                        dropped.reason,
+                        again.map_or_else(String::new, |again| format!(
+                            "; again in {:.1}s",
+                            again.as_secs_f64()
+                        ))
+                    ));
+                }
             }
         }
     }
 
-    async fn send(&self) -> Result<(), String> {
+    async fn send(&self) -> Result<(), Dropped> {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| Dropped::for_good(e.to_string()))?
             .as_secs() as i64;
-        let beat = build_heartbeat(&self.identity, timestamp)?;
+        let beat = build_heartbeat(&self.identity, timestamp).map_err(Dropped::for_good)?;
         let response = self
             .client
             .post(&self.url)
             .json(&beat)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("api refused the heartbeat: {}", response.status()))
+            .map_err(|e| Dropped::in_passing(e.to_string()))?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let reason = format!("api refused the heartbeat: {status}");
+        // The ingress's 404 while the api's one pod is replaced (a deploy, every
+        // time), a rate limit, a server error: nothing about this device.
+        let passes = status == reqwest::StatusCode::NOT_FOUND
+            || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status.is_server_error();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| retry_after(value, SystemTime::now()));
+        Err(Dropped {
+            reason,
+            passes,
+            retry_after,
+        })
+    }
+}
+
+/// The first retry of a beat that failed in passing comes a sixth of an
+/// interval after it — five seconds at the daemon's thirty.
+const FIRST_RETRY_PER_INTERVAL: u32 = 6;
+
+/// The longest a `Retry-After` is waited out. Longer than this and the device
+/// would go offline for the api's own say-so; past it the beat asks anyway.
+const LONGEST_RETRY_AFTER: Duration = Duration::from_secs(600);
+
+/// When a beat that failed in passing is tried again.
+///
+/// Soon at first, because the common failure is the api's half-minute between
+/// two pods, and a device should stay online through it. Then less soon each
+/// time it fails again — doubling from a sixth of an interval to the interval
+/// itself, so a failure that goes on costs the api what a healthy device does,
+/// one beat an interval — and never in step with every other device refused
+/// at the same moment: each wait is jittered by a quarter either way. An api
+/// that names its own `Retry-After` is not asked before it, up to
+/// [`LONGEST_RETRY_AFTER`]. A beat that lands starts the schedule over.
+#[derive(Debug, Clone)]
+struct Retries {
+    interval: Duration,
+    /// Failures in passing since the last beat that landed.
+    failed: u32,
+}
+
+impl Retries {
+    fn every(interval: Duration) -> Retries {
+        Retries {
+            interval,
+            failed: 0,
+        }
+    }
+
+    /// A beat landed, or was refused on its merits: the next failure in
+    /// passing starts from the soonest retry again.
+    fn landed(&mut self) {
+        self.failed = 0;
+    }
+
+    /// How long to wait after one more failure in passing. `jitter` is
+    /// uniform in `[0, 1)`.
+    fn after_failure(&mut self, retry_after: Option<Duration>, jitter: f64) -> Duration {
+        let first = self.interval / FIRST_RETRY_PER_INTERVAL;
+        let doubled = first.saturating_mul(1 << self.failed.min(16));
+        self.failed = self.failed.saturating_add(1);
+        let jittered = doubled.min(self.interval).mul_f64(0.75 + jitter / 2.0);
+        match retry_after {
+            Some(asked) => jittered.max(asked.min(LONGEST_RETRY_AFTER)),
+            None => jittered,
+        }
+    }
+}
+
+/// A number uniform in `[0, 1)`, from the operating system's random source
+/// (a version 4 UUID is 122 bits of it). Only bytes 9 to 15 are taken, which
+/// the version's nibble (byte 6) and the variant's two bits (byte 8) leave
+/// alone, and 53 of their 56 bits — as many as an `f64` holds exactly.
+fn jitter() -> f64 {
+    let uuid = uuid::Uuid::new_v4().into_bytes();
+    let mut bits = [0u8; 8];
+    bits[..7].copy_from_slice(&uuid[9..16]);
+    (u64::from_le_bytes(bits) >> 3) as f64 / (1u64 << 53) as f64
+}
+
+/// What a `Retry-After` header asks for, as a wait from `now`: a number of
+/// seconds, or an HTTP date. A date already past asks for no wait.
+fn retry_after(value: &str, now: SystemTime) -> Option<Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let at = httpdate::parse_http_date(value).ok()?;
+    Some(at.duration_since(now).unwrap_or(Duration::ZERO))
+}
+
+/// A beat that did not land, and whether trying again soon could land it.
+struct Dropped {
+    reason: String,
+    passes: bool,
+    /// How long the api asked to be left alone, when it said.
+    retry_after: Option<Duration>,
+}
+
+impl Dropped {
+    fn in_passing(reason: String) -> Dropped {
+        Dropped {
+            reason,
+            passes: true,
+            retry_after: None,
+        }
+    }
+
+    fn for_good(reason: String) -> Dropped {
+        Dropped {
+            reason,
+            passes: false,
+            retry_after: None,
         }
     }
 }
@@ -320,6 +467,133 @@ mod tests {
             &beat.signature_b64,
         )
         .is_err());
+    }
+
+    /// At the daemon's 30 s: 5 s, 10 s, 20 s, then the interval for as long
+    /// as the failure lasts, each a quarter either way; and from the soonest
+    /// again once a beat lands.
+    #[test]
+    fn a_failure_that_goes_on_is_retried_less_soon_up_to_the_interval() {
+        let mut retries = Retries::every(HEARTBEAT_INTERVAL);
+        let unjittered: Vec<u64> = (0..6)
+            .map(|_| retries.after_failure(None, 0.5).as_secs())
+            .collect();
+        assert_eq!(unjittered, [5, 10, 20, 30, 30, 30]);
+
+        retries.landed();
+        assert_eq!(
+            retries.after_failure(None, 0.0),
+            Duration::from_millis(3750)
+        );
+        retries.landed();
+        assert_eq!(
+            retries.after_failure(None, 0.999_999),
+            Duration::from_secs(5).mul_f64(0.75 + 0.999_999 / 2.0)
+        );
+    }
+
+    /// Ten devices behind one address, failing together for ten minutes and
+    /// each jittered to its soonest, post at most three beats a minute each:
+    /// a quarter of the 120 a minute the api allows that address, and about
+    /// what they would if every beat landed.
+    #[test]
+    fn a_sustained_failure_costs_the_api_about_one_beat_an_interval() {
+        let mut retries = Retries::every(HEARTBEAT_INTERVAL);
+        let (mut elapsed, mut beats) = (Duration::ZERO, 1);
+        while elapsed < Duration::from_secs(600) {
+            elapsed += retries.after_failure(None, 0.0);
+            beats += 1;
+        }
+        let per_minute = beats as f64 / 10.0;
+        assert!(per_minute <= 3.0, "{per_minute} beats a minute per device");
+        assert!(10.0 * per_minute < 120.0);
+    }
+
+    /// A `Retry-After` is waited out, in seconds or as a date, up to ten
+    /// minutes; the backoff still stands when it asks for less.
+    #[test]
+    fn a_retry_after_is_honoured_up_to_a_bound() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_750_000_000);
+        assert_eq!(retry_after(" 42 ", now), Some(Duration::from_secs(42)));
+        assert_eq!(
+            retry_after(&httpdate::fmt_http_date(now + Duration::from_secs(90)), now),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            retry_after(&httpdate::fmt_http_date(now - Duration::from_secs(5)), now),
+            Some(Duration::ZERO)
+        );
+        assert_eq!(retry_after("soon", now), None);
+
+        let mut retries = Retries::every(HEARTBEAT_INTERVAL);
+        assert_eq!(
+            retries.after_failure(Some(Duration::from_secs(45)), 0.5),
+            Duration::from_secs(45)
+        );
+        assert_eq!(
+            retries.after_failure(Some(Duration::from_secs(1)), 0.5),
+            Duration::from_secs(10),
+            "a short Retry-After does not undo the backoff"
+        );
+        assert_eq!(
+            retries.after_failure(Some(Duration::from_secs(86_400)), 0.5),
+            LONGEST_RETRY_AFTER
+        );
+    }
+
+    /// The jitter the schedule is fed spreads over all of `[0, 1)`, so the
+    /// waits it makes spread over a quarter either way of the schedule's.
+    /// Taken from a UUID, it carried the version's and variant's fixed bits
+    /// and never left `[0.5, 0.75)` (#131 review).
+    #[test]
+    fn the_jitter_spreads_evenly_over_zero_to_one() {
+        let draws: Vec<f64> = (0..20_000).map(|_| jitter()).collect();
+        assert!(draws.iter().all(|draw| (0.0..1.0).contains(draw)));
+        for quarter in 0..4 {
+            let low = quarter as f64 / 4.0;
+            let share = draws
+                .iter()
+                .filter(|draw| (low..low + 0.25).contains(*draw))
+                .count() as f64
+                / draws.len() as f64;
+            assert!(
+                (0.22..0.28).contains(&share),
+                "{share} of the draws in [{low}, {})",
+                low + 0.25
+            );
+        }
+        let waits: Vec<Duration> = draws
+            .iter()
+            .map(|draw| Retries::every(HEARTBEAT_INTERVAL).after_failure(None, *draw))
+            .collect();
+        let (shortest, longest) = (waits.iter().min().unwrap(), waits.iter().max().unwrap());
+        assert!(*shortest < Duration::from_millis(3_900), "{shortest:?}");
+        assert!(*longest > Duration::from_millis(6_100), "{longest:?}");
+    }
+
+    /// The supervisor holds a beat to the deadline it set itself: overdue
+    /// once it is past it by the slack, whether that deadline was the next
+    /// interval or the end of a long `Retry-After`; and a loop that has
+    /// stopped coming round is still caught.
+    #[test]
+    fn a_beat_is_overdue_past_its_own_deadline() {
+        let beat = Beat {
+            url: "http://127.0.0.1:9/unused".to_string(),
+            identity: identity().0,
+            client: reqwest::Client::new(),
+            reachable: Reachability::unreachable(),
+            due: Arc::new(Mutex::new(Instant::now())),
+        };
+        let slack = Duration::from_millis(20);
+
+        beat.came_round(Duration::from_millis(10));
+        assert!(!beat.overdue_by(slack), "on time");
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(beat.overdue_by(slack), "stopped coming round");
+
+        beat.came_round(Duration::from_secs(600));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!beat.overdue_by(slack), "waiting out what it was asked to");
     }
 
     #[test]

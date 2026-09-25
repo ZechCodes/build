@@ -25,12 +25,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api::clients::ClientRegistry;
+use crate::logline::Throttle;
 
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
 /// above it a human is already waiting and wants to know which of the four
 /// durations to blame.
 pub const SLOW_FRAME: Duration = Duration::from_millis(200);
+
+/// How often the daemon's clock writes a line for one method's slow frames.
+pub const SLOW_FRAME_LINES: Duration = Duration::from_secs(10);
 
 /// How many distinct methods keep a histogram of their own. The method name
 /// comes off the wire, so the map needs a bound; past it every further method
@@ -108,14 +112,14 @@ impl Priority {
 /// say so.
 struct QueueRecord {
     depth: AtomicUsize,
-    timing: MethodRecord,
+    timing: Histogram,
 }
 
 impl QueueRecord {
-    fn new(priority: Priority) -> QueueRecord {
+    fn new() -> QueueRecord {
         QueueRecord {
             depth: AtomicUsize::new(0),
-            timing: MethodRecord::new(priority.label()),
+            timing: Histogram::new(),
         }
     }
 
@@ -141,29 +145,44 @@ pub struct FrameClock {
     served: AtomicU64,
     slow: AtomicU64,
     sink: SlowFrameSink,
+    /// The daemon's clock writes a method's slow frames one per window,
+    /// each saying how many it stands for; a clock a test reads writes all.
+    slow_lines: Option<(Throttle, Duration)>,
     /// What each live session declared in its greeting — its own leaf, read
     /// by `bridge.stats` beside the counters.
     clients: ClientRegistry,
 }
 
 impl FrameClock {
-    /// The daemon's clock: slow frames go to stderr.
+    /// The daemon's clock: slow frames go to stderr, one line per method per
+    /// [`SLOW_FRAME_LINES`] — under load they come by the thousand (#131).
     pub fn new() -> Arc<FrameClock> {
-        FrameClock::reporting_to(Arc::new(|line: &str| crate::logline::say(line)))
+        FrameClock::build(
+            Arc::new(|line: &str| crate::logline::say(line)),
+            Some(SLOW_FRAME_LINES),
+        )
     }
 
     /// A clock whose slow-frame lines go somewhere a test can read them.
     pub fn reporting_to(sink: SlowFrameSink) -> Arc<FrameClock> {
+        FrameClock::build(sink, None)
+    }
+
+    /// The same, throttled the way the daemon's is, on a window of the test's.
+    #[cfg(test)]
+    pub fn throttled_reporting_to(sink: SlowFrameSink, window: Duration) -> Arc<FrameClock> {
+        FrameClock::build(sink, Some(window))
+    }
+
+    fn build(sink: SlowFrameSink, throttle: Option<Duration>) -> Arc<FrameClock> {
         Arc::new(FrameClock {
             methods: RwLock::new(HashMap::new()),
             holder: Mutex::new(None),
-            queues: [
-                QueueRecord::new(Priority::Foreground),
-                QueueRecord::new(Priority::Background),
-            ],
+            queues: [QueueRecord::new(), QueueRecord::new()],
             served: AtomicU64::new(0),
             slow: AtomicU64::new(0),
             sink,
+            slow_lines: throttle.map(|window| (Throttle::new(window), window)),
             clients: ClientRegistry::new(),
         })
     }
@@ -264,17 +283,28 @@ impl FrameClock {
 
     fn publish(&self, frame: &FrameTimer) {
         let spent = frame.spent();
-        frame.method.record(spent.total);
+        frame.method.record(&spent);
         self.queue(frame.priority).timing.record(spent.total);
         self.served.fetch_add(1, Ordering::Relaxed);
         if spent.total >= SLOW_FRAME {
             self.slow.fetch_add(1, Ordering::Relaxed);
-            (self.sink)(&slow_frame_line(
-                &frame.method.method,
-                &spent,
-                self.queue_depth(),
-            ));
+            self.say_slow(&frame.method.method, &spent);
         }
+    }
+
+    /// One slow frame's line, unless its method has had one this window.
+    fn say_slow(&self, method: &str, spent: &Spent) {
+        let suffix = match &self.slow_lines {
+            None => String::new(),
+            Some((throttle, window)) => match throttle.admit(method) {
+                Some(suppressed) => crate::logline::suppressed_suffix(suppressed, *window),
+                None => return,
+            },
+        };
+        (self.sink)(&format!(
+            "{}{suffix}",
+            slow_frame_line(method, spent, self.queue_depth())
+        ));
     }
 }
 
@@ -497,45 +527,43 @@ fn micros(duration: Duration) -> u64 {
     duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-/// One method's frames since boot: how many, how slow the slowest was, and a
-/// fixed histogram of the rest.
-struct MethodRecord {
-    method: String,
+/// Durations since boot: how many, the longest, and a fixed histogram of the
+/// rest.
+struct Histogram {
     served: AtomicU64,
     max_micros: AtomicU64,
     buckets: [AtomicU64; BUCKET_CEILINGS_MICROS.len()],
 }
 
-impl MethodRecord {
-    fn new(method: &str) -> MethodRecord {
-        MethodRecord {
-            method: method.to_string(),
+impl Histogram {
+    fn new() -> Histogram {
+        Histogram {
             served: AtomicU64::new(0),
             max_micros: AtomicU64::new(0),
             buckets: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
-    fn record(&self, total: Duration) {
-        let total = micros(total);
+    fn record(&self, spent: Duration) {
+        let spent = micros(spent);
         self.served.fetch_add(1, Ordering::Relaxed);
-        self.max_micros.fetch_max(total, Ordering::Relaxed);
+        self.max_micros.fetch_max(spent, Ordering::Relaxed);
         let bucket = BUCKET_CEILINGS_MICROS
             .iter()
-            .position(|ceiling| total <= *ceiling)
+            .position(|ceiling| spent <= *ceiling)
             .unwrap_or(BUCKET_CEILINGS_MICROS.len() - 1);
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The bucket ceiling the given share of frames falls at or below, capped
-    /// by the largest frame actually seen — the buckets are coarse, and a
-    /// percentile above the maximum would be a number no frame ever took.
+    /// The bucket ceiling the given share of durations falls at or below,
+    /// capped by the longest actually seen — the buckets are coarse, and a
+    /// percentile above the maximum would be a number nothing ever took.
     fn quantile_micros(&self, share: f64) -> u64 {
         let served = self.served.load(Ordering::Relaxed);
         if served == 0 {
             return 0;
         }
-        let max = self.max_micros.load(Ordering::Relaxed);
+        let max = self.max_micros();
         let target = ((served as f64) * share).ceil().max(1.0) as u64;
         let mut seen = 0;
         for (bucket, ceiling) in self.buckets.iter().zip(BUCKET_CEILINGS_MICROS) {
@@ -547,12 +575,41 @@ impl MethodRecord {
         max
     }
 
+    fn max_micros(&self) -> u64 {
+        self.max_micros.load(Ordering::Relaxed)
+    }
+}
+
+/// One method's frames since boot: how long each took end to end, and how
+/// long each held the app mutex — the number that says whom it kept waiting.
+struct MethodRecord {
+    method: String,
+    total: Histogram,
+    held: Histogram,
+}
+
+impl MethodRecord {
+    fn new(method: &str) -> MethodRecord {
+        MethodRecord {
+            method: method.to_string(),
+            total: Histogram::new(),
+            held: Histogram::new(),
+        }
+    }
+
+    fn record(&self, spent: &Spent) {
+        self.total.record(spent.total);
+        self.held.record(spent.held);
+    }
+
     fn stats(&self) -> Value {
         json!({
-            "served": self.served.load(Ordering::Relaxed),
-            "p50_ms": as_millis(self.quantile_micros(0.50)),
-            "p95_ms": as_millis(self.quantile_micros(0.95)),
-            "max_ms": as_millis(self.max_micros.load(Ordering::Relaxed)),
+            "served": self.total.served.load(Ordering::Relaxed),
+            "p50_ms": as_millis(self.total.quantile_micros(0.50)),
+            "p95_ms": as_millis(self.total.quantile_micros(0.95)),
+            "max_ms": as_millis(self.total.max_micros()),
+            "held_p99_ms": as_millis(self.held.quantile_micros(0.99)),
+            "held_max_ms": as_millis(self.held.max_micros()),
         })
     }
 }
@@ -621,6 +678,47 @@ mod tests {
         assert_eq!(clock.stats()["slow_frames"], 1);
     }
 
+    /// Under load the slow frames of one verb come by the thousand (#131).
+    /// The daemon's clock writes the first of each method and then one per
+    /// window, saying how many it stands for; another method still gets its
+    /// own line, and every slow frame is still counted.
+    #[test]
+    fn slow_frame_lines_are_throttled_per_method() {
+        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&lines);
+        let clock = FrameClock::throttled_reporting_to(
+            Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+            Duration::from_secs(1),
+        );
+        let burst: Vec<FrameTimer> = (0..50).map(|_| clock.frame("issues.list")).collect();
+        let other = clock.frame("board.list");
+        std::thread::sleep(SLOW_FRAME + Duration::from_millis(10));
+        let first_said = Instant::now();
+        drop(burst);
+        drop(other);
+
+        let said = lines.lock().unwrap().clone();
+        assert_eq!(said.len(), 2, "one line per method: {said:?}");
+        assert!(said[0].starts_with("slow frame issues.list "), "{said:?}");
+        assert!(said[1].starts_with("slow frame board.list "), "{said:?}");
+        assert_eq!(clock.stats()["slow_frames"], 51, "every slow frame counted");
+
+        let late = clock.frame("issues.list");
+        std::thread::sleep(
+            (Duration::from_secs(1) + Duration::from_millis(20))
+                .saturating_sub(first_said.elapsed())
+                .max(SLOW_FRAME),
+        );
+        drop(late);
+        let said = lines.lock().unwrap().clone();
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(
+            said[2].starts_with("slow frame issues.list ")
+                && said[2].ends_with(" (+49 alike in the last 1s)"),
+            "the window's next line says what it stands for: {said:?}"
+        );
+    }
+
     #[test]
     fn a_quick_frame_logs_nothing() {
         let (clock, lines) = recording_clock();
@@ -631,6 +729,35 @@ mod tests {
         }
         assert!(lines.lock().unwrap().is_empty());
         assert_eq!(clock.stats()["slow_frames"], 0);
+    }
+
+    /// The yardstick for a verb that keeps everybody else waiting is how long
+    /// it HELD the app mutex, not how long it took: a frame that queued or
+    /// waited for the lock slowed nobody. So each verb's hold has a histogram
+    /// of its own beside its total.
+    #[test]
+    fn stats_report_each_methods_hold_apart_from_its_total() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(0u32));
+        for _ in 0..3 {
+            let timer = clock.frame("issues.list");
+            {
+                let _held = timer.lock(&state);
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let stats = clock.stats();
+        let method = &stats["methods"]["issues.list"];
+        let held_p99 = method["held_p99_ms"].as_f64().expect("a held p99");
+        let held_max = method["held_max_ms"].as_f64().expect("a held max");
+        assert!((3.0..25.0).contains(&held_max), "{method}");
+        assert!(held_p99 <= held_max && held_p99 >= 3.0, "{method}");
+        assert!(
+            method["p95_ms"].as_f64().unwrap() >= 30.0,
+            "the total still counts the time spent outside the lock: {method}"
+        );
     }
 
     #[test]
@@ -725,7 +852,7 @@ mod tests {
 
     #[test]
     fn quantiles_span_the_recorded_frames() {
-        let record = MethodRecord::new("board.list");
+        let record = Histogram::new();
         for _ in 0..95 {
             record.record(Duration::from_micros(400));
         }
@@ -734,7 +861,7 @@ mod tests {
         }
         assert_eq!(record.quantile_micros(0.50), 500);
         assert_eq!(record.quantile_micros(0.95), 500);
-        assert_eq!(record.stats()["max_ms"], 900.0);
+        assert_eq!(record.max_micros(), 900_000);
     }
 
     /// The two queues are reported apart, so "the focused surface is slow" and

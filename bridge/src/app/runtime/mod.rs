@@ -2,6 +2,7 @@ pub(in crate::app) mod agents;
 pub(in crate::app) mod deferred;
 pub(in crate::app) mod delivery;
 pub(in crate::app) mod lifecycle;
+pub(in crate::app) mod off_the_workers;
 pub(in crate::app) mod pumps;
 pub(in crate::app) mod recovery;
 pub(in crate::app) mod resume;

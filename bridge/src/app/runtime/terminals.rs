@@ -1,8 +1,8 @@
 use crate::api::clients::DeclaredClient;
 use crate::api::API_VERSION;
 use crate::app::{
-    capture_conversation_names, err, record_idle_in_thread, require_str, spawn_tab_pumps, AppState,
-    HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
+    capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str,
+    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
@@ -727,7 +727,10 @@ impl AppState {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(interval).await;
-                let reaped = state.lock().unwrap().reap_orphaned_terminals();
+                let reaping = Arc::clone(&state);
+                let reaped =
+                    off_the_workers(move || reaping.lock().unwrap().reap_orphaned_terminals())
+                        .await;
                 for term_id in reaped {
                     eprintln!("terminal reaper: closed {term_id} (worktree gone)");
                 }
@@ -885,25 +888,32 @@ impl AppState {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(poll_interval).await;
-                let (demoted, routers) = {
-                    let mut app = state.lock().unwrap();
-                    // A router process that died mid-decision told nobody, and
-                    // its capture would otherwise read as being routed forever.
-                    (
-                        app.mark_idle_tasks(quiet_threshold),
-                        app.reap_finished_router_sessions(),
-                    )
-                };
-                for task_id in demoted {
-                    eprintln!("idle monitor: {task_id} went idle without a done report");
-                }
-                for capture_id in routers {
-                    eprintln!("idle monitor: the router on {capture_id} stopped");
-                }
-                // Asked with the lock RELEASED: a terminal answers this off its
-                // harness's transcript tree, which is a filesystem read.
-                capture_conversation_names(&state);
+                let sweeping = Arc::clone(&state);
+                off_the_workers(move || AppState::sweep_idle(&sweeping, quiet_threshold)).await;
             }
         });
+    }
+
+    /// One tick of the idle monitor: demote, reap finished routers, then ask
+    /// the live agents their conversations' names.
+    fn sweep_idle(state: &Arc<Mutex<AppState>>, quiet_threshold: Duration) {
+        let (demoted, routers) = {
+            let mut app = state.lock().unwrap();
+            // A router process that died mid-decision told nobody, and its
+            // capture would otherwise read as being routed forever.
+            (
+                app.mark_idle_tasks(quiet_threshold),
+                app.reap_finished_router_sessions(),
+            )
+        };
+        for task_id in demoted {
+            eprintln!("idle monitor: {task_id} went idle without a done report");
+        }
+        for capture_id in routers {
+            eprintln!("idle monitor: the router on {capture_id} stopped");
+        }
+        // Asked with the lock RELEASED: a terminal answers this off its
+        // harness's transcript tree, which is a filesystem read.
+        capture_conversation_names(state);
     }
 }

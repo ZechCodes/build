@@ -1,6 +1,6 @@
 use crate::app::{
-    record_activity, AppState, DeliveryRunner, LifecycleDiagnostic, PumpWake, SelfReport, TabKey,
-    TabPumps, TabRole, AGENT_DELIVERY_METHOD, NO_ANSWER_SESSION_ENDED,
+    off_the_workers, record_activity, AppState, DeliveryRunner, LifecycleDiagnostic, PumpWake,
+    SelfReport, TabKey, TabPumps, TabRole, AGENT_DELIVERY_METHOD, NO_ANSWER_SESSION_ENDED,
 };
 use crate::harness::{AgentSession, AgentStatus};
 use crate::screen::{ScreenHandle, TERM_FLUSH_MS};
@@ -21,6 +21,7 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         session_instance,
         screen,
         output,
+        push_runtime,
     } = pumps;
     super::delivery::receipts::spawn_receipt_pump(state, &session, session_instance.clone());
     spawn_tab_pump(
@@ -28,8 +29,11 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         key.clone(),
         Arc::clone(&session),
         session_instance.clone(),
-        screen,
-        output.bytes,
+        BytePump {
+            screen,
+            rx: output.bytes,
+            push_runtime,
+        },
     );
     let status_changed = session.status_changed();
     spawn_activity_pump(
@@ -50,70 +54,91 @@ pub(in crate::app) fn spawn_status_pump(
     instance: Option<SessionInstance>,
     mut changed: Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>>,
 ) {
-    let Some(mut changed) = changed.take() else {
+    let (Some(mut changed), Some(instance)) = (changed.take(), instance) else {
         return;
     };
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
-    let state = Arc::downgrade(state);
-    let session = Arc::downgrade(&session);
+    let mut pump = StatusPump {
+        state: Arc::downgrade(state),
+        key,
+        session: Arc::downgrade(&session),
+        instance,
+        recorded_context: None,
+        recorded_limit: super::usage_limits::UsageObservation::default(),
+    };
     tokio::spawn(async move {
-        let mut recorded_context = None;
-        let mut recorded_limit = super::usage_limits::UsageObservation::default();
         loop {
             let snapshot = changed.borrow_and_update().clone();
-            let (ended, retry_deferred, clock, delivery_state) = {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
-                let mut app = state.lock().unwrap();
-                let Some(session) = session.upgrade() else {
-                    return;
-                };
-                let Some(instance) = instance.as_ref() else {
-                    return;
-                };
-                if !still_pumping_instance(&app, &key, &session, instance) {
-                    return;
-                }
-                let owner = &instance.entity_id;
-                app.record_agent_status_snapshot(owner, &instance.agent_id, &snapshot);
-                record_new_turn_context(&mut app, instance, &snapshot, &mut recorded_context);
-                // A limit recorded wants its reset waited for, and one cleared
-                // may have left agents to start again: either is a drain.
-                let usage_limit_moved = app.record_usage_limit(
-                    owner,
-                    &instance.agent_id,
-                    &snapshot,
-                    &mut recorded_limit,
-                );
-                let ended = matches!(snapshot.status, AgentStatus::Ended { .. });
-                if let Some(reason) = ended.then(|| session.start_refused()).flatten() {
-                    app.record_agent_start_refused(owner, &instance.agent_id, &reason);
-                }
-                let retry_deferred = usage_limit_moved
-                    || !matches!(snapshot.status, AgentStatus::Working)
-                        && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
-                (
-                    ended,
-                    retry_deferred,
-                    Arc::clone(&app.frame_clock),
-                    Arc::clone(&state),
-                )
-            };
-            if retry_deferred {
-                let timer = clock.frame(AGENT_DELIVERY_METHOD);
-                DeliveryRunner::drain(&delivery_state, &timer);
-            }
-            if ended {
-                return;
-            }
-            if changed.changed().await.is_err() {
+            let still_watching;
+            (pump, still_watching) = off_the_workers(move || {
+                let still_watching = pump.observe(&snapshot);
+                (pump, still_watching)
+            })
+            .await;
+            if !still_watching || changed.changed().await.is_err() {
                 return;
             }
         }
     });
+}
+
+/// What the status pump carries from one snapshot to the next. It travels to
+/// the blocking pool and back with each snapshot, because writing a snapshot
+/// down takes the app mutex.
+struct StatusPump {
+    state: std::sync::Weak<Mutex<AppState>>,
+    key: TabKey,
+    session: std::sync::Weak<dyn AgentSession>,
+    instance: SessionInstance,
+    recorded_context: Option<crate::harness::TurnContext>,
+    recorded_limit: super::usage_limits::UsageObservation,
+}
+
+impl StatusPump {
+    /// Write one snapshot down, and drain if it freed a turn that was waiting.
+    /// Whether to go on watching: not once the session has ended, or the tab
+    /// has passed to another session.
+    fn observe(&mut self, snapshot: &crate::harness::SessionStatusSnapshot) -> bool {
+        let Some(state) = self.state.upgrade() else {
+            return false;
+        };
+        let (ended, retry_deferred, clock) = {
+            let mut app = state.lock().unwrap();
+            let Some(session) = self.session.upgrade() else {
+                return false;
+            };
+            let instance = &self.instance;
+            if !still_pumping_instance(&app, &self.key, &session, instance) {
+                return false;
+            }
+            let owner = &instance.entity_id;
+            app.record_agent_status_snapshot(owner, &instance.agent_id, snapshot);
+            record_new_turn_context(&mut app, instance, snapshot, &mut self.recorded_context);
+            // A limit recorded wants its reset waited for, and one cleared
+            // may have left agents to start again: either is a drain.
+            let usage_limit_moved = app.record_usage_limit(
+                owner,
+                &instance.agent_id,
+                snapshot,
+                &mut self.recorded_limit,
+            );
+            let ended = matches!(snapshot.status, AgentStatus::Ended { .. });
+            if let Some(reason) = ended.then(|| session.start_refused()).flatten() {
+                app.record_agent_start_refused(owner, &instance.agent_id, &reason);
+            }
+            let retry_deferred = usage_limit_moved
+                || !matches!(snapshot.status, AgentStatus::Working)
+                    && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
+            (ended, retry_deferred, Arc::clone(&app.frame_clock))
+        };
+        if retry_deferred {
+            let timer = clock.frame(AGENT_DELIVERY_METHOD);
+            DeliveryRunner::drain(&state, &timer);
+        }
+        !ended
+    }
 }
 
 /// Whether an agent whose turn just ended has something waiting for it: a
@@ -150,6 +175,14 @@ fn record_new_turn_context(
     *recorded = Some(context);
 }
 
+/// What a byte pump paints and where: the tab's screen, the stream it reads,
+/// and the runtime it runs on.
+pub(in crate::app) struct BytePump {
+    pub(in crate::app) screen: Option<ScreenHandle>,
+    pub(in crate::app) rx: Option<broadcast::Receiver<Vec<u8>>>,
+    pub(in crate::app) push_runtime: Option<tokio::runtime::Handle>,
+}
+
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
@@ -178,21 +211,27 @@ pub(in crate::app) fn spawn_tab_pump(
     key: TabKey,
     session: Arc<dyn AgentSession>,
     instance: Option<SessionInstance>,
-    screen: Option<ScreenHandle>,
-    rx: Option<broadcast::Receiver<Vec<u8>>>,
+    pump: BytePump,
 ) {
     // No terminal, no bytes: the pump exists to paint a stream into a grid, and
     // a session that offers none has nothing for it to do.
-    let (Some(mut rx), Some(screen)) = (rx, screen) else {
+    let BytePump {
+        screen: Some(screen),
+        rx: Some(mut rx),
+        push_runtime,
+    } = pump
+    else {
         return;
     };
-    if tokio::runtime::Handle::try_current().is_err() {
+    // The daemon's push runtime, where the paint competes with nothing that
+    // answers a request; with none set, the runtime starting the pump.
+    let Some(runtime) = push_runtime.or_else(|| tokio::runtime::Handle::try_current().ok()) else {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto and nothing attached to feed.
         return;
-    }
+    };
     let state = Arc::clone(state);
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         screen.restart();
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -202,7 +241,10 @@ pub(in crate::app) fn spawn_tab_pump(
                     Ok(chunk) => screen.feed(&chunk),
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        end_of_session(&state, &key, &session, instance.as_ref(), &screen);
+                        off_the_workers(move || {
+                            end_of_session(&state, &key, &session, instance.as_ref(), &screen)
+                        })
+                        .await;
                         return;
                     }
                 },
@@ -375,142 +417,179 @@ pub(in crate::app) fn spawn_activity_pump(
     if rx.is_none() && surfaces_changed.is_none() {
         return;
     }
+    // Everything the pump writes belongs to the instance it was started for,
+    // so without one there is nothing it could write.
+    let Some(instance) = instance else {
+        return;
+    };
     if tokio::runtime::Handle::try_current().is_err() {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto.
         return;
     }
-    let state = Arc::downgrade(state);
-    let session = Arc::downgrade(&session);
+    let pump = Arc::new(ActivityPump {
+        state: Arc::downgrade(state),
+        key,
+        session: Arc::downgrade(&session),
+        instance,
+    });
     tokio::spawn(async move {
-        if surfaces_changed.is_some()
-            && !publish_surface_invalidation(&state, &key, &session, instance.as_ref())
-        {
+        if surfaces_changed.is_some() && !pump.step(ActivityPump::surfaces_moved).await {
             return;
         }
         loop {
             let Some(woke) = next_pump_wake(&mut rx, &mut surfaces_changed).await else {
                 return;
             };
-            let reported = match woke {
-                PumpWake::SurfacesMoved => {
-                    if !publish_surface_invalidation(&state, &key, &session, instance.as_ref()) {
-                        return;
-                    }
-                    continue;
-                }
+            let still_pumping = match woke {
+                PumpWake::SurfacesMoved => pump.step(ActivityPump::surfaces_moved).await,
                 PumpWake::SurfacesUnwatchable => {
                     surfaces_changed = None;
-                    continue;
+                    true
                 }
-                PumpWake::Reported(reported) => reported,
-            };
-            match reported {
-                Ok(report) => {
-                    let Some(instance) = instance.as_ref() else {
-                        return;
-                    };
-                    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
-                        return;
-                    };
-                    let said = SelfReport::read(&session);
-                    let mut s = state.lock().unwrap();
-                    if !still_pumping_instance(&s, &key, &session, instance) {
-                        return;
-                    }
-                    s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
-                    record_activity(
-                        &mut s,
-                        &key,
-                        &instance.entity_id,
-                        &instance.agent_id,
-                        &report,
-                    );
+                PumpWake::Reported(Ok(report)) => {
+                    pump.step(move |pump| pump.reported(&report)).await
                 }
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
                 // lost, and the events after it still belong in the timeline.
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => {
-                    let Some(instance) = instance.as_ref() else {
-                        return;
-                    };
-                    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
-                        return;
-                    };
-                    let said = SelfReport::read(&session);
-                    // Protocol sessions publish their final status before
-                    // closing the activity stream. Consume that exact boundary
-                    // here as well as in the watch pump: the two tasks race,
-                    // and EOF must not call a completed turn an interruption
-                    // merely because it acquired the app lock first.
-                    let final_status = session
-                        .status_changed()
-                        .map(|status| status.borrow().clone());
-                    let mut s = state.lock().unwrap();
-                    // The reading is a filesystem walk, and a replacement can
-                    // have taken the tab over while it ran: what follows ends a
-                    // session, and ending the live one would mark it dead,
-                    // harvest its open tool calls and close its turn.
-                    if !still_pumping_instance(&s, &key, &session, instance) {
-                        return;
-                    }
-                    let Some(unanswered_call_sequences) = s
-                        .session_registry
-                        .end_agent_stream_if_current(&key, &session, instance)
-                    else {
-                        return;
-                    };
-                    match said.named {
-                        Some(_) => s.note_self_report(
-                            &instance.entity_id,
-                            &instance.agent_id,
-                            instance,
-                            said,
-                        ),
-                        // A session that ended having never announced a
-                        // conversation of its own is the shape of one spawned
-                        // with an id that no longer resolves: the child exits
-                        // without an init line. Clearing sends the next spawn
-                        // back to the transcript probe, so one dead id costs
-                        // one restart rather than every restart — and where the
-                        // child died at startup for an unrelated reason, the
-                        // probe is what would have answered anyway.
-                        None => {
-                            s.record_agent_resume_id(&instance.entity_id, &instance.agent_id, None)
-                        }
-                    }
-                    // A call still open when the child's stream ended never got
-                    // an answer and never will: it is closed here, saying so,
-                    // BEFORE the session ends — so the timeline reads
-                    // calls-closed-then-session-ended rather than a session
-                    // ending over work that still claims to run.
-                    for sequence in unanswered_call_sequences {
-                        s.resolve_agent_tool_call(
-                            &instance.entity_id,
-                            &instance.agent_id,
-                            sequence,
-                            crate::thread::ToolCallOutcome::Unanswered,
-                            NO_ANSWER_SESSION_ENDED,
-                        );
-                    }
-                    if let Some(snapshot) = final_status.as_ref() {
-                        s.record_agent_status_snapshot(
-                            &instance.entity_id,
-                            &instance.agent_id,
-                            snapshot,
-                        );
-                    }
-                    // The process is what a session IS, so this is where the
-                    // conversation's lineage closes — and where a turn the dead
-                    // process was holding is closed, so the row stops reading as
-                    // working.
-                    s.record_agent_session_end(&instance.entity_id, &instance.agent_id, instance);
-                    return;
+                PumpWake::Reported(Err(broadcast::error::RecvError::Lagged(_))) => true,
+                PumpWake::Reported(Err(broadcast::error::RecvError::Closed)) => {
+                    pump.step(ActivityPump::closed).await;
+                    false
                 }
+            };
+            if !still_pumping {
+                return;
             }
         }
     });
+}
+
+/// What the activity pump writes on behalf of: one session, as one instance,
+/// in one tab. Shared with the blocking pool for each step, because every step
+/// takes the app mutex — and most read the session's self-report, a
+/// filesystem walk, first.
+struct ActivityPump {
+    state: std::sync::Weak<Mutex<AppState>>,
+    key: TabKey,
+    session: std::sync::Weak<dyn AgentSession>,
+    instance: SessionInstance,
+}
+
+/// The state and the session an [`ActivityPump`] writes for, while both last.
+type LivePump = (Arc<Mutex<AppState>>, Arc<dyn AgentSession>);
+
+impl ActivityPump {
+    /// Run one step on the blocking pool.
+    async fn step<T: Send + 'static>(
+        self: &Arc<Self>,
+        step: impl FnOnce(&ActivityPump) -> T + Send + 'static,
+    ) -> T {
+        let pump = Arc::clone(self);
+        off_the_workers(move || step(&pump)).await
+    }
+
+    fn live(&self) -> Option<LivePump> {
+        Some((self.state.upgrade()?, self.session.upgrade()?))
+    }
+
+    /// Tell the owning entity's watchers its surfaces moved. Whether the tab is
+    /// still this session's.
+    fn surfaces_moved(&self) -> bool {
+        let Some((state, session)) = self.live() else {
+            return false;
+        };
+        let state = state.lock().unwrap();
+        if !still_pumping_instance(&state, &self.key, &session, &self.instance) {
+            return false;
+        }
+        state.note_entity_changed(&self.instance.entity_id);
+        true
+    }
+
+    /// Post one reported activity. Whether the tab is still this session's.
+    fn reported(&self, report: &crate::harness::ActivityReport) -> bool {
+        let instance = &self.instance;
+        let Some((state, session)) = self.live() else {
+            return false;
+        };
+        let said = SelfReport::read(&session);
+        let mut s = state.lock().unwrap();
+        if !still_pumping_instance(&s, &self.key, &session, instance) {
+            return false;
+        }
+        s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
+        record_activity(
+            &mut s,
+            &self.key,
+            &instance.entity_id,
+            &instance.agent_id,
+            report,
+        );
+        true
+    }
+
+    /// The death rites, when the activity stream closes.
+    fn closed(&self) {
+        let instance = &self.instance;
+        let Some((state, session)) = self.live() else {
+            return;
+        };
+        let said = SelfReport::read(&session);
+        // Protocol sessions publish their final status before closing the
+        // activity stream. Consume that exact boundary here as well as in the
+        // watch pump: the two tasks race, and EOF must not call a completed
+        // turn an interruption merely because it acquired the app lock first.
+        let final_status = session
+            .status_changed()
+            .map(|status| status.borrow().clone());
+        let mut s = state.lock().unwrap();
+        // The reading is a filesystem walk, and a replacement can have taken
+        // the tab over while it ran: what follows ends a session, and ending the
+        // live one would mark it dead, harvest its open tool calls and close its
+        // turn.
+        if !still_pumping_instance(&s, &self.key, &session, instance) {
+            return;
+        }
+        let Some(unanswered_call_sequences) = s
+            .session_registry
+            .end_agent_stream_if_current(&self.key, &session, instance)
+        else {
+            return;
+        };
+        match said.named {
+            Some(_) => s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said),
+            // A session that ended having never announced a conversation of its
+            // own is the shape of one spawned with an id that no longer
+            // resolves: the child exits without an init line. Clearing sends
+            // the next spawn back to the transcript probe, so one dead id costs
+            // one restart rather than every restart — and where the child died
+            // at startup for an unrelated reason, the probe is what would have
+            // answered anyway.
+            None => s.record_agent_resume_id(&instance.entity_id, &instance.agent_id, None),
+        }
+        // A call still open when the child's stream ended never got an answer
+        // and never will: it is closed here, saying so, BEFORE the session ends
+        // — so the timeline reads calls-closed-then-session-ended rather than a
+        // session ending over work that still claims to run.
+        for sequence in unanswered_call_sequences {
+            s.resolve_agent_tool_call(
+                &instance.entity_id,
+                &instance.agent_id,
+                sequence,
+                crate::thread::ToolCallOutcome::Unanswered,
+                NO_ANSWER_SESSION_ENDED,
+            );
+        }
+        if let Some(snapshot) = final_status.as_ref() {
+            s.record_agent_status_snapshot(&instance.entity_id, &instance.agent_id, snapshot);
+        }
+        // The process is what a session IS, so this is where the conversation's
+        // lineage closes — and where a turn the dead process was holding is
+        // closed, so the row stops reading as working.
+        s.record_agent_session_end(&instance.entity_id, &instance.agent_id, instance);
+    }
 }
 
 async fn next_pump_wake(
@@ -532,26 +611,6 @@ async fn next_pump_wake(
         }),
         (None, None) => None,
     }
-}
-
-fn publish_surface_invalidation(
-    state: &std::sync::Weak<Mutex<AppState>>,
-    key: &TabKey,
-    session: &std::sync::Weak<dyn AgentSession>,
-    instance: Option<&SessionInstance>,
-) -> bool {
-    let Some(instance) = instance else {
-        return false;
-    };
-    let (Some(state), Some(session)) = (state.upgrade(), session.upgrade()) else {
-        return false;
-    };
-    let state = state.lock().unwrap();
-    if !still_pumping_instance(&state, key, &session, instance) {
-        return false;
-    }
-    state.note_entity_changed(&instance.entity_id);
-    true
 }
 
 /// The terminal's capture point: ask every live agent session for the

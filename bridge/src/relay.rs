@@ -153,6 +153,65 @@ impl HeartbeatWatch {
     }
 }
 
+impl RelayError {
+    /// Whether the relay's name did not resolve: the resolver not answering
+    /// yet after a network change or a wake from sleep ("Temporary failure in
+    /// name resolution", 34 of them in one evening on 2026-09-24). Nothing
+    /// about the relay was learned, so there is no reason to wait out a
+    /// backoff meant for a relay that refused or dropped us.
+    pub fn is_name_resolution(&self) -> bool {
+        let RelayError::Ws(error) = self else {
+            return false;
+        };
+        matches!(
+            error.as_ref(),
+            tokio_tungstenite::tungstenite::Error::Io(io)
+                if io.to_string().contains("failed to lookup address information")
+        )
+    }
+}
+
+/// How soon a relay whose name did not resolve is dialed again.
+pub const NAME_RESOLUTION_RETRY: Duration = Duration::from_secs(2);
+
+/// How long to wait before redialing after a socket ended with `outcome`.
+///
+/// A name that did not resolve is tried again on a short, fixed timer, and
+/// neither waits out the backoff nor grows it (#131); anything else waits the
+/// backoff's current delay and doubles it for the next time.
+pub fn redial_wait(
+    outcome: &Result<(), RelayError>,
+    backoff: &mut crate::backoff::Backoff,
+) -> Duration {
+    if outcome.as_ref().is_err_and(RelayError::is_name_resolution) {
+        return NAME_RESOLUTION_RETRY;
+    }
+    let wait = backoff.current();
+    backoff.increase();
+    wait
+}
+
+/// A resolver that stays down is redialed every [`NAME_RESOLUTION_RETRY`];
+/// its line is said once a minute, with how many it stands for.
+static NAME_RESOLUTION_LINES: Throttle = Throttle::new(Duration::from_secs(60));
+
+/// The line a redial says: why the socket ended and when it is dialed again.
+pub fn say_redial(outcome: &Result<(), RelayError>, wait: Duration) {
+    let reconnecting = format!("reconnecting in {}s", wait.as_secs());
+    match outcome {
+        Ok(()) => say(format!("relay disconnected; {reconnecting}")),
+        Err(error) if error.is_name_resolution() => {
+            if let Some(suppressed) = NAME_RESOLUTION_LINES.admit("name resolution") {
+                say(format!(
+                    "relay error: {error}; {reconnecting}{}",
+                    crate::logline::suppressed_suffix(suppressed, Duration::from_secs(60))
+                ));
+            }
+        }
+        Err(error) => say(format!("relay error: {error}; {reconnecting}")),
+    }
+}
+
 impl From<tokio_tungstenite::tungstenite::Error> for RelayError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
         // Boxed: tungstenite's error type is large, and a large `Err` variant
@@ -669,5 +728,45 @@ mod crypto_provider_tests {
             rustls::crypto::CryptoProvider::get_default().is_some(),
             "no process-level crypto provider: a wss:// connect would panic"
         );
+    }
+}
+
+#[cfg(test)]
+mod redial_tests {
+    use super::*;
+    use crate::backoff::Backoff;
+
+    /// A relay whose name does not resolve — a real lookup of a name that
+    /// cannot exist — is dialed again in two seconds, and the backoff is left
+    /// where it was for the failures that deserve it.
+    #[tokio::test]
+    async fn a_name_that_does_not_resolve_is_redialed_soon_and_grows_nothing() {
+        let failed = tokio_tungstenite::connect_async("ws://relay.b131.invalid/ws/device")
+            .await
+            .map(|_| ())
+            .map_err(RelayError::from);
+        let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+        backoff.increase();
+        backoff.increase();
+
+        assert!(
+            failed.as_ref().is_err_and(RelayError::is_name_resolution),
+            "{failed:?}"
+        );
+        assert_eq!(redial_wait(&failed, &mut backoff), NAME_RESOLUTION_RETRY);
+        assert_eq!(backoff.current(), Duration::from_secs(8), "untouched");
+    }
+
+    /// Anything else waits the backoff out and doubles it.
+    #[test]
+    fn any_other_end_waits_the_backoff_and_doubles_it() {
+        let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
+        let refused = Err(RelayError::from(tokio_tungstenite::tungstenite::Error::Io(
+            std::io::Error::from(std::io::ErrorKind::ConnectionRefused),
+        )));
+        assert!(!refused.as_ref().is_err_and(RelayError::is_name_resolution));
+        assert_eq!(redial_wait(&refused, &mut backoff), Duration::from_secs(2));
+        assert_eq!(redial_wait(&Ok(()), &mut backoff), Duration::from_secs(4));
+        assert_eq!(backoff.current(), Duration::from_secs(8));
     }
 }

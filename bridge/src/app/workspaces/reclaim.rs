@@ -29,7 +29,7 @@
 mod explicit;
 mod notice;
 
-use crate::app::{AppState, DeliveryRunner};
+use crate::app::{off_the_workers, AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
@@ -113,15 +113,25 @@ fn now_ms() -> i64 {
 impl AppState {
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
-    pub fn spawn_workspace_reclaim(
+    ///
+    /// No runtime worker waits on the app mutex here (#131): the policy is
+    /// set and the handles read on the blocking pool, each sweep runs there,
+    /// and the loop checks the stop handle it already holds.
+    pub async fn spawn_workspace_reclaim(
         state: Arc<Mutex<AppState>>,
         policy: ReclaimPolicy,
     ) -> Arc<AtomicBool> {
         let (nudge, stop) = {
-            let mut app = state.lock().unwrap();
-            app.reclaim_policy = policy.clone();
-            (app.reclaim_nudge.clone(), app.reclaim_stop.clone())
+            let state = Arc::clone(&state);
+            let policy = policy.clone();
+            off_the_workers(move || {
+                let mut app = state.lock().unwrap();
+                app.reclaim_policy = policy;
+                (app.reclaim_nudge.clone(), app.reclaim_stop.clone())
+            })
+            .await
         };
+        let stopped = Arc::clone(&stop);
         tokio::spawn(async move {
             tokio::time::sleep(policy.first_sweep_after).await;
             loop {
@@ -135,7 +145,7 @@ impl AppState {
                 if let Err(joined) = sweep.await {
                     eprintln!("workspace reclaim: sweep failed: {joined}");
                 }
-                if state.lock().unwrap().reclaim_stop.load(Ordering::Relaxed) {
+                if stopped.load(Ordering::Relaxed) {
                     return;
                 }
                 tokio::select! {

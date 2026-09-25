@@ -1,5 +1,6 @@
 use crate::app::{
-    apply_thread_action, AppState, DeferredJob, DeferredNext, DeliveryRunner, SessionRegistry,
+    apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
+    SessionRegistry,
 };
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
@@ -29,6 +30,124 @@ pub(in crate::app) enum AddressedSession {
 /// gets a name of its own rather than borrowing one from the wire.
 pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 
+/// How many agents' control frames may be at the app mutex at once.
+///
+/// Every tool call takes the lock, and off the workers nothing else limits how
+/// many wait for it together: a dozen busy agents would stand a dozen deep in
+/// front of every frame the user is waiting on. At this many at a time, the
+/// user's frame waits behind two agents' holds at most; the rest take their
+/// turn on the runtime, asleep, holding no thread.
+pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
+
+/// What every control stream shares: the clock its frames are timed by, and
+/// the turns they take at the app mutex.
+pub(in crate::app) struct ControlPlane {
+    clock: Arc<FrameClock>,
+    turns: Arc<tokio::sync::Semaphore>,
+    #[cfg(test)]
+    at_the_lock: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    most_at_the_lock: std::sync::atomic::AtomicUsize,
+}
+
+impl ControlPlane {
+    pub(in crate::app) fn new(clock: Arc<FrameClock>) -> Arc<ControlPlane> {
+        Arc::new(ControlPlane {
+            clock,
+            turns: Arc::new(tokio::sync::Semaphore::new(CONTROL_FRAMES_AT_THE_LOCK)),
+            #[cfg(test)]
+            at_the_lock: Default::default(),
+            #[cfg(test)]
+            most_at_the_lock: Default::default(),
+        })
+    }
+
+    /// Answer one frame on the blocking pool, once it is this frame's turn.
+    /// The frame is timed from its arrival, so the wait for a turn counts
+    /// against it the way a queued RPC's wait does.
+    #[cfg(unix)]
+    async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
+        let timer = self.clock.frame(MCP_CONTROL_METHOD);
+        let turn = Turn::take(self).await;
+        answer_off_the_workers(state, frame, timer, turn).await
+    }
+
+    /// The most control frames that have been at the lock at once.
+    #[cfg(test)]
+    pub(in crate::app) fn most_at_the_lock(&self) -> usize {
+        self.most_at_the_lock
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// One control frame's turn at the app mutex.
+///
+/// Held while the frame is at the lock, and given back while it waits on the
+/// git it handed back: that git runs with the guard released, and a turn kept
+/// through it would let two slow workspace operations stand every other
+/// agent's frame in line with the mutex free. The frame takes a turn again
+/// before it writes the git's outcome down. Its connection reads nothing more
+/// until it is answered, so one agent's frames still land in the order sent.
+pub(in crate::app) struct Turn {
+    plane: Arc<ControlPlane>,
+    permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+impl Turn {
+    pub(in crate::app) async fn take(plane: &Arc<ControlPlane>) -> Turn {
+        let mut turn = Turn {
+            plane: Arc::clone(plane),
+            permit: None,
+        };
+        turn.take_again().await;
+        turn
+    }
+
+    /// Give the turn back for as long as `work` runs, and wait for another
+    /// after it.
+    pub(in crate::app) async fn aside<T>(
+        &mut self,
+        work: impl std::future::Future<Output = T>,
+    ) -> T {
+        self.give_back();
+        let done = work.await;
+        self.take_again().await;
+        done
+    }
+
+    async fn take_again(&mut self) {
+        let permit = Arc::clone(&self.plane.turns)
+            .acquire_owned()
+            .await
+            .expect("the control plane's turns are never closed");
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.plane.at_the_lock.fetch_add(1, SeqCst) + 1;
+            self.plane.most_at_the_lock.fetch_max(now, SeqCst);
+        }
+        self.permit = Some(permit);
+    }
+
+    fn give_back(&mut self) {
+        if let Some(permit) = self.permit.take() {
+            // Counted out while the permit is still held: dropped first, a
+            // waiter it wakes could count itself in before this one left.
+            #[cfg(test)]
+            self.plane
+                .at_the_lock
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            drop(permit);
+        }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        self.give_back();
+    }
+}
+
 /// Resolve a control frame only when it carries the current per-session
 /// capability, returning the AGENT that sent it. The token is never included in
 /// errors or logs.
@@ -46,17 +165,20 @@ pub(in crate::app) fn authenticated_mcp_owner<'a>(
 }
 
 #[cfg(unix)]
-/// Run the git a socket line handed back — with the guard released, on a
-/// blocking thread so several harnesses at once park no runtime worker — and
-/// write it down under the same timer. The socket's twin of the drain in
-/// [`dispatch_frame`], for a router's tool and a coding agent's report alike.
+/// Run the git a socket line handed back — with the guard released and the
+/// frame's turn given back, on a blocking thread so several harnesses at once
+/// park no runtime worker — and write it down under the same timer. The
+/// socket's twin of the drain in [`dispatch_frame`], for a router's tool and a
+/// coding agent's report alike.
 pub(in crate::app) async fn apply_off_the_socket(
     state: &Arc<Mutex<AppState>>,
     timer: &FrameTimer,
+    turn: &mut Turn,
     mut deferred: DeferredJob,
 ) -> Result<Value, String> {
     loop {
-        let done = tokio::task::spawn_blocking(move || deferred.run())
+        let done = turn
+            .aside(tokio::task::spawn_blocking(move || deferred.run()))
             .await
             .expect("the lifecycle job panicked");
         match timer
@@ -86,7 +208,12 @@ pub(in crate::app) async fn serve_done_listener(
     state: Arc<Mutex<AppState>>,
     listener: tokio::net::UnixListener,
 ) {
-    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    let plane = {
+        let state = Arc::clone(&state);
+        ControlPlane::new(
+            off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await,
+        )
+    };
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
     loop {
@@ -96,7 +223,7 @@ pub(in crate::app) async fn serve_done_listener(
                 tokio::spawn(handle_done_stream(
                     Arc::clone(&state),
                     stream,
-                    Arc::clone(&clock),
+                    Arc::clone(&plane),
                 ));
             }
             Err(error) => {
@@ -113,7 +240,7 @@ pub(in crate::app) async fn serve_done_listener(
 pub(in crate::app) async fn handle_done_stream(
     state: Arc<Mutex<AppState>>,
     stream: tokio::net::UnixStream,
-    clock: Arc<FrameClock>,
+    plane: Arc<ControlPlane>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut lines = tokio::io::BufReader::new(read_half).lines();
@@ -121,8 +248,7 @@ pub(in crate::app) async fn handle_done_stream(
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        let timer = clock.frame(MCP_CONTROL_METHOD);
-        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame, &timer).await {
+        if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
             let _ = write_half.write_all(response.to_string().as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
@@ -130,10 +256,34 @@ pub(in crate::app) async fn handle_done_stream(
     }
 }
 
+/// Answer one control frame on the blocking pool.
+///
+/// Every tool call takes the app mutex, some of them for as long as the
+/// tracker takes to read, and a harness waiting on its answer must not park a
+/// runtime worker behind whichever frame holds the lock. The frame's own awaits
+/// — the git it hands back, run with the guard released — are driven from the
+/// same blocking thread.
+#[cfg(unix)]
+async fn answer_off_the_workers(
+    state: Arc<Mutex<AppState>>,
+    frame: Value,
+    timer: FrameTimer,
+    mut turn: Turn,
+) -> Option<Value> {
+    let runtime = tokio::runtime::Handle::current();
+    off_the_workers(move || {
+        runtime.block_on(handle_authenticated_mcp_frame(
+            &state, &frame, &timer, &mut turn,
+        ))
+    })
+    .await
+}
+
 pub(in crate::app) async fn handle_authenticated_mcp_frame(
     state: &Arc<Mutex<AppState>>,
     frame: &Value,
     timer: &FrameTimer,
+    turn: &mut Turn,
 ) -> Option<Value> {
     let admission = state.lock().unwrap().update_admission();
     let _lease = match admission {
@@ -156,12 +306,12 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     };
     match addressed {
         Some(AddressedSession::Router { capture_id, .. }) => {
-            handle_router_mcp_frame(state, frame, &capture_id, timer).await
+            handle_router_mcp_frame(state, frame, &capture_id, timer, turn).await
         }
         Some(AddressedSession::Coding {
             entity_id,
             agent_id,
-        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id, timer).await,
+        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id, timer, turn).await,
         None => Some(json!({ "ok": false, "error": "unauthorized MCP session" })),
     }
 }
@@ -171,6 +321,7 @@ pub(in crate::app) async fn handle_router_mcp_frame(
     frame: &Value,
     capture_id: &str,
     timer: &FrameTimer,
+    turn: &mut Turn,
 ) -> Option<Value> {
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
@@ -184,7 +335,7 @@ pub(in crate::app) async fn handle_router_mcp_frame(
     .ok()?;
     let (answered, deferred) = timer.lock(state).router_deferring(capture_id, action);
     let result = match deferred {
-        Some(deferred) => apply_off_the_socket(state, timer, deferred).await,
+        Some(deferred) => apply_off_the_socket(state, timer, turn, deferred).await,
         None => answered,
     };
     DeliveryRunner::drain(state, timer);
@@ -197,6 +348,7 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
     entity_id: &str,
     agent_id: &str,
     timer: &FrameTimer,
+    turn: &mut Turn,
 ) -> Option<Value> {
     if let Ok(report) =
         serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
@@ -205,7 +357,7 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
             .lock(state)
             .done_deferring_for_agent(entity_id, agent_id, report);
         if let Some(deferred) = deferred {
-            if let Err(error) = apply_off_the_socket(state, timer, deferred).await {
+            if let Err(error) = apply_off_the_socket(state, timer, turn, deferred).await {
                 eprintln!("done report {entity_id}: {error}");
             }
         }
@@ -220,7 +372,7 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
         .lock(state)
         .agent_action_deferring(entity_id, agent_id, action);
     let result = match deferred {
-        Some(deferred) => apply_off_the_socket(state, timer, deferred).await,
+        Some(deferred) => apply_off_the_socket(state, timer, turn, deferred).await,
         None => answered,
     };
     DeliveryRunner::drain(state, timer);

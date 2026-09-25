@@ -1450,6 +1450,19 @@ pub(super) fn count_serialized_items(count: usize) {
 pub(super) fn count_serialized_items(_count: usize) {}
 
 impl ThreadMessage {
+    /// Whether a legacy delivery still owes the agent this message: the
+    /// human's, carried by no operation, not seen, and never sent or only
+    /// queued. `Store::waiting_legacy_messages` asks the database the same.
+    pub fn awaits_legacy_delivery(&self) -> bool {
+        self.role == MessageRole::User
+            && self.operation_id.is_none()
+            && self.seen_at.is_none()
+            && matches!(
+                self.delivery_status,
+                None | Some(MessageDeliveryStatus::Queued)
+            )
+    }
+
     /// The outcome this message reports, reading a record written before the
     /// field existed too: such a record set `done` alone, which is a completion
     /// and has always been one.

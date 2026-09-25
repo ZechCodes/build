@@ -12,6 +12,23 @@
     "subscription_id": "s-focus",
     "watch": "live"
   },
+  "refusal": {
+    "since": "1.24.0",
+    "params": {
+      "subscription_id": "s-inbox",
+      "scope": { "kind": "all" },
+      "kinds": ["state", "thread", "reviews", "issues"],
+      "mode": "realtime",
+      "priority": "foreground"
+    },
+    "reply": {
+      "ok": false,
+      "error": "Build cannot subscribe to reviews: this bridge does not know it.",
+      "error_code": "invalid_params",
+      "retryable": false,
+      "details": { "kinds": ["reviews"] }
+    }
+  },
   "errors": [
     "invalid_params",
     "unavailable"

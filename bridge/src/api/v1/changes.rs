@@ -18,12 +18,17 @@
 //! upsert by `subscription_id`; re-sending an id with a new mode is how a
 //! client changes cadence, and the bus keeps what that subscription already
 //! held.
+//!
+//! One exception to "one shape": subscribe takes its kinds as words
+//! ([`KindNames`]) and reads them itself, so a kind this bridge does not know
+//! is refused by name — every one of them, in `details.kinds` — and a client
+//! can drop exactly those and ask again (announced as `changes.refusedKinds`).
 
 use super::{Handler, NoParams};
 use crate::api::ApiError;
 use crate::app::{AppState, WatchAnswer};
 use crate::carrier::SessionSender;
-use crate::changes::{Kind, Scope, SubscriptionSpec, WatchState};
+use crate::changes::{Kind, KindNames, Scope, SubscriptionSpec, WatchState};
 use crate::{v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -34,7 +39,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!(
             "changes.subscribe",
             changes_subscribe,
-            SubscriptionSpec,
+            SubscriptionSpec<KindNames>,
             Subscribed
         ),
         v1_method!(
@@ -109,7 +114,11 @@ pub struct SubscriptionList {
 // -------------------------------------------------------------- handlers ---
 
 /// Upsert one subscription for the calling session.
-fn changes_subscribe(app: &mut AppState, params: SubscriptionSpec) -> Result<Subscribed, ApiError> {
+fn changes_subscribe(
+    app: &mut AppState,
+    params: SubscriptionSpec<KindNames>,
+) -> Result<Subscribed, ApiError> {
+    let params = known_kinds(params)?;
     let session = caller()?;
     check(&params)?;
     let subscription_id = params.id.clone();
@@ -143,6 +152,27 @@ fn changes_list(app: &mut AppState, _params: NoParams) -> Result<SubscriptionLis
     let session = caller()?;
     Ok(SubscriptionList {
         subscriptions: app.changes().list(session.session_id()),
+    })
+}
+
+/// The spec with its kinds read, or `invalid_params` naming every kind this
+/// bridge does not know: in a sentence, and in `details.kinds` for a client to
+/// drop before it asks again. The rest of the request is refused with them —
+/// nothing of it is subscribed.
+fn known_kinds(params: SubscriptionSpec<KindNames>) -> Result<SubscriptionSpec, ApiError> {
+    params.known().map_err(|unknown| {
+        let (named, pronoun) = match unknown.split_last() {
+            Some((last, rest)) if !rest.is_empty() => {
+                (format!("{} and {last}", rest.join(", ")), "them")
+            }
+            _ => (unknown.join(""), "it"),
+        };
+        ApiError::InvalidParams {
+            message: format!(
+                "Build cannot subscribe to {named}: this bridge does not know {pronoun}."
+            ),
+            details: Some(serde_json::json!({ "kinds": unknown })),
+        }
     })
 }
 
@@ -263,6 +293,82 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(refused.code(), "invalid_params");
+    }
+
+    /// The kinds of a subscribe, as a client sends them.
+    fn asking_for(kinds: &[&str]) -> SubscriptionSpec<KindNames> {
+        SubscriptionSpec {
+            id: "s-inbox".into(),
+            scope: Scope::All,
+            kinds: kinds.iter().copied().collect(),
+            mode: Mode::Realtime,
+            priority: Priority::Foreground,
+        }
+    }
+
+    /// One kind this bridge does not know refuses the subscription, naming
+    /// that kind in the sentence and in `details.kinds` for the client to drop.
+    #[test]
+    fn an_unknown_kind_is_refused_by_name() {
+        let refused = known_kinds(asking_for(&["state", "reviews", "thread"])).unwrap_err();
+        assert_eq!(refused.code(), "invalid_params");
+        assert_eq!(
+            refused.message(),
+            "Build cannot subscribe to reviews: this bridge does not know it."
+        );
+        assert_eq!(refused.details(), Some(&json!({ "kinds": ["reviews"] })));
+    }
+
+    /// Several are all named at once, in the order asked and each once, so
+    /// one retry without them is enough.
+    #[test]
+    fn every_unknown_kind_is_named_at_once() {
+        let refused = known_kinds(asking_for(&[
+            "reviews",
+            "state",
+            "sandwiches",
+            "reviews",
+            "pickles",
+        ]))
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_params");
+        assert_eq!(
+            refused.message(),
+            "Build cannot subscribe to reviews, sandwiches and pickles: this bridge does not know them."
+        );
+        assert_eq!(
+            refused.details(),
+            Some(&json!({ "kinds": ["reviews", "sandwiches", "pickles"] }))
+        );
+    }
+
+    /// Every kind it does know reads as that kind, deduplicated.
+    #[test]
+    fn known_kinds_read_as_the_set() {
+        let read = known_kinds(asking_for(&["thread", "state", "thread", "issues"])).unwrap();
+        assert_eq!(
+            read.kinds,
+            [Kind::State, Kind::Thread, Kind::Issues]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(read.id, "s-inbox");
+    }
+
+    /// The fixture's refusal is what the verb answers for the fixture's
+    /// request, envelope and all — the shape the SPA's retry reads.
+    #[test]
+    fn the_changes_subscribe_refusal_fixture_round_trips() {
+        let fixture = crate::api::v1::testing::fixture("changes.subscribe");
+        let refusal = &fixture["refusal"];
+        let params =
+            crate::api::v1::parse_params::<SubscriptionSpec<KindNames>>(&refusal["params"])
+                .expect("the refused request is well formed; only its kinds are not known");
+        let refused = known_kinds(params).unwrap_err();
+        let reply = refused.into_reply(json!("r1"));
+        let mut expected = refusal["reply"].clone();
+        expected["id"] = json!("r1");
+        assert_eq!(reply, expected);
     }
 
     /// A field this bridge predates is refused by name, as a kind it predates

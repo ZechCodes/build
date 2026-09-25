@@ -51,7 +51,7 @@ pub(super) fn default_refusal(
 }
 
 /// What each remote answers for its `HEAD`: the refusal when one names
-/// `branch`, and the refusal to guess when one cannot be asked.
+/// `branch`, and the refusal to guess when one cannot establish its default.
 fn asked_refusal(repo: &Path, branch: &str) -> Option<&'static str> {
     let Ok(remotes) = run_git(repo, &["remote"]) else {
         return Some(UNCONFIRMED);
@@ -59,16 +59,16 @@ fn asked_refusal(repo: &Path, branch: &str) -> Option<&'static str> {
     remotes
         .lines()
         .find_map(|remote| match asked_default(repo, remote) {
-            Ok(Some(name)) if name == branch => Some(IS_DEFAULT),
+            Ok(name) if name == branch => Some(IS_DEFAULT),
             Ok(_) => None,
             Err(()) => Some(UNCONFIRMED),
         })
 }
 
-/// The branch `remote`'s `HEAD` names, as the remote answers it now: `None`
-/// for a remote whose `HEAD` names no branch, `Err` for one that did not
-/// answer within [`REMOTE_DEADLINE`].
-fn asked_default(repo: &Path, remote: &str) -> Result<Option<String>, ()> {
+/// The branch `remote`'s `HEAD` names, as the remote answers it now. A
+/// successful query with no advertised `HEAD` leaves the default unknown,
+/// just as a query that fails or exceeds [`REMOTE_DEADLINE`] does.
+fn asked_default(repo: &Path, remote: &str) -> Result<String, ()> {
     if remote.starts_with('-') {
         return Err(());
     }
@@ -78,13 +78,15 @@ fn asked_default(repo: &Path, remote: &str) -> Result<Option<String>, ()> {
     if !answered.status.success() {
         return Err(());
     }
-    Ok(String::from_utf8_lossy(&answered.stdout)
+    String::from_utf8_lossy(&answered.stdout)
         .lines()
         .find_map(|line| {
             line.strip_prefix("ref: refs/heads/")?
                 .strip_suffix("\tHEAD")
+                .filter(|name| !name.is_empty())
                 .map(str::to_string)
-        }))
+        })
+        .ok_or(())
 }
 
 /// The branch each remote's `HEAD` pointed at when this repository last
@@ -190,6 +192,74 @@ mod tests {
         );
         assert_eq!(
             default_refusal(&repo, "feature", &[], Remotes::Asked),
+            Some(UNCONFIRMED)
+        );
+    }
+
+    #[test]
+    fn a_remote_that_hides_head_leaves_the_branch_unconfirmed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin_defaulting_to_trunk(tmp.path());
+        let origin = tmp.path().join("origin.git");
+        git_in(&origin, &["config", "uploadpack.hideRefs", "HEAD"]);
+        assert_eq!(
+            run_git(&repo, &["ls-remote", "--symref", "origin", "HEAD"]).unwrap(),
+            ""
+        );
+        assert_eq!(
+            default_refusal(&repo, "trunk", &[], Remotes::Asked),
+            Some(UNCONFIRMED)
+        );
+        git_in(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        assert_eq!(
+            default_refusal(&repo, "trunk", &[], Remotes::Asked),
+            Some(IS_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn an_unborn_remote_head_leaves_the_branch_unconfirmed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = init_repo_named(tmp.path(), "repo");
+        let origin = tmp.path().join("origin.git");
+        git_in(
+            tmp.path(),
+            &["init", "--bare", "-b", "trunk", origin.to_str().unwrap()],
+        );
+        git_in(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        assert_eq!(
+            run_git(&repo, &["ls-remote", "--symref", "origin", "HEAD"]).unwrap(),
+            ""
+        );
+        assert_eq!(
+            default_refusal(&repo, "feature", &[], Remotes::Asked),
+            Some(UNCONFIRMED)
+        );
+    }
+
+    #[test]
+    fn a_detached_remote_head_leaves_the_branch_unconfirmed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = origin_defaulting_to_trunk(tmp.path());
+        let origin = tmp.path().join("origin.git");
+        let tip = run_git(&origin, &["rev-parse", "refs/heads/trunk"]).unwrap();
+        git_in(&origin, &["update-ref", "--no-deref", "HEAD", tip.trim()]);
+        assert_eq!(
+            run_git(&repo, &["ls-remote", "--symref", "origin", "HEAD"]).unwrap(),
+            format!("{}\tHEAD\n", tip.trim())
+        );
+        assert_eq!(
+            default_refusal(&repo, "trunk", &[], Remotes::Asked),
             Some(UNCONFIRMED)
         );
     }

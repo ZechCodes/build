@@ -43,6 +43,25 @@ pub struct StoredIdentity {
     pub approved: bool,
 }
 
+/// The name a new identity is given: `BRIDGE_DEVICE_NAME`, else the host
+/// name, else `bridge`. Also how the bridge names its machine in a sentence
+/// the user reads.
+pub fn default_device_name() -> String {
+    std::env::var("BRIDGE_DEVICE_NAME").unwrap_or_else(|_| hostname())
+}
+
+/// A human-recognizable device name. Falls back to `bridge` when the host
+/// name can't be determined.
+fn hostname() -> String {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "bridge".to_string())
+}
+
 /// Generate a fresh, unpaired identity with a random `device_id` and the given name.
 /// Pure: only calls the key generators and packs the struct.
 pub fn generate(name: &str) -> StoredIdentity {

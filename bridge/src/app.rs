@@ -18,6 +18,7 @@ mod config;
 mod facts;
 mod fs;
 mod git;
+mod github;
 mod issues;
 mod mcp;
 mod projects;
@@ -465,6 +466,8 @@ pub struct AppState {
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
     notifier: Option<Notifier>,
+    /// The `gh` that `github.repos` runs.
+    github: crate::github::GithubCli,
     /// At most one push per task-state change.
     notify_throttle: NotifyThrottle,
     /// Which peer connection each E2EE session has (spec §Signaling), and the
@@ -621,6 +624,10 @@ impl AppState {
             session_locator_factory,
             resume_id_probe: default_resume_id_probe(),
             notifier: None,
+            #[cfg(not(test))]
+            github: crate::github::GithubCli::default(),
+            #[cfg(test)]
+            github: crate::github::GithubCli::absent(),
             notify_throttle: NotifyThrottle::default(),
             peers: PeersSlot::new(SessionPeers::with_factory(Arc::new(NoPeerFactory))),
             changes,

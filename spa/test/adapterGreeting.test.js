@@ -14,6 +14,7 @@ const NONE = {
   diffs: { perFile: false },
   issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
   conversations: { settings: false },
+  github: { repos: false },
   messages: { context: false },
   threads: { postOperations: false },
 };
@@ -60,6 +61,7 @@ describe("the adapter a greeting selects", () => {
       // watching (1.9) is the same story one minor later.
       issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
       conversations: { settings: false },
+      github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false },
     });

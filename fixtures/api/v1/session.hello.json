@@ -70,6 +70,7 @@
       "git.status",
       "git.unpushed",
       "git.unstage",
+      "github.repos",
       "issue.approve",
       "issue.archive",
       "issue.comment_add",

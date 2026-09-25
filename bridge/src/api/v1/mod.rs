@@ -34,7 +34,7 @@
 //! `project.*`, `capture.*`, `settings.*`, `models.list`), [`thread`]
 //! (`thread.*`, `agent.add/choose/remove/list`), [`changes`]
 //! (`changes.subscribe/unsubscribe/list`), [`git`] (`git.*`, `fs.*`,
-//! and the diff reads), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
+//! and the diff reads), [`github`] (`github.repos`), [`lifecycle`] (`issue.*`, `plan.*`, `run.*`,
 //! `branch.*`, `worktree.create/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
 //! `bridge.check_update`, `bridge.install_update`), [`issues`] (`issues.*`, the per-project
@@ -44,6 +44,7 @@
 pub mod board;
 pub mod changes;
 pub mod git;
+pub mod github;
 pub mod issues;
 pub mod lifecycle;
 pub mod thread;
@@ -271,12 +272,13 @@ pub fn call_typed<P: DeserializeOwned, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 8] {
+fn families() -> [&'static [(&'static str, Handler)]; 9] {
     [
         board::methods(),
         changes::methods(),
         thread::methods(),
         git::methods(),
+        github::methods(),
         issues::methods(),
         lifecycle::methods(),
         updates::methods(),

@@ -1,0 +1,28 @@
+{
+  "method": "github.repos",
+  "since": "1.22.0",
+  "params": {},
+  "result": {
+    "repos": [
+      {
+        "name_with_owner": "zech/build",
+        "description": "Agentic IDE",
+        "ssh_url": "git@github.com:zech/build.git",
+        "url": "https://github.com/zech/build",
+        "private": true,
+        "pushed_at": "2026-09-24T22:00:00Z"
+      },
+      {
+        "name_with_owner": "smarter-dev/bot",
+        "ssh_url": "git@github.com:smarter-dev/bot.git",
+        "url": "https://github.com/smarter-dev/bot",
+        "private": false,
+        "pushed_at": "2026-09-20T08:00:00Z"
+      }
+    ]
+  },
+  "errors": [
+    "unavailable",
+    "internal"
+  ]
+}

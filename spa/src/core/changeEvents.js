@@ -82,6 +82,7 @@ const NO_CAPABILITIES = Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
   }),
   conversations: Object.freeze({ settings: false }),
+  github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
   threads: Object.freeze({ postOperations: false }),
 });

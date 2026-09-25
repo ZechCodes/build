@@ -9,6 +9,8 @@ import { deviceSettingsAddress, projectSettingsAddress, removeProjectSetting, wa
 import { deleteCached, readCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { refreshGithubRepos } from "../core/githubRepos.js";
+import { attachRepoPicker } from "./repoPicker.js";
 
 const field = (label, id, value) =>
   `<div class="field"><label>${esc(label)}</label>
@@ -103,6 +105,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
+  void refreshGithubRepos(deviceId, callRpc);
   let frame = sheet.firstElementChild;
   let view = "settings";
   let paintedRemote = "";
@@ -238,14 +241,15 @@ function mountSources(project, { callRpc, record, deviceId, saveDraft, onFrameCh
         button,
       );
   });
-  $("#psaddremote").onclick = () => openAddRemote(project, write, saveDraft);
+  $("#psaddremote").onclick = () => openAddRemote(project, { write, saveDraft, deviceId });
   $("#psaddfolder").onclick = () => void browseForSource(project, { callRpc, deviceId, onFrameChange, onReturn });
 }
 
 /** Say where to clone the remote from, and what to call it. */
-function openAddRemote(project, write, saveDraft) {
+function openAddRemote(project, { write, saveDraft, deviceId }) {
   const host = $("#psaddsource");
   host.innerHTML = addSourceHtml();
+  attachRepoPicker($("#psremoteurl"), deviceId);
   $("#pssourcecancel").onclick = () => { host.innerHTML = ""; saveDraft(); $("#psaddremote").focus(); };
   $("#psremoteurl").oninput = () => saveDraft(true);
   $("#pssourcelabel").oninput = () => saveDraft(true);

@@ -617,6 +617,15 @@ announced name and compare an actual `session.hello` reply with that
 registry. The existing `events` array and all earlier greeting fields remain
 present.
 
+`github.repos` (since 1.22.0, gated on its verb name) takes no params and runs
+`gh repo list` for the signed-in account and for each organisation `gh org
+list` names, answering the union as `{ repos: [{ name_with_owner,
+description?, ssh_url, url, private, pushed_at? }] }` within 20 s. An
+organisation whose listing fails is left out. When `gh` is missing, signed out,
+slow or failing, the refusal's `error` is a sentence the UI shows as is
+("Build cannot list GitHub repositories on <machine> because gh is not
+installed."). The bridge keeps nothing: the SPA caches and searches the list.
+
 The latter six names describe additions to existing verbs, so the verb names
 alone cannot establish whether a bridge provides them. These six names are
 announce-only for the current SPA: it does not gate any behavior on them yet.

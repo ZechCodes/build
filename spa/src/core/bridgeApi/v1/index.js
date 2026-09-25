@@ -180,6 +180,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       commentUserNotifies: names.has("issues.commentUserNotifies"),
     },
     conversations: { settings: names.has("conversations.settings") },
+    github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
     threads: { postOperations: names.has("threads.postOperations") },
   };

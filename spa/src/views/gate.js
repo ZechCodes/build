@@ -31,6 +31,7 @@ import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
 import { startCacheSync } from "../core/cacheSync.js";
+import { startGithubRepos } from "../core/githubRepos.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
@@ -74,6 +75,7 @@ function startCacheReaders() {
 function restartCacheReaders() {
   cacheReadersUp = true;
   startCacheSync();
+  void startGithubRepos();
   return startFeed();
 }
 

@@ -40,6 +40,9 @@ pub(in crate::app) enum DeferredWork {
     /// A subscribe or unsubscribe: reconcile the worktree watchers against
     /// the new coverage, then answer with the watch state that produced.
     Watch(Box<DeferredWatch>),
+    /// A read of something outside the state entirely — another program's
+    /// answer, such as `gh`'s — whose answer is the whole result.
+    External(Box<dyn FnOnce() -> Result<Value, String> + Send>),
 }
 
 /// How the drain holds a deferred reply to the result type `api/v1` declares
@@ -113,6 +116,7 @@ impl DeferredWork {
                 DeferredOutcome::Read(read.run())
             }
             Self::Watch(watch) => DeferredOutcome::Watch(watch.run()),
+            Self::External(read) => DeferredOutcome::Read(read()),
         }
     }
 }

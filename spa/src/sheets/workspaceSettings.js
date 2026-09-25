@@ -26,6 +26,8 @@ import { deviceModelsAddress, projectSettingsAddress, watchSettingsRecord, works
 import { deleteCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { refreshGithubRepos } from "../core/githubRepos.js";
+import { attachRepoPicker } from "./repoPicker.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -111,7 +113,7 @@ const directoryDraftOf = (host) => ({
   ...Object.fromEntries(Object.entries(DIRECTORY_INPUTS).map(([field, selector]) => [field, host.querySelector(selector)?.value || ""])),
 });
 
-function restoreDirectoryDraft(host, draft) {
+function restoreDirectoryDraft(host, draft, deviceId) {
   const choice = host.querySelector("#wsdiradd");
   if (!choice || !draft) return;
   choice.value = draft.kind || "";
@@ -121,6 +123,7 @@ function restoreDirectoryDraft(host, draft) {
     const control = host.querySelector(selector);
     if (control) control.value = draft[field] || "";
   }
+  attachRepoPicker(host.querySelector(DIRECTORY_INPUTS.remote), deviceId);
 }
 
 /**
@@ -142,6 +145,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
+  void refreshGithubRepos(deviceId, callRpc);
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
   const draft = { name: null, directory: emptyDirectoryDraft() };
@@ -169,7 +173,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     draft.directory = saved.directory || emptyDirectoryDraft();
     if (draft.name !== null) $("#wslabel").value = draft.name;
     nameChanged();
-    restoreDirectoryDraft(sheet, draft.directory);
+    restoreDirectoryDraft(sheet, draft.directory, deviceId);
   }, { debounceMs: 180 });
   const clearDraft = async () => draftRecord.write({ name: null, directory: emptyDirectoryDraft() });
 
@@ -219,8 +223,8 @@ function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDr
     if (host.querySelector("#wsdiradd")) draft.directory = directoryDraftOf(host);
     host.innerHTML = directoriesBodyHtml(detail, offered);
     host.querySelector("#wsdirerr").textContent = errorText;
-    wireDirectories(workspace, { callRpc, record, current, draft, saveDraft });
-    restoreDirectoryDraft(host, draft.directory);
+    wireDirectories(workspace, { callRpc, record, current, deviceId, draft, saveDraft });
+    restoreDirectoryDraft(host, draft.directory, deviceId);
   };
   const record = watchSettingsRecord(workspaceSettingsAddress(deviceId, workspace.id), (value) => {
     detail = value;
@@ -251,7 +255,7 @@ function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDr
   };
 }
 
-function wireDirectories(workspace, { callRpc, record, current, draft, saveDraft }) {
+function wireDirectories(workspace, { callRpc, record, current, deviceId, draft, saveDraft }) {
   const write = async (method, params, button) => {
     const error = $("#wsdirerr");
     error.textContent = "";
@@ -286,11 +290,12 @@ function wireDirectories(workspace, { callRpc, record, current, draft, saveDraft
   };
   choice.onchange = () => {
     $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
+    attachRepoPicker($("#wsdirremote"), deviceId);
     go.disabled = !choice.value;
     draft.directory = directoryDraftOf($("#wsdirs"));
     saveDraft();
   };
-  restoreDirectoryDraft($("#wsdirs"), draft.directory);
+  restoreDirectoryDraft($("#wsdirs"), draft.directory, deviceId);
   go.onclick = () => {
     const params = addDirectoryParams(choice.value);
     if (!params) {

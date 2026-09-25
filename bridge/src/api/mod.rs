@@ -278,6 +278,9 @@ impl ApiError {
         if sentence.starts_with("unknown ") && !sentence.starts_with("unknown method") {
             return ApiError::not_found(message);
         }
+        if sentence.starts_with(crate::github::REFUSAL) {
+            return ApiError::unavailable(message);
+        }
         ApiError::internal(message)
     }
 

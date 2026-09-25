@@ -92,6 +92,7 @@ describe("adapter selection", () => {
       issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
+      github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false },
     });
@@ -203,6 +204,7 @@ describe("adapter selection", () => {
         diffs: { perFile: false },
         issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
         conversations: { settings: false },
+        github: { repos: false },
         messages: { context: false },
         threads: { postOperations: false },
       });
@@ -410,5 +412,13 @@ describe("the v1 adapter", () => {
     expect(v1.parseEvent({ type: "invented.later", payload: 1 })).toBe(null);
     expect(v1.parseEvent(null)).toBe(null);
     expect(v1.parseEvent({ id: "r1", ok: true })).toBe(null);
+  });
+});
+
+describe("github.repos", () => {
+  it("is on only when the greeting names the verb, never inferred from a minor", () => {
+    expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: [] }).github.repos).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).github.repos).toBe(false);
   });
 });

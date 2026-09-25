@@ -57,7 +57,7 @@ ACTION_LABEL = "ACCEPT INVITE"
 ACTION = EmailAction(url=ACTION_URL, label=ACTION_LABEL)
 MARK_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark.png"
 MARK_2X_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark@2x.png"
-LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/laptop.png"
+LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/laptop-front.png"
 #: Every px size an image adds: its width and height attributes, mirrored in its style.
 IMAGE_SIZES = {
     str(size)
@@ -149,7 +149,7 @@ def test_the_image_urls_follow_the_deployment_rather_than_a_fixed_host():
         hero=LAPTOP_IMAGE,
     )
     assert 'src="https://staging.example.test/landing/email/brand-mark@2x.png"' in html
-    assert 'src="https://staging.example.test/landing/email/laptop.png"' in html
+    assert 'src="https://staging.example.test/landing/email/laptop-front.png"' in html
     assert PUBLIC_BASE_URL not in html
 
 

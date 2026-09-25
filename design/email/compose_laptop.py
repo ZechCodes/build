@@ -2,7 +2,7 @@
 
 Run with Pillow (the app's venv has it) from the repository root:
   skriftapp/.venv/bin/python design/email/compose_laptop.py \
-    /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop.png
+    /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop-front.png
 
 Trims the render to the hardware, pads it evenly, lays it on the email's background
 colour so no client ever shows transparency, scales it to 1200 px (560 px displayed, over

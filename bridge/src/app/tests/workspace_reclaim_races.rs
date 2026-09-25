@@ -1,0 +1,393 @@
+//! What can happen to a workspace while the reclaim service or
+//! `workspace.reclaim` has it reserved (#135 review): an agent starting, an
+//! issue reopening, a file changing, a terminal opening, the tracker failing,
+//! the daemon stopping. Each race is run at the one point it can hurt: after
+//! the reservation, before the second measurement.
+
+use super::tracker_tools::coding_agent;
+use super::workspace_reclaim::{
+    build_output_in, call, finish, impatient, lifecycle, linked_workspace, now_ms, pruning,
+    root_and_checkout, timeline_kinds,
+};
+use super::*;
+use crate::app::{DeferredNext, PendingAgentTurn, TurnText};
+use crate::carrier::SessionSender;
+use crate::reclaim::ReclaimPolicy;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+/// An agent on the workspace's own conversation, as `(owner, agent_id)`, with
+/// nothing queued for it.
+fn agent_in(state: &Arc<Mutex<AppState>>, ws: &str) -> (String, String) {
+    let conversation = call(
+        state,
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    );
+    let owner = conversation["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let added = call(state, "agent.add", json!({ "entity_id": owner }));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    state.lock().unwrap().delivery_queue.clear_queued();
+    (owner, agent_id)
+}
+
+/// A turn for `agent` rooted at `root`, the way one in flight is counted.
+fn turn_at(root: &Path, (owner, agent_id): &(String, String)) -> PendingAgentTurn {
+    PendingAgentTurn {
+        operation_id: None,
+        root: std::fs::canonicalize(root).unwrap(),
+        owner: owner.clone(),
+        agent_id: agent_id.clone(),
+        conversation_id: format!("conversation-{agent_id}"),
+        model_choice: crate::models::ModelChoice::default(),
+        choice_revision: 0,
+        interrupt: false,
+        say: Some(TurnText {
+            cold: "cold".into(),
+            warm: "warm".into(),
+        }),
+        phase: "test",
+        wants_catch_up: false,
+        survives_refusal: false,
+    }
+}
+
+/// The turns a drain would hand out now, settled again at once.
+fn deliverable(state: &Arc<Mutex<AppState>>) -> Vec<String> {
+    let mut app = state.lock().unwrap();
+    let mut taken = app.take_pending_turns();
+    let mut agents = Vec::new();
+    while let Some((turn, mark)) = taken.next_turn() {
+        agents.push(turn.agent_id.clone());
+        mark.settle(&mut app);
+    }
+    agents
+}
+
+fn holds(verdict: &Value) -> Vec<String> {
+    verdict["holds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hold| hold.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A finished quiet workspace with build output: `(tmp, state, project, ws,
+/// issue, checkout, output)`.
+#[allow(clippy::type_complexity)]
+fn ready_to_prune() -> (
+    tempfile::TempDir,
+    Arc<Mutex<AppState>>,
+    String,
+    String,
+    String,
+    PathBuf,
+    PathBuf,
+) {
+    let (tmp, state, project_id, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (_root, checkout) = root_and_checkout(&state, &ws);
+    let output = build_output_in(&checkout);
+    (tmp, state, project_id, ws, issue, checkout, output)
+}
+
+/// A message to the workspace's agent after the reservation: its turn waits
+/// until the reservation ends, and the workspace is no longer quiet, so
+/// nothing is pruned.
+#[test]
+fn a_message_during_a_prune_waits_for_it_and_keeps_the_build_output() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let agent = agent_in(&state, &ws);
+    let posted = std::cell::Cell::new(false);
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        let sent = call(
+            &state,
+            "thread.post",
+            json!({ "entity_id": agent.0, "agent_id": agent.1, "body": "one more thing" }),
+        );
+        assert_eq!(sent["ok"], true, "{sent:?}");
+        assert!(
+            deliverable(&state).is_empty(),
+            "no turn starts in a reserved workspace"
+        );
+        posted.set(true);
+    });
+
+    assert!(posted.get(), "the race ran");
+    assert!(output.exists(), "{:?}", lifecycle(&state, &ws));
+    assert_eq!(lifecycle(&state, &ws)["idle"], false);
+    assert_eq!(
+        deliverable(&state),
+        vec![agent.1],
+        "released with the reservation"
+    );
+}
+
+/// An agent that starts working in one of the workspace's checkouts anyway
+/// holds the prune at the last check, and holds `workspace.reclaim` too.
+#[test]
+fn an_agent_working_in_a_checkout_holds_the_prune_and_the_reclaim() {
+    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let agent = agent_in(&state, &ws);
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        let turn = turn_at(&checkout, &agent);
+        let _in_flight = state.lock().unwrap().delivery_queue.start(&turn);
+    });
+
+    assert!(output.exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"agent_working".to_string()));
+    let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+    assert_eq!(
+        refused["error"], "Build cannot reclaim quiet yet: an agent is working in it.",
+        "{refused:?}"
+    );
+}
+
+/// The issue reopening after the reservation keeps the build output, and the
+/// verdict says why.
+#[test]
+fn reopening_the_issue_during_a_prune_keeps_the_build_output() {
+    let (_tmp, state, _project, ws, issue, _checkout, output) = ready_to_prune();
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        let moved = call(
+            &state,
+            "issues.update",
+            json!({ "issue_id": issue, "status": "in_progress" }),
+        );
+        assert_eq!(moved["ok"], true, "{moved:?}");
+    });
+
+    assert!(output.exists(), "{:?}", lifecycle(&state, &ws));
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["issue_open"]);
+}
+
+/// An edit after the reservation is found by the second measurement.
+#[test]
+fn an_edit_during_a_prune_keeps_the_build_output() {
+    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        std::fs::write(checkout.join("README.md"), "changed after the first look\n").unwrap();
+    });
+
+    assert!(output.exists());
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["dirty"]);
+}
+
+/// A daemon stopping mid-prune stops it: nothing goes, and the workspace is
+/// released.
+#[test]
+fn a_stop_during_a_prune_keeps_the_build_output_and_releases_the_workspace() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        AppState::stop_workspace_reclaim(&state);
+    });
+
+    assert!(output.exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+    assert!(!state.lock().unwrap().workspace_reserved(&ws));
+}
+
+/// A stopped service measures nothing more: the last verdict stands.
+#[test]
+fn a_stopped_service_keeps_the_last_verdict() {
+    let (_tmp, state, _project, ws, _issue) = linked_workspace();
+    AppState::sweep_workspaces(&state, &impatient(), now_ms());
+    let before = lifecycle(&state, &ws);
+
+    AppState::stop_workspace_reclaim(&state);
+    AppState::sweep_workspaces(&state, &impatient(), now_ms() + 60_000);
+
+    assert_eq!(lifecycle(&state, &ws), before);
+}
+
+/// A measurement that runs out of budget is held as unmeasured and is not
+/// called idle, so it is neither pruned nor announced.
+#[test]
+fn a_measurement_over_budget_is_held_and_not_announced() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let starved = ReclaimPolicy {
+        measure_entries: 2,
+        ..pruning()
+    };
+
+    AppState::sweep_workspaces(&state, &starved, now_ms());
+
+    let verdict = lifecycle(&state, &ws);
+    assert_eq!(verdict["idle"], false, "{verdict:?}");
+    assert!(holds(&verdict).contains(&"unmeasured".to_string()));
+    assert!(verdict["noticed_at_ms"].is_null());
+    assert!(output.exists());
+}
+
+/// Issues that cannot be read hold every workspace: none of them can be called
+/// Done.
+#[test]
+fn an_unreadable_tracker_holds_the_workspace() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    state
+        .lock()
+        .unwrap()
+        .store
+        .as_ref()
+        .unwrap()
+        .damage_tracker_issues();
+
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+
+    assert!(output.exists());
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["issues_unread"]);
+    let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+    assert_eq!(
+        refused["error"],
+        "Build cannot reclaim quiet yet: Build could not read the issues linked to it.",
+        "{refused:?}"
+    );
+}
+
+/// A terminal open anywhere in the workspace holds it, for pruning and for
+/// `workspace.reclaim`.
+#[tokio::test]
+async fn an_open_terminal_holds_the_workspace() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let handler = AppState::handler(Arc::clone(&state));
+    let opened = handler.call(
+        SessionSender::detached("s1"),
+        req("term.create", json!({ "workspace_id": ws })),
+    );
+    assert_eq!(opened["ok"], true, "{opened:?}");
+
+    AppState::sweep_workspaces(&state, &pruning(), now_ms());
+
+    assert!(output.exists());
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["terminal_open"]);
+    let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+    assert_eq!(
+        refused["error"],
+        "Build cannot reclaim quiet yet: a terminal is open in it."
+    );
+    handler.call(
+        SessionSender::detached("s1"),
+        req(
+            "term.close",
+            json!({ "term_id": opened["result"]["term_id"] }),
+        ),
+    );
+}
+
+/// No terminal opens in a workspace while it is reserved.
+#[tokio::test]
+async fn no_terminal_opens_during_a_prune() {
+    let (_tmp, state, _project, ws, _issue, _checkout, _output) = ready_to_prune();
+    let handler = AppState::handler(Arc::clone(&state));
+    let refused = std::cell::RefCell::new(Value::Null);
+
+    AppState::sweep_workspaces_racing(&state, &pruning(), now_ms(), &|_| {
+        *refused.borrow_mut() = handler.call(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "workspace_id": ws })),
+        );
+    });
+
+    let refused = refused.into_inner();
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(
+        refused["error"],
+        "Build is measuring this workspace. Try again in a moment."
+    );
+}
+
+/// `workspace.reclaim` measures Git with the mutex released, holds the
+/// workspace while it does, and only then hands over the removal.
+#[test]
+fn reclaim_measures_off_the_lock_and_holds_the_workspace_meanwhile() {
+    let (_tmp, state, _project, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (root, _checkout) = root_and_checkout(&state, &ws);
+    let agent = agent_in(&state, &ws);
+    let params = json!({ "workspace_id": ws });
+
+    let (answered, deferred) = state
+        .lock()
+        .unwrap()
+        .dispatch_deferring("workspace.reclaim", &params);
+    assert!(answered.is_ok(), "{answered:?}");
+    let measuring = deferred.expect("the Git measurement leaves the lock");
+    assert!(state.lock().unwrap().workspace_reserved(&ws));
+    call(
+        &state,
+        "thread.post",
+        json!({ "entity_id": agent.0, "agent_id": agent.1, "body": "still there?" }),
+    );
+    assert!(deliverable(&state).is_empty(), "held while measuring");
+
+    let measured = measuring.run();
+    let removing =
+        match state
+            .lock()
+            .unwrap()
+            .apply_deferred_stage("workspace.reclaim", &params, measured)
+        {
+            DeferredNext::Again(removing) => removing,
+            DeferredNext::Answered(answer) => panic!("the removal was not handed on: {answer:?}"),
+        };
+    assert!(!state.lock().unwrap().workspace_reserved(&ws));
+    let removed = removing.run();
+    let answered =
+        match state
+            .lock()
+            .unwrap()
+            .apply_deferred_stage("workspace.reclaim", &params, removed)
+        {
+            DeferredNext::Answered(answer) => answer,
+            DeferredNext::Again(_) => panic!("a third stage"),
+        };
+    assert_eq!(
+        answered.unwrap(),
+        json!({ "workspace_id": ws, "deleted": true })
+    );
+    assert!(!root.exists());
+}
+
+/// Reclaiming writes the issue's timeline and wakes nobody watching it.
+#[test]
+fn a_reclaim_wakes_nobody_watching_the_issue() {
+    let (_tmp, state, project_id, ws, issue) = linked_workspace();
+    let watcher = coding_agent(&mut state.lock().unwrap(), &project_id, "watcher");
+    let tracked = call(
+        &state,
+        "issues.track",
+        json!({ "issue_id": issue, "agent_id": watcher.1 }),
+    );
+    assert_eq!(tracked["ok"], true, "{tracked:?}");
+    finish(&state, &issue);
+    {
+        let mut app = state.lock().unwrap();
+        app.delivery_queue.lapse_settle_windows();
+        app.delivery_queue.take_ready(|_| false);
+    }
+
+    let reclaimed = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+    assert_eq!(reclaimed["ok"], true, "{reclaimed:?}");
+
+    let woken = {
+        let mut app = state.lock().unwrap();
+        app.delivery_queue.lapse_settle_windows();
+        app.delivery_queue.take_ready(|_| false)
+    };
+    assert!(
+        woken.iter().all(|turn| turn.agent_id != watcher.1),
+        "the watcher is not woken for a reclaim"
+    );
+    let entries = timeline_kinds(&state, &issue);
+    assert_eq!(entries[0]["kind"], "workspace_reclaimed");
+}

@@ -643,8 +643,9 @@ Issues spec), `messages.issueNotices`, `board.usageLimits`,
 `threads.newestDeltaPagination`, `issues.commentUserMentions`,
 `issues.agentIdentities`, `issues.attachmentChunks`,
 `issues.commentUserNotifies` (`notifies_user` on issue comments, and the
-narrower "needs you" rule it makes possible; see the Issues spec), and
-`params.strict` (an undeclared param is refused; step 2.2), and
+narrower "needs you" rule it makes possible; see the Issues spec),
+`params.strict` (an undeclared param is refused; step 2.2),
+`workspaces.lifecycle` (see below), and
 `branches.finishDelete` (`branch.finish` honours `action: "delete"`). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
@@ -689,6 +690,27 @@ Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.
 
+`workspaces.lifecycle` (since 1.24.0, #135) announces the workspace reclaim
+service. Each `workspace.list` row carries `lifecycle`, the service's last
+verdict on that workspace, or `null` before the first sweep:
+`{ measured_at_ms, last_activity_ms, idle, reclaimable, holds[], issues[],
+dirty_files, unpushed_commits, behind_commits, size_bytes, pruned_bytes,
+pruned_at_ms, noticed_at_ms }`. `holds` names what keeps the workspace from
+being reclaimed: `not_ready`, `agent_working`, `terminal_open`, `dirty`,
+`unpushed`, `plain_directory`, `issue_open`, `issues_unread`, `unknown` or
+`unmeasured`. `pruned_bytes` stays 0 unless the bridge runs with
+`BRIDGE_WORKSPACE_PRUNE` on. `issues` lists
+`{ issue_id, number, title, status, state }` for each issue that links the
+workspace. `workspace.reclaim` (`{ workspace_id }`, answered like
+`workspace.delete`) removes the workspace. It refuses with `conflict` and a
+sentence ("Build cannot reclaim quiet yet: it has uncommitted changes.") while
+anything holds it, and with `busy` while another removal or the reclaim
+service has the workspace. Issue timelines gain three event kinds:
+`workspace_idle` and `workspace_pruned`, both written by the new actor
+`{ "kind": "build" }`, and `workspace_reclaimed`, written by whoever reclaimed
+the workspace. Their payloads name the workspace (`workspace_id`,
+`workspace_name`) and its size. None of the three wakes the issue's trackers.
+
 The names in the table below describe additions to existing verbs, so the
 verb names alone cannot establish whether a bridge provides them. They are
 announce-only for the current SPA: it does not gate any behavior on them yet.
@@ -703,6 +725,7 @@ They describe bridge support for clients that choose to consume them:
 | `issues.agentIdentities` | Durable `identities` map on issue views | 1.16.0 |
 | `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
 | `params.strict` | A v1 verb refuses a top-level param its type does not declare (`invalid_params`, `unknown param: <name>`) | 1.24.0 |
+| `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

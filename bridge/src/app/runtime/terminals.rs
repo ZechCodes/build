@@ -329,6 +329,7 @@ pub(in crate::app) fn term_create(
     let (key, pumps) = {
         let mut s = timer.lock(state);
         let root = terminal_scope_root(&mut s, params)?;
+        s.refuse_writers_while_reserved(&root)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
         // registry they now share.

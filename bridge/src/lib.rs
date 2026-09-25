@@ -80,6 +80,7 @@ pub mod priority;
 pub mod pty;
 pub mod reachability;
 pub mod reaper;
+pub mod reclaim;
 pub mod relay;
 pub mod relay_server;
 pub mod resume;

@@ -2,7 +2,7 @@ use crate::api::{self, ApiError, API_VERSION};
 use crate::app::{
     agent_attach, agent_interrupt, agent_start, rtc_close, rtc_ice, rtc_offer, session_hello,
     stream_start, term_ack, term_attach, term_create, term_input, term_resize, AppState,
-    DeliveryRunner, PeersSlot,
+    DeferredNext, DeliveryRunner, PeersSlot,
 };
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::orchestrator::OrchestratorError;
@@ -129,6 +129,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "workspace.delete",
     "workspace.finish",
     "workspace.init_git",
+    "workspace.reclaim",
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
@@ -354,18 +355,17 @@ fn routed(
     // released. See `AppState::deferred_work`.
     let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
     let dispatched = match deferred {
-        Some(deferred) => {
-            // THE POINT OF ALL THIS: seconds to minutes of git — a status
-            // walk, a fetch, a merge, a `git worktree remove` of a
-            // six-gigabyte checkout — with every other frame, every terminal
-            // pump and the relay's own read loop free to make progress
-            // meanwhile.
+        // THE POINT OF ALL THIS: seconds to minutes of git — a status walk, a
+        // fetch, a merge, a `git worktree remove` of a six-gigabyte checkout —
+        // with every other frame, every terminal pump and the relay's own read
+        // loop free to make progress meanwhile.
+        Some(mut deferred) => loop {
             let done = deferred.run();
-            timer
-                .lock(state)
-                .apply_deferred(method, params, done)
-                .map_err(ApiError::classify)
-        }
+            match timer.lock(state).apply_deferred_stage(method, params, done) {
+                DeferredNext::Answered(answer) => break answer.map_err(ApiError::classify),
+                DeferredNext::Again(next) => deferred = next,
+            }
+        },
         None => dispatched,
     };
     // A verb speaks to a worktree's agent by queuing a turn, and the frame's
@@ -615,13 +615,15 @@ impl AppState {
         // No `Arc` to release the mutex through — the synchronous entry point.
         // The git work runs right here, exactly as it did before the split;
         // [`dispatch_frame`] is the caller that runs it with the lock free.
-        match deferred {
-            Some(deferred) => {
-                let done = deferred.run();
-                self.apply_deferred(method, params, done)
-                    .map_err(ApiError::classify)
+        let Some(mut deferred) = deferred else {
+            return outcome;
+        };
+        loop {
+            let done = deferred.run();
+            match self.apply_deferred_stage(method, params, done) {
+                DeferredNext::Answered(answer) => return answer.map_err(ApiError::classify),
+                DeferredNext::Again(next) => deferred = next,
             }
-            None => outcome,
         }
     }
 

@@ -10,6 +10,9 @@ mod branch_delete;
 mod deletion;
 mod directories;
 mod git_initialization;
+mod reclaim;
+
+pub(in crate::app) use reclaim::{reserved_holds, ReclaimReservation};
 
 struct WorkspaceCreateWork {
     registry_root: PathBuf,
@@ -282,6 +285,7 @@ impl AppState {
                         .map(|id| self.conversation_activity_rows(id))
                         .unwrap_or_default());
                     value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
+                    value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
                     value
                 })
                 .collect::<Vec<_>>()

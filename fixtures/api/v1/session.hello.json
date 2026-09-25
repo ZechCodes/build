@@ -205,9 +205,11 @@
       "workspace.git_init_options",
       "workspace.init_git",
       "workspace.list",
+      "workspace.reclaim",
       "workspace.remove_directory",
       "workspace.rename",
       "workspace.retry",
+      "workspaces.lifecycle",
       "worktree.create",
       "worktree.diff",
       "worktree.finish"

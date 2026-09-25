@@ -179,8 +179,13 @@ impl AppState {
     /// to remove it. Both `workspace.delete` and Done start here.
     pub(super) fn workspace_to_remove(&mut self, params: &Value) -> Result<Workspace, String> {
         let workspace_id = require_str(params, "workspace_id")?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
-            return Err("another filesystem operation is still running".to_string());
+        // A workspace `workspace.reclaim` or the reclaim service is measuring
+        // is theirs until they are done with it.
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_reserved(&workspace_id)
+        {
+            return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
@@ -287,16 +292,33 @@ impl AppState {
             .collect()
     }
 
-    /// Close every writer at this root — agents first (which also discards
-    /// their queued turns), then the terminal tabs — and hand back the reaps
-    /// to wait on off the mutex.
+    /// Close every writer at this root or anywhere below it — agents first
+    /// (which also discards their queued turns), then the terminal tabs — and
+    /// hand back the reaps to wait on off the mutex. Below it too: an agent or
+    /// a shell rooted in one of the workspace's checkouts is writing into the
+    /// files about to go.
     pub(super) fn retire_everything_at(&mut self, root: &Path) -> Vec<crate::reaper::Retirement> {
-        let mut retirements = self.retire_workspace_agents(root);
+        let mut roots: Vec<PathBuf> = self
+            .session_registry
+            .tab_keys()
+            .into_iter()
+            .map(|key| key.root)
+            .filter(|tab_root| tab_root.starts_with(root) && tab_root != root)
+            .collect();
+        roots.sort();
+        roots.dedup();
+        roots.insert(0, root.to_path_buf());
+        self.delivery_queue
+            .retain_queued(|turn| !turn.tab_key().root.starts_with(root));
+        let mut retirements = Vec::new();
+        for agents_root in &roots {
+            retirements.extend(self.retire_workspace_agents(agents_root));
+        }
         let keys: Vec<_> = self
             .session_registry
             .tab_keys()
             .into_iter()
-            .filter(|key| key.root == root)
+            .filter(|key| key.root.starts_with(root))
             .collect();
         for key in keys {
             if let Some(retirement) = self.retire_tab(&key, "closed") {

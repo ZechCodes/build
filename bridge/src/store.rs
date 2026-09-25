@@ -63,6 +63,7 @@ mod operations;
 mod schema;
 mod tracker;
 mod user_session;
+mod workspace_lifecycle;
 
 #[cfg(test)]
 pub use conversations::items_decoded;
@@ -279,6 +280,15 @@ impl Store {
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
+    /// Make every stored issue unreadable, the way a damaged record is: what
+    /// a test of a tracker read failure needs.
+    #[cfg(test)]
+    pub(crate) fn damage_tracker_issues(&self) {
+        self.connection()
+            .execute("UPDATE tracker_issues SET record = '{'", [])
+            .expect("the damage lands");
+    }
+
     /// The connection, whatever an earlier panic left behind.
     ///
     /// A poisoned mutex says only that some call panicked while it held the

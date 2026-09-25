@@ -97,7 +97,7 @@ Modules are declared in `bridge/src/lib.rs`. The main groups (paths relative to 
 | Checkouts | `worktree.rs` + `worktree/` (`WorktreeManager`), `isolation/` (git worktree, Rift, plain copy), `lifecycle/`, `watch.rs`, `diff.rs`, `gitgui/`, `git_process.rs` |
 | Agents | `harness/` (providers), `pty.rs`, `screen.rs`, `agent.rs`, `thread/`, `delivery.rs`, `reaper.rs`, `resume.rs`, `priority.rs`, `mcp.rs` + `mcp/` |
 | Work model | `orchestrator/`, `plan.rs`, `run.rs`, `branch.rs`, `capture.rs`, `router.rs`, `tracker.rs`, `attention.rs`, `operation.rs` |
-| Services | `update/` (self-update), `service/` (install), `notify.rs` (web push) |
+| Services | `update/` (self-update), `service/` (install), `notify.rs` (web push), `reclaim.rs` + `reclaim/` (workspace reclaim, run by `app/workspaces/reclaim.rs`) |
 
 ### RPC and push events
 
@@ -260,6 +260,52 @@ A workspace brings together one checkout per project source. Its manifest is
 `bridge/src/app/workspaces/` and `bridge/src/lifecycle/`. Work branches are named
 `build/<slug>`. `bridge/src/watch.rs` runs one filesystem watcher per checkout,
 and those feed git and files changes into the `ChangeBus`.
+
+**Reclaim** (#135) is a service, not a verb. `AppState::spawn_workspace_reclaim`
+(`bridge/src/app/workspaces/reclaim.rs`) sweeps every managed workspace two
+minutes after startup, then every hour. It also sweeps five seconds after an
+issue that links a workspace moves to Done or closes. A sweep reads each
+workspace under the app lock, then measures it with the lock released
+(`bridge/src/reclaim.rs`: `Subject::measure`). The measure covers the newest
+activity (a conversation message, a commit, a file change outside `.git`,
+`.build` and build output), dirty and unpushed counts, and the linked issues.
+Every walk spends from one budget per workspace (2 million entries, two
+minutes, and the daemon's stop flag, `bridge/src/reclaim/budget.rs`). A
+measurement that runs out is held as `unmeasured` and is not called idle. A
+sweep then takes the lock again to write the verdict. `workspace.list` rows
+carry it as `lifecycle`. A workspace is idle after 24 h
+(`BRIDGE_WORKSPACE_IDLE_SECS`). What holds it: not ready, an agent working or a
+terminal open anywhere inside it, uncommitted or unpushed work, a plain
+directory, a linked issue not Done, or issues that could not be read.
+
+Each project agent gets one notice per sweep naming its newly quiet
+workspaces, and the notice repeats daily while they stay quiet. The linked
+issues record `workspace_idle` and `workspace_pruned` as actor `build`,
+without waking their trackers.
+
+Dropping build output (tier 1) is off unless `BRIDGE_WORKSPACE_PRUNE` is set.
+When it is on and nothing holds an idle workspace, the sweep reserves the
+workspace under the lock (`reclaim_reserved`). While a workspace is reserved,
+the delivery queue holds every turn for an agent inside it, `term.create`
+refuses, and removals and directory changes answer `busy`. The sweep measures
+the Git state and activity again, reads the holds again under the lock, and
+renames each build output directory into the workspace's trash
+(`.build/reclaim`) before the reservation ends. Build output is an ignored,
+untracked `node_modules`, `target`, `.venv` or `dist` inside one of the
+workspace's checkouts, reached without a symlink and holding no repository of
+its own (`bridge/src/reclaim/artifacts.rs`). The trash is emptied with the
+lock released.
+
+The bridge never removes a workspace on its own. `workspace.reclaim` (the
+project agent's `reclaim_workspace`, `app/workspaces/reclaim/explicit.rs`)
+refuses at once on the holds the app state knows, then reserves the workspace
+and measures Git off the lock. A deferred write-back can hand the drain
+another stage (`AppState::apply_deferred_stage`): once measured, reclaim reads
+every hold again under the lock, logs `workspace_reclaimed` on each linked
+issue without waking its trackers, and removes the workspace through the same
+path as `workspace.delete`. That path stops every agent and terminal anywhere
+under the workspace root first. The verdicts persist in the store's `meta`
+table (`bridge/src/store/workspace_lifecycle.rs`).
 
 ### Harnesses and the agents' slice
 

@@ -111,8 +111,10 @@ impl AppState {
     }
 
     fn actor_said_as(&self, actor: &Actor) -> String {
-        let Actor::Agent { agent_id } = actor else {
-            return "the user".to_string();
+        let agent_id = match actor {
+            Actor::User => return "the user".to_string(),
+            Actor::Build => return "Build".to_string(),
+            Actor::Agent { agent_id } => agent_id,
         };
         if let Some(name) = self.agent_display_name(actor) {
             return name;
@@ -129,12 +131,7 @@ impl AppState {
         }
     }
 
-    /// Put one notice on one agent's conversation and start its turn once the
-    /// settle window ends — or join the turn already waiting to.
-    ///
-    /// The same two steps the restart notice takes: the message goes on the
-    /// thread BEFORE the turn is queued, so a cold session's catch-up packet
-    /// already contains it and the agent reads it as the newest thing said.
+    /// Put one notice on one agent's conversation and start its turn.
     fn deliver_notice(
         &mut self,
         agent_id: &str,
@@ -145,21 +142,40 @@ impl AppState {
         let entity_id = self
             .entity_of_agent(agent_id)
             .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
-        let addressed = self.addressed_agent(&serde_json::json!({
-            "id": entity_id,
-            "agent_id": agent_id,
-        }))?;
-        let now = crate::store::now_rfc3339();
         let body = body.to_string();
         let envelope = envelope.clone();
         let notice = notice.clone();
-        self.edit_agent_conversation(&entity_id, agent_id, |thread, _| {
-            thread.post_user_from_build(body, &now);
+        self.post_from_build_and_wake(&entity_id, agent_id, "issue_notice", |thread, now| {
+            thread.post_user_from_build(body, now);
             // Both: the envelope says WHICH issue, the notice says what
             // happened to it, and one line that links the right thing needs
             // the two together.
             thread.wear_issue(envelope);
             thread.wear_issue_notice(notice);
+        })
+    }
+
+    /// Write something Build has to say on one agent's conversation, then
+    /// start its turn once the settle window ends — or join the turn already
+    /// waiting to.
+    ///
+    /// The message goes on the thread BEFORE the turn is queued, so a cold
+    /// session's catch-up packet already contains it and the agent reads it as
+    /// the newest thing said.
+    pub(in crate::app) fn post_from_build_and_wake(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        phase: &'static str,
+        write: impl FnOnce(&mut crate::thread::Thread, &str),
+    ) -> Result<(), String> {
+        let addressed = self.addressed_agent(&serde_json::json!({
+            "id": entity_id,
+            "agent_id": agent_id,
+        }))?;
+        let now = crate::store::now_rfc3339();
+        self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
+            write(thread, &now);
             Ok(serde_json::Value::Null)
         })?;
         self.delivery_queue
@@ -172,13 +188,13 @@ impl AppState {
                 model_choice: addressed.model_choice.clone(),
                 choice_revision: addressed.choice_revision,
                 interrupt: false,
-                // The notice is already on the thread, so the turn says what every
-                // other unread message says: go and read it.
+                // The message is already on the thread, so the turn says what
+                // every other unread message says: go and read it.
                 say: Some(TurnText {
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 }),
-                phase: "issue_notice",
+                phase,
                 wants_catch_up: true,
                 survives_refusal: false,
             });
@@ -256,14 +272,18 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
         IssueEventKind::Reopened => Some(plain("reopened")),
         IssueEventKind::Dispatched => Some(plain("assigned")),
         // Who else is watching is not a change to the issue — including the
-        // user starting to watch it, which is the user's own doing.
+        // user starting to watch it, which is the user's own doing. What
+        // happens to a linked workspace is not one either: the project agent
+        // hears about quiet workspaces in one notice of its own, and nobody
+        // watching the issue is woken for it.
         IssueEventKind::Tracked
         | IssueEventKind::Untracked
         | IssueEventKind::Watched
-        | IssueEventKind::Unwatched => None,
-        // The issue's own state says what Done did to it; the branch going
-        // with it is a record, not news to wake anyone for.
-        IssueEventKind::BranchDeleted => None,
+        | IssueEventKind::Unwatched
+        | IssueEventKind::BranchDeleted
+        | IssueEventKind::WorkspaceIdle
+        | IssueEventKind::WorkspacePruned
+        | IssueEventKind::WorkspaceReclaimed => None,
     })
 }
 
@@ -329,7 +349,10 @@ pub(in crate::app) fn notice_of_entry(
                 | IssueEventKind::Untracked
                 | IssueEventKind::Watched
                 | IssueEventKind::Unwatched
-                | IssueEventKind::BranchDeleted => None,
+                | IssueEventKind::BranchDeleted
+                | IssueEventKind::WorkspaceIdle
+                | IssueEventKind::WorkspacePruned
+                | IssueEventKind::WorkspaceReclaimed => None,
             }
         }
     }

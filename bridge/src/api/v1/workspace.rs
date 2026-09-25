@@ -1,7 +1,8 @@
 //! The workspace family: the durable multi-source checkout the SPA opens
 //! work in (`workspace.list` / `workspace.get` / `workspace.create` /
 //! `workspace.retry` / `workspace.finish`), the two verbs its settings sheet
-//! calls (`workspace.rename` / `workspace.delete`), the conversation owner a
+//! calls (`workspace.rename` / `workspace.delete`), the explicit removal of a
+//! workspace whose work is finished (`workspace.reclaim`), the conversation owner a
 //! workspace mints on demand (`workspace.ensure_conversation`), and the Git
 //! initialization surface for a source that is not a repository yet
 //! (`workspace.git_init_options` / `workspace.init_git`).
@@ -117,6 +118,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!(
             "workspace.delete",
             workspace_delete,
+            WorkspaceIdParams,
+            WorkspaceDeleteResult
+        ),
+        v1_method!(
+            "workspace.reclaim",
+            workspace_reclaim,
             WorkspaceIdParams,
             WorkspaceDeleteResult
         ),
@@ -293,6 +300,12 @@ pub struct WorkspaceListRow {
     /// Every conversation belonging to this workspace's agent rail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conversations: Option<Vec<super::thread::ConversationActivity>>,
+    /// What the reclaim service last concluded about this workspace (1.24.0,
+    /// `workspaces.lifecycle`): whether it is idle, what holds it, how big it
+    /// is. `null` before the first sweep measured it, and for an adopted
+    /// checkout, which is never measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<crate::reclaim::LifecycleRecord>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -328,8 +341,8 @@ pub struct WorkspaceDetail {
     pub run: Option<Box<RunView>>,
 }
 
-/// What `workspace.delete` answers, the acknowledgement and the drain's own
-/// value alike — the whole removal is one fact, and the client that asked for
+/// What `workspace.delete` and `workspace.reclaim` answer, the
+/// acknowledgement and the drain's own value alike — the whole removal is one fact, and the client that asked for
 /// it only needs to know it happened.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceDeleteResult {
@@ -417,7 +430,7 @@ pub struct WorkspaceInitGitResult {
 const BUSY: [&str; 1] = ["another filesystem operation is still running"];
 
 /// The request was legible and the workspace's own state said no.
-const CONFLICT: [&str; 15] = [
+const CONFLICT: [&str; 16] = [
     // Adding and removing a directory: what the workspace is, and what is
     // standing in the way of the folder going.
     "adopted checkouts are not Build's to change",
@@ -440,6 +453,8 @@ const CONFLICT: [&str; 15] = [
     "Wait for workspace provisioning to finish",
     "Stop running agents before deleting the workspace",
     "Cannot delete a workspace",
+    // Reclaim, refused because something still holds the workspace.
+    "Build cannot reclaim",
 ];
 
 /// A word in the request is not one this bridge knows. `unknown <thing>`
@@ -583,6 +598,16 @@ fn workspace_delete(
     answer(app.workspace_delete(&params.wire())).map_err(refine)
 }
 
+/// Delete's shape, by the same path, refused while anything holds the
+/// workspace. The user is the one reclaiming: an agent reclaims through its
+/// own tool, which names it.
+fn workspace_reclaim(
+    app: &mut AppState,
+    params: WorkspaceIdParams,
+) -> Result<Answer<WorkspaceDeleteResult>, ApiError> {
+    answer(app.workspace_reclaim(&params.wire(), &crate::tracker::Actor::User)).map_err(refine)
+}
+
 // ----------------------------------------------------------------- tests ---
 
 #[cfg(test)]
@@ -632,6 +657,11 @@ mod tests {
     #[test]
     fn the_workspace_finish_fixture_round_trips() {
         round_trips("workspace.finish");
+    }
+
+    #[test]
+    fn the_workspace_reclaim_fixture_round_trips() {
+        round_trips("workspace.reclaim");
     }
 
     #[test]

@@ -607,6 +607,13 @@ async fn run_daemon(
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     spawn_update_checks(app.clone());
+    // Measures every workspace and tells the project agent about quiet ones
+    // (#135). It never removes a workspace; `workspace.reclaim` does. It drops
+    // build output only when BRIDGE_WORKSPACE_PRUNE is on.
+    let reclaim_stop = AppState::spawn_workspace_reclaim(
+        app.clone(),
+        build_bridge::reclaim::ReclaimPolicy::from_env(),
+    );
 
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed
@@ -636,6 +643,8 @@ async fn run_daemon(
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
+    // Cancellation is a held atomic handle: shutdown never waits on the app mutex.
+    reclaim_stop.store(true, std::sync::atomic::Ordering::Relaxed);
     // It writes from the live roster's newest lists and never waits on the app
     // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
     shut_down(&live_roster, || {

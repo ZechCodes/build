@@ -72,6 +72,20 @@ impl IssueWrite {
         }
     }
 
+    /// Whether this write moves an issue that links a workspace to Done or
+    /// closes it: that workspace may have just become reclaimable.
+    fn finishes_a_workspace_issue(&self) -> bool {
+        !self.issue.links.workspace_ids.is_empty()
+            && self.events.iter().any(|event| match event.kind {
+                IssueEventKind::Closed => true,
+                IssueEventKind::Moved => {
+                    event.payload.get("to").and_then(Value::as_str)
+                        == Some(crate::tracker::DONE_STATUS)
+                }
+                _ => false,
+            })
+    }
+
     pub(in crate::app) fn event(
         &mut self,
         actor: &Actor,
@@ -376,6 +390,9 @@ impl AppState {
             .save_tracker_issue_activity(&write.issue, &write.comments, &write.events)
             .stored()?;
         self.note_issues_changed(project_id, &write.issue.id);
+        if write.finishes_a_workspace_issue() {
+            self.nudge_workspace_reclaim();
+        }
         // AFTER the write is durable, and quiet about its own failure: the
         // change landed, and a conversation that could not be written must not
         // turn it back into a refusal.
@@ -385,6 +402,32 @@ impl AppState {
         let issue =
             self.issue_with_read_identities(write.issue, &timeline, &StoredRosters::default());
         Ok(json!({ "issue": issue_json(project_id, &issue) }))
+    }
+
+    /// One timeline entry about a linked workspace, without waking anybody.
+    ///
+    /// What happens to an issue's workspace (#135) — Build noticing it went
+    /// quiet, Build dropping its build output, somebody reclaiming it — is
+    /// bookkeeping about the workspace, not a change to the issue. The record
+    /// is saved as it stands, so the issue keeps its place in every list, and
+    /// its watchers are not told: the project agent hears about quiet
+    /// workspaces in one notice for the whole sweep, and whoever reclaimed one
+    /// already knows.
+    pub(in crate::app) fn record_quiet_event(
+        &mut self,
+        issue_id: &str,
+        actor: &Actor,
+        kind: IssueEventKind,
+        payload: Value,
+    ) -> Result<(), String> {
+        let (project_id, issue) = self.tracker_issue(issue_id)?;
+        let now = crate::store::now_rfc3339();
+        let event = IssueEvent::new(&issue.id, actor.clone(), kind, payload, &now);
+        self.tracker_store()?
+            .save_tracker_issue_activity(&issue, &[], &[event])
+            .stored()?;
+        self.note_issues_changed(&project_id, &issue.id);
+        Ok(())
     }
 
     /// Add the links asked for, each checked against the issue's own project

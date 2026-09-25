@@ -350,8 +350,11 @@ impl AppState {
     /// to change it.
     fn workspace_to_change(&mut self, params: &Value) -> Result<Workspace, String> {
         let workspace_id = require_str(params, "workspace_id")?;
-        if self.deferred_work.is_some() || self.active_deferred_filesystem_jobs > 0 {
-            return Err("another filesystem operation is still running".to_string());
+        if self.deferred_work.is_some()
+            || self.active_deferred_filesystem_jobs > 0
+            || self.workspace_reserved(&workspace_id)
+        {
+            return Err(crate::reclaim::BUSY.to_string());
         }
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();

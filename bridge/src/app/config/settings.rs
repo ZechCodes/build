@@ -23,6 +23,12 @@ impl AppState {
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
             "isolation_available": self.account_availability(),
+            // What the reclaim service sweeps by now (#167), and which of the
+            // two an environment variable holds, so a client can say why its
+            // control does not move them.
+            "workspace_idle_secs": self.reclaim_policy_now().idle_after.as_secs(),
+            "workspace_prune": self.reclaim_policy_now().prune,
+            "workspace_pinned": self.reclaim_policy.pinned(),
         })
     }
 
@@ -140,12 +146,20 @@ impl AppState {
         let compact_above_tokens = patch
             .compact_above_tokens
             .unwrap_or(self.compact_above_tokens);
+        let reclaim_settings = crate::reclaim::ReclaimSettings {
+            idle_after_secs: patch
+                .workspace_idle_secs
+                .or(self.reclaim_settings.idle_after_secs),
+            prune: patch.workspace_prune.or(self.reclaim_settings.prune),
+        };
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
         config["role_models"] = json!(role_models);
         config["watch_agent_filed_issues"] = json!(watch_agent_filed_issues);
         config["compact_above_tokens"] = json!(compact_above_tokens);
+        config["workspace_idle_secs"] = json!(reclaim_settings.idle_after_secs);
+        config["workspace_prune"] = json!(reclaim_settings.prune);
         self.persist_config(&config)?;
         self.projects_dir = projects_dir;
         self.default_harness = default_harness;
@@ -155,6 +169,12 @@ impl AppState {
         self.role_models = role_models;
         self.watch_agent_filed_issues = watch_agent_filed_issues;
         self.compact_above_tokens = compact_above_tokens;
+        if reclaim_settings != self.reclaim_settings {
+            self.reclaim_settings = reclaim_settings;
+            // A sweep soon, so what was just chosen is what the workspaces
+            // are next measured by.
+            self.nudge_workspace_reclaim();
+        }
         Ok(self.settings_get())
     }
 }

@@ -451,6 +451,9 @@ pub struct AppState {
     /// What the reclaim service runs under: its budgets, for
     /// `workspace.reclaim` as much as for a sweep.
     reclaim_policy: crate::reclaim::ReclaimPolicy,
+    /// The device's own idle threshold and prune switch (#167), over
+    /// `reclaim_policy` wherever the environment did not set them.
+    reclaim_settings: crate::reclaim::ReclaimSettings,
     /// Workspaces the reclaim service or `workspace.reclaim` is between
     /// measuring and removing. While one is here, no agent turn is delivered
     /// in it, and nothing Build does writes in it or removes it.
@@ -645,6 +648,7 @@ impl AppState {
             reclaim_nudge: Default::default(),
             reclaim_reserved: HashMap::new(),
             reclaim_policy: Default::default(),
+            reclaim_settings: Default::default(),
             reclaim_stop: Default::default(),
             usage_limits: Default::default(),
             operation_ledger: Default::default(),

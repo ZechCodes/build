@@ -65,6 +65,8 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) role_models: Option<crate::models::RoleModels>,
     pub(in crate::app) watch_agent_filed_issues: Option<bool>,
     pub(in crate::app) compact_above_tokens: Option<u64>,
+    pub(in crate::app) workspace_idle_secs: Option<u64>,
+    pub(in crate::app) workspace_prune: Option<bool>,
 }
 
 /// The list a `settings.set` asks for, refused before anything is written if
@@ -112,7 +114,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 10] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 12] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -180,6 +182,23 @@ impl SettingsPatch {
             patch.compact_above_tokens = Some(value.as_u64().ok_or_else(|| {
                 "compact_above_tokens must be a whole number of tokens, or 0 for never.".to_string()
             })?);
+            Ok(())
+        }),
+        // The workspace lifecycle's two (#167). Zero would call every
+        // workspace quiet the moment it was made, so the threshold is above 0.
+        ("workspace_idle_secs", |patch, value, _| {
+            patch.workspace_idle_secs =
+                Some(value.as_u64().filter(|secs| *secs > 0).ok_or_else(|| {
+                    "workspace_idle_secs must be a whole number of seconds above 0.".to_string()
+                })?);
+            Ok(())
+        }),
+        ("workspace_prune", |patch, value, _| {
+            patch.workspace_prune = Some(
+                value
+                    .as_bool()
+                    .ok_or_else(|| "workspace_prune is true or false.".to_string())?,
+            );
             Ok(())
         }),
     ];
@@ -385,6 +404,13 @@ impl AppState {
         if let Some(tokens) = config.get("compact_above_tokens").and_then(Value::as_u64) {
             self.compact_above_tokens = tokens;
         }
+        self.reclaim_settings = crate::reclaim::ReclaimSettings {
+            idle_after_secs: config
+                .get("workspace_idle_secs")
+                .and_then(Value::as_u64)
+                .filter(|secs| *secs > 0),
+            prune: config.get("workspace_prune").and_then(Value::as_bool),
+        };
         self.apply_agent_modes_config(config);
         if let Some(isolation) = configured_isolation(config, "isolation") {
             self.isolation = isolation;

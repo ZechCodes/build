@@ -145,6 +145,17 @@ describe("what an event says", () => {
   it("says what became of a linked workspace", () => {
     expect(sentenceOf("workspace_idle", { workspace_name: "quiet" }))
       .toBe("noted workspace quiet has had no activity for a day");
+    // #167: the threshold is a setting, and the event says which it was.
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 86_400 }))
+      .toBe("noted workspace quiet has had no activity for a day");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 6 * 3600 }))
+      .toBe("noted workspace quiet has had no activity for 6 hours");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 3 * 86_400 }))
+      .toBe("noted workspace quiet has had no activity for 3 days");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 3600 }))
+      .toBe("noted workspace quiet has had no activity for an hour");
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet", idle_after_secs: 90 * 60 }))
+      .toBe("noted workspace quiet has had no activity for 90 minutes");
     expect(sentenceOf("workspace_pruned", { workspace_name: "quiet", pruned_bytes: 12_000_000_000 }))
       .toBe("dropped 12.0 GB of build output from workspace quiet");
     expect(sentenceOf("workspace_reclaimed", { workspace_name: "quiet", size_bytes: 640_000_000 }))

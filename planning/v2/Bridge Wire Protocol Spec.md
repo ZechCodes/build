@@ -656,7 +656,8 @@ narrower "needs you" rule it makes possible; see the Issues spec),
 `workspaces.lifecycle` (see below), and
 `branches.finishDelete` (`branch.finish` honours `action: "delete"`), and
 `workspaces.reclaimBranches` (`workspace.reclaim` deletes the workspace's local
-branches, see below). The method registry
+branches, see below), and `settings.workspaceLifecycle` (the reclaim service's
+idle threshold and prune switch on `settings.*`, see below). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -745,6 +746,23 @@ checkout moved onto the branch and it could not be restored), or the new kind
 delete the branch <name>: …" that says why it stayed). A bridge that does not
 announce the name leaves every branch where it was.
 
+`settings.workspaceLifecycle` (since 1.25.0, #167) puts the reclaim service's
+idle threshold and prune switch on `settings.*` as device settings, written to
+`config.json`. `settings.get` (and every `settings.set` answer) carries
+`workspace_idle_secs`, the threshold the service sweeps by now (24 h until the
+device chooses), `workspace_prune`, whether it drops quiet workspaces' build
+output now (off until chosen), and `workspace_pinned`, the names of those two
+that an environment variable sets on this machine (`BRIDGE_WORKSPACE_IDLE_SECS`,
+`BRIDGE_WORKSPACE_PRUNE`). A variable stays the override it was: the answer
+reports its value, and a `settings.set` of a pinned field records the device's
+choice for when the variable goes without changing what the service does.
+`settings.set` takes `workspace_idle_secs` (whole seconds above 0, refused
+`invalid_params` otherwise) and `workspace_prune` (a boolean); a change asks
+for a sweep at once. `workspace_idle` events now carry `idle_after_secs`, the
+threshold the workspace went quiet by. A bridge that does not announce the
+name answers `settings.get` without the three fields and refuses the two params
+as undeclared.
+
 The names in the table below describe additions to existing verbs, so the
 verb names alone cannot establish whether a bridge provides them. The SPA
 gates features mapped by its capability adapter, including branch deletion;
@@ -762,6 +780,7 @@ other names announce support for clients that choose to consume them:
 | `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
 | `branches.finishDelete` | `branch.finish` accepts `action: "delete"` to finish the workspace and delete its local branch | 1.24.0 |
 | `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
+| `settings.workspaceLifecycle` | `workspace_idle_secs`, `workspace_prune` and `workspace_pinned` on `settings.*` | 1.25.0 |
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature

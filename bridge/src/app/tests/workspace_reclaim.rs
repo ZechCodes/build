@@ -231,6 +231,10 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_issue() {
     assert_eq!(entries[0]["kind"], "workspace_idle");
     assert_eq!(entries[0]["actor"], json!({ "kind": "build" }));
     assert_eq!(entries[0]["payload"]["workspace_id"], ws.as_str());
+    assert_eq!(
+        entries[0]["payload"]["idle_after_secs"], 0,
+        "the threshold it went quiet by, which Settings can move (#167)"
+    );
 
     // The next sweep inside the idle period says nothing more.
     AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), now_ms());
@@ -392,6 +396,48 @@ fn the_project_agent_reclaims_under_its_own_name() {
     assert!(reclaimed.is_ok(), "{reclaimed:?}");
     let entries = timeline_kinds(&state, &issue);
     assert_eq!(entries[0]["actor"]["agent_id"], agent_id.as_str());
+}
+
+/// The running service sweeps by the device's settings as they stand at each
+/// sweep (#167), not by what it was started with: a threshold of a second,
+/// chosen after it started, makes a workspace a second old quiet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_service_sweeps_by_the_device_setting() {
+    let (_tmp, state, _project, ws, _issue) = linked_workspace();
+    let stop = AppState::spawn_workspace_reclaim(
+        state.clone(),
+        ReclaimPolicy {
+            first_sweep_after: std::time::Duration::from_millis(1500),
+            ..ReclaimPolicy::default()
+        },
+    )
+    .await;
+    let chosen = {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || {
+            call(&state, "settings.set", json!({ "workspace_idle_secs": 1 }))
+        })
+        .await
+        .unwrap()
+    };
+    assert_eq!(chosen["ok"], true, "{chosen:?}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let verdict = loop {
+        let read = {
+            let state = state.clone();
+            let ws = ws.clone();
+            tokio::task::spawn_blocking(move || lifecycle(&state, &ws))
+                .await
+                .unwrap()
+        };
+        if read != Value::Null || std::time::Instant::now() > deadline {
+            break read;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(verdict["idle"], true, "{verdict:?}");
 }
 
 /// A verdict survives a restart, so the bridge does not announce every quiet

@@ -180,6 +180,7 @@
       "settings.projectAgent",
       "settings.roleModels",
       "settings.set",
+      "settings.workspaceLifecycle",
       "term.ack",
       "term.attach",
       "term.close",

@@ -433,6 +433,25 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub compact_above_tokens: Named<u64>,
+    /// How long a workspace goes without activity before the project agent
+    /// hears about it, in seconds above 0 (1.25.0,
+    /// `settings.workspaceLifecycle`). `BRIDGE_WORKSPACE_IDLE_SECS`, where
+    /// set, still decides.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_idle_secs: Named<u64>,
+    /// Whether a quiet workspace nothing holds loses its build output (1.25.0,
+    /// `settings.workspaceLifecycle`). `BRIDGE_WORKSPACE_PRUNE`, where set,
+    /// still decides.
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspace_prune: Named<bool>,
 }
 
 /// The three words a device says about its project agents, each of them
@@ -920,6 +939,17 @@ pub struct SettingsResult {
     /// The context size an agent's next warm turn is preceded by a compaction
     /// at, unless its conversation sets its own. 0 never compacts.
     pub compact_above_tokens: u64,
+    /// The idle threshold the reclaim service sweeps by now, in seconds
+    /// (1.25.0, `settings.workspaceLifecycle`). Absent from older bridges.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_idle_secs: Option<u64>,
+    /// Whether the reclaim service drops quiet workspaces' build output now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_prune: Option<bool>,
+    /// Which of those two an environment variable sets on this machine, by
+    /// their names here: a set changes the device's choice, not what it does.
+    #[serde(default)]
+    pub workspace_pinned: Vec<String>,
 }
 
 /// One model the user has declared, and what they declared it for.

@@ -50,7 +50,20 @@
       }
     ],
     "watch_agent_filed_issues": true,
-    "compact_above_tokens": 200000
+    "compact_above_tokens": 200000,
+    "workspace_idle_secs": 86400,
+    "workspace_prune": false,
+    "workspace_pinned": [
+      "workspace_prune"
+    ]
+  },
+  "workspace_lifecycle": {
+    "since": "1.25.0",
+    "fields": [
+      "workspace_idle_secs",
+      "workspace_prune",
+      "workspace_pinned"
+    ]
   },
   "errors": [
     "internal"

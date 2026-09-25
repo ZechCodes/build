@@ -87,8 +87,32 @@ pub struct ReclaimPolicy {
     /// How each repository's Git state is read, bounded by the budget.
     pub git: GitProbe,
     /// Tier 1: drop a quiet, unheld workspace's build output. Off unless
-    /// `BRIDGE_WORKSPACE_PRUNE` turns it on.
+    /// the device's settings or `BRIDGE_WORKSPACE_PRUNE` turn it on.
     pub prune: bool,
+    /// What the environment set, which the device's settings do not move.
+    pub pinned_by_env: PinnedByEnv,
+}
+
+/// Which of the device's lifecycle settings an environment variable set, and
+/// so holds where it is whatever the settings say.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PinnedByEnv {
+    /// `BRIDGE_WORKSPACE_IDLE_SECS`.
+    pub idle_after: bool,
+    /// `BRIDGE_WORKSPACE_PRUNE`.
+    pub prune: bool,
+}
+
+/// The lifecycle settings a device holds in its config (#167). `None` is a
+/// device that has not chosen, and leaves the policy as it stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReclaimSettings {
+    /// `workspace_idle_secs`: how long a workspace goes without activity
+    /// before the project agent hears about it.
+    pub idle_after_secs: Option<u64>,
+    /// `workspace_prune`: whether a quiet, unheld workspace loses its build
+    /// output.
+    pub prune: Option<bool>,
 }
 
 impl Default for ReclaimPolicy {
@@ -102,6 +126,7 @@ impl Default for ReclaimPolicy {
             final_check_time: DEFAULT_FINAL_CHECK_TIME,
             git: GitProbe::bridge(),
             prune: false,
+            pinned_by_env: PinnedByEnv::default(),
         }
     }
 }
@@ -114,19 +139,49 @@ impl ReclaimPolicy {
         Self::from_vars(|name| std::env::var(name).ok())
     }
 
-    fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
+    pub(crate) fn from_vars(var: impl Fn(&str) -> Option<String>) -> Self {
         let seconds = |name: &str| {
             var(name)
                 .and_then(|raw| raw.trim().parse::<u64>().ok())
                 .map(Duration::from_secs)
         };
+        let idle_after = seconds("BRIDGE_WORKSPACE_IDLE_SECS");
+        let prune = var("BRIDGE_WORKSPACE_PRUNE");
         let defaults = Self::default();
         Self {
-            idle_after: seconds("BRIDGE_WORKSPACE_IDLE_SECS").unwrap_or(defaults.idle_after),
+            idle_after: idle_after.unwrap_or(defaults.idle_after),
             sweep_every: seconds("BRIDGE_WORKSPACE_SWEEP_SECS").unwrap_or(defaults.sweep_every),
-            prune: var("BRIDGE_WORKSPACE_PRUNE").is_some_and(|raw| switched_on(&raw)),
+            prune: prune.as_deref().is_some_and(switched_on),
+            pinned_by_env: PinnedByEnv {
+                idle_after: idle_after.is_some(),
+                prune: prune.is_some(),
+            },
             ..defaults
         }
+    }
+
+    /// This policy with the device's settings over it, except where the
+    /// environment set the value: the variable stays the override it was.
+    pub fn with_settings(&self, settings: &ReclaimSettings) -> Self {
+        let mut policy = self.clone();
+        if let (false, Some(secs)) = (self.pinned_by_env.idle_after, settings.idle_after_secs) {
+            policy.idle_after = Duration::from_secs(secs);
+        }
+        if let (false, Some(prune)) = (self.pinned_by_env.prune, settings.prune) {
+            policy.prune = prune;
+        }
+        policy
+    }
+
+    /// The settings an environment variable pins, by their wire names.
+    pub fn pinned(&self) -> Vec<&'static str> {
+        [
+            (self.pinned_by_env.idle_after, "workspace_idle_secs"),
+            (self.pinned_by_env.prune, "workspace_prune"),
+        ]
+        .into_iter()
+        .filter_map(|(pinned, name)| pinned.then_some(name))
+        .collect()
     }
 
     fn idle_after_ms(&self) -> i64 {

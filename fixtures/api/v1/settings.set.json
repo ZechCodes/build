@@ -39,7 +39,9 @@
       }
     ],
     "watch_agent_filed_issues": false,
-    "compact_above_tokens": 150000
+    "compact_above_tokens": 150000,
+    "workspace_idle_secs": 172800,
+    "workspace_prune": true
   },
   "result": {
     "projects_dir": "/home/ada/.build/projects",
@@ -89,7 +91,18 @@
       }
     ],
     "watch_agent_filed_issues": false,
-    "compact_above_tokens": 150000
+    "compact_above_tokens": 150000,
+    "workspace_idle_secs": 172800,
+    "workspace_prune": true,
+    "workspace_pinned": []
+  },
+  "workspace_lifecycle": {
+    "since": "1.25.0",
+    "fields": [
+      "workspace_idle_secs",
+      "workspace_prune",
+      "workspace_pinned"
+    ]
   },
   "errors": [
     "invalid_params",

@@ -69,6 +69,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "requests.receipts",
     "settings.projectAgent",
     "settings.roleModels",
+    "settings.workspaceLifecycle",
     "threads.newestDeltaPagination",
     "threads.postOperations",
     "workspaces.lifecycle",

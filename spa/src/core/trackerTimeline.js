@@ -110,6 +110,17 @@ const movedSentence = (payload, columns) => {
 /** What the workspace reclaim service (#135) recorded about a workspace this
  *  issue links: it went quiet, its build output was dropped, it was reclaimed. */
 const workspaceNamed = (payload) => `workspace ${payload.workspace_name || payload.workspace_id || ""}`.trim();
+/** The idle threshold a `workspace_idle` was written under (#167), in the
+ *  largest whole unit: "a day", "6 hours", "90 minutes". Events from before
+ *  it was a setting carry none, and were a day. */
+const QUIET_UNITS = [[86_400, "a day", "days"], [3600, "an hour", "hours"], [60, "a minute", "minutes"]];
+const quietFor = (seconds) => {
+  const secs = Number(seconds);
+  if (!Number.isFinite(secs) || secs <= 0) return "a day";
+  const [size, one, many] = QUIET_UNITS.find(([unit]) => secs % unit === 0) || [1, "a second", "seconds"];
+  const count = secs / size;
+  return count === 1 ? one : `${count} ${many}`;
+};
 const reclaimedSentence = (payload) => {
   const size = payload.size_bytes ? ` (${humanBytes(payload.size_bytes)})` : "";
   return `reclaimed ${workspaceNamed(payload)}${size}`;
@@ -127,7 +138,8 @@ const SENTENCES = Object.freeze({
   dispatched: () => "started an agent on this",
   branch_deleted: (payload) => branchDeletedSentence(payload),
   branch_kept: branchKeptSentence,
-  workspace_idle: (payload) => `noted ${workspaceNamed(payload)} has had no activity for a day`,
+  workspace_idle: (payload) =>
+    `noted ${workspaceNamed(payload)} has had no activity for ${quietFor(payload.idle_after_secs)}`,
   workspace_pruned: (payload) =>
     `dropped ${humanBytes(payload.pruned_bytes)} of build output from ${workspaceNamed(payload)}`,
   workspace_reclaimed: reclaimedSentence,

@@ -213,7 +213,7 @@ runtime that starts them.
   `1.25.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0 adds
-  `workspaces.reclaimBranches`.
+  `workspaces.reclaimBranches` and `settings.workspaceLifecycle`.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -303,8 +303,11 @@ the budget runs out or the daemon stops. A measurement that runs out anywhere
 (a Git reading, the activity walk, the size walk, or a budget found spent at
 the end) is held as `unmeasured`: not idle, not reclaimable. A
 sweep then takes the lock again to write the verdict. `workspace.list` rows
-carry it as `lifecycle`. A workspace is idle after 24 h
-(`BRIDGE_WORKSPACE_IDLE_SECS`). What holds it: not ready, an agent working or a
+carry it as `lifecycle`. A workspace is idle after 24 h, or the device's
+`workspace_idle_secs` setting (#167); `BRIDGE_WORKSPACE_IDLE_SECS`, where set,
+overrides the setting. Each sweep reads the policy afresh
+(`AppState::reclaim_policy_now`), so a change in Settings applies at the next
+sweep, which the change asks for at once. What holds it: not ready, an agent working or a
 terminal open anywhere inside it, uncommitted or unpushed work, a plain
 directory, a linked issue not Done, or issues that could not be read.
 
@@ -322,7 +325,8 @@ workspaces, and the notice repeats daily while they stay quiet. The linked
 issues record `workspace_idle` and `workspace_pruned` as actor `build`,
 without waking their trackers.
 
-Dropping build output (tier 1) is off unless `BRIDGE_WORKSPACE_PRUNE` is set.
+Dropping build output (tier 1) is off unless the device's `workspace_prune`
+setting turns it on, or `BRIDGE_WORKSPACE_PRUNE` is set, which overrides it.
 When it is on and nothing holds an idle workspace, the sweep reserves the
 workspace under the lock (`reclaim_reserved`). While a workspace is reserved,
 the delivery queue holds every turn for an agent inside it, and every bridge

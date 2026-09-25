@@ -297,8 +297,12 @@ fn live_roster_on_disk(state_root: &std::path::Path) -> Option<ResumeRoster> {
     Some(serde_json::from_str(&raw).expect("the live roster parses"))
 }
 
+/// Which agents the live roster's file names, sorted. Sorted because the
+/// file is in roster order, and two agents added in the same instant can
+/// hold ids whose order is not their roster order: these tests are about who
+/// is on it, not in what order.
 fn live_roster_ids(state_root: &std::path::Path) -> Vec<String> {
-    live_roster_on_disk(state_root)
+    let mut ids: Vec<String> = live_roster_on_disk(state_root)
         .map(|roster| {
             roster
                 .agents
@@ -306,7 +310,9 @@ fn live_roster_ids(state_root: &std::path::Path) -> Vec<String> {
                 .map(|agent| agent.agent_id)
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    ids.sort();
+    ids
 }
 
 /// A turn starting puts the agent in the live roster and a turn stopping
@@ -498,13 +504,13 @@ fn an_entity_checked_out_by_a_transaction_keeps_its_agents_in_the_live_roster() 
     live.settle();
     let mut both = vec![agent_id.clone(), other_agent.clone()];
     both.sort();
-    let mut on_disk = live_roster_ids(&state_root);
-    on_disk.sort();
-    assert_eq!(on_disk, both, "the checked-out run's agent is still there");
+    assert_eq!(
+        live_roster_ids(&state_root),
+        both,
+        "the checked-out run's agent is still there"
+    );
 
     state.finish_run_mutation(run_id.clone(), active).unwrap();
     live.settle();
-    let mut on_disk = live_roster_ids(&state_root);
-    on_disk.sort();
-    assert_eq!(on_disk, both);
+    assert_eq!(live_roster_ids(&state_root), both);
 }

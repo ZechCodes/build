@@ -360,6 +360,45 @@ async fn a_rate_limited_beat_waits_out_the_retry_after_and_recovers() {
     assert_eq!(then, 2, "landed, so the next waits the 3 s interval");
 }
 
+/// A `Retry-After` longer than the three intervals the supervisor allows a
+/// silent beat is waited out all the same: the beat said when it would come
+/// round, and the supervisor holds it to that rather than to the interval.
+/// Before, it took the wait for a wedge and started a new beat, which asked
+/// at once (#131 review: a `Retry-After: 600` asked again 91 s later).
+#[tokio::test]
+async fn a_retry_after_longer_than_the_watchdog_is_waited_out() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "5"))
+        .up_to_n_times(1)
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_secs(1));
+    tokio::time::sleep(Duration::from_millis(4700)).await;
+    let waiting = received(&api, 0).await.len();
+    tokio::time::sleep(Duration::from_millis(1300)).await;
+    let after_it = received(&api, 0).await.len();
+    beating.abort();
+
+    assert_eq!(
+        waiting, 1,
+        "nothing for the 5 s asked, past the 3 s watchdog"
+    );
+    assert!(
+        (2..=3).contains(&after_it),
+        "asked again once it passed, and on the 1 s interval after: {after_it}"
+    );
+}
+
 /// A beat the api refuses on its merits — a device it does not know, a
 /// signature it will not take — is not asked again early: the answer would
 /// be the same.

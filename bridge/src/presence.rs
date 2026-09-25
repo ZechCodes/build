@@ -46,7 +46,9 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 /// How many intervals the supervisor lets pass with no attempt at all before it
 /// replaces the beat. The same three the api's window is made of: a beat that
 /// has to be replaced is replaced before the device could go offline for want
-/// of it.
+/// of it. Counted from when the beat said it would next come round, less the
+/// one interval that is: a beat waiting out an api's `Retry-After` is not
+/// silent, it is on time.
 const MISSED_BEATS_BEFORE_REPLACING: u32 = 3;
 
 /// The path the beat is posted to.
@@ -117,7 +119,7 @@ impl PresenceReporter {
             identity: identity.clone(),
             client: beating_client(interval),
             reachable: reachable.clone(),
-            attempted: Arc::new(Mutex::new(Instant::now())),
+            due: Arc::new(Mutex::new(Instant::now() + interval)),
         };
         tokio::spawn(supervise(beat, interval))
     }
@@ -131,7 +133,7 @@ impl PresenceReporter {
 /// beat. Presence stopping is allowed to be news about the device; it is not
 /// allowed to be a permanent state of this daemon.
 async fn supervise(beat: Beat, interval: Duration) {
-    let quiet_for = interval * MISSED_BEATS_BEFORE_REPLACING;
+    let slack = interval * (MISSED_BEATS_BEFORE_REPLACING - 1);
     let watched = beat.clone();
     keep_running(
         "heartbeat",
@@ -140,10 +142,10 @@ async fn supervise(beat: Beat, interval: Duration) {
             let beat = beat.clone();
             // A new generation is not born quiet: the watchdog's clock starts
             // with it, not with whatever the last one left behind.
-            beat.attempt_noted();
+            beat.came_round(interval);
             beat.run(interval)
         },
-        move || watched.silent_for(quiet_for),
+        move || watched.overdue_by(slack),
     )
     .await
 }
@@ -206,23 +208,27 @@ struct Beat {
     /// loop: an unreachable device keeps ticking and starts beating again the
     /// moment its socket is back.
     reachable: Reachability,
-    /// When this beat last came round, beaten or skipped. The supervisor reads
-    /// it: a loop that has stopped ticking is as dead as one that has returned,
-    /// and from outside the two are the same silence.
-    attempted: Arc<Mutex<Instant>>,
+    /// When this beat said it would next come round, beaten or skipped: an
+    /// interval after it last did, or the end of the wait it chose after a
+    /// failure. The supervisor reads it: a loop that has stopped ticking is as
+    /// dead as one that has returned, and from outside the two are the same
+    /// silence — but a loop waiting out a `Retry-After` it was given is
+    /// neither, and is left to wait (#131 review).
+    due: Arc<Mutex<Instant>>,
 }
 
 impl Beat {
-    /// This beat came round. Recorded before the reachability check, because
-    /// what the supervisor watches for is the loop stopping, not the device
-    /// being away.
-    fn attempt_noted(&self) {
-        *self.attempted.lock().unwrap() = Instant::now();
+    /// This beat came round, and will again within `next_in`. Recorded before
+    /// the reachability check, because what the supervisor watches for is the
+    /// loop stopping, not the device being away.
+    fn came_round(&self, next_in: Duration) {
+        *self.due.lock().unwrap() = Instant::now() + next_in;
     }
 
-    /// Whether this beat has not come round for `quiet_for`.
-    fn silent_for(&self, quiet_for: Duration) -> bool {
-        self.attempted.lock().unwrap().elapsed() > quiet_for
+    /// Whether this beat is more than `slack` past when it said it would next
+    /// come round.
+    fn overdue_by(&self, slack: Duration) -> bool {
+        Instant::now() > *self.due.lock().unwrap() + slack
     }
 
     async fn run(self, interval: Duration) {
@@ -236,7 +242,7 @@ impl Beat {
             // The first tick is immediate, so the api knows within a second of
             // the relay authenticating this device that it is here.
             ticker.tick().await;
-            self.attempt_noted();
+            self.came_round(interval);
             // Silence is the whole report for a device nothing can reach: the
             // api needs no "offline" post, and one it could not act on from a
             // bridge with no way in is exactly the lie this loop used to tell.
@@ -258,6 +264,7 @@ impl Beat {
                     }
                     if let Some(again) = again {
                         ticker.reset_after(again);
+                        self.came_round(again);
                     }
                     crate::logline::say(format!(
                         "presence: heartbeat dropped: {}{}",
@@ -562,6 +569,31 @@ mod tests {
         let (shortest, longest) = (waits.iter().min().unwrap(), waits.iter().max().unwrap());
         assert!(*shortest < Duration::from_millis(3_900), "{shortest:?}");
         assert!(*longest > Duration::from_millis(6_100), "{longest:?}");
+    }
+
+    /// The supervisor holds a beat to the deadline it set itself: overdue
+    /// once it is past it by the slack, whether that deadline was the next
+    /// interval or the end of a long `Retry-After`; and a loop that has
+    /// stopped coming round is still caught.
+    #[test]
+    fn a_beat_is_overdue_past_its_own_deadline() {
+        let beat = Beat {
+            url: "http://127.0.0.1:9/unused".to_string(),
+            identity: identity().0,
+            client: reqwest::Client::new(),
+            reachable: Reachability::unreachable(),
+            due: Arc::new(Mutex::new(Instant::now())),
+        };
+        let slack = Duration::from_millis(20);
+
+        beat.came_round(Duration::from_millis(10));
+        assert!(!beat.overdue_by(slack), "on time");
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(beat.overdue_by(slack), "stopped coming round");
+
+        beat.came_round(Duration::from_secs(600));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(!beat.overdue_by(slack), "waiting out what it was asked to");
     }
 
     #[test]

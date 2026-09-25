@@ -467,3 +467,44 @@ fn the_live_roster_holds_ids_and_never_what_the_conversation_said() {
     assert!(!clean.contains(SECRET), "{clean}");
     assert!(!state_root.join(LIVE_ROSTER_FILE).exists());
 }
+
+/// A transaction checks out more than one entity — `run.stage_send_notes`
+/// takes the run and its plan, and finishes the plan first. An entity
+/// settling while another is checked out must not drop the checked-out one's
+/// agents from the live roster, not even for the one write the writer can
+/// land between the two finishes.
+#[test]
+fn an_entity_checked_out_by_a_transaction_keeps_its_agents_in_the_live_roster() {
+    let mut standing = standing();
+    let (state, state_root, run_id, agent_id) = standing.parts();
+    let project_id = state.project_of(&run_id).unwrap();
+    let other_workspace = workspace(state, &project_id, "the other work");
+    let ensured = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": other_workspace }),
+    ));
+    let other_run = ensured["result"]["run_id"].as_str().unwrap().to_string();
+    let added = state.handle(req("agent.add", json!({ "entity_id": other_run })));
+    let other_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let live = LiveRoster::start(&state_root, "0.2.2");
+    state.live_roster = Some(live.clone());
+    state.start_agent_working(&run_id, &agent_id, "2026-09-25T02:00:00Z");
+    live.settle();
+    assert_eq!(live_roster_ids(&state_root), vec![agent_id.clone()]);
+
+    // The transaction: the run is out of the map while another entity settles.
+    let active = state.take_run(&run_id).unwrap();
+    state.start_agent_working(&other_run, &other_agent, "2026-09-25T02:01:00Z");
+    live.settle();
+    let mut both = vec![agent_id.clone(), other_agent.clone()];
+    both.sort();
+    let mut on_disk = live_roster_ids(&state_root);
+    on_disk.sort();
+    assert_eq!(on_disk, both, "the checked-out run's agent is still there");
+
+    state.finish_run_mutation(run_id.clone(), active).unwrap();
+    live.settle();
+    let mut on_disk = live_roster_ids(&state_root);
+    on_disk.sort();
+    assert_eq!(on_disk, both);
+}

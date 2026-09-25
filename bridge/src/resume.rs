@@ -19,13 +19,21 @@
 //! roster promotes the one to the other ([`promote_live_roster`]), and resumes
 //! from it exactly as it would from a roll.
 //!
+//! Every change to either file — written, removed, renamed — is durable before
+//! the call that made it returns ([`disk`]): a power cut must never bring back
+//! a roster that had already been cleared or consumed.
+//!
 //! Both files hold ids and nothing else: which entity, which agent, which
 //! conversation, which harness session. No message, no prompt, no token.
 
+pub mod disk;
+mod live;
+
+pub use live::{shut_down, LiveRoster};
+
+use disk::{Disk, RealDisk};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
 
 /// The roster, beside the store's database in the tasks directory.
 pub const ROSTER_FILE: &str = "resume-roster.json";
@@ -93,10 +101,15 @@ impl ResumeRoster {
     /// on the boot after this one, which is not a restart notice — it is a
     /// haunting.
     pub fn take(dir: &Path) -> Option<ResumeRoster> {
+        Self::take_on(&RealDisk, dir)
+    }
+
+    pub(crate) fn take_on(disk: &dyn Disk, dir: &Path) -> Option<ResumeRoster> {
         let path = Self::path(dir);
-        let raw = std::fs::read_to_string(&path).ok();
-        let _ = std::fs::remove_file(&path);
-        let raw = raw?;
+        let raw = disk.read(&path).ok()?;
+        if let Err(error) = disk::remove(disk, &path) {
+            eprintln!("resume: could not consume the roster ({error}); it may be read again");
+        }
         match serde_json::from_str(&raw) {
             Ok(roster) => Some(roster),
             Err(error) => {
@@ -115,12 +128,15 @@ impl ResumeRoster {
     /// down with every agent idle must not leave last week's roster to be read
     /// as this boot's.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
+        self.save_on(&RealDisk, dir)
+    }
+
+    pub(crate) fn save_on(&self, disk: &dyn Disk, dir: &Path) -> Result<(), String> {
         let path = Self::path(dir);
         if self.agents.is_empty() {
-            let _ = std::fs::remove_file(&path);
-            return Ok(());
+            return disk::remove(disk, &path);
         }
-        write_atomically(&path, &self.body()?)
+        disk::replace(disk, &path, &self.body()?)
     }
 
     fn body(&self) -> Result<String, String> {
@@ -131,39 +147,14 @@ impl ResumeRoster {
     /// Drop any roster without reading it — the opt-out's shutdown half. The
     /// live roster goes with it: an opted-out roll must not be resumed from
     /// the file a crash would have been.
-    pub fn forget(dir: &Path) {
-        let _ = std::fs::remove_file(Self::path(dir));
-        let _ = std::fs::remove_file(live_path(dir));
+    pub(crate) fn forget_on(disk: &dyn Disk, dir: &Path) -> Result<(), String> {
+        disk::remove(disk, &Self::path(dir))?;
+        disk::remove(disk, &live_path(dir))
     }
 }
 
-fn live_path(dir: &Path) -> PathBuf {
+pub(crate) fn live_path(dir: &Path) -> PathBuf {
     dir.join(LIVE_ROSTER_FILE)
-}
-
-/// Replace `path` with `body` so that a reader — the next boot, after any kind
-/// of death — finds the old file or the new one and never half of either: a
-/// temp file beside it, synced, renamed over it, and the directory synced so
-/// the rename itself survives the power going.
-fn write_atomically(path: &Path, body: &str) -> Result<(), String> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| format!("{} names no file", path.display()))?;
-    let temp = path.with_file_name(format!(".{}.tmp", name.to_string_lossy()));
-    let written = (|| {
-        let mut file = std::fs::File::create(&temp)?;
-        file.write_all(body.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        if let Some(dir) = path.parent() {
-            std::fs::File::open(dir)?.sync_all()?;
-        }
-        Ok::<(), std::io::Error>(())
-    })();
-    written.map_err(|error| {
-        let _ = std::fs::remove_file(&temp);
-        format!("write {}: {error}", path.display())
-    })
 }
 
 /// At boot, before anything can write the live roster again: a live roster
@@ -176,198 +167,23 @@ fn write_atomically(path: &Path, body: &str) -> Result<(), String> {
 /// file is what it had not yet removed. Returns whether a live roster was
 /// promoted, which is what the boot log says.
 pub fn promote_live_roster(dir: &Path) -> bool {
+    promote_live_roster_on(&RealDisk, dir).unwrap_or_else(|error| {
+        eprintln!("resume: could not promote the live roster: {error}");
+        false
+    })
+}
+
+pub(crate) fn promote_live_roster_on(disk: &dyn Disk, dir: &Path) -> Result<bool, String> {
     let live = live_path(dir);
     if !live.exists() {
-        return false;
+        return Ok(false);
     }
     if ResumeRoster::path(dir).exists() {
-        let _ = std::fs::remove_file(&live);
-        return false;
+        disk::remove(disk, &live)?;
+        return Ok(false);
     }
-    match std::fs::rename(&live, ResumeRoster::path(dir)) {
-        Ok(()) => true,
-        Err(error) => {
-            eprintln!("resume: could not promote {}: {error}", live.display());
-            false
-        }
-    }
-}
-
-/// The live roster: the set of agents a crash would have to bring back, on
-/// disk for as long as the daemon runs.
-///
-/// [`publish`](Self::publish) is called with the app mutex held, so it does no
-/// filesystem work at all: it swaps the newest list into a slot and wakes a
-/// thread of its own, which writes with every lock released. Lists published
-/// while a write is in flight collapse into the newest one — the file only
-/// ever has to hold the last.
-#[derive(Clone)]
-pub struct LiveRoster {
-    shared: Arc<LiveShared>,
-}
-
-struct LiveShared {
-    dir: PathBuf,
-    version: String,
-    slot: Mutex<LiveSlot>,
-    changed: Condvar,
-}
-
-#[derive(Default)]
-struct LiveSlot {
-    /// The newest list published, written or not.
-    latest: Vec<ResumingAgent>,
-    /// Whether `latest` has not reached the file yet.
-    unwritten: bool,
-    /// Whether the writer is between taking a list and finishing with it.
-    writing: bool,
-    /// Set by the clean shutdown; nothing published after it is written.
-    finished: bool,
-}
-
-impl LiveRoster {
-    /// Start the writer for `dir`. Call [`promote_live_roster`] first: the
-    /// first list published overwrites whatever the last run left.
-    pub fn start(dir: &Path, version: &str) -> LiveRoster {
-        let live = LiveRoster {
-            shared: Arc::new(LiveShared {
-                dir: dir.to_path_buf(),
-                version: version.to_string(),
-                slot: Mutex::new(LiveSlot::default()),
-                changed: Condvar::new(),
-            }),
-        };
-        let writer = live.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("live-roster".to_string())
-            .spawn(move || writer.write_until_finished())
-        {
-            eprintln!("resume: no live roster this run ({error}); only a clean shutdown records");
-            live.shared.slot.lock().unwrap().finished = true;
-        }
-        live
-    }
-
-    /// Say who is working now. Cheap and lock-safe: an unchanged list is
-    /// dropped here, and a changed one is only handed to the writer.
-    pub fn publish(&self, agents: Vec<ResumingAgent>) {
-        let mut slot = self.shared.slot.lock().unwrap();
-        if slot.finished || slot.latest == agents {
-            return;
-        }
-        slot.latest = agents;
-        slot.unwritten = true;
-        self.shared.changed.notify_all();
-    }
-
-    fn write_until_finished(&self) {
-        let mut slot = self.shared.slot.lock().unwrap();
-        loop {
-            if slot.unwritten {
-                let agents = slot.latest.clone();
-                slot.unwritten = false;
-                slot.writing = true;
-                drop(slot);
-                if let Err(error) = self.write(agents) {
-                    eprintln!("resume: could not write the live roster: {error}");
-                }
-                slot = self.shared.slot.lock().unwrap();
-                slot.writing = false;
-                self.shared.changed.notify_all();
-                continue;
-            }
-            if slot.finished {
-                return;
-            }
-            slot = self.shared.changed.wait(slot).unwrap();
-        }
-    }
-
-    fn write(&self, agents: Vec<ResumingAgent>) -> Result<(), String> {
-        let path = live_path(&self.shared.dir);
-        if agents.is_empty() {
-            return match std::fs::remove_file(&path) {
-                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-                    Err(format!("remove {}: {error}", path.display()))
-                }
-                _ => Ok(()),
-            };
-        }
-        let roster = ResumeRoster {
-            recorded_at: crate::store::now_rfc3339(),
-            version: self.shared.version.clone(),
-            agents,
-        };
-        write_atomically(&path, &roster.body()?)
-    }
-
-    /// The clean shutdown: stop the writer, write the roster proper from the
-    /// newest list, and only then remove the live file.
-    ///
-    /// The list is the one the last mutation published, so this never waits
-    /// on the app mutex — a handler holding it for a minute cannot hold the
-    /// shutdown past systemd's patience. A write already in flight is waited
-    /// for, so it cannot land after the removal and leave a live roster for a
-    /// shutdown that was clean. `wanted` is the opt-out: `false` records
-    /// nobody and leaves neither file behind.
-    ///
-    /// Returns how many agents were recorded. On an error the live roster is
-    /// left where it is, so the next boot still resumes from it.
-    pub fn finish(&self, wanted: bool) -> Result<usize, String> {
-        let agents = {
-            let mut slot = self.shared.slot.lock().unwrap();
-            slot.finished = true;
-            self.shared.changed.notify_all();
-            while slot.writing {
-                slot = self.shared.changed.wait(slot).unwrap();
-            }
-            slot.unwritten = false;
-            slot.latest.clone()
-        };
-        let dir = &self.shared.dir;
-        if !wanted {
-            ResumeRoster::forget(dir);
-            return Ok(0);
-        }
-        let count = agents.len();
-        ResumeRoster {
-            recorded_at: crate::store::now_rfc3339(),
-            version: self.shared.version.clone(),
-            agents,
-        }
-        .save(dir)?;
-        let _ = std::fs::remove_file(live_path(dir));
-        Ok(count)
-    }
-
-    /// The whole of the shutdown half, as the daemon calls it: honour the
-    /// opt-out, [`finish`](Self::finish), and say what happened on stderr.
-    ///
-    /// Silent about its own failure beyond that line: a roster that could not
-    /// be written costs the next boot its resume, and must not cost this
-    /// shutdown its exit — the harnesses are already dying and the store is
-    /// already durable.
-    pub fn record_at_shutdown(&self) {
-        let wanted = resume_is_wanted(&self.shared.dir, |key| std::env::var(key).ok());
-        match self.finish(wanted) {
-            Ok(_) if !wanted => eprintln!("resume: opted out of this roll; recording nobody"),
-            Ok(0) => eprintln!("resume: no agent was working; recorded nobody"),
-            Ok(count) => eprintln!("resume: recorded {count} agent(s) to bring back"),
-            Err(error) => eprintln!(
-                "resume: could not record the roster: {error}; the live roster stays for the next boot"
-            ),
-        }
-    }
-
-    /// Block until everything published so far is on disk. For tests, which
-    /// read the file the writer thread writes.
-    #[cfg(test)]
-    pub fn settle(&self) {
-        let mut slot = self.shared.slot.lock().unwrap();
-        while slot.unwritten || slot.writing {
-            slot = self.shared.changed.wait(slot).unwrap();
-        }
-    }
+    disk::rename(disk, &live, &ResumeRoster::path(dir))?;
+    Ok(true)
 }
 
 /// Whether this roll resumes its agents. The default is yes; a deliberate
@@ -426,7 +242,6 @@ pub fn restart_notice(at: &str, version: &str, was_working: bool) -> String {
          what you were doing, ask."
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,208 +296,6 @@ mod tests {
         std::fs::write(ResumeRoster::path(dir.path()), "{ not json").unwrap();
         assert_eq!(ResumeRoster::take(dir.path()), None);
         assert!(!ResumeRoster::path(dir.path()).exists());
-    }
-
-    fn working(agent_id: &str) -> ResumingAgent {
-        ResumingAgent {
-            entity_id: "run-1".to_string(),
-            agent_id: agent_id.to_string(),
-            conversation_id: agent_id.to_string(),
-            resume_session_id: Some(format!("sess-{agent_id}")),
-            was_working: true,
-        }
-    }
-
-    fn live_file(dir: &Path) -> Option<ResumeRoster> {
-        let raw = std::fs::read_to_string(live_path(dir)).ok()?;
-        Some(serde_json::from_str(&raw).expect("the live roster parses"))
-    }
-
-    /// Every file in the tasks directory, so a test can say no temp file was
-    /// left beside the roster.
-    fn files_in(dir: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    /// While the daemon runs, who is working is on disk — not only at the
-    /// shutdown that a SIGKILL never runs.
-    #[test]
-    fn a_published_list_is_on_disk_in_the_live_roster() {
-        let dir = tempfile::tempdir().unwrap();
-        let live = LiveRoster::start(dir.path(), "0.2.2");
-        live.publish(vec![working("agent-1")]);
-        live.settle();
-
-        let written = live_file(dir.path()).expect("the live roster was written");
-        assert_eq!(written.agents, vec![working("agent-1")]);
-        assert_eq!(written.version, "0.2.2");
-        assert!(
-            !ResumeRoster::path(dir.path()).exists(),
-            "the roster proper is the clean shutdown's alone"
-        );
-        assert_eq!(files_in(dir.path()), vec![LIVE_ROSTER_FILE.to_string()]);
-    }
-
-    /// The newest list replaces the last, and nobody working leaves no file.
-    #[test]
-    fn the_live_roster_follows_the_newest_list_and_goes_when_it_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let live = LiveRoster::start(dir.path(), "0.2.2");
-        live.publish(vec![working("agent-1")]);
-        live.publish(vec![working("agent-1"), working("agent-2")]);
-        live.settle();
-        assert_eq!(live_file(dir.path()).unwrap().agents.len(), 2);
-
-        live.publish(Vec::new());
-        live.settle();
-        assert!(!live_path(dir.path()).exists());
-        assert!(
-            files_in(dir.path()).is_empty(),
-            "{:?}",
-            files_in(dir.path())
-        );
-    }
-
-    /// The hard kill: the writer is simply never told to finish, which is all
-    /// a SIGKILL, a panic or the power going looks like from the disk. The
-    /// next boot promotes what the live roster held and resumes it.
-    #[test]
-    fn a_death_that_runs_no_shutdown_leaves_a_roster_for_the_next_boot() {
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let live = LiveRoster::start(dir.path(), "0.2.2");
-            live.publish(vec![working("agent-1")]);
-            live.settle();
-        }
-
-        assert!(
-            promote_live_roster(dir.path()),
-            "the live roster is promoted"
-        );
-        assert!(!live_path(dir.path()).exists());
-        let roster = ResumeRoster::take(dir.path()).expect("a roster to resume from");
-        assert_eq!(roster.agents, vec![working("agent-1")]);
-    }
-
-    /// The clean shutdown writes the roster proper BEFORE it returns — the
-    /// daemon exits straight after — and clears the live file only after that
-    /// write. Nothing published afterwards, by harnesses dying on their way
-    /// down, brings the live file back.
-    #[test]
-    fn the_clean_shutdown_writes_the_roster_before_returning_then_clears_the_live_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let live = LiveRoster::start(dir.path(), "0.2.2");
-        live.publish(vec![working("agent-1")]);
-        live.publish(vec![working("agent-1"), working("agent-2")]);
-
-        assert_eq!(live.finish(true), Ok(2));
-        let roster = ResumeRoster::take(dir.path()).expect("the shutdown wrote a roster");
-        assert_eq!(
-            roster.agents,
-            vec![working("agent-1"), working("agent-2")],
-            "the newest list, written or not"
-        );
-        live.publish(Vec::new());
-        live.publish(vec![working("agent-3")]);
-        live.settle();
-        assert!(!live_path(dir.path()).exists());
-        assert!(
-            files_in(dir.path()).is_empty(),
-            "{:?}",
-            files_in(dir.path())
-        );
-        assert!(!promote_live_roster(dir.path()));
-    }
-
-    /// Races the writer: a list published a moment before shutdown may be
-    /// mid-write when `finish` runs, and that write must not land after the
-    /// live file has been removed.
-    #[test]
-    fn a_write_in_flight_at_shutdown_never_outlives_it() {
-        for round in 0..50 {
-            let dir = tempfile::tempdir().unwrap();
-            let live = LiveRoster::start(dir.path(), "0.2.2");
-            live.publish(vec![working(&format!("agent-{round}"))]);
-            assert_eq!(live.finish(true), Ok(1));
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            assert!(!live_path(dir.path()).exists(), "round {round}");
-            assert!(ResumeRoster::path(dir.path()).exists(), "round {round}");
-        }
-    }
-
-    /// Opting out of a roll records nobody at either file.
-    #[test]
-    fn an_opted_out_shutdown_leaves_neither_roster() {
-        let dir = tempfile::tempdir().unwrap();
-        let live = LiveRoster::start(dir.path(), "0.2.2");
-        live.publish(vec![working("agent-1")]);
-        live.settle();
-
-        assert_eq!(live.finish(false), Ok(0));
-        assert!(
-            files_in(dir.path()).is_empty(),
-            "{:?}",
-            files_in(dir.path())
-        );
-    }
-
-    /// Both on disk means the shutdown wrote its roster and died before it
-    /// removed the live one: the roster is the later word.
-    #[test]
-    fn a_clean_roster_wins_over_a_live_one_at_boot() {
-        let dir = tempfile::tempdir().unwrap();
-        roster().save(dir.path()).unwrap();
-        std::fs::write(live_path(dir.path()), "{ \"stale\": true }").unwrap();
-
-        assert!(!promote_live_roster(dir.path()));
-        assert!(!live_path(dir.path()).exists());
-        assert_eq!(ResumeRoster::take(dir.path()), Some(roster()));
-    }
-
-    /// The files are addresses, not content: ids, a session id, a time and a
-    /// version. Nothing an agent or a person said can ride along, because the
-    /// record has nowhere to put it.
-    #[test]
-    fn the_roster_file_holds_ids_and_nothing_else() {
-        let dir = tempfile::tempdir().unwrap();
-        let live = LiveRoster::start(dir.path(), "0.2.2");
-        live.publish(vec![working("agent-1")]);
-        live.settle();
-
-        let raw = std::fs::read_to_string(live_path(dir.path())).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let mut top: Vec<&str> = value
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        top.sort_unstable();
-        assert_eq!(top, ["agents", "recorded_at", "version"]);
-        for agent in value["agents"].as_array().unwrap() {
-            let mut keys: Vec<&str> = agent
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            keys.sort_unstable();
-            assert_eq!(
-                keys,
-                [
-                    "agent_id",
-                    "conversation_id",
-                    "entity_id",
-                    "resume_session_id",
-                    "was_working"
-                ]
-            );
-        }
     }
 
     #[test]

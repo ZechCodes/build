@@ -218,8 +218,8 @@ impl AppState {
             self.plans.remove(&id);
             self.projects.unbind_entity(&id);
             self.board.attention_mut().remove_entity_clocks(&id);
+            self.forget_live_roster_entity(&id);
         }
-        self.publish_live_roster();
         let capture_ids: Vec<_> = self
             .captures
             .values()

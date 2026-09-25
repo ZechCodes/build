@@ -171,7 +171,7 @@ impl AppState {
         // browsers, whatever started it. And the live roster, for the same
         // reason: a turn starting or stopping is a mutation like any other.
         self.note_entity_changed(&plan_id);
-        self.publish_live_roster();
+        self.publish_live_roster_for(&plan_id);
         persisted
     }
 
@@ -219,7 +219,7 @@ impl AppState {
         self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();
         self.note_entity_changed(&run_id);
-        self.publish_live_roster();
+        self.publish_live_roster_for(&run_id);
         persisted
     }
 

@@ -306,11 +306,15 @@ the delivery queue holds every turn for an agent inside it, and every bridge
 write inside it answers `busy`: `term.create`, the `git.*` verbs that change a
 tree or its refs, `fs.write`, `fs.mkdir`, attachments, `run.git_action`, Done,
 removals, renames and directory changes. The sweep measures the Git state and
-activity again and inspects the build output, with the lock released. Then,
-under the lock, it reads the holds, the Git state and each directory once
-more (still untracked and ignored, read from a fresh index), and renames each
-build output directory into the workspace's trash (`.build/reclaim`) before
-the reservation ends. Anything found keeps all of it. Build output is an ignored,
+activity again and inspects the build output, with the lock released. A final
+killable Git child reads one fresh index per repository and validates its
+candidates together. The five-second final budget includes that child, taking
+the lock again, cheap checks of holds, index and ignore-rule metadata, and
+candidate paths, and each rename into the workspace's trash (`.build/reclaim`). Deadline checks inside the loops
+stop further work, and any unfinished validation keeps the candidates and
+marks the verdict `unmeasured`. The reservation lasts through the moves.
+Configuration includes whose input files cannot be identified by libgit2's
+configuration API keep their build output. Build output is an ignored,
 untracked `node_modules`, `target`, `.venv` or `dist` inside one of the
 workspace's checkouts, reached without a symlink and holding no repository of
 its own (`bridge/src/reclaim/artifacts.rs`). The trash is emptied with the

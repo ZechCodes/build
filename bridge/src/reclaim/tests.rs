@@ -44,7 +44,7 @@ fn prune(subject: &Subject) -> u64 {
         return 0;
     };
     let artifacts = subject.build_output(&budget()).unwrap();
-    let moved = guard.move_to_trash(&artifacts);
+    let moved = guard.move_to_trash(&artifacts, &budget());
     guard.empty_trash(&budget());
     moved.iter().map(|artifact| artifact.bytes).sum()
 }

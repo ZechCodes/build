@@ -718,9 +718,9 @@ the workspace. Their payloads name the workspace (`workspace_id`,
 `workspace_name`) and its size. None of the three wakes the issue's trackers.
 
 The names in the table below describe additions to existing verbs, so the
-verb names alone cannot establish whether a bridge provides them. They are
-announce-only for the current SPA: it does not gate any behavior on them yet.
-They describe bridge support for clients that choose to consume them:
+verb names alone cannot establish whether a bridge provides them. The SPA
+gates features mapped by its capability adapter, including branch deletion;
+other names announce support for clients that choose to consume them:
 
 | Feature name | Shape or behavior announced | First available |
 | --- | --- | --- |
@@ -732,12 +732,13 @@ They describe bridge support for clients that choose to consume them:
 | `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
 | `params.strict` | A v1 verb refuses a top-level param its type does not declare (`invalid_params`, `unknown param: <name>`) | 1.24.0 |
 | `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
+| `branches.finishDelete` | `branch.finish` accepts `action: "delete"` to finish the workspace and delete its local branch | 1.24.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its
 corresponding capability flag off, even when the minor version would otherwise
 suggest it. Announcing other feature or verb names does not create new SPA
-gates; the names in that table are announcements only. For older 1.x greetings
+gates beyond those mapped by the adapter. For older 1.x greetings
 with no array, the v1 adapter keeps the historical feature mapping below. An
 explicit older nested boolean wins over the version default when present.
 Unknown names are ignored. A missing or malformed list on 1.22+ enables none

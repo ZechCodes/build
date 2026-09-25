@@ -14,7 +14,7 @@
 //! released, on a budget, and whatever is left is emptied by the next sweep.
 
 use super::budget::{Budget, Unfinished};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// The directory names build output goes under.
 pub const ARTIFACT_DIRS: [&str; 4] = ["node_modules", "target", ".venv", "dist"];
@@ -49,7 +49,7 @@ pub fn find(repository: &Path, budget: &Budget) -> Result<Vec<PathBuf>, Unfinish
     };
     let tracked: Vec<PathBuf> = index
         .iter()
-        .map(|entry| PathBuf::from(String::from_utf8_lossy(&entry.path).into_owned()))
+        .map(|entry| index_entry_path(entry.path))
         .collect();
     let mut found = Vec::new();
     let mut pending = vec![(repository.to_path_buf(), 0usize)];
@@ -87,31 +87,38 @@ fn holds_a_repository(directory: &Path) -> bool {
     std::fs::symlink_metadata(directory.join(".git")).is_ok()
 }
 
-/// Whether `artifact` is still build output, asked again of the disk and a
-/// freshly read index just before it is moved: still a real directory where
-/// it was, still ignored, nothing inside it tracked since (a `git add -f`),
-/// and no repository at its top. Cheap enough to ask under the app mutex:
-/// one index read and one ignore lookup.
-pub fn still_build_output(artifact: &Artifact) -> bool {
-    let Ok(relative) = artifact.path.strip_prefix(&artifact.repository) else {
-        return false;
-    };
-    let Ok(repo) = git2::Repository::open(&artifact.repository) else {
-        return false;
-    };
-    let Ok(index) = repo.index() else {
-        return false;
-    };
-    let tracked: Vec<PathBuf> = index
-        .iter()
-        .map(|entry| PathBuf::from(String::from_utf8_lossy(&entry.path).into_owned()))
-        .collect();
-    still_in_place(&artifact.path)
-        && !holds_a_repository(&artifact.path)
-        && is_build_output(&repo, relative, &tracked)
+/// The final check's cheap on-disk part. Index and ignore checks run together
+/// in the bounded Git child; this only rejects a moved/link target or a new
+/// repository at the candidate root before rename.
+pub fn still_candidate(artifact: &Artifact) -> bool {
+    still_in_place(&artifact.path) && !holds_a_repository(&artifact.path)
 }
 
-fn is_build_output(repo: &git2::Repository, relative: &Path, tracked: &[PathBuf]) -> bool {
+/// A child-probe request must stay within its repository. The caller gives
+/// paths relative to a canonical repository, and the child checks again.
+pub(super) fn valid_relative_candidate(relative: &Path) -> bool {
+    !relative.as_os_str().is_empty()
+        && relative
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+#[cfg(unix)]
+pub(super) fn index_entry_path(bytes: Vec<u8>) -> PathBuf {
+    use std::os::unix::ffi::OsStringExt;
+    std::ffi::OsString::from_vec(bytes).into()
+}
+
+#[cfg(not(unix))]
+pub(super) fn index_entry_path(bytes: Vec<u8>) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(super) fn is_build_output(
+    repo: &git2::Repository,
+    relative: &Path,
+    tracked: &[PathBuf],
+) -> bool {
     let named = relative
         .file_name()
         .and_then(|name| name.to_str())

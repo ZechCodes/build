@@ -33,6 +33,21 @@ fn issue_id(issue: &Value) -> String {
     issue["id"].as_str().unwrap().to_string()
 }
 
+#[tokio::test]
+async fn shutdown_can_cancel_reclaim_while_the_app_mutex_is_held() {
+    let (_tmp, state, _project, _ws, _issue) = linked_workspace();
+    let stop = AppState::spawn_workspace_reclaim(
+        state.clone(),
+        ReclaimPolicy {
+            first_sweep_after: std::time::Duration::from_secs(24 * 60 * 60),
+            ..ReclaimPolicy::default()
+        },
+    );
+    let app = state.lock().unwrap();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(app.reclaim_stop.load(std::sync::atomic::Ordering::Relaxed));
+}
+
 /// A project over a repository with an origin, one workspace in it, and one
 /// issue linked to that workspace: `(tempdir, state, project, workspace, issue)`.
 pub(super) fn linked_workspace() -> (

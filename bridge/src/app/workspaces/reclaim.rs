@@ -19,10 +19,12 @@
 //! agent turn is delivered in it, no terminal opens in it and nothing else
 //! removes it, and no Git verb, file write or directory change starts in it.
 //! Then its Git state and activity are measured again and its build output is
-//! inspected, with the mutex released. Under the mutex once more, the holds,
-//! the Git state and each directory are read a last time, and only then is the
-//! build output moved into the workspace's trash with one rename each, before
-//! the reservation ends. The trash is emptied afterwards, off the mutex.
+//! inspected, with the mutex released. A killable child reads the final Git
+//! state and one fresh index per repository, validating candidates in a batch.
+//! Under the mutex once more, holds, index metadata and candidate paths are
+//! checked cheaply before build output moves into the workspace's trash. The
+//! same final deadline bounds the child, checks and moves. The reservation
+//! ends before trash is emptied off the mutex.
 
 mod explicit;
 mod notice;
@@ -30,7 +32,9 @@ mod notice;
 use crate::app::{AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
-use crate::reclaim::{LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
+use crate::reclaim::{
+    Budget, IndexSnapshot, LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject,
+};
 use crate::tracker::{Actor, Issue, IssueEventKind, IssueState};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
@@ -90,6 +94,8 @@ pub(in crate::app) enum PrunePhase {
     /// Measured again and the build output inspected, before the last look
     /// and the move.
     Inspected,
+    /// The final child has validated candidates, before the locked move.
+    Validated,
 }
 
 /// A workspace the project agent is about to hear about.
@@ -107,7 +113,10 @@ fn now_ms() -> i64 {
 impl AppState {
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
-    pub fn spawn_workspace_reclaim(state: Arc<Mutex<AppState>>, policy: ReclaimPolicy) -> Arc<AtomicBool> {
+    pub fn spawn_workspace_reclaim(
+        state: Arc<Mutex<AppState>>,
+        policy: ReclaimPolicy,
+    ) -> Arc<AtomicBool> {
         let (nudge, stop) = {
             let mut app = state.lock().unwrap();
             app.reclaim_policy = policy.clone();
@@ -201,7 +210,7 @@ impl AppState {
         policy: &ReclaimPolicy,
         racer: &dyn Fn(PrunePhase),
     ) -> LifecycleRecord {
-        let Some(root) = subject.canonical_root() else {
+        if subject.canonical_root().is_none() {
             let mut record = record;
             record.unmeasured();
             return record;
@@ -228,17 +237,39 @@ impl AppState {
         let budget = policy.budget(Arc::clone(&stop));
         let mut fresh = subject.measure(now_ms, policy, &budget);
         let artifacts = if fresh.idle && fresh.reclaimable {
-            subject.build_output(&budget).unwrap_or_default()
+            match subject.build_output(&budget) {
+                Ok(artifacts) => artifacts,
+                Err(_) => {
+                    fresh.unmeasured();
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
         racer(PrunePhase::Inspected);
+        // The reservation stays live while the killable child validates the
+        // final Git state and all candidates; RPCs can still take the mutex.
+        let last_look = policy.final_check_budget(Arc::clone(&stop));
+        let snapshots = if artifacts.is_empty() {
+            if subject.canonical_root().is_none() {
+                fresh.unmeasured();
+            }
+            None
+        } else {
+            subject.confirm_build_output(&mut fresh, &artifacts, policy, &last_look)
+        };
+        if snapshots.is_some() {
+            racer(PrunePhase::Validated);
+        }
         let moved = {
             let mut app = state.lock().unwrap();
             let moved = if app.spoken_to_since(&subject, &mut fresh) {
                 Vec::new()
+            } else if let Some(snapshots) = &snapshots {
+                app.move_build_output(&subject, &artifacts, &mut fresh, snapshots, &last_look)
             } else {
-                app.move_build_output(&subject, &root, &artifacts, &mut fresh, policy, &stop)
+                Vec::new()
             };
             app.release_reservation(&subject.workspace_id);
             moved
@@ -262,28 +293,17 @@ impl AppState {
         fresh
     }
 
-    /// The last look, under the mutex and the reservation, and the move.
-    ///
-    /// The holds only the app state knows are read again. Then Git is read
-    /// again: inspecting build output can take minutes, and a commit, a
-    /// `git add -f` or an edit that landed meanwhile, by anything Build did
-    /// not start, is found here. Then each directory is asked again whether it
-    /// is still untracked, ignored build output. Anything found keeps every
-    /// directory where it is, and the verdict says why.
+    /// Only cheap checks remain under the mutex. The same deadline that
+    /// bounded the child is checked inside each loop and each rename.
     fn move_build_output(
         &self,
         subject: &Subject,
-        root: &Path,
         artifacts: &[Artifact],
         record: &mut LifecycleRecord,
-        policy: &ReclaimPolicy,
-        stop: &Arc<AtomicBool>,
+        snapshots: &[IndexSnapshot],
+        last_look: &Budget,
     ) -> Vec<Artifact> {
-        if subject
-            .boundary
-            .as_ref()
-            .is_none_or(|boundary| boundary.validate().is_err())
-        {
+        if last_look.check().is_err() {
             record.unmeasured();
             return Vec::new();
         }
@@ -295,25 +315,17 @@ impl AppState {
             }
             None => return Vec::new(),
         }
-        let last_look = policy.final_check_budget(Arc::clone(stop));
-        if artifacts.is_empty() || !subject.confirm_git(record, policy, &last_look) {
-            return Vec::new();
+        for snapshot in snapshots {
+            if last_look.check().is_err() || !snapshot.unchanged() {
+                record.unmeasured();
+                return Vec::new();
+            }
         }
-        if let Some(changed) = artifacts
-            .iter()
-            .find(|artifact| !artifacts::still_build_output(artifact))
-        {
-            eprintln!(
-                "workspace reclaim: {} changed while it was inspected; nothing moved",
-                changed.path.display()
-            );
-            return Vec::new();
-        }
-        // The daemon stopping, or the last look running out of time, while
-        // it was taken: nothing moves.
-        if last_look.check().is_err() {
-            record.unmeasured();
-            return Vec::new();
+        for artifact in artifacts {
+            if last_look.check().is_err() || !artifacts::still_candidate(artifact) {
+                record.unmeasured();
+                return Vec::new();
+            }
         }
         let Some(guard) = subject
             .boundary
@@ -323,11 +335,11 @@ impl AppState {
             record.unmeasured();
             return Vec::new();
         };
-        if guard.expected_root() != root {
+        let moved = guard.move_to_trash(artifacts, last_look);
+        if last_look.check().is_err() {
             record.unmeasured();
-            return Vec::new();
         }
-        guard.move_to_trash(artifacts)
+        moved
     }
 
     /// Whether somebody wrote to the workspace's conversation since `subject`

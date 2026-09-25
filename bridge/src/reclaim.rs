@@ -21,10 +21,12 @@ mod git_probe;
 mod measure;
 
 pub use budget::{Budget, Unfinished};
-pub use git_probe::{reading_line as git_reading_line, GitProbe};
+pub use git_probe::{reading_line as git_reading_line, GitProbe, IndexSnapshot};
+pub use measure::{
+    measure_repositories, measure_repositories_with_candidates, newest_change_ms, RepositoryMeasure,
+};
 #[cfg(unix)]
-pub use measure::measure_repositories_pinned;
-pub use measure::{measure_repositories, newest_change_ms, RepositoryMeasure};
+pub use measure::{measure_repositories_pinned, measure_repositories_pinned_with_candidates};
 
 use artifacts::Artifact;
 use containment::WorkspaceBoundary;
@@ -50,8 +52,8 @@ pub const DEFAULT_MEASURE_ENTRIES: u64 = 2_000_000;
 /// How long measuring one workspace may take.
 pub const DEFAULT_MEASURE_TIME: Duration = Duration::from_secs(120);
 /// How long the last look at a workspace's Git state may take, just before
-/// its build output is moved. It is taken under the app mutex, so it is
-/// short: a workspace too slow to read in it keeps its build output.
+/// its build output is moved. Git and candidate indexes are read off the app
+/// mutex; the same deadline bounds the cheap locked checks and final moves.
 pub const DEFAULT_FINAL_CHECK_TIME: Duration = Duration::from_secs(5);
 
 /// How every refusal of `workspace.reclaim` begins.
@@ -369,6 +371,49 @@ impl Subject {
             }
             _ => false,
         }
+    }
+
+    /// Read Git and all candidate indexes off the app mutex, in the killable
+    /// child. The returned index metadata is cheap to recheck under the mutex.
+    pub fn confirm_build_output(
+        &self,
+        record: &mut LifecycleRecord,
+        artifacts: &[Artifact],
+        policy: &ReclaimPolicy,
+        budget: &Budget,
+    ) -> Option<Vec<IndexSnapshot>> {
+        if budget.check().is_err() {
+            record.unmeasured();
+            return None;
+        }
+        let guard = self
+            .boundary
+            .as_ref()
+            .and_then(|boundary| boundary.validate().ok());
+        let Some(repositories) = guard
+            .as_ref()
+            .and_then(|guard| self.pinned_repositories(guard))
+        else {
+            record.unmeasured();
+            return None;
+        };
+        let git = measure_repositories_pinned_with_candidates(
+            &repositories,
+            artifacts,
+            budget,
+            &policy.git,
+        );
+        if git.unfinished {
+            record.unmeasured();
+            return None;
+        }
+        record.dirty_files = git.dirty_files;
+        record.unpushed_commits = git.unpushed_commits;
+        record.hold(&git.holds);
+        if !git.holds.is_empty() || !git.candidates_valid {
+            return None;
+        }
+        Some(git.index_snapshots)
     }
 
     /// Read the Git state once more, as the last look before build output is

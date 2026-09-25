@@ -323,8 +323,8 @@ impl ValidatedBoundary {
             .map_err(|_| super::Unfinished)
     }
 
-    pub fn move_to_trash(&self, artifacts: &[Artifact]) -> Vec<Artifact> {
-        if self.ensure_current().is_err() {
+    pub fn move_to_trash(&self, artifacts: &[Artifact], budget: &Budget) -> Vec<Artifact> {
+        if budget.check().is_err() || self.ensure_current().is_err() {
             return Vec::new();
         }
         let Ok(trash) = self.trash(true) else {
@@ -337,6 +337,7 @@ impl ValidatedBoundary {
         artifacts
             .iter()
             .enumerate()
+            .take_while(|_| budget.check().is_ok())
             .filter_map(|(index, artifact)| {
                 self.ensure_current().ok()?;
                 let relative = artifact.path.strip_prefix(&self.expected_root).ok()?;
@@ -353,6 +354,7 @@ impl ValidatedBoundary {
                     return None;
                 }
                 let target = format!("{stamp}-{index}-{}", name.to_string_lossy());
+                budget.check().ok()?;
                 rename_child(
                     parent.as_raw_fd(),
                     name,

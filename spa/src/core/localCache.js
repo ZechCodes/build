@@ -353,11 +353,17 @@ function outlasted() {
 }
 
 /** Reach the database through a lost connection: every attempt on the
- *  backoff, resting when they run out. */
+ *  backoff, resting when they run out. A reopen during an outage starts as far
+ *  along the backoff as the outage already is. The backoff lives here and not
+ *  in the operations: everything that wants the database waits on this one
+ *  opening, and goes through it in the order it asked — so a write retried
+ *  after a failed transaction still lands before one asked for after it. */
 async function reachDb() {
   const delays = timing.reopenDelaysMs;
+  const along = outage ? outage.attempts : 0;
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
-    if (attempt > 0) await pause(delays[attempt]);
+    const step = attempt + along;
+    if (step > 0) await pause(delays[Math.min(step, delays.length - 1)]);
     if (disabled) return null;
     const { db, error } = await openOnce();
     if (db) return db;
@@ -477,12 +483,12 @@ async function reachableDb() {
 }
 
 /** One operation's attempts on a connection that keeps failing it. Waiting
- *  for the database to come back spends none of them. */
+ *  for the database to come back spends none of them, and there is no pause
+ *  between them: the reopen carries the backoff (see `reachDb`). */
 async function attemptOperation(mode, run) {
   const delays = timing.reopenDelaysMs;
   let outcome = UNAVAILABLE;
   for (let attempt = 0; attempt < delays.length; attempt += 1) {
-    if (attempt > 0) await pause(delays[attempt]);
     const reached = await reachableDb();
     if (!reached) return UNAVAILABLE;
     outcome = await attemptTransaction(reached.db, mode, run);

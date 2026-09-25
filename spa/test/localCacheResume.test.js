@@ -156,6 +156,30 @@ describe("a connection lost across a resume", () => {
     expect(cacheEvents()[1]).toMatchObject({ forMs: FAST_RECOVERY.restMs, error: "UnknownError" });
   });
 
+  it("keeps two writes to one record in the order they were asked when the first is retried", async () => {
+    // A push writes "running", and its transaction dies with the connection;
+    // the next push writes "done" while the first waits to retry. The retry
+    // must not land on top of the newer write.
+    cache.setCacheRecoveryTiming({ ...FAST_RECOVERY, reopenDelaysMs: [0, 50, 100, 150] });
+    await cache.writeCached(address, { status: "queued" });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let failed = false;
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      if (!failed) {
+        failed = true;
+        throw connectionLost();
+      }
+      return originalTransaction.apply(this, args);
+    });
+
+    const running = cache.writeCached(address, { status: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const done = cache.writeCached(address, { status: "done" });
+    await Promise.all([running, done]);
+
+    expect((await cache.readCached(address))?.value).toEqual({ status: "done" });
+  });
+
   it("makes a write asked for while the cache rests once the database is back", async () => {
     await cache.writeCached(address, { head: "before" });
     const heard = [];

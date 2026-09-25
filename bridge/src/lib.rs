@@ -67,6 +67,7 @@ pub mod identity;
 pub mod isolation;
 pub mod lifecycle;
 pub mod liveness;
+#[cfg(unix)]
 pub mod logfile;
 pub mod logline;
 pub mod mcp;

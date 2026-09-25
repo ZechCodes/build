@@ -27,10 +27,13 @@ add the browser's own storage error names and messages.
 
 A tab whose screens went blank while its connections look healthy may have lost
 its local cache instead: `buildCacheHealth()` answers `ready`, `recovering`,
-`resting` or `stood-down` with when and the error, and the dump above carries the
-cache's own events under `local-cache` (connection lost, resting, recovered,
-stood down, each with the page's visibility and `sinceShownMs`, how long after
-the page was last shown). On a phone both are in Settings: the dump under
+`resting`, `blocked` or `stood-down` with when and the error, and the dump above
+carries the cache's own events under `local-cache` (connection lost, resting,
+recovered, open blocked, write refused, stood down, each with the page's
+visibility and `sinceShownMs`, how long after the page was last shown). A
+stand-down's `reason` says which: `open-failed` (a private window, or a newer
+version), `persistent` (it never came back), `blocked` (a tab on an older build
+held it) or `transaction-failed`. On a phone both are in Settings: the dump under
 Diagnostics, and the "Local cache" line under the build line.
 
 To ask whether a tab that reads connected is still carried right now, run

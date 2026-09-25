@@ -90,9 +90,12 @@ const DEFAULT_TIMING = Object.freeze({
    *  the last several seconds on, about eight in all — long enough to outlast
    *  WebKit reconnecting to its storage process after a resume. */
   reopenDelaysMs: Object.freeze([0, 50, 150, 400, 1000, 2000, 4000]),
-  /** How long an open may stay pending before it counts as lost. WebKit has
-   *  left an open unanswered after a resume. An upgrade blocked by another tab
-   *  is waited on for `blockedTimeoutMs` instead. */
+  /** How long an open may stay pending before it counts as a failed attempt.
+   *  This bounds what one attempt costs, and little more: a hung open holds
+   *  the origin's connection queue, so the opens retried after it queue behind
+   *  it, and a hang the browser never answers spends the round (about
+   *  forty seconds) and then rests. An upgrade blocked by another tab is
+   *  waited on for `blockedTimeoutMs` instead. */
   openTimeoutMs: 5000,
   /** How long an upgrade waits for another tab to close its older connection.
    *  A tab on this build closes at once when told to; one on a build before

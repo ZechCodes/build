@@ -58,9 +58,14 @@ function refNames(host) {
   return [...host.querySelectorAll("[data-ref]")].map((row) => row.textContent);
 }
 
-async function mount({ checkoutError, refsResponse = listing } = {}) {
+async function mount({ checkoutError, refsResponse = listing, refsAnswers = [] } = {}) {
   const host = document.querySelector("#host");
   const callRpc = vi.fn(async (method) => {
+    if (method === "git.refs" && refsAnswers.length) {
+      const next = refsAnswers.shift();
+      if (next instanceof Error) throw next;
+      return next;
+    }
     if (method === "git.refs") return refsResponse;
     if (method === "git.checkout_ref" && checkoutError) throw checkoutError;
     return {};
@@ -160,5 +165,58 @@ describe("workspace ref picker", () => {
     expect(toggle.textContent).toContain("main");
     expect(host.querySelector(".workspace-referror").textContent).toContain("local changes would be overwritten");
     expect(onCheckout).not.toHaveBeenCalled();
+  });
+
+  it("clears a refused refs read once a later read lands", async () => {
+    const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+    await writeCached(address, listing);
+    const { host, callRpc } = await mount({ refsAnswers: [new Error("Not a git repository")] });
+    const status = host.querySelector('[role="status"]');
+    await vi.waitFor(() => expect(status.textContent).toBe("Not a git repository"));
+
+    host.querySelector("[data-refpicker-toggle]").click();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(2));
+    await vi.waitFor(() => expect(status.textContent).toBe(""));
+    expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main");
+  });
+
+  it("clears a refused refs read when the cache takes a new record", async () => {
+    const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+    const { host } = await mount({ refsAnswers: [new Error("Not a git repository")], refsResponse: { ...listing } });
+    const status = host.querySelector('[role="status"]');
+    await vi.waitFor(() => expect(status.textContent).toBe("Not a git repository"));
+    expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("Refs unavailable");
+
+    await writeCached(address, listing);
+    await vi.waitFor(() => expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main"));
+    expect(status.textContent).toBe("");
+  });
+
+  it.each([["Device offline"], ["Device not reachable"], ["App is out of date"], ["the channel closed"]])(
+    "never writes %s, the machine's state, over the cached refs",
+    async (mark) => {
+      const address = cacheScope.address({ entityId: 'workspace:["ws-1","repo"]', kind: "refs" });
+      await writeCached(address, listing);
+      const { host, callRpc } = await mount({ refsAnswers: [new Error(mark)] });
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("git.refs", scope));
+      await flush();
+      expect(host.querySelector(".workspace-reftrigger-name").textContent).toBe("main");
+      expect(host.querySelector('[role="status"]').textContent).toBe("");
+    },
+  );
+
+  it("keeps a checkout refusal when a refs read lands after it", async () => {
+    const refusal = new Error("Cannot switch: local changes would be overwritten");
+    const { host, callRpc } = await mount({ checkoutError: refusal });
+    const toggle = host.querySelector("[data-refpicker-toggle]");
+    toggle.click();
+    host.querySelector('[data-ref="refs/heads/feature/search"]').click();
+    await vi.waitFor(() => expect(host.querySelector('[role="status"]').textContent).toContain("local changes"));
+
+    toggle.click();
+    toggle.click();
+    await vi.waitFor(() => expect(callRpc.mock.calls.filter(([method]) => method === "git.refs")).toHaveLength(3));
+    await flush();
+    expect(host.querySelector('[role="status"]').textContent).toContain("local changes");
   });
 });

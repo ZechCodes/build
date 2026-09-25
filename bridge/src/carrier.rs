@@ -784,6 +784,7 @@ impl FrameIntake {
         }
         if let Some(pong) = pong_for(&frame) {
             sender.push(pong);
+            self.registry.ledger.pinged(&envelope.session_id);
             return Ok(());
         }
         // The receipt goes out the moment the frame is admitted, before
@@ -1751,6 +1752,36 @@ mod intake_tests {
     /// path that was carrying, and the session was re-minted every few seconds
     /// for a day. The question a ping asks is whether the frame gets there and
     /// back, so it is answered before the queue.
+    /// Every ping the intake answers is told to its ledger, which is where a
+    /// session's summary counts them and the gaps between them (#131).
+    #[tokio::test]
+    async fn an_answered_ping_is_told_to_the_ledger() {
+        let ledger = crate::transport_ledger::RecordingLedger::new();
+        let intake = FrameIntake::with_ledger(
+            FrameHandler::new(
+                crate::timing::FrameClock::new(),
+                |_sender, _frame, _timer| json!({ "ok": true }),
+            ),
+            TRANSPORT.clone(),
+            ledger.clone(),
+        );
+        let (carrier, _out) = CarrierHandle::open_channel();
+        let key = transport::generate_session_key();
+        intake
+            .open("s-1", &session_init("s-1", &key), &carrier)
+            .unwrap();
+        for id in 0..2 {
+            intake
+                .accept(
+                    client_request(&key, "s-1", "data", json!({ "id": id, "method": "ping" })),
+                    &carrier,
+                )
+                .await
+                .expect("the ping was admitted");
+        }
+        assert_eq!(ledger.pings_of("s-1"), 2);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_ping_answers_while_every_worker_and_the_queue_are_full() {
         let intake = FrameIntake::with_pool(

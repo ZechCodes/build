@@ -67,7 +67,7 @@ use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::resume::{promote_live_roster, shut_down, LiveRoster};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
-use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
+use build_bridge::transport_ledger::{FanOutLedger, StderrLedger, SummaryLedger};
 use build_bridge::transport_report::TransportReporter;
 use build_bridge::update::{UpdateConfig, UpdateService};
 use build_bridge::{identity, pairing, service, transport};
@@ -564,6 +564,7 @@ async fn run_daemon(
     // content-free: a session id, a word, a candidate type.
     let ledger = FanOutLedger::new(vec![
         Arc::new(StderrLedger),
+        SummaryLedger::new(),
         TransportReporter::start(
             &runtime.config.api_url,
             &identity.device_id,

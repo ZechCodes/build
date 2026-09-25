@@ -176,7 +176,7 @@ move together, and the new fixtures' `since` equals that number.
 
 | Verb | Params | Result |
 | --- | --- | --- |
-| `issues.list` | `{project_id, state?, status?, assignee?, label?}` | `{issues: [Issue], user_session}` — see [The user's session](#the-users-session) |
+| `issues.list` | `{project_id, state?, status?, assignee?, label?, limit?, cursor?}` | `{issues: [Issue], user_session, next_cursor?}` — see [The user's session](#the-users-session) |
 | `issues.get` | `{issue_id}` | `{issue, timeline: [TimelineEntry]}` |
 | `issues.create` | `{project_id, title, body?, status?, labels?, priority?, assignee?, links?}` | `{issue, dispatch}` |
 | `issues.update` | `{issue_id, title?, body?, labels?, priority?, status?, state?}` | `{issue}` |
@@ -196,9 +196,22 @@ Notes on each:
   optional and they are ANDed. `state` absent means both; `assignee` takes the
   actor shape, plus the two words `"none"` (unassigned) and `"any"`. `state` and
   `status` are answered in SQL off the hoisted columns; `assignee` and `label`
-  live inside the record and are applied to what that read answers. All four are
-  params of the verb either way — a client sends them rather than filtering what
-  it was given.
+  live inside the record and are applied to each row as that read goes. All four
+  are params of the verb either way — a client sends them rather than filtering
+  what it was given.
+- **Paging `issues.list`** (1.24, announced as `issues.listPaged`, #85). `limit`
+  (1 to 500) answers at most that many issues, and `next_cursor` is present only
+  when more follow. Handing it back as `cursor` with the same filter answers the
+  issues numbered below the last one the page answered, so an issue filed while
+  a client pages lands above the first page and never shifts a row across a
+  cursor. The cursor is opaque and carries a digest of the filter it was made
+  under (project, state, status, assignee, label, as each means rather than as
+  it was spelled); with any other filter it is refused (`invalid_params`,
+  "Build cannot continue this list: the cursor was made for a different
+  filter."), and one this bridge did not make is refused as "Build cannot read
+  this cursor: ask for the list again from the start." No `limit` is the whole
+  list, as before. A page reads only its own rows' timelines, so it holds the
+  app lock for no longer than the whole list does.
 - **`issues.get`** answers the issue and its whole timeline. Comments and events
   interleave into one ascending list ordered by `(created_at|at, id)` — ids are
   time-ordered, so equal timestamps still have one stable order. An entry is the

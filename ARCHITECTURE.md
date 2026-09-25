@@ -213,7 +213,9 @@ runtime that starts them.
   `1.25.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0 adds
-  `workspaces.reclaimBranches` and `settings.workspaceLifecycle`.
+  `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
+  `issues.listPaged` (`limit`/`cursor` on `issues.list`,
+  `bridge/src/app/tracker/pages.rs`).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.

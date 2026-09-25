@@ -60,6 +60,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "issues.commentUserNotifies",
     "issues.context",
     "issues.doneSinceLeft",
+    "issues.listPaged",
     "issues.watching",
     "messages.context",
     "messages.fromAgent",

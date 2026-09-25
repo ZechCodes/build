@@ -653,11 +653,12 @@ Issues spec), `messages.issueNotices`, `board.usageLimits`,
 `issues.commentUserNotifies` (`notifies_user` on issue comments, and the
 narrower "needs you" rule it makes possible; see the Issues spec),
 `params.strict` (an undeclared param is refused; step 2.2),
-`workspaces.lifecycle` (see below), and
-`branches.finishDelete` (`branch.finish` honours `action: "delete"`), and
+`workspaces.lifecycle` (see below),
+`branches.finishDelete` (`branch.finish` honours `action: "delete"`),
 `workspaces.reclaimBranches` (`workspace.reclaim` deletes the workspace's local
-branches, see below), and `settings.workspaceLifecycle` (the reclaim service's
-idle threshold and prune switch on `settings.*`, see below). The method registry
+branches, see below), `settings.workspaceLifecycle` (the reclaim service's
+idle threshold and prune switch on `settings.*`, see below), and
+`issues.listPaged` (`issues.list` pages; see below). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -700,6 +701,27 @@ ref at a newer commit is left untouched and reported as a refusal.
 Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.
+
+`issues.listPaged` (since 1.24.0, #85) announces `limit` and `cursor` on
+`issues.list` and `next_cursor` in its answer. `limit` is 1 to 500 and asks for
+at most that many issues, in the list's own order (number descending); absent,
+the list is whole, as it always was. A page with more after it carries
+`next_cursor`, an opaque string; sent back as `cursor` with the same filter, it
+answers the issues numbered below the last one the page held. Numbers never
+move, so an issue filed between pages lands above the first page (where the
+next read from the top finds it) and never moves a row across a cursor; an
+issue that leaves the filter between pages is simply not on the next one. A
+cursor names the filter it was made under — project, `state`, `status`,
+`assignee` and `label`, compared as they mean, so a column's display name and
+its slug are one filter — and with any other filter it is refused
+(`invalid_params`, "Build cannot continue this list: the cursor was made for a
+different filter."). A cursor this bridge cannot read is refused as "Build
+cannot read this cursor: ask for the list again from the start.", and a limit
+out of range as "Build cannot list 0 issues at a time: a page holds 1 to 500."
+Every page carries `project_id` and `user_session` like the whole list. A client
+sends `limit` and `cursor` only to a bridge that announces the name
+(`params.strict` refuses them elsewhere). `fixtures/api/v1/issues.list.json`
+carries a two-page example under `examples`.
 
 `workspaces.lifecycle` (since 1.24.0, #135) announces the workspace reclaim
 service. Each `workspace.list` row carries `lifecycle`, the service's last
@@ -787,6 +809,8 @@ other names announce support for clients that choose to consume them:
 | `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
 | `settings.workspaceLifecycle` | `workspace_idle_secs`, `workspace_prune` and `workspace_pinned` on `settings.*` | 1.25.0 |
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
+| `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.24.0 |
+
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

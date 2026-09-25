@@ -34,6 +34,14 @@ pub struct IssueFilter<'a> {
     pub status: Option<&'a str>,
 }
 
+/// Where a list read starts and how much of it to read: the issues numbered
+/// below `below`, at most `take` of them. The default is the whole list.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct IssueSeek {
+    pub below: Option<u64>,
+    pub take: Option<usize>,
+}
+
 impl IssueFilter<'_> {
     /// The `WHERE` tail this filter adds, and the values it binds after the
     /// project key. Built together so a clause can never outnumber its binds.
@@ -114,22 +122,56 @@ impl Store {
         project_path: &str,
         filter: IssueFilter<'_>,
     ) -> Result<Vec<Issue>, StoreError> {
+        self.list_tracker_issues_below(project_path, filter, IssueSeek::default(), |_| true)
+    }
+
+    /// One stretch of a project's list, newest first: the issues numbered
+    /// below `seek.below` that `keep` keeps, and no more than `seek.take` of
+    /// them (#85).
+    ///
+    /// Read down the `(project, number)` index and stopped as soon as the
+    /// stretch is full, so a page costs the rows it answers and the ones
+    /// `keep` passed over on the way, never the whole project. `keep` is the
+    /// caller's half of the filter — an assignee, a label — applied here so
+    /// the stretch counts only what it keeps.
+    pub fn list_tracker_issues_below(
+        &self,
+        project_path: &str,
+        filter: IssueFilter<'_>,
+        seek: IssueSeek,
+        mut keep: impl FnMut(&Issue) -> bool,
+    ) -> Result<Vec<Issue>, StoreError> {
         let (tail, binds) = filter.clause();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_path.to_string())];
+        values.extend(
+            binds
+                .into_iter()
+                .map(|bind| Box::new(bind) as Box<dyn rusqlite::ToSql>),
+        );
+        let below = match seek.below {
+            Some(number) => {
+                values.push(Box::new(i64::try_from(number).unwrap_or(i64::MAX)));
+                format!(" AND number < ?{}", values.len())
+            }
+            None => String::new(),
+        };
         let sql = format!(
-            "SELECT id, record FROM tracker_issues WHERE project_key = ?1{tail} \
+            "SELECT id, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
              ORDER BY number DESC"
         );
         let conn = self.connection();
         let mut statement = conn.prepare(&sql)?;
-        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&project_path];
-        values.extend(binds.iter().map(|bind| bind as &dyn rusqlite::ToSql));
-        let rows: Vec<(String, String)> = statement
-            .query_map(values.as_slice(), |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<_, _>>()?;
-        drop(statement);
-        rows.into_iter()
-            .map(|(id, raw)| decode(&raw, "tracker_issues", &id))
-            .collect()
+        let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
+        let mut kept = Vec::new();
+        while seek.take.is_none_or(|take| kept.len() < take) {
+            let Some(row) = rows.next()? else { break };
+            let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+            let issue = decode(&raw, "tracker_issues", &id)?;
+            if keep(&issue) {
+                kept.push(issue);
+            }
+        }
+        Ok(kept)
     }
 
     /// One comment by its id, and the issue it is on.

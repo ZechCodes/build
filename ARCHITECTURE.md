@@ -270,8 +270,13 @@ workspace under the app lock, then measures it with the lock released
 activity (a conversation message, a commit, a file change outside `.git`,
 `.build` and build output), dirty and unpushed counts, and the linked issues.
 Every walk spends from one budget per workspace (2 million entries, two
-minutes, and the daemon's stop flag, `bridge/src/reclaim/budget.rs`). A
-measurement that runs out is held as `unmeasured` and is not called idle. A
+minutes, and the daemon's stop flag, `bridge/src/reclaim/budget.rs`). Git is
+read in a process of its own, `build-bridge measure-git`, one repository at a
+time (`bridge/src/reclaim/git_probe.rs`): libgit2's status, history walk and
+diff cannot be interrupted, so the service kills and reaps the reading when
+the budget runs out or the daemon stops. A measurement that runs out anywhere
+(a Git reading, the activity walk, the size walk, or a budget found spent at
+the end) is held as `unmeasured`: not idle, not reclaimable. A
 sweep then takes the lock again to write the verdict. `workspace.list` rows
 carry it as `lifecycle`. A workspace is idle after 24 h
 (`BRIDGE_WORKSPACE_IDLE_SECS`). What holds it: not ready, an agent working or a
@@ -304,7 +309,9 @@ The bridge never removes a workspace on its own. `workspace.reclaim` (the
 project agent's `reclaim_workspace`, `app/workspaces/reclaim/explicit.rs`)
 refuses at once on the holds the app state knows, then reserves the workspace
 and measures Git off the lock. A deferred write-back can hand the drain
-another stage (`AppState::apply_deferred_stage`): once measured, reclaim reads
+another stage (`AppState::apply_deferred_stage`). The measurement is the
+sweep's, on the same budget and the same killable reading, so it has ended
+before the reservation's 15-minute backstop could. Once measured, reclaim reads
 every hold again under the lock, reads Git once more on a short budget (five
 seconds, `unmeasured` past it) so a commit that landed meanwhile still holds
 the workspace, logs `workspace_reclaimed` on each linked

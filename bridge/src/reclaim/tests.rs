@@ -223,6 +223,149 @@ fn a_measurement_out_of_budget_is_held_and_not_idle() {
     assert!(subject(&root, &checkout).build_output(&tight(3)).is_err());
 }
 
+/// Stands in for `build-bridge measure-git` under `cargo test`: the probe
+/// runs this binary with only this test selected and the repository in the
+/// environment. Run any other way, it does nothing.
+#[test]
+fn git_reading_child() {
+    if std::env::var_os(git_probe::REPOSITORY_VAR).is_some() {
+        println!("{}", git_reading_line());
+    }
+}
+
+/// A probe that writes its pid to `pid` and then never finishes.
+fn hanging_probe(pid: &Path) -> GitProbe {
+    GitProbe::command(
+        "/bin/sh",
+        &[
+            "-c",
+            &format!("echo $$ > '{}'; exec sleep 60", pid.display()),
+        ],
+    )
+}
+
+/// Whether the process `pid` names is gone: killed, and reaped.
+fn gone(pid: &Path) -> bool {
+    let pid: i32 = std::fs::read_to_string(pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) != 0 }
+}
+
+/// A clean, pushed checkout of 5,000 tracked files, measured on a 2 ms
+/// budget: its Git reading cannot finish in time, so the workspace is held
+/// as unmeasured, not idle and not reclaimable. With the default budget the
+/// same workspace is idle and reclaimable.
+#[test]
+fn five_thousand_files_over_a_tiny_budget_are_unmeasured() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = init_repo_named(tmp.path(), "source");
+    let many = source.join(".build/many");
+    std::fs::create_dir_all(&many).unwrap();
+    for index in 0..5_000 {
+        std::fs::write(many.join(format!("{index}.txt")), "x").unwrap();
+    }
+    git_in(&source, &["add", "."]);
+    git_in(&source, &["commit", "-q", "-m", "many files"]);
+    let root = tmp.path().join("ws");
+    std::fs::create_dir(&root).unwrap();
+    let checkout = root.join("Build");
+    git_in(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            source.to_str().unwrap(),
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let policy = ReclaimPolicy::default();
+    let two_ms = Budget::new(
+        DEFAULT_MEASURE_ENTRIES,
+        std::time::Duration::from_millis(2),
+        Default::default(),
+    );
+
+    let starved = subject(&root, &checkout).measure(tomorrow(), &policy, &two_ms);
+
+    assert!(!starved.idle, "{starved:?}");
+    assert!(!starved.reclaimable, "{starved:?}");
+    assert!(starved.holds.contains(&HOLD_UNMEASURED.to_string()));
+    let fed = subject(&root, &checkout).measure(tomorrow(), &policy, &budget());
+    assert!(fed.idle && fed.reclaimable, "{fed:?}");
+}
+
+/// A Git reading still running when the budget runs out is killed and
+/// reaped, and the measurement says it did not finish.
+#[test]
+fn a_reading_past_its_deadline_is_killed() {
+    let (tmp, _root, checkout) = pushed_workspace();
+    let pid = tmp.path().join("reading.pid");
+    let short = Budget::new(
+        DEFAULT_MEASURE_ENTRIES,
+        std::time::Duration::from_millis(500),
+        Default::default(),
+    );
+    let started = std::time::Instant::now();
+
+    let measured = measure_repositories(&[checkout], &short, &hanging_probe(&pid));
+
+    assert!(measured.unfinished, "{measured:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(gone(&pid), "the reading was killed");
+}
+
+/// The daemon stopping kills a Git reading in flight.
+#[test]
+fn a_stop_kills_a_reading_in_flight() {
+    let (tmp, _root, checkout) = pushed_workspace();
+    let pid = tmp.path().join("reading.pid");
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = {
+        let (stop, pid) = (Arc::clone(&stop), pid.clone());
+        std::thread::spawn(move || {
+            while !pid.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        })
+    };
+    let started = std::time::Instant::now();
+
+    let measured = measure_repositories(
+        &[checkout],
+        &ReclaimPolicy::default().budget(stop),
+        &hanging_probe(&pid),
+    );
+
+    stopper.join().unwrap();
+    assert!(measured.unfinished, "{measured:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert!(gone(&pid), "the reading was killed");
+}
+
+/// A size walk that runs out holds the workspace as unmeasured.
+#[test]
+fn a_size_walk_out_of_budget_is_unmeasured() {
+    let (_tmp, root, checkout) = pushed_workspace();
+    fill(&checkout.join("node_modules/pkg"), 1024);
+    // Enough for the activity walk, which skips build output, and not for
+    // the size walk, which counts it.
+    let entries = (1..10_000)
+        .find(|entries| newest_change_ms(&root, &tight(*entries)).is_ok())
+        .unwrap();
+
+    let record =
+        subject(&root, &checkout).measure(tomorrow(), &ReclaimPolicy::default(), &tight(entries));
+
+    assert!(!record.idle, "{record:?}");
+    assert!(record.holds.contains(&HOLD_UNMEASURED.to_string()));
+    assert!(record.size_bytes.is_none());
+}
+
 /// A stopped daemon stops a walk at its next entry.
 #[test]
 fn a_stop_ends_a_walk() {

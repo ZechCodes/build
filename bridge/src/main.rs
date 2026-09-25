@@ -83,6 +83,9 @@ async fn main() {
         Some("install-service") => install_service().await,
         Some("uninstall-service") => uninstall_service(),
         Some("update-helper") => update_helper(),
+        // One repository's Git state for the workspace reclaim service, read
+        // in a process of its own so the service can kill it at its budget.
+        Some("measure-git") => println!("{}", build_bridge::reclaim::git_reading_line()),
         Some("--version") | Some("-V") => {
             println!("build-bridge {}", env!("CARGO_PKG_VERSION"));
         }

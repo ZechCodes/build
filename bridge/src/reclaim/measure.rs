@@ -2,6 +2,7 @@
 
 use super::artifacts::ARTIFACT_DIRS;
 use super::budget::{Budget, Unfinished};
+use super::git_probe::{GitProbe, GitReading};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -20,38 +21,55 @@ pub struct RepositoryMeasure {
     pub newest_commit_ms: Option<i64>,
     /// `dirty`, `unpushed`, or `unknown` when a repository could not be read.
     pub holds: Vec<&'static str>,
-    /// The budget ran out before every repository was read.
+    /// The budget ran out, or the daemon stopped, before every repository
+    /// was read.
     pub unfinished: bool,
 }
 
 /// Measure every Git directory, with the same test Done uses for "the work is
-/// somewhere else": [`crate::gitgui::work_summary`]. One repository's reading
-/// cannot be interrupted, so the budget is checked between them.
-pub fn measure_repositories(repositories: &[PathBuf], budget: &Budget) -> RepositoryMeasure {
+/// somewhere else": [`crate::gitgui::work_summary`], read by `probe` in a
+/// process of its own so the budget bounds it. The budget is checked before
+/// and after every repository, the last one included: a reading that ran
+/// over, or was killed, leaves the measure unfinished.
+pub fn measure_repositories(
+    repositories: &[PathBuf],
+    budget: &Budget,
+    probe: &GitProbe,
+) -> RepositoryMeasure {
     let mut measure = RepositoryMeasure::default();
     for repository in repositories {
-        if budget.check().is_err() {
+        let Ok(reading) = probe.read(repository, budget) else {
             measure.unfinished = true;
-            break;
-        }
-        match crate::gitgui::work_summary(repository) {
-            Ok(summary) => {
-                measure.unpushed_commits += summary.pushes;
-                measure.behind_commits += summary.behind;
-                measure.dirty_files += dirty_file_count(repository);
-                push_unique(
-                    &mut measure.holds,
-                    crate::workspace::summary_finish_blockers(&summary),
-                );
-            }
-            Err(_) => push_unique(
-                &mut measure.holds,
-                vec![crate::workspace::FINISH_BLOCKER_UNKNOWN],
-            ),
-        }
-        measure.newest_commit_ms = measure.newest_commit_ms.max(head_commit_ms(repository));
+            return measure;
+        };
+        measure.add(&reading);
     }
+    measure.unfinished = budget.check().is_err();
     measure
+}
+
+impl RepositoryMeasure {
+    fn add(&mut self, reading: &GitReading) {
+        use crate::workspace::{
+            FINISH_BLOCKER_DIRTY, FINISH_BLOCKER_UNKNOWN, FINISH_BLOCKER_UNPUSHED,
+        };
+        if !reading.read {
+            push_unique(&mut self.holds, vec![FINISH_BLOCKER_UNKNOWN]);
+            return;
+        }
+        self.unpushed_commits += reading.pushes;
+        self.behind_commits += reading.behind;
+        self.dirty_files += reading.dirty_files;
+        self.newest_commit_ms = self.newest_commit_ms.max(reading.newest_commit_ms);
+        let mut found = Vec::new();
+        if reading.dirty {
+            found.push(FINISH_BLOCKER_DIRTY);
+        }
+        if reading.pushes > 0 {
+            found.push(FINISH_BLOCKER_UNPUSHED);
+        }
+        push_unique(&mut self.holds, found);
+    }
 }
 
 fn push_unique(holds: &mut Vec<&'static str>, more: Vec<&'static str>) {
@@ -60,28 +78,6 @@ fn push_unique(holds: &mut Vec<&'static str>, more: Vec<&'static str>) {
             holds.push(hold);
         }
     }
-}
-
-/// How many paths `git status` would list: edits, staged or not, and untracked
-/// files. Ignored files are not work.
-fn dirty_file_count(repository: &Path) -> u64 {
-    let Ok(repo) = git2::Repository::open(repository) else {
-        return 0;
-    };
-    let mut options = git2::StatusOptions::new();
-    options
-        .include_untracked(true)
-        .recurse_untracked_dirs(true)
-        .include_ignored(false);
-    repo.statuses(Some(&mut options))
-        .map(|statuses| statuses.len() as u64)
-        .unwrap_or(0)
-}
-
-fn head_commit_ms(repository: &Path) -> Option<i64> {
-    let repo = git2::Repository::open(repository).ok()?;
-    let commit = repo.head().ok()?.peel_to_commit().ok()?;
-    Some(commit.time().seconds().saturating_mul(1000))
 }
 
 /// The newest modification time of any file under `root`, in ms. `.git`,

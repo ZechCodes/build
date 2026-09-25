@@ -29,13 +29,13 @@ mod notice;
 
 use crate::app::{AppState, DeliveryRunner};
 use crate::reclaim::artifacts::{self, Artifact};
-use crate::reclaim::{Budget, LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
+use crate::reclaim::{LifecycleRecord, LinkedIssue, NoticeDue, ReclaimPolicy, Subject};
 use crate::tracker::{Actor, Issue, IssueEventKind, IssueState};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -43,9 +43,11 @@ use std::time::{Duration, Instant};
 /// sweep.
 const NUDGE_SETTLE: Duration = Duration::from_secs(5);
 
-/// A reservation older than this is treated as released. Measuring one
-/// workspace is budgeted well under it; this only frees a workspace whose
-/// reserving thread died.
+/// A reservation older than this is treated as released. Everything done
+/// under one is bounded well inside it (the measurement's budget, two
+/// minutes, with its Git readings killed at the deadline, plus the last
+/// look's five seconds), so this only frees a workspace whose reserving
+/// thread died.
 const RESERVATION_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 /// Where the service's own deliveries are charged on the frame clock.
@@ -107,15 +109,16 @@ impl AppState {
     pub fn spawn_workspace_reclaim(state: Arc<Mutex<AppState>>, policy: ReclaimPolicy) -> Arc<AtomicBool> {
         let (nudge, stop) = {
             let mut app = state.lock().unwrap();
-            app.reclaim_policy = policy;
+            app.reclaim_policy = policy.clone();
             (app.reclaim_nudge.clone(), app.reclaim_stop.clone())
         };
         tokio::spawn(async move {
             tokio::time::sleep(policy.first_sweep_after).await;
             loop {
                 let swept = Arc::clone(&state);
+                let policy_now = policy.clone();
                 let sweep = tokio::task::spawn_blocking(move || {
-                    AppState::sweep_workspaces(&swept, &policy, now_ms());
+                    AppState::sweep_workspaces(&swept, &policy_now, now_ms());
                     // The notices the sweep queued.
                     AppState::deliver_after_sweep(&swept);
                 });
@@ -228,8 +231,7 @@ impl AppState {
             let moved = if app.spoken_to_since(&subject, &mut fresh) {
                 Vec::new()
             } else {
-                let last_look = policy.final_check_budget(Arc::clone(&stop));
-                app.move_build_output(&subject, &root, &artifacts, &mut fresh, &last_look)
+                app.move_build_output(&subject, &root, &artifacts, &mut fresh, policy, &stop)
             };
             app.release_reservation(&subject.workspace_id);
             moved
@@ -238,11 +240,12 @@ impl AppState {
         if moved.is_empty() {
             return fresh;
         }
-        let budget = policy.budget(stop);
-        artifacts::empty_trash(&root, &budget);
+        artifacts::empty_trash(&root, &policy.budget(Arc::clone(&stop)));
         fresh.pruned_bytes += moved.iter().map(|artifact| artifact.bytes).sum::<u64>();
         fresh.pruned_at_ms = Some(now_ms);
-        subject.resize(&mut fresh, &budget);
+        if !subject.resize(&mut fresh, &policy.budget(stop)) {
+            fresh.unmeasured();
+        }
         fresh
     }
 
@@ -260,7 +263,8 @@ impl AppState {
         root: &Path,
         artifacts: &[Artifact],
         record: &mut LifecycleRecord,
-        last_look: &Budget,
+        policy: &ReclaimPolicy,
+        stop: &Arc<AtomicBool>,
     ) -> Vec<Artifact> {
         match self.prune_holds(&subject.workspace_id, true) {
             Some((holds, _)) if holds.is_empty() => {}
@@ -270,7 +274,8 @@ impl AppState {
             }
             None => return Vec::new(),
         }
-        if artifacts.is_empty() || !subject.confirm_git(record, last_look) {
+        let last_look = policy.final_check_budget(Arc::clone(stop));
+        if artifacts.is_empty() || !subject.confirm_git(record, policy, &last_look) {
             return Vec::new();
         }
         if let Some(changed) = artifacts
@@ -281,6 +286,12 @@ impl AppState {
                 "workspace reclaim: {} changed while it was inspected; nothing moved",
                 changed.path.display()
             );
+            return Vec::new();
+        }
+        // The daemon stopping, or the last look running out of time, while
+        // it was taken: nothing moves.
+        if last_look.check().is_err() {
+            record.unmeasured();
             return Vec::new();
         }
         crate::reclaim::trash_of(root)

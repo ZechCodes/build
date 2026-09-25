@@ -1,10 +1,13 @@
 //! `workspace.reclaim`: remove a workspace whose work is somewhere else and
 //! whose issues are finished, logged on each of those issues.
 //!
-//! Three steps, because measuring Git is unbounded and the app mutex must not
-//! wait on it. Under the mutex, the holds only the app state knows are read
-//! and the workspace is reserved, so nothing starts in it. With the mutex
-//! released, the Git state Done reads is measured. Under the mutex again, the
+//! Three steps, because measuring Git can take minutes and the app mutex must
+//! not wait on it. Under the mutex, the holds only the app state knows are
+//! read and the workspace is reserved, so nothing starts in it. With the mutex
+//! released, the Git state Done reads is measured, on the service's budget:
+//! each repository is read in a process of its own that is killed when the
+//! budget runs out or the daemon stops, so the measurement has ended, one way
+//! or the other, before the reservation does. Under the mutex again, the
 //! reservation ends, every hold is read once more, Git is given a last look,
 //! and the removal is handed
 //! to the drain the way `workspace.delete` hands it: every agent and terminal
@@ -13,10 +16,11 @@
 
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
-use crate::reclaim::LinkedIssue;
+use crate::reclaim::{Budget, LinkedIssue, ReclaimPolicy};
 use crate::tracker::{Actor, IssueEventKind};
 use crate::workspace::Workspace;
 use serde_json::{json, Value};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 /// The Git measurement, run with the mutex released, and the decision it
@@ -25,13 +29,16 @@ struct MeasureBeforeReclaim {
     workspace: Workspace,
     actor: Actor,
     params: Value,
+    policy: ReclaimPolicy,
+    stop: Arc<AtomicBool>,
     /// What the measurement found, for the decision to read.
     measured: Mutex<Vec<&'static str>>,
 }
 
 impl DeferredGitWork for MeasureBeforeReclaim {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        let blockers = crate::workspace::workspace_directory_blockers(&self.workspace);
+        let budget = self.policy.budget(Arc::clone(&self.stop));
+        let blockers = git_holds(&self.workspace, &self.policy, &budget);
         *self
             .measured
             .lock()
@@ -75,6 +82,8 @@ impl AppState {
                 workspace,
                 actor: actor.clone(),
                 params: params.clone(),
+                policy: self.reclaim_policy.clone(),
+                stop: Arc::clone(&self.reclaim_stop),
                 measured: Mutex::new(Vec::new()),
             }),
             params: params.clone(),
@@ -129,21 +138,10 @@ impl AppState {
     /// not start, still holds the workspace. Bounded, because the mutex is
     /// held: a workspace too slow to read in time is held as unmeasured.
     fn last_look(&self, workspace: &Workspace) -> Vec<&'static str> {
-        let paths: Vec<_> = workspace
-            .directories
-            .iter()
-            .filter(|directory| directory.is_git)
-            .map(|directory| directory.path.clone())
-            .collect();
         let budget = self
             .reclaim_policy
             .final_check_budget(Arc::clone(&self.reclaim_stop));
-        let git = crate::reclaim::measure_repositories(&paths, &budget);
-        let mut found = git.holds;
-        if git.unfinished {
-            found.push(crate::reclaim::HOLD_UNMEASURED);
-        }
-        found
+        git_holds(workspace, &self.reclaim_policy, &budget)
     }
 
     /// The issues linking one workspace, or why they could not be read.
@@ -179,6 +177,25 @@ impl AppState {
             }
         }
     }
+}
+
+/// What the workspace's Git directories hold it for, read within `budget`:
+/// `dirty`, `unpushed`, `unknown`, or `unmeasured` when the budget ran out or
+/// the daemon stopped before every one was read. The same reading the
+/// service's sweep takes.
+fn git_holds(workspace: &Workspace, policy: &ReclaimPolicy, budget: &Budget) -> Vec<&'static str> {
+    let paths: Vec<_> = workspace
+        .directories
+        .iter()
+        .filter(|directory| directory.is_git)
+        .map(|directory| directory.path.clone())
+        .collect();
+    let git = crate::reclaim::measure_repositories(&paths, budget, &policy.git);
+    let mut found = git.holds;
+    if git.unfinished {
+        found.push(crate::reclaim::HOLD_UNMEASURED);
+    }
+    found
 }
 
 /// The refusal, as a sentence the user can read.

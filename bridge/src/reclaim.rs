@@ -16,9 +16,11 @@
 
 pub mod artifacts;
 mod budget;
+mod git_probe;
 mod measure;
 
 pub use budget::{Budget, Unfinished};
+pub use git_probe::{reading_line as git_reading_line, GitProbe};
 pub use measure::{measure_repositories, newest_change_ms, RepositoryMeasure};
 
 use artifacts::Artifact;
@@ -67,8 +69,8 @@ pub const HOLD_TERMINAL_OPEN: &str = "terminal_open";
 pub const HOLD_UNMEASURED: &str = "unmeasured";
 
 /// When the service runs, what it calls idle, how much one measurement may
-/// cost, and whether it may drop build output.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// cost, how Git is read, and whether it may drop build output.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReclaimPolicy {
     pub idle_after: Duration,
     pub sweep_every: Duration,
@@ -76,6 +78,8 @@ pub struct ReclaimPolicy {
     pub measure_entries: u64,
     pub measure_time: Duration,
     pub final_check_time: Duration,
+    /// How each repository's Git state is read, bounded by the budget.
+    pub git: GitProbe,
     /// Tier 1: drop a quiet, unheld workspace's build output. Off unless
     /// `BRIDGE_WORKSPACE_PRUNE` turns it on.
     pub prune: bool,
@@ -90,6 +94,7 @@ impl Default for ReclaimPolicy {
             measure_entries: DEFAULT_MEASURE_ENTRIES,
             measure_time: DEFAULT_MEASURE_TIME,
             final_check_time: DEFAULT_FINAL_CHECK_TIME,
+            git: GitProbe::bridge(),
             prune: false,
         }
     }
@@ -212,6 +217,13 @@ impl LifecycleRecord {
 }
 
 impl LifecycleRecord {
+    /// What the budget did not cover is not known: held as `unmeasured`,
+    /// and neither idle nor reclaimable.
+    pub fn unmeasured(&mut self) {
+        self.idle = false;
+        self.hold(&[HOLD_UNMEASURED]);
+    }
+
     /// Add holds found after the measurement, which makes the workspace not
     /// reclaimable.
     pub fn hold(&mut self, more: &[&str]) {
@@ -259,11 +271,12 @@ impl Subject {
     /// here: dropping build output is [`Subject::build_output`] and the
     /// service's reservation around it.
     ///
-    /// What the budget did not cover is held as `unmeasured`, and a workspace
-    /// whose activity could not be read to the end is not called idle.
+    /// Any part the budget did not cover (a repository's Git state, the
+    /// activity walk, the size walk) or a budget found spent at the end
+    /// holds the workspace as `unmeasured`: not idle, not reclaimable.
     pub fn measure(&self, now_ms: i64, policy: &ReclaimPolicy, budget: &Budget) -> LifecycleRecord {
         let paths = self.repository_paths();
-        let git = measure_repositories(&paths, budget);
+        let git = measure_repositories(&paths, budget, &policy.git);
         let changed = newest_change_ms(&self.root, budget);
         let last_activity_ms = [
             self.conversation_activity_ms,
@@ -274,17 +287,12 @@ impl Subject {
         .into_iter()
         .flatten()
         .max();
-        let mut measured = git.holds.clone();
-        if git.unfinished || changed.is_err() {
-            measured.push(HOLD_UNMEASURED);
-        }
         let mut record = LifecycleRecord {
             measured_at_ms: now_ms,
             last_activity_ms,
-            idle: changed.is_ok()
-                && last_activity_ms
-                    .is_some_and(|at| now_ms.saturating_sub(at) >= policy.idle_after_ms()),
-            holds: self.holds_with(&measured),
+            idle: last_activity_ms
+                .is_some_and(|at| now_ms.saturating_sub(at) >= policy.idle_after_ms()),
+            holds: self.holds_with(&git.holds),
             issues: self.issues.clone(),
             dirty_files: git.dirty_files,
             unpushed_commits: git.unpushed_commits,
@@ -294,19 +302,24 @@ impl Subject {
         record.reclaimable = record.holds.is_empty();
         // Sizing walks the whole tree, build output included, so it runs when
         // the number is about to be read rather than every sweep.
-        if record.idle
-            && (record.size_bytes.is_none() || record.notice_due(now_ms, policy) != NoticeDue::No)
-        {
-            self.resize(&mut record, budget);
+        let wants_size = record.idle
+            && (record.size_bytes.is_none() || record.notice_due(now_ms, policy) != NoticeDue::No);
+        let sized = !wants_size || self.resize(&mut record, budget);
+        if git.unfinished || changed.is_err() || !sized || budget.check().is_err() {
+            record.unmeasured();
         }
         record
     }
 
-    /// Measure the size on disk again, keeping the last size when the budget
-    /// runs out first.
-    pub fn resize(&self, record: &mut LifecycleRecord, budget: &Budget) {
-        if let Ok(size) = artifacts::size_on_disk(&self.root, budget) {
-            record.size_bytes = Some(size);
+    /// Measure the size on disk again. `false` when the budget ran out or the
+    /// daemon stopped first; the last size is kept.
+    pub fn resize(&self, record: &mut LifecycleRecord, budget: &Budget) -> bool {
+        match artifacts::size_on_disk(&self.root, budget) {
+            Ok(size) => {
+                record.size_bytes = Some(size);
+                true
+            }
+            Err(Unfinished) => false,
         }
     }
 
@@ -314,18 +327,23 @@ impl Subject {
     /// moved, and fold what it finds into `record`. Answers whether it still
     /// finds nothing at stake: every tree clean, every commit pushed, and all
     /// of it read within the budget.
-    pub fn confirm_git(&self, record: &mut LifecycleRecord, budget: &Budget) -> bool {
-        let git = measure_repositories(&self.repository_paths(), budget);
-        let mut found = git.holds.clone();
+    pub fn confirm_git(
+        &self,
+        record: &mut LifecycleRecord,
+        policy: &ReclaimPolicy,
+        budget: &Budget,
+    ) -> bool {
+        let git = measure_repositories(&self.repository_paths(), budget, &policy.git);
         if git.unfinished {
-            found.push(HOLD_UNMEASURED);
+            record.unmeasured();
+            return false;
         }
-        if found.is_empty() {
+        if git.holds.is_empty() {
             return true;
         }
         record.dirty_files = git.dirty_files;
         record.unpushed_commits = git.unpushed_commits;
-        record.hold(&found);
+        record.hold(&git.holds);
         false
     }
 

@@ -16,7 +16,7 @@ use crate::app::workspaces::PrunePhase;
 use crate::app::{DeferredNext, PendingAgentTurn, TurnText};
 use crate::carrier::SessionSender;
 use crate::git_fixture::git_in;
-use crate::reclaim::ReclaimPolicy;
+use crate::reclaim::{GitProbe, ReclaimPolicy};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -380,6 +380,141 @@ fn a_stop_during_a_prune_keeps_the_build_output_and_releases_the_workspace() {
     assert!(output.exists());
     assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
     assert!(!state.lock().unwrap().workspace_reserved(&ws));
+}
+
+/// A Git probe that reads Git the way the service does until `hang` exists,
+/// then writes its pid to `pid` and never finishes.
+fn probe_hanging_once(hang: &Path, pid: &Path) -> GitProbe {
+    let reader = std::env::current_exe().unwrap();
+    let script = format!(
+        "if [ -e '{}' ]; then echo $$ > '{}'; exec sleep 60; fi; \
+         exec '{}' --exact reclaim::tests::git_reading_child --nocapture",
+        hang.display(),
+        pid.display(),
+        reader.display()
+    );
+    GitProbe::command("/bin/sh", &["-c", &script])
+}
+
+/// Stop the service once the reading `pid` names has started.
+fn stop_when_reading(state: &Arc<Mutex<AppState>>, pid: &Path) -> std::thread::JoinHandle<()> {
+    let (state, pid) = (Arc::clone(state), pid.to_path_buf());
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !pid.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        AppState::stop_workspace_reclaim(&state);
+    })
+}
+
+/// Whether the process `pid` names is gone: killed, and reaped.
+fn gone(pid: &Path) -> bool {
+    let pid: i32 = std::fs::read_to_string(pid)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only asks whether the process exists.
+    unsafe { libc::kill(pid, 0) != 0 }
+}
+
+/// The daemon stopping while the first measurement reads Git: the reading
+/// is killed, the workspace is unmeasured, and nothing is pruned.
+#[test]
+fn a_stop_while_git_is_read_prunes_nothing() {
+    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
+    std::fs::write(&hang, "").unwrap();
+    let policy = ReclaimPolicy {
+        git: probe_hanging_once(&hang, &pid),
+        ..pruning()
+    };
+    let stopper = stop_when_reading(&state, &pid);
+
+    AppState::sweep_workspaces(&state, &policy, now_ms());
+
+    stopper.join().unwrap();
+    assert!(output.join("pkg/index.js").exists());
+    let verdict = lifecycle(&state, &ws);
+    assert_eq!(verdict["idle"], false, "{verdict:?}");
+    assert!(holds(&verdict).contains(&"unmeasured".to_string()));
+    assert!(gone(&pid), "the reading was killed");
+}
+
+/// The daemon stopping while the prune reads Git again, under the
+/// reservation: the reading is killed, nothing moves, and the workspace is
+/// released.
+#[test]
+fn a_stop_while_the_prune_reads_git_again_prunes_nothing() {
+    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
+    let policy = ReclaimPolicy {
+        git: probe_hanging_once(&hang, &pid),
+        ..pruning()
+    };
+    let stopper = stop_when_reading(&state, &pid);
+
+    AppState::sweep_workspaces_racing(
+        &state,
+        &policy,
+        now_ms(),
+        &at(PrunePhase::Reserved, || std::fs::write(&hang, "").unwrap()),
+    );
+
+    stopper.join().unwrap();
+    assert!(output.join("pkg/index.js").exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+    assert!(!state.lock().unwrap().workspace_reserved(&ws));
+    assert!(gone(&pid), "the reading was killed");
+}
+
+/// The daemon stopping after the build output was inspected: the last look
+/// finds it, and nothing moves.
+#[test]
+fn a_stop_after_inspection_prunes_nothing() {
+    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+
+    AppState::sweep_workspaces_racing(
+        &state,
+        &pruning(),
+        now_ms(),
+        &at(PrunePhase::Inspected, || {
+            AppState::stop_workspace_reclaim(&state)
+        }),
+    );
+
+    assert!(output.join("pkg/index.js").exists());
+    assert!(holds(&lifecycle(&state, &ws)).contains(&"unmeasured".to_string()));
+    assert!(!state.lock().unwrap().workspace_reserved(&ws));
+}
+
+/// `workspace.reclaim` reads Git on the service's budget: a reading that
+/// outlives it is killed, the reclaim is refused as unmeasured, and the
+/// workspace is released and kept.
+#[test]
+fn a_reclaim_whose_git_reading_runs_out_is_refused() {
+    let (tmp, state, _project, ws, issue) = linked_workspace();
+    finish(&state, &issue);
+    let (root, _checkout) = root_and_checkout(&state, &ws);
+    let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
+    std::fs::write(&hang, "").unwrap();
+    state.lock().unwrap().reclaim_policy = ReclaimPolicy {
+        git: probe_hanging_once(&hang, &pid),
+        measure_time: std::time::Duration::from_millis(500),
+        ..ReclaimPolicy::default()
+    };
+
+    let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
+
+    assert_eq!(refused["error_code"], "conflict", "{refused:?}");
+    assert_eq!(
+        refused["error"],
+        "Build cannot reclaim quiet yet: Build could not finish measuring it."
+    );
+    assert!(root.exists());
+    assert!(!state.lock().unwrap().workspace_reserved(&ws));
+    assert!(gone(&pid), "the reading was killed");
 }
 
 /// A stopped service measures nothing more: the last verdict stands.

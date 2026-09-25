@@ -549,6 +549,7 @@ fn refuse_removal_if_identity_save_fails(
     state_root: &Path,
     removal: &str,
     params: &Value,
+    roster: &Value,
     linked_issue_id: &str,
 ) {
     let store = state.tracker_store().unwrap();
@@ -572,13 +573,13 @@ fn refuse_removal_if_identity_save_fails(
     );
     let workspace = state
         .workspaces
-        .get(params["workspace_id"].as_str().unwrap())
+        .get(roster["workspace_id"].as_str().unwrap())
         .unwrap();
     assert!(workspace.root.exists());
     assert!(state
-        .entity_agents(params["entity_id"].as_str().unwrap())
+        .entity_agents(roster["entity_id"].as_str().unwrap())
         .unwrap()
-        .by_id(params["agent_id"].as_str().unwrap())
+        .by_id(roster["agent_id"].as_str().unwrap())
         .is_some());
     assert!(state.deferred_work.is_none());
     let store = state.tracker_store().unwrap();
@@ -657,14 +658,19 @@ fn unread_legacy_identities_survive_roster_removal() {
             store.save_tracker_issue_activity(&old, &[], &[]).unwrap();
             let timeline_before = store.load_tracker_timeline(&id).unwrap();
             // No issue read/write between the simulated upgrade and removal.
-            let params = json!({
+            let roster = json!({
                 "workspace_id": ws, "entity_id": entity_id, "agent_id": agent_id,
             });
+            let params = match removal {
+                "agent.remove" => json!({ "entity_id": entity_id, "agent_id": agent_id }),
+                _ => json!({ "workspace_id": ws }),
+            };
             refuse_removal_if_identity_save_fails(
                 &mut state,
                 &state_root,
                 removal,
                 &params,
+                &roster,
                 &linked_id,
             );
             let removed = state.handle(req(removal, params));

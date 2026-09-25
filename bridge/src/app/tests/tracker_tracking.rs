@@ -1434,21 +1434,31 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
 }
 
 /// The api path is a human on the board, who is not an agent and cannot be
-/// put on an issue's trackers. It carries no such field and is unaffected.
+/// put on an issue's trackers. It carries no such field: asking for one is
+/// refused by name, and nothing is filed.
 #[test]
 fn the_api_path_tracks_nobody() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let made = state.handle(req(
+    let refused = state.handle(req(
         "issues.create",
         json!({ "project_id": project_id, "title": "filed by the user", "track": true }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(refused["error"], "unknown param: track", "{refused:?}");
+    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    assert_eq!(listed["result"]["issues"], json!([]), "{listed:?}");
+
+    let made = state.handle(req(
+        "issues.create",
+        json!({ "project_id": project_id, "title": "filed by the user" }),
     ));
     assert_eq!(made["ok"], true, "{made:?}");
     assert_eq!(
         made["result"]["issue"]["trackers"],
         json!([]),
-        "an unknown field is ignored, and the user is not a tracker"
+        "the user is not a tracker"
     );
 }
 

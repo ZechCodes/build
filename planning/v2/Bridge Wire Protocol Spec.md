@@ -86,9 +86,11 @@ API version is one no later SPA can ever identify.
   major and the previous one. The SPA carries an adapter per supported major
   and picks by the version the bridge reports. A gap in either direction is
   a gate view with an update instruction, never a broken surface.
-- **Additive within a major.** Unknown fields are ignored by both ends;
-  unknown methods and unknown event types are errors and no-ops respectively,
-  never crashes.
+- **Additive within a major.** An unknown field in a reply or push is
+  ignored; an unknown top-level param on a request is refused by name (since
+  1.24.0, see step 2.2), the way an unknown push kind refuses its
+  subscription. Unknown methods and unknown event types are errors and no-ops
+  respectively, never crashes.
 - **Content-free stays a rule for the api path only.** `changes.rs` keeps
   events content-free "like every other signal Build sends about work it
   cannot read". That binds the web-push path through skriftapp, which is
@@ -558,8 +560,39 @@ pub struct GitStatusParams {
 pub struct GitStatusResult { … }
 ```
 
-Requests derive `Deserialize` without `deny_unknown_fields` (forward
-compatibility: a newer SPA may send a field this bridge predates). Responses
+A request param the verb's type does not declare is refused, never dropped
+(since 1.24.0, announced as `params.strict`). Before it, the facade parsed
+params into the typed struct and handed the implementation that struct
+serialised back, so a field this bridge did not know vanished and the verb
+answered `ok`: `issues.create` with an `assignee` a bridge predated filed the
+issue unassigned, and a `patch: false` on a `project.diff` that did not
+declare it answered the whole patch. The rule, in `parse_params`:
+
+- A top-level param the params type does not declare is refused with
+  `invalid_params`, `error: "unknown param: <name>"` (`"unknown params: <a>,
+  <b>"` for several, sorted), and `details: { "params": [<name>, …] }`. The
+  whole request is refused, as an unknown kind refuses the whole
+  `changes.subscribe`; nothing of it runs.
+- "Declared" is what the type reads: its fields, a flattened scope's fields,
+  a `rename` or `alias`. A declared field at its default (`null`, `false`) is
+  declared. `deny_unknown_fields` cannot say this — serde does not support it
+  with `#[serde(flatten)]`, which every scoped verb uses — so `parse_params`
+  asks the type: a field whose value, swapped for a probe, changes nothing the
+  type holds is one it never read.
+- The rule binds a verb's top-level params. Nested objects keep their own
+  rules: a message context item's unknown field is ignored and its unknown
+  `kind` refused (step 2.6); a free-form value (`issues.create`'s `assignee`)
+  is checked by the verb that reads it.
+- So a new param is an addition like any other: it joins the release's minor
+  and, when its verb already exists, a feature name. A client sends it only
+  to a bridge whose greeting announces it. An older bridge (before 1.24.0)
+  still drops what it does not know, which is why the gate is the greeting
+  and not the refusal.
+- `fixtures/api/v1/` holds every verb to it: `bridge/tests/api_contract.rs`
+  adds a field no verb declares to each fixture's params and expects the
+  refusal to name it.
+
+Responses
 derive `Serialize`; `skip_serializing_if` for optional fields so a field's
 absence and its `null` mean the same to every client. The `route` table in
 `app/rpc.rs` becomes `api::v1::dispatch(method, params) -> Result<Value,
@@ -608,9 +641,10 @@ behavior or response shapes use feature names: `changes.subscriptions`,
 issues, `user_session` on `issues.list`, and the `user.present` verb, see the
 Issues spec), `messages.issueNotices`, `board.usageLimits`,
 `threads.newestDeltaPagination`, `issues.commentUserMentions`,
-`issues.agentIdentities`, `issues.attachmentChunks`, and
+`issues.agentIdentities`, `issues.attachmentChunks`,
 `issues.commentUserNotifies` (`notifies_user` on issue comments, and the
-narrower "needs you" rule it makes possible; see the Issues spec). The method registry
+narrower "needs you" rule it makes possible; see the Issues spec), and
+`params.strict` (an undeclared param is refused; step 2.2). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -626,8 +660,8 @@ slow or failing, the refusal's `error` is a sentence the UI shows as is
 ("Build cannot list GitHub repositories on <machine> because gh is not
 installed."). The bridge keeps nothing: the SPA caches and searches the list.
 
-The latter six names describe additions to existing verbs, so the verb names
-alone cannot establish whether a bridge provides them. These six names are
+The names in the table below describe additions to existing verbs, so the
+verb names alone cannot establish whether a bridge provides them. They are
 announce-only for the current SPA: it does not gate any behavior on them yet.
 They describe bridge support for clients that choose to consume them:
 
@@ -639,12 +673,13 @@ They describe bridge support for clients that choose to consume them:
 | `issues.commentUserMentions` | `mentions_user` on issue comments | 1.13.0 |
 | `issues.agentIdentities` | Durable `identities` map on issue views | 1.16.0 |
 | `issues.attachmentChunks` | `issues.attachment` accepts `offset` and `length` for chunk reads | 1.19.0 |
+| `params.strict` | A v1 verb refuses a top-level param its type does not declare (`invalid_params`, `unknown param: <name>`) | 1.24.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its
 corresponding capability flag off, even when the minor version would otherwise
 suggest it. Announcing other feature or verb names does not create new SPA
-gates; the six names above are announcements only. For older 1.x greetings
+gates; the names in that table are announcements only. For older 1.x greetings
 with no array, the v1 adapter keeps the historical feature mapping below. An
 explicit older nested boolean wins over the version default when present.
 Unknown names are ignored. A missing or malformed list on 1.22+ enables none

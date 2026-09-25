@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "1.23.0",
+    "api_version": "1.24.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -123,6 +123,7 @@
       "messages.fromAgent",
       "messages.issueNotices",
       "models.list",
+      "params.strict",
       "ping",
       "plan.abandon",
       "plan.approve",

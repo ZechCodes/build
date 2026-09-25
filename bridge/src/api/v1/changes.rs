@@ -265,18 +265,19 @@ mod tests {
         assert_eq!(refused.code(), "invalid_params");
     }
 
-    /// An unknown field is ignored, both ends, forever: the params derive
-    /// `Deserialize` without `deny_unknown_fields`.
+    /// A field this bridge predates is refused by name, as a kind it predates
+    /// is: a client asks for what the greeting advertises.
     #[test]
-    fn params_from_a_newer_client_parse() {
-        let parsed: SubscriptionSpec = serde_json::from_value(json!({
+    fn params_from_a_newer_client_are_refused_by_name() {
+        let refused = crate::api::v1::parse_params::<SubscriptionSpec>(&json!({
             "subscription_id": "s-focus",
             "scope": { "kind": "entity", "id": "run-7" },
             "kinds": ["state"],
             "mode": "realtime",
             "settle_ms": 40,
         }))
-        .expect("a field this bridge predates is ignored");
-        assert_eq!(parsed.id, "s-focus");
+        .expect_err("a field this bridge predates is not quietly dropped");
+        assert_eq!(refused.code(), "invalid_params");
+        assert_eq!(refused.message(), "unknown param: settle_ms");
     }
 }

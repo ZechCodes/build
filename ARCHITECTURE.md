@@ -194,7 +194,7 @@ cannot starve the relay connection, the heartbeat or negotiation.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `1.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -207,6 +207,14 @@ cannot starve the relay connection, the heartbeat or negotiation.
 - Rule, from the header of `bridge/src/api/v1/mod.rs`: additive changes in one
   release share one minor bump. Only a breaking removal or shape change needs a
   new major.
+- A top-level param a v1 verb's params type does not declare is refused, never
+  dropped: `invalid_params`, `unknown param: <name>`, with `details.params`
+  listing every one (`parse_params` in `bridge/src/api/v1/mod.rs`; announced
+  as `params.strict` since 1.24.0). It is the same answer an unknown kind
+  gets from `changes.subscribe`. So a new param is announced like any other
+  addition, and a client sends it only to a bridge whose greeting names it.
+  Nested objects keep their own rules: a message context item's unknown
+  field is still ignored, and its unknown kind refused.
 - `PROTOCOL_VERSION` in `bridge/src/transport.rs` is a different number: the
   version of the E2EE envelope.
 

@@ -973,12 +973,17 @@ function mergeTogetherInStore(addresses, keys, merge) {
 }
 
 /** Raise a count every tab shares, in one transaction, and answer it: one more
- * than it held, and never under `floor`. Undefined when there is no cache to
- * count in. Not announced — nothing paints from a count. */
-export async function takeCachedCount(address, floor = 0) {
+ * than it held, and never under `floor`. Wait through a transient connection
+ * loss; undefined means no cache exists to share, while a refused counter
+ * write rejects instead of handing out an unshared number. Not announced. */
+export function takeCachedCount(address, floor = 0) {
   const key = recordKey(address);
+  return inRecoveryWriteOrder([key], () => takeCountInStore(key, floor));
+}
+
+async function takeCountInStore(key, floor) {
   let taken;
-  const { committed } = await transact("readwrite", (store) => {
+  const outcome = await transact("readwrite", (store) => {
     taken = undefined;
     const request = store.get(key);
     request.onsuccess = () => {
@@ -987,8 +992,10 @@ export async function takeCachedCount(address, floor = 0) {
       if (putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: next }, key)) taken = next;
     };
     return null;
-  });
-  return committed ? taken : undefined;
+  }, true);
+  if (outcome.committed) return taken;
+  if (outcome.unavailable) return undefined;
+  throw outcome.error || new Error("Build could not update the shared cache counter.");
 }
 
 /** Drop every record one entity holds on one device — a single range delete,

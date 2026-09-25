@@ -637,9 +637,12 @@ In practice:
   tab fills in page by page. A page can be short or empty and still name the
   next (under a label or assignee the bridge reads a bounded stretch per page);
   the pull walks on until no next is named. Every read takes a number, as it
-  is asked, from a count shared by all tabs in the cache. Each page notes the
-  stretch of issue numbers it had the say on beside the list record, written
-  in the same transaction as that list record (`spa/src/core/issueReadOrder.js`,
+  is asked, from a count shared by all tabs in the cache. Allocation waits
+  through transient cache recovery; a refused counter write stops the read
+  instead of inventing a tab-local number while shared storage is usable.
+  Each page notes the stretch of issue numbers it had the say on beside the
+  list record, written in the same transaction as that list record
+  (`spa/src/core/issueReadOrder.js`,
   `mergeCachedTogether`). That joint write waits through transient cache
   recovery before the walk advances; a refused fold stops the walk without
   advancing its cursor. A page yields every row a read asked after it had

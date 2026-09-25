@@ -781,7 +781,6 @@ fn operation_payload_preserves_batches_attachments_and_normalized_options() {
         "thread.attach",
         json!({
             "entity_id": run_id,
-            "agent_id": agent_id,
             "filename": "review.png",
             "content_b64": b64encode(ONE_PIXEL_PNG),
         }),

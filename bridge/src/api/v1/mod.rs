@@ -4,10 +4,13 @@
 //! table naming the verbs it serves. [`dispatch`] parses the params into the
 //! verb's typed struct, runs the handler, and serialises the typed result;
 //! `app/rpc.rs::route` asks here first and falls through to its legacy arms
-//! for anything unregistered. Requests derive `Deserialize` without
-//! `deny_unknown_fields` (a newer client may send what this bridge predates);
-//! results derive `Serialize` with `skip_serializing_if` on optionals, so an
-//! absent field and a `null` one read the same.
+//! for anything unregistered. A top-level param the verb's type does not
+//! declare is refused (`invalid_params`, `unknown param: <name>`), never
+//! dropped: a client sends a newer param only once the greeting announces
+//! it. The check is [`parse_params`]'s, not `deny_unknown_fields`, which
+//! cannot see through the `#[serde(flatten)]`ed scopes. Nested objects keep
+//! their own rules. Results derive `Serialize` with `skip_serializing_if` on
+//! optionals, so an absent field and a `null` one read the same.
 //!
 //! A handler signature never mentions `serde_json::Value` — the test at the
 //! bottom scans the family files for one. An implementation change that
@@ -204,9 +207,9 @@ pub fn deferral_placeholder(value: Value) -> Value {
 
 /// The params of a v1 verb, as the pre-facade implementation still reads
 /// them. Typed params are the contract; the implementation underneath takes a
-/// [`Value`], so a handler hands it one built back from the typed struct —
-/// which also drops any field this bridge does not know, so an implementation
-/// can never read past its own contract.
+/// [`Value`], so a handler hands it one built back from the typed struct, and
+/// an implementation can never read past its own contract. A field the
+/// contract does not name never gets this far: [`parse_params`] refuses it.
 pub trait WireParams: Serialize {
     fn wire(&self) -> Value {
         serde_json::to_value(self).unwrap_or(Value::Null)
@@ -222,8 +225,67 @@ impl<T: Serialize> WireParams for T {}
 pub struct NoParams {}
 
 /// Parse `params` into `P`, naming a missing field the way every bridge verb
-/// always has (`missing required param: <field>`).
-pub fn parse_params<P: DeserializeOwned>(params: &Value) -> Result<P, ApiError> {
+/// always has (`missing required param: <field>`), and refusing a field `P`
+/// does not declare (`unknown param: <field>`) rather than dropping it.
+pub fn parse_params<P: DeserializeOwned + Serialize>(params: &Value) -> Result<P, ApiError> {
+    let parsed = parse_declared::<P>(params)?;
+    let unknown = undeclared_params::<P>(params, &parsed);
+    if unknown.is_empty() {
+        Ok(parsed)
+    } else {
+        Err(unknown_params(unknown))
+    }
+}
+
+/// A value no declared field holds, standing in for a param's own.
+const PROBE: &str = "\u{0}build: is this param declared?";
+
+/// The top-level params `P` swallows: those whose value changes nothing.
+///
+/// `deny_unknown_fields` cannot say this for the families' types — it is not
+/// supported with `#[serde(flatten)]`, which every scoped verb uses. So the
+/// question is put to `P` itself. A field that survives the round trip is
+/// declared; one that did not is swapped for [`PROBE`], and a declared field
+/// either refuses that or carries it into what `P` holds. A field `P` holds
+/// nothing of whatever its value is was never read. Only fields the round
+/// trip dropped are probed, so a request of declared, non-default fields
+/// parses once, as it always did.
+fn undeclared_params<P: DeserializeOwned + Serialize>(params: &Value, parsed: &P) -> Vec<String> {
+    let Value::Object(given) = params else {
+        return Vec::new();
+    };
+    let Ok(held) = serde_json::to_value(parsed) else {
+        return Vec::new();
+    };
+    given
+        .keys()
+        .filter(|name| held.get(name.as_str()).is_none())
+        .filter(|name| {
+            let mut probed = given.clone();
+            probed.insert((*name).clone(), Value::String(PROBE.into()));
+            serde_json::from_value::<P>(Value::Object(probed))
+                .ok()
+                .and_then(|holds| serde_json::to_value(holds).ok())
+                .is_some_and(|holds| holds == held)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The refusal for fields a verb does not declare, every one named; sorted,
+/// because a JSON object's keys are.
+fn unknown_params(names: Vec<String>) -> ApiError {
+    let message = match names.as_slice() {
+        [one] => format!("unknown param: {one}"),
+        many => format!("unknown params: {}", many.join(", ")),
+    };
+    ApiError::InvalidParams {
+        message,
+        details: Some(serde_json::json!({ "params": names })),
+    }
+}
+
+fn parse_declared<P: DeserializeOwned>(params: &Value) -> Result<P, ApiError> {
     serde_json::from_value(params.clone()).map_err(|error| {
         let message = error.to_string();
         let message = match message.strip_prefix("missing field `") {
@@ -238,7 +300,7 @@ pub fn parse_params<P: DeserializeOwned>(params: &Value) -> Result<P, ApiError> 
 }
 
 #[doc(hidden)]
-pub fn parse_as<P: DeserializeOwned>(params: &Value) -> Result<(), String> {
+pub fn parse_as<P: DeserializeOwned + Serialize>(params: &Value) -> Result<(), String> {
     parse_params::<P>(params)
         .map(|_| ())
         .map_err(|error| error.message().to_string())
@@ -261,7 +323,7 @@ pub fn round_trip_as<R: DeserializeOwned + Serialize>(result: &Value) -> Result<
 
 /// Run one typed handler over untyped params: parse, call, serialise.
 #[doc(hidden)]
-pub fn call_typed<P: DeserializeOwned, R: Serialize>(
+pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
     app: &mut AppState,
     params: &Value,
     handler: fn(&mut AppState, P) -> Result<R, ApiError>,
@@ -388,7 +450,7 @@ mod tests {
 
     #[test]
     fn a_missing_required_param_reads_as_the_bridge_always_spelled_it() {
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize, serde::Serialize)]
         struct Needs {
             #[allow(dead_code)]
             paths: Vec<String>,
@@ -396,6 +458,87 @@ mod tests {
         let refused = parse_params::<Needs>(&serde_json::json!({})).unwrap_err();
         assert_eq!(refused.message(), "missing required param: paths");
         assert_eq!(refused.code(), "invalid_params");
+    }
+
+    /// The shapes a verb's params take in the families: a flattened scope, an
+    /// optional left out of the wire when absent, an alias, a required field.
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Scope {
+        project_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worktree_id: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    struct Diff {
+        #[serde(flatten)]
+        scope: Scope,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        patch: Option<bool>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        staged: bool,
+        #[serde(default, alias = "plan_id", skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assignee: Option<Value>,
+    }
+
+    /// A field the verb does not declare is refused by name, as an unknown
+    /// push kind refuses its whole subscription: answering `ok` to a request
+    /// whose half was never read tells the client the half happened.
+    #[test]
+    fn a_param_the_verb_does_not_declare_is_refused_by_name() {
+        let refused = parse_params::<Diff>(&serde_json::json!({
+            "project_id": "proj-1",
+            "pacth": false,
+        }))
+        .expect_err("a misspelt patch is not quietly the whole patch");
+        assert_eq!(refused.code(), "invalid_params");
+        assert_eq!(refused.message(), "unknown param: pacth");
+        assert_eq!(
+            refused.details(),
+            Some(&serde_json::json!({ "params": ["pacth"] }))
+        );
+    }
+
+    #[test]
+    fn every_undeclared_param_is_named_at_once() {
+        let refused = parse_params::<Diff>(&serde_json::json!({
+            "project_id": "proj-1",
+            "zeta": 1,
+            "alpha": null,
+        }))
+        .unwrap_err();
+        assert_eq!(refused.message(), "unknown params: alpha, zeta");
+        assert_eq!(
+            refused.details(),
+            Some(&serde_json::json!({ "params": ["alpha", "zeta"] }))
+        );
+    }
+
+    /// A declared field the typed struct drops on the way back out — a `null`
+    /// optional, a `false` flag, an alias, a field of a flattened scope — is
+    /// still declared, and is not mistaken for an unknown one.
+    #[test]
+    fn a_declared_param_at_its_default_is_not_unknown() {
+        let parsed = parse_params::<Diff>(&serde_json::json!({
+            "project_id": "proj-1",
+            "worktree_id": null,
+            "patch": null,
+            "staged": false,
+            "plan_id": "run-7",
+            "assignee": null,
+        }))
+        .expect("every one of these is declared");
+        assert_eq!(parsed.run_id.as_deref(), Some("run-7"));
+    }
+
+    #[test]
+    fn a_verb_that_takes_nothing_refuses_whatever_it_is_given() {
+        parse_params::<NoParams>(&serde_json::json!({})).expect("nothing is nothing");
+        let refused =
+            parse_params::<NoParams>(&serde_json::json!({ "project_id": "proj-1" })).unwrap_err();
+        assert_eq!(refused.message(), "unknown param: project_id");
     }
 
     /// The signature text of every `fn` in a family file: from `fn` to the

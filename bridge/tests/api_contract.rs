@@ -169,6 +169,27 @@ fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
     }
 }
 
+/// A param absent from a verb's declared shape cannot be swallowed: each
+/// fixture's params, plus one field no verb declares, are refused naming that
+/// field. Every fixture's own params parsing (above) is the other half — no
+/// fixture sends a field its verb does not declare.
+#[test]
+fn every_v1_verb_refuses_a_param_its_shape_does_not_declare() {
+    let fixtures: std::collections::BTreeMap<String, Value> =
+        method_fixtures().into_iter().collect();
+    for (method, handler) in v1::methods() {
+        let mut params = fixtures[*method]["params"].clone();
+        params["undeclared_by_any_verb"] = Value::Bool(false);
+        let refused = handler
+            .parse_params(&params)
+            .expect_err(&format!("{method}: an undeclared param was swallowed"));
+        assert!(
+            refused.contains("unknown param: undeclared_by_any_verb"),
+            "{method}: the refusal names the param it did not know: {refused}"
+        );
+    }
+}
+
 // ------------------------------------------------------------- the pushes ---
 
 /// Every push the bridge sends on a session, as `fixtures/api/v1/events.json`

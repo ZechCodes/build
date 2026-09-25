@@ -1388,8 +1388,8 @@ mod tests {
     #[test]
     fn a_settings_patch_carries_only_what_it_named() {
         let params: SettingsSetParams =
-            serde_json::from_value(serde_json::json!({ "isolation": "worktree", "unknown": 1 }))
-                .expect("an unknown field is ignored");
+            super::super::parse_params(&serde_json::json!({ "isolation": "worktree" }))
+                .expect("a patch of one field");
         assert_eq!(
             params.wire(),
             serde_json::json!({ "isolation": "worktree" })

@@ -20,6 +20,7 @@ from skrift.lib.email_backends import EmailBackend
 from buildapp.email_template import (
     EmailAction,
     EmailBlock,
+    EmailImage,
     render_email_html,
     render_email_text,
 )
@@ -59,9 +60,13 @@ def compose_email(
     paragraphs: tuple[str, ...],
     unsubscribe_url: str | None,
     one_click: bool,
+    public_base_url: str,
     action: EmailAction | None = None,
     after_action: tuple[EmailBlock, ...] = (),
+    hero: EmailImage | None = None,
 ) -> OutboundEmail:
+    """``public_base_url`` is where the HTML part's images are fetched from; the text
+    part has none."""
     body = {
         "heading": heading,
         "paragraphs": paragraphs,
@@ -73,7 +78,9 @@ def compose_email(
         to=to,
         subject=subject,
         text_body=render_email_text(**body),
-        html_body=render_email_html(**body),
+        html_body=render_email_html(
+            **body, public_base_url=public_base_url, hero=hero
+        ),
         headers=list_unsubscribe_headers(unsubscribe_url, one_click=one_click),
     )
 

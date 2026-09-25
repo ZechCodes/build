@@ -14,7 +14,12 @@ from buildapp.email_message import (
     LIST_UNSUBSCRIBE_HEADER,
     LIST_UNSUBSCRIBE_POST_HEADER,
 )
-from buildapp.email_test_support import FailingEmailBackend, RecordingEmailBackend
+from buildapp.email_template import LAPTOP_IMAGE
+from buildapp.email_test_support import (
+    PUBLIC_BASE_URL,
+    FailingEmailBackend,
+    RecordingEmailBackend,
+)
 from buildapp.invite_mail import (
     GETTING_STARTED,
     INVITE_ACTION_LABEL,
@@ -30,6 +35,13 @@ from buildapp.invite_mail import (
 
 INVITED = "invitee@example.com"
 INVITE_URL = "https://getbuild.ing/invite/inv_a-raw-token"
+LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/{LAPTOP_IMAGE.file}"
+
+
+def invite_email():
+    return build_invite_email(
+        to=INVITED, invite_url=INVITE_URL, public_base_url=PUBLIC_BASE_URL
+    )
 
 
 INSTALL_COMMAND = 'curl -fsSL "https://getbuild.ing/install.sh" | sh'
@@ -68,10 +80,10 @@ def test_the_subject_and_copy_are_verbatim():
 def test_the_text_part_reads_top_to_bottom_as_the_copy_on_the_issue():
     """A snapshot of the whole plain-text part: what an invitee with images and HTML
     off reads, and what Zech signed off on."""
-    message = build_invite_email(to=INVITED, invite_url=INVITE_URL)
+    message = invite_email()
     assert message.text_body == "\n\n".join(
         (
-            "build_",
+            "Build",
             "You’re in.",
             "Thanks for waiting. Your spot in the Build alpha is ready.",
             f"Create your account: {INVITE_URL}",
@@ -88,7 +100,7 @@ def test_the_text_part_reads_top_to_bottom_as_the_copy_on_the_issue():
 
 
 def test_the_html_part_carries_the_button_then_the_steps_in_order():
-    html = build_invite_email(to=INVITED, invite_url=INVITE_URL).html_body
+    html = invite_email().html_body
     assert f'href="{INVITE_URL}"' in html
     assert f">{INVITE_ACTION_LABEL}</a>" in html
     escaped_command = INSTALL_COMMAND.replace('"', "&quot;")
@@ -109,8 +121,20 @@ def test_the_html_part_carries_the_button_then_the_steps_in_order():
         assert f">{number}.</td>" in html
 
 
+def test_the_laptop_sits_between_the_intro_and_the_button():
+    html = invite_email().html_body
+    assert f'alt="{LAPTOP_IMAGE.alt}"' in html
+    positions = [
+        html.index(INVITE_HEADING),
+        html.index(escape(INVITE_PARAGRAPHS[0])),
+        html.index(LAPTOP_URL),
+        html.index(f'href="{INVITE_URL}"'),
+    ]
+    assert positions == sorted(positions)
+
+
 def test_the_message_names_the_address_it_was_sent_to():
-    message = build_invite_email(to=INVITED, invite_url=INVITE_URL)
+    message = invite_email()
     assert message.to == INVITED
     assert message.subject == INVITE_SUBJECT
     for body in (message.text_body, message.html_body):
@@ -119,13 +143,13 @@ def test_the_message_names_the_address_it_was_sent_to():
 
 
 def test_the_invite_url_is_the_messages_action_in_both_bodies():
-    message = build_invite_email(to=INVITED, invite_url=INVITE_URL)
+    message = invite_email()
     assert f'href="{INVITE_URL}"' in message.html_body
     assert f"{INVITE_ACTION_LABEL}: {INVITE_URL}" in message.text_body.splitlines()
 
 
 def test_an_invite_carries_no_unsubscribe_because_it_is_not_a_mailing():
-    message = build_invite_email(to=INVITED, invite_url=INVITE_URL)
+    message = invite_email()
     assert message.headers == {}
     assert LIST_UNSUBSCRIBE_HEADER not in message.headers
     assert LIST_UNSUBSCRIBE_POST_HEADER not in message.headers
@@ -135,22 +159,21 @@ def test_an_invite_carries_no_unsubscribe_because_it_is_not_a_mailing():
 
 def test_sending_delivers_the_invite_through_the_backend_it_was_handed():
     email_backend = RecordingEmailBackend()
-    assert asyncio.run(send_invite_email(email_backend, INVITED, INVITE_URL)) is True
+    sent = send_invite_email(email_backend, INVITED, INVITE_URL, PUBLIC_BASE_URL)
+    assert asyncio.run(sent) is True
     assert [sent.to for sent in email_backend.sent] == [INVITED]
     assert email_backend.sent[0].subject == INVITE_SUBJECT
     assert INVITE_URL in email_backend.sent[0].text_body
 
 
 def test_a_send_that_fails_is_swallowed_and_reported_so_the_operator_can_resend():
-    assert (
-        asyncio.run(send_invite_email(FailingEmailBackend(), INVITED, INVITE_URL))
-        is False
-    )
+    sent = send_invite_email(FailingEmailBackend(), INVITED, INVITE_URL, PUBLIC_BASE_URL)
+    assert asyncio.run(sent) is False
 
 
 def test_the_task_is_the_same_send_deferred_until_after_the_response():
     email_backend = RecordingEmailBackend()
-    task = invite_email_task(email_backend, INVITED, INVITE_URL)
+    task = invite_email_task(email_backend, INVITED, INVITE_URL, PUBLIC_BASE_URL)
     assert isinstance(task, BackgroundTask)
     assert task.fn is send_invite_email
     assert email_backend.sent == []

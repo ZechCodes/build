@@ -7,7 +7,6 @@
 // created workspace opens at names it.
 
 import { go } from "../app.js";
-import { canAnswer, contextFor } from "./deviceContexts.js";
 import { deviceCall } from "./inboxDevices.js";
 import { isolationOptionsHtml } from "./isolation.js";
 import { modalDialogHtml, openModal } from "./modal.js";
@@ -27,7 +26,10 @@ export function workspaceCreateParams({ projectId, name = "", isolation = "" }) 
   };
 }
 
-const canCreate = (state) => Boolean(state.projectId && canAnswer(contextFor(state.deviceId)));
+/** Whether there is a project to create in. Whether its machine can take the
+ *  workspace is the machine's call to answer at the press (core/inboxDevices.js),
+ *  never a question this dialog asks of the connection. */
+const canCreate = (state) => Boolean(state.projectId);
 
 function createdWorkspaceRoute(answer) {
   const workspace = answer?.workspace || answer;
@@ -73,8 +75,9 @@ export function openCreateWork({ projectId, deviceId, projectName, navigate = go
   const state = { projectId, deviceId, projectName: projectName || projectId || "project", name: "", isolation: "", busy: false, error: "" };
   // Read at the press, never captured at the mount: a machine that was away
   // when the dialog opened is asked the moment it is back, which is the way the
-  // composer and the capture page ask too (core/inboxDevices.js).
-  const askDevice = (method, params) => deviceCall(deviceId)(method, params);
+  // composer and the capture page ask too (core/inboxDevices.js). One that is
+  // still away refuses in a sentence, which the dialog shows as it shows any.
+  const askDevice = (method, params) => deviceCall(deviceId, "create a workspace")(method, params);
   let dismissed = false;
   let close;
   const dismiss = () => {

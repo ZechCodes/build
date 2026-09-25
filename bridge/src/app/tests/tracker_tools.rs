@@ -434,6 +434,94 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
     );
 }
 
+/// A real MCP frame's `notify_user` is kept on the comment (#144), through the
+/// answer, the timeline and read_comment, apart from `mentions_user`: the
+/// inbox counts a question put to the user, not every comment on an issue
+/// the user watches. A comment without it carries neither.
+#[test]
+fn mcp_comment_notify_user_is_kept_on_the_comment() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    state.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_issues": false }),
+    ));
+    let created = call(
+        &mut state,
+        &who,
+        BridgeAction::TrackerCreateIssue {
+            title: "Needs an answer".into(),
+            body: None,
+            status: None,
+            labels: Vec::new(),
+            priority: None,
+            attachments: Vec::new(),
+            track: None,
+            notify_user: None,
+        },
+    )
+    .unwrap();
+    let issue_id = created["issue"]["id"].as_str().unwrap();
+    let comment = |id: u64, arguments: Value| {
+        let frame = json!({
+            "jsonrpc": "2.0", "id": id, "method": "tools/call",
+            "params": { "name": "comment_issue", "arguments": arguments }
+        });
+        DoneServer::new(&who.1)
+            .handle_message(&frame.to_string())
+            .action
+            .expect("MCP frame emits a comment action")
+    };
+
+    let asked = call(
+        &mut state,
+        &who,
+        comment(
+            1,
+            json!({ "issue_id": issue_id, "body": "Ship it tonight?", "notify_user": true }),
+        ),
+    )
+    .unwrap();
+    assert_eq!(asked["comment"]["notifies_user"], true);
+    assert!(asked["comment"].get("mentions_user").is_none());
+    assert_eq!(asked["issue"]["watched"], true);
+    let asked_id = asked["comment"]["id"].as_str().unwrap().to_string();
+
+    let quiet = call(
+        &mut state,
+        &who,
+        comment(2, json!({ "issue_id": issue_id, "body": "Rebased." })),
+    )
+    .unwrap();
+    assert!(quiet["comment"].get("notifies_user").is_none());
+
+    let timeline = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    let entry = |id: &Value| {
+        timeline["result"]["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| &entry["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(entry(&json!(asked_id))["notifies_user"], true);
+    assert!(entry(&quiet["comment"]["id"])
+        .get("notifies_user")
+        .is_none());
+    let read = call(
+        &mut state,
+        &who,
+        BridgeAction::TrackerReadComment {
+            comment_id: asked_id,
+        },
+    )
+    .unwrap();
+    assert_eq!(read["notifies_user"], true);
+}
+
 /// An issue of another project is unknown to this agent — not forbidden.
 /// It cannot list it and cannot have been handed it, and saying an id it
 /// guessed exists somewhere else tells it more than it asked.

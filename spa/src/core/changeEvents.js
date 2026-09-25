@@ -65,6 +65,7 @@ import { pageVisible } from "./visibility.js";
 import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
 import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
+import { rememberNeedsYouRule } from "./needsYouRule.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -77,7 +78,9 @@ const NO_CAPABILITIES = Object.freeze({
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
-  issues: Object.freeze({ attachments: false, watching: false, context: false, doneSinceLeft: false }),
+  issues: Object.freeze({
+    attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
+  }),
   conversations: Object.freeze({ settings: false }),
   messages: Object.freeze({ context: false }),
   threads: Object.freeze({ postOperations: false }),
@@ -814,6 +817,8 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
   if (!state.adapter) return abandonBridge(state);
+  // Into the cache, where the views that draw Needs you read it (#144).
+  void rememberNeedsYouRule(deviceId, state.adapter.capabilities);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

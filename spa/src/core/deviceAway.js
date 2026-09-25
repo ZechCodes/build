@@ -60,15 +60,30 @@ export const blockedText = (reason, name = null) =>
  *  this tab cannot read — so everything it is said with names the side that is
  *  behind instead of calling the machine away. */
 const UNREACHABLE = {
-  app: { sentence: deviceAppBehindText, mark: appBehindMark, word: appBehindWord },
-  bridge: { sentence: deviceBridgeBehindText, mark: bridgeBehindMark, word: bridgeBehindWord },
+  app: {
+    sentence: deviceAppBehindText,
+    mark: appBehindMark,
+    word: appBehindWord,
+    because: "this machine's bridge is newer than this app, which needs a reload",
+  },
+  bridge: {
+    sentence: deviceBridgeBehindText,
+    mark: bridgeBehindMark,
+    word: bridgeBehindWord,
+    because: "this machine's bridge is older than this app, and needs updating",
+  },
 };
 
 /** Every blocked reason said the three ways, from the one table of phrases. */
 const BLOCKED = Object.fromEntries(
-  Object.keys(BLOCKED_WHY).map((reason) => [
+  Object.entries(BLOCKED_WHY).map(([reason, why]) => [
     reason,
-    { sentence: (name) => blockedText(reason, name), mark: deviceBlockedMark, word: deviceBlockedWord },
+    {
+      sentence: (name) => blockedText(reason, name),
+      mark: deviceBlockedMark,
+      word: deviceBlockedWord,
+      because: `a direct connection to this machine could not be made: ${why}`,
+    },
   ]),
 );
 
@@ -94,3 +109,9 @@ export const deviceAwayMark = (context) => unreachableAs(context)?.mark || devic
 
 /** The one word a greyed row wears to say why it is grey. */
 export const deviceAwayWord = (context) => unreachableAs(context)?.word || deviceOfflineWord;
+
+/** Why a press on a machine that cannot answer was refused, as the clause
+ *  after "because" in the sentence that says so: away, or the actual reason —
+ *  a browser that cannot connect, or the side that needs updating — since
+ *  neither of those is a machine that has gone. */
+export const deviceAwayBecause = (context) => unreachableAs(context)?.because || "this machine is away";

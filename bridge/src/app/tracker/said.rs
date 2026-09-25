@@ -174,6 +174,7 @@ mod tests {
                 created_at: "2026-09-20T15:01:00Z".into(),
                 author_context: None,
                 mentions_user: false,
+                notifies_user: false,
             });
         }
         write

@@ -725,7 +725,7 @@ describe("what a row says", () => {
     expect(html).toContain("inbox-muted");
     // The open menu is the one whose row was asked for; a shut one is not in
     // the markup at all — the DOM patcher would never re-hide it.
-    expect(html).toMatch(/class="splitmenu inbox-menu">/);
+    expect(html).toMatch(/class="splitmenu inbox-menu" role="menu"/);
     expect(inboxRowHtml(entry, {})).not.toContain("splitmenu");
     expect(inboxRowHtml(entry, {})).not.toContain("data-mute=");
   });
@@ -740,7 +740,10 @@ describe("what a row says", () => {
     expect(html).toContain("inbox-more");
     expect(html).toContain("⋯");
     expect(html).not.toContain('class="splitbtn"');
-    expect(html).not.toMatch(/<button[^>]*data-done=/);
+    // On the row, Done is nowhere but the menu, where it is a menu item.
+    const [row, menu] = html.split('class="splitmenu inbox-menu"');
+    expect(row).not.toContain("data-done=");
+    expect(menu).toMatch(/<button class="mi" type="button" role="menuitem" tabindex="-1" data-done=/);
     const order = [...html.matchAll(/data-(done|dismiss|mute)="run-1"/g)].map((m) => m[1]);
     expect(order).toEqual(["done", "dismiss", "mute"]);
   });

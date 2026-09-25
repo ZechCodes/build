@@ -178,10 +178,11 @@ describe("the project header actions", () => {
   });
 });
 
-// A project whose machine cannot be asked anything says so, and offers the one
-// thing that can still be done with it.
+// A project whose machine cannot be asked anything says so — and says nothing
+// else: its head offers what every head offers.
 describe("a project on a machine that is away", () => {
   const block = (over = {}) => ({
+    key: "project:dev-9/p1",
     projectKey: "dev-9/p1",
     name: "relaydb",
     entries: [],
@@ -217,16 +218,31 @@ describe("a project on a machine that is away", () => {
     expect(deviceTags([on("dev-9", { id: "p1", name: "relaydb" })], devices).get("dev-9/p1").offline).toBe(false);
   });
 
-  it("offers Hide only on an offline block, beside the cog and the +", () => {
-    const away = projectHeadHtml(block({ offline: true }));
-    expect(away).toContain('data-project-hide="dev-9/p1"');
-    expect(away).toContain('title="Hide project"');
-    expect(away).toContain("Hide project relaydb");
-    // Inside the hover reveal, ahead of the two controls it joins.
-    expect(away.indexOf("inbox-project-actions")).toBeLessThan(away.indexOf("inbox-project-hide"));
-    expect(away.indexOf("inbox-project-hide")).toBeLessThan(away.indexOf("inbox-project-settings"));
-    // A machine that is answering would simply undo the hide on its next tick.
-    expect(projectHeadHtml(block({ offline: false }))).not.toContain("data-project-hide");
-    expect(projectHeadHtml(block())).not.toContain("data-project-hide");
+  // Which controls a head has is what the cache holds, never whether its
+  // machine is answering: Hide lives in the block's menu on every block.
+  it("offers Hide in the block's menu, whether or not its machine is away", () => {
+    const open = { openMenuKey: "project:dev-9/p1" };
+    for (const offline of [true, false]) {
+      const head = projectHeadHtml(block({ offline }), open);
+      expect(head).toContain('data-project-hide="dev-9/p1"');
+      expect(head).toContain("Hide project");
+      // Behind the block's ⋯, which stands in the hover reveal ahead of the cog
+      // and the +; the menu hangs off the head, after everything on it.
+      expect(head).toContain('data-menu="project:dev-9/p1"');
+      expect(head.indexOf("inbox-project-actions")).toBeLessThan(head.indexOf("inbox-more"));
+      expect(head.indexOf("inbox-more")).toBeLessThan(head.indexOf("inbox-project-settings"));
+      expect(head.indexOf("inbox-project-create")).toBeLessThan(head.indexOf("inbox-menu"));
+    }
+    // A menu that is shut is not in the markup at all, on any block.
+    expect(projectHeadHtml(block({ offline: true }))).not.toContain("data-project-hide");
+    expect(projectHeadHtml(block({ offline: true }))).toContain('data-menu="project:dev-9/p1"');
+    expect(projectHeadHtml(block({ offline: true }), { openMenuKey: "workspace:dev-9/w1" })).not.toContain("data-project-hide");
+  });
+
+  it("paints the same controls on a head whose machine is away as on one that answers", () => {
+    const controls = (offline) =>
+      projectHeadHtml(block({ offline }), { openMenuKey: "project:dev-9/p1" })
+        .match(/data-project-[a-z]+|data-menu|disabled/g);
+    expect(controls(true)).toEqual(controls(false));
   });
 });

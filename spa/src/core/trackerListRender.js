@@ -31,6 +31,7 @@ import {
   numberHtml,
   priorityMarkHtml,
   rowAssigneeHtml,
+  reviewerWords,
   rowLabelsHtml,
   statusChipHtml,
 } from "./trackerChips.js";
@@ -49,12 +50,12 @@ import {
  * that does not parse, an issue with no labels — and what is left is spaced,
  * not punctuated: the gap between two of them is the separator.
  */
-const factsHtml = (issue, columns, nowMs) =>
+const factsHtml = (issue, columns, nowMs, reading) =>
   [
     // Closed leads, because it changes how everything after it reads: a column
     // on a closed issue is where it stopped, not where it is.
     closedChipHtml(issue.state),
-    statusChipHtml(columns, issue.status),
+    statusChipHtml(columns, issue.status, reviewerWords(issue, reading)),
     ageHtml(issue.updated_at, nowMs),
     rowLabelsHtml(issue.labels),
   ]
@@ -88,7 +89,7 @@ export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...cont
   return (
   `<li class="issue-row" data-issue="${esc(issue.id)}">
     <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span></a>
-    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs)}${assignee}</span>
+    <span class="issue-row-facts">${factsHtml(issue, columns, nowMs, reading)}${assignee}</span>
   </li>`);
 };
 

@@ -205,7 +205,8 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     if (!project) throw new Error("This project is no longer registered on this device.");
     return project;
   }).catch((error) => {
-    if (!$("#psproject")) paintMissing(`Project settings are unavailable: ${error.message}`);
+    // The refusal is the sentence: the sheet's title already says what it is.
+    if (!$("#psproject")) paintMissing(error.message);
   });
   return { whenCachePainted: record.whenPainted };
 }

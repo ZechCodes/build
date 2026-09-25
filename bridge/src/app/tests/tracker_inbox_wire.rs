@@ -167,6 +167,15 @@ fn watched_issue_inbox_wire_probe() {
         json!({ "issue_id": review, "status": "in_review" }),
     );
     let in_review = reader.step("in_review", &review);
+    // In review is not the user's until the reviewer is the user (#144).
+    mcp_call(
+        &state,
+        &entity,
+        &agent,
+        "assign_issue",
+        json!({ "issue_id": review, "assignee": { "kind": "user" } }),
+    );
+    let assigned = reader.step("assigned", &review);
     mcp_call(
         &state,
         &entity,
@@ -176,12 +185,22 @@ fn watched_issue_inbox_wire_probe() {
     );
     let done = reader.step("done", &review);
 
+    // Agents' own traffic on a watched issue, then a question put to the user
+    // (#144): only the second asks for them.
     mcp_call(
         &state,
         &entity,
         &agent,
         "comment_issue",
-        json!({ "issue_id": asked, "body": "Which name should the row use?" }),
+        json!({ "issue_id": asked, "body": "Rebased on main." }),
+    );
+    let chatter = reader.step("chatter", &asked);
+    mcp_call(
+        &state,
+        &entity,
+        &agent,
+        "comment_issue",
+        json!({ "issue_id": asked, "body": "Which name should the row use?", "notify_user": true }),
     );
     let commented = reader.step("commented", &asked);
     let comment_id = commented["get"]["timeline"]
@@ -202,7 +221,9 @@ fn watched_issue_inbox_wire_probe() {
     // inbox subscription, and the answers after it say what changed.
     for (step, id) in [
         (&in_review, &review),
+        (&assigned, &review),
         (&done, &review),
+        (&chatter, &asked),
         (&commented, &asked),
         (&read, &asked),
     ] {
@@ -213,6 +234,16 @@ fn watched_issue_inbox_wire_probe() {
         );
     }
     assert_eq!(issue_status(&in_review, &review), "in_review");
+    assert_eq!(
+        commented["get"]["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|entry| entry["type"] == "comment")
+            .unwrap()["notifies_user"],
+        true
+    );
     assert_eq!(issue_status(&done, &review), "done");
     assert_eq!(read["get"]["issue"]["read_through"], json!(comment_id));
 
@@ -222,8 +253,8 @@ fn watched_issue_inbox_wire_probe() {
             "greeting": greeting,
             "subscription_id": INBOX_SUBSCRIPTION,
             "project_id": project,
-            "review": { "issue_id": review, "steps": [start, in_review, done] },
-            "comment": { "issue_id": asked, "steps": [asked_start, commented, read] },
+            "review": { "issue_id": review, "steps": [start, in_review, assigned, done] },
+            "comment": { "issue_id": asked, "steps": [asked_start, chatter, commented, read] },
         })
     );
 }

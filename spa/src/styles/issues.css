@@ -380,6 +380,10 @@
 .issue-card-title { color:var(--ink); text-decoration:none; font-weight:550; line-height:1.35; }
 .issue-card-title:hover { text-decoration:underline; }
 .issue-card-labels { display:flex; flex-wrap:wrap; gap:4px; }
+/* Who an In review card is with (#144). A long agent name ends in an ellipsis
+   rather than widening the column. */
+.issue-card-status { display:flex; min-width:0; }
+.issue-card-status .issue-status { overflow:hidden; text-overflow:ellipsis; }
 .issue-card .issue-assign { margin:0; align-self:flex-start; padding:2px 6px; }
 
 /* ---- one issue's page ---------------------------------------------------- */

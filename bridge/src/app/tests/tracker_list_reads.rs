@@ -67,6 +67,7 @@ fn activity(cast: &Cast, issue_id: &str, index: usize) -> (Vec<IssueComment>, Ve
             author: cast.author(index + n),
             body: format!("note {n}"),
             mentions_user: false,
+            notifies_user: false,
             refs: Vec::new(),
             attachments: Vec::new(),
             created_at: at(n * 2),

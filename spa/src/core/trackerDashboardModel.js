@@ -212,6 +212,8 @@ export function backlogGroups(entries) {
  * session: Done is then everything finished since the user left. Without it
  * Done falls back to the cached timelines' last 24 hours. `sessionStartedMs`
  * comes with it, and sets apart what finished before this session.
+ *
+ * `askedOnly` is the machine's cached Needs you rule (core/needsYouRule.js).
  * `columns` are the cached `issues.columns`, which name Backlog's columns. */
 export function dashboardSections(issues, {
   feed = null,
@@ -221,9 +223,10 @@ export function dashboardSections(issues, {
   activityByAgent = new Map(),
   doneCutoffMs = null,
   sessionStartedMs = null,
+  askedOnly,
   columns,
 } = {}) {
-  const grouped = attentionGroups(issues, { feed, projectKey, detailById });
+  const grouped = attentionGroups(issues, { feed, projectKey, detailById, askedOnly });
   const reading = {
     agentLabels: agentLabels(workspaceAgents(feed, projectKey)),
     projectName: projectName(feed, projectKey),

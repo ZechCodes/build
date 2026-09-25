@@ -786,6 +786,33 @@ Nothing else. An agent filing among agents on a device that has turned the
 setting off, and an agent an agent spawned, are not the user's business until
 somebody says they are.
 
+### What needs the user (#144)
+
+A watched issue is one the user can see; it needs them only when:
+
+- it is **assigned to the user**, or
+- an agent comment they have not read **mentions them** (`mention_user`, kept
+  as `mentions_user` on the comment), or
+- an agent comment they have not read **asked them** (`notify_user`, kept as
+  `notifies_user` on the comment since 1.23.0).
+
+The In review column alone no longer qualifies: agents review each other's
+work there, and a review round between agents has nothing for the user to
+decide. An issue in review is assigned to whoever is reviewing it, and its card
+says so ("In review · Astra reviewer", "In review · you").
+
+A bridge announces this as `issues.commentUserNotifies`. Against a bridge
+without the name, a client keeps the earlier rule — In review, or any unread
+agent comment on a watched issue — because such a bridge does not record which
+comments asked.
+
+The inbox and the Issues tab's Needs you read this from the same cached
+records: the issue (its `watched`, `assignee` and `read_through`) and its
+timeline. Neither waits on the board's `tracker_issue` feed row, whose unread
+count is re-read only with the board and can lag a comment an `issues` push has
+already cached. Nor does the row stand in for the watch: after Stop watching,
+the cached issue says `watched: false`, and the issue leaves both at once.
+
 ### The verbs
 
 | Verb | Params | Result |

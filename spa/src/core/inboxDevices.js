@@ -3,41 +3,43 @@
 // The inbox is one list across every machine on the account, so a row names the
 // device that answered for it, and a verb on a row must reach THAT device:
 // clearing a row the laptop answered for through the desktop's session would
-// clear nothing. So every verb asks this module for its call, and a device that
-// cannot answer right now hands back one that refuses in the same words the row
-// is greyed with — the verb sites are written once, for every row, whichever
-// machine it came from. A surface that is about one machine rather than one row
-// — the create dialog — asks the same way, by device id.
+// clear nothing. So every verb asks this module for its call, which at each
+// press either reaches that device or refuses, in a sentence naming what the
+// press was for and why the machine cannot take it — the verb sites are written
+// once, for every row, whichever machine it came from. A surface that is about one
+// machine rather than one row — the create dialog — asks the same way, by
+// device id.
+//
+// Nothing here shuts a control. What the rail paints is what the cache holds,
+// and a machine that is still connecting is painted as if it had answered: its
+// rows are greyed and say why, beside everything they held, and every control
+// on them stays live. The call behind the control is what refuses.
 
 import { App } from "../app.js";
 import { canAnswer, contextFor, creationDevice, homeContext } from "./deviceContexts.js";
 import { deviceNameOf } from "./devicePolicy.js";
 import { allDevicesOfflineText } from "./text.js";
-import { deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
+import { deviceAwayBecause, deviceAwayMark, deviceAwayWord } from "./deviceAway.js";
 import { deviceOfflineNotice } from "./deviceNotice.js";
 import { notifyError } from "./notify.js";
 import { EMPTY_CATALOG } from "./modelCatalog.js";
-
-/** What a device that cannot answer offers: nothing to call, and the words its
- *  rows and their menus are marked with — which say why it cannot, since a
- *  machine answering in a shape this tab cannot read is not away at all. */
-const noDevice = (context) => ({ call: null, disabled: deviceAwayMark(context), word: deviceAwayWord(context) });
 
 /** The machine a surface is about: the one it names, or the one creation goes
  *  to when it names none. */
 const contextOf = (deviceId) => (deviceId ? contextFor(deviceId) : homeContext());
 
 /**
- * What one machine offers right now: `{ call, disabled }`.
+ * The word a machine's greyed rows wear while it cannot answer — which says
+ * why it cannot, since a machine answering in a shape this tab cannot read is
+ * not away at all — and null while it can.
  *
  * Naming no machine means the one where creation goes: home. A row this client
  * is holding itself — a capture taken while no device could take it — names
  * none, and so does a surface that is about nowhere in particular.
  */
-function deviceTarget(deviceId) {
+function awayWordOf(deviceId) {
   const context = contextOf(deviceId);
-  if (!canAnswer(context)) return noDevice(context);
-  return { call: context.rpc, disabled: false, word: null };
+  return canAnswer(context) ? null : deviceAwayWord(context);
 }
 
 /**
@@ -66,59 +68,79 @@ export const deviceCatalog = (deviceId) => {
 export const followDeviceCatalog = (deviceId, listener) =>
   contextOf(deviceId)?.onModelCatalogChanged(listener) || (() => {});
 
-/** The call a surface about one machine makes: that machine's, or one that
- *  refuses in the words its rows are greyed with — so no call site asks whether
- *  the machine is there. */
-export function deviceCall(deviceId) {
-  const { call, disabled } = deviceTarget(deviceId);
-  return call || (() => Promise.reject(new Error(disabled)));
+/** What a press on a machine that cannot answer says, wherever it was
+ *  pressed: one plain sentence naming what the press was for, and why the
+ *  machine cannot take it. `doing` is that, in the reader's words — "archive
+ *  this workspace"; `context` is the machine's, whose reason is said when it
+ *  has one, and a machine that is simply not here is away. */
+export const awayRefusal = (doing, context = null) =>
+  `Build cannot ${doing} because ${deviceAwayBecause(context)}.`;
+
+/** The words a call is refused with: the sentence for what it was doing when
+ *  its caller said, else the machine's short mark. `doing` is a phrase, or —
+ *  for a surface that sends more than one verb through the one call, like a
+ *  project's settings sheet — a phrase per method. */
+function refusalOf(context, doing, method, params) {
+  if (!doing) return deviceAwayMark(context);
+  return awayRefusal(typeof doing === "function" ? doing(method, params) : doing, context);
 }
 
-/** The device a row's verbs run against, and the call they make: the row says
- *  which machine answered for it, so no verb site asks whose row it is. */
-const verbTarget = (row) => deviceTarget(row && row.deviceId);
-export const verbCall = (row) => deviceCall(row && row.deviceId);
+/**
+ * The call a surface about one machine makes: that machine's, or a refusal at
+ * the press — so no call site asks whether the machine is there, and no
+ * control has to be shut in case it is not.
+ *
+ * Which it is, is decided at each press, not when the call is handed out: a
+ * sheet opened while the machine was away sends once it is back, and one opened
+ * while it was here refuses in the sentence once it has gone. A call the
+ * machine drops mid-flight, because it went, is refused in that sentence too.
+ */
+export function deviceCall(deviceId, doing = null) {
+  // Passed through as asked, so an argument the caller left out stays left out.
+  return (...asked) => {
+    const context = contextOf(deviceId);
+    const refused = () => new Error(refusalOf(contextOf(deviceId), doing, ...asked));
+    if (!canAnswer(context)) return Promise.reject(refused());
+    return context.rpc(...asked).catch((error) => {
+      throw canAnswer(contextOf(deviceId)) ? error : refused();
+    });
+  };
+}
+
+/** The call a row's verbs make: the row says which machine answered for it, so
+ *  no verb site asks whose row it is. */
+export const verbCall = (row, doing = null) => deviceCall(row && row.deviceId, doing);
 
 /**
- * After the paint: grey what no device can answer for right now, and shut the
- * controls that would have asked.
+ * After the paint: grey what no device can answer for right now, and say why
+ * on the row.
  *
  * A row's device is its own; a block's is its project's. It is a pass over the
  * painted list rather than a class inside the row renderers because a device
  * goes offline between paints and nothing about a row changes when it does.
+ * It only ever marks: every control on a greyed row or block is exactly what it
+ * is on a live one, and a press on it is refused by its own call.
  * `lookup`: { entryFor(key), blockFor(projectKey) } — the wiring's own record
  * of what it painted, since a row is never found by a selector built from a key
  * the daemon minted.
  */
 export function paintDeviceState(list, { entryFor, blockFor }) {
   for (const element of list.querySelectorAll(".inbox-entry")) {
-    markAway(element, markDeviceState(element, entryFor(element.dataset.key), ROW_CONTROLS));
+    markAway(element, greyAway(element, entryFor(element.dataset.key)));
   }
   for (const element of list.querySelectorAll(".inbox-project")) {
-    markDeviceState(element, blockFor(element.dataset.project), BLOCK_CONTROLS);
+    greyAway(element, blockFor(element.dataset.project));
   }
 }
 
-/** What a row offers that only its own machine can carry out: the actions in
- *  its menu, and the Done on the row itself. */
-const ROW_CONTROLS = ".inbox-menu .mi, [data-workspace-done]";
-
-/** And what a project block offers: the + that starts work in it. */
-const BLOCK_CONTROLS = ":scope > .inbox-project-head .inbox-project-create, :scope > .inbox-project-head .inbox-project-settings";
-
-/** One row or block: greyed while its own device cannot answer, and every
- *  control named by `controls` shut with the reason. A row this client holds
- *  itself names no device and is nobody's to grey. Hands back the word that
- *  device's rows wear, which is what a row's own mark is painted from. */
-function markDeviceState(element, painted, controls) {
-  const target = painted && painted.deviceId ? verbTarget(painted) : null;
-  const reason = (target && target.disabled) || false;
-  element.classList.toggle("inbox-offline", Boolean(reason));
-  for (const control of element.querySelectorAll(controls)) {
-    if (reason) shutControl(control, reason);
-    else openControl(control);
-  }
-  return reason ? target.word : null;
+/** One row or block: greyed while its own device cannot answer. A row this
+ *  client holds itself names no device and is nobody's to grey. Hands back the
+ *  word that device's rows wear, which is what a row's own mark is painted
+ *  from. */
+function greyAway(element, painted) {
+  const word = painted && painted.deviceId ? awayWordOf(painted.deviceId) : null;
+  element.classList.toggle("inbox-offline", Boolean(word));
+  return word;
 }
 
 /** The word a greyed row wears — offline, or the update that would make its
@@ -138,23 +160,6 @@ function markAway(element, away) {
   const word = shown || line.insertBefore(document.createElement("span"), line.querySelector(".badge"));
   word.className = "dim inbox-away";
   word.textContent = away;
-}
-
-/** A control whose device cannot answer: it says so, and it does nothing. What
- *  it says when it works is kept, so it can say it again. */
-function shutControl(control, reason) {
-  if (!("deviceTitle" in control.dataset)) control.dataset.deviceTitle = control.title;
-  control.title = reason;
-  control.setAttribute("aria-disabled", "true");
-  control.setAttribute("disabled", "");
-}
-
-function openControl(control) {
-  if (!("deviceTitle" in control.dataset)) return;
-  control.title = control.dataset.deviceTitle;
-  delete control.dataset.deviceTitle;
-  control.removeAttribute("aria-disabled");
-  control.removeAttribute("disabled");
 }
 
 /**

@@ -844,21 +844,13 @@ function menuHtml(entry, open) {
   if (entry.kind === TRACKER_ISSUE) return menuButtonHtml(entry, open, [unwatchItemHtml(entry)]);
   const items = [];
   if (entry.canFinish) {
-    items.push(
-      `<div class="mi" data-done="${esc(entry.key)}"><span class="mt">Done</span><span class="md">${
-        entry.kind === "issue" ? "File the issue away" : "Delete the branch and its checkout"
-      }</span></div>`,
-    );
+    items.push(menuItemHtml(`data-done="${esc(entry.key)}"`, "Done",
+      entry.kind === "issue" ? "File the issue away" : "Delete the branch and its checkout"));
   }
-  items.push(
-    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Moves it to Recent until a new message</span></div>`,
-  );
+  items.push(menuItemHtml(`data-dismiss="${esc(entry.key)}"`, "Clear from inbox", "Moves it to Recent until a new message"));
   if (entry.entityId) {
-    items.push(
-      `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
-        entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
-      }</span></div>`,
-    );
+    items.push(menuItemHtml(`data-mute="${esc(entry.key)}"`, entry.muted ? "Unmute" : "Mute",
+      entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"));
   }
   return menuButtonHtml(entry, open, items);
 }
@@ -867,16 +859,30 @@ function menuHtml(entry, open) {
  *  user, so it has nothing to clear or finish. Its one verb is its mute: stop
  *  watching, which is what Mute means to the bridge for an issue. */
 const unwatchItemHtml = (entry) =>
-  `<div class="mi" data-unwatch="${esc(entry.key)}"><span class="mt">Stop watching</span><span class="md">Keeps the issue, but leaves it out of your inbox</span></div>`;
+  menuItemHtml(`data-unwatch="${esc(entry.key)}"`, "Stop watching", "Keeps the issue, but leaves it out of your inbox");
+
+/** One item of a rail menu — a row's or a block's. A button, so Enter and
+ *  Space press it like any other; out of the Tab order, because the arrows
+ *  walk a menu (core/inboxView.js). `data` is the attribute that says which
+ *  press it is, already escaped. */
+export const menuItemHtml = (data, title, detail) =>
+  `<button class="mi" type="button" role="menuitem" tabindex="-1" ${data}><span class="mt">${esc(title)}</span><span class="md">${esc(detail)}</span></button>`;
+
+/** A rail menu, in the markup only while it is open: the DOM patcher leaves a
+ *  split menu's `hidden` alone (a poll must not shut what the reader opened),
+ *  so a menu that closes has to leave rather than hide. `label` names what it
+ *  is the menu of. */
+export const railMenuHtml = (open, label, items) =>
+  (open ? `<div class="splitmenu inbox-menu" role="menu" aria-label="${esc(label)}">${items.join("")}</div>` : "");
+
+/** The ⋯ that opens a rail menu, saying whether it is open. */
+export const moreButtonHtml = (key, name, open) =>
+  `<button class="iconbtn inbox-more" type="button" data-menu="${esc(key)}" title="More" aria-label="More actions for ${esc(name)}" aria-haspopup="menu" aria-expanded="${open ? "true" : "false"}">⋯</button>`;
 
 /** The ⋯ and, while it is open, the menu behind it. */
 function menuButtonHtml(entry, open, items) {
-  // The menu is in the markup only while it is open: the DOM patcher leaves a
-  // split menu's `hidden` alone (a poll must not shut what the reader opened),
-  // so a menu that closes has to leave rather than hide.
-  const menu = open ? `<div class="splitmenu inbox-menu">${items.join("")}</div>` : "";
-  return `<button class="iconbtn inbox-more" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">⋯</button>
-    ${menu}`;
+  return `${moreButtonHtml(entry.key, entry.name, open)}
+    ${railMenuHtml(open, `Actions for ${entry.name}`, items)}`;
 }
 
 /** The machine something is on, said dim after its name. Minted here because a

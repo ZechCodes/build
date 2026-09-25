@@ -91,7 +91,7 @@ describe("the second line", () => {
       updated_at: "2026-08-21T10:00:00Z",
     });
     expect(facts(row)).toEqual([
-      "issue-status:In review",
+      "issue-status:In review · issues-spa · Agent 1", // who it is with (#144)
       "issue-age:2h ago",
       "issue-labels:bugui", // two label words, spaced by the stylesheet and nothing else
       "issue-assign:issues-spa · Agent 1",

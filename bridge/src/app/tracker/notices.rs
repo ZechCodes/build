@@ -562,6 +562,7 @@ mod tests {
             created_at: "2026-09-20T15:01:00Z".into(),
             author_context: None,
             mentions_user: false,
+            notifies_user: false,
         });
         let notice = notice_of(&write, None).unwrap();
         assert_eq!(notice.action, "commented");
@@ -610,6 +611,7 @@ mod tests {
             created_at: "2026-09-20T15:01:00Z".into(),
             author_context: None,
             mentions_user: false,
+            notifies_user: false,
         });
         let reading = reader_body_of(&write, "Rail scroll");
         assert_eq!(reading, "New comment from Rail scroll");

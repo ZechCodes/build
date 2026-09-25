@@ -2,12 +2,14 @@
 // #125: a watched issue's inbox row paints from the cache on a reload, before
 // the bridge answers anything, and Stop watching takes it away at once and
 // puts it back if the bridge refuses. Real cache, feed, device registry and
-// rail; the session's `call` is the only stand-in.
+// rail; the session's `call` is the only stand-in. And (#144) a cold reload
+// with no session at all still paints the row from what the cache holds, and
+// Stop watching takes a question out of the Dashboard's Needs you as well.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { issue, issueDetail } from "./trackerWireFixture.js";
+import { comment, issue, issueDetail } from "./trackerWireFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const DEVICE = "watch-device";
@@ -23,18 +25,22 @@ const rowFor = (id) => rows().find((row) => row.dataset.key === `tracker_issue:$
 
 /** The bridge: greets, and answers what a case scripted; anything else never
  *  answers, so what paints came from the cache. */
+let greeting = GREETING;
 const call = vi.fn((method, params) => {
-  if (method === "session.hello") return Promise.resolve(GREETING);
+  if (method === "session.hello") return Promise.resolve(greeting);
   const answer = answers[method];
   return answer ? answer(params) : new Promise(() => {});
 });
 
-beforeEach(async () => {
+/** A reload: the feed and the issue records are already on disk. `greet`
+ *  lands a session before the rail mounts; without it no machine answers. */
+async function boot({ greet = true, issues = [review], rule = null, hello = GREETING, timelines = {} } = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   document.body.innerHTML = bodyHtml;
   answers = {};
+  greeting = hello;
   call.mockClear();
   const { App } = await import("../src/app.js");
   Object.assign(App, { route: { name: "inbox" }, devices: [{ id: DEVICE, name: "Laptop", status: "online" }],
@@ -46,23 +52,27 @@ beforeEach(async () => {
     inboxView: await import("../src/core/inboxView.js"),
     deviceContexts: await import("../src/core/deviceContexts.js"),
     connection: await import("../src/connection.js"),
+    needsYouRule: await import("../src/core/needsYouRule.js"),
+    issuesPane: await import("../src/core/trackerIssuesPane.js"),
   };
-  // A reload: the feed and the issue records are already on disk.
   const address = (kind) => ({ deviceId: DEVICE, entityId: "", kind });
   await modules.cache.writeCached(address("feed"), { items: [], runs: [], projects: [project], workspaces: [] });
   await modules.cache.writeCached(address("projects"), [project]);
   await modules.cache.writeCached(address("workspaces"), []);
-  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([review], []));
-  await modules.tracker.writeIssueRecord(DEVICE, PROJECT, review.id, issueDetail(review, []));
-  const context = modules.deviceContexts.adoptDeviceSession({
-    deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
-    installAdapter: (selection) => selection.create(call),
-  });
-  await modules.connection.greetLiveBridge(context);
+  await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord(issues, []));
+  for (const one of issues) await modules.tracker.writeIssueRecord(DEVICE, PROJECT, one.id, issueDetail(one, timelines[one.id] || []));
+  if (rule) await modules.needsYouRule.rememberNeedsYouRule(DEVICE, rule);
+  if (greet) {
+    const context = modules.deviceContexts.adoptDeviceSession({
+      deviceId: DEVICE, call, close: () => {}, peer: () => {}, onCarrier: () => {},
+      installAdapter: (selection) => selection.create(call),
+    });
+    await modules.connection.greetLiveBridge(context);
+  }
   modules.inboxView.setInboxView("inbox");
   modules.inboxView.mountInboxList();
   await modules.taskFeed.startFeed();
-});
+}
 
 afterEach(() => {
   modules.inboxView.unmountInboxList();
@@ -77,6 +87,8 @@ const unwatch = async () => {
 };
 
 describe("a watched issue's inbox row", () => {
+  beforeEach(() => boot());
+
   it("paints from the cache on a reload, on both faces, and opens the issue", async () => {
     await vi.waitFor(() => expect(rowFor(review.id)?.querySelector(".inbox-facts")?.textContent).toBe("In review"), WAIT);
     expect(call.mock.calls.some(([method]) => method === "issues.list" || method === "issues.get")).toBe(false);
@@ -139,5 +151,61 @@ describe("a watched issue's inbox row", () => {
     await vi.waitFor(() => expect(rowFor(review.id)).not.toBe(null), WAIT);
     const held = await modules.tracker.readIssuesRecord(DEVICE, PROJECT);
     expect(held.issues[0].watched).toBe(true);
+  });
+});
+
+describe("a watched issue's inbox row before any machine answers (#144)", () => {
+  const mine = issue({ id: "issue-9", number: 9, title: "Pick the fix", watched: true, status: "in_progress",
+    assignee: { kind: "user" }, updated_at: "2026-09-24T01:00:00Z" });
+
+  beforeEach(() => boot({ greet: false, issues: [review, mine], rule: { issues: { commentUserNotifies: true } } }));
+
+  it("paints what the cache says needs the user, by the cached rule, with no greeting", async () => {
+    await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-facts")?.textContent).toBe("Assigned to you"), WAIT);
+    // In review between agents is not the user's business by the cached rule.
+    expect(rowFor(review.id)).toBe(null);
+    expect(call).not.toHaveBeenCalled();
+    expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
+  });
+});
+
+describe("Stop watching an issue an agent asked the user about (#144)", () => {
+  // Agent work, so only the unread question put it in Needs you, and the
+  // board's feed row for it is from before the question: it counts nothing.
+  const asked = issue({ id: "issue-10", number: 10, title: "Which fix", watched: true, status: "in_progress",
+    assignee: { kind: "agent", agent_id: "agent-astra" }, read_through: "ie-01K5Z1",
+    updated_at: "2026-09-24T01:00:00Z" });
+  const question = comment({ id: "ic-01K5Z3", issue_id: asked.id, author: { kind: "agent", agent_id: "agent-astra" },
+    body: "Which of the two fixes do you want?", notifies_user: true });
+  const staleRow = { kind: "tracker_issue", projectKey: project.projectKey, issue_id: asked.id, unread: 0 };
+  let pane;
+
+  beforeEach(() => boot({
+    issues: [asked],
+    timelines: { [asked.id]: [question] },
+    hello: { api_version: "1.23.0", push_events: true, capabilities: ["issues.watching", "issues.commentUserNotifies"] },
+  }));
+  afterEach(() => pane?.dispose());
+
+  it("leaves the Dashboard when it leaves the inbox, whatever the board's row still says", async () => {
+    await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
+    const host = document.body.appendChild(document.createElement("div"));
+    pane = modules.issuesPane.mountIssuesPane(host, {
+      projectId: PROJECT, projectName: "Build", deviceId: DEVICE, projectKey: project.projectKey,
+      callRpc: call, catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
+      feed: () => ({ workspaces: [], items: [staleRow], projects: [] }), defaultView: "dashboard", navigate: () => {},
+    });
+    const needsYou = () => [...host.querySelectorAll('[data-dashboard-section="needsYou"] .issue-dashboard-row')]
+      .map((row) => row.dataset.issue);
+    await vi.waitFor(() => expect(rowFor(asked.id)).not.toBe(null), WAIT);
+    await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
+
+    answers["issues.unwatch"] = async () => ({ issue: { ...asked, watched: false } });
+    rowFor(asked.id).querySelector("[data-menu]").click();
+    await vi.waitFor(() => expect(rowFor(asked.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
+    rowFor(asked.id).querySelector("[data-unwatch]").click();
+    await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+    expect((await modules.tracker.readIssuesRecord(DEVICE, PROJECT)).issues[0].watched).toBe(false);
+    await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
   });
 });

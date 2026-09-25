@@ -471,6 +471,13 @@ pub struct IssueComment {
     /// A durable request for the user to read or answer this comment.
     #[serde(default, skip_serializing_if = "is_false")]
     pub mentions_user: bool,
+    /// The agent asked for the user to be told (`notify_user`, #144). Kept
+    /// on the comment rather than only turning on the issue's watch, so a
+    /// reader can tell a question put to the user from the agents' own
+    /// traffic on an issue the user watches. Announced as
+    /// `issues.commentUserNotifies`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub notifies_user: bool,
     /// Typed references, fenced twice: shape by `validate_thread_links`, then
     /// ownership by the issue. See the spec's "Typed references".
     #[serde(default)]

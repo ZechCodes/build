@@ -194,7 +194,7 @@ cannot starve the relay connection, the heartbeat or negotiation.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `1.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -481,12 +481,6 @@ them into new code; each is a candidate to bring under the rule.
   - the connection icon (`spa/src/connectionStatus.js`);
   - the compose box's "… is away" note, painted before anything is queued
     (`spa/src/core/composeView.js`, #137).
-  - **pending, not accepted:** the inbox shuts a row's Done and menu actions
-    and a block's New workspace and Settings while the machine cannot answer,
-    and offers Hide project only then (`spa/src/core/inboxDevices.js`
-    `paintDeviceState`, `spa/src/core/inboxProjects.js` `hideButtonHtml`). A
-    disabled action control is a render guard, not a status display; #140
-    removes it.
   - **pending, not accepted:** the account's offline mark
     (`accountSaysAway`, written by `markWhatTheAccountNoLongerLists` in
     `spa/src/devices.js`) lands only on contexts that exist at the presence
@@ -542,6 +536,11 @@ refuses when that device cannot answer.
   greeting flags. New features get a name, never a legacy row.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+- A flag that changes what a view draws is written to the cache at the
+  greeting and read from there, so a cold mount draws what it will keep:
+  `issues.commentUserNotifies` becomes the per-device Needs you rule in
+  `spa/src/core/needsYouRule.js`, read by the Issues tab and the inbox's
+  watched issues.
 - A session is adopted before it is greeted, so `canAnswer` is true before the
   greeting's verdict. Each greeting, including a re-greeting on a new carrier
   or a restored path (`greetLiveBridge` in `spa/src/connection.js`), gets its

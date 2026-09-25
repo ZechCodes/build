@@ -912,6 +912,65 @@ export function mergeCachedAtomically(address, merge) {
   });
 }
 
+/** Merge several records inside one IndexedDB readwrite transaction: `merge`
+ * is handed their values, in the order asked, and answers the next value for
+ * each — null leaves that one alone. For records that must move together, the
+ * way a list and the note of what it was last read as must, so neither another
+ * tab nor a failed write can land one without the other. */
+export function mergeCachedTogether(addresses, merge) {
+  const keys = addresses.map(recordKey);
+  let changed = [];
+  return wroteStore((store) => {
+    changed = [];
+    const held = new Array(keys.length);
+    let waiting = keys.length;
+    const mergeAll = () => {
+      try {
+        const next = merge(held.map((record) => record?.value));
+        for (const [index, key] of keys.entries()) {
+          if (next?.[index] == null) continue;
+          const record = withBridgeGeneration(addresses[index], { at: Date.now(), order: nextWriteOrder(), value: next[index] });
+          if (!putOrAbort(store, record, key)) return;
+          changed.push(key);
+        }
+      } catch (error) {
+        abortForError(store, error);
+      }
+    };
+    keys.forEach((key, index) => {
+      const request = store.get(key);
+      request.onsuccess = () => {
+        held[index] = request.result;
+        waiting -= 1;
+        if (!waiting) mergeAll();
+      };
+    });
+    return null;
+  }).then((committed) => {
+    if (committed) for (const key of changed) announce(partsOfKey(key));
+    return Boolean(committed && changed.length);
+  });
+}
+
+/** Raise a count every tab shares, in one transaction, and answer it: one more
+ * than it held, and never under `floor`. Undefined when there is no cache to
+ * count in. Not announced — nothing paints from a count. */
+export async function takeCachedCount(address, floor = 0) {
+  const key = recordKey(address);
+  let taken;
+  const { committed } = await transact("readwrite", (store) => {
+    taken = undefined;
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const held = Number(request.result?.value) || 0;
+      const next = Math.max(held + 1, floor);
+      if (putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: next }, key)) taken = next;
+    };
+    return null;
+  });
+  return committed ? taken : undefined;
+}
+
 /** Drop every record one entity holds on one device — a single range delete,
  *  which is why the entity sits second in the key. */
 export function evictEntity(deviceId, entityId) {

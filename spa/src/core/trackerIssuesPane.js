@@ -493,9 +493,9 @@ export function mountIssuesPane(host, options) {
     const movedCatalogue = withMovedIssue(heldCatalogue, issueId, status);
     state.focusIssue = issueId;
     const moved = [issuesQueryAddress(state.deviceId, state.projectId, queryParams()), issuesAddress(state.deviceId, state.projectId)];
-    // Newer than any page still out: one landing after this does not put the
-    // card back (core/issueReadOrder.js).
-    noteWritten(moved, [issueId]);
+    // Newer than any page still out, in this tab or another: one landing
+    // after this does not put the card back (core/issueReadOrder.js).
+    await noteWritten(moved, [issueId]);
     await Promise.all([
       writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns)),
       writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns)),
@@ -505,7 +505,7 @@ export function mountIssuesPane(host, options) {
     } catch (error) {
       if (state.disposed) return;
       state.focusIssue = issueId;
-      noteWritten(moved, [issueId]);
+      await noteWritten(moved, [issueId]);
       await Promise.all([
         writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns)),
         writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns)),

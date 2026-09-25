@@ -65,7 +65,6 @@ describe("laying a page over a held list", () => {
 
 describe("yielding to a newer read", () => {
   const stretch = (issues, over = {}) => ({ issues, above: Infinity, through: -Infinity, readAt: null, read: 1, ...over });
-  const ADDRESS = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues" };
 
   it("keeps a newer read's copy of a row though its updated_at is the same", () => {
     const newer = issue(5, { title: "read later" });
@@ -75,44 +74,57 @@ describe("yielding to a newer read", () => {
 
   it("leaves out a row a newer read left out, though the cache never held it", async () => {
     const order = await import("../src/core/issueReadOrder.js");
-    const older = order.nextIssueRead();
-    const newer = order.nextIssueRead();
-    order.noteStretch(ADDRESS, { above: 8, through: 4, read: newer });
-    const laid = pages.withIssuePage([issue(9)], stretch([issue(6), issue(5)], { above: 7, through: 5, read: older }), order.lastSayOn(ADDRESS));
+    const older = await order.nextIssueRead();
+    const newer = await order.nextIssueRead();
+    const reads = order.withStretch(null, { above: 8, through: 4, read: newer });
+    const laid = pages.withIssuePage([issue(9)], stretch([issue(6), issue(5)], { above: 7, through: 5, read: older }), order.lastSayIn(reads));
     expect(numbers(laid)).toEqual([9]);
   });
 
   it("lays a row where only older reads had the say", async () => {
     const order = await import("../src/core/issueReadOrder.js");
-    const older = order.nextIssueRead();
-    const newer = order.nextIssueRead();
-    order.noteStretch(ADDRESS, { above: 8, through: 4, read: older });
-    const laid = pages.withIssuePage([], stretch([issue(6)], { read: newer }), order.lastSayOn(ADDRESS));
+    const older = await order.nextIssueRead();
+    const newer = await order.nextIssueRead();
+    const reads = order.withStretch(null, { above: 8, through: 4, read: older });
+    const laid = pages.withIssuePage([], stretch([issue(6)], { read: newer }), order.lastSayIn(reads));
     expect(numbers(laid)).toEqual([6]);
   });
 
   it("forgets every older say once a pull has had the say on every number", async () => {
     const order = await import("../src/core/issueReadOrder.js");
-    const stale = order.nextIssueRead();
-    order.noteStretch(ADDRESS, { above: 8, through: 4, read: stale });
-    order.noteWritten([ADDRESS], ["issue-2"]);
-    const first = order.nextIssueRead();
-    order.noteStretch(ADDRESS, { above: Infinity, through: 5, read: first });
-    const lastSay = order.lastSayOn(ADDRESS);
-    expect(lastSay(issue(2))).toBeGreaterThan(stale);
-    const last = order.nextIssueRead();
-    order.noteStretch(ADDRESS, { above: 5, through: -Infinity, read: last, pullRead: first });
-    expect(order.lastSayOn(ADDRESS)(issue(2))).toBe(last);
-    expect(order.lastSayOn(ADDRESS)(issue(6))).toBe(first);
+    const stale = await order.nextIssueRead();
+    let reads = order.withStretch(null, { above: 8, through: 4, read: stale });
+    reads = order.withWritten(reads, ["issue-2"], await order.nextIssueRead());
+    const first = await order.nextIssueRead();
+    reads = order.withStretch(reads, { above: Infinity, through: 5, read: first });
+    expect(order.lastSayIn(reads)(issue(2))).toBeGreaterThan(stale);
+    const last = await order.nextIssueRead();
+    reads = order.withStretch(reads, { above: 5, through: -Infinity, read: last, pullRead: first });
+    expect(order.lastSayIn(reads)(issue(2))).toBe(last);
+    expect(order.lastSayIn(reads)(issue(6))).toBe(first);
+    expect(reads.stretches).toHaveLength(2);
   });
 
-  it("gives a card this tab moved the say over any read already out", async () => {
+  it("gives a card moved here the say over any read already out", async () => {
     const order = await import("../src/core/issueReadOrder.js");
-    const out = order.nextIssueRead();
+    const ADDRESS = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues" };
+    const out = await order.nextIssueRead();
     const moved = issue(5, { status: "done" });
-    order.noteWritten([ADDRESS], ["issue-5"]);
-    const laid = pages.withIssuePage([moved], stretch([issue(5, { status: "backlog" })], { read: out }), order.lastSayOn(ADDRESS));
+    await order.noteWritten([ADDRESS], ["issue-5"]);
+    const reads = (await cache.readCached(order.readsAddress(ADDRESS)))?.value;
+    const laid = pages.withIssuePage([moved], stretch([issue(5, { status: "backlog" })], { read: out }), order.lastSayIn(reads));
     expect(laid).toEqual([moved]);
+  });
+
+  it("numbers reads in the order they are asked, across tabs sharing the cache", async () => {
+    const order = await import("../src/core/issueReadOrder.js");
+    const first = await order.nextIssueRead();
+    vi.resetModules();
+    const otherTab = await import("../src/core/issueReadOrder.js");
+    const second = await otherTab.nextIssueRead();
+    const third = await order.nextIssueRead();
+    expect(first).toBeLessThan(second);
+    expect(second).toBeLessThan(third);
   });
 });
 
@@ -280,5 +292,68 @@ describe("the numbers between one page's rows and the next's", () => {
     const answers = [answer([], { next_cursor: "below-13" }), answer([])];
     await pull(async () => answers.shift());
     expect(await held()).toEqual([]);
+  });
+});
+
+describe("across tabs sharing the cache", () => {
+  // Each tab is its own copy of the modules over the one IndexedDB: the
+  // boundary between two browser tabs.
+  const ADDRESS = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues", sub: "" };
+  const answer = (issues) => ({ project_id: "p1", issues });
+  const pull = (api, ask) => api.pullIssuePages({
+    ask, deviceId: "dev-1", projectId: "p1", params: { project_id: "p1" }, limit: 100,
+    fold: (stretch) => api.foldIssuesPage(ADDRESS, stretch, () => []),
+  });
+  const held = async () => (await cache.readCached(ADDRESS))?.value?.issues || [];
+  const anotherTab = async () => {
+    vi.resetModules();
+    return import("../src/core/trackerPages.js");
+  };
+  /** Start a pull in this tab whose one page is held until answered. */
+  const heldPull = () => {
+    let answerIt;
+    const asked = new Promise((resolve) => {
+      answerIt = resolve;
+    });
+    let answered;
+    const pulled = pull(pages, () => new Promise((resolve) => {
+      answered = resolve;
+      answerIt();
+    }));
+    return { asked, answer: async (page) => { answered(page); await pulled; } };
+  };
+
+  it("does not put back an issue another tab's newer read took off the list", async () => {
+    const old = heldPull();
+    await old.asked;
+    await pull(await anotherTab(), async () => answer([]));
+    await old.answer(answer([issue(20)]));
+    expect(await held()).toEqual([]);
+  });
+
+  it("keeps another tab's newer copy of a row over an older page's with the same updated_at", async () => {
+    const old = heldPull();
+    await old.asked;
+    await pull(await anotherTab(), async () => answer([issue(20, { title: "read later" })]));
+    await old.answer(answer([issue(20, { title: "read first" })]));
+    expect((await held()).map((one) => one.title)).toEqual(["read later"]);
+  });
+
+  it("does not put back a card another tab moved while a page was out", async () => {
+    await cache.writeCached(ADDRESS, { issues: [issue(20, { status: "backlog" })], columns: [] });
+    const old = heldPull();
+    await old.asked;
+    vi.resetModules();
+    const otherOrder = await import("../src/core/issueReadOrder.js");
+    await otherOrder.noteWritten([ADDRESS], ["issue-20"]);
+    await cache.writeCached(ADDRESS, { issues: [issue(20, { status: "done" })], columns: [] });
+    await old.answer(answer([issue(20, { status: "backlog" })]));
+    expect((await held()).map((one) => one.status)).toEqual(["done"]);
+  });
+
+  it("still lays a page asked after another tab's read", async () => {
+    await pull(await anotherTab(), async () => answer([issue(20, { title: "read first" })]));
+    await pull(pages, async () => answer([issue(20, { title: "read later" }), issue(19)]));
+    expect((await held()).map((one) => one.title)).toEqual(["read later", "issue 19"]);
   });
 });

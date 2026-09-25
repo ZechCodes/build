@@ -491,6 +491,74 @@ describe("readCachedMany", () => {
   });
 });
 
+describe("records merged together", () => {
+  const list = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues" };
+  const note = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issue-reads", sub: "list" };
+  const other = { deviceId: "dev-1", entityId: "p1", kind: "status" };
+
+  it("hands the merge every value as held and writes and announces what it changed", async () => {
+    await cache.writeCached(list, { count: 1 });
+    await cache.writeCached(other, { head: "abc" });
+    const heard = [];
+    cache.subscribeCache({ deviceId: "dev-1" }, (changed) => heard.push(changed.kind));
+    let seen;
+    const wrote = await cache.mergeCachedTogether([list, note, other], (values) => {
+      seen = values;
+      return [{ count: values[0].count + 1 }, { reads: 1 }, null];
+    });
+    expect(wrote).toBe(true);
+    expect(seen).toEqual([{ count: 1 }, undefined, { head: "abc" }]);
+    const records = await cache.readCachedMany([list, note, other]);
+    expect(records.map((record) => record?.value)).toEqual([{ count: 2 }, { reads: 1 }, { head: "abc" }]);
+    expect(heard).toEqual(["tracker-issues", "tracker-issue-reads"]);
+  });
+
+  it("writes none of them when one cannot be written", async () => {
+    await cache.writeCached(list, { count: 1 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await cache.mergeCachedTogether([list, note], () => [{ count: 2 }, { uncloneable: () => {} }])).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+    vi.resetModules();
+    const reopened = await import("../src/core/localCache.js");
+    expect((await reopened.readCached(list))?.value).toEqual({ count: 1 });
+    expect(await reopened.readCached(note)).toBeUndefined();
+  });
+});
+
+describe("a count every tab shares", () => {
+  const COUNT = { deviceId: "", entityId: "", kind: "count" };
+
+  it("answers one more each time it is taken, in whichever tab takes it", async () => {
+    expect(await cache.takeCachedCount(COUNT)).toBe(1);
+    vi.resetModules();
+    const otherTab = await import("../src/core/localCache.js");
+    expect(await otherTab.takeCachedCount(COUNT)).toBe(2);
+    expect(await cache.takeCachedCount(COUNT)).toBe(3);
+  });
+
+  it("never answers under its floor, nor under what it held", async () => {
+    expect(await cache.takeCachedCount(COUNT, 100)).toBe(100);
+    expect(await cache.takeCachedCount(COUNT, 50)).toBe(101);
+  });
+
+  it("is not announced", async () => {
+    const heard = [];
+    cache.subscribeCache({}, (changed) => heard.push(changed));
+    await cache.takeCachedCount(COUNT);
+    expect(heard).toEqual([]);
+  });
+
+  it("answers nothing where there is no cache to count in", async () => {
+    delete globalThis.indexedDB;
+    vi.resetModules();
+    const without = await import("../src/core/localCache.js");
+    expect(await without.takeCachedCount(COUNT)).toBeUndefined();
+  });
+});
+
 describe("announcements", () => {
   /** Resolve on the subscriber's first call, or reject if nothing arrives —
    *  the timer also keeps the loop alive while a channel message is in

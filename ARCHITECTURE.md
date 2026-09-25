@@ -633,20 +633,21 @@ In practice:
   record for exactly the numbers it answers for, so the tab fills in page by
   page. A page can be short or empty and still name the next (under a label or
   assignee the bridge reads a bounded stretch per page); the pull walks on
-  until no next is named. Every read takes a number as it is asked, and each
-  page notes the stretch of issue numbers it had the say on
-  (`spa/src/core/issueReadOrder.js`, in memory): a page yields every row a
-  read asked after it had the say on, present or absent, so an older page
-  neither brings back an issue a newer read took off the list nor overwrites
-  a newer copy with the same `updated_at`. A page answers for its own rows
+  until no next is named. Every read takes a number as it is asked, from a
+  count every tab shares in the cache, and each page notes the stretch of
+  issue numbers it had the say on in a note beside the list record, written
+  in the same transaction as the page (`spa/src/core/issueReadOrder.js`,
+  `mergeCachedTogether`): a page yields every row a read asked after it had
+  the say on, in any tab, present or absent, so an older page neither brings
+  back an issue a newer read took off the list nor overwrites a newer copy
+  with the same `updated_at`. A page answers for its own rows
   and below with its own read; the numbers between the last row the walk laid
   and a page's first keep the older read of the pages that read past them,
-  since the cursor does not say how far the page before read. For another
-  tab's writes the
-  timestamps stand in: a held row written after the page's copy of it, or one
-  the page does not name that was written after the page was read, keeps its
-  place. An
-  older bridge is read whole, as before.
+  since the cursor does not say how far the page before read. For writers
+  that are not page reads (a whole list from an older bridge, an issue filed
+  here) the timestamps stand in: a held row written after the page's copy of
+  it, or one the page does not name that was written after the page was
+  read, keeps its place. An older bridge is read whole, as before.
 
 No timer polls the bridge for data. The data timers are the device presence
 poll against skriftapp and the served-version check. The transport has its own:

@@ -84,6 +84,24 @@ export async function mergeCached(address, merge) {
 // keeps those steps in one readwrite transaction across browser tabs.
 export const mergeCachedAtomically = mergeCached;
 
+export async function mergeCachedTogether(addresses, merge) {
+  const next = merge(addresses.map((address) => records.get(recordKey(address))?.value));
+  let changed = false;
+  for (const [index, address] of addresses.entries()) {
+    if (next?.[index] === undefined || next?.[index] === null) continue;
+    await writeCached(address, next[index]);
+    changed = true;
+  }
+  return changed;
+}
+
+export async function takeCachedCount(address, floor = 0) {
+  const key = recordKey(address);
+  const next = Math.max((Number(records.get(key)?.value) || 0) + 1, floor);
+  records.set(key, { at: Date.now(), value: next });
+  return next;
+}
+
 // The feed's own write path. The rows' observation stamps it keeps are the
 // real cache's business (core/cacheFreshness.js); this double keeps none.
 export async function updateCachedFeed(address, update) {

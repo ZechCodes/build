@@ -14,17 +14,18 @@
 // there, and the views repaint from the list record's announcement. Nothing
 // paints from the wire.
 //
-// A page can be older than what the cache already holds: a push re-read or
-// the Issues tab's own read may lay a row, or take one away, while a page is
-// out. So a page yields every row a read asked after it has had the say on,
-// present or absent (core/issueReadOrder.js) — the newer word wins the way
-// `pushFence` has it win for whole records (#142). Another tab's reads are not
-// in that order, so for what they wrote the timestamps stand in: a held row
-// written after the page's copy of it keeps its place, and so does a row the
-// page does not name that was written after the page was read.
+// A page can be older than what the cache already holds: a push re-read, the
+// Issues tab's own read or another tab's may lay a row, or take one away,
+// while a page is out. So a page yields every row a read asked after it has
+// had the say on, present or absent (core/issueReadOrder.js) — the newer word
+// wins the way `pushFence` has it win for whole records (#142). A writer that
+// is not a read of pages — a whole list from an older bridge, an issue filed
+// here — is not in that order, so for what it wrote the timestamps stand in: a
+// held row written after the page's copy of it keeps its place, and so does a
+// row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedAtomically, readCached, writeCached } from "./localCache.js";
-import { lastSayOn, nextIssueRead, noteStretch } from "./issueReadOrder.js";
+import { cachedSubKeys, deleteCached, mergeCachedTogether, readCached, writeCached } from "./localCache.js";
+import { lastSayIn, nextIssueRead, readsAddress, withStretch } from "./issueReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortIssues } from "./trackerFilters.js";
 import { TRACKER_ISSUES_PAGE_KIND, issuesPageAddress, issuesRecord } from "./trackerCache.js";
@@ -82,15 +83,15 @@ export function withIssuePage(held, stretch, lastSay = () => 0) {
   return sortIssues([...kept, ...laid]);
 }
 
-/** Lay one page over the list record at `address`, in one transaction, so a
- *  write landing between the read and the write is not lost, and note in that
- *  same step that the page had the say on its stretch there. */
+/** Lay one page over the list record at `address`, and note beside it that
+ *  the page had the say on its stretch there — the two in one transaction, so
+ *  a write landing between the read and the write is not lost, and another
+ *  tab never reads the list without the note or the note without the list. */
 export const foldIssuesPage = (address, stretch, columnsOf) =>
-  mergeCachedAtomically(address, (held) => {
-    const issues = withIssuePage(held?.issues, stretch, lastSayOn(address));
-    noteStretch(address, stretch);
-    return issuesRecord(issues, columnsOf(held));
-  });
+  mergeCachedTogether([address, readsAddress(address)], ([held, reads]) => [
+    issuesRecord(withIssuePage(held?.issues, stretch, lastSayIn(reads)), columnsOf(held)),
+    withStretch(reads, stretch),
+  ]);
 
 const pageParams = (params, cursor, limit) => (cursor ? { ...params, limit, cursor } : { ...params, limit });
 
@@ -172,7 +173,7 @@ async function forgetOtherPages(deviceId, projectId, params, landed) {
  *  the last row laid, until a page lays a row under them. */
 async function pullPage({ ask, deviceId, projectId, params, fold, active, limit }, place) {
   const asked = pageParams(params, place.cursor, limit);
-  const read = nextIssueRead();
+  const read = await nextIssueRead();
   const answer = await ask(asked);
   if (!answer || !active()) return null;
   const { sub, page } = await landPage(deviceId, projectId, asked, answer);

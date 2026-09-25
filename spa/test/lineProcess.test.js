@@ -28,6 +28,14 @@ it("fails a wait at once when the process ends before it answers", async () => {
   await expect(started.next((line) => line.ready)).rejects.toThrow(/exit 42/);
 });
 
+it("fails a wait at once when the process ends while what it started holds its output", async () => {
+  started = startLineProcess("sh", ["-c", "sleep 300 & exit 42"]);
+  const asked = Date.now();
+
+  await expect(started.next((line) => line.ready, 5_000)).rejects.toThrow(/exit 42/);
+  expect(Date.now() - asked).toBeLessThan(2_000);
+});
+
 it("fails a wait at once when the command cannot start", async () => {
   started = startLineProcess("build-test-no-such-command", []);
 

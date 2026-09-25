@@ -11,6 +11,7 @@ import readline from "node:readline";
 
 const STOP_GRACE_MS = 5000;
 const POLL_MS = 50;
+const EXIT_SETTLE_MS = 100;
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** Signal every process in the group; false once there is none left to. */
@@ -47,8 +48,12 @@ export function startLineProcess(command, args, { cwd, onLine = () => false } = 
     for (const waiter of waiters) waiter.fail(ended);
     waiters.clear();
   };
+  const endedWith = (code, signal) => end(new Error(`${command} ended (${signal || `exit ${code}`}):\n${said}`));
   child.on("error", (error) => end(new Error(`${command} could not start: ${error.message}\n${said}`)));
-  child.on("close", (code, signal) => end(new Error(`${command} ended (${signal || `exit ${code}`}):\n${said}`)));
+  // Its exit, not its pipes closing: something it started can hold those open
+  // long after it has failed. A moment first for what it said on the way out.
+  child.on("exit", (code, signal) => setTimeout(() => endedWith(code, signal), EXIT_SETTLE_MS));
+  child.on("close", endedWith);
   // A worker that exits under a test still takes the group with it.
   const orphaned = () => signalGroup(child.pid, "SIGKILL");
   if (child.pid) process.once("exit", orphaned);

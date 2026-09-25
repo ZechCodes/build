@@ -15,6 +15,15 @@ The images are cached for a year under stable names. A replacement image may not
 client that has already fetched the old one until that year runs out. If the change must reach
 everyone straight away, give the file a new name and update `email_template.py`.
 
+Every image ends with a lossless recompression, which leaves each pixel as it was and keeps no
+metadata chunks. [oxipng](https://github.com/shssoichiro/oxipng) runs through mise, with no
+system install:
+
+```sh
+mise exec aqua:shssoichiro/oxipng@10.2.1 -- \
+  oxipng -o max --strip safe --zopfli skriftapp/buildapp/landing/email/*.png
+```
+
 ## Brand mark
 
 The mark is 32 px tall and sits at the left of a transparent 80 × 32 box. A client that
@@ -29,6 +38,8 @@ for scale in 1 2; do
       -strip PNG32:skriftapp/buildapp/landing/email/brand-mark$suffix.png
 done
 ```
+
+Then recompress both with oxipng, as above.
 
 ## Laptop
 
@@ -64,12 +75,14 @@ renders. It uses only demonstration data, with the host named `dev-mbp` (see
 
 3. Compose the email image. This crops the render to the hardware, lays it on the email's
    `#030604` background, scales it to 1200 px wide and remaps it to a dithered 256-colour
-   palette (about 120 KB; the budget is 250 KB):
+   palette (about 120 KB, about 106 KB after oxipng; the budget is 250 KB):
 
    ```sh
    skriftapp/.venv/bin/python design/email/compose_laptop.py \
      /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop-front.png
    ```
+
+4. Recompress it with oxipng, as above.
 
 If the composed height changes, update `LAPTOP_IMAGE` in `email_template.py`.
 `test_email_assets.py` fails when a file's aspect ratio no longer matches its declared size.

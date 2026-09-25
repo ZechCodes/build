@@ -693,19 +693,11 @@ async fn relay_forever(
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&device_url, &identity, intake.clone(), &reachable).await {
-            Ok(()) => build_bridge::logline::say(format!(
-                "relay disconnected; reconnecting in {}s",
-                backoff.current().as_secs()
-            )),
-            Err(e) => build_bridge::logline::say(format!(
-                "relay error: {e}; reconnecting in {}s",
-                backoff.current().as_secs()
-            )),
-        }
+        let outcome = relay::run(&device_url, &identity, intake.clone(), &reachable).await;
         backoff.note_session(connected_at.elapsed());
-        tokio::time::sleep(backoff.current()).await;
-        backoff.increase();
+        let wait = relay::redial_wait(&outcome, &mut backoff);
+        relay::say_redial(&outcome, wait);
+        tokio::time::sleep(wait).await;
     }
 }
 

@@ -628,15 +628,18 @@ In practice:
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
 - **Paged issue lists.** From a bridge announcing `issues.listPaged`, the sync
   pass and the Issues tab pull `issues.list` a page at a time
-  (`spa/src/core/trackerPages.js`): each page is written under its own
-  address (its filter, cursor and limit), read back, and laid over the list
-  record for exactly the numbers it answers for, so the tab fills in page by
-  page. A page can be short or empty and still name the next (under a label or
-  assignee the bridge reads a bounded stretch per page); the pull walks on
-  until no next is named. Every read takes a number as it is asked, from a
-  count every tab shares in the cache, and each page notes the stretch of
-  issue numbers it had the say on in a note beside the list record, written
-  in the same transaction as the page (`spa/src/core/issueReadOrder.js`,
+  (`spa/src/core/trackerPages.js`): each page read is written under its own
+  address (its filter, cursor, limit and read number) with that read number
+  in its body. The page is read back and laid over the list using its own read
+  number and cursor. A completed walk removes only older pages of its filter,
+  leaving newer reads alone even when they are still awaiting readback. Each
+  page updates the list record for exactly the numbers it answers for, so the
+  tab fills in page by page. A page can be short or empty and still name the
+  next (under a label or assignee the bridge reads a bounded stretch per page);
+  the pull walks on until no next is named. Every read takes a number, as it
+  is asked, from a count shared by all tabs in the cache. Each page notes the
+  stretch of issue numbers it had the say on beside the list record, written
+  in the same transaction as that list record (`spa/src/core/issueReadOrder.js`,
   `mergeCachedTogether`): a page yields every row a read asked after it had
   the say on, in any tab, present or absent, so an older page neither brings
   back an issue a newer read took off the list nor overwrites a newer copy

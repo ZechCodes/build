@@ -10,7 +10,7 @@
 // than after the last of them, and a row outside the stretch is never touched.
 //
 // Render from cache: a page is written under its own address — one per
-// filter, cursor and limit — the list is folded from what is read back from
+// filter, cursor, limit and read — the list is folded from what is read back from
 // there, and the views repaint from the list record's announcement. Nothing
 // paints from the wire.
 //
@@ -24,7 +24,7 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedTogether, readCached, writeCached } from "./localCache.js";
+import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached } from "./localCache.js";
 import { lastSayIn, nextIssueRead, readsAddress, withStretch } from "./issueReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortIssues } from "./trackerFilters.js";
@@ -136,33 +136,40 @@ function stretchOf(page, place, own, next) {
 /** Whether a stretch answers for any number, and so has anything to lay. */
 const coversNumbers = (stretch) => stretch.through < stretch.above;
 
-/** Write one page where it lives and answer what the cache now holds there. */
-async function landPage(deviceId, projectId, asked, answer) {
-  const address = issuesPageAddress(deviceId, projectId, asked);
-  await writeCached(address, answer);
+/** Keep the body and the read that produced it together. Even simultaneous
+ * reads of one cursor have their own addresses, so one can never borrow the
+ * other's body or cursor. */
+async function landPage(deviceId, projectId, asked, answer, read) {
+  const address = issuesPageAddress(deviceId, projectId, { ...asked, read_order: read });
+  await mergeCachedAtomically(address, (held) =>
+    Number(held?.read_order) > read ? null : { ...answer, read_order: read });
   return { sub: address.sub, page: (await readCached(address))?.value };
 }
 
-/** A list's filter, from one of its pages' sub-keys: the page's params less
- *  where it started and how long it was. */
-function filterOfPage(sub) {
+/** A page's filter and originating read, from its sub-key. An old page with
+ * no read token is eligible for cleanup when a current walk completes. */
+function pageIdentity(sub) {
   try {
     const filter = { ...JSON.parse(sub) };
+    const read = Number.isSafeInteger(filter.read_order) ? filter.read_order : 0;
     delete filter.cursor;
     delete filter.limit;
-    return JSON.stringify(filter);
+    delete filter.read_order;
+    return { filter: JSON.stringify(filter), read };
   } catch {
     return null;
   }
 }
 
-/** Drop the pages an earlier pull of this same list left under cursors this
- *  one did not reach. Cursors move as issues are filed, so without this each
- *  pull would leave its pages behind for good. Other filters' pages stay. */
-async function forgetOtherPages(deviceId, projectId, params, landed) {
+/** Drop only pages from older reads of this filter that this walk did not
+ * land. A newer walk may have written a page but still await its readback. */
+async function forgetOtherPages(deviceId, projectId, params, landed, pullRead) {
   const filter = JSON.stringify(params);
   const subs = await cachedSubKeys(deviceId, projectId, TRACKER_ISSUES_PAGE_KIND);
-  const stale = subs.filter((sub) => !landed.has(sub) && filterOfPage(sub) === filter);
+  const stale = subs.filter((sub) => {
+    const page = pageIdentity(sub);
+    return !landed.has(sub) && page?.filter === filter && page.read < pullRead;
+  });
   if (stale.length) await deleteCached(stale.map((sub) => ({ deviceId, entityId: projectId, kind: TRACKER_ISSUES_PAGE_KIND, sub })));
 }
 
@@ -176,13 +183,24 @@ async function pullPage({ ask, deviceId, projectId, params, fold, active, limit 
   const read = await nextIssueRead();
   const answer = await ask(asked);
   if (!answer || !active()) return null;
-  const { sub, page } = await landPage(deviceId, projectId, asked, answer);
-  if (!page || !active()) return null;
+  const { sub, page } = await landPage(deviceId, projectId, asked, answer, read);
+  if (!Number.isSafeInteger(page?.read_order) || page.read_order !== read || !active()) return null;
+  return foldLandedPage({ sub, page, place, read, fold });
+}
+
+/** This read's cached body owns both the fold and the cursor walk. */
+async function foldLandedPage({ sub, page, place, read, fold }) {
   const next = nextCursorOf(page, place.cursor);
-  const own = { read, readAt: userSessionOf(page)?.now_ms ?? null };
+  const own = { read: page.read_order, readAt: userSessionOf(page)?.now_ms ?? null };
   const stretch = { ...stretchOf(page, place, own, next), pullRead: place.pullRead ?? read };
   if (coversNumbers(stretch)) await fold(stretch, page);
-  return { sub, cursor: next, above: stretch.through, pullRead: stretch.pullRead, since: sinceAfter(stretch, place, own) };
+  return {
+    sub,
+    cursor: next,
+    above: stretch.through,
+    pullRead: stretch.pullRead,
+    since: sinceAfter(stretch, place, own),
+  };
 }
 
 /** The read that has the say below a page: the page's own once it has laid
@@ -205,6 +223,6 @@ export async function pullIssuePages(pull) {
     landed.add(place.sub);
   } while (place.cursor && walk.active());
   if (!walk.active()) return false;
-  await forgetOtherPages(walk.deviceId, walk.projectId, walk.params, landed);
+  await forgetOtherPages(walk.deviceId, walk.projectId, walk.params, landed, place.pullRead);
   return true;
 }

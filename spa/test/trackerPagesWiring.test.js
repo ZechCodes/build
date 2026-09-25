@@ -179,6 +179,84 @@ afterEach(() => {
 });
 
 describe("a tracker synced from a bridge that pages", () => {
+  async function pageAddressRace(changeBridge) {
+    // One answer covers the whole Open list. A stale first page can therefore
+    // survive as the final list state, with no later page masking the race.
+    tracker = new Map([[250, tracker.get(250)]]);
+    await boot(PAGING_GREETING);
+    await settle();
+    sync.stopCacheSync();
+    await mountPane("list");
+    await settle();
+    const newerPane = pane;
+    const newerHost = document.querySelector("#issues");
+    const params = { project_id: "p1", state: "open" };
+    const openList = trackerCache.issuesQueryAddress("dev-1", "p1", params);
+
+    // Another tab reserves its read and holds the bridge's old answer. It
+    // uses the real page pull and list fold over the same IndexedDB as the
+    // mounted pane, whose change watcher will start the newer read.
+    vi.resetModules();
+    const otherPages = await import("../src/core/trackerPages.js");
+    const otherCache = await import("../src/core/localCache.js");
+    let release;
+    let ready;
+    const asked = new Promise((resolve) => { ready = resolve; });
+    const oldDone = otherPages.pullIssuePages({
+      deviceId: "dev-1", projectId: "p1", params, limit: 100,
+      ask: (pageParams) => {
+        const answer = listAnswer(pageParams);
+        return new Promise((resolve) => {
+          release = () => resolve(answer);
+          ready();
+        });
+      },
+      fold: (stretch) => otherPages.foldIssuesPage(openList, stretch, () => []),
+    });
+    await asked;
+    let pageAddress;
+    changeBridge();
+    let released = false;
+    const pagePrefix = { deviceId: "dev-1", entityId: "p1", kind: trackerCache.TRACKER_ISSUES_PAGE_KIND };
+    const stopWatching = cache.subscribeCache(pagePrefix, (address) => {
+      const pageParams = JSON.parse(address.sub);
+      if (pageParams.state !== "open" || pageParams.limit !== 100) return;
+      if (released) return;
+      released = true;
+      pageAddress = address;
+      release();
+    });
+    expect(changeEvents.dispatchChangeEvent({
+      type: "changes",
+      items: [{ entity_id: "p1", issues: { issue_ids: ["issue-250"], truncated: false } }],
+    }, "dev-1")).toBe(true);
+    await vi.waitFor(() => expect(released).toBe(true));
+    await oldDone;
+    await settle();
+    stopWatching();
+    newerPane.dispose();
+    return { pageAddress, otherCache, newerHost };
+  }
+
+  it("keeps a newer pane's page when an older tab answers the same page parameters", async () => {
+    const newer = { ...tracker.get(250), title: "new from push", updated_at: new Date(tick()).toISOString() };
+    const { pageAddress, otherCache, newerHost } = await pageAddressRace(() => tracker.set(250, newer));
+    const openList = trackerCache.issuesQueryAddress("dev-1", "p1", { project_id: "p1", state: "open" });
+    expect((await cache.readCached(openList))?.value?.issues.find((row) => row.number === 250)).toMatchObject(newer);
+    expect(newerHost.querySelector('[data-issue="issue-250"] .issue-title')?.textContent).toBe("new from push");
+    expect((await otherCache.readCached(pageAddress))?.value?.issues.find((row) => row.number === 250)).toMatchObject(newer);
+  });
+
+  it("keeps a newer empty page's absence when an older tab answers the same page parameters", async () => {
+    const { pageAddress, otherCache, newerHost } = await pageAddressRace(() => {
+      for (const [number, issue] of tracker) tracker.set(number, { ...issue, state: "closed" });
+    });
+    const openList = trackerCache.issuesQueryAddress("dev-1", "p1", { project_id: "p1", state: "open" });
+    expect((await cache.readCached(openList))?.value?.issues).toEqual([]);
+    expect(newerHost.querySelector('[data-issue="issue-250"]')).toBeNull();
+    expect((await otherCache.readCached(pageAddress))?.value?.issues).toEqual([]);
+  });
+
   it("pulls the list page by page and lands every row in the cache, in order", async () => {
     const seen = watchTheList();
     await boot(PAGING_GREETING);
@@ -301,8 +379,7 @@ describe("a tracker synced from a bridge that pages", () => {
     holdNext = (params) => params.cursor === cursorFor(151);
     await mountPane();
     await vi.waitFor(() => expect(held).not.toBeNull());
-    const olderPage = trackerCache.issuesPageAddress("dev-1", "p1", held.params);
-    await cache.deleteCached([olderPage]);
+    const pagesBefore = await cache.cachedSubKeys("dev-1", "p1", trackerCache.TRACKER_ISSUES_PAGE_KIND);
 
     // The device reconnects: a new session replaces the one that asked.
     registerDevice("dev-1");
@@ -313,7 +390,7 @@ describe("a tracker synced from a bridge that pages", () => {
     await settle();
 
     // The old session's answer is not written, and no page after it asked.
-    expect(await cache.readCached(olderPage)).toBeUndefined();
+    expect(await cache.cachedSubKeys("dev-1", "p1", trackerCache.TRACKER_ISSUES_PAGE_KIND)).toEqual(pagesBefore);
     expect(lists()).toEqual([]);
   });
 

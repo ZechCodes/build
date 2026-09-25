@@ -169,7 +169,7 @@ describe("pulling every page", () => {
   it("writes each page under its own address and folds what it reads back from there", async () => {
     const seen = [];
     await pull(pagingBridge(), async (stretch, page) => {
-      const address = trackerCache.issuesPageAddress("dev-1", "p1", { project_id: "p1", limit: 3, ...(stretch.above === Infinity ? {} : { cursor: `c${stretch.above}` }) });
+      const address = trackerCache.issuesPageAddress("dev-1", "p1", { project_id: "p1", limit: 3, ...(stretch.above === Infinity ? {} : { cursor: `c${stretch.above}` }), read_order: stretch.read });
       seen.push((await cache.readCached(address))?.value);
       expect(page).toEqual(seen.at(-1));
     });
@@ -185,6 +185,24 @@ describe("pulling every page", () => {
     expect(await cache.readCached(stale)).toBeUndefined();
     expect(await cache.readCached(narrowed)).toBeTruthy();
     expect(await cache.cachedSubKeys("dev-1", "p1", trackerCache.TRACKER_ISSUES_PAGE_KIND)).toHaveLength(4);
+  });
+
+  it("keeps a newer read's raw page while an older walk cleans up", async () => {
+    let release;
+    let ready;
+    const asked = new Promise((resolve) => { ready = resolve; });
+    const old = pull(() => new Promise((resolve) => {
+      release = () => resolve({ issues: [issue(20)] });
+      ready();
+    }), async () => {});
+    await asked;
+    const { nextIssueRead } = await import("../src/core/issueReadOrder.js");
+    const newerRead = await nextIssueRead();
+    const newer = trackerCache.issuesPageAddress("dev-1", "p1", { project_id: "p1", limit: 3, read_order: newerRead });
+    await cache.writeCached(newer, { issues: [issue(30)], read_order: newerRead });
+    release();
+    expect(await old).toBe(true);
+    expect((await cache.readCached(newer))?.value?.issues).toEqual([issue(30)]);
   });
 
   it("stops where the bridge stops answering, keeping what already landed", async () => {
@@ -236,6 +254,18 @@ describe("pulling every page", () => {
     const ask = vi.fn(async () => ({ issues: [issue(3)], next_cursor: "same" }));
     await pull(ask, async () => {});
     expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops if readback lost the page body's read provenance", async () => {
+    const pagePrefix = { deviceId: "dev-1", entityId: "p1", kind: trackerCache.TRACKER_ISSUES_PAGE_KIND };
+    const folded = vi.fn();
+    let stop;
+    stop = cache.subscribeCache(pagePrefix, (address) => {
+      stop();
+      void cache.writeCached(address, { issues: [issue(3)], read_order: 0 });
+    });
+    expect(await pull(async () => ({ issues: [issue(3)] }), folded)).toBe(false);
+    expect(folded).not.toHaveBeenCalled();
   });
 });
 
@@ -355,5 +385,35 @@ describe("across tabs sharing the cache", () => {
     await pull(await anotherTab(), async () => answer([issue(20, { title: "read first" })]));
     await pull(pages, async () => answer([issue(20, { title: "read later" }), issue(19)]));
     expect((await held()).map((one) => one.title)).toEqual(["read later", "issue 19"]);
+  });
+
+  it("keeps the numbers between different tabs' first-page cursors", async () => {
+    let releaseOld;
+    let oldAsked;
+    const asked = new Promise((resolve) => { oldAsked = resolve; });
+    const old = pull(pages, (params) => {
+      if (params.cursor) return answer([issue(10)]);
+      return new Promise((resolve) => {
+        releaseOld = () => resolve({ ...answer([issue(20)]), next_cursor: "c20" });
+        oldAsked();
+      });
+    });
+    await asked;
+
+    const other = await anotherTab();
+    let live = true;
+    expect(await other.pullIssuePages({
+      ask: async () => ({ ...answer([issue(30)]), next_cursor: "c30" }),
+      deviceId: "dev-1", projectId: "p1", params: { project_id: "p1" }, limit: 100,
+      active: () => live,
+      fold: async (stretch) => {
+        await other.foldIssuesPage(ADDRESS, stretch, () => []);
+        live = false;
+      },
+    })).toBe(false);
+
+    releaseOld();
+    await old;
+    expect(numbers(await held())).toEqual([30, 20, 10]);
   });
 });

@@ -277,6 +277,86 @@ async fn a_dozen_agents_tool_calls_take_turns_at_the_app_mutex() {
     );
 }
 
+/// A frame's turn at the app mutex is given back while the git it handed
+/// back runs with the guard released: two agents' slow workspace operations
+/// in flight at once leave the lock free and every turn free, and a third
+/// agent's tool call is answered in the meantime (#131 review). Each of the
+/// two takes a turn again to write its outcome down.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_slow_workspace_operation_gives_its_turn_back_while_its_git_runs() {
+    use crate::app::mcp::{apply_off_the_socket, ControlPlane, Turn};
+    use std::io::BufRead;
+
+    let dir = tempfile::tempdir().unwrap();
+    let state = unrooted_state(dir.path());
+    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    let plane = ControlPlane::new(Arc::clone(&clock));
+    let (started, running) = std::sync::mpsc::channel();
+    let mut finishes = Vec::new();
+    let mut slow = Vec::new();
+    for _ in 0..crate::app::mcp::CONTROL_FRAMES_AT_THE_LOCK {
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        finishes.push(finish);
+        let started = started.clone();
+        let job = {
+            let mut app = state.lock().unwrap();
+            app.deferred_work = Some(crate::app::DeferredWork::External(Box::new(move || {
+                started.send(()).unwrap();
+                finished.recv().unwrap();
+                Ok(json!({ "slow": true }))
+            })));
+            app.take_deferred().expect("the operation was deferred")
+        };
+        let (state, plane, clock) = (Arc::clone(&state), Arc::clone(&plane), Arc::clone(&clock));
+        slow.push(tokio::spawn(async move {
+            let timer = clock.frame(crate::app::mcp::MCP_CONTROL_METHOD);
+            let mut turn = Turn::take(&plane).await;
+            apply_off_the_socket(&state, &timer, &mut turn, job).await
+        }));
+    }
+    let running = tokio::task::spawn_blocking(move || {
+        for _ in 0..crate::app::mcp::CONTROL_FRAMES_AT_THE_LOCK {
+            running
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the slow operation started");
+        }
+    });
+    running.await.unwrap();
+
+    let mut agent = an_agent_on(&state, &plane);
+    a_tool_call(&mut agent);
+    let answer = tokio::task::spawn_blocking(move || {
+        agent
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a read timeout");
+        let mut answer = String::new();
+        std::io::BufReader::new(agent)
+            .read_line(&mut answer)
+            .map(|_| answer)
+    })
+    .await
+    .unwrap();
+    assert!(
+        answer
+            .as_deref()
+            .is_ok_and(|answer| answer.contains("unauthorized")),
+        "the third agent was answered while two operations ran: {answer:?}"
+    );
+
+    finishes
+        .into_iter()
+        .for_each(|finish| finish.send(()).unwrap());
+    for operation in slow {
+        let written = tokio::time::timeout(Duration::from_secs(5), operation)
+            .await
+            .expect("each operation takes a turn again and writes its outcome down")
+            .unwrap();
+        assert_eq!(written, Ok(json!({ "slow": true })));
+    }
+    assert!(plane.most_at_the_lock() <= crate::app::mcp::CONTROL_FRAMES_AT_THE_LOCK);
+}
+
 /// A job whose decide phase is immediate, so its apply phase falls due inside
 /// the hold.
 struct Immediate;

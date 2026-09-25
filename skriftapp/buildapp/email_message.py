@@ -17,7 +17,12 @@ from litestar import Request
 from skrift.config import Settings, get_settings
 from skrift.lib.email_backends import EmailBackend
 
-from buildapp.email_template import EmailAction, render_email_html, render_email_text
+from buildapp.email_template import (
+    EmailAction,
+    EmailBlock,
+    render_email_html,
+    render_email_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +60,14 @@ def compose_email(
     unsubscribe_url: str | None,
     one_click: bool,
     action: EmailAction | None = None,
+    after_action: tuple[EmailBlock, ...] = (),
 ) -> OutboundEmail:
     body = {
         "heading": heading,
         "paragraphs": paragraphs,
         "unsubscribe_url": unsubscribe_url,
         "action": action,
+        "after_action": after_action,
     }
     return OutboundEmail(
         to=to,

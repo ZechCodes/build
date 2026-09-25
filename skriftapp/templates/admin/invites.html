@@ -1,4 +1,5 @@
 {% extends "admin/base.html" %}
+{% from "admin/_invite_status.html" import invite_status %}
 
 {% block title %}Invites - Admin - {{ site_name() }}{% endblock %}
 
@@ -45,7 +46,7 @@
                 {% for invite in invites %}
                 <tr>
                     <td>{{ invite.email }}</td>
-                    <td>{{ invite.state }}</td>
+                    <td>{{ invite_status(invite.status) }}</td>
                     <td>{{ invite.invited_by }}</td>
                     <td>{{ invite.created_at.strftime('%Y-%m-%d %H:%M') if invite.created_at else '' }}</td>
                     <td>{{ invite.expires_at.strftime('%Y-%m-%d %H:%M') if invite.expires_at else '' }}</td>

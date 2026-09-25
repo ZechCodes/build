@@ -10,6 +10,12 @@ import pytest
 
 from buildapp.email_template import (
     EMAIL_ACCENT,
+    EMAIL_ACTION_PADDING,
+    EMAIL_ACTION_PADDING_BOTTOM_PX,
+    EMAIL_COMMAND_FONT_SIZE_PX,
+    EMAIL_COMMAND_PADDING,
+    EMAIL_STEP_NUMBER_WIDTH_PX,
+    EMAIL_STEPS_TITLE_PADDING_BOTTOM_PX,
     EMAIL_BODY_FONT_SIZE_PX,
     EMAIL_BODY_LINE_HEIGHT,
     EMAIL_FONT_STACK,
@@ -28,8 +34,11 @@ from buildapp.email_template import (
     OUTLOOK_LAYOUT_CLOSER,
     OUTLOOK_LAYOUT_OPENER,
     UNSUBSCRIBE_LINK_LABEL,
+    TEXT_STEP_INDENT,
     WORDMARK,
     EmailAction,
+    EmailStep,
+    EmailSteps,
     render_email_html,
     render_email_text,
 )
@@ -213,3 +222,103 @@ def test_a_message_with_no_action_renders_exactly_as_it_did_before():
 def test_an_action_is_one_value_so_neither_half_can_go_missing():
     with pytest.raises(TypeError):
         EmailAction(url=ACTION_URL)
+
+
+STEPS = EmailSteps(
+    title="Getting started",
+    steps=(
+        EmailStep(text="Install it:", command='curl -fsSL "https://x/i.sh" | sh', detail="Or not."),
+        EmailStep(text="Pair it."),
+    ),
+)
+AFTER_ACTION = ("A note after the button.", STEPS, "Sign-off.")
+
+
+def render_with_steps(renderer):
+    return renderer(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action=ACTION,
+        after_action=AFTER_ACTION,
+    )
+
+
+def test_what_follows_the_action_renders_after_it_in_both_parts():
+    html = render_with_steps(render_email_html)
+    text = render_with_steps(render_email_text)
+    assert html.index(ACTION_URL) < html.index("A note after the button.")
+    assert html.index("Getting started") < html.index("Pair it.") < html.index("Sign-off.")
+    assert text.split("\n\n")[-7:] == [
+        "A note after the button.",
+        "Getting started",
+        "1. Install it:",
+        f'{TEXT_STEP_INDENT}curl -fsSL "https://x/i.sh" | sh',
+        f"{TEXT_STEP_INDENT}Or not.",
+        "2. Pair it.",
+        "Sign-off.",
+    ]
+
+
+def test_steps_are_numbered_cells_and_the_command_is_its_own_code_block():
+    html = render_with_steps(render_email_html)
+    assert "<ol" not in html
+    assert ">1.</td>" in html and ">2.</td>" in html
+    assert "<code>curl -fsSL &quot;https://x/i.sh&quot; | sh</code>" in html
+
+
+def test_every_size_the_steps_add_comes_from_a_named_constant():
+    html = render_with_steps(render_email_html)
+    named_sizes = {
+        str(EMAIL_MAX_WIDTH_PX),
+        str(EMAIL_BODY_FONT_SIZE_PX),
+        str(EMAIL_HEADING_FONT_SIZE_PX),
+        str(EMAIL_WORDMARK_FONT_SIZE_PX),
+        str(EMAIL_WORDMARK_PADDING_BOTTOM_PX),
+        str(EMAIL_HEADING_PADDING_BOTTOM_PX),
+        str(EMAIL_PARAGRAPH_SPACING_PX),
+        str(EMAIL_ACTION_PADDING_BOTTOM_PX),
+        str(EMAIL_STEPS_TITLE_PADDING_BOTTOM_PX),
+        str(EMAIL_STEP_NUMBER_WIDTH_PX),
+        str(EMAIL_COMMAND_FONT_SIZE_PX),
+        *re.findall(SIZE_LITERAL_PATTERN, EMAIL_OUTER_PADDING),
+        *re.findall(SIZE_LITERAL_PATTERN, EMAIL_ACTION_PADDING),
+        *re.findall(SIZE_LITERAL_PATTERN, EMAIL_COMMAND_PADDING),
+    }
+    assert set(re.findall(SIZE_LITERAL_PATTERN, html)) <= named_sizes
+
+
+def test_steps_escape_every_slot():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        after_action=(
+            "<script>alert(1)</script>",
+            EmailSteps(
+                title="<script>alert(2)</script>",
+                steps=(
+                    EmailStep(
+                        text="<script>alert(3)</script>",
+                        command="<script>alert(4)</script>",
+                        detail="<script>alert(5)</script>",
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert "<script" not in html
+    assert html.count("&lt;script&gt;") == 5
+
+
+def test_nothing_after_the_action_renders_exactly_as_before():
+    for renderer in (render_email_html, render_email_text):
+        assert renderer(
+            heading=HEADING, paragraphs=PARAGRAPHS, unsubscribe_url=None, action=ACTION
+        ) == renderer(
+            heading=HEADING,
+            paragraphs=PARAGRAPHS,
+            unsubscribe_url=None,
+            action=ACTION,
+            after_action=(),
+        )

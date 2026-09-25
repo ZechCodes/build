@@ -9,6 +9,7 @@ code and copy) is ``invite_pages``, and what it means for access is ``alpha_memb
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -155,3 +156,44 @@ async def all_invites(db_session: AsyncSession) -> list[Invite]:
         select(Invite).order_by(Invite.created_at.desc())
     )
     return list(result.scalars())
+
+
+async def newest_invites_by_email(
+    db_session: AsyncSession, emails: Iterable[str]
+) -> dict[str, Invite]:
+    """The newest invite each address was sent, keyed by the stored address — what the
+    waitlist page reads a signup's invite state from. An address never invited is
+    absent."""
+    wanted = set(emails)
+    if not wanted:
+        return {}
+    result = await db_session.execute(
+        select(Invite)
+        .where(Invite.email.in_(wanted))
+        .order_by(Invite.created_at.desc())
+    )
+    newest: dict[str, Invite] = {}
+    for invite in result.scalars():
+        newest.setdefault(invite.email, invite)
+    return newest
+
+
+async def reissue_invite(
+    db_session: AsyncSession, email: str, invited_by: UUID | None, now: datetime
+) -> tuple[Invite, str]:
+    """Revoke every link this address still holds unredeemed, then issue a fresh one —
+    so after a resend exactly one live link exists. A redeemed invite is left alone:
+    it is the membership, not a link. Raises ``ValueError`` as ``issue_invite`` does."""
+    normalized = normalize_waitlist_address(email)
+    if normalized is None:
+        raise ValueError(INVALID_ADDRESS_MESSAGE)
+    live = await db_session.execute(
+        select(Invite).where(
+            Invite.email == normalized,
+            Invite.redeemed_at.is_(None),
+            Invite.revoked_at.is_(None),
+        )
+    )
+    for invite in live.scalars():
+        invite.revoked_at = now
+    return await issue_invite(db_session, normalized, invited_by, now)

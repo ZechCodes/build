@@ -9,29 +9,61 @@ from __future__ import annotations
 from litestar.background_tasks import BackgroundTask
 from skrift.lib.email_backends import EmailBackend
 
+from buildapp import releases
 from buildapp.email_message import OutboundEmail, compose_email, deliver_emails
-from buildapp.email_template import EmailAction
+from buildapp.email_template import EmailAction, EmailStep, EmailSteps
 
-INVITE_SUBJECT = "Your Build invite"
+#: The install command and docs link name the public site, as the docs page does: the
+#: invitee installs from getbuild.ing whichever deployment sent the mail.
+PUBLIC_SITE_URL = "https://getbuild.ing"
+DOCS_URL = f"{PUBLIC_SITE_URL}/docs"
+
+INVITE_SUBJECT = "You’re in: your Build invite"
 INVITE_HEADING = "You’re in."
-INVITE_PARAGRAPHS = (
-    "Build turns an issue into shipped code, on your machine.",
-    "This invite is for {email} and works once, for the next 14 days.",
+INVITE_PARAGRAPHS = ("Thanks for waiting. Your spot in the Build alpha is ready.",)
+INVITE_ACTION_LABEL = "Create your account"
+INVITE_LINK_NOTE = "This link is just for you ({email}). It works once, for the next 14 days."
+GETTING_STARTED = EmailSteps(
+    title="Getting started",
+    steps=(
+        EmailStep(
+            text="Install the bridge on the machine where your code lives:",
+            command=releases.install_command(PUBLIC_SITE_URL),
+            detail=(
+                "There’s also a desktop app. It’s optional, and its installer is at "
+                f"{DOCS_URL}."
+            ),
+        ),
+        EmailStep(text="In Build, enter the pairing code the bridge prints."),
+        EmailStep(
+            text="Check that the fingerprint matches the one the bridge printed, "
+            "then approve."
+        ),
+    ),
 )
-INVITE_ACTION_LABEL = "ACCEPT INVITE"
+INVITE_CLOSING = (
+    "That’s it. Your agents run on your machine from there.",
+    "Stuck, or something broke? Reply to this email. It comes straight to me.",
+    "— Zech",
+)
 
 
 def build_invite_email(*, to: str, invite_url: str) -> OutboundEmail:
+    """Welcome, the one button, whose link it is, then how to get from an account to a
+    paired machine — the same three steps the app's first-run screen walks."""
     return compose_email(
         to=to,
         subject=INVITE_SUBJECT,
         heading=INVITE_HEADING,
-        paragraphs=tuple(
-            paragraph.format(email=to) for paragraph in INVITE_PARAGRAPHS
-        ),
+        paragraphs=INVITE_PARAGRAPHS,
         unsubscribe_url=None,
         one_click=False,
         action=EmailAction(url=invite_url, label=INVITE_ACTION_LABEL),
+        after_action=(
+            INVITE_LINK_NOTE.format(email=to),
+            GETTING_STARTED,
+            *INVITE_CLOSING,
+        ),
     )
 
 

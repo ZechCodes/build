@@ -30,6 +30,7 @@ from buildapp.accounts import addresses_by_id
 from buildapp.clock import utc_now
 from buildapp.email_message import provide_email_backend, provide_public_base_url
 from buildapp.invite_mail import send_invite_email
+from buildapp.invite_status import invite_status
 from buildapp.invites import EMAIL_FIELD, InviteState, invite_state
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
@@ -72,6 +73,7 @@ def build_invites_dashboard(
                 "invite_id": str(invite.id),
                 "email": invite.email,
                 "state": state.value,
+                "status": invite_status(invite, now),
                 "invited_by": addresses.get(invite.invited_by) or NO_ONE,
                 "redeemed_by": addresses.get(invite.redeemed_by) or NO_ONE,
                 "redeemed_at": invite.redeemed_at,

@@ -94,16 +94,14 @@ const emptyHtml = () => `<div class="empty project-empty">
     <p>A workspace is where the work happens in this project. The + above makes the first one.</p>
   </div>`;
 
-/** One of the two filters (#167). The reclaimable one says how many there are,
- *  so the press is not a guess. */
-const filterButtonHtml = (listing, filter, label) => {
-  const active = listing.filter === filter;
-  return `<button class="btn mini project-filter${active ? " active" : ""}" type="button" data-workspace-filter="${filter}" aria-pressed="${active}">${esc(label)}</button>`;
-};
+/** One of the two filters (#167), as first stood up; `paintFilters` says
+ *  which is chosen and how many can be reclaimed. */
+const filterButtonHtml = (filter, label) =>
+  `<button class="btn mini project-filter" type="button" data-workspace-filter="${filter}" aria-pressed="false">${esc(label)}</button>`;
 
-const filtersHtml = (listing) => `<div class="project-filters" role="group" aria-label="Which workspaces to show">
-    ${filterButtonHtml(listing, ALL_WORKSPACES, "All")}
-    ${filterButtonHtml(listing, RECLAIMABLE_WORKSPACES, `Reclaimable (${listing.reclaimableCount})`)}
+const filtersHtml = () => `<div class="project-filters" role="group" aria-label="Which workspaces to show">
+    ${filterButtonHtml(ALL_WORKSPACES, "All")}
+    ${filterButtonHtml(RECLAIMABLE_WORKSPACES, "Reclaimable")}
   </div>`;
 
 const listingHtml = (listing, ui) =>
@@ -111,11 +109,47 @@ const listingHtml = (listing, ui) =>
     ? `<p class="project-filter-empty">No workspace can be reclaimed right now.</p>`
     : `<div class="project-rows">${listing.rows.map((row) => rowHtml(row, ui)).join("")}</div>`;
 
-const pageHtml = (page, ui) => {
-  if (page.empty) return emptyHtml();
-  const listing = workspaceListing(page, ui.filter);
-  return `${filtersHtml(listing)}${listingHtml(listing, ui)}`;
-};
+/** The filters stay the nodes they were across repaints: a press or a feed
+ *  move must not take the focused one away (review 1). Only what they say
+ *  changes. The reclaimable one says how many there are, so the press is not a
+ *  guess. */
+function paintFilters(pane, listing) {
+  for (const button of pane.querySelectorAll("[data-workspace-filter]")) {
+    const active = button.dataset.workspaceFilter === listing.filter;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    if (button.dataset.workspaceFilter === RECLAIMABLE_WORKSPACES) {
+      button.textContent = `Reclaimable (${listing.reclaimableCount})`;
+    }
+  }
+}
+
+/** The rows are rebuilt; a Reclaim that had focus gets it back afterwards,
+ *  found by the workspace it reclaims. */
+function paintListing(host, listing, ui) {
+  const focused = host.contains(document.activeElement)
+    ? document.activeElement.closest("[data-workspace-reclaim]")?.dataset.workspaceReclaim
+    : null;
+  host.innerHTML = listingHtml(listing, ui);
+  if (!focused) return;
+  [...host.querySelectorAll("[data-workspace-reclaim]")]
+    .find((button) => button.dataset.workspaceReclaim === focused)
+    ?.focus();
+}
+
+/** The Workspaces tab: the empty state, or the filters over the rows. */
+function paintWorkspaces(pane, ui) {
+  if (ui.page.empty) {
+    pane.innerHTML = emptyHtml();
+    return;
+  }
+  if (!pane.querySelector("[data-project-listing]")) {
+    pane.innerHTML = `${filtersHtml()}<div data-project-listing></div>`;
+  }
+  const listing = workspaceListing(ui.page, ui.filter);
+  paintFilters(pane, listing);
+  paintListing(pane.querySelector("[data-project-listing]"), listing, ui);
+}
 
 /** The two verbs this page owns, in the toolbar's slot. Called on every toolbar
  *  repaint, so it rebuilds only when the project it names has changed. */
@@ -163,7 +197,7 @@ function paint(state) {
   const shown = JSON.stringify([state.page.rows, state.filter, [...state.reclaiming], [...state.reclaimErrors]]);
   if (pane.dataset.rows !== shown) {
     pane.dataset.rows = shown;
-    pane.innerHTML = pageHtml(state.page, state);
+    paintWorkspaces(pane, state);
   }
 }
 

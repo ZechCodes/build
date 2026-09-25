@@ -457,6 +457,48 @@ describe("the Reclaimable filter and the size column", () => {
     expect(shownIds()).toEqual(["dev-1/huge", "dev-1/large", "dev-1/small"]);
   });
 
+  // Review 1 (P2): the press repainted the pane and took the focused button
+  // with it, so focus fell to the body.
+  it("keeps keyboard focus on the filter pressed", async () => {
+    await openWorkspacesTab();
+    await flush();
+    filter("reclaimable").focus();
+
+    filter("reclaimable").click();
+
+    expect(document.activeElement).toBe(filter("reclaimable"));
+    expect(document.activeElement.getAttribute("aria-pressed")).toBe("true");
+    expect(shownIds()).toEqual(["dev-1/large", "dev-1/small"]);
+
+    filter("all").focus();
+    filter("all").click();
+    expect(document.activeElement).toBe(filter("all"));
+  });
+
+  it("keeps keyboard focus on a filter when the feed moves", async () => {
+    await openWorkspacesTab();
+    await flush();
+    filter("reclaimable").focus();
+
+    snapshot = { ...snapshot, workspaces: [...snapshot.workspaces, workspace("huge", { lifecycle: verdict(true, 90_000_000_000) })] };
+    deliver();
+
+    expect(document.activeElement).toBe(filter("reclaimable"));
+    expect(filter("reclaimable").textContent).toBe("Reclaimable (3)");
+  });
+
+  it("keeps keyboard focus on a row's Reclaim when the feed moves", async () => {
+    await openWorkspacesTab();
+    await flush();
+    const reclaim = () => document.querySelector('[data-workspace-reclaim="dev-1/large"]');
+    reclaim().focus();
+
+    snapshot = { ...snapshot, workspaces: [...snapshot.workspaces, workspace("huge", { lifecycle: verdict(true, 90_000_000_000) })] };
+    deliver();
+
+    expect(document.activeElement).toBe(reclaim());
+  });
+
   it("says so when nothing can be reclaimed", async () => {
     snapshot = { ...snapshot, workspaces: [workspace("held", { lifecycle: verdict(false, 1_000) })] };
     await openWorkspacesTab();

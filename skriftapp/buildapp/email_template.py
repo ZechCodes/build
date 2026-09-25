@@ -1,6 +1,11 @@
 """The one outbound email layout. Every colour and size is a literal here rather than a
 landing.css custom property because custom properties, rgba() and max-width do not
-survive Outlook and Gmail."""
+survive Outlook and Gmail.
+
+Images are PNGs this deployment serves under ``/landing/email/``, linked by absolute URL
+from its public base URL: mail clients run no scripts and fetch nothing relative. Many
+block remote images, so every image carries its size and alt text and the message reads
+in order without them."""
 
 from __future__ import annotations
 
@@ -19,9 +24,11 @@ EMAIL_FONT_STACK = (
     "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
 )
 EMAIL_OUTER_PADDING = "40px 16px"
-EMAIL_WORDMARK_FONT_SIZE_PX = 16
-EMAIL_WORDMARK_LETTER_SPACING = ".08em"
-EMAIL_WORDMARK_PADDING_BOTTOM_PX = 28
+#: The mark's alt text, which is all a client blocking images shows of the header.
+EMAIL_BRAND_FONT_SIZE_PX = 16
+EMAIL_BRAND_LETTER_SPACING = ".08em"
+EMAIL_MARK_PADDING_BOTTOM_PX = 28
+EMAIL_HERO_PADDING_BOTTOM_PX = 24
 EMAIL_HEADING_FONT_SIZE_PX = 22
 EMAIL_HEADING_LINE_HEIGHT = "1.35"
 EMAIL_HEADING_PADDING_BOTTOM_PX = 20
@@ -47,7 +54,11 @@ EMAIL_COMMAND_FONT_SIZE_PX = 13
 #: How far the text part indents a step's command and detail under its number.
 TEXT_STEP_INDENT = "   "
 
-WORDMARK = "build_"
+#: The text part's first line, where the HTML part has the mark.
+TEXT_BRAND_LINE = "Build"
+#: Where the root controller serves ``landing/email/``; see ``RootController.landing_asset``.
+EMAIL_ASSET_DIRECTORY = "email"
+EMAIL_ASSET_PATH = f"/landing/{EMAIL_ASSET_DIRECTORY}"
 FOOTER_PREFIX = "Not you?"
 UNSUBSCRIBE_LINK_LABEL = "Unsubscribe"
 
@@ -70,13 +81,72 @@ class EmailAction:
             f'style="display:inline-block;padding:{EMAIL_ACTION_PADDING};'
             f"background:{EMAIL_ACCENT};color:{EMAIL_BACKGROUND};"
             f"font-size:{EMAIL_BODY_FONT_SIZE_PX}px;"
-            f"letter-spacing:{EMAIL_WORDMARK_LETTER_SPACING};"
+            f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING};"
             f'text-decoration:none">{escape(self.label)}</a>'
             "</td></tr>"
         )
 
     def text_line(self) -> str:
         return f"{self.label}: {self.url}"
+
+
+@dataclass(frozen=True)
+class EmailImage:
+    """A hosted PNG shown at ``width_px`` × ``height_px``. The file is twice that size so
+    it stays sharp on high-density screens; ``file_1x``, when there is one, is offered
+    through ``srcset`` to the clients that read it."""
+
+    file: str
+    width_px: int
+    height_px: int
+    alt: str
+    file_1x: str | None = None
+
+    def url(self, public_base_url: str, file: str) -> str:
+        return escape(f"{public_base_url.rstrip('/')}{EMAIL_ASSET_PATH}/{file}")
+
+    def html(self, public_base_url: str, style: str) -> str:
+        """The tag, sized by attributes because Outlook reads only those; ``style``
+        sizes it everywhere else and styles its alt text."""
+        src = self.url(public_base_url, self.file)
+        srcset = (
+            ""
+            if self.file_1x is None
+            else f' srcset="{self.url(public_base_url, self.file_1x)} 1x, {src} 2x"'
+        )
+        return (
+            f'<img src="{src}"{srcset} alt="{escape(self.alt)}" '
+            f'width="{self.width_px}" height="{self.height_px}" '
+            f'style="display:block;border:0;{style}">'
+        )
+
+
+#: The Build mark, 32 px tall, at the left of a transparent 80 px box: wide enough for
+#: its alt text "Build" where a client blocks images. brand-mark.svg rendered by
+#: design/email/README.md.
+MARK_IMAGE = EmailImage(
+    file="brand-mark@2x.png",
+    file_1x="brand-mark.png",
+    width_px=80,
+    height_px=32,
+    alt="Build",
+)
+#: The app on the landing's laptop, the full width of the layout. Rendered by
+#: design/email/README.md.
+LAPTOP_IMAGE = EmailImage(
+    file="laptop.png", width_px=560, height_px=308, alt="Build on a laptop"
+)
+#: The mark keeps its size; its alt text is the accent, as the wordmark it replaced was.
+MARK_STYLE = (
+    f"width:{MARK_IMAGE.width_px}px;height:{MARK_IMAGE.height_px}px;"
+    f"color:{EMAIL_ACCENT};font-size:{EMAIL_BRAND_FONT_SIZE_PX}px;"
+    f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING}"
+)
+#: The hero shrinks with a narrow screen and never grows past its own width.
+HERO_STYLE = (
+    f"width:100%;height:auto;color:{EMAIL_TEXT_SECONDARY};"
+    f"font-size:{EMAIL_BODY_FONT_SIZE_PX}px"
+)
 
 
 @dataclass(frozen=True)
@@ -182,14 +252,27 @@ def render_footer_row(unsubscribe_url: str) -> str:
     )
 
 
+def hero_html_row(hero: EmailImage | None, public_base_url: str) -> str:
+    if hero is None:
+        return ""
+    style = f"max-width:{hero.width_px}px;{HERO_STYLE}"
+    return (
+        f'<tr><td style="padding-bottom:{EMAIL_HERO_PADDING_BOTTOM_PX}px">'
+        f"{hero.html(public_base_url, style)}</td></tr>"
+    )
+
+
 def render_email_html(
     *,
     heading: str,
     paragraphs: tuple[str, ...],
     unsubscribe_url: str | None,
+    public_base_url: str,
     action: EmailAction | None = None,
     after_action: tuple[EmailBlock, ...] = (),
+    hero: EmailImage | None = None,
 ) -> str:
+    """``hero`` is an image under the opening copy and above the action."""
     paragraph_markup = "".join(paragraph_html(paragraph) for paragraph in paragraphs)
     after_action_markup = "".join(block_html_rows(block) for block in after_action)
     footer_markup = (
@@ -208,13 +291,13 @@ def render_email_html(
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
         f'style="max-width:{EMAIL_MAX_WIDTH_PX}px;text-align:left;'
         f'font-family:{EMAIL_FONT_STACK}">'
-        f'<tr><td style="padding-bottom:{EMAIL_WORDMARK_PADDING_BOTTOM_PX}px;'
-        f"color:{EMAIL_ACCENT};font-size:{EMAIL_WORDMARK_FONT_SIZE_PX}px;"
-        f'letter-spacing:{EMAIL_WORDMARK_LETTER_SPACING}">{WORDMARK}</td></tr>'
+        f'<tr><td style="padding-bottom:{EMAIL_MARK_PADDING_BOTTOM_PX}px">'
+        f"{MARK_IMAGE.html(public_base_url, MARK_STYLE)}</td></tr>"
         f'<tr><td style="padding-bottom:{EMAIL_HEADING_PADDING_BOTTOM_PX}px;'
         f"color:{EMAIL_TEXT_PRIMARY};font-size:{EMAIL_HEADING_FONT_SIZE_PX}px;"
         f'line-height:{EMAIL_HEADING_LINE_HEIGHT}">{escape(heading)}</td></tr>'
         f"<tr><td>{paragraph_markup}</td></tr>"
+        f"{hero_html_row(hero, public_base_url)}"
         f"{'' if action is None else action.html_row()}"
         f"{after_action_markup}"
         f"{footer_markup}"
@@ -244,7 +327,7 @@ def render_email_text(
     )
     return "\n\n".join(
         (
-            WORDMARK,
+            TEXT_BRAND_LINE,
             heading,
             *paragraphs,
             *action_lines,

@@ -56,7 +56,9 @@ def resolve_waitlist_email_context(
     )
 
 
-def build_confirmation_email(*, to: str, unsubscribe_url: str) -> OutboundEmail:
+def build_confirmation_email(
+    *, to: str, unsubscribe_url: str, public_base_url: str
+) -> OutboundEmail:
     return compose_email(
         to=to,
         subject=CONFIRMATION_SUBJECT,
@@ -64,10 +66,13 @@ def build_confirmation_email(*, to: str, unsubscribe_url: str) -> OutboundEmail:
         paragraphs=CONFIRMATION_PARAGRAPHS,
         unsubscribe_url=unsubscribe_url,
         one_click=True,
+        public_base_url=public_base_url,
     )
 
 
-def build_owner_notification_email(*, to: str, signup_email: str) -> OutboundEmail:
+def build_owner_notification_email(
+    *, to: str, signup_email: str, public_base_url: str
+) -> OutboundEmail:
     return compose_email(
         to=to,
         subject=f"{OWNER_SUBJECT_PREFIX}{signup_email}",
@@ -75,6 +80,7 @@ def build_owner_notification_email(*, to: str, signup_email: str) -> OutboundEma
         paragraphs=(OWNER_PARAGRAPH_TEMPLATE.format(signup_email=signup_email),),
         unsubscribe_url=None,
         one_click=False,
+        public_base_url=public_base_url,
     )
 
 
@@ -87,14 +93,18 @@ def build_signup_emails(
     )
     messages = (
         build_confirmation_email(
-            to=signup_email, unsubscribe_url=signup_unsubscribe_url
+            to=signup_email,
+            unsubscribe_url=signup_unsubscribe_url,
+            public_base_url=context.public_base_url,
         ),
     )
     if not context.notify_address:
         return messages
     return messages + (
         build_owner_notification_email(
-            to=context.notify_address, signup_email=signup_email
+            to=context.notify_address,
+            signup_email=signup_email,
+            public_base_url=context.public_base_url,
         ),
     )
 

@@ -102,5 +102,7 @@ class InvitesController(Controller):
                 "expires_at": invite.expires_at.isoformat(),
                 "url": url,
             },
-            background=invite_email_task(email_backend, invite.email, url),
+            background=invite_email_task(
+                email_backend, invite.email, url, public_base_url
+            ),
         )

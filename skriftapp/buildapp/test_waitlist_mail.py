@@ -62,7 +62,9 @@ def test_confirmation_subject_and_copy_are_verbatim():
         "Build turns an issue into shipped code, on your machine. Invites go out as seats open.",
         "The next email you get from us is your invite. Nothing else.",
     )
-    message = build_confirmation_email(to=SIGNER, unsubscribe_url=UNSUBSCRIBE_URL)
+    message = build_confirmation_email(
+        to=SIGNER, unsubscribe_url=UNSUBSCRIBE_URL, public_base_url=PUBLIC_BASE_URL
+    )
     assert message.to == SIGNER
     assert message.subject == CONFIRMATION_SUBJECT
     for body in (message.text_body, message.html_body):
@@ -72,7 +74,9 @@ def test_confirmation_subject_and_copy_are_verbatim():
 
 
 def test_confirmation_carries_list_unsubscribe_and_one_click():
-    headers = build_confirmation_email(to=SIGNER, unsubscribe_url=UNSUBSCRIBE_URL).headers
+    headers = build_confirmation_email(
+        to=SIGNER, unsubscribe_url=UNSUBSCRIBE_URL, public_base_url=PUBLIC_BASE_URL
+    ).headers
     assert headers[LIST_UNSUBSCRIBE_HEADER] == f"<{UNSUBSCRIBE_URL}>"
     assert headers[LIST_UNSUBSCRIBE_POST_HEADER] == ONE_CLICK_HEADER_VALUE
 
@@ -80,7 +84,9 @@ def test_confirmation_carries_list_unsubscribe_and_one_click():
 def test_owner_notification_subject_and_copy_are_verbatim():
     assert OWNER_HEADING == "New waitlist signup"
     assert OWNER_PARAGRAPH_TEMPLATE == "{signup_email} joined the Build waitlist."
-    message = build_owner_notification_email(to=OWNER_ADDRESS, signup_email=SIGNER)
+    message = build_owner_notification_email(
+        to=OWNER_ADDRESS, signup_email=SIGNER, public_base_url=PUBLIC_BASE_URL
+    )
     assert message.to == OWNER_ADDRESS
     assert message.subject == f"{OWNER_SUBJECT_PREFIX}{SIGNER}"
     for body in (message.text_body, message.html_body):
@@ -90,7 +96,9 @@ def test_owner_notification_subject_and_copy_are_verbatim():
 
 
 def test_owner_notification_carries_no_unsubscribe_at_all():
-    message = build_owner_notification_email(to=OWNER_ADDRESS, signup_email=SIGNER)
+    message = build_owner_notification_email(
+        to=OWNER_ADDRESS, signup_email=SIGNER, public_base_url=PUBLIC_BASE_URL
+    )
     assert message.headers == {}
     for body in (message.text_body, message.html_body):
         assert UNSUBSCRIBE_PATH_PREFIX not in body

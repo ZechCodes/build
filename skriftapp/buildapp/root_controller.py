@@ -7,6 +7,7 @@ module serves that document and fills the only two values that cannot be static.
 """
 
 import asyncio
+from pathlib import Path
 
 from litestar import Controller, get
 from litestar.di import Provide
@@ -17,6 +18,7 @@ from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 
 from buildapp import releases
 from buildapp.email_message import provide_public_base_url
+from buildapp.email_template import EMAIL_ASSET_DIRECTORY
 from buildapp.landing_page import (
     LANDING_DIR,
     fill_slots,
@@ -39,6 +41,11 @@ UNBUILT_LANDING_MESSAGE = "The landing page has not been built yet."
 #: Only /docs and /privacy still render through the shell, and cinematic.css is their
 #: stylesheet. The homepage carries its own.
 LANDING_HEAD = '<link rel="stylesheet" href="/landing/cinematic.css">'
+
+#: Email images sit at stable URLs in mail already sent, so a mail client may keep them a
+#: year. Not ``immutable``: a changed render keeps its name, and a year is the bound on
+#: how long an old copy can be shown. See design/email/README.md.
+EMAIL_ASSET_CACHE_CONTROL = "public, max-age=31536000"
 
 LANDING_MEDIA_TYPES = {
     ".js": "text/javascript",
@@ -78,6 +85,14 @@ def render_privacy_page() -> str:
         head=LANDING_HEAD,
         body_class="cinematic-page public-doc-page",
     )
+
+
+def landing_cache_headers(asset: Path) -> dict[str, str]:
+    """Only the email images are cached long; the page's own assets are revalidated,
+    because their names do not change when a deploy changes them."""
+    if asset.parent == (LANDING_DIR / EMAIL_ASSET_DIRECTORY).resolve():
+        return {"Cache-Control": EMAIL_ASSET_CACHE_CONTROL}
+    return {}
 
 
 class RootController(Controller):
@@ -130,4 +145,6 @@ class RootController(Controller):
         if not resolved.is_relative_to(LANDING_DIR.resolve()) or not resolved.is_file():
             raise NotFoundException()
         media_type = LANDING_MEDIA_TYPES.get(resolved.suffix, "application/octet-stream")
-        return Response(resolved.read_bytes(), media_type=media_type)
+        return Response(
+            resolved.read_bytes(), media_type=media_type, headers=landing_cache_headers(resolved)
+        )

@@ -160,7 +160,10 @@ class InvitesAdminController(Controller):
         except ValueError:
             return _flashed(request, INVITE_REFUSED_MESSAGE, ok=False)
         mailed = await send_invite_email(
-            email_backend, invite.email, invites.invite_url(public_base_url, raw)
+            email_backend,
+            invite.email,
+            invites.invite_url(public_base_url, raw),
+            public_base_url,
         )
         return _flashed(request, sent_message(invite.email, mailed), ok=mailed)
 

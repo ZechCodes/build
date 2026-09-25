@@ -1,6 +1,7 @@
 """Tests pinning the one email layout: a single table capped at 560px in every client
-including Outlook, the accent used once for the wordmark, every slot escaped, nothing
-loaded from the network, and no footer at all on a message that carries no unsubscribe."""
+including Outlook, the Build mark as the header, the accent used once (the mark's alt
+text), every slot escaped, nothing loaded from anywhere but this deployment's own
+email images, and no footer at all on a message that carries no unsubscribe."""
 
 from __future__ import annotations
 
@@ -27,22 +28,26 @@ from buildapp.email_template import (
     EMAIL_MAX_WIDTH_PX,
     EMAIL_OUTER_PADDING,
     EMAIL_PARAGRAPH_SPACING_PX,
-    EMAIL_WORDMARK_FONT_SIZE_PX,
-    EMAIL_WORDMARK_LETTER_SPACING,
-    EMAIL_WORDMARK_PADDING_BOTTOM_PX,
+    EMAIL_HERO_PADDING_BOTTOM_PX,
+    EMAIL_MARK_PADDING_BOTTOM_PX,
+    EMAIL_BRAND_FONT_SIZE_PX,
+    EMAIL_BRAND_LETTER_SPACING,
     FOOTER_PREFIX,
+    LAPTOP_IMAGE,
+    MARK_IMAGE,
     OUTLOOK_LAYOUT_CLOSER,
     OUTLOOK_LAYOUT_OPENER,
+    TEXT_BRAND_LINE,
     UNSUBSCRIBE_LINK_LABEL,
     TEXT_STEP_INDENT,
-    WORDMARK,
     EmailAction,
+    EmailImage,
     EmailStep,
     EmailSteps,
-    render_email_html,
     render_email_text,
 )
-from buildapp.email_test_support import UNSUBSCRIBE_URL
+from buildapp.email_template import render_email_html as render_layout_html
+from buildapp.email_test_support import PUBLIC_BASE_URL, UNSUBSCRIBE_URL
 
 HEADING = "You’re on the list."
 PARAGRAPHS = ("First paragraph of the message.", "Second paragraph of the message.")
@@ -50,6 +55,20 @@ SIZE_LITERAL_PATTERN = r"(\d+(?:\.\d+)?)px"
 ACTION_URL = "https://getbuild.ing/invite/inv_token"
 ACTION_LABEL = "ACCEPT INVITE"
 ACTION = EmailAction(url=ACTION_URL, label=ACTION_LABEL)
+MARK_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark.png"
+MARK_2X_URL = f"{PUBLIC_BASE_URL}/landing/email/brand-mark@2x.png"
+LAPTOP_URL = f"{PUBLIC_BASE_URL}/landing/email/laptop.png"
+#: Every px size an image adds: its width and height attributes, mirrored in its style.
+IMAGE_SIZES = {
+    str(size)
+    for image in (MARK_IMAGE, LAPTOP_IMAGE)
+    for size in (image.width_px, image.height_px)
+}
+
+
+def render_email_html(**body) -> str:
+    """The layout as every sender calls it: from this deployment's origin."""
+    return render_layout_html(public_base_url=PUBLIC_BASE_URL, **body)
 
 
 def render_html_body(unsubscribe_url: str | None = UNSUBSCRIBE_URL) -> str:
@@ -69,7 +88,7 @@ def test_html_is_one_table_layout_capped_at_560px():
     assert EMAIL_MAX_WIDTH_PX == 560
     assert f"max-width:{EMAIL_MAX_WIDTH_PX}px" in html
     assert "<table" in html
-    assert "<img" not in html
+    assert html.count("<img") == 1
     assert "gradient" not in html
 
 
@@ -89,24 +108,68 @@ def test_every_size_in_the_layout_comes_from_a_named_constant():
         str(EMAIL_BODY_FONT_SIZE_PX),
         str(EMAIL_FOOTER_FONT_SIZE_PX),
         str(EMAIL_HEADING_FONT_SIZE_PX),
-        str(EMAIL_WORDMARK_FONT_SIZE_PX),
-        str(EMAIL_WORDMARK_PADDING_BOTTOM_PX),
+        str(EMAIL_BRAND_FONT_SIZE_PX),
+        str(EMAIL_MARK_PADDING_BOTTOM_PX),
         str(EMAIL_HEADING_PADDING_BOTTOM_PX),
         str(EMAIL_FOOTER_PADDING_TOP_PX),
         str(EMAIL_PARAGRAPH_SPACING_PX),
         str(EMAIL_HAIRLINE_WIDTH_PX),
+        *IMAGE_SIZES,
         *re.findall(SIZE_LITERAL_PATTERN, EMAIL_OUTER_PADDING),
     }
     assert set(re.findall(SIZE_LITERAL_PATTERN, html)) <= named_sizes
     assert EMAIL_OUTER_PADDING in html
     assert f"line-height:{EMAIL_BODY_LINE_HEIGHT}" in html
-    assert f"letter-spacing:{EMAIL_WORDMARK_LETTER_SPACING}" in html
+    assert f"letter-spacing:{EMAIL_BRAND_LETTER_SPACING}" in html
 
 
-def test_html_uses_the_accent_exactly_once_for_the_wordmark():
+def test_html_uses_the_accent_exactly_once_for_the_marks_alt_text():
     html = render_html_body()
     assert html.count(EMAIL_ACCENT) == 1
-    assert WORDMARK in html
+    mark_tag = re.search(r"<img[^>]*>", html).group(0)
+    assert f"color:{EMAIL_ACCENT}" in mark_tag
+
+
+def test_the_header_is_the_build_mark_hosted_by_this_deployment():
+    mark_tag = re.search(r"<img[^>]*>", render_html_body()).group(0)
+    assert f'src="{MARK_2X_URL}"' in mark_tag
+    assert f'srcset="{MARK_URL} 1x, {MARK_2X_URL} 2x"' in mark_tag
+    assert 'alt="Build"' in mark_tag
+    assert f'width="{MARK_IMAGE.width_px}"' in mark_tag
+    assert f'height="{MARK_IMAGE.height_px}"' in mark_tag
+    assert MARK_IMAGE.height_px == 32
+
+
+def test_the_image_urls_follow_the_deployment_rather_than_a_fixed_host():
+    html = render_layout_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        public_base_url="https://staging.example.test",
+        hero=LAPTOP_IMAGE,
+    )
+    assert 'src="https://staging.example.test/landing/email/brand-mark@2x.png"' in html
+    assert 'src="https://staging.example.test/landing/email/laptop.png"' in html
+    assert PUBLIC_BASE_URL not in html
+
+
+def test_a_base_url_with_a_trailing_slash_gives_no_double_slash():
+    html = render_layout_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        public_base_url=f"{PUBLIC_BASE_URL}/",
+        hero=LAPTOP_IMAGE,
+    )
+    assert f'src="{MARK_2X_URL}"' in html
+    assert f'src="{LAPTOP_URL}"' in html
+    assert f"{PUBLIC_BASE_URL}//" not in html
+
+
+def test_no_underscore_wordmark_is_left_in_either_part():
+    for body in (render_html_body(), render_text_body()):
+        assert "build_" not in body.lower()
+    assert render_text_body().split("\n\n")[0] == TEXT_BRAND_LINE == "Build"
 
 
 def test_html_and_text_carry_every_paragraph_and_the_unsubscribe_url():
@@ -115,7 +178,62 @@ def test_html_and_text_carry_every_paragraph_and_the_unsubscribe_url():
         for paragraph in PARAGRAPHS:
             assert paragraph in body
         assert UNSUBSCRIBE_URL in body
-    assert WORDMARK in render_text_body()
+
+
+def test_a_hero_image_sits_under_the_copy_and_above_the_action():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action=ACTION,
+        hero=LAPTOP_IMAGE,
+    )
+    hero_tag = re.search(rf'<img[^>]*src="{re.escape(LAPTOP_URL)}"[^>]*>', html).group(0)
+    assert 'alt="Build on a laptop"' in hero_tag
+    assert f'width="{LAPTOP_IMAGE.width_px}"' in hero_tag
+    assert f'height="{LAPTOP_IMAGE.height_px}"' in hero_tag
+    assert LAPTOP_IMAGE.width_px == EMAIL_MAX_WIDTH_PX
+    assert html.index(PARAGRAPHS[-1]) < html.index(LAPTOP_URL) < html.index(ACTION_URL)
+    assert f"padding-bottom:{EMAIL_HERO_PADDING_BOTTOM_PX}px" in html
+
+
+def test_a_message_without_a_hero_carries_only_the_mark():
+    assert LAPTOP_URL not in render_html_body()
+    assert render_html_body() == render_email_html(
+        heading=HEADING, paragraphs=PARAGRAPHS, unsubscribe_url=UNSUBSCRIBE_URL, hero=None
+    )
+
+
+def test_with_images_blocked_the_alt_texts_read_in_order():
+    """What a client that blocks remote images shows: each image's alt text where the
+    image would be, and the copy around them in reading order."""
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action=ACTION,
+        hero=LAPTOP_IMAGE,
+    )
+    blocked = re.sub(r'<img[^>]*alt="([^"]*)"[^>]*>', r"[\1]", html)
+    positions = [
+        blocked.index("[Build]"),
+        blocked.index(HEADING),
+        blocked.index(PARAGRAPHS[-1]),
+        blocked.index("[Build on a laptop]"),
+        blocked.index(ACTION_LABEL),
+    ]
+    assert positions == sorted(positions)
+
+
+def test_an_image_escapes_its_url_and_alt_text():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        hero=EmailImage(file='x.png"onerror="alert(1)', width_px=1, height_px=1, alt="<b>"),
+    )
+    assert '"onerror="' not in html
+    assert "<b>" not in html
 
 
 def test_a_message_without_an_unsubscribe_url_carries_no_footer_line():
@@ -126,7 +244,7 @@ def test_a_message_without_an_unsubscribe_url_carries_no_footer_line():
         assert FOOTER_PREFIX not in body
         assert HEADING in body
     assert "<a " not in html
-    assert "http" not in html
+    assert set(re.findall(r'https?://[^"\s]+', html)) == {MARK_URL, MARK_2X_URL}
     assert text.endswith(PARAGRAPHS[-1])
 
 
@@ -149,9 +267,13 @@ def test_text_body_ends_with_the_unsubscribe_line():
     assert text.splitlines()[-1] == unsubscribe_line
 
 
-def test_html_declares_no_external_resource_and_no_custom_property():
+def test_html_loads_nothing_but_the_hosted_mark_and_declares_no_custom_property():
     html = render_html_body()
-    assert html.count("http") == 1
+    assert set(re.findall(r'https?://[^"\s]+', html)) == {
+        MARK_URL,
+        MARK_2X_URL,
+        UNSUBSCRIBE_URL,
+    }
     assert "var(" not in html
 
 
@@ -273,11 +395,12 @@ def test_every_size_the_steps_add_comes_from_a_named_constant():
         str(EMAIL_MAX_WIDTH_PX),
         str(EMAIL_BODY_FONT_SIZE_PX),
         str(EMAIL_HEADING_FONT_SIZE_PX),
-        str(EMAIL_WORDMARK_FONT_SIZE_PX),
-        str(EMAIL_WORDMARK_PADDING_BOTTOM_PX),
+        str(EMAIL_BRAND_FONT_SIZE_PX),
+        str(EMAIL_MARK_PADDING_BOTTOM_PX),
         str(EMAIL_HEADING_PADDING_BOTTOM_PX),
         str(EMAIL_PARAGRAPH_SPACING_PX),
         str(EMAIL_ACTION_PADDING_BOTTOM_PX),
+        *IMAGE_SIZES,
         str(EMAIL_STEPS_TITLE_PADDING_BOTTOM_PX),
         str(EMAIL_STEP_NUMBER_WIDTH_PX),
         str(EMAIL_COMMAND_FONT_SIZE_PX),

@@ -41,11 +41,23 @@ pub struct IssueFilter<'a> {
 const LIST_KEY: &str = "tracker_list_key";
 
 /// Where a list read starts and how much of it to read: the issues numbered
-/// below `below`, at most `take` of them. The default is the whole list.
+/// below `below`, at most `take` of them, out of at most `scan` rows read.
+/// The default is the whole list.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct IssueSeek {
     pub below: Option<u64>,
     pub take: Option<usize>,
+    pub scan: Option<usize>,
+}
+
+/// One stretch of a list, newest first. `scanned_to` is set when the read
+/// stopped at its `scan` bound with rows still below: the number of the last
+/// row it read, which the next stretch starts below. What it kept may then
+/// be short of `take`, or nothing.
+#[derive(Debug, Default)]
+pub struct IssueStretch {
+    pub issues: Vec<Issue>,
+    pub scanned_to: Option<u64>,
 }
 
 impl IssueFilter<'_> {
@@ -129,24 +141,27 @@ impl Store {
         filter: IssueFilter<'_>,
     ) -> Result<Vec<Issue>, StoreError> {
         self.list_tracker_issues_below(project_path, filter, IssueSeek::default(), |_| true)
+            .map(|stretch| stretch.issues)
     }
 
     /// One stretch of a project's list, newest first: the issues numbered
-    /// below `seek.below` that `keep` keeps, and no more than `seek.take` of
-    /// them (#85).
+    /// below `seek.below` that `keep` keeps, no more than `seek.take` of them,
+    /// out of no more than `seek.scan` rows read (#85).
     ///
     /// Read down the `(project, number)` index and stopped as soon as the
-    /// stretch is full, so a page costs the rows it answers and the ones
-    /// `keep` passed over on the way, never the whole project. `keep` is the
-    /// caller's half of the filter — an assignee, a label — applied here so
-    /// the stretch counts only what it keeps.
+    /// stretch is full or the scan bound is reached, so a page costs the rows
+    /// it answers and a bounded number `keep` passed over on the way, never
+    /// the whole project: a label nobody carries costs one bound's worth of
+    /// rows, not every issue. `keep` is the caller's half of the filter — an
+    /// assignee, a label — applied here so the stretch counts only what it
+    /// keeps.
     pub fn list_tracker_issues_below(
         &self,
         project_path: &str,
         filter: IssueFilter<'_>,
         seek: IssueSeek,
         mut keep: impl FnMut(&Issue) -> bool,
-    ) -> Result<Vec<Issue>, StoreError> {
+    ) -> Result<IssueStretch, StoreError> {
         let (tail, binds) = filter.clause();
         let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(project_path.to_string())];
         values.extend(
@@ -162,22 +177,32 @@ impl Store {
             None => String::new(),
         };
         let sql = format!(
-            "SELECT id, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
+            "SELECT id, number, record FROM tracker_issues WHERE project_key = ?1{tail}{below} \
              ORDER BY number DESC"
         );
         let conn = self.connection();
         let mut statement = conn.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
-        let mut kept = Vec::new();
-        while seek.take.is_none_or(|take| kept.len() < take) {
+        let mut stretch = IssueStretch::default();
+        let mut scanned = 0;
+        let mut last_read = None;
+        while seek.take.is_none_or(|take| stretch.issues.len() < take) {
             let Some(row) = rows.next()? else { break };
-            let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+            // A row past the bound is only fetched, never decoded: it says
+            // there is more below, which is what the next stretch is for.
+            if seek.scan.is_some_and(|scan| scanned >= scan) {
+                stretch.scanned_to = last_read;
+                break;
+            }
+            scanned += 1;
+            let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            last_read = u64::try_from(number).ok();
             let issue = decode(&raw, "tracker_issues", &id)?;
             if keep(&issue) {
-                kept.push(issue);
+                stretch.issues.push(issue);
             }
         }
-        Ok(kept)
+        Ok(stretch)
     }
 
     /// The key this store's list cursors are made under, minted the first

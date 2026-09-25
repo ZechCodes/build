@@ -26,6 +26,13 @@ use sha2::{Digest, Sha256};
 /// The most issues one page holds.
 const MOST_PER_PAGE: u64 = 500;
 
+/// How many rows a page reads for each row it may answer. A filter the
+/// store cannot seek on — an assignee, a label — passes over rows it does not
+/// keep; past this many a page stops short and names where the next one
+/// starts, so a label nobody carries costs a bounded read, not the whole
+/// project under the lock.
+const ROWS_READ_PER_ROW: usize = 4;
+
 /// The version of the cursor's spelling, so a later one can be told apart.
 const CURSOR_VERSION: &str = "v1";
 
@@ -118,17 +125,30 @@ impl PageAsk {
         })
     }
 
-    /// How many rows to read to know whether there is a page after this one.
-    pub(super) fn rows_to_read(&self) -> Option<usize> {
+    /// How many rows to keep to know whether there is a page after this one.
+    pub(super) fn rows_to_keep(&self) -> Option<usize> {
         self.limit.map(|limit| limit + 1)
     }
 
-    /// Cut what was read to the page, and name the next page when there is
-    /// one. `rows` holds at most [`Self::rows_to_read`] issue numbers' worth.
-    pub(super) fn cut<T>(&self, rows: &mut Vec<T>, number: impl Fn(&T) -> u64) -> Option<String> {
+    /// How many rows the page may read to keep them.
+    pub(super) fn rows_to_scan(&self) -> Option<usize> {
+        self.rows_to_keep().map(|keep| keep * ROWS_READ_PER_ROW)
+    }
+
+    /// Cut what was kept to the page, and name the next page when there is
+    /// one. `rows` holds at most [`Self::rows_to_keep`] issues; `scanned_to`
+    /// is the last number read when the read stopped at
+    /// [`Self::rows_to_scan`] with rows still below it, and then the page is
+    /// short, or empty, and the next starts below that number.
+    pub(super) fn cut<T>(
+        &self,
+        rows: &mut Vec<T>,
+        scanned_to: Option<u64>,
+        number: impl Fn(&T) -> u64,
+    ) -> Option<String> {
         let limit = self.limit?;
         if rows.len() <= limit {
-            return None;
+            return scanned_to.map(|last| cursor_for(last, &self.made_in));
         }
         rows.truncate(limit);
         rows.last()

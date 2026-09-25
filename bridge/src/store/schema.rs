@@ -202,6 +202,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS tracker_issues_number
 -- rather than a scan and a sort.
 CREATE INDEX IF NOT EXISTS tracker_issues_by_project
     ON tracker_issues(project_key, number DESC);
+-- The same seek narrowed by a column filter, so a page of the open issues,
+-- or of a column nobody is in, reads only the rows it answers (#85).
+CREATE INDEX IF NOT EXISTS tracker_issues_by_state
+    ON tracker_issues(project_key, state, number DESC);
+CREATE INDEX IF NOT EXISTS tracker_issues_by_status
+    ON tracker_issues(project_key, status, number DESC);
 
 CREATE TABLE IF NOT EXISTS tracker_comments (
     id         TEXT PRIMARY KEY,

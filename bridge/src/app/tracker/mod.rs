@@ -141,7 +141,7 @@ impl AppState {
                 label,
             },
         )?;
-        let mut issues = self
+        let stretch = self
             .tracker_store()?
             .list_tracker_issues_below(
                 &project_path,
@@ -151,12 +151,14 @@ impl AppState {
                 },
                 IssueSeek {
                     below: page.below,
-                    take: page.rows_to_read(),
+                    take: page.rows_to_keep(),
+                    scan: page.rows_to_scan(),
                 },
                 |issue| assignee.matches(issue) && edits::carries_label(issue, label),
             )
             .stored()?;
-        let next_cursor = page.cut(&mut issues, |issue| issue.number);
+        let mut issues = stretch.issues;
+        let next_cursor = page.cut(&mut issues, stretch.scanned_to, |issue| issue.number);
         let rows = self.listed_rows(&project_id, issues)?;
         let mut answer = json!({
             "project_id": project_id,

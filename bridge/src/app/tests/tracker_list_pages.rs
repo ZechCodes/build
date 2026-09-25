@@ -195,6 +195,90 @@ fn a_cursor_continues_the_filter_it_was_made_under() {
     assert_eq!(walked, ids_of(&whole));
 }
 
+/// The number a cursor continues below. The cursor is opaque to a client;
+/// a test reads it to see where a page stopped reading.
+fn cursor_number(page: &Value) -> Option<u64> {
+    use base64::Engine;
+    let cursor = page.get("next_cursor")?.as_str()?;
+    let spelled = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor)
+        .unwrap();
+    String::from_utf8(spelled)
+        .unwrap()
+        .split(':')
+        .nth(1)?
+        .parse()
+        .ok()
+}
+
+/// A label nobody carries: a page of one reads four rows for each it may
+/// answer (eight here), not the project, and answers nothing and where the
+/// next page starts. Walking on reaches the end with every page empty.
+#[test]
+fn a_page_under_a_filter_that_keeps_nothing_reads_a_bounded_stretch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    project_of(&mut state, &project_id, 20);
+    let filter = json!({ "project_id": project_id, "label": "nobody" });
+
+    let mut first = filter.clone();
+    first["limit"] = json!(1);
+    let page = listed(&mut state, first);
+
+    assert_eq!(numbers_of(&page), Vec::<u64>::new());
+    assert_eq!(cursor_number(&page), Some(13), "{page:?}");
+    let pages = every_page(&mut state, filter, 1);
+    let numbers: Vec<Vec<u64>> = pages.iter().map(numbers_of).collect();
+    assert_eq!(numbers, vec![Vec::<u64>::new(); 3]);
+    let stops: Vec<Option<u64>> = pages.iter().map(cursor_number).collect();
+    assert_eq!(stops, vec![Some(13), Some(5), None]);
+}
+
+/// A sparse label walked a row at a time: short and empty pages carry the
+/// cursor on, and together they are the whole filtered list, in order.
+#[test]
+fn short_pages_under_a_sparse_filter_walk_to_the_whole_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let ids = project_of(&mut state, &project_id, 30);
+    // Newest first, so index 0 is #30: label #29, #11 and #2.
+    for index in [1, 19, 28] {
+        let labelled = state.handle(req(
+            "issues.update",
+            json!({ "issue_id": ids[index], "labels": ["rare"] }),
+        ));
+        assert_eq!(labelled["ok"], true, "{labelled:?}");
+    }
+    let filter = json!({ "project_id": project_id, "label": "rare" });
+
+    let pages = every_page(&mut state, filter.clone(), 1);
+
+    assert!(pages.iter().all(|page| numbers_of(page).len() <= 1));
+    let walked: Vec<u64> = pages.iter().flat_map(numbers_of).collect();
+    assert_eq!(walked, vec![29, 11, 2]);
+    assert_eq!(walked, numbers_of(&listed(&mut state, filter)));
+}
+
+/// A read that reaches the end of the list exactly at its bound names no
+/// next page: there is nothing below to ask for.
+#[test]
+fn a_bounded_read_that_ends_the_list_names_no_next_page() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    project_of(&mut state, &project_id, 8);
+
+    let page = listed(
+        &mut state,
+        json!({ "project_id": project_id, "label": "nobody", "limit": 1 }),
+    );
+
+    assert_eq!(numbers_of(&page), Vec::<u64>::new());
+    assert_eq!(page.get("next_cursor"), None, "{page:?}");
+}
+
 #[test]
 fn a_cursor_made_under_another_filter_is_refused_in_a_sentence() {
     let tmp = tempfile::tempdir().unwrap();

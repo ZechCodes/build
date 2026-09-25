@@ -214,7 +214,10 @@ Notes on each:
   the cursor was made for a different filter.", and one that cannot be read
   as "Build cannot read this cursor: ask for the list again from the start." No `limit` is the whole
   list, as before. A page reads only its own rows' timelines, so it holds the
-  app lock for no longer than the whole list does.
+  app lock for no longer than the whole list does. It reads at most four rows
+  for each it may answer: under an assignee or label filter that passes over
+  rows, a page can come back short, or empty, and still carry `next_cursor`,
+  so a client walks on until `next_cursor` is absent.
 - **`issues.get`** answers the issue and its whole timeline. Comments and events
   interleave into one ascending list ordered by `(created_at|at, id)` — ids are
   time-ordered, so equal timestamps still have one stable order. An entry is the

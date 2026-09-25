@@ -711,6 +711,13 @@ answers the issues numbered below the last one the page held. Numbers never
 move, so an issue filed between pages lands above the first page (where the
 next read from the top finds it) and never moves a row across a cursor; an
 issue that leaves the filter between pages is simply not on the next one. A
+page can hold fewer than `limit` issues, or none, and still carry
+`next_cursor`: `assignee` and `label` are not columns the store can seek on,
+so a page reads at most four rows for each it may answer and, when those run
+out with rows still below, stops short and names where the next page starts.
+A label nobody carries costs a bounded read per page rather than the whole
+project. A client keeps asking while `next_cursor` is present and stops only
+when it is absent, never on a short or empty page. A
 cursor names the list it was made in — the bridge's store, by a key the store
 mints once and keeps, and the project, by its repository path rather than its
 boot-local `proj-N` — and a cursor from another store or another project is

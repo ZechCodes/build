@@ -361,9 +361,15 @@ impl Retries {
     }
 }
 
-/// A number uniform in `[0, 1)`, from the operating system's random source.
+/// A number uniform in `[0, 1)`, from the operating system's random source
+/// (a version 4 UUID is 122 bits of it). Only bytes 9 to 15 are taken, which
+/// the version's nibble (byte 6) and the variant's two bits (byte 8) leave
+/// alone, and 53 of their 56 bits — as many as an `f64` holds exactly.
 fn jitter() -> f64 {
-    (uuid::Uuid::new_v4().as_u128() as u64 >> 11) as f64 / (1u64 << 53) as f64
+    let uuid = uuid::Uuid::new_v4().into_bytes();
+    let mut bits = [0u8; 8];
+    bits[..7].copy_from_slice(&uuid[9..16]);
+    (u64::from_le_bytes(bits) >> 3) as f64 / (1u64 << 53) as f64
 }
 
 /// What a `Retry-After` header asks for, as a wait from `now`: a number of
@@ -526,6 +532,36 @@ mod tests {
             retries.after_failure(Some(Duration::from_secs(86_400)), 0.5),
             LONGEST_RETRY_AFTER
         );
+    }
+
+    /// The jitter the schedule is fed spreads over all of `[0, 1)`, so the
+    /// waits it makes spread over a quarter either way of the schedule's.
+    /// Taken from a UUID, it carried the version's and variant's fixed bits
+    /// and never left `[0.5, 0.75)` (#131 review).
+    #[test]
+    fn the_jitter_spreads_evenly_over_zero_to_one() {
+        let draws: Vec<f64> = (0..20_000).map(|_| jitter()).collect();
+        assert!(draws.iter().all(|draw| (0.0..1.0).contains(draw)));
+        for quarter in 0..4 {
+            let low = quarter as f64 / 4.0;
+            let share = draws
+                .iter()
+                .filter(|draw| (low..low + 0.25).contains(*draw))
+                .count() as f64
+                / draws.len() as f64;
+            assert!(
+                (0.22..0.28).contains(&share),
+                "{share} of the draws in [{low}, {})",
+                low + 0.25
+            );
+        }
+        let waits: Vec<Duration> = draws
+            .iter()
+            .map(|draw| Retries::every(HEARTBEAT_INTERVAL).after_failure(None, *draw))
+            .collect();
+        let (shortest, longest) = (waits.iter().min().unwrap(), waits.iter().max().unwrap());
+        assert!(*shortest < Duration::from_millis(3_900), "{shortest:?}");
+        assert!(*longest > Duration::from_millis(6_100), "{longest:?}");
     }
 
     #[test]

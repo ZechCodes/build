@@ -103,7 +103,7 @@ class EmailImage:
     file_1x: str | None = None
 
     def url(self, public_base_url: str, file: str) -> str:
-        return escape(f"{public_base_url}{EMAIL_ASSET_PATH}/{file}")
+        return escape(f"{public_base_url.rstrip('/')}{EMAIL_ASSET_PATH}/{file}")
 
     def html(self, public_base_url: str, style: str) -> str:
         """The tag, sized by attributes because Outlook reads only those; ``style``

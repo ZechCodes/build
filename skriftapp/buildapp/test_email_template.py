@@ -153,6 +153,19 @@ def test_the_image_urls_follow_the_deployment_rather_than_a_fixed_host():
     assert PUBLIC_BASE_URL not in html
 
 
+def test_a_base_url_with_a_trailing_slash_gives_no_double_slash():
+    html = render_layout_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        public_base_url=f"{PUBLIC_BASE_URL}/",
+        hero=LAPTOP_IMAGE,
+    )
+    assert f'src="{MARK_2X_URL}"' in html
+    assert f'src="{LAPTOP_URL}"' in html
+    assert f"{PUBLIC_BASE_URL}//" not in html
+
+
 def test_no_underscore_wordmark_is_left_in_either_part():
     for body in (render_html_body(), render_text_body()):
         assert "build_" not in body.lower()

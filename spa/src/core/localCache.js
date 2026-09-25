@@ -65,6 +65,10 @@ const AT_INDEX = "at";
 //
 // Only an error no reopen can fix stands the cache down for the session: a
 // private window refusing IndexedDB, a full quota, a schema that is not ours.
+// So does one that outlasts the weather: a store the browser can never open
+// (Safari raises the same UnknownError for a corrupt one) fails every round,
+// and a page someone is looking at does not wait on it for ever — nor does a
+// page that has never opened it at all, whose boot paint is waiting.
 // A write the database refuses on its own account (a value it cannot clone, or
 // one that keeps failing while every other transaction commits) fails alone.
 
@@ -73,6 +77,10 @@ const AT_INDEX = "at";
 let disabled = false;
 
 let dbPromise = null;
+/** Whether the database has opened at all in this page. Before it has, a
+ *  round of failed opens is not a resume's weather but a store that cannot be
+ *  opened — and the boot paint is waiting on it. */
+let everOpened = false;
 const intentionalAborts = new WeakMap();
 
 const DEFAULT_TIMING = Object.freeze({
@@ -87,6 +95,11 @@ const DEFAULT_TIMING = Object.freeze({
   /** How long the cache rests after the attempts run out, unless a wake ends
    *  it first. */
   restMs: 30_000,
+  /** How long the cache may keep failing on a page someone is looking at
+   *  before the failure counts as the database's own. Counted from the later
+   *  of the outage starting and the page last being shown: a hidden page waits
+   *  on, and a resume starts the count again. */
+  giveUpAfterMs: 60_000,
 });
 let timing = DEFAULT_TIMING;
 
@@ -322,6 +335,23 @@ function openOnce() {
   });
 }
 
+/** How long the cache has been failing in front of someone: since the outage
+ *  began or the page was last shown, whichever is later. None while hidden. */
+function visibleFailingMs() {
+  if (!outage || pageHidden()) return 0;
+  return Date.now() - Math.max(outage.since, lastShownAt ?? 0);
+}
+
+/** A round of attempts ran out. On a page that has never opened the database,
+ *  or one that has watched it fail past the ceiling, the failure is the
+ *  database's and the cache stands down, answering everything waiting on it.
+ *  True when it did. */
+function outlasted() {
+  if (pageHidden()) return false;
+  if (!everOpened || visibleFailingMs() >= timing.giveUpAfterMs) standDown("persistent", outage?.error);
+  return disabled;
+}
+
 /** Reach the database through a lost connection: every attempt on the
  *  backoff, resting when they run out. */
 async function reachDb() {
@@ -337,7 +367,7 @@ async function reachDb() {
     }
     connectionLost("open-failed", error);
   }
-  rest();
+  if (!outlasted()) rest();
   return null;
 }
 
@@ -365,6 +395,7 @@ function openDb() {
       if (dbPromise === opening) dbPromise = null;
       return null;
     }
+    everOpened = true;
     watchConnection(db, opening);
     return db;
   });
@@ -460,6 +491,7 @@ async function attemptOperation(mode, run) {
     connectionLost("transaction-failed", outcome.error);
     invalidateDb(reached.db, reached.opening);
   }
+  if (outlasted()) return UNAVAILABLE;
   cacheEvent("cache-operation-failed", { mode, attempts: delays.length, ...errorFields(outcome.error) });
   return { ...outcome, unavailable: true, exhausted: true };
 }
@@ -471,7 +503,8 @@ async function attemptOperation(mode, run) {
  *
  *  A read is never answered "nothing" because the database was away: one
  *  whose attempts all failed waits for the next wake and asks again, until it
- *  is answered or the cache stands down. A write whose attempts all failed
+ *  is answered or the cache stands down — which a failure that outlasts the
+ *  weather makes it do (`outlasted`). A write whose attempts all failed
  *  fails alone; the pull that carried it asks again from its own cursor. */
 async function transact(mode, run) {
   for (;;) {

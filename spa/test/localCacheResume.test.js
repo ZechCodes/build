@@ -181,6 +181,54 @@ describe("a connection lost across a resume", () => {
   });
 });
 
+describe("a database that never comes back", () => {
+  // Safari has UnknownErrors that are not weather: a store it cannot open or
+  // migrate fails every open, the same way, forever. Waiting on it held every
+  // read — and the boot paint behind them — until the site's data was cleared.
+
+  it("stands down after failing in plain sight past the ceiling, and answers the readers", async () => {
+    cache.setCacheRecoveryTiming({ ...FAST_RECOVERY, giveUpAfterMs: 100 });
+    const handles = [];
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      handles.push(this);
+      return originalTransaction.apply(this, args);
+    });
+    await cache.writeCached(address, { head: "stored" });
+    transaction.mockRestore();
+    forceCloseDatabase(handles[0]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    failOpens(Infinity, new DOMException("Error creating or migrating Records table in database", "UnknownError"));
+
+    expect(await cache.readCached(address)).toBeUndefined();
+    expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", reason: "persistent", error: "UnknownError" });
+    expect(eventNames()).toContain("cache-resting");
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("stands down after one round when it has never opened in this page, so the boot paint is not held", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const open = failOpens(Infinity, new DOMException("Unable to open database file on disk", "UnknownError"));
+
+    expect(await cache.readCached(address)).toBeUndefined();
+    expect(open).toHaveBeenCalledTimes(FAST_RECOVERY.reopenDelaysMs.length);
+    expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", reason: "persistent" });
+    expect(eventNames()).toEqual(["cache-connection-lost", "cache-stood-down"]);
+  });
+
+  it("stands down when every transaction keeps failing on a database that opens", async () => {
+    cache.setCacheRecoveryTiming({ ...FAST_RECOVERY, giveUpAfterMs: 100 });
+    await cache.writeCached(address, { head: "stored" });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+      throw new DOMException("An internal error was encountered in the Indexed Database server", "UnknownError");
+    });
+
+    expect(await cache.readCached(address)).toBeUndefined();
+    expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", reason: "persistent" });
+  });
+});
+
 describe("an open blocked by another tab", () => {
   it("waits for the other connection to close rather than standing down", async () => {
     // Another tab running an older build holds version 2 open and does not

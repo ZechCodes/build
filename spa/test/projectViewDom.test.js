@@ -336,3 +336,62 @@ describe("the project's two tabs", () => {
     expect(pane.dispose).toHaveBeenCalled();
   });
 });
+
+// The reclaim service's verdict on each workspace (#135), read off the cached
+// rows: a line saying what holds a quiet workspace, and a Reclaim when nothing
+// does.
+describe("a workspace's lifecycle on the Workspaces tab", () => {
+  const verdict = (extra = {}) => ({
+    idle: true, reclaimable: false, holds: [], issues: [], dirty_files: 0, unpushed_commits: 0,
+    behind_commits: 0, size_bytes: 17_200_000_000, pruned_bytes: 0, pruned_at_ms: null, noticed_at_ms: null,
+    measured_at_ms: 1, last_activity_ms: 0, ...extra,
+  });
+  const reclaimButton = (row) => row.querySelector("[data-workspace-reclaim]");
+
+  beforeEach(() => {
+    snapshot = {
+      ...snapshot,
+      workspaces: [
+        workspace("ws-1", { lifecycle: verdict({ reclaimable: true }) }),
+        workspace("ws-2", { name: "docs", lifecycle: verdict({ holds: ["dirty"], dirty_files: 3 }) }),
+      ],
+    };
+  });
+
+  it("says what holds a quiet workspace and offers Reclaim only where nothing does", async () => {
+    await openWorkspacesTab();
+    await flush();
+
+    expect(rows()[0].textContent).toContain("Reclaimable · 17.2 GB");
+    expect(reclaimButton(rows()[0])).not.toBeNull();
+    expect(rows()[1].textContent).toContain("Idle · 3 uncommitted files · 17.2 GB");
+    expect(reclaimButton(rows()[1])).toBeNull();
+  });
+
+  it("reclaims through the bridge without opening the workspace", async () => {
+    await openWorkspacesTab();
+    await flush();
+    const before = location.hash;
+
+    reclaimButton(rows()[0]).click();
+    await vi.waitFor(() => expect(refreshFeed).toHaveBeenCalledWith("dev-1"));
+
+    expect(here).toHaveBeenCalledWith("workspace.reclaim", { workspace_id: "ws-1" });
+    expect(location.hash).toBe(before);
+  });
+
+  it("shows the bridge's refusal on the row and offers Reclaim again", async () => {
+    here.mockImplementation(async (method) => {
+      if (method === "workspace.reclaim") throw new Error("Build cannot reclaim ws-1 yet: it has uncommitted changes.");
+      return {};
+    });
+    await openWorkspacesTab();
+    await flush();
+
+    reclaimButton(rows()[0]).click();
+    await vi.waitFor(() =>
+      expect(rows()[0].querySelector("[data-reclaim-error]").textContent)
+        .toBe("Build cannot reclaim ws-1 yet: it has uncommitted changes."));
+    expect(reclaimButton(rows()[0]).disabled).toBe(false);
+  });
+});

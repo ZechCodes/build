@@ -49,14 +49,35 @@ const factsLine = (row) =>
 
 const unreadHtml = (row) => (row.unreadCount > 0 ? `<span class="badge inbox-unread">${row.unreadCount}</span>` : "");
 
+/** Line three, when the reclaim service has something to say (#135): what holds
+ *  a quiet workspace, or that nothing does. The bridge refusing a Reclaim says
+ *  why in its own words, under it. */
+const lifecycleHtml = (row, ui) => {
+  if (!row.lifecycle) return "";
+  const error = ui.reclaimErrors.get(row.workspaceKey) || "";
+  return `<div class="inbox-facts project-lifecycle">${esc(row.lifecycle.text)}</div>
+      <span class="warn" data-reclaim-error${error ? "" : " hidden"}>${esc(error)}</span>`;
+};
+
+/** Reclaim, where nothing holds the workspace. It removes the workspace, whose
+ *  work is already pushed and whose issues are finished, so it asks nothing
+ *  first: the bridge measures again and refuses if that stopped being true. */
+const reclaimHtml = (row, ui) => {
+  if (!row.lifecycle?.reclaimable) return "";
+  const pending = ui.reclaiming.has(row.workspaceKey);
+  return `<div class="inbox-actions"><button class="btn mini" type="button" data-workspace-reclaim="${esc(row.workspaceKey)}" aria-label="Reclaim workspace ${esc(row.name)}"${pending ? " disabled" : ""}>${pending ? "Reclaiming…" : "Reclaim"}</button></div>`;
+};
+
 /** One workspace, in the rail's own row shape: a project page and the rail are
  *  two views of the same list, so they read as the same list. */
-const rowHtml = (row) => `<div class="srow inbox-entry project-row${row.muted ? " inbox-muted" : ""}" data-workspace="${esc(row.workspaceKey)}">
+const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.muted ? " inbox-muted" : ""}" data-workspace="${esc(row.workspaceKey)}">
     <span class="sdot sdot-${esc(row.state)}" title="${esc(row.state)}"></span>
     <div class="inbox-body">
       <div class="inbox-line inbox-name"><span class="stitle">${esc(row.name)}</span>${unreadHtml(row)}</div>
       <div class="inbox-facts">${esc(factsLine(row))}</div>
+      ${lifecycleHtml(row, ui)}
     </div>
+    ${reclaimHtml(row, ui)}
   </div>`;
 
 /** A project nobody has cut a workspace in yet. That is the first state of
@@ -67,8 +88,8 @@ const emptyHtml = () => `<div class="empty project-empty">
     <p>A workspace is where the work happens in this project. The + above makes the first one.</p>
   </div>`;
 
-const pageHtml = (page) =>
-  page.empty ? emptyHtml() : `<div class="project-rows">${page.rows.map(rowHtml).join("")}</div>`;
+const pageHtml = (page, ui) =>
+  page.empty ? emptyHtml() : `<div class="project-rows">${page.rows.map((row) => rowHtml(row, ui)).join("")}</div>`;
 
 /** The two verbs this page owns, in the toolbar's slot. Called on every toolbar
  *  repaint, so it rebuilds only when the project it names has changed. */
@@ -113,10 +134,10 @@ function paint(state) {
     state.issues?.feedMoved();
     return;
   }
-  const shown = JSON.stringify(state.page.rows);
+  const shown = JSON.stringify([state.page.rows, [...state.reclaiming], [...state.reclaimErrors]]);
   if (pane.dataset.rows !== shown) {
     pane.dataset.rows = shown;
-    pane.innerHTML = pageHtml(state.page);
+    pane.innerHTML = pageHtml(state.page, state);
   }
 }
 
@@ -171,6 +192,37 @@ function mountIssues(state, pane) {
   });
 }
 
+/** Reclaim one workspace (#135). The row repaints from the feed once the
+ *  bridge has removed it; a refusal stays on the row until the next press. */
+async function reclaimWorkspace(state, workspaceKey) {
+  const row = state.page.rows.find((candidate) => candidate.workspaceKey === workspaceKey);
+  if (!row || state.reclaiming.has(workspaceKey)) return;
+  state.reclaiming.add(workspaceKey);
+  state.reclaimErrors.delete(workspaceKey);
+  paint(state);
+  try {
+    await state.context.rpc("workspace.reclaim", { workspace_id: row.workspaceId });
+  } catch (error) {
+    state.reclaimErrors.set(workspaceKey, error?.message || String(error));
+  } finally {
+    state.reclaiming.delete(workspaceKey);
+    if (!state.disposed) paint(state);
+  }
+  await refreshFeed(state.context.deviceId);
+}
+
+/** A press in the list: Reclaim on its own button, anywhere else on a row
+ *  opens that workspace. */
+function pressList(state, event) {
+  const reclaim = event.target.closest("[data-workspace-reclaim]");
+  if (reclaim) {
+    reclaimWorkspace(state, reclaim.dataset.workspaceReclaim);
+    return;
+  }
+  const row = event.target.closest("[data-workspace]");
+  if (row) openWorkspace(state, row.dataset.workspace);
+}
+
 /** A row opens its workspace. The row carries the route the rail would have
  *  opened it with, so the same workspace opens the same way from either list. */
 function openWorkspace(state, workspaceKey) {
@@ -194,6 +246,7 @@ export async function renderProject() {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "dashboard", feed: null, issues: null, openTab: null,
+    reclaiming: new Set(), reclaimErrors: new Map(),
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
@@ -202,10 +255,7 @@ export async function renderProject() {
   // place, because a navigation would remount the rail beside the page.
   state.openTab = (tab) => openTab(state, tab === WORKSPACES_TAB ? WORKSPACES_TAB : ISSUES_TAB);
   setProjectTabHandler(state.openTab);
-  $("#project-pane").onclick = (event) => {
-    const row = event.target.closest("[data-workspace]");
-    if (row) openWorkspace(state, row.dataset.workspace);
-  };
+  $("#project-pane").onclick = (event) => pressList(state, event);
   const deviceStrip = mountDeviceStrip(root, context, { hasContent: () => !state.page.empty });
   const unsubscribe = subscribeFeed((feed) => {
     if (state.disposed) return;

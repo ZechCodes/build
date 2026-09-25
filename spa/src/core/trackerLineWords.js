@@ -133,10 +133,14 @@ export function actorName(actor, reading = {}) {
   return writtenActorName(actor.trim(), reading);
 }
 
+/** The actor kinds that are one name whoever reads them: the human, and Build
+ *  itself for what the bridge records on its own (#135). */
+const FIXED_ACTOR_NAMES = Object.freeze({ user: "You", build: "Build" });
+
 /** The wire's tagged shape, which every field but a notice's actor uses. */
 function taggedActorName(actor, { agentLabels = {}, identities = {}, projectName = "" }) {
   if (actor.kind === "project_agent") return projectAgentName(projectName);
-  if (actor.kind === "user") return "You";
+  if (Object.hasOwn(FIXED_ACTOR_NAMES, actor.kind)) return FIXED_ACTOR_NAMES[actor.kind];
   if (actor.kind !== "agent") return String(actor.kind || "");
   const id = String(actor.agent_id || "");
   return id.startsWith(PROJECT_AGENT_PREFIX) ? projectAgentName(projectName)

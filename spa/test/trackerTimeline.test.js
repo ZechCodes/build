@@ -127,6 +127,19 @@ describe("what an event says", () => {
       .toContain("restore failed at abc");
   });
 
+  // The reclaim service (#135) records a linked workspace going quiet, losing
+  // its build output, and being reclaimed.
+  it("says what became of a linked workspace", () => {
+    expect(sentenceOf("workspace_idle", { workspace_name: "quiet" }))
+      .toBe("noted workspace quiet has had no activity for a day");
+    expect(sentenceOf("workspace_pruned", { workspace_name: "quiet", pruned_bytes: 12_000_000_000 }))
+      .toBe("dropped 12.0 GB of build output from workspace quiet");
+    expect(sentenceOf("workspace_reclaimed", { workspace_name: "quiet", size_bytes: 640_000_000 }))
+      .toBe("reclaimed workspace quiet (640 MB)");
+    expect(sentenceOf("workspace_reclaimed", { workspace_name: "quiet", size_bytes: null }))
+      .toBe("reclaimed workspace quiet");
+  });
+
   // A later minor adding a kind leaves a reader with a row they can recognize.
   it("says an unknown kind's own name rather than nothing", () => {
     expect(sentenceOf("pinned", {})).toBe("pinned");

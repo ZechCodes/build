@@ -175,6 +175,7 @@ export function actorInitials(actor) {
   if (!actor || !actor.kind) return "–";
   if (actor.kind === "user") return "Y";
   if (actor.kind === "project_agent") return "P";
+  if (actor.kind === "build") return "B";
   return "A";
 }
 

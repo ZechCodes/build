@@ -566,3 +566,60 @@ fn a_store_with_no_captures_yet_loads_none() {
     let store = Store::new(dir.path().join("tasks")).expect("store opens");
     assert_eq!(store.load_all_captures().unwrap(), Vec::new());
 }
+
+/// Naming a stored agent needs its record, never its conversation (#131):
+/// the roster reads answer every run and every Issue with the agents the
+/// full reads restore — the same members, in the same order — and leave each
+/// conversation in the database.
+#[test]
+fn the_roster_reads_name_every_agent_the_full_reads_do_without_a_conversation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).expect("store opens");
+    let mut plan = plan_record("plan-1");
+    plan.agents[0].name = Some("Planner".into());
+    plan.agents[0]
+        .thread
+        .post_user("plan this".to_string(), None, NOW);
+    store.save_issue_plan(&plan).expect("the Issue saves");
+    for (id, issue, created) in [
+        ("run-late", Some("plan-1"), "2026-08-21T12:00:00Z"),
+        ("run-early", None, "2026-08-21T08:00:00Z"),
+    ] {
+        let mut run = run_record(id, issue, created);
+        run.agents[0].name = Some(format!("Builder of {id}"));
+        for n in 0..5 {
+            run.agents[0]
+                .thread
+                .post_user(format!("message {n}"), None, created);
+        }
+        store.save_run(&run).expect("the run saves");
+    }
+
+    let runs = store.load_all_runs().expect("runs load");
+    let run_rosters = store.load_all_run_rosters().expect("run rosters load");
+    let plans = store.load_all_plans().expect("plans load");
+    let plan_rosters = store.load_all_plan_rosters().expect("plan rosters load");
+
+    let members = |runs: &[PersistedRun]| -> Vec<_> {
+        runs.iter()
+            .map(|run| (run.id.clone(), run.worktree_path.clone(), run.members()))
+            .collect()
+    };
+    assert_eq!(members(&run_rosters), members(&runs));
+    assert_eq!(
+        plan_rosters
+            .iter()
+            .map(|plan| plan.members())
+            .collect::<Vec<_>>(),
+        plans.iter().map(|plan| plan.members()).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        run_rosters[1].members()[0].name.as_deref(),
+        Some("Builder of run-late")
+    );
+    assert!(run_rosters
+        .iter()
+        .flat_map(|run| &run.agents)
+        .chain(plan_rosters.iter().flat_map(|plan| &plan.agents))
+        .all(|agent| agent.thread.items.is_empty()));
+}

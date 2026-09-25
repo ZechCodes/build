@@ -16,8 +16,8 @@ use std::collections::{BTreeSet, HashMap};
 /// names, that read held the app lock for seconds at a time under
 /// `issues.list` (#128); looking each agent up by restoring every stored
 /// roster — each a copy of those tails — held it for another 450 ms on a real
-/// store (#131). So the records are read once, into an index of who every
-/// stored agent was, and nothing is copied but names. Nothing a call does
+/// store (#131). So the records are read once, without their conversations,
+/// into an index of who every stored agent was. Nothing a call does
 /// between two issues changes those records — a backfill writes the issue,
 /// never a run — so the index stands for the rest of the call. Build one per
 /// call, never keep one.
@@ -257,8 +257,8 @@ impl AppState {
     /// knows nobody.
     fn stored_identities(&self) -> Option<HashMap<String, IssueAgentIdentity>> {
         let store = self.tracker_store().ok()?;
-        let runs = store.load_all_runs().ok()?;
-        let plans = store.load_all_plans().unwrap_or_default();
+        let runs = store.load_all_run_rosters().ok()?;
+        let plans = store.load_all_plan_rosters().unwrap_or_default();
         let mut known = HashMap::new();
         for identity in self.run_identities(&runs).chain(plan_identities(&plans)) {
             known.entry(identity.agent_id.clone()).or_insert(identity);

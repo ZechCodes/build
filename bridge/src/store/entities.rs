@@ -305,6 +305,11 @@ fn retain_agent_message_times(
     Ok(())
 }
 
+/// How a read fills in a record's agents: with their conversations' tails
+/// ([`Store::read_agents`]) or without ([`Store::read_agent_records`]).
+type ReadAgents =
+    fn(&Connection, &str, &ModelChoice, Option<&str>) -> Result<Vec<Agent>, StoreError>;
+
 impl Store {
     /// Classify every stored item for the freshly added columns.
     ///
@@ -539,7 +544,9 @@ impl Store {
         Ok(())
     }
     /// Read one owner's agents back, conversations included, in rail order.
-    pub(super) fn read_agents(
+    /// A record's agents as their rows hold them — settings, names, rail
+    /// positions — with every conversation left in the database.
+    pub(super) fn read_agent_records(
         conn: &Connection,
         owner_id: &str,
         entity_choice: &ModelChoice,
@@ -552,16 +559,6 @@ impl Store {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<_, _>>()?;
-        // The tail of each conversation, not the whole of it: a boot that read
-        // every item of every conversation would spend, in one go and for the
-        // life of the process, exactly what the paged reads exist to save.
-        let mut tail = conn.prepare(THREAD_PAGE_SQL)?;
-        let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
-        let mut last_sequence = conn.prepare(THREAD_LAST_SEQUENCE_SQL)?;
-        let mut last_message = conn.prepare(THREAD_LAST_MESSAGE_SQL)?;
-        let mut last_own_message = conn.prepare(THREAD_LAST_OWN_MESSAGE_SQL)?;
-        let mut first_attention_after = conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?;
-        let mut last_attention = conn.prepare(THREAD_LAST_ATTENTION_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
         for (index, (id, raw)) in rows.into_iter().enumerate() {
             let mut agent: Agent =
@@ -576,6 +573,32 @@ impl Store {
             // tool can still be legacy-shaped. Materialize it in memory; only
             // the versioned boot migration above overwrites raw stored data.
             materialize_agent_identity(&mut agent, entity_choice, primary_conversation);
+            agents.push(agent);
+        }
+        Ok(agents)
+    }
+
+    /// A record's agents, each with the tail of its conversation.
+    pub(super) fn read_agents(
+        conn: &Connection,
+        owner_id: &str,
+        entity_choice: &ModelChoice,
+        shared_primary_conversation: Option<&str>,
+    ) -> Result<Vec<Agent>, StoreError> {
+        let mut agents =
+            Store::read_agent_records(conn, owner_id, entity_choice, shared_primary_conversation)?;
+        // The tail of each conversation, not the whole of it: a boot that read
+        // every item of every conversation would spend, in one go and for the
+        // life of the process, exactly what the paged reads exist to save.
+        let mut tail = conn.prepare(THREAD_PAGE_SQL)?;
+        let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
+        let mut last_sequence = conn.prepare(THREAD_LAST_SEQUENCE_SQL)?;
+        let mut last_message = conn.prepare(THREAD_LAST_MESSAGE_SQL)?;
+        let mut last_own_message = conn.prepare(THREAD_LAST_OWN_MESSAGE_SQL)?;
+        let mut first_attention_after = conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?;
+        let mut last_attention = conn.prepare(THREAD_LAST_ATTENTION_SQL)?;
+        for agent in &mut agents {
+            let id = agent.id.clone();
             let held = count.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             let stored_last = last_sequence.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             let items = read_thread_page(&mut tail, &id, i64::MAX, RESIDENT_CONVERSATION_TAIL)?;
@@ -597,7 +620,6 @@ impl Store {
                 summary.activity_at,
                 summary.working,
             );
-            agents.push(agent);
         }
         Ok(agents)
     }
@@ -677,6 +699,21 @@ impl Store {
     /// Every Issue with its implementations, oldest first.
     pub fn load_all_issues(&self) -> Result<Vec<PersistedIssue>, StoreError> {
         let conn = self.connection();
+        let mut issues = Vec::new();
+        for issue in Store::read_issue_records(&conn, Store::read_agents)? {
+            let implementations = Store::read_runs(&conn, Some(&issue.id))?;
+            issues.push(PersistedIssue {
+                issue,
+                implementations,
+            });
+        }
+        Ok(issues)
+    }
+    /// Every Issue's own record, oldest first, its agents read by `read_agents`.
+    fn read_issue_records(
+        conn: &Connection,
+        read_agents: ReadAgents,
+    ) -> Result<Vec<PersistedPlan>, StoreError> {
         let mut statement =
             conn.prepare("SELECT id, record FROM issues ORDER BY created_at, id")?;
         let rows: Vec<(String, String)> = statement
@@ -697,12 +734,8 @@ impl Store {
                 model: issue.model.clone(),
                 effort: issue.effort.clone(),
             };
-            issue.agents = Store::read_agents(&conn, &id, &issue_choice, None)?;
-            let implementations = Store::read_runs(&conn, Some(&id))?;
-            issues.push(PersistedIssue {
-                issue,
-                implementations,
-            });
+            issue.agents = read_agents(conn, &id, &issue_choice, None)?;
+            issues.push(issue);
         }
         Ok(issues)
     }
@@ -750,6 +783,14 @@ impl Store {
         conn: &Connection,
         issue_id: Option<&str>,
     ) -> Result<Vec<PersistedRun>, StoreError> {
+        Store::read_runs_with(conn, issue_id, Store::read_agents)
+    }
+
+    fn read_runs_with(
+        conn: &Connection,
+        issue_id: Option<&str>,
+        read_agents: ReadAgents,
+    ) -> Result<Vec<PersistedRun>, StoreError> {
         let (sql, bind): (&str, Vec<&str>) = match issue_id {
             Some(id) => (
                 "SELECT id, record FROM implementations WHERE issue_id = ?1
@@ -784,7 +825,7 @@ impl Store {
                 .plan_id
                 .as_deref()
                 .and_then(|issue_id| primary_agent_id(conn, issue_id).ok().flatten());
-            run.agents = Store::read_agents(conn, &id, &run_choice, shared_primary.as_deref())?;
+            run.agents = read_agents(conn, &id, &run_choice, shared_primary.as_deref())?;
             runs.push(run);
         }
         Ok(runs)
@@ -794,6 +835,20 @@ impl Store {
     pub fn load_all_runs(&self) -> Result<Vec<PersistedRun>, StoreError> {
         let conn = self.connection();
         Store::read_runs(&conn, None)
+    }
+    /// Every run as [`load_all_runs`](Self::load_all_runs) reads it, less its
+    /// agents' conversations: who ran where, for a caller that only names
+    /// agents — whose cost is then the agent rows, not their conversations.
+    pub fn load_all_run_rosters(&self) -> Result<Vec<PersistedRun>, StoreError> {
+        let conn = self.connection();
+        Store::read_runs_with(&conn, None, Store::read_agent_records)
+    }
+    /// Every Issue's own record with its agents but not their conversations,
+    /// and without its implementations — the
+    /// [`load_all_run_rosters`](Self::load_all_run_rosters) of Issues.
+    pub fn load_all_plan_rosters(&self) -> Result<Vec<PersistedPlan>, StoreError> {
+        let conn = self.connection();
+        Store::read_issue_records(&conn, Store::read_agent_records)
     }
     /// Every Issue's own record, oldest first, without its implementations.
     pub fn load_all_plans(&self) -> Result<Vec<PersistedPlan>, StoreError> {

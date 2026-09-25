@@ -6,11 +6,15 @@
 //! issue filed meanwhile lands above the first page, where the client's next
 //! read from the top finds it.
 //!
-//! The cursor carries that number and a digest of the filter it was made
-//! under. A cursor is only a place in ONE filter's list — below #40 of the
-//! open issues is not below #40 of the closed ones — so a cursor handed back
-//! with another filter is refused rather than answered as a page of a list
-//! nobody asked for. Opaque to the client: it is handed back as it came.
+//! The cursor carries that number, a digest of the list it was made in and a
+//! digest of the filter it was made under. A cursor is only a place in ONE
+//! list: below #40 of this device's Build project is not below #40 of another
+//! device's, whose project may wear the same boot-local `proj-N`, and below
+//! #40 of the open issues is not below #40 of the closed ones. So the list is
+//! the store's own key and the project's repository path, and a cursor handed
+//! back to another store, another project or under another filter is refused
+//! rather than answered as a page of a list nobody asked for. Opaque to the
+//! client: it is handed back as it came.
 
 use super::edits::AssigneeFilter;
 use crate::tracker::IssueState;
@@ -28,12 +32,27 @@ const CURSOR_VERSION: &str = "v1";
 const UNREADABLE: &str = "Build cannot read this cursor: ask for the list again from the start.";
 const ANOTHER_FILTER: &str =
     "Build cannot continue this list: the cursor was made for a different filter.";
+const ANOTHER_LIST: &str =
+    "Build cannot continue this list: the cursor was made for another project or on another device.";
+
+/// Which list a read is of: the store that holds it, by the key it keeps for
+/// its cursors, and the project, by its repository path — the name that
+/// outlives a restart, where a `proj-N` does not.
+pub(super) struct ListOf<'a> {
+    pub store_key: &'a str,
+    pub project_path: &'a str,
+}
+
+impl ListOf<'_> {
+    fn digest(&self) -> String {
+        digest_of(&json!([self.store_key, self.project_path]))
+    }
+}
 
 /// What one list read narrows by, as it MEANS it rather than as it was typed:
 /// a column named the way it is shown and the way it is stored is one
 /// filter, and so is a label in either case.
 pub(super) struct ListFilter<'a> {
-    pub project_id: &'a str,
     pub state: Option<IssueState>,
     pub status: Option<&'a str>,
     pub assignee: &'a AssigneeFilter,
@@ -44,19 +63,30 @@ impl ListFilter<'_> {
     /// A digest of the filter, stable across restarts and releases of the
     /// bridge, which a cursor carries so it can only continue its own list.
     fn digest(&self) -> String {
-        let meaning = json!([
-            self.project_id,
+        digest_of(&json!([
             self.state.map(IssueState::as_str),
             self.status,
             self.assignee.key(),
             self.label.map(str::to_ascii_lowercase),
-        ]);
-        let digest = Sha256::digest(meaning.to_string().as_bytes());
-        digest[..8]
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
+        ]))
     }
+}
+
+/// The first eight bytes of a meaning's SHA-256, in hex: enough to tell two
+/// lists or two filters apart, short enough to keep a cursor short.
+fn digest_of(meaning: &Value) -> String {
+    let digest = Sha256::digest(meaning.to_string().as_bytes());
+    digest[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Where a cursor was made: the list and the filter, each as its digest.
+#[derive(PartialEq)]
+struct MadeIn {
+    list: String,
+    filter: String,
 }
 
 /// One page, as it was asked for: how many rows at most, and the number the
@@ -64,20 +94,27 @@ impl ListFilter<'_> {
 pub(super) struct PageAsk {
     pub limit: Option<usize>,
     pub below: Option<u64>,
-    digest: String,
+    made_in: MadeIn,
 }
 
 impl PageAsk {
-    pub(super) fn parse(params: &Value, filter: &ListFilter<'_>) -> Result<Self, String> {
-        let digest = filter.digest();
+    pub(super) fn parse(
+        params: &Value,
+        list: &ListOf<'_>,
+        filter: &ListFilter<'_>,
+    ) -> Result<Self, String> {
+        let made_in = MadeIn {
+            list: list.digest(),
+            filter: filter.digest(),
+        };
         let below = match params.get("cursor") {
             None | Some(Value::Null) => None,
-            Some(cursor) => Some(cursor_number(cursor, &digest)?),
+            Some(cursor) => Some(cursor_number(cursor, &made_in)?),
         };
         Ok(Self {
             limit: limit(params)?,
             below,
-            digest,
+            made_in,
         })
     }
 
@@ -95,7 +132,7 @@ impl PageAsk {
         }
         rows.truncate(limit);
         rows.last()
-            .map(|last| cursor_for(number(last), &self.digest))
+            .map(|last| cursor_for(number(last), &self.made_in))
     }
 }
 
@@ -114,31 +151,44 @@ fn limit(params: &Value) -> Result<Option<usize>, String> {
         })
 }
 
-fn cursor_for(number: u64, digest: &str) -> String {
-    URL_SAFE_NO_PAD.encode(format!("{CURSOR_VERSION}:{number}:{digest}"))
+fn cursor_for(number: u64, made_in: &MadeIn) -> String {
+    let MadeIn { list, filter } = made_in;
+    URL_SAFE_NO_PAD.encode(format!("{CURSOR_VERSION}:{number}:{list}:{filter}"))
 }
 
 /// The number a cursor continues below, once it is known to be one this
-/// filter's list made.
-fn cursor_number(cursor: &Value, digest: &str) -> Result<u64, String> {
-    let (number, made_under) = cursor
+/// list and this filter made.
+fn cursor_number(cursor: &Value, made_in: &MadeIn) -> Result<u64, String> {
+    let (number, made) = cursor
         .as_str()
         .and_then(|cursor| URL_SAFE_NO_PAD.decode(cursor).ok())
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .and_then(|spelled| read_cursor(&spelled))
         .ok_or_else(|| UNREADABLE.to_string())?;
-    if made_under != digest {
+    if made.list != made_in.list {
+        return Err(ANOTHER_LIST.to_string());
+    }
+    if made.filter != made_in.filter {
         return Err(ANOTHER_FILTER.to_string());
     }
     Ok(number)
 }
 
-fn read_cursor(spelled: &str) -> Option<(u64, String)> {
-    let mut parts = spelled.splitn(3, ':');
+fn read_cursor(spelled: &str) -> Option<(u64, MadeIn)> {
+    let mut parts = spelled.split(':');
     if parts.next()? != CURSOR_VERSION {
         return None;
     }
     let number = parts.next()?.parse().ok()?;
-    let digest = parts.next().filter(|digest| !digest.is_empty())?;
-    Some((number, digest.to_string()))
+    let mut digest = || {
+        parts
+            .next()
+            .filter(|digest| !digest.is_empty())
+            .map(str::to_string)
+    };
+    let made = MadeIn {
+        list: digest()?,
+        filter: digest()?,
+    };
+    parts.next().is_none().then_some((number, made))
 }

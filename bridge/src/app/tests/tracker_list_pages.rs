@@ -6,8 +6,12 @@
 //! number a page answered. A number never moves, so an issue filed while a
 //! client is paging lands above the first page and never shifts one below it.
 
+use super::project_agent::{added_project, rooted};
 use super::tracker::{filed, refused, tracked};
 use super::*;
+
+const ANOTHER_LIST: &str =
+    "Build cannot continue this list: the cursor was made for another project or on another device.";
 
 /// A project holding `count` issues, numbered 1 to `count`, and their ids in
 /// the order `issues.list` answers them: newest first.
@@ -285,8 +289,8 @@ fn a_cursor_this_bridge_did_not_make_is_refused_in_a_sentence() {
     }
 }
 
-/// Another project's cursor is another filter: the project is part of what
-/// a list is narrowed to.
+/// Another project's cursor is another list: below #2 of one project is not
+/// below #2 of the next.
 #[test]
 fn a_cursor_from_another_project_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
@@ -295,7 +299,7 @@ fn a_cursor_from_another_project_is_refused() {
     project_of(&mut state, &project_id, 3);
     let (_other_home, other_repo) = init_repo();
     let other_repo = std::fs::canonicalize(&other_repo).unwrap();
-    let other = super::project_agent::added_project(&mut state, &other_repo);
+    let other = added_project(&mut state, &other_repo);
     project_of(&mut state, &other, 3);
     let first = listed(&mut state, json!({ "project_id": project_id, "limit": 1 }));
 
@@ -305,10 +309,76 @@ fn a_cursor_from_another_project_is_refused() {
         json!({ "project_id": other, "cursor": first["next_cursor"] }),
     );
 
-    assert_eq!(
-        error,
-        "Build cannot continue this list: the cursor was made for a different filter."
+    assert_eq!(error, ANOTHER_LIST);
+}
+
+/// Another store's cursor is another list, though its project wears the
+/// same `proj-N`, sits at the same path — two devices with one checkout
+/// layout, or two bridges on one machine — and numbers its issues the same
+/// way: continuing it here would answer the issues below a place in a list
+/// this store never made, skipping every one above it.
+#[test]
+fn a_cursor_from_another_store_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let store_of = |name: &str| {
+        let state_root = root.join(name);
+        std::fs::create_dir_all(&state_root).unwrap();
+        let mut state = rooted(&state_root)
+            .with_task_store(state_root.join("store"))
+            .expect("the store opens");
+        let project_id = added_project(&mut state, &repo);
+        (state, project_id)
+    };
+    let (mut first, first_project) = store_of("first");
+    project_of(&mut first, &first_project, 5);
+    let page = listed(
+        &mut first,
+        json!({ "project_id": first_project, "limit": 1 }),
     );
+    let (mut second, second_project) = store_of("second");
+    project_of(&mut second, &second_project, 7);
+    assert_eq!(first_project, second_project);
+
+    let error = refused(
+        &mut second,
+        "issues.list",
+        json!({ "project_id": second_project, "limit": 2, "cursor": page["next_cursor"] }),
+    );
+
+    assert_eq!(error, ANOTHER_LIST);
+}
+
+/// The store keeps its cursor key: a cursor made before a restart continues
+/// the same list after it, though the project may come back under another
+/// `proj-N`.
+#[test]
+fn a_cursor_outlives_a_restart_of_its_bridge() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let cursor = {
+        let mut state = rooted(&state_root)
+            .with_task_store(state_root.join("store"))
+            .expect("the store opens");
+        let project_id = added_project(&mut state, &repo);
+        project_of(&mut state, &project_id, 5);
+        listed(&mut state, json!({ "project_id": project_id, "limit": 2 }))["next_cursor"].clone()
+    };
+
+    let mut state = rooted(&state_root)
+        .with_task_store(state_root.join("store"))
+        .expect("the store opens again");
+    let project_id = added_project(&mut state, &repo);
+    let page = listed(
+        &mut state,
+        json!({ "project_id": project_id, "limit": 2, "cursor": cursor }),
+    );
+
+    assert_eq!(numbers_of(&page), vec![3, 2]);
 }
 
 /// Issues filed while a client pages land above the first page, where the

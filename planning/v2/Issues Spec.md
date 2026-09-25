@@ -204,12 +204,15 @@ Notes on each:
   when more follow. Handing it back as `cursor` with the same filter answers the
   issues numbered below the last one the page answered, so an issue filed while
   a client pages lands above the first page and never shifts a row across a
-  cursor. The cursor is opaque and carries a digest of the filter it was made
-  under (project, state, status, assignee, label, as each means rather than as
-  it was spelled); with any other filter it is refused (`invalid_params`,
-  "Build cannot continue this list: the cursor was made for a different
-  filter."), and one this bridge did not make is refused as "Build cannot read
-  this cursor: ask for the list again from the start." No `limit` is the whole
+  cursor. The cursor is opaque and carries a digest of the list it was made in
+  (the store's own key and the project's repository path, never its
+  boot-local `proj-N`) and of the filter it was made under (state, status,
+  assignee, label, as each means rather than as it was spelled). A cursor from
+  another store or project is refused (`invalid_params`, "Build cannot
+  continue this list: the cursor was made for another project or on another
+  device."), one under any other filter as "Build cannot continue this list:
+  the cursor was made for a different filter.", and one that cannot be read
+  as "Build cannot read this cursor: ask for the list again from the start." No `limit` is the whole
   list, as before. A page reads only its own rows' timelines, so it holds the
   app lock for no longer than the whole list does.
 - **`issues.get`** answers the issue and its whole timeline. Comments and events

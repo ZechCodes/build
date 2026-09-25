@@ -127,10 +127,14 @@ impl AppState {
         let status = edits::optional_status(params, "status")?;
         let assignee = edits::optional_assignee_filter(params)?;
         let label = crate::app::optional_nonempty_string(params, "label")?;
+        let store_key = self.tracker_store()?.tracker_list_key().stored()?;
         let page = pages::PageAsk::parse(
             params,
+            &pages::ListOf {
+                store_key: &store_key,
+                project_path: &project_path,
+            },
             &pages::ListFilter {
-                project_id: &project_id,
                 state,
                 status: status.as_deref(),
                 assignee: &assignee,

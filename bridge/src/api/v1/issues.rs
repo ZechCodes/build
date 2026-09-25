@@ -558,7 +558,7 @@ const CONFLICT: [&str; 7] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 21] = [
+const INVALID: [&str; 22] = [
     "unknown assignee kind:",
     "assignee: name a kind",
     "assignee new_agent: name a",
@@ -583,6 +583,7 @@ const INVALID: [&str; 21] = [
     "a page holds 1 to",
     "Build cannot read this cursor",
     "the cursor was made for a different filter",
+    "the cursor was made for another project or on another device",
 ];
 
 /// The store is not there, or a reference did not survive its fencing. Neither

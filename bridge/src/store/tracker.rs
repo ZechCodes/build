@@ -34,6 +34,12 @@ pub struct IssueFilter<'a> {
     pub status: Option<&'a str>,
 }
 
+/// The `meta` key under which this store keeps the key its list cursors are
+/// made under (#85). A `proj-N` id is minted per boot and a repository path
+/// can be tracked by two stores, so neither says which store a cursor came
+/// from; this key does.
+const LIST_KEY: &str = "tracker_list_key";
+
 /// Where a list read starts and how much of it to read: the issues numbered
 /// below `below`, at most `take` of them. The default is the whole list.
 #[derive(Debug, Default, Clone, Copy)]
@@ -172,6 +178,26 @@ impl Store {
             }
         }
         Ok(kept)
+    }
+
+    /// The key this store's list cursors are made under, minted the first
+    /// time one is asked for and kept for the life of the store (#85).
+    pub fn tracker_list_key(&self) -> Result<String, StoreError> {
+        let conn = self.connection();
+        let read = |conn: &rusqlite::Connection| {
+            conn.query_row("SELECT value FROM meta WHERE key = ?1", [LIST_KEY], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+        };
+        if let Some(key) = read(&conn)? {
+            return Ok(key);
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+            rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
+        )?;
+        Ok(read(&conn)?.unwrap_or_default())
     }
 
     /// One comment by its id, and the issue it is on.

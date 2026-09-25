@@ -711,11 +711,16 @@ answers the issues numbered below the last one the page held. Numbers never
 move, so an issue filed between pages lands above the first page (where the
 next read from the top finds it) and never moves a row across a cursor; an
 issue that leaves the filter between pages is simply not on the next one. A
-cursor names the filter it was made under — project, `state`, `status`,
-`assignee` and `label`, compared as they mean, so a column's display name and
-its slug are one filter — and with any other filter it is refused
-(`invalid_params`, "Build cannot continue this list: the cursor was made for a
-different filter."). A cursor this bridge cannot read is refused as "Build
+cursor names the list it was made in — the bridge's store, by a key the store
+mints once and keeps, and the project, by its repository path rather than its
+boot-local `proj-N` — and a cursor from another store or another project is
+refused (`invalid_params`, "Build cannot continue this list: the cursor was
+made for another project or on another device."); it survives a restart of the
+bridge that made it. It names the filter it was made under too — `state`,
+`status`, `assignee` and `label`, compared as they mean, so a column's display
+name and its slug are one filter — and with any other filter it is refused
+("Build cannot continue this list: the cursor was made for a different
+filter."). A cursor this bridge cannot read is refused as "Build
 cannot read this cursor: ask for the list again from the start.", and a limit
 out of range as "Build cannot list 0 issues at a time: a page holds 1 to 500."
 Every page carries `project_id` and `user_session` like the whole list. A client

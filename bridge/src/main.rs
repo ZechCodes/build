@@ -581,6 +581,8 @@ async fn run_daemon(
     // dialling two machines that were never going to answer.
     let reachable = Reachability::unreachable();
     spawn_update_heartbeat(home_dir(), app.clone());
+    // The service manager's stderr file, rotated rather than left to grow.
+    build_bridge::logfile::spawn_rotation();
     // The runtime the relay socket, the presence beat and every peer's
     // channels run on: threads that never take the app lock, so a handler
     // holding it for a minute slows answers and severs nothing (issue #128).

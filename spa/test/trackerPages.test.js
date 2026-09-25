@@ -210,11 +210,75 @@ describe("pulling every page", () => {
       [[9], Infinity, 9],
       [[2], 9, -Infinity],
     ]);
+    // Between #9 and #2 the first page, the empty one and the last may each
+    // have read some of the numbers. The first page's read is the oldest, so
+    // it has the say there; the last page's own read has it only from the
+    // row it named down.
+    expect(folded[1].spans).toEqual([
+      { above: 9, through: 3, read: folded[0].read, readAt: null },
+      { above: 3, through: -Infinity, read: folded[1].read, readAt: null },
+    ]);
   });
 
   it("stops rather than loop on a cursor that does not move", async () => {
     const ask = vi.fn(async () => ({ issues: [issue(3)], next_cursor: "same" }));
     await pull(ask, async () => {});
     expect(ask).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("the numbers between one page's rows and the next's", () => {
+  const params = { project_id: "p1", label: "bug" };
+  const ADDRESS = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues-query", sub: JSON.stringify(params) };
+  const labelled = issue(20, { labels: ["bug"] });
+  const answer = (issues, extra = {}) => ({ project_id: "p1", issues, ...extra });
+  const pull = (ask) => pages.pullIssuePages({
+    ask, deviceId: "dev-1", projectId: "p1", params, limit: 1,
+    fold: (stretch) => pages.foldIssuesPage(ADDRESS, stretch, () => []),
+  });
+  const held = async () => numbers((await cache.readCached(ADDRESS))?.value?.issues || []);
+
+  // The walk's first page reads #20 down to #13 and keeps nothing; while its
+  // answer is on the way, #20 takes the label and a newer read lays it.
+  const scannedPastWhileANewerReadLaysIt = (rest) => {
+    let call = 0;
+    return async () => {
+      if (++call === 1) {
+        await pull(async () => answer([labelled]));
+        expect(await held()).toEqual([20]);
+        return answer([], { next_cursor: "below-13" });
+      }
+      return rest();
+    };
+  };
+
+  it("does not let a page after an empty one take off a row it never read", async () => {
+    await pull(scannedPastWhileANewerReadLaysIt(() => answer([])));
+    expect(await held()).toEqual([20]);
+  });
+
+  it("does not let a page after an empty one take it off for the rows it did name", async () => {
+    await pull(scannedPastWhileANewerReadLaysIt(() => answer([issue(4, { labels: ["bug"] })])));
+    expect(await held()).toEqual([20, 4]);
+  });
+
+  it("does not let a page after a short one take off a row the short one read past", async () => {
+    let call = 0;
+    await pull(async () => {
+      if (++call === 1) {
+        // Keeps #30 and reads on down to #13 before its answer comes back.
+        await pull(async () => answer([issue(30, { labels: ["bug"] }), labelled]));
+        return answer([issue(30, { labels: ["bug"] })], { next_cursor: "below-13" });
+      }
+      return answer([]);
+    });
+    expect(await held()).toEqual([30, 20]);
+  });
+
+  it("still takes off a row every page since it was laid read past", async () => {
+    await cache.writeCached(ADDRESS, { issues: [labelled], columns: [] });
+    const answers = [answer([], { next_cursor: "below-13" }), answer([])];
+    await pull(async () => answers.shift());
+    expect(await held()).toEqual([]);
   });
 });

@@ -47,14 +47,16 @@ export function lastSayOn(address) {
   );
 }
 
-/** A page asked as read `read` had the say on `through` (inclusive) up to
- *  `above` (exclusive) under this record. The last page of a pull that began
- *  as read `pullRead` completes it: every number has had a say at least that
- *  new, so every older say is spent and forgotten. */
-export function noteStretch(address, { above, through, read, pullRead = read }) {
+/** A page had the say on each of its spans — `through` (inclusive) up to
+ *  `above` (exclusive), as read `read` — under this record. The last page of
+ *  a pull that began as read `pullRead` completes it: every number has had a
+ *  say at least that new, so every older say is spent and forgotten. */
+export function noteStretch(address, stretch) {
+  const { above, through, read, pullRead = read } = stretch;
   const ledger = ledgerOf(address);
   if (through === -Infinity) forgetOlder(ledger, pullRead);
-  ledger.stretches.push({ above, through, read });
+  for (const span of stretch.spans || [{ above, through, read }])
+    ledger.stretches.push({ above: span.above, through: span.through, read: span.read });
 }
 
 function forgetOlder(ledger, read) {

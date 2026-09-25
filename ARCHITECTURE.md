@@ -638,7 +638,11 @@ In practice:
   (`spa/src/core/issueReadOrder.js`, in memory): a page yields every row a
   read asked after it had the say on, present or absent, so an older page
   neither brings back an issue a newer read took off the list nor overwrites
-  a newer copy with the same `updated_at`. For another tab's writes the
+  a newer copy with the same `updated_at`. A page answers for its own rows
+  and below with its own read; the numbers between the last row the walk laid
+  and a page's first keep the older read of the pages that read past them,
+  since the cursor does not say how far the page before read. For another
+  tab's writes the
   timestamps stand in: a held row written after the page's copy of it, or one
   the page does not name that was written after the page was read, keeps its
   place. An

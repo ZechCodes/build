@@ -2,8 +2,9 @@
 //! under the rules Done's branch deletion keeps (#87): measured once the
 //! checkout is gone, at the commit the checks passed, never a default branch,
 //! never a branch checked out somewhere, never one whose default a remote
-//! cannot confirm. The workspace goes either way; each linked issue says what
-//! became of the branch, and why it stayed when it did.
+//! cannot confirm. The workspace goes either way. The answer says what became
+//! of each branch in each repository, and so does each linked issue, with why
+//! a branch stayed when it did.
 
 use super::workspace_reclaim::{call, finish, linked_workspace, root_and_checkout};
 use super::*;
@@ -52,14 +53,32 @@ fn branch_entries(state: &Arc<Mutex<AppState>>, issue: &str) -> Vec<Value> {
         .collect()
 }
 
-fn reclaim(state: &Arc<Mutex<AppState>>, ws: &str) {
+/// Reclaim, and answer what the reclaim said of its branches.
+fn reclaim(state: &Arc<Mutex<AppState>>, ws: &str) -> Vec<Value> {
     let reclaimed = call(state, "workspace.reclaim", json!({ "workspace_id": ws }));
     assert_eq!(reclaimed["ok"], true, "{reclaimed:?}");
+    assert_eq!(reclaimed["result"]["workspace_id"], ws);
     assert_eq!(
-        reclaimed["result"],
-        json!({ "workspace_id": ws, "deleted": true }),
-        "the answer is delete's, whatever became of the branch"
+        reclaimed["result"]["deleted"], true,
+        "the workspace goes whatever became of the branch"
     );
+    reclaimed["result"]["branches"]
+        .as_array()
+        .cloned()
+        .unwrap_or_else(|| panic!("no branches in {reclaimed:?}"))
+}
+
+/// The id of the workspace's first source, as the answer names it.
+fn source_id(state: &Arc<Mutex<AppState>>, ws: &str) -> String {
+    state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(ws)
+        .unwrap()
+        .directories[0]
+        .source_id
+        .clone()
 }
 
 /// The origin the fixture's source repository pushes to.
@@ -77,16 +96,31 @@ fn reclaim_deletes_the_workspace_branch_and_says_so_on_the_issue() {
     finish(&state, &issue);
     let (source, branch) = source_and_branch(&state, &ws);
     assert!(has_branch(&source, &branch));
+    let source_id = source_id(&state, &ws);
 
-    reclaim(&state, &ws);
+    let branches = reclaim(&state, &ws);
 
     assert!(
         !has_branch(&source, &branch),
         "{branch} is still in {source:?}"
     );
+    assert_eq!(
+        branches,
+        vec![json!({
+            "source_id": source_id,
+            "repository": source.display().to_string(),
+            "branch": branch,
+            "outcome": "deleted",
+        })]
+    );
     let entries = branch_entries(&state, &issue);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "branch_deleted");
+    assert_eq!(entries[0]["payload"]["outcome"], "deleted");
+    assert_eq!(
+        entries[0]["payload"]["repository"],
+        source.display().to_string()
+    );
     assert_eq!(entries[0]["actor"], json!({ "kind": "user" }));
     assert_eq!(entries[0]["payload"]["branch"], branch.as_str());
     assert_eq!(entries[0]["payload"]["workspace_id"], ws.as_str());
@@ -108,8 +142,16 @@ fn reclaim_keeps_a_branch_checked_out_in_the_source_and_says_why() {
         &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],
     );
 
-    reclaim(&state, &ws);
+    let branches = reclaim(&state, &ws);
 
+    assert_eq!(branches.len(), 1, "{branches:?}");
+    assert_eq!(branches[0]["outcome"], "kept");
+    assert!(
+        branches[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("it is checked out at ")),
+        "{branches:?}"
+    );
     assert!(!root.exists(), "the workspace goes either way");
     assert!(has_branch(&source, &branch));
     let entries = branch_entries(&state, &issue);
@@ -287,4 +329,97 @@ fn a_branch_already_gone_is_not_reported() {
 
     assert!(!has_branch(&source, &branch));
     assert_eq!(branch_entries(&state, &issue), Vec::<Value>::new());
+}
+
+/// Two sources carrying the same branch name, deleted in one repository and
+/// kept in the other: the answer and the issue say which is which.
+#[test]
+fn a_branch_deleted_in_one_source_and_kept_in_another_is_told_apart() {
+    let (tmp, state, project, issue) = two_source_project();
+    let ws = super::project_agent::workspace(&mut state.lock().unwrap(), &project, "pair");
+    let linked = call(
+        &state,
+        "issues.link",
+        json!({ "issue_id": issue, "workspace_id": ws }),
+    );
+    assert_eq!(linked["ok"], true, "{linked:?}");
+    finish(&state, &issue);
+    let directories = state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&ws)
+        .unwrap()
+        .directories
+        .clone();
+    assert_eq!(directories.len(), 2, "{directories:?}");
+    let branch = directories[0].branch.clone().unwrap();
+    assert_eq!(directories[1].branch.as_deref(), Some(branch.as_str()));
+    let (kept, deleted) = (&directories[1], &directories[0]);
+    git_in(
+        &kept.source_path,
+        &["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")],
+    );
+
+    let mut branches = reclaim(&state, &ws);
+
+    branches.sort_by_key(|entry| entry["outcome"].as_str().unwrap().to_string());
+    assert_eq!(branches.len(), 2, "{branches:?}");
+    assert_eq!(branches[0]["outcome"], "deleted");
+    assert_eq!(branches[0]["source_id"], deleted.source_id.as_str());
+    assert_eq!(
+        branches[0]["repository"],
+        deleted.source_path.display().to_string()
+    );
+    assert_eq!(branches[1]["outcome"], "kept");
+    assert_eq!(branches[1]["source_id"], kept.source_id.as_str());
+    assert!(!has_branch(&deleted.source_path, &branch));
+    assert!(has_branch(&kept.source_path, &branch));
+    let entries = branch_entries(&state, &issue);
+    let by_repository = |repo: &Path| {
+        entries
+            .iter()
+            .find(|entry| entry["payload"]["repository"] == repo.display().to_string())
+            .unwrap_or_else(|| panic!("no entry for {repo:?} in {entries:?}"))
+    };
+    assert_eq!(
+        by_repository(&deleted.source_path)["kind"],
+        "branch_deleted"
+    );
+    assert_eq!(by_repository(&kept.source_path)["kind"], "branch_kept");
+    drop(tmp);
+}
+
+/// A project over two repositories with origins, and an issue:
+/// `(tempdir, state, project, issue)`.
+fn two_source_project() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = super::tracker::tracked_with_origin(&state_root);
+    let second = crate::git_fixture::init_repo_named(&state_root, "second");
+    let origin = state_root.join("second.git");
+    git_in(
+        &state_root,
+        &[
+            "clone",
+            "--bare",
+            second.to_str().unwrap(),
+            origin.to_str().unwrap(),
+        ],
+    );
+    git_in(
+        &second,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    git_in(&second, &["fetch", "origin"]);
+    let added = state.handle(req(
+        "project.add_source",
+        json!({ "project_id": project_id, "path": second, "name": "second" }),
+    ));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let issue = super::tracker::filed(&mut state, &project_id, "Two sources")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (tmp, state.shared(), project_id, issue)
 }

@@ -365,9 +365,10 @@ the local branch each one carried (#167), through Done's `BranchDeletion`
 commit the checks passed, never a default branch, never a branch checked out
 anywhere, never one with commits no remote has or whose remote cannot say which
 branch is its default. A branch that has to stay never holds the reclaim up.
-Each issue linking the workspace or the branch records `branch_deleted` or
-`branch_kept` (with the reason), under whoever reclaimed and without waking
-its trackers. The verdicts persist in the store's `meta`
+The answer names each repository's outcome (`deleted`, `kept`,
+`restore_failed`, with the reason), and each issue linking the workspace or
+the branch records the same entry as `branch_deleted` or `branch_kept`, under
+whoever reclaimed and without waking its trackers. The verdicts persist in the store's `meta`
 table (`bridge/src/store/workspace_lifecycle.rs`).
 
 ### Harnesses and the agents' slice

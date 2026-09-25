@@ -78,6 +78,8 @@ enum Moment {
 pub(in crate::app) struct BranchDeletion {
     /// The source repository the branch lives in.
     repo: PathBuf,
+    /// The project source that repository is, as the workspace names it.
+    source_id: String,
     branch: String,
     /// The checkout Done removes. It holding the branch is not a refusal.
     checkout: PathBuf,
@@ -119,6 +121,7 @@ impl BranchDeletion {
     fn in_directory(directory: &WorkspaceDirectory, branch: &str, defaults: &[String]) -> Self {
         Self {
             repo: directory.source_path.clone(),
+            source_id: directory.source_id.clone(),
             branch: branch.to_string(),
             checkout: directory.path.clone(),
             defaults: defaults
@@ -132,6 +135,26 @@ impl BranchDeletion {
 
     pub(in crate::app) fn branch(&self) -> &str {
         &self.branch
+    }
+
+    pub(in crate::app) fn repo(&self) -> &std::path::Path {
+        &self.repo
+    }
+
+    pub(in crate::app) fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    /// One branch in one repository, for a test of what is said about it.
+    #[cfg(test)]
+    pub(in crate::app) fn for_tests(repo: &std::path::Path, source_id: &str, branch: &str) -> Self {
+        Self {
+            repo: repo.to_path_buf(),
+            source_id: source_id.to_string(),
+            branch: branch.to_string(),
+            checkout: repo.join("gone"),
+            defaults: Vec::new(),
+        }
     }
 
     /// Why this branch cannot be deleted, as a sentence, or `None`.
@@ -313,13 +336,14 @@ pub(in crate::app) fn delete_all(deletions: &[BranchDeletion]) -> Result<(), Bra
 }
 
 /// Delete each branch on its own, one repository's refusal leaving the
-/// others to go, and say how each went. A branch already gone says nothing.
+/// others to go, and say how each went, beside the deletion it was, so the
+/// repository stays named. A branch already gone says nothing.
 pub(in crate::app) fn delete_each(
     deletions: &[BranchDeletion],
-) -> Vec<(String, Result<(), BranchDeleteFailure>)> {
+) -> Vec<(&BranchDeletion, Result<(), BranchDeleteFailure>)> {
     deletions
         .iter()
-        .filter_map(|deletion| Some((deletion.branch.clone(), deletion.delete_present()?)))
+        .filter_map(|deletion| Some((deletion, deletion.delete_present()?)))
         .collect()
 }
 
@@ -332,6 +356,7 @@ mod tests {
     fn deletion(repo: &Path, branch: &str, checkout: &Path) -> BranchDeletion {
         BranchDeletion {
             repo: repo.to_path_buf(),
+            source_id: "source-1".to_string(),
             branch: branch.to_string(),
             checkout: checkout.to_path_buf(),
             defaults: Vec::new(),

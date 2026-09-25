@@ -22,10 +22,6 @@ use crate::tracker::{Actor, IssueEventKind};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-
-/// How each branch a reclaim took went: deleted, or why it stayed.
-type BranchOutcomes = Vec<(String, Result<(), BranchDeleteFailure>)>;
 
 /// What the drain removes, resolved before the mutex was released: the
 /// checkouts to unregister from their sources, and the root to walk away.
@@ -43,9 +39,6 @@ pub(super) struct DeleteWorkspaceFiles {
     /// The workspace as it stood when the removal was decided.
     workspace: Workspace,
     removal: Removal,
-    /// What became of each branch a reclaim took, for the write-back to
-    /// record on the issues.
-    reclaimed_branches: Mutex<BranchOutcomes>,
 }
 
 /// What a removal does beyond taking the files.
@@ -216,13 +209,8 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
                 }
             }
             Removal::Reclaim(reclaiming) => {
-                let outcomes = std::mem::take(
-                    &mut *self
-                        .reclaimed_branches
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                );
-                app.note_reclaimed_branches(&self.workspace, &reclaiming.actor, &outcomes);
+                let branches = result["branches"].as_array().cloned().unwrap_or_default();
+                app.note_reclaimed_branches(&self.workspace, &reclaiming.actor, &branches);
             }
             Removal::Finish(_) | Removal::Delete => {}
         }
@@ -233,8 +221,8 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
 impl DeleteWorkspaceFiles {
     /// The files are gone: take the branches the removal was asked to, and
     /// answer. Done says how its branch went beside the record of what it
-    /// finished; a reclaim answers as a delete does and leaves what became of
-    /// its branches for the issues.
+    /// finished; a reclaim answers as a delete does, with what became of each
+    /// branch in each repository beside it (`reclaimed_branch`).
     fn take_branches(&self, finished: Option<crate::workspace::WorkspaceFinish>) -> Value {
         match (&self.removal, finished) {
             (Removal::Finish(finishing), Some(finished)) => {
@@ -247,12 +235,11 @@ impl DeleteWorkspaceFiles {
                 answer
             }
             (Removal::Reclaim(reclaiming), _) => {
-                *self
-                    .reclaimed_branches
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    branch_delete::delete_each(&reclaiming.branches);
-                json!({ "workspace_id": self.workspace_id, "deleted": true })
+                let branches: Vec<Value> = branch_delete::delete_each(&reclaiming.branches)
+                    .iter()
+                    .map(|(deletion, outcome)| reclaimed_branch(deletion, outcome))
+                    .collect();
+                json!({ "workspace_id": self.workspace_id, "deleted": true, "branches": branches })
             }
             _ => json!({ "workspace_id": self.workspace_id, "deleted": true }),
         }
@@ -357,7 +344,6 @@ impl AppState {
                 run_ids,
                 workspace: workspace.clone(),
                 removal,
-                reclaimed_branches: Mutex::new(Vec::new()),
             }),
             params: params.clone(),
             invalidates: true,
@@ -477,16 +463,17 @@ impl AppState {
 
     /// What a reclaim did with each branch the workspace carried, on every
     /// issue linking the workspace or that branch, quietly and under whoever
-    /// reclaimed, like the reclaim itself: `branch_deleted`, or `branch_kept`
-    /// with the sentence that says why it stayed.
+    /// reclaimed, like the reclaim itself: the answer's own entry for that
+    /// branch and repository, as `branch_deleted` or `branch_kept`.
     fn note_reclaimed_branches(
         &mut self,
         workspace: &Workspace,
         actor: &Actor,
-        outcomes: &[(String, Result<(), BranchDeleteFailure>)],
+        branches: &[Value],
     ) {
-        for (branch, outcome) in outcomes {
-            let (kind, payload) = reclaimed_branch_event(workspace, branch, outcome);
+        for entry in branches {
+            let (kind, payload) = reclaimed_branch_event(workspace, entry);
+            let branch = entry["branch"].as_str().unwrap_or_default();
             let issues = self.issues_linking_workspace_or_branch(
                 &workspace.project_id,
                 &workspace.id,
@@ -537,29 +524,46 @@ impl AppState {
     }
 }
 
-/// The timeline entry for one branch a reclaim took. A branch whose
-/// restoration failed is gone, so it reads as deleted, with the reason.
-fn reclaimed_branch_event(
-    workspace: &Workspace,
-    branch: &str,
-    outcome: &Result<(), BranchDeleteFailure>,
-) -> (IssueEventKind, Value) {
-    let mut payload = json!({
-        "branch": branch,
-        "workspace_id": workspace.id,
-        "workspace_name": workspace.name,
-        "reclaimed": true,
+/// A reclaim deleted the branch.
+const BRANCH_DELETED: &str = "deleted";
+/// A reclaim left the branch where it was, and says why.
+const BRANCH_KEPT: &str = "kept";
+/// A checkout moved onto the branch while it was deleted, and putting it back
+/// failed: the ref is gone, and the reason names the commit to restore.
+const BRANCH_RESTORE_FAILED: &str = "restore_failed";
+
+/// What became of one branch in one repository, as the reclaim answers it:
+/// `{ source_id, repository, branch, outcome, reason? }`.
+fn reclaimed_branch(deletion: &BranchDeletion, outcome: &Result<(), BranchDeleteFailure>) -> Value {
+    let word = match outcome {
+        Ok(()) => BRANCH_DELETED,
+        Err(failure) if failure.recovery_failed() => BRANCH_RESTORE_FAILED,
+        Err(_) => BRANCH_KEPT,
+    };
+    let mut entry = json!({
+        "source_id": deletion.source_id(),
+        "repository": deletion.repo().display().to_string(),
+        "branch": deletion.branch(),
+        "outcome": word,
     });
-    let kind = match outcome {
-        Ok(()) => IssueEventKind::BranchDeleted,
-        Err(failure) => {
-            payload["reason"] = json!(failure.reason());
-            if failure.recovery_failed() {
-                IssueEventKind::BranchDeleted
-            } else {
-                IssueEventKind::BranchKept
-            }
-        }
+    if let Err(failure) = outcome {
+        entry["reason"] = json!(failure.reason());
+    }
+    entry
+}
+
+/// The timeline entry for one of those: the same fields, and the workspace.
+/// A branch whose restoration failed is gone, so it reads as deleted, with
+/// the reason.
+fn reclaimed_branch_event(workspace: &Workspace, entry: &Value) -> (IssueEventKind, Value) {
+    let mut payload = entry.clone();
+    payload["workspace_id"] = json!(workspace.id);
+    payload["workspace_name"] = json!(workspace.name);
+    payload["reclaimed"] = json!(true);
+    let kind = if entry["outcome"] == BRANCH_KEPT {
+        IssueEventKind::BranchKept
+    } else {
+        IssueEventKind::BranchDeleted
     };
     (kind, payload)
 }
@@ -578,4 +582,65 @@ fn checkouts_of(workspace: &Workspace) -> Vec<(PathBuf, PathBuf)> {
         })
         .map(|directory| (directory.source_path.clone(), directory.path.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn said(outcome: Result<(), BranchDeleteFailure>) -> Value {
+        let deletion = BranchDeletion::for_tests(Path::new("/repos/second"), "source-2", "build/x");
+        reclaimed_branch(&deletion, &outcome)
+    }
+
+    /// Each outcome, by its word, naming the repository it happened in.
+    #[test]
+    fn a_reclaimed_branch_says_its_repository_and_what_became_of_it() {
+        assert_eq!(
+            said(Ok(())),
+            json!({
+                "source_id": "source-2",
+                "repository": "/repos/second",
+                "branch": "build/x",
+                "outcome": "deleted",
+            })
+        );
+        let kept = said(Err(BranchDeleteFailure::Refused(
+            "Build cannot delete the branch build/x: it has commits no remote has.".to_string(),
+        )));
+        assert_eq!(kept["outcome"], "kept");
+        assert_eq!(
+            kept["reason"],
+            "Build cannot delete the branch build/x: it has commits no remote has."
+        );
+    }
+
+    /// Restoration that failed left the ref gone: the answer says so, and the
+    /// issue reads it as deleted, with the reason naming what to restore.
+    #[test]
+    fn a_failed_restoration_is_reported_as_such_and_logged_as_deleted() {
+        let failed = said(Err(BranchDeleteFailure::RecoveryFailed(
+            "Build could not restore the deleted branch build/x at abc123".to_string(),
+        )));
+        assert_eq!(failed["outcome"], "restore_failed");
+        assert!(failed["reason"].as_str().unwrap().contains("abc123"));
+
+        let workspace: Workspace = serde_json::from_value(json!({
+            "id": "ws-1", "project_id": "proj-1", "name": "pair",
+            "root": "/ws/pair", "status": "ready", "directories": [],
+        }))
+        .unwrap();
+        let (kind, payload) = reclaimed_branch_event(&workspace, &failed);
+        assert_eq!(kind, IssueEventKind::BranchDeleted);
+        assert_eq!(payload["outcome"], "restore_failed");
+        assert_eq!(payload["repository"], "/repos/second");
+        assert_eq!(payload["workspace_name"], "pair");
+        assert_eq!(payload["reclaimed"], true);
+
+        let (kind, _) = reclaimed_branch_event(
+            &workspace,
+            &said(Err(BranchDeleteFailure::Refused("no".into()))),
+        );
+        assert_eq!(kind, IssueEventKind::BranchKept);
+    }
 }

@@ -356,10 +356,10 @@ fn reclaim_removes_the_workspace_and_logs_it_on_the_issue() {
     let reclaimed = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
 
     assert_eq!(reclaimed["ok"], true, "{reclaimed:?}");
-    assert_eq!(
-        reclaimed["result"],
-        json!({ "workspace_id": ws, "deleted": true })
-    );
+    assert_eq!(reclaimed["result"]["workspace_id"], ws.as_str());
+    assert_eq!(reclaimed["result"]["deleted"], true);
+    // What became of its branch is #167's (workspace_reclaim_branches.rs).
+    assert_eq!(reclaimed["result"]["branches"][0]["outcome"], "deleted");
     assert!(!root.exists());
     assert!(git2::Repository::open(&source)
         .unwrap()

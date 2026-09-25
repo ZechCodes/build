@@ -737,14 +737,19 @@ is asked); never a branch checked out, rebased or bisected anywhere; never one
 holding commits no remote has; and only at the commit those checks passed,
 with the checkouts read again before and after. Nobody named these branches,
 so a branch that has to stay never refuses the reclaim: the workspace goes and
-the branch stays. The answer is `workspace.delete`'s, unchanged. Each issue
-linking the workspace or the branch gets one event per branch, written by
-whoever reclaimed and waking nobody: `branch_deleted` (payload `branch`,
-`workspace_id`, `workspace_name`, `reclaimed: true`, and `reason` when a
-checkout moved onto the branch and it could not be restored), or the new kind
-`branch_kept` (the same payload, with `reason`, the sentence "Build cannot
-delete the branch <name>: …" that says why it stayed). A bridge that does not
-announce the name leaves every branch where it was.
+the branch stays. The answer is `workspace.delete`'s plus `branches`, one entry
+per repository a branch was taken from: `{ source_id, repository, branch,
+outcome, reason? }`, where `outcome` is `deleted`, `kept` (with `reason`, the
+sentence "Build cannot delete the branch <name>: …" that says why it stayed)
+or `restore_failed` (a checkout moved onto the branch while it was deleted and
+putting it back failed: the ref is gone, and `reason` names the commit, the
+repository and the checkout). A branch that was already gone has no entry.
+Each issue linking the workspace or the branch gets one event per entry,
+written by whoever reclaimed and waking nobody, whose payload is the entry
+plus `workspace_id`, `workspace_name` and `reclaimed: true`: `branch_deleted`
+for `deleted` and `restore_failed`, and the new kind `branch_kept` for
+`kept`. A bridge that does not announce the name leaves every branch where it
+was, and answers without `branches`.
 
 `settings.workspaceLifecycle` (since 1.25.0, #167) puts the reclaim service's
 idle threshold and prune switch on `settings.*` as device settings, written to

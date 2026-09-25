@@ -82,7 +82,14 @@ const linkChange = (payload) => {
 
 /** Done deleted the branch the issue's work was on (#87), or a reclaim did
  *  (#167, `reclaimed`). */
-const branchNamed = (payload) => (payload.branch ? `branch ${payload.branch}` : "the branch");
+/** The branch, and the repository it was in when the event names one: a
+ *  reclaim over several sources says which (#167). */
+const repositoryNamed = (payload) => {
+  const name = String(payload.repository || "").replace(/\/+$/, "").split("/").pop();
+  return name ? ` in ${name}` : "";
+};
+const branchNamed = (payload) =>
+  `${payload.branch ? `branch ${payload.branch}` : "the branch"}${repositoryNamed(payload)}`;
 const branchDeletedSentence = (payload) => {
   const when = payload.reclaimed ? "reclaimed" : "finished";
   const sentence = `deleted ${branchNamed(payload)} when the workspace was ${when}`;

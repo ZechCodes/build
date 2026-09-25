@@ -138,6 +138,11 @@ describe("what an event says", () => {
       reason: "Build cannot delete the branch build/login: it has commits no remote has.",
     })).toBe("kept branch build/login when the workspace was reclaimed. Build cannot delete the branch build/login: it has commits no remote has.");
     expect(sentenceOf("branch_kept", {})).toBe("kept the branch when the workspace was reclaimed");
+    // A workspace over several repositories: which one it happened in.
+    expect(sentenceOf("branch_deleted", { branch: "build/x", reclaimed: true, repository: "/home/ada/code/assets" }))
+      .toBe("deleted branch build/x in assets when the workspace was reclaimed");
+    expect(sentenceOf("branch_kept", { branch: "build/x", reclaimed: true, repository: "/home/ada/code/build/", reason: "Why." }))
+      .toBe("kept branch build/x in build when the workspace was reclaimed. Why.");
   });
 
   // The reclaim service (#135) records a linked workspace going quiet, losing

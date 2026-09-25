@@ -124,11 +124,14 @@
         },
         "kind": "branch_kept",
         "payload": {
+          "source_id": "source-1",
+          "repository": "/home/ada/code/build",
           "branch": "build/kanban-drag",
+          "outcome": "kept",
+          "reason": "Build cannot delete the branch build/kanban-drag: it has commits no remote has.",
           "workspace_id": "ws-3f2a91c4",
           "workspace_name": "kanban-drag",
-          "reclaimed": true,
-          "reason": "Build cannot delete the branch build/kanban-drag: it has commits no remote has."
+          "reclaimed": true
         }
       }
     ]

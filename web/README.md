@@ -138,6 +138,27 @@ ISSUES_REPO=$PWD/.. node stall-watch-check.mjs
 ISSUES_REPO=$PWD/.. node relay-wins-check.mjs
 ```
 
+## The liveness gate (#131)
+
+`scripts/liveness-gate.sh` (repo root) is the TURN soak as a gate, and what
+`.github/workflows/liveness.yml` runs before a bridge release publishes. It
+brings up its own stack (`deploy/compose.liveness.yml` over
+`deploy/compose.real.yml`, project `liveness-gate`, app on 8128, relay on
+18128) with a coturn on the stack's network, pairs, and then at once:
+
+- `liveness-soak.mjs`, in the qa image: one TURN-only session for ten
+  minutes, busy loops in a terminal and an `issues.list` hammer beside it;
+  fails on any drop, any timeout, any ping at 500 ms or over;
+- `ice-restart-check.mjs`, four minutes in, in `mcr.microsoft.com/playwright`
+  on the host's network: the real app over the same TURN, made to see its
+  peer fail once, so it runs its own ICE restart; fails unless the restart
+  lands within 15 s on the relayed path and holds.
+
+It needs docker and nothing else, exits non-zero if either failed, and takes
+the stack down whatever happened. `SOAK_MS=120000 RESTART_AT_S=45` is a short
+run; the soak's other knobs (`LOAD_AGENTS`, `PROBE_STATS`, `LOAD_TERM_FLOOD`)
+are in its header.
+
 `PREFER_DEVICE_ID` pins one machine when the account has several
 (`deploy/compose.two-bridges.yml`); without it the harness takes the first
 device the api reports online.

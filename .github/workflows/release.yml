@@ -318,12 +318,22 @@ jobs:
           path: assets
           if-no-files-found: error
 
+  # A bridge that drops a phone's session under load, or cannot restart ICE on
+  # a relayed path, is not released (#131): the TURN soak runs on the tagged
+  # tree before anything is published.
+  liveness:
+    name: TURN soak with an ICE restart
+    needs: [version]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/liveness.yml
+
   # The only job that writes anything outside this repo, and the only one that
   # holds a token. Re-running it is safe: the release is created if missing and
   # every asset is uploaded with --clobber.
   publish:
     name: Publish to the releases repo
-    needs: [version, apple-creds, checksums]
+    needs: [version, apple-creds, checksums, liveness]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

@@ -8,16 +8,22 @@
 //!
 //! Refused before anything is touched, as one plain sentence, when the branch
 //! is a default branch (`main`, `master`, the one a remote's `HEAD` names, or
-//! the one the project or the directory was cut from), is checked out
-//! somewhere other than the checkout Done is about to remove, or holds commits
-//! no remote has. Measured again in the drain once the checkout is gone,
-//! because the user's own checkout can move onto the branch in between; a
-//! refusal there leaves the branch and says why in the answer, since the
-//! workspace is already gone by then.
+//! the one the project or the directory was cut from), is checked out, rebased
+//! or bisected somewhere other than the checkout Done is about to remove, or
+//! holds commits no remote has. Measured again in the drain once the
+//! checkout is gone, because the user's own checkout can move onto the branch
+//! in between; a refusal there leaves the branch and says why in the answer,
+//! since the workspace is already gone by then.
 //!
 //! The measurement is of one commit, not of a name: the delete names the tip
 //! the checks passed and Git refuses it if the branch has moved since, so a
 //! commit landing between the check and the delete is never deleted unseen.
+//! `update-ref` does not refuse a branch a checkout holds, as `branch -D`
+//! does, so the checkouts are read again immediately before it and once more
+//! after it; a checkout that moved onto the branch in between gets the branch
+//! back at the same commit.
+
+mod checkouts;
 
 use crate::git_process::run_git;
 use crate::workspace::Workspace;
@@ -28,6 +34,16 @@ pub(crate) const DELETE_ACTION: &str = "delete";
 
 /// Branch names Done never deletes, whatever the repository calls its default.
 const PROTECTED_NAMES: [&str; 2] = ["main", "master"];
+
+/// When the branch is measured: before the checkout Done removes has gone,
+/// or after.
+#[derive(Clone, Copy)]
+enum Moment {
+    /// Done's own checkout still stands on the branch and does not count.
+    BeforeRemoval,
+    /// Done's checkout is gone, so anything still on the branch holds it.
+    AfterRemoval,
+}
 
 /// One local branch Done takes with it.
 #[derive(Clone, Debug)]
@@ -74,12 +90,12 @@ impl BranchDeletion {
 
     /// Why this branch cannot be deleted, as a sentence, or `None`.
     pub(in crate::app) fn refusal(&self) -> Option<String> {
-        self.measure().err()
+        self.measure(Moment::BeforeRemoval).err()
     }
 
     /// The tip every check passed, `None` for a branch already gone, or why
     /// the branch stays.
-    fn measure(&self) -> Result<Option<String>, String> {
+    fn measure(&self, moment: Moment) -> Result<Option<String>, String> {
         let refuse = |reason: &str| {
             Err(format!(
                 "Build cannot delete the branch {}: {reason}.",
@@ -92,19 +108,17 @@ impl BranchDeletion {
         let Some(tip) = self.tip() else {
             return Ok(None);
         };
-        if let Some(path) = self.checked_out_elsewhere() {
-            return refuse(&format!("it is checked out at {}", path.display()));
-        }
         if self.has_unpushed_commits(&tip) {
             return refuse("it has commits no remote has");
         }
+        self.unheld(moment)?;
         Ok(Some(tip))
     }
 
-    /// Delete the branch, measured again first. A branch already gone is
-    /// deleted.
+    /// Delete the branch once Done's checkout is gone, measured again first.
+    /// A branch already gone is deleted.
     pub(in crate::app) fn delete(&self) -> Result<(), String> {
-        match self.measure()? {
+        match self.measure(Moment::AfterRemoval)? {
             Some(tip) => self.delete_at(&tip),
             None => Ok(()),
         }
@@ -115,6 +129,7 @@ impl BranchDeletion {
     /// every remote, not against whatever HEAD the source is on, so this is
     /// `branch -D`'s force with the commit named instead of the branch.
     fn delete_at(&self, tip: &str) -> Result<(), String> {
+        self.unheld(Moment::AfterRemoval)?;
         if let Err(error) = run_git(&self.repo, &["update-ref", "-d", &self.local_ref(), tip]) {
             if self.tip().is_some_and(|now| now != tip) {
                 return Err(format!(
@@ -128,6 +143,7 @@ impl BranchDeletion {
                 error.to_string().trim()
             ));
         }
+        self.restore_if_held(tip)?;
         // What `branch -D` also takes: the branch's upstream and settings.
         // None is the usual case, which Git answers as a failure.
         let _ = run_git(
@@ -187,21 +203,30 @@ impl BranchDeletion {
             .collect()
     }
 
-    /// The first checkout of the source repository standing on the branch,
-    /// other than the one Done removes.
-    fn checked_out_elsewhere(&self) -> Option<PathBuf> {
-        let listed = run_git(&self.repo, &["worktree", "list", "--porcelain"]).ok()?;
-        let wanted = format!("branch {}", self.local_ref());
-        listed
-            .split("\n\n")
-            .filter(|block| block.lines().any(|line| line == wanted))
-            .filter_map(|block| {
-                block
-                    .lines()
-                    .find_map(|line| line.strip_prefix("worktree "))
-            })
-            .map(PathBuf::from)
-            .find(|path| !super::same_path(path, &self.checkout))
+    /// `Ok` while no checkout holds the branch, or why one does. Before the
+    /// removal, the checkout Done removes is not counted.
+    fn unheld(&self, moment: Moment) -> Result<(), String> {
+        let except = match moment {
+            Moment::BeforeRemoval => Some(self.checkout.as_path()),
+            Moment::AfterRemoval => None,
+        };
+        match checkouts::held_elsewhere(&self.repo, &self.branch, except) {
+            Some(reason) => Err(format!(
+                "Build cannot delete the branch {}: {reason}.",
+                self.branch
+            )),
+            None => Ok(()),
+        }
+    }
+
+    /// A checkout that moved onto the branch between the look before the
+    /// delete and the delete itself: the branch comes back at `tip`, the
+    /// commit it was deleted at, unless something has made it again since.
+    fn restore_if_held(&self, tip: &str) -> Result<(), String> {
+        self.unheld(Moment::AfterRemoval).inspect_err(|_| {
+            let absent = "0".repeat(tip.len());
+            let _ = run_git(&self.repo, &["update-ref", &self.local_ref(), tip, &absent]);
+        })
     }
 
     /// Commits reachable from `tip` that no remote-tracking ref reaches. A
@@ -336,7 +361,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let repo = pushed_feature(tmp.path());
         let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
-        let measured = feature.measure().unwrap().unwrap();
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
         git_in(&repo, &["switch", "-q", "feature"]);
         git_in(
             &repo,
@@ -357,6 +382,44 @@ mod tests {
             "Build cannot delete the branch feature: it gained commits while Build was deleting it."
         );
         assert_eq!(feature.tip(), Some(moved));
+    }
+
+    // A checkout moving onto the branch after the checks, at the same commit:
+    // the tip still matches, so only the look immediately before the delete
+    // stands between it and a checkout whose HEAD names a deleted branch.
+    #[test]
+    fn a_branch_checked_out_after_its_checks_is_refused_and_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
+        git_in(&repo, &["switch", "-q", "feature"]);
+        assert_eq!(feature.tip().as_deref(), Some(measured.as_str()));
+        let refused = feature.delete_at(&measured).unwrap_err();
+        assert!(
+            refused.starts_with("Build cannot delete the branch feature: it is checked out at "),
+            "{refused}"
+        );
+        assert_eq!(feature.tip(), Some(measured));
+    }
+
+    // The checkout moved onto the branch between that look and the delete:
+    // the branch is deleted under it, and the look after puts it back.
+    #[test]
+    fn a_branch_checked_out_during_its_delete_is_put_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
+        git_in(&repo, &["switch", "-q", "feature"]);
+        git_in(
+            &repo,
+            &["update-ref", "-d", "refs/heads/feature", &measured],
+        );
+        assert_eq!(feature.tip(), None);
+        let refused = feature.restore_if_held(&measured).unwrap_err();
+        assert!(refused.contains("it is checked out at "), "{refused}");
+        assert_eq!(feature.tip(), Some(measured));
     }
 
     #[test]

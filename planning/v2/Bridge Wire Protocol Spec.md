@@ -667,12 +667,15 @@ resolved the workspace by, in each source repository its directories carry it
 in. It is refused before anything is removed (`conflict`, "Build cannot delete
 the branch <name>: it is a default branch." for `main`, `master`, the branch a
 remote's `HEAD` names or the project's base, "…: it is checked out at <path>."
-or "…: it has commits no remote has.") and measured again once the checkout is
-gone. The delete names the commit those checks passed, so a branch that gained
-commits in between is kept. A branch that stayed then is `branch_deleted:
-false` with `branch_reason`, beside the workspace's removal, which stands.
-Success adds `branch_deleted: true` to the answer and a `branch_deleted` event (payload
-`branch`, `workspace_id`) to every issue linking the workspace or the branch.
+— or being rebased or bisected there — or "…: it has commits no remote has.")
+and measured again once the checkout is gone. The delete names the commit
+those checks passed, so a branch that gained commits in between is kept, and
+the checkouts are read again immediately before and after it, so a checkout
+that moved onto the branch keeps it. A branch that stayed then is
+`branch_deleted: false` with `branch_reason`, beside the workspace's removal,
+which stands. Success adds `branch_deleted: true` to the answer and a
+`branch_deleted` event (payload `branch`, `workspace_id`) to every issue
+linking the workspace or the branch.
 Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.

@@ -12,6 +12,10 @@
 //! checkout is gone, because the user's own checkout can move onto the branch
 //! in between; a refusal there leaves the branch and says why in the answer,
 //! since the workspace is already gone by then.
+//!
+//! The measurement is of one commit, not of a name: the delete names the tip
+//! the checks passed and Git refuses it if the branch has moved since, so a
+//! commit landing between the check and the delete is never deleted unseen.
 
 use crate::git_process::run_git;
 use crate::workspace::Workspace;
@@ -52,52 +56,83 @@ impl BranchDeletion {
 
     /// Why this branch cannot be deleted, as a sentence, or `None`.
     pub(in crate::app) fn refusal(&self) -> Option<String> {
-        if !self.exists() {
-            return None;
-        }
-        let reason = match self.checked_out_elsewhere() {
-            Some(path) => format!("it is checked out at {}", path.display()),
-            None if self.has_unpushed_commits() => "it has commits no remote has".to_string(),
-            None => return None,
+        self.measure().err()
+    }
+
+    /// The tip every check passed, `None` for a branch already gone, or why
+    /// the branch stays.
+    fn measure(&self) -> Result<Option<String>, String> {
+        let refuse = |reason: &str| {
+            Err(format!(
+                "Build cannot delete the branch {}: {reason}.",
+                self.branch
+            ))
         };
-        Some(format!(
-            "Build cannot delete the branch {}: {reason}.",
-            self.branch
-        ))
+        let Some(tip) = self.tip() else {
+            return Ok(None);
+        };
+        if let Some(path) = self.checked_out_elsewhere() {
+            return refuse(&format!("it is checked out at {}", path.display()));
+        }
+        if self.has_unpushed_commits(&tip) {
+            return refuse("it has commits no remote has");
+        }
+        Ok(Some(tip))
     }
 
     /// Delete the branch, measured again first. A branch already gone is
     /// deleted.
     pub(in crate::app) fn delete(&self) -> Result<(), String> {
-        if let Some(refusal) = self.refusal() {
-            return Err(refusal);
+        match self.measure()? {
+            Some(tip) => self.delete_at(&tip),
+            None => Ok(()),
         }
-        if !self.exists() {
-            return Ok(());
+    }
+
+    /// Delete the branch only while it still points at `tip`, the commit the
+    /// checks passed. Whether the branch is safe to lose was measured against
+    /// every remote, not against whatever HEAD the source is on, so this is
+    /// `branch -D`'s force with the commit named instead of the branch.
+    fn delete_at(&self, tip: &str) -> Result<(), String> {
+        if let Err(error) = run_git(&self.repo, &["update-ref", "-d", &self.local_ref(), tip]) {
+            if self.tip().is_some_and(|now| now != tip) {
+                return Err(format!(
+                    "Build cannot delete the branch {}: it gained commits while Build was deleting it.",
+                    self.branch
+                ));
+            }
+            return Err(format!(
+                "Build could not delete the branch {}: {}",
+                self.branch,
+                error.to_string().trim()
+            ));
         }
-        // `-D`: whether the branch is safe to lose was measured against every
-        // remote above, not against whatever HEAD the source happens to be on.
-        run_git(&self.repo, &["branch", "-D", "--", &self.branch])
-            .map(|_| ())
-            .map_err(|error| {
-                format!(
-                    "Build could not delete the branch {}: {}",
-                    self.branch,
-                    error.to_string().trim()
-                )
-            })
+        // What `branch -D` also takes: the branch's upstream and settings.
+        // None is the usual case, which Git answers as a failure.
+        let _ = run_git(
+            &self.repo,
+            &[
+                "config",
+                "--remove-section",
+                &format!("branch.{}", self.branch),
+            ],
+        );
+        Ok(())
     }
 
     fn local_ref(&self) -> String {
         format!("refs/heads/{}", self.branch)
     }
 
-    fn exists(&self) -> bool {
+    /// The commit the branch points at, or `None` when there is no branch.
+    fn tip(&self) -> Option<String> {
         run_git(
             &self.repo,
             &["rev-parse", "--verify", "--quiet", &self.local_ref()],
         )
-        .is_ok()
+        .ok()
+        .map(|oid| oid.trim().to_string())
+        .filter(|oid| !oid.is_empty())
     }
 
     /// The first checkout of the source repository standing on the branch,
@@ -117,19 +152,14 @@ impl BranchDeletion {
             .find(|path| !super::same_path(path, &self.checkout))
     }
 
-    /// Commits on the branch that no remote-tracking ref reaches. A repository
-    /// with no remote has nowhere the work went, so every commit counts.
-    /// Unreadable counts as unpushed: this is the check that keeps work.
-    fn has_unpushed_commits(&self) -> bool {
+    /// Commits reachable from `tip` that no remote-tracking ref reaches. A
+    /// repository with no remote has nowhere the work went, so every commit
+    /// counts. Unreadable counts as unpushed: this is the check that keeps
+    /// work.
+    fn has_unpushed_commits(&self, tip: &str) -> bool {
         run_git(
             &self.repo,
-            &[
-                "rev-list",
-                "--count",
-                &self.local_ref(),
-                "--not",
-                "--remotes",
-            ],
+            &["rev-list", "--count", tip, "--not", "--remotes"],
         )
         .map(|count| count.trim() != "0")
         .unwrap_or(true)
@@ -184,7 +214,7 @@ mod tests {
         let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
         assert_eq!(feature.refusal(), None);
         feature.delete().unwrap();
-        assert!(!feature.exists());
+        assert_eq!(feature.tip(), None);
     }
 
     #[test]
@@ -212,7 +242,7 @@ mod tests {
             refused,
             "Build cannot delete the branch feature: it has commits no remote has."
         );
-        assert!(feature.exists());
+        assert!(feature.tip().is_some());
     }
 
     #[test]
@@ -231,7 +261,7 @@ mod tests {
             "{refused}"
         );
         assert!(refused.ends_with("other."), "{refused}");
-        assert!(feature.exists());
+        assert!(feature.tip().is_some());
     }
 
     #[test]
@@ -244,6 +274,50 @@ mod tests {
             &["worktree", "add", "-q", own.to_str().unwrap(), "feature"],
         );
         assert_eq!(deletion(&repo, "feature", &own).refusal(), None);
+    }
+
+    // A commit landing between the checks and the delete: the checks passed
+    // one tip and the branch now has another, which nothing has examined.
+    #[test]
+    fn a_branch_that_moved_after_its_checks_is_refused_and_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure().unwrap().unwrap();
+        git_in(&repo, &["switch", "-q", "feature"]);
+        git_in(
+            &repo,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "landed after the check",
+            ],
+        );
+        git_in(&repo, &["switch", "-q", "main"]);
+        let moved = feature.tip().unwrap();
+        assert_ne!(moved, measured);
+        let refused = feature.delete_at(&measured).unwrap_err();
+        assert_eq!(
+            refused,
+            "Build cannot delete the branch feature: it gained commits while Build was deleting it."
+        );
+        assert_eq!(feature.tip(), Some(moved));
+    }
+
+    #[test]
+    fn deleting_takes_the_branch_settings_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        git_in(
+            &repo,
+            &["branch", "-q", "--set-upstream-to=origin/main", "feature"],
+        );
+        deletion(&repo, "feature", &tmp.path().join("gone"))
+            .delete()
+            .unwrap();
+        assert!(run_git(&repo, &["config", "--get", "branch.feature.remote"]).is_err());
     }
 
     #[test]

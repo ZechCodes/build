@@ -63,6 +63,15 @@
 //                          (it spins BRIDGE_LOAD_THREADS busy loops as its tool
 //                          children), so this is load spawned the way a real
 //                          headless agent's is, in that agent's scope.
+//   LOAD_AGENTS=1          how many such agents to dispatch. The #131 fake `claude`
+//                          (see the #131 issue) also calls an MCP tool back to back,
+//                          so each agent is a stream of `mcp.control` frames that
+//                          take the app lock, the way a busy agent's are.
+//   PROBE_STATS=1          a fourth session calls `bridge.stats` every PING_EVERY_MS:
+//                          a verb that goes through the dispatch pool but never takes
+//                          the app lock, so its round trip is the bridge's main
+//                          runtime answering at all. The summary adds the per-verb
+//                          frame table `bridge.stats` ends the run with.
 //   HAMMER_ISSUES=1        seed SEED_ISSUES (150) issues with a comment each in the
 //                          first project, then issues.list back to back from a third
 //                          session (foreground priority, the `app` channel) for the
@@ -97,6 +106,8 @@ const RELAY_BOTH_ENDS = process.env.RELAY_BOTH_ENDS !== "0";
 const POLICY = process.env.ICE_TRANSPORT_POLICY || "relay";
 const TERM_THREADS = num("LOAD_TERM_THREADS", 0);
 const AGENT_THREADS = num("LOAD_AGENT_THREADS", 0);
+const AGENTS = num("LOAD_AGENTS", 1);
+const PROBE = process.env.PROBE_STATS === "1";
 const HAMMER = process.env.HAMMER_ISSUES === "1";
 const SEED_ISSUES = num("SEED_ISSUES", 150);
 
@@ -112,6 +123,7 @@ const ms = (value) => (Number.isFinite(value) ? `${Math.round(value)} ms` : "n/a
 
 const run = { sent: 0, rtts: [], timeouts: 0, refusals: 0, iceDisconnected: 0, drops: [], pushes: [], otherPushes: {}, states: [] };
 const hammer = { calls: 0, errors: 0, latencies: [] };
+const probe = { calls: 0, errors: 0, latencies: [], finalStats: null };
 let dead = null; // why the link can carry no more pings, once it cannot
 let stopping = false;
 const drop = (why) => (run.drops.push(`${stamp()} ${why}`), log(`DROP ${why}`));
@@ -275,19 +287,24 @@ async function startBusyLoops(app, term) {
   };
 }
 
-/** A headless agent, dispatched the way the app does it; the fake `claude` on
- * the bridge's PATH does the spinning. */
+/** Headless agents, dispatched the way the app does it; the fake `claude` on
+ * the bridge's PATH does the spinning (and, the #131 one, the tool calls). */
 async function startAgentLoad(session, project) {
-  const branch = `liveness-load-${Date.now().toString(36)}`;
-  const dispatched = await session.call("branch.dispatch", {
-    project_id: project.project_id, instruction: `liveness load: spin ${AGENT_THREADS} busy loops`, branch,
-    provider: "claude_adk", model: "claude-fable-5-1",
-  });
-  const runId = dispatched.run_id || dispatched.run?.run_id || dispatched.agent?.run_id || null;
-  log(`headless agent dispatched on ${branch}: ${JSON.stringify(dispatched).slice(0, 200)}`);
+  const runIds = [];
+  for (let n = 0; n < AGENTS; n++) {
+    const branch = `liveness-load-${Date.now().toString(36)}-${n}`;
+    const dispatched = await session.call("branch.dispatch", {
+      project_id: project.project_id, instruction: `liveness load: spin ${AGENT_THREADS} busy loops`, branch,
+      provider: "claude_adk", model: "claude-fable-5-1",
+    });
+    runIds.push(dispatched.run_id || dispatched.run?.run_id || dispatched.agent?.run_id || null);
+    log(`headless agent ${n + 1}/${AGENTS} dispatched on ${branch}: ${JSON.stringify(dispatched).slice(0, 200)}`);
+  }
   return async () => {
-    if (!runId) return log("no run id to abandon; the bridge's stop ends the agent's scope");
-    await session.call("run.abandon", { run_id: runId }).then(() => log(`run ${runId} abandoned`), (error) => log(`run.abandon refused: ${error.message}`));
+    for (const runId of runIds) {
+      if (!runId) { log("no run id to abandon; the bridge's stop ends the agent's scope"); continue; }
+      await session.call("run.abandon", { run_id: runId }).then(() => log(`run ${runId} abandoned`), (error) => log(`run.abandon refused: ${error.message}`));
+    }
   };
 }
 
@@ -314,6 +331,31 @@ async function hammerIssues(session, projectId) {
     }
     hammer.calls += 1;
   }
+}
+
+/** `bridge.stats` on a cadence: dispatched like any verb, answered without the
+ * app lock, so a slow answer is the main runtime not getting to it. */
+async function probeStats(session) {
+  while (!stopping && !dead) {
+    const tick = Date.now();
+    const sent = performance.now();
+    try {
+      await session.call("bridge.stats", {});
+      probe.latencies.push(performance.now() - sent);
+    } catch (error) {
+      probe.errors += 1;
+      if (/channel closed/.test(error.message)) return;
+    }
+    probe.calls += 1;
+    await sleep(Math.max(0, tick + PING_EVERY_MS - Date.now()));
+  }
+  probe.finalStats = await session.call("bridge.stats", {}).catch((error) => ({ error: error.message }));
+}
+
+/** The per-verb frame table from the run's last `bridge.stats`, slowest first. */
+function statsTable() {
+  const methods = Object.entries(probe.finalStats?.methods || {}).sort(([, a], [, b]) => b.max_ms - a.max_ms);
+  return methods.slice(0, 12).map(([name, m]) => `  ${name.padEnd(24)} n=${m.served} p50=${m.p50_ms} p95=${m.p95_ms} max=${m.max_ms} ms`).join("\n");
 }
 
 // ── the soak ─────────────────────────────────────────────────────────────────
@@ -369,7 +411,7 @@ function summary(link) {
   const max = maxOf(rtts);
   const over = rtts.filter((rtt) => rtt >= RTT_CEILING_MS).length;
   console.log("\n──────── liveness summary ────────");
-  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_AGENT_THREADS=${AGENT_THREADS} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
+  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_AGENT_THREADS=${AGENT_THREADS} LOAD_AGENTS=${AGENT_THREADS > 0 ? AGENTS : 0} PROBE_STATS=${PROBE ? 1 : 0} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
   console.log(`path         ${pair.text}${pair.relayed ? "" : "   !! NOT relay/relay"}`);
   console.log(`pings        samples=${run.sent} answered=${rtts.length} p50=${ms(pct(rtts, 50))} p95=${ms(pct(rtts, 95))} max=${ms(max)}`);
   console.log(`             over ${RTT_CEILING_MS} ms=${over}  timeouts(>${PING_DEADLINE_MS} ms)=${run.timeouts}  never answered=${run.sent - rtts.length - run.refusals}  refused=${run.refusals}`);
@@ -377,6 +419,10 @@ function summary(link) {
   console.log(`drops        ${run.drops.length}${run.drops.length ? "\n  " + run.drops.join("\n  ") : ""}${dead ? `\n  link dead: ${dead}` : ""}`);
   console.log(`pushes       soak session ${run.pushes.length} [${[...new Set(run.pushes)].join(", ")}]  other sessions ${JSON.stringify(run.otherPushes)}`);
   if (HAMMER) console.log(`issues.list  calls=${hammer.calls} p50=${ms(pct(hammer.latencies, 50))} p95=${ms(pct(hammer.latencies, 95))} max=${ms(maxOf(hammer.latencies))} errors=${hammer.errors}`);
+  if (PROBE) {
+    console.log(`bridge.stats calls=${probe.calls} p50=${ms(pct(probe.latencies, 50))} p95=${ms(pct(probe.latencies, 95))} max=${ms(maxOf(probe.latencies))} errors=${probe.errors}`);
+    console.log(`frames       (bridge.stats at the end: frame time per verb since boot, slowest max first)\n${statsTable()}`);
+  }
   console.log(`harness      event-loop delay p99=${ms(loopDelay.percentile(99) / 1e6)} max=${ms(loopDelay.max / 1e6)} (a stall here is the harness's, not the bridge's)`);
   const failed = run.drops.length > 0 || run.timeouts > 0 || max >= RTT_CEILING_MS || dead;
   const verdict = failed ? "FAIL" : pair.relayed ? "PASS" : "INCONCLUSIVE (clean, but not relay/relay)";
@@ -397,6 +443,7 @@ async function main() {
   const soakMint = await mint(rendezvous, device);
   const termMint = TERM_THREADS > 0 ? await mint(rendezvous, device) : null;
   const hammerMint = HAMMER ? await mint(rendezvous, device) : null;
+  const probeMint = PROBE ? await mint(rendezvous, device) : null;
 
   const signaling = openCarriedSession({ carrier: relayCarrier(rendezvous, soakMint.sessionId), transport, ...soakMint });
   const link = await openRelayedLink({ signaling, iceServers });
@@ -407,7 +454,8 @@ async function main() {
     onPush: (push) => { run.pushes.push(push.type); log(`push ${JSON.stringify(push).slice(0, 200)}`); } });
   const term = termMint && openCarriedSession({ carrier: link.term, transport, ...termMint, timeoutMs: 60000, onPush: other });
   const reader = hammerMint && openCarriedSession({ carrier: forSession(link.app, hammerMint.sessionId), transport, ...hammerMint, timeoutMs: 120000, onPush: other });
-  for (const one of [session, term, reader].filter(Boolean)) await one.call("ping"); // each rides its channel before the socket goes
+  const prober = probeMint && openCarriedSession({ carrier: forSession(link.app, probeMint.sessionId), transport, ...probeMint, timeoutMs: 120000, onPush: other });
+  for (const one of [session, term, reader, prober].filter(Boolean)) await one.call("ping"); // each rides its channel before the socket goes
   await rendezvous.close();
   log(`device ${device.name} (${device.deviceId}); rendezvous closed; pair ${pairNow(link.peer).text}`);
   await session.call("session.hello", { client: { name: "liveness-soak", version: "0", api_range: ">=1.0.0 <2.0.0" } });
@@ -420,9 +468,11 @@ async function main() {
 
   loopDelay.reset();
   const reading = HAMMER ? hammerIssues(reader, project.project_id) : null;
+  const probing = PROBE ? probeStats(prober) : null;
   await soak(link, session);
   stopping = true;
   await reading;
+  await probing;
   if (stopLoops) await stopLoops();
   if (stopAgent) await stopAgent();
   const code = summary(link);

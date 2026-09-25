@@ -152,7 +152,10 @@ brings up its own stack (`deploy/compose.liveness.yml` over
 - `ice-restart-check.mjs`, four minutes in, in `mcr.microsoft.com/playwright`
   on the host's network: the real app over the same TURN, made to see its
   peer fail once, so it runs its own ICE restart; fails unless the restart
-  lands within 15 s on the relayed path and holds.
+  lands within 15 s, on the same peer with a new ufrag at both ends and a
+  new nominated relay pair carrying data, and holds. `NEGATIVE_CONTROL=1`
+  strips `iceRestart` from the app's restart offer, and the gate must then
+  fail.
 
 It needs docker and nothing else, exits non-zero if either failed, and takes
 the stack down whatever happened. `SOAK_MS=120000 RESTART_AT_S=45` is a short

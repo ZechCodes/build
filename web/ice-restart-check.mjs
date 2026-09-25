@@ -17,11 +17,21 @@
 //      `iceRestart` offer, a real answer from the bridge, a real set of checks,
 //      and the app's own "does it carry" probe before it says `connected`;
 //   3. the app's diagnostics (`buildConnectionDiagnostics()`, what Settings →
-//      Diagnostics shows) time it: `restarting` to the restart's `connected`.
+//      Diagnostics shows) time it: `restarting` to the restart's `connected`;
+//   4. and the peer itself says it was a restart, not the old path carrying
+//      on under a new name: the same RTCPeerConnection, a new ICE generation
+//      at both ends (a new ufrag in the local and in the bridge's
+//      description), and the pair selected on it a different one from
+//      before, nominated, relayed, and carrying data both ways. The synthetic
+//      `failed` leaves the old path working, so the app's word alone cannot
+//      tell a restart from none (#131 review: with `iceRestart` stripped from
+//      the offer, the ufrags stayed and the diagnostics still said
+//      "restarted"). NEGATIVE_CONTROL=1 strips it that way, and must fail.
 //
 // Exit 0 when the restart landed within RESTART_DEADLINE_MS on a relayed path
-// and the app held it for HOLD_MS after; 1 when it did not; 2 when the run
-// could not get as far as a restart (no connection to begin with).
+// of a new ICE generation and the app held it for HOLD_MS after; 1 when it
+// did not; 2 when the run could not get as far as a restart (no connection to
+// begin with).
 //
 // It runs inside mcr.microsoft.com/playwright with the host's network, so it
 // reaches the stack's published ports and coturn's address on the compose
@@ -30,6 +40,7 @@
 //   APP=http://localhost:8128  TURN_HOST=<coturn IP>  TURN_USER / TURN_PASSWORD
 //   SETTLE_MS=20000   how long the session carries before the restart
 //   RESTART_DEADLINE_MS=15000   HOLD_MS=20000   CHROMIUM_PATH (optional)
+//   NEGATIVE_CONTROL=1   the app's restart offer loses `iceRestart`
 
 import { chromium } from "playwright";
 
@@ -77,6 +88,57 @@ async function forceRelay(context) {
   // allocates through the same coturn.
   await context.route("**/api/rtc/ice-servers", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ iceServers: servers }) }));
+}
+
+/** The app's restart offer, stripped of `iceRestart`: what the check must
+ *  catch — the app says it restarted, and ICE never did. */
+async function stripIceRestart(context) {
+  await context.addInitScript(() => {
+    const createOffer = RTCPeerConnection.prototype.createOffer;
+    RTCPeerConnection.prototype.createOffer = function (options, ...rest) {
+      return createOffer.call(this, options && { ...options, iceRestart: false }, ...rest);
+    };
+  });
+}
+
+/** Where the newest peer's ICE stands: the ufrag of each end's description,
+ *  and the candidate pair its transport has selected, with the pair's
+ *  counters and the local candidate's type. */
+const iceOf = (page) =>
+  page.evaluate(async () => {
+    const peer = window.__peers.at(-1);
+    const ufrag = (description) => description?.sdp.match(/a=ice-ufrag:(\S+)/)?.[1] ?? null;
+    const reports = [...(await peer.getStats()).values()];
+    const transport = reports.find((report) => report.type === "transport" && report.selectedCandidatePairId);
+    const pair = reports.find((report) => report.id === transport?.selectedCandidatePairId);
+    const local = reports.find((report) => report.id === pair?.localCandidateId);
+    return {
+      peers: window.__peers.length,
+      local: ufrag(peer.localDescription),
+      remote: ufrag(peer.remoteDescription),
+      pair: pair && {
+        id: pair.id,
+        state: pair.state,
+        nominated: pair.nominated,
+        bytesSent: pair.bytesSent,
+        bytesReceived: pair.bytesReceived,
+        localType: local?.candidateType,
+      },
+    };
+  });
+
+/** Why `after` is not a restart of `before` that carries, or null when it is. */
+function notARestart(before, after) {
+  if (after.peers !== before.peers) return `a new connection (${before.peers} → ${after.peers} peers), not an ICE restart`;
+  if (!after.local || after.local === before.local) return `the local ufrag did not change (${before.local} → ${after.local})`;
+  if (!after.remote || after.remote === before.remote) return `the bridge's ufrag did not change (${before.remote} → ${after.remote})`;
+  const pair = after.pair;
+  if (!pair) return "no candidate pair is selected";
+  if (pair.id === before.pair?.id) return `the old candidate pair ${pair.id} is still the selected one`;
+  if (pair.state !== "succeeded" || !pair.nominated) return `the new pair is ${pair.state}, nominated ${pair.nominated}`;
+  if (pair.localType !== "relay") return `the new pair is ${pair.localType}, not relayed`;
+  if (!(pair.bytesSent > 0 && pair.bytesReceived > 0)) return `the new pair carried ${pair.bytesSent} bytes out and ${pair.bytesReceived} in`;
+  return null;
 }
 
 /** What the app recorded about its connection, oldest first. */
@@ -136,6 +198,10 @@ async function main() {
     // the product's own.
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, bypassCSP: true });
     await forceRelay(context);
+    if (process.env.NEGATIVE_CONTROL === "1") {
+      log("NEGATIVE CONTROL: the restart offer loses iceRestart; this run must fail");
+      await stripIceRestart(context);
+    }
     const page = await context.newPage();
     page.on("pageerror", (error) => log("[pageerror]", error.message));
     page.on("console", (message) => {
@@ -157,6 +223,8 @@ async function main() {
     // ring, and a row that fell off its end would shift every index after it.
     const since = await page.evaluate(() => Date.now());
     const after = (rows) => rows.filter((row) => row.at >= since);
+    const before = await iceOf(page);
+    log(`before: ${JSON.stringify(before)}`);
     const peers = await reportFailedOnce(page);
     log(`the newest of ${peers} peer(s) reported failed; the app restarts ICE`);
     const outcome = await until(
@@ -187,13 +255,30 @@ async function main() {
       return 1;
     }
 
+    const restarted = await iceOf(page);
+    log(`after: ${JSON.stringify(restarted)}`);
+    const not = notARestart(before, restarted);
+    if (not) {
+      log(`RESULT FAIL: the app said it restarted, and ICE did not: ${not}`);
+      return 1;
+    }
+
     await page.waitForTimeout(HOLD_MS);
     const lost = after(await diagnostics(page)).filter((row) => ["restart-failed", "closed"].includes(row.event));
     if (lost.length > 0) {
       log(`RESULT FAIL: the restarted session did not hold: ${JSON.stringify(lost)}`);
       return 1;
     }
-    log(`RESULT PASS: restarted in ${tookMs} ms on a relayed path and held ${HOLD_MS} ms`);
+    const held = await iceOf(page);
+    if (held.pair?.id !== restarted.pair.id || !(held.pair.bytesReceived > restarted.pair.bytesReceived)) {
+      log(`RESULT FAIL: the new pair did not carry through the hold: ${JSON.stringify(held)}`);
+      return 1;
+    }
+    log(
+      `RESULT PASS: restarted in ${tookMs} ms onto ICE generation ${restarted.local}/${restarted.remote} ` +
+        `(was ${before.local}/${before.remote}), relayed, and held ${HOLD_MS} ms carrying ` +
+        `${held.pair.bytesReceived - restarted.pair.bytesReceived} bytes in`,
+    );
     return 0;
   } finally {
     await browser.close();

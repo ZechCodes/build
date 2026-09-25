@@ -11,7 +11,8 @@
 #     hammer, and fails on any drop, any timeout, or any ping at 500 ms or over;
 #   - web/ice-restart-check.mjs, RESTART_AT_S into the soak, runs the real app
 #     in Chromium over the same TURN and puts it through an ICE restart, which
-#     fails unless it lands within 15 s on the relayed path and holds.
+#     fails unless it lands within 15 s on a new ICE generation over the
+#     relayed path and holds.
 #
 # Exits non-zero if either failed, and takes everything down whatever happened.
 # Needs docker (with compose) and nothing else: the soak runs in the stack's qa
@@ -20,10 +21,12 @@
 #
 #   scripts/liveness-gate.sh
 #   SOAK_MS=120000 RESTART_AT_S=45 scripts/liveness-gate.sh   # a short run
+#   NEGATIVE_CONTROL=1 SOAK_MS=120000 RESTART_AT_S=45 scripts/liveness-gate.sh
+#     # the app's restart offer loses `iceRestart`: must exit non-zero
 #
 # Knobs: SOAK_MS (600000) RESTART_AT_S (240) LOAD_TERM_THREADS (4)
 #   LIVENESS_PROJECT (liveness-gate) LIVENESS_LOGS (a temp dir; kept)
-#   PLAYWRIGHT_IMAGE (mcr.microsoft.com/playwright:v1.63.0-noble)
+#   PLAYWRIGHT_IMAGE (mcr.microsoft.com/playwright:v1.63.0-noble) NEGATIVE_CONTROL
 #   LIVENESS_BRIDGE_WORKERS LIVENESS_BRIDGE_CPUS (compose.liveness.yml's)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -95,6 +98,7 @@ sleep "$restart_at_s"
 restart_exit=0
 docker run --rm --network host --ipc=host \
   -v "$PWD/web:/check:ro" -e APP=http://localhost:8128 -e TURN_HOST="$turn_ip" \
+  -e NEGATIVE_CONTROL="${NEGATIVE_CONTROL:-}" \
   "$playwright_image" bash -c \
   "cp /check/ice-restart-check.mjs /tmp/ && cd /tmp && npm install --silent --no-audit --no-fund playwright@$playwright_version >/dev/null && node ice-restart-check.mjs" \
   >"$logs/ice-restart.log" 2>&1 || restart_exit=$?
@@ -105,6 +109,6 @@ wait "$soak" || soak_exit=$?
 say "the soak:"
 sed -n '/liveness summary/,$p' "$logs/soak.log"
 say "the ICE restart:"
-grep -E "restart|RESULT|never connected|pageerror|ice-restart-check:" "$logs/ice-restart.log" || tail -20 "$logs/ice-restart.log"
+grep -E "restart|RESULT|NEGATIVE|before:|after:|never connected|pageerror|ice-restart-check:" "$logs/ice-restart.log" || tail -20 "$logs/ice-restart.log"
 say "soak exit $soak_exit, ICE restart exit $restart_exit"
 [ "$soak_exit" = 0 ] && [ "$restart_exit" = 0 ]

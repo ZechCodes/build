@@ -53,7 +53,9 @@ const numberOf = (cursor) => Number(atob(cursor).split(":")[1]);
 function listAnswer(params) {
   tick();
   const below = params.cursor ? numberOf(params.cursor) : Infinity;
-  const rows = [...tracker.values()].filter((issue) => issue.number < below).sort((a, b) => b.number - a.number);
+  const rows = [...tracker.values()]
+    .filter((issue) => issue.number < below && (!params.state || params.state === issue.state))
+    .sort((a, b) => b.number - a.number);
   const page = params.limit ? rows.slice(0, params.limit) : rows;
   const more = Boolean(params.limit) && rows.length > params.limit;
   return {
@@ -130,7 +132,7 @@ async function boot(hello) {
   sync.startCacheSync();
 }
 
-function mountPane() {
+function mountPane(defaultView = "dashboard") {
   document.body.innerHTML = '<div id="issues"></div>';
   return import("../src/core/trackerIssuesPane.js").then(({ mountIssuesPane }) => {
     pane = mountIssuesPane(document.querySelector("#issues"), {
@@ -142,7 +144,7 @@ function mountPane() {
       catalog: () => ({ providers: [] }),
       refreshCatalog: async () => ({ providers: [] }),
       feed: () => ({ workspaces: [], items: [], projects: [] }),
-      defaultView: "dashboard",
+      defaultView,
       navigate: () => {},
     });
   });
@@ -228,6 +230,68 @@ describe("a tracker synced from a bridge that pages", () => {
     expect(landed.find((issue) => issue.number === 120)).toMatchObject({ title: "moved on", status: "in_progress" });
     // And the push was answered by a read begun after it, not folded away.
     expect(lists().filter((params) => !params.cursor).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("does not put back an issue a newer read took off the list while an older page was out", async () => {
+    await boot(PAGING_GREETING);
+    await settle();
+    // The Open list's second page is held: asked now, answered later.
+    holdNext = (params) => params.state === "open" && params.cursor === cursorFor(151);
+    await mountPane("list");
+    await vi.waitFor(() => expect(held).not.toBeNull());
+    const olderPane = pane;
+
+    // #120 is closed and pushed. A second Issues tab reads the Open list
+    // after the push, and #120 is not on it.
+    tracker.set(120, { ...tracker.get(120), state: "closed", updated_at: (tick(), stamp()) });
+    changeEvents.dispatchChangeEvent({
+      type: "changes",
+      items: [{ entity_id: "p1", issues: { issue_ids: ["issue-120"], truncated: false } }],
+    }, "dev-1");
+    await mountPane("list");
+    await settle();
+    const openList = trackerCache.issuesQueryAddress("dev-1", "p1", { project_id: "p1", state: "open" });
+    const openRows = async () => (await cache.readCached(openList))?.value?.issues || [];
+    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+
+    // Now the older page lands. It must not bring #120 back as open.
+    const seen = [];
+    const stopWatching = cache.subscribeCache(openList, () => void openRows().then((rows) => seen.push(rows)));
+    held.release();
+    held = null;
+    await settle();
+    stopWatching();
+    olderPane.dispose();
+
+    expect(seen.some((rows) => rows.some((row) => row.number === 120))).toBe(false);
+    expect(numbers(await openRows())).toEqual(everyNumber.filter((number) => number !== 120));
+  });
+
+  it("keeps a newer read's row over an older page's copy with the same updated_at", async () => {
+    // The bridge fills in who an issue's agent is when it lists the issue,
+    // without touching the issue's updated_at: two copies of one row with one
+    // timestamp can differ, and only the order they were read in says which
+    // is newer.
+    holdNext = (params) => params.cursor === cursorFor(151);
+    await boot(PAGING_GREETING);
+    await vi.waitFor(() => expect(held).not.toBeNull());
+    tracker.set(120, { ...tracker.get(120), identities: { agent: { name: "New name", available: true } } });
+    await mountPane();
+    changeEvents.dispatchChangeEvent({
+      type: "changes",
+      items: [{ entity_id: "p1", issues: { issue_ids: ["issue-120"], truncated: false } }],
+    }, "dev-1");
+    const nameOf120 = (rows) => rows.find((row) => row.number === 120)?.identities?.agent?.name;
+    await vi.waitFor(async () => expect(nameOf120(await heldList())).toBe("New name"));
+
+    const seen = watchTheList();
+    held.release();
+    held = null;
+    await settle();
+
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((rows) => nameOf120(rows) === "New name")).toBe(true);
+    expect(numbers(await heldList())).toEqual(everyNumber);
   });
 
   it("pulls the whole list in one read from a bridge that does not page", async () => {

@@ -14,13 +14,17 @@
 // there, and the views repaint from the list record's announcement. Nothing
 // paints from the wire.
 //
-// A page can be older than what the cache already holds: a push re-read, the
-// Issues tab's own read or another tab may write a row while a page is out.
-// So a held row written after the page's copy of it keeps its place, and so
-// does a row the page does not name that was written after the page was read.
-// The newer word wins the way `pushFence` has it win for whole records (#142).
+// A page can be older than what the cache already holds: a push re-read or
+// the Issues tab's own read may lay a row, or take one away, while a page is
+// out. So a page yields every row a read asked after it has had the say on,
+// present or absent (core/issueReadOrder.js) — the newer word wins the way
+// `pushFence` has it win for whole records (#142). Another tab's reads are not
+// in that order, so for what they wrote the timestamps stand in: a held row
+// written after the page's copy of it keeps its place, and so does a row the
+// page does not name that was written after the page was read.
 
 import { cachedSubKeys, deleteCached, mergeCachedAtomically, readCached, writeCached } from "./localCache.js";
+import { lastSayOn, nextIssueRead, noteStretch } from "./issueReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortIssues } from "./trackerFilters.js";
 import { TRACKER_ISSUES_PAGE_KIND, issuesPageAddress, issuesRecord } from "./trackerCache.js";
@@ -38,27 +42,43 @@ const instant = (text) => Date.parse(text || "");
 const writtenAfter = (held, answered) => instant(held.updated_at) > instant(answered.updated_at);
 const writtenAfterRead = (held, readAt) => Number.isFinite(readAt) && instant(held.updated_at) > readAt;
 
+/** What a page lays: the rows it names that no newer read has had the say on
+ *  and that are not older than the held copy. */
+function rowsToLay(issues, heldById, overtaken) {
+  return issues.filter((row) => {
+    const heldRow = heldById.get(row.id);
+    return !overtaken(row) && !(heldRow && writtenAfter(heldRow, row));
+  });
+}
+
 /**
  * The held list with one page laid over the stretch of numbers it answers for:
- * `through` (inclusive) up to `above` (exclusive). Pure.
+ * `through` (inclusive) up to `above` (exclusive). Pure. The page was asked as
+ * read `read`, and `lastSay(row)` names the newest read that had the say on a
+ * row: where that is newer, the held list stands, the row present or absent.
  */
-export function withIssuePage(held, { issues = [], above = Infinity, through = -Infinity, readAt = null }) {
-  const heldById = new Map((held || []).map((row) => [row.id, row]));
-  const answered = issues.map((row) => {
-    const heldRow = heldById.get(row.id);
-    return heldRow && writtenAfter(heldRow, row) ? heldRow : row;
-  });
-  const answeredIds = new Set(answered.map((row) => row.id));
+export function withIssuePage(held, stretch, lastSay = () => 0) {
+  const { issues = [], above = Infinity, through = -Infinity, readAt = null, read = 0 } = stretch;
+  const heldRows = held || [];
+  const overtaken = (row) => lastSay(row) > read;
+  const laid = rowsToLay(issues, new Map(heldRows.map((row) => [row.id, row])), overtaken);
+  const laidIds = new Set(laid.map((row) => row.id));
+  const namedIds = new Set(issues.map((row) => row.id));
   const covered = (row) => Number(row.number) < above && Number(row.number) >= through;
-  const kept = (held || []).filter((row) =>
-    !answeredIds.has(row.id) && (!covered(row) || writtenAfterRead(row, readAt)));
-  return sortIssues([...kept, ...answered]);
+  const keeps = (row) => !covered(row) || namedIds.has(row.id) || overtaken(row) || writtenAfterRead(row, readAt);
+  const kept = heldRows.filter((row) => !laidIds.has(row.id) && keeps(row));
+  return sortIssues([...kept, ...laid]);
 }
 
 /** Lay one page over the list record at `address`, in one transaction, so a
- *  write landing between the read and the write is not lost. */
+ *  write landing between the read and the write is not lost, and note in that
+ *  same step that the page had the say on its stretch there. */
 export const foldIssuesPage = (address, stretch, columnsOf) =>
-  mergeCachedAtomically(address, (held) => issuesRecord(withIssuePage(held?.issues, stretch), columnsOf(held)));
+  mergeCachedAtomically(address, (held) => {
+    const issues = withIssuePage(held?.issues, stretch, lastSayOn(address));
+    noteStretch(address, stretch);
+    return issuesRecord(issues, columnsOf(held));
+  });
 
 const pageParams = (params, cursor, limit) => (cursor ? { ...params, limit, cursor } : { ...params, limit });
 
@@ -122,17 +142,20 @@ async function forgetOtherPages(deviceId, projectId, params, landed) {
 }
 
 /** Ask for, land and fold the page at `place`, and answer where the next
- *  starts (no cursor once this was the last), or null when the pull stops. */
-async function pullPage({ ask, deviceId, projectId, params, fold, active, limit }, { cursor, above }) {
+ *  starts (no cursor once this was the last), or null when the pull stops.
+ *  Each page is a read of its own, numbered as it is asked; `pullRead` is the
+ *  pull's first. */
+async function pullPage({ ask, deviceId, projectId, params, fold, active, limit }, { cursor, above, pullRead }) {
   const asked = pageParams(params, cursor, limit);
+  const read = nextIssueRead();
   const answer = await ask(asked);
   if (!answer || !active()) return null;
   const { sub, page } = await landPage(deviceId, projectId, asked, answer);
   if (!page || !active()) return null;
   const next = nextCursorOf(page, cursor);
-  const stretch = stretchOf(page, above, next);
+  const stretch = { ...stretchOf(page, above, next), read, pullRead: pullRead ?? read };
   if (coversNumbers(stretch)) await fold(stretch, page);
-  return { sub, cursor: next, above: stretch.through };
+  return { sub, cursor: next, above: stretch.through, pullRead: stretch.pullRead };
 }
 
 /**
@@ -144,7 +167,7 @@ async function pullPage({ ask, deviceId, projectId, params, fold, active, limit 
 export async function pullIssuePages(pull) {
   const walk = { active: () => true, limit: ISSUE_PAGE_LIMIT, ...pull };
   const landed = new Set();
-  let place = { cursor: null, above: Infinity };
+  let place = { cursor: null, above: Infinity, pullRead: null };
   do {
     place = await pullPage(walk, place);
     if (!place) return false;

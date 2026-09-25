@@ -63,6 +63,59 @@ describe("laying a page over a held list", () => {
   });
 });
 
+describe("yielding to a newer read", () => {
+  const stretch = (issues, over = {}) => ({ issues, above: Infinity, through: -Infinity, readAt: null, read: 1, ...over });
+  const ADDRESS = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues" };
+
+  it("keeps a newer read's copy of a row though its updated_at is the same", () => {
+    const newer = issue(5, { title: "read later" });
+    const laid = pages.withIssuePage([newer], stretch([issue(5, { title: "read first" })]), () => 2);
+    expect(laid).toEqual([newer]);
+  });
+
+  it("leaves out a row a newer read left out, though the cache never held it", async () => {
+    const order = await import("../src/core/issueReadOrder.js");
+    const older = order.nextIssueRead();
+    const newer = order.nextIssueRead();
+    order.noteStretch(ADDRESS, { above: 8, through: 4, read: newer });
+    const laid = pages.withIssuePage([issue(9)], stretch([issue(6), issue(5)], { above: 7, through: 5, read: older }), order.lastSayOn(ADDRESS));
+    expect(numbers(laid)).toEqual([9]);
+  });
+
+  it("lays a row where only older reads had the say", async () => {
+    const order = await import("../src/core/issueReadOrder.js");
+    const older = order.nextIssueRead();
+    const newer = order.nextIssueRead();
+    order.noteStretch(ADDRESS, { above: 8, through: 4, read: older });
+    const laid = pages.withIssuePage([], stretch([issue(6)], { read: newer }), order.lastSayOn(ADDRESS));
+    expect(numbers(laid)).toEqual([6]);
+  });
+
+  it("forgets every older say once a pull has had the say on every number", async () => {
+    const order = await import("../src/core/issueReadOrder.js");
+    const stale = order.nextIssueRead();
+    order.noteStretch(ADDRESS, { above: 8, through: 4, read: stale });
+    order.noteWritten([ADDRESS], ["issue-2"]);
+    const first = order.nextIssueRead();
+    order.noteStretch(ADDRESS, { above: Infinity, through: 5, read: first });
+    const lastSay = order.lastSayOn(ADDRESS);
+    expect(lastSay(issue(2))).toBeGreaterThan(stale);
+    const last = order.nextIssueRead();
+    order.noteStretch(ADDRESS, { above: 5, through: -Infinity, read: last, pullRead: first });
+    expect(order.lastSayOn(ADDRESS)(issue(2))).toBe(last);
+    expect(order.lastSayOn(ADDRESS)(issue(6))).toBe(first);
+  });
+
+  it("gives a card this tab moved the say over any read already out", async () => {
+    const order = await import("../src/core/issueReadOrder.js");
+    const out = order.nextIssueRead();
+    const moved = issue(5, { status: "done" });
+    order.noteWritten([ADDRESS], ["issue-5"]);
+    const laid = pages.withIssuePage([moved], stretch([issue(5, { status: "backlog" })], { read: out }), order.lastSayOn(ADDRESS));
+    expect(laid).toEqual([moved]);
+  });
+});
+
 describe("pulling every page", () => {
   const LIST = Array.from({ length: 7 }, (_, index) => issue(7 - index));
   /** A bridge that pages the way #85's does: number descending, and a cursor

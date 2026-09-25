@@ -29,6 +29,7 @@ import {
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
+import { noteWritten } from "./issueReadOrder.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
@@ -487,6 +488,10 @@ export function mountIssuesPane(host, options) {
     const movedQuery = withMovedIssue(heldQuery, issueId, status);
     const movedCatalogue = withMovedIssue(heldCatalogue, issueId, status);
     state.focusIssue = issueId;
+    const moved = [issuesQueryAddress(state.deviceId, state.projectId, queryParams()), issuesAddress(state.deviceId, state.projectId)];
+    // Newer than any page still out: one landing after this does not put the
+    // card back (core/issueReadOrder.js).
+    noteWritten(moved, [issueId]);
     await Promise.all([
       writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns)),
       writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns)),
@@ -496,6 +501,7 @@ export function mountIssuesPane(host, options) {
     } catch (error) {
       if (state.disposed) return;
       state.focusIssue = issueId;
+      noteWritten(moved, [issueId]);
       await Promise.all([
         writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns)),
         writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns)),

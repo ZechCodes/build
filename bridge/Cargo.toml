@@ -35,6 +35,7 @@ dryoc = "0.7"
 base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
+httpdate = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 semver = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }

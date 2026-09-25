@@ -297,6 +297,69 @@ async fn a_beat_refused_in_passing_is_tried_again_soon() {
     );
 }
 
+/// A failure that does not pass soon is not asked about every few seconds
+/// for as long as it lasts: the retries come less soon each time, up to the
+/// interval, so ten devices behind one address cannot spend the api's whole
+/// budget for it between them (#131 review). At a 3 s interval the beats
+/// come at 0 s, then about 0.5, 1.5, 3.5 and 6.5 s — against twelve in 6 s
+/// at a fixed half second.
+#[tokio::test]
+async fn a_failure_that_goes_on_is_retried_less_soon_each_time() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_secs(3));
+    tokio::time::sleep(Duration::from_millis(6000)).await;
+    let beats = received(&api, 0).await;
+    beating.abort();
+
+    assert!(
+        (4..=5).contains(&beats.len()),
+        "{} beats in 6 s of 503s",
+        beats.len()
+    );
+}
+
+/// A 429 that says when to come back is not asked before then, although a
+/// first retry would otherwise come half a second later; and once a beat
+/// lands, the next waits the interval.
+#[tokio::test]
+async fn a_rate_limited_beat_waits_out_the_retry_after_and_recovers() {
+    let api = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "2"))
+        .up_to_n_times(1)
+        .mount(&api)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(HEARTBEAT_PATH))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&api)
+        .await;
+    let (identity, _) = identity_for("dev-1");
+
+    let beating =
+        PresenceReporter::start_every(&api.uri(), &identity, &reached(), Duration::from_secs(3));
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let waiting = received(&api, 0).await.len();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let after_it = received(&api, 0).await.len();
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let then = received(&api, 0).await.len();
+    beating.abort();
+
+    assert_eq!(waiting, 1, "nothing before the Retry-After's 2 s");
+    assert_eq!(after_it, 2, "asked again once it passed");
+    assert_eq!(then, 2, "landed, so the next waits the 3 s interval");
+}
+
 /// A beat the api refuses on its merits — a device it does not know, a
 /// signature it will not take — is not asked again early: the answer would
 /// be the same.

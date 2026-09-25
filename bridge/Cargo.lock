@@ -294,6 +294,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "git2",
+ "httpdate",
  "ignore",
  "jiff",
  "libc",

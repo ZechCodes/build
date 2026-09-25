@@ -109,6 +109,6 @@ wait "$soak" || soak_exit=$?
 say "the soak:"
 sed -n '/liveness summary/,$p' "$logs/soak.log"
 say "the ICE restart:"
-grep -E "restart|RESULT|NEGATIVE|before:|after:|never connected|pageerror|ice-restart-check:" "$logs/ice-restart.log" || tail -20 "$logs/ice-restart.log"
+grep -E "restart|RESULT|NEGATIVE|before:|after:|generation|probe|never connected|pageerror|ice-restart-check:" "$logs/ice-restart.log" || tail -20 "$logs/ice-restart.log"
 say "soak exit $soak_exit, ICE restart exit $restart_exit"
 [ "$soak_exit" = 0 ] && [ "$restart_exit" = 0 ]

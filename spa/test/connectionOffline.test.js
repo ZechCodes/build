@@ -484,6 +484,22 @@ describe("per-device connections", () => {
 
   // The link only knows a restart landed on a dead process if it can ask the
   // session. Without the question it takes every restart as carried.
+  // The console's probe asks the same carry check of every machine that can
+  // answer — the live sessions this file connected, not a list of its own.
+  it("probes each live machine's own session from the console", async () => {
+    await connectEveryDevice();
+    const rows = await globalThis.buildConnectionProbe(250);
+    expect(rows.length).toBeGreaterThan(0);
+    const sessions = [...handedOut.values()].flat();
+    for (const row of rows) {
+      const asked = sessions.filter((one) => one.deviceId === row.deviceId && one.confirmCarried.mock.calls.length > 0);
+      expect(asked, row.deviceId).toHaveLength(1);
+      expect(asked[0].confirmCarried).toHaveBeenCalledWith(250);
+    }
+    // The stand-in answers with a sentence rather than `true`, so none counts.
+    expect(rows.every((row) => row.carried === false)).toBe(true);
+  });
+
   it("hands each peer link its own session's carry check", async () => {
     await connectEveryDevice();
     const handed = wire.openPeerLink.mock.calls.map(([options]) => options.confirmCarried);

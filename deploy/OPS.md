@@ -24,6 +24,11 @@ restart outcomes and deadlines. The history stays in that tab's memory and is
 cleared by a reload. It contains timestamps and connection identifiers, not SDP,
 candidate addresses, credentials or application content.
 
+To ask whether a tab that reads connected is still carried right now, run
+`await buildConnectionProbe()` there. It sends each machine the tab can talk to
+one `ping` over the path its session rides and answers
+`[{ deviceId, carried, ms }]`.
+
 Match the session identifier and timestamp with the bridge's stderr. A macOS
 LaunchAgent writes this to `~/.build/log/bridge.err.log`; a Linux service writes
 to `journalctl --user -u build-bridge`. Diagnostic lines contain `timestamp_ms`

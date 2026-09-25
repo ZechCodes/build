@@ -18,20 +18,26 @@
 //      and the app's own "does it carry" probe before it says `connected`;
 //   3. the app's diagnostics (`buildConnectionDiagnostics()`, what Settings →
 //      Diagnostics shows) time it: `restarting` to the restart's `connected`;
-//   4. and the peer itself says it was a restart, not the old path carrying
-//      on under a new name: the same RTCPeerConnection, a new ICE generation
-//      at both ends (a new ufrag in the local and in the bridge's
-//      description), and the pair selected on it a different one from
-//      before, nominated, relayed, and carrying data both ways. The synthetic
-//      `failed` leaves the old path working, so the app's word alone cannot
-//      tell a restart from none (#131 review: with `iceRestart` stripped from
-//      the offer, the ufrags stayed and the diagnostics still said
-//      "restarted"). NEGATIVE_CONTROL=1 strips it that way, and must fail.
+//   4. the peer itself says it was a restart, not the old path carrying on
+//      under a new name: within the same deadline, the same RTCPeerConnection
+//      reaches a new ICE generation at both ends (a new ufrag in the local and
+//      in the bridge's description) with a selected pair that is not the old
+//      one, succeeded, nominated and relayed. The synthetic `failed` leaves
+//      the old path working, so the app's word alone cannot tell a restart
+//      from none (#131 review: with `iceRestart` stripped from the offer, the
+//      ufrags stayed and the diagnostics still said "restarted").
+//      NEGATIVE_CONTROL=1 strips it that way, and must fail;
+//   5. and the new pair carries the session, asked rather than watched: an
+//      idle path carries nothing, so once the generation is selected, and
+//      every PROBE_EVERY_MS through the hold, the check has the app send —
+//      `buildConnectionProbe()`, the app's own carry check (a `ping` over the
+//      path its session rides) — and requires every machine answered and the
+//      exchange counted on the new pair both ways.
 //
 // Exit 0 when the restart landed within RESTART_DEADLINE_MS on a relayed path
-// of a new ICE generation and the app held it for HOLD_MS after; 1 when it
-// did not; 2 when the run could not get as far as a restart (no connection to
-// begin with).
+// of a new ICE generation that carried every probe for HOLD_MS after; 1 when
+// it did not; 2 when the run could not get as far as a restart (no connection
+// to begin with).
 //
 // It runs inside mcr.microsoft.com/playwright with the host's network, so it
 // reaches the stack's published ports and coturn's address on the compose
@@ -39,7 +45,8 @@
 //
 //   APP=http://localhost:8128  TURN_HOST=<coturn IP>  TURN_USER / TURN_PASSWORD
 //   SETTLE_MS=20000   how long the session carries before the restart
-//   RESTART_DEADLINE_MS=15000   HOLD_MS=20000   CHROMIUM_PATH (optional)
+//   RESTART_DEADLINE_MS=15000   HOLD_MS=20000   PROBE_EVERY_MS=4000
+//   CHROMIUM_PATH (optional)
 //   NEGATIVE_CONTROL=1   the app's restart offer loses `iceRestart`
 
 import { chromium } from "playwright";
@@ -50,6 +57,7 @@ const EMAIL = process.env.QA_EMAIL || "qa@localhost";
 const SETTLE_MS = num("SETTLE_MS", 20000);
 const RESTART_DEADLINE_MS = num("RESTART_DEADLINE_MS", 15000);
 const HOLD_MS = num("HOLD_MS", 20000);
+const PROBE_EVERY_MS = num("PROBE_EVERY_MS", 4000);
 const CONNECT_TIMEOUT_MS = num("CONNECT_TIMEOUT_MS", 120000);
 const TURN_HOST = process.env.TURN_HOST;
 const TURN_PORT = num("TURN_PORT", 3478);
@@ -127,7 +135,8 @@ const iceOf = (page) =>
     };
   });
 
-/** Why `after` is not a restart of `before` that carries, or null when it is. */
+/** Why `after` is not a new ICE generation of `before`, selected on a
+ *  relayed pair, or null when it is. */
 function notARestart(before, after) {
   if (after.peers !== before.peers) return `a new connection (${before.peers} → ${after.peers} peers), not an ICE restart`;
   if (!after.local || after.local === before.local) return `the local ufrag did not change (${before.local} → ${after.local})`;
@@ -137,8 +146,41 @@ function notARestart(before, after) {
   if (pair.id === before.pair?.id) return `the old candidate pair ${pair.id} is still the selected one`;
   if (pair.state !== "succeeded" || !pair.nominated) return `the new pair is ${pair.state}, nominated ${pair.nominated}`;
   if (pair.localType !== "relay") return `the new pair is ${pair.localType}, not relayed`;
-  if (!(pair.bytesSent > 0 && pair.bytesReceived > 0)) return `the new pair carried ${pair.bytesSent} bytes out and ${pair.bytesReceived} in`;
   return null;
+}
+
+/** Wait, until `deadline` (this process's clock), for the newest peer to
+ *  reach a new generation of `before`. `{ ice }` when it did; `{ why, ice }`
+ *  with the last reason when the deadline passed first. */
+async function newGeneration(page, before, deadline) {
+  for (;;) {
+    const ice = await iceOf(page);
+    const why = notARestart(before, ice);
+    if (!why) return { ice };
+    if (Date.now() > deadline) return { why, ice };
+    await page.waitForTimeout(100);
+  }
+}
+
+/** Have the app carry something now — `buildConnectionProbe()`, one carry
+ *  check per machine over the path its session rides — and require every
+ *  machine to answer with the exchange counted on `pairId` both ways. `{ why }`
+ *  when it did not; `{ ms, sent, received }` when it did. */
+async function carriesOn(page, pairId) {
+  const before = await iceOf(page);
+  const rows = await page.evaluate(() => window.buildConnectionProbe?.(5000) ?? null);
+  // Chromium serves getStats from a cache a few tens of milliseconds old.
+  await page.waitForTimeout(150);
+  const after = await iceOf(page);
+  if (!Array.isArray(rows)) return { why: "this app has no buildConnectionProbe() to ask" };
+  if (rows.length === 0 || !rows.every((row) => row.carried)) return { why: `the app's probe went unanswered: ${JSON.stringify(rows)}` };
+  if (before.pair?.id !== pairId || after.pair?.id !== pairId) {
+    return { why: `the selected pair moved off ${pairId} (${before.pair?.id} → ${after.pair?.id})` };
+  }
+  const sent = after.pair.bytesSent - before.pair.bytesSent;
+  const received = after.pair.bytesReceived - before.pair.bytesReceived;
+  if (!(sent > 0 && received > 0)) return { why: `the probe did not cross ${pairId}: ${sent} bytes out, ${received} in` };
+  return { ms: Math.max(...rows.map((row) => row.ms)), sent, received };
 }
 
 /** What the app recorded about its connection, oldest first. */
@@ -255,29 +297,41 @@ async function main() {
       return 1;
     }
 
-    const restarted = await iceOf(page);
-    log(`after: ${JSON.stringify(restarted)}`);
-    const not = notARestart(before, restarted);
-    if (not) {
-      log(`RESULT FAIL: the app said it restarted, and ICE did not: ${not}`);
+    // The new generation, within the same deadline the landing had.
+    const pageNow = await page.evaluate(() => Date.now());
+    const deadline = Date.now() + RESTART_DEADLINE_MS - (pageNow - outcome.restarting.at);
+    const reached = await newGeneration(page, before, deadline);
+    log(`after: ${JSON.stringify(reached.ice)}`);
+    if (reached.why) {
+      log(`RESULT FAIL: the app said it restarted, and ICE did not within ${RESTART_DEADLINE_MS} ms: ${reached.why}`);
       return 1;
     }
+    const restarted = reached.ice;
+    const generationMs = (await page.evaluate(() => Date.now())) - outcome.restarting.at;
+    log(`new generation ${restarted.local}/${restarted.remote} on ${restarted.pair.id}, ${generationMs} ms after restarting`);
 
-    await page.waitForTimeout(HOLD_MS);
+    // Carried, asked: once now, and every PROBE_EVERY_MS through the hold.
+    const holdEnds = Date.now() + HOLD_MS;
+    const probes = [];
+    for (;;) {
+      const probe = await carriesOn(page, restarted.pair.id);
+      if (probe.why) {
+        log(`RESULT FAIL: probe ${probes.length + 1} on the restarted path: ${probe.why}`);
+        return 1;
+      }
+      probes.push(probe);
+      log(`  probe ${probes.length}: answered in ${probe.ms} ms, ${probe.sent} bytes out and ${probe.received} in on ${restarted.pair.id}`);
+      if (Date.now() >= holdEnds) break;
+      await page.waitForTimeout(Math.min(PROBE_EVERY_MS, Math.max(0, holdEnds - Date.now())));
+    }
     const lost = after(await diagnostics(page)).filter((row) => ["restart-failed", "closed"].includes(row.event));
     if (lost.length > 0) {
       log(`RESULT FAIL: the restarted session did not hold: ${JSON.stringify(lost)}`);
       return 1;
     }
-    const held = await iceOf(page);
-    if (held.pair?.id !== restarted.pair.id || !(held.pair.bytesReceived > restarted.pair.bytesReceived)) {
-      log(`RESULT FAIL: the new pair did not carry through the hold: ${JSON.stringify(held)}`);
-      return 1;
-    }
     log(
       `RESULT PASS: restarted in ${tookMs} ms onto ICE generation ${restarted.local}/${restarted.remote} ` +
-        `(was ${before.local}/${before.remote}), relayed, and held ${HOLD_MS} ms carrying ` +
-        `${held.pair.bytesReceived - restarted.pair.bytesReceived} bytes in`,
+        `(was ${before.local}/${before.remote}), relayed, and carried all ${probes.length} probes over ${HOLD_MS} ms`,
     );
     return 0;
   } finally {

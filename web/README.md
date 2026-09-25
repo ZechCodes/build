@@ -153,9 +153,10 @@ brings up its own stack (`deploy/compose.liveness.yml` over
   on the host's network: the real app over the same TURN, made to see its
   peer fail once, so it runs its own ICE restart; fails unless the restart
   lands within 15 s, on the same peer with a new ufrag at both ends and a
-  new nominated relay pair carrying data, and holds. `NEGATIVE_CONTROL=1`
-  strips `iceRestart` from the app's restart offer, and the gate must then
-  fail.
+  new nominated relay pair, and that pair carries every probe the check has
+  the app send (`buildConnectionProbe()`, a `ping` over the session's path)
+  on landing and every 4 s through a 20 s hold. `NEGATIVE_CONTROL=1` strips
+  `iceRestart` from the app's restart offer, and the gate must then fail.
 
 It needs docker and nothing else, exits non-zero if either failed, and takes
 the stack down whatever happened. `SOAK_MS=120000 RESTART_AT_S=45` is a short

@@ -23,6 +23,7 @@ import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
+import { probeConnections } from "./core/connectionProbe.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, rememberSelectedDevice } from "./app.js";
@@ -271,6 +272,8 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
 // The whole record rather than the events alone: somebody reading this out of a
 // console is the person who most needs to know the ring dropped something (#60).
 globalThis.buildConnectionDiagnostics = connectionDiagnosticReport;
+// Its twin that asks rather than remembers: one carry check per machine, now.
+globalThis.buildConnectionProbe = (timeoutMs) => probeConnections(timeoutMs);
 
 /**
  * Find this machine, open its connection, and put the session on it.

@@ -23,6 +23,7 @@ import { createDeviceRecoverySupervisor } from "./core/deviceRecovery.js";
 import { openSession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
 import { connectionDiagnosticReport, recordConnectionDiagnostic } from "./core/connectionDiagnostics.js";
+import { cacheHealth } from "./core/localCache.js";
 import { probeConnections } from "./core/connectionProbe.js";
 import { isSignaling } from "./core/sessionSwitch.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
@@ -274,6 +275,9 @@ function openDirectLink(deviceId, session, sessionLease, authority) {
 globalThis.buildConnectionDiagnostics = connectionDiagnosticReport;
 // Its twin that asks rather than remembers: one carry check per machine, now.
 globalThis.buildConnectionProbe = (timeoutMs) => probeConnections(timeoutMs);
+// Whether the local cache every surface paints from is answering, and if not,
+// since when and why (#169). Its events are in the dump above, as `local-cache`.
+globalThis.buildCacheHealth = () => cacheHealth();
 
 /**
  * Find this machine, open its connection, and put the session on it.

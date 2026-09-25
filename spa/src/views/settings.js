@@ -28,6 +28,7 @@ import { onDeviceStateChanged } from "../core/deviceContexts.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../core/connectionDiagnostics.js";
 import { connectionDiagnosticsPanelHtml, mountConnectionDiagnostics } from "../core/connectionDiagnosticsPanel.js";
 import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersionLine.js";
+import { cacheHealthLineHtml, mountCacheHealthLine } from "../core/cacheHealthLine.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 
 /** The sha this bundle was built at, as core/version.js and core/changeEvents.js
@@ -123,12 +124,13 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   let disposeCreation = null;
   let disposePairing = null;
   let disposeDiagnostics = null;
+  let disposeCacheHealth = null;
   let disposeDevices = null;
   let disposeCatalog = null;
   let disposeCatalogState = null;
   let disposePush = null;
   let catalogDeviceId;
-  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); disposePush?.(); });
+  registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeCacheHealth?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); disposePush?.(); });
   root.innerHTML = `
     <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
@@ -170,6 +172,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
     </div>
     ${connectionDiagnosticsPanelHtml()}
     ${buildVersionLineHtml(BUNDLE_VERSION)}
+    ${cacheHealthLineHtml()}
     <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed. Each device's own settings — its projects, its folder, how agents run there — live on its page.</div>
@@ -309,6 +312,9 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   // account list, so a device that has a name is named. Its poll is this page's
   // teardown — nothing ticks once Settings is off screen.
   mountBuildVersionLine(root, { version: BUNDLE_VERSION, clipboard: navigator.clipboard });
+  // Whether the cache every surface paints from is answering (#169): a blank
+  // screen with a working cache is the bridge's story, and one without is not.
+  disposeCacheHealth = mountCacheHealthLine(root);
 
   disposeDiagnostics = mountConnectionDiagnostics(root, {
     history: connectionDiagnosticHistory,

@@ -33,10 +33,16 @@ const seedVersion = (version, key, record) =>
     };
   });
 
+/** The recovery schedule, shortened so a test waits milliseconds for what a
+ *  phone waits seconds for. Same shape: several attempts, then a rest. */
+const FAST_RECOVERY = { reopenDelaysMs: [0, 1, 2, 3], openTimeoutMs: 200, restMs: 40 };
+
 beforeEach(async () => {
   vi.resetModules();
   freshFactory();
   cache = await import("../src/core/localCache.js");
+  cache.setCacheRecoveryTiming(FAST_RECOVERY);
+  vi.spyOn(console, "info").mockImplementation(() => {});
 });
 
 describe("records", () => {
@@ -126,12 +132,12 @@ describe("a write that fails", () => {
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, { head: "abc" });
     const heard = [];
     cache.subscribeCache({ deviceId: "dev-1" }, (changed) => heard.push(changed));
-    // A value IndexedDB cannot store: the put throws inside the transaction,
-    // and the cache stands down for the session.
+    // A value IndexedDB cannot store: the put throws inside the transaction.
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, () => "not storable");
     expect(heard).toEqual([]);
-    // Degraded to "no cache", silently — never to "what you hold has changed".
-    await expect(cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" })).resolves.toBeUndefined();
+    // That write failed and nothing else did: what was stored still reads.
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }))?.value).toEqual({ head: "abc" });
+    expect(cache.cacheHealth().state).toBe("ready");
   });
 });
 
@@ -207,41 +213,32 @@ describe("a suspended browser whose IndexedDB connection closes", () => {
     }
   });
 
-  it("keeps a caller's merge error fatal even when it resembles a connection error", async () => {
+  it("fails a caller's merge error alone, even when it resembles a connection error", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
     await cache.writeCached(address, { count: 1 });
     let calls = 0;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(await cache.mergeCachedAtomically(address, () => {
-        calls += 1;
-        throw new DOMException("caller failed", "InvalidStateError");
-      })).toBe(false);
-      expect(calls).toBe(1);
-      expect(await cache.readCached(address)).toBeUndefined();
-      expect(warn).toHaveBeenCalledTimes(1);
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await cache.mergeCachedAtomically(address, () => {
+      calls += 1;
+      throw new DOMException("caller failed", "InvalidStateError");
+    })).toBe(false);
+    // Not retried as a cache fault, and not a reason to stop answering.
+    expect(calls).toBe(1);
+    expect((await cache.readCached(address))?.value).toEqual({ count: 1 });
+    expect(cache.cacheHealth().state).toBe("ready");
   });
 
-  it("stands down for an uncloneable record from an atomic merge", async () => {
+  it("refuses an uncloneable record from an atomic merge without standing down", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
     await cache.writeCached(address, { count: 1 });
     const heard = [];
     cache.subscribeCache(address, (changed) => heard.push(changed));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(await cache.mergeCachedAtomically(address, () => ({ uncloneable: () => {} }))).toBe(false);
-      expect(heard).toEqual([]);
-      expect(await cache.readCached(address)).toBeUndefined();
-      expect(warn).toHaveBeenCalledTimes(1);
-    } finally {
-      warn.mockRestore();
-    }
+    expect(await cache.mergeCachedAtomically(address, () => ({ uncloneable: () => {} }))).toBe(false);
+    expect(heard).toEqual([]);
+    expect((await cache.readCached(address))?.value).toEqual({ count: 1 });
+    expect(cache.cacheHealth().state).toBe("ready");
   });
 
-  it("bounds repeated storage put failures inside a merge", async () => {
+  it("bounds repeated storage put failures inside a merge, failing that write alone", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
     await cache.writeCached(address, { count: 1 });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -250,13 +247,16 @@ describe("a suspended browser whose IndexedDB connection closes", () => {
     });
     try {
       expect(await cache.mergeCachedAtomically(address, (previous) => ({ count: previous.count + 1 }))).toBe(false);
-      expect(put).toHaveBeenCalledTimes(2);
-      expect(await cache.readCached(address)).toBeUndefined();
-      expect(warn).toHaveBeenCalledTimes(1);
+      expect(put).toHaveBeenCalledTimes(FAST_RECOVERY.reopenDelaysMs.length);
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       put.mockRestore();
       warn.mockRestore();
     }
+    // The cache never stood down: the record reads, and the next write lands.
+    expect((await cache.readCached(address))?.value).toEqual({ count: 1 });
+    expect(await cache.mergeCachedAtomically(address, (previous) => ({ count: previous.count + 1 }))).toBe(true);
+    expect(cache.cacheHealth().state).toBe("ready");
   });
 
   it("reopens the store and keeps records readable after wake", async () => {
@@ -422,19 +422,30 @@ describe("a suspended browser whose IndexedDB connection closes", () => {
     }
   });
 
-  it("stands down after a bounded number of persistent connection failures", async () => {
+  it("keeps a read waiting through persistent connection failures, never answering it with nothing", async () => {
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
-    await cache.readCached(address); // let fake-indexeddb create its upgrade transaction
+    await cache.writeCached(address, { head: "stored" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
-      throw new DOMException("connection closed", "InvalidStateError");
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let failing = true;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      if (failing) throw new DOMException("connection closed", "InvalidStateError");
+      return originalTransaction.apply(this, args);
     });
     try {
-      expect(await cache.readCached(address)).toBeUndefined();
-      expect(transaction).toHaveBeenCalledTimes(2);
-      expect(await cache.readCached(address)).toBeUndefined();
-      expect(transaction).toHaveBeenCalledTimes(2);
-      expect(warn).toHaveBeenCalledTimes(1);
+      let answered = false;
+      const read = cache.readCached(address).then((record) => {
+        answered = true;
+        return record;
+      });
+      // Past a whole round of attempts and into the next: still no answer.
+      await vi.waitFor(() => expect(transaction.mock.calls.length).toBeGreaterThan(FAST_RECOVERY.reopenDelaysMs.length));
+      expect(answered).toBe(false);
+      expect(cache.cacheHealth()).toMatchObject({ state: "recovering", error: "InvalidStateError" });
+      failing = false;
+      expect((await read)?.value).toEqual({ head: "stored" });
+      expect(cache.cacheHealth().state).toBe("ready");
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       transaction.mockRestore();
       warn.mockRestore();

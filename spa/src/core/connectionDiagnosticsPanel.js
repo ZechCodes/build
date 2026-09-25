@@ -25,7 +25,7 @@ const POLL_MS = 1000;
 /// rather than behind a link because the buttons under it send this somewhere:
 /// whoever presses Share is owed the contents before they do.
 const PRIVACY_NOTE =
-  "Timestamps and connection identifiers only — no message content, no keys, no addresses. The history lives in this tab and a reload clears it.";
+  "Timestamps, connection identifiers and the browser's storage errors only — no message content, no keys, no addresses. The history lives in this tab and a reload clears it.";
 
 export function connectionDiagnosticsPanelHtml() {
   return `<div class="panel" id="diagnostics">

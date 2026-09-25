@@ -11,12 +11,35 @@
 //! bridge, so a new table means the roll cannot be rolled back — and the roster
 //! is worth nothing the moment it has been read. A file the next boot consumes
 //! and deletes is the right durability for it.
+//!
+//! A shutdown that never runs — SIGKILL, a panic, the power going — writes no
+//! roster, so there is a second file: the [`LiveRoster`], rewritten whenever
+//! the set of working agents changes and removed only once a clean shutdown
+//! has written the roster proper. A boot that finds the live file and no
+//! roster promotes the one to the other ([`promote_live_roster`]), and resumes
+//! from it exactly as it would from a roll.
+//!
+//! Both files hold ids and nothing else: which entity, which agent, which
+//! conversation, which harness session. No message, no prompt, no token.
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// The roster, beside the store's database in the tasks directory.
 pub const ROSTER_FILE: &str = "resume-roster.json";
+
+/// The live roster: who is working right now, kept on disk for the shutdown
+/// that never happens. Beside the roster, and only ever renamed onto it.
+pub const LIVE_ROSTER_FILE: &str = "resume-roster.live.json";
+
+/// How long systemd waits after SIGTERM before it sends SIGKILL. The final
+/// write is one small file and an fsync, and nothing on the way to it waits
+/// for the app mutex; this is the headroom for a disk that is slow to sync
+/// and the scope stops after it, not an estimate of either. A SIGKILL past it
+/// still loses nothing the live roster did not already have on disk.
+pub const STOP_TIMEOUT_SECS: u64 = 30;
 
 /// The per-roll opt-out a script can drop next to it. Consumed at boot, so it
 /// silences exactly one restart and never the one after.
@@ -97,14 +120,253 @@ impl ResumeRoster {
             let _ = std::fs::remove_file(&path);
             return Ok(());
         }
-        let body = serde_json::to_string_pretty(self)
-            .map_err(|error| format!("serialize the resume roster: {error}"))?;
-        std::fs::write(&path, body).map_err(|error| format!("write {}: {error}", path.display()))
+        write_atomically(&path, &self.body()?)
     }
 
-    /// Drop any roster without reading it — the opt-out's shutdown half.
+    fn body(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| format!("serialize the resume roster: {error}"))
+    }
+
+    /// Drop any roster without reading it — the opt-out's shutdown half. The
+    /// live roster goes with it: an opted-out roll must not be resumed from
+    /// the file a crash would have been.
     pub fn forget(dir: &Path) {
         let _ = std::fs::remove_file(Self::path(dir));
+        let _ = std::fs::remove_file(live_path(dir));
+    }
+}
+
+fn live_path(dir: &Path) -> PathBuf {
+    dir.join(LIVE_ROSTER_FILE)
+}
+
+/// Replace `path` with `body` so that a reader — the next boot, after any kind
+/// of death — finds the old file or the new one and never half of either: a
+/// temp file beside it, synced, renamed over it, and the directory synced so
+/// the rename itself survives the power going.
+fn write_atomically(path: &Path, body: &str) -> Result<(), String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} names no file", path.display()))?;
+    let temp = path.with_file_name(format!(".{}.tmp", name.to_string_lossy()));
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        if let Some(dir) = path.parent() {
+            std::fs::File::open(dir)?.sync_all()?;
+        }
+        Ok::<(), std::io::Error>(())
+    })();
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!("write {}: {error}", path.display())
+    })
+}
+
+/// At boot, before anything can write the live roster again: a live roster
+/// with no roster beside it is what a death that ran no shutdown left, and it
+/// becomes the roster this boot resumes from. Renamed rather than read, so a
+/// boot that dies before it resumes anybody leaves the same roster for the
+/// boot after it.
+///
+/// A roster beside it wins: a clean shutdown wrote that one last, and the live
+/// file is what it had not yet removed. Returns whether a live roster was
+/// promoted, which is what the boot log says.
+pub fn promote_live_roster(dir: &Path) -> bool {
+    let live = live_path(dir);
+    if !live.exists() {
+        return false;
+    }
+    if ResumeRoster::path(dir).exists() {
+        let _ = std::fs::remove_file(&live);
+        return false;
+    }
+    match std::fs::rename(&live, ResumeRoster::path(dir)) {
+        Ok(()) => true,
+        Err(error) => {
+            eprintln!("resume: could not promote {}: {error}", live.display());
+            false
+        }
+    }
+}
+
+/// The live roster: the set of agents a crash would have to bring back, on
+/// disk for as long as the daemon runs.
+///
+/// [`publish`](Self::publish) is called with the app mutex held, so it does no
+/// filesystem work at all: it swaps the newest list into a slot and wakes a
+/// thread of its own, which writes with every lock released. Lists published
+/// while a write is in flight collapse into the newest one — the file only
+/// ever has to hold the last.
+#[derive(Clone)]
+pub struct LiveRoster {
+    shared: Arc<LiveShared>,
+}
+
+struct LiveShared {
+    dir: PathBuf,
+    version: String,
+    slot: Mutex<LiveSlot>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct LiveSlot {
+    /// The newest list published, written or not.
+    latest: Vec<ResumingAgent>,
+    /// Whether `latest` has not reached the file yet.
+    unwritten: bool,
+    /// Whether the writer is between taking a list and finishing with it.
+    writing: bool,
+    /// Set by the clean shutdown; nothing published after it is written.
+    finished: bool,
+}
+
+impl LiveRoster {
+    /// Start the writer for `dir`. Call [`promote_live_roster`] first: the
+    /// first list published overwrites whatever the last run left.
+    pub fn start(dir: &Path, version: &str) -> LiveRoster {
+        let live = LiveRoster {
+            shared: Arc::new(LiveShared {
+                dir: dir.to_path_buf(),
+                version: version.to_string(),
+                slot: Mutex::new(LiveSlot::default()),
+                changed: Condvar::new(),
+            }),
+        };
+        let writer = live.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("live-roster".to_string())
+            .spawn(move || writer.write_until_finished())
+        {
+            eprintln!("resume: no live roster this run ({error}); only a clean shutdown records");
+            live.shared.slot.lock().unwrap().finished = true;
+        }
+        live
+    }
+
+    /// Say who is working now. Cheap and lock-safe: an unchanged list is
+    /// dropped here, and a changed one is only handed to the writer.
+    pub fn publish(&self, agents: Vec<ResumingAgent>) {
+        let mut slot = self.shared.slot.lock().unwrap();
+        if slot.finished || slot.latest == agents {
+            return;
+        }
+        slot.latest = agents;
+        slot.unwritten = true;
+        self.shared.changed.notify_all();
+    }
+
+    fn write_until_finished(&self) {
+        let mut slot = self.shared.slot.lock().unwrap();
+        loop {
+            if slot.unwritten {
+                let agents = slot.latest.clone();
+                slot.unwritten = false;
+                slot.writing = true;
+                drop(slot);
+                if let Err(error) = self.write(agents) {
+                    eprintln!("resume: could not write the live roster: {error}");
+                }
+                slot = self.shared.slot.lock().unwrap();
+                slot.writing = false;
+                self.shared.changed.notify_all();
+                continue;
+            }
+            if slot.finished {
+                return;
+            }
+            slot = self.shared.changed.wait(slot).unwrap();
+        }
+    }
+
+    fn write(&self, agents: Vec<ResumingAgent>) -> Result<(), String> {
+        let path = live_path(&self.shared.dir);
+        if agents.is_empty() {
+            return match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    Err(format!("remove {}: {error}", path.display()))
+                }
+                _ => Ok(()),
+            };
+        }
+        let roster = ResumeRoster {
+            recorded_at: crate::store::now_rfc3339(),
+            version: self.shared.version.clone(),
+            agents,
+        };
+        write_atomically(&path, &roster.body()?)
+    }
+
+    /// The clean shutdown: stop the writer, write the roster proper from the
+    /// newest list, and only then remove the live file.
+    ///
+    /// The list is the one the last mutation published, so this never waits
+    /// on the app mutex — a handler holding it for a minute cannot hold the
+    /// shutdown past systemd's patience. A write already in flight is waited
+    /// for, so it cannot land after the removal and leave a live roster for a
+    /// shutdown that was clean. `wanted` is the opt-out: `false` records
+    /// nobody and leaves neither file behind.
+    ///
+    /// Returns how many agents were recorded. On an error the live roster is
+    /// left where it is, so the next boot still resumes from it.
+    pub fn finish(&self, wanted: bool) -> Result<usize, String> {
+        let agents = {
+            let mut slot = self.shared.slot.lock().unwrap();
+            slot.finished = true;
+            self.shared.changed.notify_all();
+            while slot.writing {
+                slot = self.shared.changed.wait(slot).unwrap();
+            }
+            slot.unwritten = false;
+            slot.latest.clone()
+        };
+        let dir = &self.shared.dir;
+        if !wanted {
+            ResumeRoster::forget(dir);
+            return Ok(0);
+        }
+        let count = agents.len();
+        ResumeRoster {
+            recorded_at: crate::store::now_rfc3339(),
+            version: self.shared.version.clone(),
+            agents,
+        }
+        .save(dir)?;
+        let _ = std::fs::remove_file(live_path(dir));
+        Ok(count)
+    }
+
+    /// The whole of the shutdown half, as the daemon calls it: honour the
+    /// opt-out, [`finish`](Self::finish), and say what happened on stderr.
+    ///
+    /// Silent about its own failure beyond that line: a roster that could not
+    /// be written costs the next boot its resume, and must not cost this
+    /// shutdown its exit — the harnesses are already dying and the store is
+    /// already durable.
+    pub fn record_at_shutdown(&self) {
+        let wanted = resume_is_wanted(&self.shared.dir, |key| std::env::var(key).ok());
+        match self.finish(wanted) {
+            Ok(_) if !wanted => eprintln!("resume: opted out of this roll; recording nobody"),
+            Ok(0) => eprintln!("resume: no agent was working; recorded nobody"),
+            Ok(count) => eprintln!("resume: recorded {count} agent(s) to bring back"),
+            Err(error) => eprintln!(
+                "resume: could not record the roster: {error}; the live roster stays for the next boot"
+            ),
+        }
+    }
+
+    /// Block until everything published so far is on disk. For tests, which
+    /// read the file the writer thread writes.
+    #[cfg(test)]
+    pub fn settle(&self) {
+        let mut slot = self.shared.slot.lock().unwrap();
+        while slot.unwritten || slot.writing {
+            slot = self.shared.changed.wait(slot).unwrap();
+        }
     }
 }
 

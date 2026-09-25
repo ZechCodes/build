@@ -63,6 +63,7 @@ use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
 use build_bridge::reachability::Reachability;
+use build_bridge::resume::{promote_live_roster, LiveRoster};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
@@ -531,7 +532,15 @@ async fn run_daemon(
         runtime.qa_agent,
         runtime.mcp_socket
     );
-    let app = app.shared();
+    // A live roster the last run left and no clean shutdown replaced is the
+    // roster this boot resumes from; it is renamed into place before the new
+    // run's live roster can overwrite it.
+    let tasks_dir = &runtime.tasks_dir;
+    if promote_live_roster(tasks_dir) {
+        eprintln!("resume: the last run ended without a clean shutdown; resuming from its live roster");
+    }
+    let live_roster = LiveRoster::start(tasks_dir, env!("CARGO_PKG_VERSION"));
+    let app = app.with_live_roster(live_roster.clone()).shared();
     let handler = AppState::handler(app.clone());
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
@@ -625,8 +634,10 @@ async fn run_daemon(
     // The one exit the daemon has, whichever way the loop ended: record who was
     // working before the harnesses go with the process. Rolling the binary
     // kills every session on the device at once, and nothing but this says so.
+    // It writes from the live roster's newest list and never waits on the app
+    // mutex, so a handler holding that cannot keep it past `TimeoutStopSec`.
     eprintln!("bridge: shutting down");
-    AppState::record_resume_roster(&app, &runtime.tasks_dir, env!("CARGO_PKG_VERSION"));
+    live_roster.record_at_shutdown();
     // Then the children: in scopes of their own they are no longer in this
     // unit's cgroup for systemd to end, so they are ended here (and by the
     // `BindsTo=` each scope carries, should this not run).

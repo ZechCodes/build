@@ -554,6 +554,7 @@ impl AppState {
                 self.board.attention_mut().remove_entity_clocks(run_id);
                 self.board.diff_mut().remove_run_files_changed_at(run_id);
                 self.invalidate_run_stat(run_id);
+                self.publish_live_roster();
                 self.rescan_external_worktrees(project_id);
             }
         }

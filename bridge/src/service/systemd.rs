@@ -62,6 +62,11 @@ impl ServiceManager for Systemd {
     /// default, 100) and far ahead of its agents' slice (20): it relays the
     /// user's live phone session. `ExecStart=` must not change shape —
     /// `update::provenance` matches that line byte for byte.
+    ///
+    /// `TimeoutStopSec=` is stated rather than left to the manager's default,
+    /// which a distribution may have cut to a few seconds: the SIGTERM path
+    /// writes the resume roster before it exits, and the SIGKILL that follows
+    /// the timeout would cut that write short (`crate::resume`).
     fn render_unit(&self, config: &ServiceConfig) -> String {
         let binary = systemd_quote(&config.binary_path.to_string_lossy());
         let stdout_log = config.log_dir.join("bridge.log");
@@ -82,6 +87,7 @@ impl ServiceManager for Systemd {
              ExecStart={binary} serve\n\
              Restart=on-failure\n\
              RestartSec=5\n\
+             TimeoutStopSec={stop_timeout}\n\
              CPUWeight=500\n\
              {environment}\
              StandardOutput=append:{stdout}\n\
@@ -91,6 +97,7 @@ impl ServiceManager for Systemd {
              WantedBy=default.target\n",
             stdout = stdout_log.display(),
             stderr = stderr_log.display(),
+            stop_timeout = crate::resume::STOP_TIMEOUT_SECS,
         )
     }
 
@@ -163,7 +170,7 @@ mod tests {
         let unit = Systemd.render_unit(&sample_config(HOME));
         assert!(unit.contains("ExecStart=\"/home/dev/.local/bin/build-bridge\" serve\n"));
         assert!(unit.contains("Restart=on-failure\n"));
-        assert!(unit.contains("RestartSec=5\nCPUWeight=500\n"));
+        assert!(unit.contains("RestartSec=5\nTimeoutStopSec=30\nCPUWeight=500\n"));
         assert!(unit.contains("StandardOutput=append:/home/dev/.build/log/bridge.log\n"));
         assert!(unit.contains("StandardError=append:/home/dev/.build/log/bridge.err.log\n"));
         assert!(unit.contains("WantedBy=default.target\n"));
@@ -189,6 +196,7 @@ mod tests {
              ExecStart=\"/home/dev/.local/bin/build-bridge\" serve\n\
              Restart=on-failure\n\
              RestartSec=5\n\
+             TimeoutStopSec=30\n\
              CPUWeight=500\n\
              StandardOutput=append:/home/dev/.build/log/bridge.log\n\
              StandardError=append:/home/dev/.build/log/bridge.err.log\n\

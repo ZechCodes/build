@@ -2,7 +2,7 @@
 
 Run with Pillow (the app's venv has it) from the repository root:
   skriftapp/.venv/bin/python design/email/compose_laptop.py \
-    /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop.png
+    /tmp/laptop-render.png skriftapp/buildapp/landing/email/laptop-front.png
 
 Trims the render to the hardware, pads it evenly, lays it on the email's background
 colour so no client ever shows transparency, scales it to 1200 px (560 px displayed, over
@@ -35,7 +35,10 @@ def compose(render: Image.Image) -> Image.Image:
     canvas.paste(hardware, (padding, padding), hardware)
     height = round(canvas.height * OUTPUT_WIDTH_PX / canvas.width)
     scaled = canvas.resize((OUTPUT_WIDTH_PX, height), Image.Resampling.LANCZOS)
-    return scaled.quantize(PALETTE_COLOURS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.FLOYDSTEINBERG)
+    # An octree palette keeps the small saturated colours (the dock's icons) that a
+    # median cut spends on the dark gradients; the dithered remap hides the banding.
+    palette = scaled.quantize(PALETTE_COLOURS, method=Image.Quantize.FASTOCTREE)
+    return scaled.quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG)
 
 
 def main(source: Path, target: Path) -> None:

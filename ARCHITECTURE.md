@@ -543,21 +543,22 @@ In practice:
   the page to be shown, then rests until the next wake (page shown, `pageshow`,
   `online`, or 10 s) and tries again. The backoff lives in the one shared
   reopen, not in each operation, so writes retried through it keep the order
-  they were asked in. Each open is given five seconds, which bounds one
-  attempt but cannot rescue a hung one: later opens queue behind it. A read is never answered "nothing"
-  because the database was away: it waits until a read really answers, so a
-  surface keeps what it painted and a merge never takes "unreadable" for
-  "empty". A write waits the same way, and one that keeps failing while the
-  database answers fails alone, as does one that does not fit a full quota.
-  Only an error no reopen can fix (a private window refusing IndexedDB, a
-  schema error) stands the cache down for the session — and so does a failure
-  that outlasts the weather: a round of failed opens before the database has
-  ever opened in this page (a store Safari cannot open, with the boot paint
-  waiting on it), a minute of failing while the page is shown, or ten seconds
-  of an upgrade blocked by a tab on an older build. A hidden page waits on. `cacheHealth()` answers the state now (Settings shows
-  it as the "Local cache" line, the console as `buildCacheHealth()`), and every
-  loss, rest, recovery and stand-down is recorded in the connection
-  diagnostics under `local-cache`.
+  they were asked in. Each open is given five seconds, which bounds one attempt
+  but cannot rescue a hung one: later opens queue behind it. A read is never
+  answered "nothing" because the database was away: it waits until a read
+  really answers, so a surface keeps what it painted and a merge never takes
+  "unreadable" for "empty". A write waits the same way, and one that keeps
+  failing while the database answers fails alone, as does one that does not fit
+  a full quota. Only an error no reopen can fix (a private window refusing
+  IndexedDB, a schema error) stands the cache down for the session — and so
+  does a failure that outlasts the weather: a round of failed opens before the
+  database has ever opened in this page (a store Safari cannot open, with the
+  boot paint waiting on it), a minute of failing while the page is shown, or
+  ten seconds of an upgrade blocked by a tab on an older build. A hidden page
+  waits on. `cacheHealth()` answers the state now (Settings shows it as the
+  "Local cache" line, the console as `buildCacheHealth()`), and every loss,
+  rest, recovery and stand-down is recorded in the connection diagnostics under
+  `local-cache`.
 - **The sync layer** is `spa/src/core/cacheSync.js`, the main reader of the
   wire. On a greeting, a reconnect or a tab return, `syncDevice()` makes one
   ordered pass per device: the lists, then the workspace being viewed, then the

@@ -205,6 +205,40 @@ describe("a connection lost across a resume", () => {
   });
 });
 
+describe("a wake in the middle of an outage", () => {
+  it("reopens at the front of the backoff, not after the delay the outage had reached", async () => {
+    // The page's own events, which a node test has none of.
+    const page = new EventTarget();
+    vi.stubGlobal("addEventListener", page.addEventListener.bind(page));
+    try {
+      cache.setCacheRecoveryTiming({ ...FAST_RECOVERY, reopenDelaysMs: [0, 1, 1, 1, 1, 1000], restMs: 60_000 });
+      await cache.writeCached(address, { head: "stored" });
+      const originalTransaction = IDBDatabase.prototype.transaction;
+      let failed = false;
+      vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+        if (!failed) {
+          failed = true;
+          throw connectionLost();
+        }
+        return originalTransaction.apply(this, args);
+      });
+      const open = failOpens(6);
+      const read = cache.readCached(address);
+      await vi.waitFor(() => expect(cache.cacheHealth().state).toBe("resting"), { timeout: 3000 });
+      expect(open).toHaveBeenCalledTimes(6);
+
+      const wokeAt = Date.now();
+      page.dispatchEvent(new Event("pageshow"));
+
+      expect((await read)?.value).toEqual({ head: "stored" });
+      expect(Date.now() - wokeAt).toBeLessThan(500);
+      expect(open).toHaveBeenCalledTimes(7);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("a database that never comes back", () => {
   // Safari has UnknownErrors that are not weather: a store it cannot open or
   // migrate fails every open, the same way, forever. Waiting on it held every

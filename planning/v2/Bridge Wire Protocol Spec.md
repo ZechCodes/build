@@ -617,7 +617,7 @@ announced name and compare an actual `session.hello` reply with that
 registry. The existing `events` array and all earlier greeting fields remain
 present.
 
-`github.repos` (since 1.22.0, gated on its verb name) takes no params and runs
+`github.repos` (since 1.23.0, gated on its verb name) takes no params and runs
 `gh repo list` for the signed-in account and for each organisation `gh org
 list` names, answering the union as `{ repos: [{ name_with_owner,
 description?, ssh_url, url, private, pushed_at? }] }` within 20 s. An

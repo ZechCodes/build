@@ -1,6 +1,6 @@
 {
   "method": "github.repos",
-  "since": "1.22.0",
+  "since": "1.23.0",
   "params": {},
   "result": {
     "repos": [

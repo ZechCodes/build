@@ -108,14 +108,14 @@ impl Priority {
 /// say so.
 struct QueueRecord {
     depth: AtomicUsize,
-    timing: MethodRecord,
+    timing: Histogram,
 }
 
 impl QueueRecord {
-    fn new(priority: Priority) -> QueueRecord {
+    fn new() -> QueueRecord {
         QueueRecord {
             depth: AtomicUsize::new(0),
-            timing: MethodRecord::new(priority.label()),
+            timing: Histogram::new(),
         }
     }
 
@@ -157,10 +157,7 @@ impl FrameClock {
         Arc::new(FrameClock {
             methods: RwLock::new(HashMap::new()),
             holder: Mutex::new(None),
-            queues: [
-                QueueRecord::new(Priority::Foreground),
-                QueueRecord::new(Priority::Background),
-            ],
+            queues: [QueueRecord::new(), QueueRecord::new()],
             served: AtomicU64::new(0),
             slow: AtomicU64::new(0),
             sink,
@@ -264,7 +261,7 @@ impl FrameClock {
 
     fn publish(&self, frame: &FrameTimer) {
         let spent = frame.spent();
-        frame.method.record(spent.total);
+        frame.method.record(&spent);
         self.queue(frame.priority).timing.record(spent.total);
         self.served.fetch_add(1, Ordering::Relaxed);
         if spent.total >= SLOW_FRAME {
@@ -497,45 +494,43 @@ fn micros(duration: Duration) -> u64 {
     duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
-/// One method's frames since boot: how many, how slow the slowest was, and a
-/// fixed histogram of the rest.
-struct MethodRecord {
-    method: String,
+/// Durations since boot: how many, the longest, and a fixed histogram of the
+/// rest.
+struct Histogram {
     served: AtomicU64,
     max_micros: AtomicU64,
     buckets: [AtomicU64; BUCKET_CEILINGS_MICROS.len()],
 }
 
-impl MethodRecord {
-    fn new(method: &str) -> MethodRecord {
-        MethodRecord {
-            method: method.to_string(),
+impl Histogram {
+    fn new() -> Histogram {
+        Histogram {
             served: AtomicU64::new(0),
             max_micros: AtomicU64::new(0),
             buckets: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
-    fn record(&self, total: Duration) {
-        let total = micros(total);
+    fn record(&self, spent: Duration) {
+        let spent = micros(spent);
         self.served.fetch_add(1, Ordering::Relaxed);
-        self.max_micros.fetch_max(total, Ordering::Relaxed);
+        self.max_micros.fetch_max(spent, Ordering::Relaxed);
         let bucket = BUCKET_CEILINGS_MICROS
             .iter()
-            .position(|ceiling| total <= *ceiling)
+            .position(|ceiling| spent <= *ceiling)
             .unwrap_or(BUCKET_CEILINGS_MICROS.len() - 1);
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The bucket ceiling the given share of frames falls at or below, capped
-    /// by the largest frame actually seen — the buckets are coarse, and a
-    /// percentile above the maximum would be a number no frame ever took.
+    /// The bucket ceiling the given share of durations falls at or below,
+    /// capped by the longest actually seen — the buckets are coarse, and a
+    /// percentile above the maximum would be a number nothing ever took.
     fn quantile_micros(&self, share: f64) -> u64 {
         let served = self.served.load(Ordering::Relaxed);
         if served == 0 {
             return 0;
         }
-        let max = self.max_micros.load(Ordering::Relaxed);
+        let max = self.max_micros();
         let target = ((served as f64) * share).ceil().max(1.0) as u64;
         let mut seen = 0;
         for (bucket, ceiling) in self.buckets.iter().zip(BUCKET_CEILINGS_MICROS) {
@@ -547,12 +542,41 @@ impl MethodRecord {
         max
     }
 
+    fn max_micros(&self) -> u64 {
+        self.max_micros.load(Ordering::Relaxed)
+    }
+}
+
+/// One method's frames since boot: how long each took end to end, and how
+/// long each held the app mutex — the number that says whom it kept waiting.
+struct MethodRecord {
+    method: String,
+    total: Histogram,
+    held: Histogram,
+}
+
+impl MethodRecord {
+    fn new(method: &str) -> MethodRecord {
+        MethodRecord {
+            method: method.to_string(),
+            total: Histogram::new(),
+            held: Histogram::new(),
+        }
+    }
+
+    fn record(&self, spent: &Spent) {
+        self.total.record(spent.total);
+        self.held.record(spent.held);
+    }
+
     fn stats(&self) -> Value {
         json!({
-            "served": self.served.load(Ordering::Relaxed),
-            "p50_ms": as_millis(self.quantile_micros(0.50)),
-            "p95_ms": as_millis(self.quantile_micros(0.95)),
-            "max_ms": as_millis(self.max_micros.load(Ordering::Relaxed)),
+            "served": self.total.served.load(Ordering::Relaxed),
+            "p50_ms": as_millis(self.total.quantile_micros(0.50)),
+            "p95_ms": as_millis(self.total.quantile_micros(0.95)),
+            "max_ms": as_millis(self.total.max_micros()),
+            "held_p99_ms": as_millis(self.held.quantile_micros(0.99)),
+            "held_max_ms": as_millis(self.held.max_micros()),
         })
     }
 }
@@ -631,6 +655,35 @@ mod tests {
         }
         assert!(lines.lock().unwrap().is_empty());
         assert_eq!(clock.stats()["slow_frames"], 0);
+    }
+
+    /// The yardstick for a verb that keeps everybody else waiting is how long
+    /// it HELD the app mutex, not how long it took: a frame that queued or
+    /// waited for the lock slowed nobody. So each verb's hold has a histogram
+    /// of its own beside its total.
+    #[test]
+    fn stats_report_each_methods_hold_apart_from_its_total() {
+        let (clock, _) = recording_clock();
+        let state = Arc::new(Mutex::new(0u32));
+        for _ in 0..3 {
+            let timer = clock.frame("issues.list");
+            {
+                let _held = timer.lock(&state);
+                std::thread::sleep(Duration::from_millis(3));
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
+        let stats = clock.stats();
+        let method = &stats["methods"]["issues.list"];
+        let held_p99 = method["held_p99_ms"].as_f64().expect("a held p99");
+        let held_max = method["held_max_ms"].as_f64().expect("a held max");
+        assert!((3.0..25.0).contains(&held_max), "{method}");
+        assert!(held_p99 <= held_max && held_p99 >= 3.0, "{method}");
+        assert!(
+            method["p95_ms"].as_f64().unwrap() >= 30.0,
+            "the total still counts the time spent outside the lock: {method}"
+        );
     }
 
     #[test]
@@ -725,7 +778,7 @@ mod tests {
 
     #[test]
     fn quantiles_span_the_recorded_frames() {
-        let record = MethodRecord::new("board.list");
+        let record = Histogram::new();
         for _ in 0..95 {
             record.record(Duration::from_micros(400));
         }
@@ -734,7 +787,7 @@ mod tests {
         }
         assert_eq!(record.quantile_micros(0.50), 500);
         assert_eq!(record.quantile_micros(0.95), 500);
-        assert_eq!(record.stats()["max_ms"], 900.0);
+        assert_eq!(record.max_micros(), 900_000);
     }
 
     /// The two queues are reported apart, so "the focused surface is slow" and

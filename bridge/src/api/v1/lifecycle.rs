@@ -1560,13 +1560,14 @@ pub struct WorkspaceFinishResult {
     /// do not.
     #[serde(default)]
     pub deleted: bool,
-    /// Whether the local branch went too. Present only on a `branch.finish`
-    /// that asked for `action: "delete"` (since 1.24.0).
+    /// Whether the local branch went too. A failed post-delete restoration
+    /// is `true` with `branch_reason` describing recovery. Present only on a
+    /// `branch.finish` that asked for `action: "delete"` (since 1.24.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_deleted: Option<bool>,
-    /// Why the branch stayed, as a sentence: it was measured again once the
-    /// checkout was gone and something had moved onto it since the click.
-    /// Absent when it went.
+    /// Why the branch stayed, or a recovery warning when a checkout took its
+    /// name after deletion and restoring the measured tip failed. Absent on
+    /// an ordinary successful deletion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch_reason: Option<String>,
 }

@@ -80,8 +80,10 @@ const linkChange = (payload) => {
 };
 
 /** Done deleted the branch the issue's work was on (#87). */
-const branchDeletedSentence = (payload) =>
-  `deleted ${payload.branch ? `branch ${payload.branch}` : "the branch"} when the workspace was finished`;
+const branchDeletedSentence = (payload) => {
+  const sentence = `deleted ${payload.branch ? `branch ${payload.branch}` : "the branch"} when the workspace was finished`;
+  return payload.reason ? `${sentence}; ${payload.reason}` : sentence;
+};
 
 const closedSentence = (payload) =>
   payload.reason === "workspace_finished" ? "closed this when the workspace was finished" : "closed this";

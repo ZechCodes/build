@@ -27,12 +27,32 @@
 mod checkouts;
 mod defaults;
 
-use crate::git_process::run_git;
+use crate::git_process::{run_git, GitError};
 use crate::workspace::Workspace;
 use std::path::PathBuf;
 
 /// The `branch.finish` action that deletes the branch as well.
 pub(crate) const DELETE_ACTION: &str = "delete";
+
+/// A post-removal refusal leaves the ref present. A failed recovery means the
+/// ref is absent even though a checkout moved onto its name during deletion.
+#[derive(Debug)]
+pub(in crate::app) enum BranchDeleteFailure {
+    Refused(String),
+    RecoveryFailed(String),
+}
+
+impl BranchDeleteFailure {
+    pub(in crate::app) fn reason(&self) -> &str {
+        match self {
+            Self::Refused(reason) | Self::RecoveryFailed(reason) => reason,
+        }
+    }
+
+    pub(in crate::app) fn recovery_failed(&self) -> bool {
+        matches!(self, Self::RecoveryFailed(_))
+    }
+}
 
 /// When the branch is measured: before the checkout Done removes has gone,
 /// or after.
@@ -125,8 +145,11 @@ impl BranchDeletion {
 
     /// Delete the branch once Done's checkout is gone, measured again first.
     /// A branch already gone is deleted.
-    pub(in crate::app) fn delete(&self) -> Result<(), String> {
-        match self.measure(Moment::AfterRemoval)? {
+    pub(in crate::app) fn delete(&self) -> Result<(), BranchDeleteFailure> {
+        match self
+            .measure(Moment::AfterRemoval)
+            .map_err(BranchDeleteFailure::Refused)?
+        {
             Some(tip) => self.delete_at(&tip),
             None => Ok(()),
         }
@@ -136,20 +159,21 @@ impl BranchDeletion {
     /// checks passed. Whether the branch is safe to lose was measured against
     /// every remote, not against whatever HEAD the source is on, so this is
     /// `branch -D`'s force with the commit named instead of the branch.
-    fn delete_at(&self, tip: &str) -> Result<(), String> {
-        self.unheld(Moment::AfterRemoval)?;
+    fn delete_at(&self, tip: &str) -> Result<(), BranchDeleteFailure> {
+        self.unheld(Moment::AfterRemoval)
+            .map_err(BranchDeleteFailure::Refused)?;
         if let Err(error) = run_git(&self.repo, &["update-ref", "-d", &self.local_ref(), tip]) {
             if self.tip().is_some_and(|now| now != tip) {
-                return Err(format!(
+                return Err(BranchDeleteFailure::Refused(format!(
                     "Build cannot delete the branch {}: it gained commits while Build was deleting it.",
                     self.branch
-                ));
+                )));
             }
-            return Err(format!(
+            return Err(BranchDeleteFailure::Refused(format!(
                 "Build could not delete the branch {}: {}",
                 self.branch,
                 error.to_string().trim()
-            ));
+            )));
         }
         self.restore_if_held(tip)?;
         // What `branch -D` also takes: the branch's upstream and settings.
@@ -199,11 +223,41 @@ impl BranchDeletion {
     /// A checkout that moved onto the branch between the look before the
     /// delete and the delete itself: the branch comes back at `tip`, the
     /// commit it was deleted at, unless something has made it again since.
-    fn restore_if_held(&self, tip: &str) -> Result<(), String> {
-        self.unheld(Moment::AfterRemoval).inspect_err(|_| {
-            let absent = "0".repeat(tip.len());
-            let _ = run_git(&self.repo, &["update-ref", &self.local_ref(), tip, &absent]);
+    fn restore_if_held(&self, tip: &str) -> Result<(), BranchDeleteFailure> {
+        let absent = "0".repeat(tip.len());
+        self.restore_if_held_using(tip, || {
+            run_git(&self.repo, &["update-ref", &self.local_ref(), tip, &absent])
         })
+    }
+
+    fn restore_if_held_using(
+        &self,
+        tip: &str,
+        mut restore: impl FnMut() -> Result<String, GitError>,
+    ) -> Result<(), BranchDeleteFailure> {
+        let Err(held_reason) = self.unheld(Moment::AfterRemoval) else {
+            return Ok(());
+        };
+        let mut git_errors = Vec::new();
+        for _ in 0..2 {
+            if let Err(error) = restore() {
+                git_errors.push(error.to_string());
+            }
+            // A concurrent creator may have installed a newer tip. The
+            // create-only write never replaces it; any surviving ref makes
+            // this the ordinary checked-out refusal.
+            if self.tip().is_some() {
+                return Err(BranchDeleteFailure::Refused(held_reason));
+            }
+        }
+        Err(BranchDeleteFailure::RecoveryFailed(format!(
+            "Build could not restore the deleted branch {} at {} in repository {}: a checkout still names the missing branch. {} The ref is still missing after two create-only attempts. Git reported: {}",
+            self.branch,
+            tip,
+            self.repo.display(),
+            held_reason,
+            git_errors.join("; ")
+        )))
     }
 
     /// Commits reachable from `tip` that no remote-tracking ref reaches. A
@@ -226,7 +280,7 @@ pub(in crate::app) fn first_refusal(deletions: &[BranchDeletion]) -> Option<Stri
 }
 
 /// Delete every branch, and the first reason one stayed.
-pub(in crate::app) fn delete_all(deletions: &[BranchDeletion]) -> Result<(), String> {
+pub(in crate::app) fn delete_all(deletions: &[BranchDeletion]) -> Result<(), BranchDeleteFailure> {
     deletions.iter().try_for_each(BranchDeletion::delete)
 }
 
@@ -294,7 +348,7 @@ mod tests {
         let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
         let refused = feature.delete().unwrap_err();
         assert_eq!(
-            refused,
+            refused.reason(),
             "Build cannot delete the branch feature: it has commits no remote has."
         );
         assert!(feature.tip().is_some());
@@ -312,10 +366,12 @@ mod tests {
         let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
         let refused = feature.delete().unwrap_err();
         assert!(
-            refused.starts_with("Build cannot delete the branch feature: it is checked out at "),
-            "{refused}"
+            refused
+                .reason()
+                .starts_with("Build cannot delete the branch feature: it is checked out at "),
+            "{refused:?}"
         );
-        assert!(refused.ends_with("other."), "{refused}");
+        assert!(refused.reason().ends_with("other."), "{refused:?}");
         assert!(feature.tip().is_some());
     }
 
@@ -355,7 +411,7 @@ mod tests {
         assert_ne!(moved, measured);
         let refused = feature.delete_at(&measured).unwrap_err();
         assert_eq!(
-            refused,
+            refused.reason(),
             "Build cannot delete the branch feature: it gained commits while Build was deleting it."
         );
         assert_eq!(feature.tip(), Some(moved));
@@ -374,8 +430,10 @@ mod tests {
         assert_eq!(feature.tip().as_deref(), Some(measured.as_str()));
         let refused = feature.delete_at(&measured).unwrap_err();
         assert!(
-            refused.starts_with("Build cannot delete the branch feature: it is checked out at "),
-            "{refused}"
+            refused
+                .reason()
+                .starts_with("Build cannot delete the branch feature: it is checked out at "),
+            "{refused:?}"
         );
         assert_eq!(feature.tip(), Some(measured));
     }
@@ -395,8 +453,135 @@ mod tests {
         );
         assert_eq!(feature.tip(), None);
         let refused = feature.restore_if_held(&measured).unwrap_err();
-        assert!(refused.contains("it is checked out at "), "{refused}");
+        assert!(
+            refused.reason().contains("it is checked out at "),
+            "{refused:?}"
+        );
         assert_eq!(feature.tip(), Some(measured));
+    }
+
+    /// Git can reject restoration because another process holds the ref lock.
+    /// Done must expose the missing ref and measured commit for manual recovery.
+    #[test]
+    fn a_persistent_restore_lock_reports_missing_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
+        git_in(&repo, &["config", "branch.feature.remote", "origin"]);
+        git_in(&repo, &["switch", "-q", "feature"]);
+        git_in(
+            &repo,
+            &["update-ref", "-d", "refs/heads/feature", &measured],
+        );
+        let lock = repo.join(".git/refs/heads/feature.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        let error = feature.restore_if_held(&measured).unwrap_err();
+        assert!(error.recovery_failed(), "{error:?}");
+        assert!(error.reason().contains("could not restore"), "{error:?}");
+        assert!(error.reason().contains(&measured), "{error:?}");
+        assert!(
+            error.reason().contains(&repo.display().to_string()),
+            "{error:?}"
+        );
+        assert_eq!(feature.tip(), None);
+        assert_eq!(
+            run_git(&repo, &["config", "--get", "branch.feature.remote"])
+                .unwrap()
+                .trim(),
+            "origin"
+        );
+    }
+
+    #[test]
+    fn a_transient_restore_lock_is_retried_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
+        git_in(&repo, &["switch", "-q", "feature"]);
+        git_in(
+            &repo,
+            &["update-ref", "-d", "refs/heads/feature", &measured],
+        );
+        let lock = repo.join(".git/refs/heads/feature.lock");
+        std::fs::write(&lock, "").unwrap();
+        let mut attempts = 0;
+
+        let refused = feature
+            .restore_if_held_using(&measured, || {
+                attempts += 1;
+                if attempts == 2 {
+                    std::fs::remove_file(&lock).unwrap();
+                }
+                run_git(
+                    &repo,
+                    &[
+                        "update-ref",
+                        "refs/heads/feature",
+                        &measured,
+                        &"0".repeat(measured.len()),
+                    ],
+                )
+            })
+            .unwrap_err();
+        assert_eq!(attempts, 2);
+        assert!(
+            refused.reason().contains("it is checked out at "),
+            "{refused:?}"
+        );
+        assert_eq!(feature.tip(), Some(measured));
+    }
+
+    #[test]
+    fn a_concurrent_recreated_ref_is_left_at_its_newer_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        let feature = deletion(&repo, "feature", &tmp.path().join("gone"));
+        let measured = feature.measure(Moment::AfterRemoval).unwrap().unwrap();
+        git_in(&repo, &["switch", "-q", "feature"]);
+        git_in(
+            &repo,
+            &["update-ref", "-d", "refs/heads/feature", &measured],
+        );
+        let newer = run_git(
+            &repo,
+            &[
+                "commit-tree",
+                &format!("{measured}^{{tree}}"),
+                "-p",
+                &measured,
+                "-m",
+                "newer work",
+            ],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let mut attempts = 0;
+
+        let refused = feature
+            .restore_if_held_using(&measured, || {
+                attempts += 1;
+                git_in(&repo, &["update-ref", "refs/heads/feature", &newer]);
+                run_git(
+                    &repo,
+                    &[
+                        "update-ref",
+                        "refs/heads/feature",
+                        &measured,
+                        &"0".repeat(measured.len()),
+                    ],
+                )
+            })
+            .unwrap_err();
+        assert_eq!(attempts, 1);
+        assert!(
+            refused.reason().contains("it is checked out at "),
+            "{refused:?}"
+        );
+        assert_eq!(feature.tip(), Some(newer));
     }
 
     #[test]
@@ -422,7 +607,7 @@ mod tests {
         for name in ["main", "master"] {
             let protected = deletion(&repo, name, &tmp.path().join("gone"));
             assert_eq!(
-                protected.delete().unwrap_err(),
+                protected.delete().unwrap_err().reason(),
                 format!("Build cannot delete the branch {name}: it is a default branch.")
             );
             assert!(protected.tip().is_some());

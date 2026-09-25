@@ -123,6 +123,8 @@ describe("what an event says", () => {
     expect(sentenceOf("branch_deleted", { branch: "build/login", workspace_id: "ws-1" }))
       .toBe("deleted branch build/login when the workspace was finished");
     expect(sentenceOf("branch_deleted", {})).toBe("deleted the branch when the workspace was finished");
+    expect(sentenceOf("branch_deleted", { branch: "build/login", reason: "restore failed at abc" }))
+      .toContain("restore failed at abc");
   });
 
   // A later minor adding a kind leaves a reader with a row they can recognize.

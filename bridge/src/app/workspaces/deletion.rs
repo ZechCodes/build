@@ -123,7 +123,12 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
         if result["branch_deleted"] == true {
             if let Some((finishing, workspace)) = &self.finish {
                 for branch in finishing.branches.iter().map(BranchDeletion::branch) {
-                    app.note_branch_deleted(&workspace.project_id, &self.workspace_id, branch);
+                    app.note_branch_deleted(
+                        &workspace.project_id,
+                        &self.workspace_id,
+                        branch,
+                        result["branch_reason"].as_str(),
+                    );
                 }
             }
         }
@@ -140,9 +145,9 @@ fn note_branch_outcome(answer: &mut Value, branches: &[BranchDeletion]) {
     }
     match branch_delete::delete_all(branches) {
         Ok(()) => answer["branch_deleted"] = json!(true),
-        Err(reason) => {
-            answer["branch_deleted"] = json!(false);
-            answer["branch_reason"] = json!(reason);
+        Err(failure) => {
+            answer["branch_deleted"] = json!(failure.recovery_failed());
+            answer["branch_reason"] = json!(failure.reason());
         }
     }
 }

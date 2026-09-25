@@ -678,7 +678,13 @@ that moved onto the branch keeps it. A branch that stayed then is
 `branch_deleted: false` with `branch_reason`, beside the workspace's removal,
 which stands. Success adds `branch_deleted: true` to the answer and a
 `branch_deleted` event (payload `branch`, `workspace_id`) to every issue
-linking the workspace or the branch.
+linking the workspace or the branch. If a checkout moves onto the branch
+between the last check and the atomic delete, Build restores the measured tip
+with a create-only ref write. It retries once when a failed write leaves the
+ref absent. If the ref is still absent, `branch_deleted: true` carries
+`branch_reason` with the measured commit, repository and checkout details;
+the linked `branch_deleted` event carries the same `reason`. A concurrent
+ref at a newer commit is left untouched and reported as a refusal.
 Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.

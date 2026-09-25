@@ -177,6 +177,23 @@ it("a branch the bridge kept after the removal is said, and the removal stands",
   expect(notice.textContent).not.toContain("Couldn't finish");
 });
 
+it("a failed branch recovery leaves a lasting notice without claiming the branch stayed", async () => {
+  const reason = "Build could not restore branch build/login at abc in /repo after it was deleted.";
+  call = vi.fn(async (method) =>
+    method === "branch.finish" ? { complete: true, repositories: [], deleted: true, branch_deleted: true, branch_reason: reason } : {},
+  );
+  await greetThenOpen(greeting);
+  await pressDone();
+  const notice = await vi.waitFor(() => {
+    const found = document.querySelector("#notices .notice.error");
+    expect(found).toBeTruthy();
+    return found;
+  });
+  expect(notice.textContent).toContain("branch recovery failed");
+  expect(notice.textContent).not.toContain("branch stays");
+  expect(notice.querySelector(".notice-detail").textContent).toContain(reason);
+});
+
 it("a bridge without the name is told nothing it would drop, and the user is told why", async () => {
   await greetThenOpen(olderGreeting);
   const { text, params } = await pressDone();

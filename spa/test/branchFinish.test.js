@@ -11,7 +11,7 @@ import {
   branchFinishFacts,
   branchFinishParams,
   branchInboxKey,
-  branchKeptNotice,
+  branchFinishNotice,
 } from "../src/core/branchFinish.js";
 import { entryKeyOf } from "../src/core/inbox.js";
 
@@ -102,16 +102,31 @@ describe("what Done sends", () => {
 describe("what Done says when the branch stayed", () => {
   it("says the checkout went and the branch stayed, in the bridge's sentence", () => {
     const reason = "Build cannot delete the branch build/login: it gained commits while Build was deleting it.";
-    expect(branchKeptNotice("build/login", { deleted: true, branch_deleted: false, branch_reason: reason })).toEqual({
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: false, branch_reason: reason })).toEqual({
       summary: "Removed the checkout of build/login; the branch stays",
       detail: reason,
     });
   });
 
   it("says nothing when the branch went, or when nothing was asked of it", () => {
-    expect(branchKeptNotice("build/login", { deleted: true, branch_deleted: true })).toBe(null);
-    expect(branchKeptNotice("build/login", { deleted: true })).toBe(null);
-    expect(branchKeptNotice("build/login", undefined)).toBe(null);
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: true })).toBe(null);
+    expect(branchFinishNotice("build/login", { deleted: true })).toBe(null);
+    expect(branchFinishNotice("build/login", undefined)).toBe(null);
+  });
+
+  it("still says the branch stayed when an older partial reply omits its reason", () => {
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: false })).toEqual({
+      summary: "Removed the checkout of build/login; the branch stays",
+      detail: "",
+    });
+  });
+
+  it("reports a failed restore without claiming the branch stayed", () => {
+    const reason = "Build could not restore branch build/login at abc in /repo after it was deleted.";
+    expect(branchFinishNotice("build/login", { deleted: true, branch_deleted: true, branch_reason: reason })).toEqual({
+      summary: "Removed the checkout of build/login; branch recovery failed",
+      detail: reason,
+    });
   });
 });
 

@@ -35,7 +35,7 @@ import {
   workspaceIsRecent,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
-import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchKeptNotice } from "./branchFinish.js";
+import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchFinishNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
@@ -793,7 +793,7 @@ async function dismissEntry(entry) {
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   const call = verbCall(target, finishDoing(target));
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
-  else sayWhatStayed(target, await sendBranchFinish(target, call, optionId));
+  else sayBranchFinishNotice(target, await sendBranchFinish(target, call, optionId));
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
@@ -801,11 +801,11 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
 }
 
-/** The workspace is gone and the branch stayed: the bridge's reason, said
- *  beside a removal that stands and is not undone. */
-function sayWhatStayed(target, answer) {
-  const kept = branchKeptNotice(target.branch, answer);
-  if (kept) notifyError(kept.summary, kept.detail);
+/** The workspace is gone; say why a requested branch deletion was refused or
+ *  why a deleted branch could not be restored. */
+function sayBranchFinishNotice(target, answer) {
+  const notice = branchFinishNotice(target.branch, answer);
+  if (notice) notifyError(notice.summary, notice.detail);
 }
 
 /** What Done does, in the words a refusal names it by. */

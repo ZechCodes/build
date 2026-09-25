@@ -91,14 +91,15 @@ export function branchFinishFailureSummary(name) {
   return `Couldn't finish ${name || "this item"}`;
 }
 
-/** What Done says when the workspace went and the branch stayed (#87): the
- *  bridge measured the branch again once the checkout was gone and kept it.
- *  The removal stands, so this is said beside it, in the bridge's own
- *  sentence. Null for every other answer. */
-export function branchKeptNotice(name, answer) {
-  if (answer?.branch_deleted !== false) return null;
+/** A post-removal branch outcome that needs a lasting notice. A refusal kept
+ *  the branch; a recovery warning means the checkout went but restoration
+ *  failed, so its summary must never claim the branch stayed. */
+export function branchFinishNotice(name, answer) {
+  if (answer?.branch_deleted !== false && !answer?.branch_reason) return null;
   return {
-    summary: `Removed the checkout of ${name || "this branch"}; the branch stays`,
+    summary: answer.branch_deleted === true
+      ? `Removed the checkout of ${name || "this branch"}; branch recovery failed`
+      : `Removed the checkout of ${name || "this branch"}; the branch stays`,
     detail: String(answer.branch_reason || ""),
   };
 }

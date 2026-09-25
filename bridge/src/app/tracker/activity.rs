@@ -191,6 +191,7 @@ impl AppState {
         project_id: &str,
         workspace_id: &str,
         branch: &str,
+        reason: Option<&str>,
     ) {
         let Ok(project_path) = self.tracker_project_path(project_id) else {
             return;
@@ -212,7 +213,12 @@ impl AppState {
             write.event(
                 &Actor::User,
                 IssueEventKind::BranchDeleted,
-                json!({ "branch": branch, "workspace_id": workspace_id }),
+                match reason {
+                    Some(reason) => {
+                        json!({ "branch": branch, "workspace_id": workspace_id, "reason": reason })
+                    }
+                    None => json!({ "branch": branch, "workspace_id": workspace_id }),
+                },
                 &now,
             );
             if let Err(error) = self.commit_issue_write(project_id, write, &now) {

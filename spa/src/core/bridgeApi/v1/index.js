@@ -178,6 +178,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       watching: names.has("issues.watching"),
       doneSinceLeft: names.has("issues.doneSinceLeft"),
       commentUserNotifies: names.has("issues.commentUserNotifies"),
+      listPaged: names.has("issues.listPaged"),
     },
     conversations: { settings: names.has("conversations.settings") },
     github: { repos: names.has("github.repos") },

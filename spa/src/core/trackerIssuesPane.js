@@ -28,6 +28,7 @@ import {
   writeIssuesRecord,
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
+import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
@@ -424,16 +425,8 @@ export function mountIssuesPane(host, options) {
     const filters = shownFilters();
     try {
       const params = issueListParams(state.projectId, filters);
-      const answer = await state.callRpc("issues.list", params);
-      if (state.disposed) return;
-      const columns = state.columns;
-      // The fetch is a writer only. The matching cache announcement above is
-      // what re-reads this record and repaints the pane.
-      await writeIssuesQueryRecord(state.deviceId, state.projectId, params, issuesRecord(answer?.issues, columns));
-      // An unnarrowed answer is also the authoritative whole-list record.
-      if (!narrowsTheRead(filters))
-        await writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(answer?.issues, columns));
-      await writeUserSession(state.deviceId, answer);
+      if (pagesIssues(state.deviceId)) await readListPages(params, filters);
+      else await readWholeList(params, filters);
     } catch (error) {
       if (state.disposed) return;
       // The wire going away is not news about this project's issues. With a
@@ -442,6 +435,39 @@ export function mountIssuesPane(host, options) {
       if (reads.failed(error)) return;
       notifyError("Could not read this project's issues", messageOf(error));
     }
+  }
+
+  async function readWholeList(params, filters) {
+    const answer = await state.callRpc("issues.list", params);
+    if (state.disposed) return;
+    const columns = state.columns;
+    // The fetch is a writer only. The matching cache announcement above is
+    // what re-reads this record and repaints the pane.
+    await writeIssuesQueryRecord(state.deviceId, state.projectId, params, issuesRecord(answer?.issues, columns));
+    // An unnarrowed answer is also the authoritative whole-list record.
+    if (!narrowsTheRead(filters))
+      await writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(answer?.issues, columns));
+    await writeUserSession(state.deviceId, answer);
+  }
+
+  /** The same read a page at a time, from a bridge that pages it (#85). Each
+   *  page is laid over the records the whole answer would have replaced, for
+   *  the numbers it answers for, and the pane repaints from each. */
+  async function readListPages(params, filters) {
+    const { deviceId, projectId } = state;
+    const addresses = [issuesQueryAddress(deviceId, projectId, params)];
+    if (!narrowsTheRead(filters)) addresses.push(issuesAddress(deviceId, projectId));
+    await pullIssuePages({
+      ask: (asked) => state.callRpc("issues.list", asked),
+      deviceId,
+      projectId,
+      params,
+      active: () => !state.disposed,
+      fold: (stretch, page) => Promise.all([
+        ...addresses.map((address) => foldIssuesPage(address, stretch, () => state.columns)),
+        writeUserSession(deviceId, page),
+      ]),
+    });
   }
 
   // ---- moving a card -------------------------------------------------------

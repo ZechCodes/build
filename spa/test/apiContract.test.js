@@ -73,6 +73,19 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
+  // A fixture's further examples (a paged `issues.list`, #85) are results
+  // like any other.
+  it("parses every further example's result without throwing", () => {
+    const examples = methodFixtures.flatMap(({ name, body }) =>
+      (body.examples || []).map((example, index) => ({ where: `${name} examples[${index}]`, method: body.method, example })));
+    expect(examples.length).toBeGreaterThan(0);
+    for (const { where, method, example } of examples) {
+      expect(example, where).toHaveProperty("params");
+      expect(example, where).toHaveProperty("result");
+      expect(() => v1.parseResult(method, example.result), where).not.toThrow();
+    }
+  });
+
   it("was introduced within this adapter's major, no later than current", () => {
     // The adapter's floor is where it stops serving OLD bridges; a verb that
     // predates the floor is still one it speaks. What must hold is the major.

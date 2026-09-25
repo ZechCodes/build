@@ -6,9 +6,11 @@
 // stops being listed on a device, the cache's single range delete over
 // (device, project) takes its issue list and every issue page with it.
 //
-// Two records, both whole:
+// The records:
 //
 //   `tracker-issues`            the project's whole list, plus its columns
+//   `tracker-issues-query`      one narrowed list, by its params
+//   `tracker-issues-page`       one page of a paged list, by its params (#85)
 //   `tracker-issue` / <id>      one issue and its timeline, as `issues.get`
 //                               answered them
 //
@@ -23,6 +25,7 @@ import { issueUnreadKey, latestIssueMark } from "./trackerUnread.js";
 export const TRACKER_ISSUES_KIND = "tracker-issues";
 export const TRACKER_ISSUES_QUERY_KIND = "tracker-issues-query";
 export const TRACKER_ISSUE_KIND = "tracker-issue";
+export const TRACKER_ISSUES_PAGE_KIND = "tracker-issues-page";
 
 /** The project's list. */
 export const issuesAddress = (deviceId, projectId) => ({
@@ -40,6 +43,17 @@ export const issuesQueryAddress = (deviceId, projectId, params) => ({
   deviceId,
   entityId: String(projectId || ""),
   kind: TRACKER_ISSUES_QUERY_KIND,
+  sub: JSON.stringify(params || {}),
+});
+
+/** One page of a paged `issues.list` answer (#85), under the params that asked
+ *  for it — its filter, cursor and limit — so every combination is a record of
+ *  its own. A pull folds the list from what it reads back from here
+ *  (core/trackerPages.js). */
+export const issuesPageAddress = (deviceId, projectId, params) => ({
+  deviceId,
+  entityId: String(projectId || ""),
+  kind: TRACKER_ISSUES_PAGE_KIND,
   sub: JSON.stringify(params || {}),
 });
 

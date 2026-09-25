@@ -12,7 +12,7 @@ const NONE = {
   requests: { priority: false },
   errors: { codes: false },
   diffs: { perFile: false },
-  issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
+  issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
   conversations: { settings: false },
   github: { repos: false },
   messages: { context: false },
@@ -60,7 +60,7 @@ describe("the adapter a greeting selects", () => {
       diffs: { perFile: false },
       // Files on an issue arrived in 1.8; a 1.2 bridge carries none, and
       // watching (1.9) is the same story one minor later.
-      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false },
+      issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       conversations: { settings: false },
       github: { repos: false },
       messages: { context: false },

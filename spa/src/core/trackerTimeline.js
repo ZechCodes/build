@@ -80,10 +80,20 @@ const linkChange = (payload) => {
   return named ? `linked ${named}` : "linked this";
 };
 
-/** Done deleted the branch the issue's work was on (#87). */
+/** Done deleted the branch the issue's work was on (#87), or a reclaim did
+ *  (#167, `reclaimed`). */
+const branchNamed = (payload) => (payload.branch ? `branch ${payload.branch}` : "the branch");
 const branchDeletedSentence = (payload) => {
-  const sentence = `deleted ${payload.branch ? `branch ${payload.branch}` : "the branch"} when the workspace was finished`;
+  const when = payload.reclaimed ? "reclaimed" : "finished";
+  const sentence = `deleted ${branchNamed(payload)} when the workspace was ${when}`;
   return payload.reason ? `${sentence}; ${payload.reason}` : sentence;
+};
+
+/** A reclaim left the branch where it was, and the bridge's sentence says
+ *  why (#167). */
+const branchKeptSentence = (payload) => {
+  const sentence = `kept ${branchNamed(payload)} when the workspace was reclaimed`;
+  return payload.reason ? `${sentence}. ${payload.reason}` : sentence;
 };
 
 const closedSentence = (payload) =>
@@ -116,6 +126,7 @@ const SENTENCES = Object.freeze({
   reopened: () => "reopened this",
   dispatched: () => "started an agent on this",
   branch_deleted: (payload) => branchDeletedSentence(payload),
+  branch_kept: branchKeptSentence,
   workspace_idle: (payload) => `noted ${workspaceNamed(payload)} has had no activity for a day`,
   workspace_pruned: (payload) =>
     `dropped ${humanBytes(payload.pruned_bytes)} of build output from ${workspaceNamed(payload)}`,

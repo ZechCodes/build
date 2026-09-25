@@ -127,6 +127,19 @@ describe("what an event says", () => {
       .toContain("restore failed at abc");
   });
 
+  // #167: a reclaim takes the workspace's branch where that is safe, and says
+  // why it stayed where it was not.
+  it("says what a reclaim did with the workspace's branch", () => {
+    expect(sentenceOf("branch_deleted", { branch: "build/login", reclaimed: true }))
+      .toBe("deleted branch build/login when the workspace was reclaimed");
+    expect(sentenceOf("branch_kept", {
+      branch: "build/login",
+      reclaimed: true,
+      reason: "Build cannot delete the branch build/login: it has commits no remote has.",
+    })).toBe("kept branch build/login when the workspace was reclaimed. Build cannot delete the branch build/login: it has commits no remote has.");
+    expect(sentenceOf("branch_kept", {})).toBe("kept the branch when the workspace was reclaimed");
+  });
+
   // The reclaim service (#135) records a linked workspace going quiet, losing
   // its build output, and being reclaimed.
   it("says what became of a linked workspace", () => {

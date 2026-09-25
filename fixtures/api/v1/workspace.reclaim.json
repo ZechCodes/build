@@ -8,6 +8,12 @@
     "workspace_id": "ws-3f2a91c4",
     "deleted": true
   },
+  "reclaimed_branches": {
+    "since": "1.25.0",
+    "fields": [
+      "branches"
+    ]
+  },
   "errors": [
     "not_found",
     "invalid_params",

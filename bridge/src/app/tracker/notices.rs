@@ -281,6 +281,7 @@ fn notice_of(write: &IssueWrite, actor_name: Option<String>) -> Option<IssueNoti
         | IssueEventKind::Watched
         | IssueEventKind::Unwatched
         | IssueEventKind::BranchDeleted
+        | IssueEventKind::BranchKept
         | IssueEventKind::WorkspaceIdle
         | IssueEventKind::WorkspacePruned
         | IssueEventKind::WorkspaceReclaimed => None,
@@ -350,6 +351,7 @@ pub(in crate::app) fn notice_of_entry(
                 | IssueEventKind::Watched
                 | IssueEventKind::Unwatched
                 | IssueEventKind::BranchDeleted
+                | IssueEventKind::BranchKept
                 | IssueEventKind::WorkspaceIdle
                 | IssueEventKind::WorkspacePruned
                 | IssueEventKind::WorkspaceReclaimed => None,

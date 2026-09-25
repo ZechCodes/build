@@ -654,7 +654,9 @@ Issues spec), `messages.issueNotices`, `board.usageLimits`,
 narrower "needs you" rule it makes possible; see the Issues spec),
 `params.strict` (an undeclared param is refused; step 2.2),
 `workspaces.lifecycle` (see below), and
-`branches.finishDelete` (`branch.finish` honours `action: "delete"`). The method registry
+`branches.finishDelete` (`branch.finish` honours `action: "delete"`), and
+`workspaces.reclaimBranches` (`workspace.reclaim` deletes the workspace's local
+branches, see below). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -725,6 +727,24 @@ answered as usual. Issue timelines gain three event kinds:
 the workspace. Their payloads name the workspace (`workspace_id`,
 `workspace_name`) and its size. None of the three wakes the issue's trackers.
 
+`workspaces.reclaimBranches` (since 1.25.0, #167): once `workspace.reclaim`
+has removed the workspace's checkouts, it deletes the local branch each one
+carried, in the source repository it was cut from, under the rules
+`branches.finishDelete` gives Done's post-removal measurement: never `main`,
+`master`, a configured base or the branch a remote's `HEAD` names (each remote
+is asked); never a branch checked out, rebased or bisected anywhere; never one
+holding commits no remote has; and only at the commit those checks passed,
+with the checkouts read again before and after. Nobody named these branches,
+so a branch that has to stay never refuses the reclaim: the workspace goes and
+the branch stays. The answer is `workspace.delete`'s, unchanged. Each issue
+linking the workspace or the branch gets one event per branch, written by
+whoever reclaimed and waking nobody: `branch_deleted` (payload `branch`,
+`workspace_id`, `workspace_name`, `reclaimed: true`, and `reason` when a
+checkout moved onto the branch and it could not be restored), or the new kind
+`branch_kept` (the same payload, with `reason`, the sentence "Build cannot
+delete the branch <name>: …" that says why it stayed). A bridge that does not
+announce the name leaves every branch where it was.
+
 The names in the table below describe additions to existing verbs, so the
 verb names alone cannot establish whether a bridge provides them. The SPA
 gates features mapped by its capability adapter, including branch deletion;
@@ -742,6 +762,7 @@ other names announce support for clients that choose to consume them:
 | `workspaces.lifecycle` | `lifecycle` on `workspace.list` rows, and the `workspace.reclaim` verb | 1.24.0 |
 | `branches.finishDelete` | `branch.finish` accepts `action: "delete"` to finish the workspace and delete its local branch | 1.24.0 |
 | `changes.refusedKinds` | A `changes.subscribe` refused for an unknown kind names every such kind in `details.kinds` | 1.24.0 |
+| `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

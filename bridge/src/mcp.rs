@@ -1474,7 +1474,7 @@ impl DoneServer {
             }
         }), json!({
             "name": "reclaim_workspace",
-            "description": "Remove a workspace whose work is safe somewhere else: every commit is pushed, nothing is uncommitted, no agent is working in it, and every issue linked to it is Done or closed. Its agents and terminals stop, its checkouts are handed back, the folder goes, and each linked issue records the reclaim. Refused, with the reasons, while anything still holds it. That refusal is the difference from delete_workspace, which removes whatever is there.",
+            "description": "Remove a workspace whose work is safe somewhere else: every commit is pushed, nothing is uncommitted, no agent is working in it, and every issue linked to it is Done or closed. Its agents and terminals stop, its checkouts are handed back, the folder goes, and each linked issue records the reclaim. The local branch each checkout carried goes too, unless it is a default branch, is checked out elsewhere or has commits no remote has; then it stays and the issue says why. Refused, with the reasons, while anything still holds it. That refusal is the difference from delete_workspace, which removes whatever is there.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

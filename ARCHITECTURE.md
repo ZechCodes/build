@@ -210,9 +210,10 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
-  `workspaces.lifecycle` shares this release with `params.strict`,
-  `branches.finishDelete` and `changes.refusedKinds`.
+  `1.25.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  1.24.0 carried `workspaces.lifecycle`, `params.strict`,
+  `branches.finishDelete` and `changes.refusedKinds`; 1.25.0 adds
+  `workspaces.reclaimBranches`.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -354,7 +355,15 @@ seconds, `unmeasured` past it) so a commit that landed meanwhile still holds
 the workspace, logs `workspace_reclaimed` on each linked
 issue without waking its trackers, and removes the workspace through the same
 path as `workspace.delete`. That path stops every agent and terminal anywhere
-under the workspace root first. The verdicts persist in the store's `meta`
+under the workspace root first. Once the checkouts are gone, the drain deletes
+the local branch each one carried (#167), through Done's `BranchDeletion`
+(`app/workspaces/branch_delete/`): measured off the lock, deleted only at the
+commit the checks passed, never a default branch, never a branch checked out
+anywhere, never one with commits no remote has or whose remote cannot say which
+branch is its default. A branch that has to stay never holds the reclaim up.
+Each issue linking the workspace or the branch records `branch_deleted` or
+`branch_kept` (with the reason), under whoever reclaimed and without waking
+its trackers. The verdicts persist in the store's `meta`
 table (`bridge/src/store/workspace_lifecycle.rs`).
 
 ### Harnesses and the agents' slice

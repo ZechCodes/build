@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "1.24.0",
+    "api_version": "1.25.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -211,6 +211,7 @@
       "workspace.rename",
       "workspace.retry",
       "workspaces.lifecycle",
+      "workspaces.reclaimBranches",
       "worktree.create",
       "worktree.diff",
       "worktree.finish"

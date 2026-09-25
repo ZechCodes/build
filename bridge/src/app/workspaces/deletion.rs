@@ -14,13 +14,18 @@
 //! removal itself runs off the mutex through the deferred drain, because
 //! unregistering worktrees and walking a tree away are both unbounded.
 
-use super::branch_delete::{self, BranchDeletion};
+use super::branch_delete::{self, BranchDeleteFailure, BranchDeletion};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
 use crate::reclaim::containment::WorkspaceBoundary;
+use crate::tracker::{Actor, IssueEventKind};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+/// How each branch a reclaim took went: deleted, or why it stayed.
+type BranchOutcomes = Vec<(String, Result<(), BranchDeleteFailure>)>;
 
 /// What the drain removes, resolved before the mutex was released: the
 /// checkouts to unregister from their sources, and the root to walk away.
@@ -35,17 +40,38 @@ pub(super) struct DeleteWorkspaceFiles {
     /// The runs whose checkout lived under this root — the conversation the
     /// workspace owned, and anything adopted below it.
     run_ids: Vec<String>,
-    /// Set when this removal is a Done: the workspace to write into the
-    /// registry's history before its files go, the registry to write it to,
-    /// and the branches it takes with it. A plain delete is not history and
-    /// records nothing.
-    finish: Option<(Finishing, Workspace)>,
+    /// The workspace as it stood when the removal was decided.
+    workspace: Workspace,
+    removal: Removal,
+    /// What became of each branch a reclaim took, for the write-back to
+    /// record on the issues.
+    reclaimed_branches: Mutex<BranchOutcomes>,
+}
+
+/// What a removal does beyond taking the files.
+pub(super) enum Removal {
+    /// `workspace.delete`: nothing. A plain delete is not history and records
+    /// nothing.
+    Delete,
+    /// Done: writes the workspace into the registry's history before its
+    /// files go, and deletes the branches it was asked to.
+    Finish(Finishing),
+    /// `workspace.reclaim`: takes the branch each directory carries once the
+    /// checkouts are gone, and records on the issues how each went.
+    Reclaim(Reclaiming),
 }
 
 /// What a Done does beyond a delete: where it writes the record of what it
 /// finished, and the local branches it deletes once the checkouts are gone.
 pub(super) struct Finishing {
     pub(super) registry_root: PathBuf,
+    pub(super) branches: Vec<BranchDeletion>,
+}
+
+/// What a reclaim does beyond a delete: the branches it takes, and who
+/// reclaimed, whom the issues name.
+pub(super) struct Reclaiming {
+    pub(super) actor: Actor,
     pub(super) branches: Vec<BranchDeletion>,
 }
 
@@ -61,13 +87,13 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
         // removal that fails halfway must not lose the record of where the
         // work was left. It measures the Git work once more here, off the
         // mutex, so nothing that landed since the click is deleted unseen.
-        let finished = match &self.finish {
-            Some((finishing, workspace)) => {
-                let mut workspace = workspace.clone();
+        let finished = match &self.removal {
+            Removal::Finish(finishing) => {
+                let mut workspace = self.workspace.clone();
                 let registry = crate::workspace::WorkspaceRegistry::load(&finishing.registry_root)?;
                 Some(registry.record_finished(&mut workspace)?)
             }
-            None => None,
+            Removal::Delete | Removal::Reclaim(_) => None,
         };
         for retirement in &self.retirements {
             if !retirement.wait(crate::orchestrator::CHECKOUT_REAP_WAIT) {
@@ -161,18 +187,7 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
                 self.root.display()
             )
         })?;
-        match (finished, &self.finish) {
-            (Some(finished), Some((finishing, _))) => {
-                let mut answer = json!({
-                    "complete": finished.complete,
-                    "repositories": finished.repositories,
-                    "deleted": true,
-                });
-                note_branch_outcome(&mut answer, &finishing.branches);
-                Ok(answer)
-            }
-            _ => Ok(json!({ "workspace_id": self.workspace_id, "deleted": true })),
-        }
+        Ok(self.take_branches(finished))
     }
 
     /// A partial removal is still a move: the in-memory index has to agree
@@ -189,19 +204,58 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
         app.complete_workspace_delete(&self.workspace_id, &self.run_ids)?;
-        if result["branch_deleted"] == true {
-            if let Some((finishing, workspace)) = &self.finish {
+        match &self.removal {
+            Removal::Finish(finishing) if result["branch_deleted"] == true => {
                 for branch in finishing.branches.iter().map(BranchDeletion::branch) {
                     app.note_branch_deleted(
-                        &workspace.project_id,
+                        &self.workspace.project_id,
                         &self.workspace_id,
                         branch,
                         result["branch_reason"].as_str(),
                     );
                 }
             }
+            Removal::Reclaim(reclaiming) => {
+                let outcomes = std::mem::take(
+                    &mut *self
+                        .reclaimed_branches
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                );
+                app.note_reclaimed_branches(&self.workspace, &reclaiming.actor, &outcomes);
+            }
+            Removal::Finish(_) | Removal::Delete => {}
         }
         Ok(result)
+    }
+}
+
+impl DeleteWorkspaceFiles {
+    /// The files are gone: take the branches the removal was asked to, and
+    /// answer. Done says how its branch went beside the record of what it
+    /// finished; a reclaim answers as a delete does and leaves what became of
+    /// its branches for the issues.
+    fn take_branches(&self, finished: Option<crate::workspace::WorkspaceFinish>) -> Value {
+        match (&self.removal, finished) {
+            (Removal::Finish(finishing), Some(finished)) => {
+                let mut answer = json!({
+                    "complete": finished.complete,
+                    "repositories": finished.repositories,
+                    "deleted": true,
+                });
+                note_branch_outcome(&mut answer, &finishing.branches);
+                answer
+            }
+            (Removal::Reclaim(reclaiming), _) => {
+                *self
+                    .reclaimed_branches
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    branch_delete::delete_each(&reclaiming.branches);
+                json!({ "workspace_id": self.workspace_id, "deleted": true })
+            }
+            _ => json!({ "workspace_id": self.workspace_id, "deleted": true }),
+        }
     }
 }
 
@@ -240,7 +294,7 @@ impl AppState {
         if self.agent_working_at_root(&Self::canonical_root(&workspace.root)) {
             return Err("Stop running agents before deleting the workspace".to_string());
         }
-        self.remove_workspace(&workspace, params, None, boundary)?;
+        self.remove_workspace(&workspace, params, Removal::Delete, boundary)?;
         Ok(json!({ "workspace_id": workspace.id, "deleted": true }))
     }
 
@@ -266,14 +320,14 @@ impl AppState {
     }
 
     /// Stop everything standing in this workspace and hand its removal to the
-    /// drain. `finish` is set when the removal is a Done, which writes the
-    /// record of what was finished on the way out and deletes the branches it
-    /// was asked to.
+    /// drain. `removal` says what else goes with it: a Done writes the record
+    /// of what was finished on the way out and deletes the branches it was
+    /// asked to; a reclaim takes the workspace's branches.
     pub(super) fn remove_workspace(
         &mut self,
         workspace: &Workspace,
         params: &Value,
-        finish: Option<Finishing>,
+        removal: Removal,
         boundary: WorkspaceBoundary,
     ) -> Result<(), String> {
         self.preserve_project_issue_identities(&workspace.project_id)?;
@@ -282,7 +336,7 @@ impl AppState {
         // any notices the automatic close queues for this workspace.
         // Eligibility has been accepted; a later disk failure does not undo
         // the completed work or reopen its issues.
-        if finish.is_some() {
+        if matches!(removal, Removal::Finish(_)) {
             self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
         }
         let root = boundary
@@ -301,7 +355,9 @@ impl AppState {
                 retirements,
                 checkouts: checkouts_of(workspace),
                 run_ids,
-                finish: finish.map(|finishing| (finishing, workspace.clone())),
+                workspace: workspace.clone(),
+                removal,
+                reclaimed_branches: Mutex::new(Vec::new()),
             }),
             params: params.clone(),
             invalidates: true,
@@ -419,6 +475,35 @@ impl AppState {
         retirements
     }
 
+    /// What a reclaim did with each branch the workspace carried, on every
+    /// issue linking the workspace or that branch, quietly and under whoever
+    /// reclaimed, like the reclaim itself: `branch_deleted`, or `branch_kept`
+    /// with the sentence that says why it stayed.
+    fn note_reclaimed_branches(
+        &mut self,
+        workspace: &Workspace,
+        actor: &Actor,
+        outcomes: &[(String, Result<(), BranchDeleteFailure>)],
+    ) {
+        for (branch, outcome) in outcomes {
+            let (kind, payload) = reclaimed_branch_event(workspace, branch, outcome);
+            let issues = self.issues_linking_workspace_or_branch(
+                &workspace.project_id,
+                &workspace.id,
+                branch,
+            );
+            for issue in issues {
+                if let Err(error) = self.record_quiet_event(&issue.id, actor, kind, payload.clone())
+                {
+                    eprintln!(
+                        "note reclaimed branch {branch} on #{}: {error}",
+                        issue.number
+                    );
+                }
+            }
+        }
+    }
+
     /// The files are gone: drop the runs that lived in them and the record
     /// that listed them, so `workspace.list` stops naming it.
     fn complete_workspace_delete(
@@ -450,6 +535,33 @@ impl AppState {
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(())
     }
+}
+
+/// The timeline entry for one branch a reclaim took. A branch whose
+/// restoration failed is gone, so it reads as deleted, with the reason.
+fn reclaimed_branch_event(
+    workspace: &Workspace,
+    branch: &str,
+    outcome: &Result<(), BranchDeleteFailure>,
+) -> (IssueEventKind, Value) {
+    let mut payload = json!({
+        "branch": branch,
+        "workspace_id": workspace.id,
+        "workspace_name": workspace.name,
+        "reclaimed": true,
+    });
+    let kind = match outcome {
+        Ok(()) => IssueEventKind::BranchDeleted,
+        Err(failure) => {
+            payload["reason"] = json!(failure.reason());
+            if failure.recovery_failed() {
+                IssueEventKind::BranchDeleted
+            } else {
+                IssueEventKind::BranchKept
+            }
+        }
+    };
+    (kind, payload)
 }
 
 /// Every Git directory of the workspace that is a real isolated checkout, as

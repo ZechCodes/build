@@ -184,11 +184,19 @@ and `Store` wraps its own connection mutex (`bridge/src/store.rs`).
 
 ### Liveness and signaling
 
-`LivenessRuntime` (`bridge/src/liveness.rs`) is a small, separate tokio runtime
-whose threads are named `bridge-live`. Nothing on it may take the app lock.
-`run_daemon` in `bridge/src/main.rs` puts three things on it: the relay socket,
-the presence reporter, and the WebRTC peer factory. That way a busy app lock
-cannot starve the relay connection, the heartbeat or negotiation.
+`DedicatedRuntime::liveness()` (`bridge/src/liveness.rs`) is a small, separate
+tokio runtime whose threads are named `bridge-live`. Nothing on it may take the
+app lock. `run_daemon` in `bridge/src/main.rs` puts three things on it: the
+relay socket, the presence reporter, and the WebRTC peer factory. That way a
+busy app lock cannot starve the relay connection, the heartbeat or negotiation.
+
+`DedicatedRuntime::push()` (`bridge-push`) carries what the bridge pushes to
+its clients, which is CPU rather than waiting: the change bus's flusher (a frame
+serialized and encrypted per subscriber per window) and every terminal's byte
+pump (a vt100 parse per chunk, a frame per attached client every 10 ms).
+`AppState::with_push_runtime` hands it to the flusher and, through the session
+registry, to each tab's `TabPumps`. With none set (the tests) both run on the
+runtime that starts them.
 
 - **Presence** (`bridge/src/presence.rs`): a device-signed heartbeat to
   skriftapp's `/api/devices/heartbeat` every 30 s (`HEARTBEAT_INTERVAL`), sent

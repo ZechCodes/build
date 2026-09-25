@@ -21,6 +21,7 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         session_instance,
         screen,
         output,
+        push_runtime,
     } = pumps;
     super::delivery::receipts::spawn_receipt_pump(state, &session, session_instance.clone());
     spawn_tab_pump(
@@ -28,8 +29,11 @@ pub(in crate::app) fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey,
         key.clone(),
         Arc::clone(&session),
         session_instance.clone(),
-        screen,
-        output.bytes,
+        BytePump {
+            screen,
+            rx: output.bytes,
+            push_runtime,
+        },
     );
     let status_changed = session.status_changed();
     spawn_activity_pump(
@@ -171,6 +175,14 @@ fn record_new_turn_context(
     *recorded = Some(context);
 }
 
+/// What a byte pump paints and where: the tab's screen, the stream it reads,
+/// and the runtime it runs on.
+pub(in crate::app) struct BytePump {
+    pub(in crate::app) screen: Option<ScreenHandle>,
+    pub(in crate::app) rx: Option<broadcast::Receiver<Vec<u8>>>,
+    pub(in crate::app) push_runtime: Option<tokio::runtime::Handle>,
+}
+
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
@@ -199,21 +211,27 @@ pub(in crate::app) fn spawn_tab_pump(
     key: TabKey,
     session: Arc<dyn AgentSession>,
     instance: Option<SessionInstance>,
-    screen: Option<ScreenHandle>,
-    rx: Option<broadcast::Receiver<Vec<u8>>>,
+    pump: BytePump,
 ) {
     // No terminal, no bytes: the pump exists to paint a stream into a grid, and
     // a session that offers none has nothing for it to do.
-    let (Some(mut rx), Some(screen)) = (rx, screen) else {
+    let BytePump {
+        screen: Some(screen),
+        rx: Some(mut rx),
+        push_runtime,
+    } = pump
+    else {
         return;
     };
-    if tokio::runtime::Handle::try_current().is_err() {
+    // The daemon's push runtime, where the paint competes with nothing that
+    // answers a request; with none set, the runtime starting the pump.
+    let Some(runtime) = push_runtime.or_else(|| tokio::runtime::Handle::try_current().ok()) else {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto and nothing attached to feed.
         return;
-    }
+    };
     let state = Arc::clone(state);
-    tokio::spawn(async move {
+    runtime.spawn(async move {
         screen.restart();
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

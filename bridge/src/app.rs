@@ -471,6 +471,10 @@ pub struct AppState {
     /// in tests without an Arc simply skip pump spawning (they assert on
     /// state, not pushes).
     self_handle: Option<std::sync::Weak<Mutex<AppState>>>,
+    /// The daemon's push runtime (`liveness.rs`), where the change bus's
+    /// flusher runs; the session registry holds it too, for the byte pumps.
+    /// `None` is the runtime that shares the state.
+    push_runtime: Option<tokio::runtime::Handle>,
     next_stream: u64,
     /// When true, simulate the agent deterministically (local QA, no LLM).
     qa_agent: bool,
@@ -645,6 +649,7 @@ impl AppState {
             usage_limits: Default::default(),
             operation_ledger: Default::default(),
             self_handle: None,
+            push_runtime: None,
             next_stream: 1,
             qa_agent,
             session_locator_factory,
@@ -735,17 +740,30 @@ impl AppState {
         Ok(self)
     }
 
+    /// Push to the clients from `runtime`: the change bus's flush and every
+    /// terminal's paint, serialized and encrypted per client, apart from the
+    /// runtime that answers the clients' requests.
+    pub fn with_push_runtime(mut self, runtime: tokio::runtime::Handle) -> Self {
+        self.session_registry.set_push_runtime(runtime.clone());
+        self.push_runtime = Some(runtime);
+        self
+    }
+
     /// Share this state so the relay handler and the done-socket listener both
     /// drive the same tasks. Stashes a weak self-handle so `&mut self` hooks
     /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
         let state = Arc::new(Mutex::new(self));
-        let (changes, watchers) = {
+        let (changes, watchers, push_runtime) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
             let _ = app.facts_handle.set(Arc::downgrade(&state));
             app.watchers.set_roots(app.worktree_roots());
-            (Arc::clone(&app.changes), Arc::clone(&app.watchers))
+            (
+                Arc::clone(&app.changes),
+                Arc::clone(&app.watchers),
+                app.push_runtime.clone(),
+            )
         };
         if let Some(updates) = state.lock().unwrap().update_service() {
             let weak = Arc::downgrade(&state);
@@ -789,7 +807,7 @@ impl AppState {
         // gets no flusher and simply never sends. The watcher reconciler is
         // the same shape: it starts watchers, which is a tree walk, so it too
         // runs off this mutex.
-        ChangeBus::spawn_flusher(Arc::clone(&changes));
+        ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
         state
     }

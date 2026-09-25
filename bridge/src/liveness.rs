@@ -23,17 +23,27 @@
 //! dispatcher, whose workers live on the main runtime and whose queues are the
 //! only thing a task here ever waits on, and waiting on a queue suspends the
 //! task, never the thread.
+//!
+//! The same shape carries one more runtime, `bridge-push`: the work that
+//! serializes and encrypts what the bridge pushes to its clients — the change
+//! bus's flusher, a frame per subscriber per window, and the terminals' byte
+//! pumps, a vt100 parse per chunk and a frame per attached client every 10 ms
+//! (issue #131). That is CPU, not waiting, and on the main runtime's workers
+//! it stood in line with the dispatcher that answers the clients' requests.
+//! It takes no lock the app holds on its own threads; a pump's death rites,
+//! which do, go to the blocking pool.
 
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime::{Handle, Runtime};
 
-/// How many threads the liveness runtime has. Two: the work is a socket, a
-/// beat and a few channels' worth of encryption, and the second thread is so
-/// one long chunk of that never holds up the rest.
+/// How many threads each runtime here has. Two: the liveness work is a socket,
+/// a beat and a few channels' worth of encryption, the push work a few
+/// terminals' paint and a flush, and the second thread is so one long chunk of
+/// either never holds up the rest.
 const WORKER_THREADS: usize = 2;
 
-/// The runtime, alive for as long as the daemon is.
+/// A runtime of its own, alive for as long as the daemon is.
 ///
 /// It is stopped, never merely dropped: the daemon's shutdown runs inside a
 /// task of the main runtime, and a tokio runtime dropped from inside another
@@ -42,23 +52,34 @@ const WORKER_THREADS: usize = 2;
 /// an exit 101. [`stop`](Self::stop) shuts the runtime down in the background,
 /// which blocks nothing and is allowed anywhere; the drop does the same for
 /// whoever forgets.
-pub struct LivenessRuntime {
+pub struct DedicatedRuntime {
     runtime: Mutex<Option<Runtime>>,
     handle: Handle,
 }
 
-impl LivenessRuntime {
-    pub fn start() -> Result<Arc<LivenessRuntime>, String> {
+impl DedicatedRuntime {
+    /// The relay socket, the presence beat and the peers' channels.
+    pub fn liveness() -> Result<Arc<DedicatedRuntime>, String> {
+        DedicatedRuntime::start("bridge-live")
+    }
+
+    /// What the bridge pushes to its clients: the change bus's flusher and
+    /// the terminals' byte pumps.
+    pub fn push() -> Result<Arc<DedicatedRuntime>, String> {
+        DedicatedRuntime::start("bridge-push")
+    }
+
+    /// `name` is under 15 bytes, so it survives Linux's `comm` truncation and
+    /// reads as itself in `top -H`.
+    fn start(name: &'static str) -> Result<Arc<DedicatedRuntime>, String> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(WORKER_THREADS)
-            // Under 15 bytes, so it survives Linux's `comm` truncation and
-            // reads as itself in `top -H`.
-            .thread_name("bridge-live")
+            .thread_name(name)
             .enable_all()
             .build()
-            .map_err(|error| format!("cannot start the liveness runtime: {error}"))?;
+            .map_err(|error| format!("cannot start the {name} runtime: {error}"))?;
         let handle = runtime.handle().clone();
-        Ok(Arc::new(LivenessRuntime {
+        Ok(Arc::new(DedicatedRuntime {
             runtime: Mutex::new(Some(runtime)),
             handle,
         }))
@@ -90,7 +111,7 @@ impl LivenessRuntime {
     }
 }
 
-impl Drop for LivenessRuntime {
+impl Drop for DedicatedRuntime {
     fn drop(&mut self) {
         self.stop();
     }
@@ -111,7 +132,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let liveness = LivenessRuntime::start().unwrap();
+        let liveness = DedicatedRuntime::liveness().unwrap();
 
         // The app lock, held by "a handler" for the length of the test.
         let app_lock = Arc::new(Mutex::new(()));
@@ -154,7 +175,7 @@ mod tests {
             .build()
             .unwrap();
         main.block_on(async {
-            let liveness = LivenessRuntime::start().unwrap();
+            let liveness = DedicatedRuntime::liveness().unwrap();
             let ticking = liveness.spawn(async {
                 loop {
                     tokio::time::sleep(Duration::from_millis(1)).await;

@@ -58,7 +58,7 @@ use build_bridge::backoff::Backoff;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::config::BridgeConfig;
 use build_bridge::harness::HarnessContext;
-use build_bridge::liveness::LivenessRuntime;
+use build_bridge::liveness::DedicatedRuntime;
 use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
@@ -545,7 +545,18 @@ async fn run_daemon(
         );
     }
     let live_roster = LiveRoster::start(tasks_dir, env!("CARGO_PKG_VERSION"));
-    let app = app.with_live_roster(live_roster.clone()).shared();
+    // What the bridge pushes to its clients — the change bus's flush, every
+    // terminal's paint — is serialized and encrypted per client, and runs on a
+    // runtime of its own, apart from the one that answers their requests
+    // (issue #131).
+    let push = match DedicatedRuntime::push() {
+        Ok(push) => push,
+        Err(error) => exit_startup(error),
+    };
+    let app = app
+        .with_live_roster(live_roster.clone())
+        .with_push_runtime(push.handle())
+        .shared();
     let handler = AppState::handler(app.clone());
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
@@ -573,7 +584,7 @@ async fn run_daemon(
     // The runtime the relay socket, the presence beat and every peer's
     // channels run on: threads that never take the app lock, so a handler
     // holding it for a minute slows answers and severs nothing (issue #128).
-    let liveness = match LivenessRuntime::start() {
+    let liveness = match DedicatedRuntime::liveness() {
         Ok(liveness) => liveness,
         Err(error) => exit_startup(error),
     };
@@ -663,6 +674,7 @@ async fn run_daemon(
         // (`liveness.rs`).
         relay_socket.abort();
         liveness.stop();
+        push.stop();
     });
 }
 

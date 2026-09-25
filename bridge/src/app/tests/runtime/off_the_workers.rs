@@ -149,8 +149,11 @@ async fn a_byte_pumps_death_rites_wait_for_the_app_mutex_off_the_workers() {
         derived_agent_key(dir.path(), "run-bytes"),
         session,
         Some(instance_of("run-bytes")),
-        Some(ScreenHandle::new("agent:run-bytes", 80, 24)),
-        Some(subscribed),
+        crate::app::runtime::pumps::BytePump {
+            screen: Some(ScreenHandle::new("agent:run-bytes", 80, 24)),
+            rx: Some(subscribed),
+            push_runtime: None,
+        },
     );
 
     the_worker_naps_on_time_while_the_lock_is_held(&state, move || drop(bytes)).await;
@@ -299,4 +302,50 @@ async fn an_off_lock_jobs_apply_phase_waits_for_the_app_mutex_off_the_workers() 
         );
     })
     .await;
+}
+
+/// What the bridge pushes to its clients runs on the push runtime, never on
+/// the main one: the change bus's flusher from the moment the state is
+/// shared, and each terminal's byte pump from the moment its tab opens — the
+/// vt100 parse and the frame per client every 10 ms (#131).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn the_flusher_and_a_terminals_paint_run_on_the_push_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let push = crate::liveness::DedicatedRuntime::push().unwrap();
+    let pushing = || push.handle().metrics().num_alive_tasks();
+    let main = tokio::runtime::Handle::current();
+    let state = AppState::new_unrooted(dir.path(), "main", true, "unused")
+        .with_push_runtime(push.handle())
+        .shared();
+    assert_eq!(pushing(), 1, "the flusher is on the push runtime");
+    let on_main = main.metrics().num_alive_tasks();
+
+    let key = derived_agent_key(dir.path(), "run-paint");
+    let (tab, output) = Tab::spawn_shell(
+        &HarnessSpec::new("cat"),
+        key.tab_id.clone(),
+        dir.path().to_path_buf(),
+        terminal_size(80, 24),
+    )
+    .expect("the tab spawns");
+    let session = Arc::clone(&tab.session);
+    let pumps = state
+        .lock()
+        .unwrap()
+        .session_registry
+        .insert_shell(key.clone(), tab, output);
+    crate::app::spawn_tab_pumps(&state, key, pumps);
+
+    assert_eq!(
+        pushing(),
+        2,
+        "the terminal's byte pump is on the push runtime"
+    );
+    assert_eq!(
+        main.metrics().num_alive_tasks(),
+        on_main,
+        "and nothing of it is on the main runtime"
+    );
+    session.end();
+    push.stop();
 }

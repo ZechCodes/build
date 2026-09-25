@@ -25,7 +25,12 @@ import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { clearProjectTabHandler, clearToolbarVerb, setProjectTabHandler, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
-import { projectPageModel } from "../core/projectPageModel.js";
+import {
+  ALL_WORKSPACES,
+  RECLAIMABLE_WORKSPACES,
+  projectPageModel,
+  workspaceListing,
+} from "../core/projectPageModel.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { ICON_PLUS, ICON_SETTINGS } from "../core/icons.js";
 import { routeProjectKey } from "../core/deviceKey.js";
@@ -77,6 +82,7 @@ const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.mute
       <div class="inbox-facts">${esc(factsLine(row))}</div>
       ${lifecycleHtml(row, ui)}
     </div>
+    <span class="project-size">${esc(row.sizeText)}</span>
     ${reclaimHtml(row, ui)}
   </div>`;
 
@@ -88,8 +94,28 @@ const emptyHtml = () => `<div class="empty project-empty">
     <p>A workspace is where the work happens in this project. The + above makes the first one.</p>
   </div>`;
 
-const pageHtml = (page, ui) =>
-  page.empty ? emptyHtml() : `<div class="project-rows">${page.rows.map((row) => rowHtml(row, ui)).join("")}</div>`;
+/** One of the two filters (#167). The reclaimable one says how many there are,
+ *  so the press is not a guess. */
+const filterButtonHtml = (listing, filter, label) => {
+  const active = listing.filter === filter;
+  return `<button class="btn mini project-filter${active ? " active" : ""}" type="button" data-workspace-filter="${filter}" aria-pressed="${active}">${esc(label)}</button>`;
+};
+
+const filtersHtml = (listing) => `<div class="project-filters" role="group" aria-label="Which workspaces to show">
+    ${filterButtonHtml(listing, ALL_WORKSPACES, "All")}
+    ${filterButtonHtml(listing, RECLAIMABLE_WORKSPACES, `Reclaimable (${listing.reclaimableCount})`)}
+  </div>`;
+
+const listingHtml = (listing, ui) =>
+  listing.empty
+    ? `<p class="project-filter-empty">No workspace can be reclaimed right now.</p>`
+    : `<div class="project-rows">${listing.rows.map((row) => rowHtml(row, ui)).join("")}</div>`;
+
+const pageHtml = (page, ui) => {
+  if (page.empty) return emptyHtml();
+  const listing = workspaceListing(page, ui.filter);
+  return `${filtersHtml(listing)}${listingHtml(listing, ui)}`;
+};
 
 /** The two verbs this page owns, in the toolbar's slot. Called on every toolbar
  *  repaint, so it rebuilds only when the project it names has changed. */
@@ -134,7 +160,7 @@ function paint(state) {
     state.issues?.feedMoved();
     return;
   }
-  const shown = JSON.stringify([state.page.rows, [...state.reclaiming], [...state.reclaimErrors]]);
+  const shown = JSON.stringify([state.page.rows, state.filter, [...state.reclaiming], [...state.reclaimErrors]]);
   if (pane.dataset.rows !== shown) {
     pane.dataset.rows = shown;
     pane.innerHTML = pageHtml(state.page, state);
@@ -211,9 +237,15 @@ async function reclaimWorkspace(state, workspaceKey) {
   await refreshFeed(state.context.deviceId);
 }
 
-/** A press in the list: Reclaim on its own button, anywhere else on a row
- *  opens that workspace. */
+/** A press in the list: a filter narrows it, Reclaim reclaims, anywhere else
+ *  on a row opens that workspace. */
 function pressList(state, event) {
+  const filter = event.target.closest("[data-workspace-filter]");
+  if (filter) {
+    state.filter = filter.dataset.workspaceFilter;
+    paint(state);
+    return;
+  }
   const reclaim = event.target.closest("[data-workspace-reclaim]");
   if (reclaim) {
     reclaimWorkspace(state, reclaim.dataset.workspaceReclaim);
@@ -246,7 +278,7 @@ export async function renderProject() {
     route, context, disposed: false, selection: shellSelection(),
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "dashboard", feed: null, issues: null, openTab: null,
-    reclaiming: new Set(), reclaimErrors: new Map(),
+    reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;

@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { projectPageModel } from "../src/core/projectPageModel.js";
+import {
+  ALL_WORKSPACES,
+  RECLAIMABLE_WORKSPACES,
+  projectPageModel,
+  workspaceListing,
+} from "../src/core/projectPageModel.js";
 
 // One device's feed, stamped the way core/feedMerge.js stamps it: every row
 // knows the machine that answered, and a project is named by the pair.
@@ -109,5 +114,51 @@ describe("projectPageModel", () => {
   it("stands up on a feed carrying nothing at all", () => {
     expect(projectPageModel(undefined, route).rows).toEqual([]);
     expect(projectPageModel({}, route).empty).toBe(true);
+  });
+});
+
+// #167: the Workspaces tab narrows to what can be reclaimed, biggest first,
+// and every row says what it weighs, all from the cached workspace.list rows.
+describe("the workspaces listing", () => {
+  const verdict = (reclaimable, size) => ({
+    idle: true, reclaimable, holds: reclaimable ? [] : ["dirty"], dirty_files: 1, size_bytes: size, pruned_bytes: 0,
+  });
+  const sized = {
+    ...feed,
+    workspaces: [
+      workspace("small", { lifecycle: verdict(true, 2_000_000_000) }),
+      workspace("held", { lifecycle: verdict(false, 40_000_000_000) }),
+      workspace("large", { lifecycle: verdict(true, 17_200_000_000) }),
+      workspace("unmeasured"),
+    ],
+  };
+  const page = () => projectPageModel(sized, route);
+
+  it("says each row's size, and nothing for one not yet measured", () => {
+    const bySize = Object.fromEntries(page().rows.map((row) => [row.workspaceId, row.sizeText]));
+    expect(bySize).toEqual({ small: "2.0 GB", held: "40.0 GB", large: "17.2 GB", unmeasured: "" });
+  });
+
+  it("lists every workspace in the rail's order unless narrowed", () => {
+    const listed = workspaceListing(page(), ALL_WORKSPACES);
+    expect(listed.rows.map((row) => row.workspaceId)).toEqual(["small", "held", "large", "unmeasured"]);
+    expect(listed.reclaimableCount).toBe(2);
+  });
+
+  it("narrows to the reclaimable ones, largest first", () => {
+    const listed = workspaceListing(page(), RECLAIMABLE_WORKSPACES);
+    expect(listed.rows.map((row) => row.workspaceId)).toEqual(["large", "small"]);
+    expect(listed.empty).toBe(false);
+  });
+
+  it("is empty when nothing can be reclaimed", () => {
+    const listed = workspaceListing(projectPageModel(feed, route), RECLAIMABLE_WORKSPACES);
+    expect(listed.rows).toEqual([]);
+    expect(listed.empty).toBe(true);
+    expect(listed.reclaimableCount).toBe(0);
+  });
+
+  it("reads an unknown filter as every workspace", () => {
+    expect(workspaceListing(page(), "bogus").rows).toHaveLength(4);
   });
 });

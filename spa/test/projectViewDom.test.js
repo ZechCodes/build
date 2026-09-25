@@ -395,3 +395,77 @@ describe("a workspace's lifecycle on the Workspaces tab", () => {
     expect(reclaimButton(rows()[0]).disabled).toBe(false);
   });
 });
+
+// #167: a filter down to what can be reclaimed, biggest first, and a size on
+// every row, all from the cached workspace.list rows.
+describe("the Reclaimable filter and the size column", () => {
+  const verdict = (reclaimable, size) => ({
+    idle: true, reclaimable, holds: reclaimable ? [] : ["dirty"], issues: [], dirty_files: 1,
+    unpushed_commits: 0, behind_commits: 0, size_bytes: size, pruned_bytes: 0, pruned_at_ms: null,
+    noticed_at_ms: null, measured_at_ms: 1, last_activity_ms: 0,
+  });
+  const filter = (name) => document.querySelector(`[data-workspace-filter="${name}"]`);
+  const shownIds = () => rows().map((row) => row.dataset.workspace);
+  const sizes = () => rows().map((row) => row.querySelector(".project-size").textContent);
+
+  beforeEach(() => {
+    snapshot = {
+      ...snapshot,
+      workspaces: [
+        workspace("small", { lifecycle: verdict(true, 2_000_000_000) }),
+        workspace("held", { lifecycle: verdict(false, 40_000_000_000) }),
+        workspace("large", { lifecycle: verdict(true, 17_200_000_000) }),
+        workspace("fresh"),
+      ],
+    };
+  });
+
+  it("lists every workspace in its order, each with its size, until narrowed", async () => {
+    await openWorkspacesTab();
+    await flush();
+
+    expect(shownIds()).toEqual(["dev-1/small", "dev-1/held", "dev-1/large", "dev-1/fresh"]);
+    expect(sizes()).toEqual(["2.0 GB", "40.0 GB", "17.2 GB", ""]);
+    expect(filter("all").getAttribute("aria-pressed")).toBe("true");
+    expect(filter("reclaimable").textContent).toBe("Reclaimable (2)");
+  });
+
+  it("narrows to the reclaimable workspaces, largest first, and back", async () => {
+    await openWorkspacesTab();
+    await flush();
+    const before = location.hash;
+
+    filter("reclaimable").click();
+
+    expect(shownIds()).toEqual(["dev-1/large", "dev-1/small"]);
+    expect(sizes()).toEqual(["17.2 GB", "2.0 GB"]);
+    expect(filter("reclaimable").getAttribute("aria-pressed")).toBe("true");
+    expect(location.hash).toBe(before);
+
+    filter("all").click();
+    expect(shownIds()).toHaveLength(4);
+  });
+
+  it("keeps the filter when the feed moves", async () => {
+    await openWorkspacesTab();
+    await flush();
+    filter("reclaimable").click();
+
+    snapshot = { ...snapshot, workspaces: [...snapshot.workspaces, workspace("huge", { lifecycle: verdict(true, 90_000_000_000) })] };
+    deliver();
+
+    expect(shownIds()).toEqual(["dev-1/huge", "dev-1/large", "dev-1/small"]);
+  });
+
+  it("says so when nothing can be reclaimed", async () => {
+    snapshot = { ...snapshot, workspaces: [workspace("held", { lifecycle: verdict(false, 1_000) })] };
+    await openWorkspacesTab();
+    await flush();
+
+    filter("reclaimable").click();
+
+    expect(rows()).toEqual([]);
+    expect(document.querySelector(".project-filter-empty").textContent)
+      .toBe("No workspace can be reclaimed right now.");
+  });
+});

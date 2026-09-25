@@ -38,6 +38,16 @@ describe("what the line says", () => {
       .toBe("Off for this session since 13:43:02. QuotaExceededError: The quota has been exceeded. Reload to turn it back on.");
   });
 
+  it("says it is waiting for another tab", () => {
+    expect(cacheHealthText({ state: "blocked", since: AT }))
+      .toBe("Waiting since 13:43:02 for another tab with an older version of Build to close.");
+  });
+
+  it("says another tab kept it closed", () => {
+    expect(cacheHealthText({ state: "stood-down", at: AT, reason: "blocked", error: "BlockedError", message: "" }))
+      .toBe("Off for this session since 13:43:02: another tab with an older version of Build kept it closed. Close that tab and reload to turn it back on.");
+  });
+
   it("says when the browser has none", () => {
     expect(cacheHealthText({ state: "absent" })).toBe("This browser has no IndexedDB, so nothing is kept between visits.");
   });

@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore, forceCloseDatabase } from "fake-indexeddb";
 
-const FAST_RECOVERY = { reopenDelaysMs: [0, 1, 2, 3], openTimeoutMs: 200, restMs: 40 };
+const FAST_RECOVERY = { reopenDelaysMs: [0, 1, 2, 3], openTimeoutMs: 200, restMs: 40, blockedTimeoutMs: 1000 };
 const address = { deviceId: "dev-1", entityId: "run-1", kind: "status" };
 
 let cache;
@@ -254,27 +254,41 @@ describe("a database that never comes back", () => {
 });
 
 describe("an open blocked by another tab", () => {
-  it("waits for the other connection to close rather than standing down", async () => {
-    // Another tab running an older build holds version 2 open and does not
-    // answer `versionchange` on its own.
-    const older = await new Promise((resolve) => {
-      const request = indexedDB.open("build-cache", 2);
-      request.onupgradeneeded = () => request.result.createObjectStore("records");
-      request.onsuccess = () => resolve(request.result);
-    });
+  /** Another tab running an older build holds version 2 open and does not
+   *  answer `versionchange` on its own. */
+  const olderTab = () => new Promise((resolve) => {
+    const request = indexedDB.open("build-cache", 2);
+    request.onupgradeneeded = () => request.result.createObjectStore("records");
+    request.onsuccess = () => resolve(request.result);
+  });
+
+  it("waits for the other connection to close rather than standing down, and says it is waiting", async () => {
+    const older = await olderTab();
     const open = vi.spyOn(indexedDB, "open");
     const write = cache.writeCached(address, { head: "after-upgrade" });
 
     await vi.waitFor(() => expect(eventNames()).toContain("cache-open-blocked"));
     // Past the open timeout: a blocked open is not a lost one.
     await new Promise((resolve) => setTimeout(resolve, FAST_RECOVERY.openTimeoutMs + 50));
-    expect(cache.cacheHealth().state).toBe("ready");
+    expect(cache.cacheHealth()).toMatchObject({ state: "blocked", since: expect.any(Number) });
     older.close();
 
     await write;
     expect((await cache.readCached(address))?.value).toEqual({ head: "after-upgrade" });
     expect(open).toHaveBeenCalledTimes(1);
     expect(eventNames()).toEqual(["cache-open-blocked"]);
+    expect(cache.cacheHealth().state).toBe("ready");
+  });
+
+  it("stands down when the other tab never lets go, and answers what was waiting", async () => {
+    cache.setCacheRecoveryTiming({ ...FAST_RECOVERY, blockedTimeoutMs: 100 });
+    const older = await olderTab();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(await cache.readCached(address)).toBeUndefined();
+    expect(cache.cacheHealth()).toMatchObject({ state: "stood-down", reason: "blocked" });
+    expect(eventNames()).toEqual(["cache-open-blocked", "cache-stood-down"]);
+    older.close();
   });
 
   it("steps aside when a newer version opens in another tab", async () => {

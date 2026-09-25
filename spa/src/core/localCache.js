@@ -90,8 +90,14 @@ const DEFAULT_TIMING = Object.freeze({
   reopenDelaysMs: Object.freeze([0, 50, 150, 400, 1000, 2000, 4000]),
   /** How long an open may stay pending before it counts as lost. WebKit has
    *  left an open unanswered after a resume. An upgrade blocked by another tab
-   *  is waited out instead: that tab is told to close, and will. */
+   *  is waited on for `blockedTimeoutMs` instead. */
   openTimeoutMs: 5000,
+  /** How long an upgrade waits for another tab to close its older connection.
+   *  A tab on this build closes at once when told to; one on a build before
+   *  #169 has nothing that listens, and holds on until it is closed or
+   *  reloaded — so past this the cache stands down, and the page paints from
+   *  the network as it would without one. */
+  blockedTimeoutMs: 10_000,
   /** How long the cache rests after the attempts run out, unless a wake ends
    *  it first. */
   restMs: 30_000,
@@ -149,6 +155,8 @@ let restingUntil = 0;
 let restTimer = null;
 let stoodDown = null;
 let lastRecovery = null;
+/** When the open now pending was blocked by another tab, or null. */
+let blockedSince = null;
 
 const errorFields = (error) => ({
   error: error?.name || (error ? "Error" : "none"),
@@ -168,12 +176,14 @@ function cacheEvent(event, detail = {}) {
 }
 
 /** What the cache is doing right now: `ready`, `recovering` (reopening after a
- *  lost connection), `resting` (between rounds of reopening), `stood-down`
- *  (for the session), or `absent` (this browser has no IndexedDB). With when
- *  it started and the error behind it. */
+ *  lost connection), `resting` (between rounds of reopening), `blocked`
+ *  (waiting for another tab to close an older connection), `stood-down` (for
+ *  the session), or `absent` (this browser has no IndexedDB). With when it
+ *  started and the error behind it. */
 export function cacheHealth() {
   if (typeof indexedDB === "undefined") return { state: "absent" };
   if (disabled) return { state: "stood-down", ...stoodDown };
+  if (blockedSince) return { state: "blocked", since: blockedSince };
   if (!outage) return { state: "ready", lastRecovery };
   return {
     state: Date.now() < restingUntil ? "resting" : "recovering",
@@ -287,9 +297,9 @@ function invalidateDb(db, promise) {
   return true;
 }
 
-function timeoutError() {
-  const error = new Error("opening the cache database did not answer");
-  error.name = "TimeoutError";
+function namedError(name, message) {
+  const error = new Error(message);
+  error.name = name;
   return error;
 }
 
@@ -299,17 +309,24 @@ function upgrade(request) {
   db.createObjectStore(STORE).createIndex(AT_INDEX, "at");
 }
 
-/** One `indexedDB.open`: the database, or the error it failed with. A request
- *  that answers after it was given up on closes what it opened. */
+/** One `indexedDB.open`: the database, or the error it failed with — and
+ *  `blocked` when another tab held it past the wait. A request that answers
+ *  after it was given up on closes what it opened. */
 function openOnce() {
   return new Promise((resolve) => {
     let settled = false;
     let blocked = false;
     let timer = null;
+    const giveUpAfter = (ms, outcome) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => settle(outcome), ms);
+      timer?.unref?.();
+    };
     const settle = (outcome) => {
       if (settled) return outcome.db?.close();
       settled = true;
       clearTimeout(timer);
+      if (blocked) blockedSince = null;
       resolve(outcome);
     };
     let request;
@@ -318,8 +335,7 @@ function openOnce() {
     } catch (error) {
       return settle({ error });
     }
-    timer = setTimeout(() => blocked || settle({ error: timeoutError() }), timing.openTimeoutMs);
-    timer?.unref?.();
+    giveUpAfter(timing.openTimeoutMs, { error: namedError("TimeoutError", "opening the cache database did not answer") });
     request.onupgradeneeded = () => upgrade(request);
     request.onsuccess = () => settle({ db: request.result });
     request.onerror = (event) => {
@@ -327,10 +343,17 @@ function openOnce() {
       settle({ error: request.error });
     };
     // Another tab holds an older version open. It is told to close (see
-    // `onversionchange` below); this open goes through the moment it does.
+    // `onversionchange` below); this open goes through the moment it does,
+    // unless that tab never listens.
     request.onblocked = () => {
-      if (!blocked) cacheEvent("cache-open-blocked", {});
+      if (blocked || settled) return;
       blocked = true;
+      blockedSince = Date.now();
+      cacheEvent("cache-open-blocked", {});
+      giveUpAfter(timing.blockedTimeoutMs, {
+        blocked: true,
+        error: namedError("BlockedError", "another tab kept an older version of the database open"),
+      });
     };
   });
 }
@@ -365,10 +388,10 @@ async function reachDb() {
     const step = attempt + along;
     if (step > 0) await pause(delays[Math.min(step, delays.length - 1)]);
     if (disabled) return null;
-    const { db, error } = await openOnce();
+    const { db, error, blocked } = await openOnce();
     if (db) return db;
-    if (faultOf(error, "open") !== "connection") {
-      standDown("open-failed", error);
+    if (blocked || faultOf(error, "open") !== "connection") {
+      standDown(blocked ? "blocked" : "open-failed", error);
       return null;
     }
     connectionLost("open-failed", error);

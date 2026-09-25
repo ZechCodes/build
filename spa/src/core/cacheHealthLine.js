@@ -23,6 +23,12 @@ const asSentence = (text) => (text && !/[.!?]$/.test(text) ? `${text}.` : text);
 
 const seconds = (ms) => `${(Math.max(0, Number(ms) || 0) / 1000).toFixed(1)} s`;
 
+/// Why the cache stood down, where there is something truer to say than the
+/// browser's error: what it was and what brings it back.
+const STOOD_DOWN_BECAUSE = Object.freeze({
+  blocked: "another tab with an older version of Build kept it closed. Close that tab and reload to turn it back on.",
+});
+
 /// One sentence per state. Polymorphic on the state's name rather than a chain
 /// of conditions: each state says its own thing.
 const SAYS = Object.freeze({
@@ -32,8 +38,10 @@ const SAYS = Object.freeze({
   recovering: (health) => `Reconnecting since ${formatDiagnosticTime(health.since)}. ${errorText(health)}`.trim(),
   resting: (health) =>
     `Not answering since ${formatDiagnosticTime(health.since)}. Trying again when the app is next opened, or in a moment. ${errorText(health)}`.trim(),
-  "stood-down": (health) =>
-    `Off for this session since ${formatDiagnosticTime(health.at)}. ${asSentence(errorText(health))} Reload to turn it back on.`,
+  blocked: (health) => `Waiting since ${formatDiagnosticTime(health.since)} for another tab with an older version of Build to close.`,
+  "stood-down": (health) => (STOOD_DOWN_BECAUSE[health.reason]
+    ? `Off for this session since ${formatDiagnosticTime(health.at)}: ${STOOD_DOWN_BECAUSE[health.reason]}`
+    : `Off for this session since ${formatDiagnosticTime(health.at)}. ${asSentence(errorText(health))} Reload to turn it back on.`),
   absent: () => "This browser has no IndexedDB, so nothing is kept between visits.",
 });
 

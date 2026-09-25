@@ -14,6 +14,10 @@ afterEach(() => {
 });
 
 describe("what the line says", () => {
+  it("says it has not been used yet, rather than that it works", () => {
+    expect(cacheHealthText({ state: "unused" })).toBe("Not used yet in this page.");
+  });
+
   it("says the cache is working", () => {
     expect(cacheHealthText({ state: "ready", lastRecovery: null })).toBe("Working.");
   });

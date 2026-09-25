@@ -541,7 +541,7 @@ In practice:
   `UnknownError: Connection to Indexed Database server lost`. The cache reopens
   on a backoff (`reopenDelaysMs`, about eight seconds) whose retries wait for
   the page to be shown, then rests until the next wake (page shown, `pageshow`,
-  `online`, or 30 s) and tries again. The backoff lives in the one shared
+  `online`, or 10 s) and tries again. The backoff lives in the one shared
   reopen, not in each operation, so writes retried through it keep the order
   they were asked in. Each open is given five seconds, which bounds one
   attempt but cannot rescue a hung one: later opens queue behind it. A read is never answered "nothing"

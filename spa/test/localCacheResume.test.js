@@ -376,6 +376,27 @@ describe("the record of it", () => {
     expect(cache.cacheHealth().state).toBe("ready");
   });
 
+  it("says it has not been used until something has been read or written", async () => {
+    expect(cache.cacheHealth()).toEqual({ state: "unused" });
+    await cache.readCached(address);
+    expect(cache.cacheHealth().state).toBe("ready");
+  });
+
+  it("says a read's attempts ran out once per outage, not once per round it waits through", async () => {
+    await cache.writeCached(address, { head: "stored" });
+    const originalTransaction = IDBDatabase.prototype.transaction;
+    let failing = true;
+    const transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+      if (failing) throw connectionLost();
+      return originalTransaction.apply(this, args);
+    });
+    const read = cache.readCached(address);
+    await vi.waitFor(() => expect(transaction.mock.calls.length).toBeGreaterThan(3 * FAST_RECOVERY.reopenDelaysMs.length));
+    failing = false;
+    await read;
+    expect(eventNames().filter((name) => name === "cache-operation-failed")).toHaveLength(1);
+  });
+
   it("answers absent where there is no IndexedDB at all", async () => {
     vi.resetModules();
     delete globalThis.indexedDB;

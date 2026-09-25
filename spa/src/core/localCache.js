@@ -104,8 +104,9 @@ const DEFAULT_TIMING = Object.freeze({
    *  the network as it would without one. */
   blockedTimeoutMs: 10_000,
   /** How long the cache rests after the attempts run out, unless a wake ends
-   *  it first. */
-  restMs: 30_000,
+   *  it first. Short enough that storage coming back on a page nobody hides
+   *  is noticed within seconds. */
+  restMs: 10_000,
   /** How long the cache may keep failing on a page someone is looking at
    *  before the failure counts as the database's own. Counted from the later
    *  of the outage starting and the page last being shown: a hidden page waits
@@ -163,6 +164,8 @@ let stoodDown = null;
 let lastRecovery = null;
 /** The last write the database refused on its own account, or null. */
 let lastRefused = null;
+/** Whether the database has answered anything yet in this page. */
+let answered = false;
 /** When the open now pending was blocked by another tab, or null. */
 let blockedSince = null;
 
@@ -183,7 +186,8 @@ function cacheEvent(event, detail = {}) {
   (event === "cache-stood-down" ? console.warn : console.info)(`local cache: ${event}`, entry);
 }
 
-/** What the cache is doing right now: `ready`, `recovering` (reopening after a
+/** What the cache is doing right now: `unused` (nothing asked of it yet),
+ *  `ready`, `recovering` (reopening after a
  *  lost connection), `resting` (between rounds of reopening), `blocked`
  *  (waiting for another tab to close an older connection), `stood-down` (for
  *  the session), or `absent` (this browser has no IndexedDB). With when it
@@ -192,7 +196,7 @@ export function cacheHealth() {
   if (typeof indexedDB === "undefined") return { state: "absent" };
   if (disabled) return { state: "stood-down", ...stoodDown };
   if (blockedSince) return { state: "blocked", since: blockedSince };
-  if (!outage) return { state: "ready", lastRecovery, lastRefused };
+  if (!outage) return answered ? { state: "ready", lastRecovery, lastRefused } : { state: "unused" };
   return {
     state: Date.now() < restingUntil ? "resting" : "recovering",
     since: outage.since,
@@ -486,6 +490,7 @@ const UNAVAILABLE = Object.freeze({ committed: false, unavailable: true });
 /** What an attempt's outcome settles, or null when the connection failed it
  *  and the attempt is worth making again. */
 function settled(outcome) {
+  if (outcome.committed || outcome.fault === "write") answered = true;
   if (outcome.committed) {
     recovered();
     return outcome;
@@ -530,7 +535,9 @@ async function attemptOperation(mode, run) {
     invalidateDb(reached.db, reached.opening);
   }
   if (outlasted()) return UNAVAILABLE;
-  cacheEvent("cache-operation-failed", { mode, attempts: delays.length, ...errorFields(outcome.error) });
+  // Said once an outage: a read waiting it out runs out again every round.
+  if (!outage.saidExhausted) cacheEvent("cache-operation-failed", { mode, attempts: delays.length, ...errorFields(outcome.error) });
+  outage.saidExhausted = true;
   return { ...outcome, unavailable: true, exhausted: true };
 }
 

@@ -48,6 +48,7 @@ const refusedText = (refused) => (refused?.error === "QuotaExceededError"
 /// One sentence per state. Polymorphic on the state's name rather than a chain
 /// of conditions: each state says its own thing.
 const SAYS = Object.freeze({
+  unused: () => "Not used yet in this page.",
   ready: ({ lastRecovery, lastRefused }) => (lastRecovery
     ? `Working. Reconnected at ${formatDiagnosticTime(lastRecovery.at)} after ${seconds(lastRecovery.afterMs)}.`
     : "Working.") + refusedText(lastRefused),

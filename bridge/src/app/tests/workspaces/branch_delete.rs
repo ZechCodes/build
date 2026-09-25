@@ -1,7 +1,7 @@
 //! Done with the branch deleted: `branch.finish` with `action: "delete"`
 //! removes the workspace, then the local branch the finish resolved — and
-//! refuses before anything is touched when the branch is checked out
-//! somewhere else or holds commits no remote has.
+//! refuses before anything is touched when the branch is a default branch,
+//! is checked out somewhere else or holds commits no remote has.
 
 use super::*;
 
@@ -105,4 +105,39 @@ fn done_with_delete_refuses_a_branch_checked_out_elsewhere_and_touches_nothing()
     let still = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
     assert_eq!(still["ok"], true, "the workspace is untouched: {still:?}");
     assert!(local_branches(&repo).contains(&branch));
+}
+
+/// A workspace switched onto `main`: finishing it by that name with delete
+/// refuses as a whole, and local `main` stays.
+#[test]
+fn done_with_delete_never_deletes_main() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, _) = repo_with_origin(tmp.path(), "repo");
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "on-main");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    git_in(&repo, &["switch", "-q", "--detach"]);
+    git_in(&checkout, &["switch", "-q", "main"]);
+    let refreshed = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(
+        refreshed["result"]["directories"][0]["branch"], "main",
+        "{refreshed:?}"
+    );
+
+    let refused = state.handle(req(
+        "branch.finish",
+        json!({"project_id": project_id, "branch": "main", "action": "delete"}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert_eq!(
+        refused["error"],
+        "Build cannot delete the branch main: it is a default branch."
+    );
+    assert_eq!(refused["error_code"], "conflict", "{refused:?}");
+    let still = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(still["ok"], true, "the workspace is untouched: {still:?}");
+    assert!(local_branches(&repo).contains(&"main".to_string()));
 }

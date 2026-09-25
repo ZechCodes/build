@@ -7,11 +7,13 @@
 //! is looked up by name.
 //!
 //! Refused before anything is touched, as one plain sentence, when the branch
-//! is checked out somewhere other than the checkout Done is about to remove,
-//! or holds commits no remote has. Measured again in the drain once the
-//! checkout is gone, because the user's own checkout can move onto the branch
-//! in between; a refusal there leaves the branch and says why in the answer,
-//! since the workspace is already gone by then.
+//! is a default branch (`main`, `master`, the one a remote's `HEAD` names, or
+//! the one the project or the directory was cut from), is checked out
+//! somewhere other than the checkout Done is about to remove, or holds commits
+//! no remote has. Measured again in the drain once the checkout is gone,
+//! because the user's own checkout can move onto the branch in between; a
+//! refusal there leaves the branch and says why in the answer, since the
+//! workspace is already gone by then.
 //!
 //! The measurement is of one commit, not of a name: the delete names the tip
 //! the checks passed and Git refuses it if the branch has moved since, so a
@@ -24,6 +26,9 @@ use std::path::PathBuf;
 /// The `branch.finish` action that deletes the branch as well.
 pub(crate) const DELETE_ACTION: &str = "delete";
 
+/// Branch names Done never deletes, whatever the repository calls its default.
+const PROTECTED_NAMES: [&str; 2] = ["main", "master"];
+
 /// One local branch Done takes with it.
 #[derive(Clone, Debug)]
 pub(in crate::app) struct BranchDeletion {
@@ -32,12 +37,19 @@ pub(in crate::app) struct BranchDeletion {
     branch: String,
     /// The checkout Done removes. It holding the branch is not a refusal.
     checkout: PathBuf,
+    /// The branches configured as this repository's default: the project's
+    /// and the directory's base. Remote defaults are read from the repository.
+    defaults: Vec<String>,
 }
 
 impl BranchDeletion {
     /// The branch `branch` in every Git directory of `workspace` that carries
-    /// it.
-    pub(in crate::app) fn of(workspace: &Workspace, branch: &str) -> Vec<Self> {
+    /// it. `defaults` are the project's configured default branches.
+    pub(in crate::app) fn of(
+        workspace: &Workspace,
+        branch: &str,
+        defaults: &[String],
+    ) -> Vec<Self> {
         workspace
             .directories
             .iter()
@@ -46,6 +58,12 @@ impl BranchDeletion {
                 repo: directory.source_path.clone(),
                 branch: branch.to_string(),
                 checkout: directory.path.clone(),
+                defaults: defaults
+                    .iter()
+                    .chain(std::iter::once(&directory.base_branch))
+                    .filter(|name| !name.is_empty())
+                    .cloned()
+                    .collect(),
             })
             .collect()
     }
@@ -68,6 +86,9 @@ impl BranchDeletion {
                 self.branch
             ))
         };
+        if self.is_default() {
+            return refuse("it is a default branch");
+        }
         let Some(tip) = self.tip() else {
             return Ok(None);
         };
@@ -135,6 +156,37 @@ impl BranchDeletion {
         .filter(|oid| !oid.is_empty())
     }
 
+    /// `main`, `master`, a configured default, or the branch a remote's
+    /// `HEAD` names.
+    fn is_default(&self) -> bool {
+        PROTECTED_NAMES.contains(&self.branch.as_str())
+            || self.defaults.contains(&self.branch)
+            || self.remote_defaults().contains(&self.branch)
+    }
+
+    /// The branch each remote's `HEAD` points at, as a local branch name:
+    /// `refs/remotes/origin/HEAD -> refs/remotes/origin/trunk` is `trunk`.
+    fn remote_defaults(&self) -> Vec<String> {
+        let Ok(listed) = run_git(
+            &self.repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(symref)",
+                "refs/remotes/",
+            ],
+        ) else {
+            return Vec::new();
+        };
+        listed
+            .lines()
+            .filter_map(|line| {
+                let (name, target) = line.split_once(' ')?;
+                let remote = name.strip_suffix("HEAD")?;
+                target.strip_prefix(remote).map(str::to_string)
+            })
+            .collect()
+    }
+
     /// The first checkout of the source repository standing on the branch,
     /// other than the one Done removes.
     fn checked_out_elsewhere(&self) -> Option<PathBuf> {
@@ -187,6 +239,7 @@ mod tests {
             repo: repo.to_path_buf(),
             branch: branch.to_string(),
             checkout: checkout.to_path_buf(),
+            defaults: Vec::new(),
         }
     }
 
@@ -318,6 +371,58 @@ mod tests {
             .delete()
             .unwrap();
         assert!(run_git(&repo, &["config", "--get", "branch.feature.remote"]).is_err());
+    }
+
+    #[test]
+    fn main_and_master_are_never_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        git_in(&repo, &["branch", "master"]);
+        git_in(&repo, &["switch", "-q", "--detach"]);
+        for name in ["main", "master"] {
+            let protected = deletion(&repo, name, &tmp.path().join("gone"));
+            assert_eq!(
+                protected.delete().unwrap_err(),
+                format!("Build cannot delete the branch {name}: it is a default branch.")
+            );
+            assert!(protected.tip().is_some());
+        }
+    }
+
+    #[test]
+    fn the_branch_a_remote_calls_its_default_is_never_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        git_in(&repo, &["branch", "trunk"]);
+        git_in(&repo, &["push", "-q", "origin", "trunk"]);
+        git_in(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+        let trunk = deletion(&repo, "trunk", &tmp.path().join("gone"));
+        assert_eq!(
+            trunk.refusal().as_deref(),
+            Some("Build cannot delete the branch trunk: it is a default branch.")
+        );
+        assert!(trunk.delete().is_err());
+        assert!(trunk.tip().is_some());
+    }
+
+    #[test]
+    fn a_configured_default_is_never_deleted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = pushed_feature(tmp.path());
+        git_in(&repo, &["push", "-q", "origin", "feature"]);
+        let configured = BranchDeletion {
+            defaults: vec!["feature".to_string()],
+            ..deletion(&repo, "feature", &tmp.path().join("gone"))
+        };
+        assert!(configured.delete().is_err());
+        assert!(configured.tip().is_some());
     }
 
     #[test]

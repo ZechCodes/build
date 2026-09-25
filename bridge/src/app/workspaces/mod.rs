@@ -608,8 +608,9 @@ impl AppState {
         if !blockers.is_empty() {
             return Err(crate::workspace::finish_refusal(&blockers));
         }
+        let defaults = self.default_branches(&workspace.project_id);
         let branches = delete_branch
-            .map(|branch| branch_delete::BranchDeletion::of(&workspace, branch))
+            .map(|branch| branch_delete::BranchDeletion::of(&workspace, branch, &defaults))
             .unwrap_or_default();
         if let Some(refusal) = branch_delete::first_refusal(&branches) {
             return Err(refusal);
@@ -699,6 +700,19 @@ impl AppState {
             gate: None,
         })));
         Ok(json!({ "workspace_id": workspace_id, "pending": true }))
+    }
+
+    /// The branches a project is configured to build on: its own base and
+    /// each source's. Done never deletes one.
+    fn default_branches(&self, project_id: &str) -> Vec<String> {
+        self.project(project_id)
+            .map(|project| {
+                std::iter::once(&project.base_branch)
+                    .chain(project.sources.iter().map(|source| &source.base_branch))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Compatibility entry for the old finish routes. It resolves their

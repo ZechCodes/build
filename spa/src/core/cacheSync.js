@@ -145,6 +145,7 @@ const passes = new Map(); // deviceId → the pass running on it, so triggers ne
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
 const fileReads = new Map(); // file address → the newest reader allowed to write its body
+const fileRecoveries = new Map(); // deviceId → recovery completed on this session and request scope
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -325,6 +326,8 @@ async function orderedSync(deviceId, turn) {
   if (!context.active()) return false;
   await heldBeforeReading(context);
   if (!context.active()) return false;
+  const recovery = fileRecoveryFor(context, turn.session);
+  context.recoverFiles = !recovery.complete;
   readingSessions.set(deviceId, turn.session);
   turn.reading = true;
   const passStartedAt = Date.now();
@@ -332,15 +335,27 @@ async function orderedSync(deviceId, turn) {
   const view = await readLists(context, fence);
   if (!view || !context.active()) return false;
   const pass = await workspacesToRead(context, view);
-  await readWorkspaces(context, pass, fence);
+  const filesRecovered = await readWorkspaces(context, pass, fence);
   await readProjectIssues(context, view);
   await evictRowsThatAreOver(context, view, fence);
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
+  if (filesRecovered && fileRecoveries.get(deviceId) === recovery) recovery.complete = true;
   // The reader may have walked off while the pass read, and on a cold cache
   // the workspace they stand in had no row to resolve until the lists landed.
   await refollowRoute(deviceId);
   return true;
+}
+
+/** Recovery belongs to a sync lifetime, session and restored path. Ordinary
+ *  passes share its completed token; a failed pass cannot complete it. */
+function fileRecoveryFor(context, session) {
+  let recovery = fileRecoveries.get(context.deviceId);
+  if (recovery?.session !== session || recovery?.requestScope !== context.requestScope) {
+    recovery = { session, requestScope: context.requestScope, complete: false };
+    fileRecoveries.set(context.deviceId, recovery);
+  }
+  return recovery;
 }
 
 /** This device, once its bridge has said what it speaks. A bridge says which
@@ -375,11 +390,14 @@ function settledWithin(promise, waitMs) {
  *  records nothing names. One the push takes away while it is being read
  *  stops where it stands. */
 async function readWorkspaces(context, pass, fence) {
+  let filesRecovered = true;
   for (const entityId of pass.order) {
     if (!context.active()) return;
     if (removedSince(addressOf(context, entityId, "row"), fence)) continue;
-    await syncWorkspace(whileOnBoard(context, entityId, fence), entityId, pass.rows.get(entityId), entityId === pass.routed);
+    const recovered = await syncWorkspace(whileOnBoard(context, entityId, fence), entityId, pass.rows.get(entityId), entityId === pass.routed);
+    filesRecovered = recovered && filesRecovered;
   }
+  return filesRecovered;
 }
 
 /** The context for one entity's records, stood down as well once a push takes
@@ -737,13 +755,14 @@ async function syncWorkspace(context, entityId, row, routed) {
   await syncTerminals(context, entityId, row, priority);
   const log = scope ? await syncCommits(context, entityId, scope, priority) : null;
   await syncThreads(context, entityId, row, priority);
-  if (!scope) return;
-  // A previous lifetime's file refresh may never land. Every pass takes over
-  // the held bodies, including after reload or a hand-back to another tab.
+  if (!scope) return true;
+  // A previous lifetime's file refresh may never land. Recovery takes over
+  // the held bodies once; ordinary passes on this session leave them alone.
   // At most RECENT_FILES per workspace; threads stay ahead of these bodies.
-  await rereadHeldFiles(context, entityId, scope);
+  const filesRecovered = !context.recoverFiles || await rereadHeldFiles(context, entityId, scope);
   await syncPatches(context, entityId, scope, unpushedCommits(log), priority);
   await syncWorkingDiff(context, entityId, row, priority);
+  return filesRecovered;
 }
 
 /** The status, asked conditionally: the `status_key` the cache holds is the
@@ -1125,6 +1144,9 @@ function subscriptionLanded(deviceId, subscriptionId) {
   if (session === null || readingSessions.get(deviceId) !== session) return;
   const running = passes.get(deviceId);
   if (running && !running.reading) return;
+  // File bodies read before background coverage can have missed a change.
+  // Replace the token: the old pass cannot complete this new recovery.
+  if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
   void readAgainAfter(deviceId, session);
 }
 
@@ -1441,17 +1463,20 @@ async function applyFiles(context, entityId, files) {
  *  the reader is already looking at, and never of a file nobody has opened.
  *
  *  A truncated list says "the tree moved" rather than which paths did, so
- *  every held body is re-read. An ordered pass does the same without a push:
+ *  every held body is re-read. A recovery pass does the same without a push:
  *  a held body says what to refresh, even when the previous reader was stood
  *  down or the tab reloaded. There are at most `RECENT_FILES` of them. */
 async function rereadHeldFiles(context, entityId, scope, files = { truncated: true }) {
   const held = await cachedSubKeys(context.deviceId, entityId, FILE_RECORD_KIND);
   const named = new Set(files.paths || []);
   const stale = files.truncated ? held : held.filter((path) => named.has(path));
+  let recovered = true;
   for (const path of stale) {
-    if (!context.active()) return;
-    await rereadFile(context, entityId, scope, path);
+    if (!context.active()) return false;
+    const refreshed = await rereadFile(context, entityId, scope, path);
+    recovered = refreshed && recovered;
   }
+  return recovered;
 }
 
 async function rereadFile(context, entityId, scope, path) {
@@ -1459,7 +1484,7 @@ async function rereadFile(context, entityId, scope, path) {
   const reader = {};
   fileReads.set(key, reader);
   try {
-    await readFileBody({ ...context, active: () => context.active() && fileReads.get(key) === reader }, entityId, scope, path);
+    return await readFileBody({ ...context, active: () => context.active() && fileReads.get(key) === reader }, entityId, scope, path);
   } finally {
     if (fileReads.get(key) === reader) fileReads.delete(key);
   }
@@ -1470,13 +1495,13 @@ async function rereadFile(context, entityId, scope, path) {
 async function readFileBody(context, entityId, scope, path) {
   const address = addressOf(context, entityId, FILE_RECORD_KIND, path);
   const openedAt = (await readCached(address))?.value?.openedAt;
-  if (!context.active()) return;
+  if (!context.active()) return false;
   const file = await ask(context, "fs.read", { ...scope, path }, "background");
-  if (!context.active()) return;
+  if (!context.active()) return false;
   // A read that answered nothing is a file that moved out from under the
   // reader, or a machine that stopped answering. The body held is the last one
   // anybody saw; a delete here would blank an open preview on a hiccup.
-  if (!file) return;
+  if (!file) return false;
   // A body the cache may not keep — grown past the cap, or answered truncated —
   // takes the record with it. The rule is about what may be STORED; the record
   // is of a file that has since moved, and leaving it would hand the reader the
@@ -1484,6 +1509,7 @@ async function readFileBody(context, entityId, scope, path) {
   // nothing saying so.
   const kept = await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
   if (!kept) await deleteCached([addressOf(context, entityId, FILE_RECORD_KIND, path)]);
+  return context.active();
 }
 
 const applyTerminals = (context, entityId, terminals) =>
@@ -1605,6 +1631,7 @@ export function stopCacheSync() {
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;
   fileReads.clear();
+  fileRecoveries.clear();
   forgetPushes();
   // Whatever is still out stands down where it stands: its writes are all
   // behind `active()`, which this takes away with the lock.

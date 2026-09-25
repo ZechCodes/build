@@ -437,11 +437,15 @@ In practice:
   (`spa/src/core/pushFence.js`). A board read leaves a row a push wrote since
   unobserved in the `feed`, so the row's own record paints. Stopping sync
   permanently invalidates that lifetime's passes and push appliers, even on
-  the same session. Each new pass refreshes the file bodies still cached under
-  live workspaces (at most `RECENT_FILES`, five per workspace), after reading
-  their threads. That takes over abandoned file refreshes and repairs changes
-  missed while away or across a reload. Only the newest read of each file may
-  write its answer; removing an entity still invalidates all its readers.
+  the same session. The first recovery pass refreshes file bodies still cached
+  under live workspaces (at most `RECENT_FILES`, five per workspace), after
+  reading their threads. Its completion is remembered per device, session and
+  restored path until sync stops: ordinary feed refreshes and visible-tab
+  passes add no body reads. Failed recovery body reads leave it pending; late
+  background subscription coverage starts a new recovery that the earlier
+  pass cannot complete. This takes over abandoned file refreshes and repairs
+  changes missed while away or across a reload. Only the newest read of each
+  file may write its answer; removing an entity still invalidates all its readers.
   A conversation's forward read (`syncThreadWindow` in
   `spa/src/core/threadSync.js`) only
   carries items made past the cursor. When its page shows the conversation's

@@ -534,6 +534,104 @@ describe("a pass racing the wire", () => {
     expect(await cache.cachedAddresses({ deviceId: "dev-1", entityId: "run-1" })).toEqual([]);
   });
 
+  const cacheBodies = async (count = 5) => {
+    const { cacheFileBody } = await import("../src/core/cacheLifetime.js");
+    for (let index = 0; index < count; index += 1) {
+      const path = `src/${index}.js`;
+      await cacheFileBody({ deviceId: "dev-1", entityId: "run-1", path,
+        file: { path, size: 3, content_b64: "b2xk" }, openedAt: index + 1 });
+    }
+  };
+
+  it.each(["refreshFeed", "visibility"])("refreshes five bodies once per recovery, not on ordinary %s passes", async (trigger) => {
+    const wire = subscribingBridge();
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: "bmV3" }));
+    await greet();
+    await cacheSomething();
+    await cacheBodies();
+    board = [branchItem()];
+    const { refreshFeed } = await import("../src/core/taskFeed.js");
+    const visible = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    try {
+      sync.startCacheSync();
+      await settle();
+      const counts = [calls("fs.read").length];
+      for (let pass = 0; pass < 3; pass += 1) {
+        if (trigger === "refreshFeed") await refreshFeed("dev-1");
+        else document.dispatchEvent(new Event("visibilitychange"));
+        await settle();
+        counts.push(calls("fs.read").length);
+      }
+      expect(calls("board.list")).toHaveLength(4);
+      expect(counts).toEqual([5, 5, 5, 5]);
+
+      sync.startCacheSync();
+      await settle();
+      expect(calls("fs.read")).toHaveLength(10);
+      await refreshFeed("dev-1");
+      expect(calls("fs.read")).toHaveLength(10);
+
+      // Reconnect and restoration of the same session each start recovery.
+      const device = registerDevice("dev-1");
+      await greet();
+      stateListeners.forEach((listener) => listener());
+      await settle();
+      expect(calls("fs.read")).toHaveLength(15);
+      await refreshFeed("dev-1");
+      expect(calls("fs.read")).toHaveLength(15);
+      expect(await sync.syncRestoredDevice("dev-1", device.session)).toBe(true);
+      expect(calls("fs.read")).toHaveLength(20);
+      await refreshFeed("dev-1");
+      expect(calls("fs.read")).toHaveLength(20);
+    } finally {
+      visible.mockRestore();
+    }
+  });
+
+  it("finishes failed file recovery on the next pass, then leaves ordinary passes quiet", async () => {
+    const wire = subscribingBridge();
+    let fail = true;
+    wire.answering("fs.read", ({ path }) => {
+      if (fail) throw new Error("offline");
+      return { path, size: 3, content_b64: "bmV3" };
+    });
+    await greet();
+    await cacheSomething();
+    await cacheBodies(1);
+    board = [branchItem()];
+    sync.startCacheSync();
+    await settle();
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("b2xk");
+    fail = false;
+    await sync.syncDevice("dev-1");
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    await sync.syncDevice("dev-1");
+    expect(calls("fs.read")).toHaveLength(2);
+  });
+
+  it.each([false, true])("recovers bodies when background coverage lands after their baseline (pass still pending: %s)", async (pending) => {
+    const wire = subscribingBridge();
+    let body = "b2xk";
+    wire.answering("fs.read", ({ path }) => ({ path, size: 3, content_b64: body }));
+    await greet();
+    await cacheBodies(1); // No feed: cold content reads before subscriptions settle.
+    board = [branchItem()];
+    const answerSubscribe = wire.hold("changes.subscribe", ({ subscription_id }) => subscription_id === "s-background");
+    const answerDiff = pending ? wire.hold("run.diff") : () => {};
+    sync.startCacheSync();
+    await settle();
+    expect(calls("fs.read")).toHaveLength(1);
+    body = "bmV3";
+    answerSubscribe();
+    await settle();
+    answerDiff();
+    await settle();
+    expect((await read("run-1", "file", "src/0.js")).value.file.content_b64).toBe("bmV3");
+    const recovered = calls("fs.read").length;
+    await sync.syncDevice("dev-1");
+    expect(calls("fs.read")).toHaveLength(recovered);
+  });
+
   it.each([false, true])("recovers a pushed file read for a live entity across hand-back (replacement answers early: %s)", async (answersEarly) => {
     const wire = subscribingBridge();
     wire.answering("fs.read", (params) => ({ path: params.path, size: 3, content_b64: "bmV3" }));
@@ -590,7 +688,7 @@ describe("a pass racing the wire", () => {
       return { path, size: 3, content_b64: "bmV3" };
     });
 
-    const pass = sync.syncDevice("dev-1");
+    const pass = sync.syncRestoredDevice("dev-1", contexts.get("dev-1").session);
     await settle();
     expect(calls("fs.read")).toHaveLength(1);
     await flush([{ entity_id: "run-1", files: { paths: [pushedPath] } }], "s-background");

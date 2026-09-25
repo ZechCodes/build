@@ -57,6 +57,9 @@
 //   LOAD_TERM_THREADS=N    a second session (`term` channel) opens a terminal in the
 //                          first workspace (created if none) and starts N busy
 //                          loops in it: load spawned the way a terminal agent's is.
+//   LOAD_TERM_FLOOD=1      the terminal prints 200 lines every 10 ms instead of
+//                          spinning (LOAD_TERM_THREADS>0 opens it): paint work for
+//                          the bridge's byte pump and a frame per client each flush.
 //   LOAD_AGENT_THREADS=N   dispatches a HEADLESS agent (`branch.dispatch`, provider
 //                          claude_adk) on the first project; the `claude` the bridge
 //                          finds on its PATH must be the fake from the #128 proof
@@ -105,6 +108,7 @@ const TURN = { host: process.env.TURN_HOST || "liveness128-turn", port: num("TUR
 const RELAY_BOTH_ENDS = process.env.RELAY_BOTH_ENDS !== "0";
 const POLICY = process.env.ICE_TRANSPORT_POLICY || "relay";
 const TERM_THREADS = num("LOAD_TERM_THREADS", 0);
+const TERM_FLOOD = process.env.LOAD_TERM_FLOOD === "1";
 const AGENT_THREADS = num("LOAD_AGENT_THREADS", 0);
 const AGENTS = num("LOAD_AGENTS", 1);
 const PROBE = process.env.PROBE_STATS === "1";
@@ -278,9 +282,11 @@ async function startBusyLoops(app, term) {
   // and the hangup term.close causes reaches all of them. Left as bare `&` jobs
   // of the interactive shell they get process groups of their own and outlive
   // the terminal, spinning in the bridge's container forever.
-  const line = `(trap 'kill -KILL 0' INT HUP TERM; for i in $(seq ${TERM_THREADS}); do (while :; do :; done) & done; wait)`;
+  const line = TERM_FLOOD
+    ? "(trap 'kill -KILL 0' INT HUP TERM; while :; do seq 1 200; sleep 0.01; done)"
+    : `(trap 'kill -KILL 0' INT HUP TERM; for i in $(seq ${TERM_THREADS}); do (while :; do :; done) & done; wait)`;
   await term.call("term.input", { term_id, data: encode(`${line}\r`) });
-  log(`${TERM_THREADS} busy loops started in terminal ${term_id} (workspace ${workspace.workspace_id})`);
+  log(`${TERM_FLOOD ? "a flood of output" : `${TERM_THREADS} busy loops`} started in terminal ${term_id} (workspace ${workspace.workspace_id})`);
   return async () => {
     await term.call("term.input", { term_id, data: encode("\x03") }).catch((error) => log(`Ctrl-C refused: ${error.message}`));
     await term.call("term.close", { term_id }).then(() => log(`terminal ${term_id} closed`), (error) => log(`term.close refused: ${error.message}`));
@@ -413,7 +419,7 @@ function summary(link) {
   const max = maxOf(rtts);
   const over = rtts.filter((rtt) => rtt >= RTT_CEILING_MS).length;
   console.log("\n──────── liveness summary ────────");
-  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_AGENT_THREADS=${AGENT_THREADS} LOAD_AGENTS=${AGENT_THREADS > 0 ? AGENTS : 0} PROBE_STATS=${PROBE ? 1 : 0} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
+  console.log(`load         LOAD_TERM_THREADS=${TERM_THREADS} LOAD_TERM_FLOOD=${TERM_FLOOD ? 1 : 0} LOAD_AGENT_THREADS=${AGENT_THREADS} LOAD_AGENTS=${AGENT_THREADS > 0 ? AGENTS : 0} PROBE_STATS=${PROBE ? 1 : 0} HAMMER_ISSUES=${HAMMER ? 1 : 0} SOAK_MS=${SOAK_MS} RELAY_BOTH_ENDS=${RELAY_BOTH_ENDS ? 1 : 0} ICE_TRANSPORT_POLICY=${POLICY}`);
   console.log(`path         ${pair.text}${pair.relayed ? "" : "   !! NOT relay/relay"}`);
   console.log(`pings        samples=${run.sent} answered=${rtts.length} p50=${ms(pct(rtts, 50))} p95=${ms(pct(rtts, 95))} max=${ms(max)}`);
   console.log(`             over ${RTT_CEILING_MS} ms=${over}  timeouts(>${PING_DEADLINE_MS} ms)=${run.timeouts}  never answered=${run.sent - rtts.length - run.refusals}  refused=${run.refusals}`);

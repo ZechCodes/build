@@ -4,11 +4,12 @@
 // module rather than an expression repeated three times.
 //
 // Every kind in one `changes.subscribe` shares that call's fate, and a bridge
-// that does not know a kind may refuse the whole call rather than ignore the
-// one word. `addDesired` (core/changeEvents.js) then abandons the subscriptions
-// queued behind the refused one. So naming `issues` at a bridge that predates
-// it does not cost the tracker its push — it costs that DEVICE its pushes, and
-// the reader a client that has stopped painting anything until they reload.
+// that does not know a kind refuses the whole call rather than ignore the one
+// word. A bridge announcing `changes.refusedKinds` names the kind, and
+// `addDesired` (core/changeEvents.js) asks again without it; an older one names
+// nothing, and the subscription that asked for `issues` is lost with it — the
+// inbox's `state` and `thread` too. So the kind is not asked for at all where
+// the bridge does not say it carries it.
 //
 // `session.hello` answers the question outright: it advertises `changes.kinds`
 // from the bridge's own kind list, so a bridge that carries issues says so and

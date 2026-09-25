@@ -308,17 +308,45 @@ function noteRefusedSubscription(state, method, params, thrown) {
   });
 }
 
-/** One subscription call, and which of the three ways it ended. */
+/** One subscription call: which of the three ways it ended, and the refusal
+ *  when it was one. */
 async function askBridge(state, method, params) {
   const call = state.call;
   try {
     await call(method, params);
   } catch (thrown) {
-    if (state.call !== call) return CALL_STALE;
+    if (state.call !== call) return { outcome: CALL_STALE };
     noteRefusedSubscription(state, method, params, thrown);
-    return CALL_REFUSED;
+    return { outcome: CALL_REFUSED, refusal: thrown };
   }
-  return state.call === call ? CALL_DONE : CALL_STALE;
+  return { outcome: state.call === call ? CALL_DONE : CALL_STALE };
+}
+
+/// The kinds a refused subscribe named as unknown to its bridge
+/// (`details.kinds`, announced as `changes.refusedKinds`). An older bridge
+/// names none, and its refusal stays the whole spec's.
+function refusedKinds(refusal) {
+  const kinds = refusal?.details?.kinds;
+  return Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [];
+}
+
+/// The spec a refusal leaves worth asking for: every kind it asked for but the
+/// ones the bridge named. Null when the refusal named none of them, or all of
+/// them — then there is nothing different to ask for.
+function withoutRefusedKinds(spec, refusal) {
+  const refused = refusedKinds(refusal);
+  const kinds = spec.kinds.filter((kind) => !refused.includes(kind));
+  return kinds.length && kinds.length < spec.kinds.length ? { ...spec, kinds } : null;
+}
+
+/// Subscribe one spec. A bridge that refuses it for kinds it does not know says
+/// which, so the spec is asked for once more without them and every other kind
+/// is still delivered — one unknown kind no longer costs the surface its push.
+/// Once, not in a loop: a second refusal is the spec's, as any refusal is.
+async function subscribeSpec(state, spec) {
+  const asked = await askBridge(state, "changes.subscribe", spec);
+  const retry = asked.outcome === CALL_REFUSED ? withoutRefusedKinds(spec, asked.refusal) : null;
+  return retry ? (await askBridge(state, "changes.subscribe", retry)).outcome : asked.outcome;
 }
 
 /// Whether the diff may go on after this call.
@@ -345,7 +373,7 @@ async function dropStale(state, desired) {
   for (const id of [...state.live.keys()]) {
     if (desired.has(id)) continue;
     state.live.delete(id);
-    const outcome = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
+    const { outcome } = await askBridge(state, "changes.unsubscribe", { subscription_id: id });
     if (outcome === CALL_STALE) return false;
   }
   return true;
@@ -355,8 +383,10 @@ async function addDesired(state, desired) {
   for (const [id, spec] of desired) {
     const wire = JSON.stringify(spec);
     if (state.live.get(id) === wire) continue;
+    // The spec as wanted, even when the bridge took it without a kind it did
+    // not know: the next diff compares against this and asks nothing again.
     state.live.set(id, wire);
-    const outcome = await askBridge(state, "changes.subscribe", spec);
+    const outcome = await subscribeSpec(state, spec);
     if (outcome === CALL_DONE) announceHeld(state.deviceId, id);
     if (!keepGoingAfter(state, id, outcome)) return false;
   }

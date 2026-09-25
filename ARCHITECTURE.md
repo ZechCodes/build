@@ -171,7 +171,14 @@ Example pushes are in `fixtures/api/v1/events.json`.
 `Arc<std::sync::Mutex<AppState>>` via `AppState::shared()`. It is a std mutex, so
 holding it across an `.await` is denied crate-wide
 (`#![deny(clippy::await_holding_lock)]` in `bridge/src/lib.rs`, which explains
-the wedge that motivated it). Parts that must not wait on the lock have their
+the wedge that motivated it). No tokio worker waits on it either: a task that
+needs the lock (the pumps in `bridge/src/app/runtime/pumps.rs`, the MCP control
+socket in `bridge/src/app/mcp.rs`, the idle monitor, the terminal reaper, the
+update checks, an off-lock job's apply phase) takes it inside
+`off_the_workers` (`bridge/src/app/runtime/off_the_workers.rs`), which runs the
+section on the blocking pool. A worker parked on the lock behind a slow frame
+would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
+holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
 and `Store` wraps its own connection mutex (`bridge/src/store.rs`).
 

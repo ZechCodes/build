@@ -1,5 +1,6 @@
 use crate::app::{
-    apply_thread_action, AppState, DeferredJob, DeferredNext, DeliveryRunner, SessionRegistry,
+    apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
+    SessionRegistry,
 };
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
@@ -86,7 +87,10 @@ pub(in crate::app) async fn serve_done_listener(
     state: Arc<Mutex<AppState>>,
     listener: tokio::net::UnixListener,
 ) {
-    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    let clock = {
+        let state = Arc::clone(&state);
+        off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await
+    };
     let mut accept_backoff =
         crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
     loop {
@@ -122,12 +126,32 @@ pub(in crate::app) async fn handle_done_stream(
             continue;
         };
         let timer = clock.frame(MCP_CONTROL_METHOD);
-        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame, &timer).await {
+        if let Some(response) = answer_off_the_workers(Arc::clone(&state), frame, timer).await {
             let _ = write_half.write_all(response.to_string().as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
         }
     }
+}
+
+/// Answer one control frame on the blocking pool.
+///
+/// Every tool call takes the app mutex, some of them for as long as the
+/// tracker takes to read, and a harness waiting on its answer must not park a
+/// runtime worker behind whichever frame holds the lock. The frame's own awaits
+/// — the git it hands back, run with the guard released — are driven from the
+/// same blocking thread.
+#[cfg(unix)]
+async fn answer_off_the_workers(
+    state: Arc<Mutex<AppState>>,
+    frame: Value,
+    timer: FrameTimer,
+) -> Option<Value> {
+    let runtime = tokio::runtime::Handle::current();
+    off_the_workers(move || {
+        runtime.block_on(handle_authenticated_mcp_frame(&state, &frame, &timer))
+    })
+    .await
 }
 
 pub(in crate::app) async fn handle_authenticated_mcp_frame(

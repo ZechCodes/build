@@ -1,11 +1,12 @@
 //! The narrow application adapter for bridge updates. Network work and the
 //! independent helper are owned by `UpdateService`, never by the app mutex.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::app::AppState;
+use crate::app::{off_the_workers, AppState};
 use crate::carrier::SessionSender;
 use crate::update::{AdmissionGate, UpdateService, UpdateStatus};
 
@@ -17,6 +18,28 @@ impl AppState {
 
     pub fn update_service(&self) -> Option<Arc<UpdateService>> {
         self.updates.clone()
+    }
+
+    /// Tick the update service every `interval`, telling it whether an agent
+    /// is mid-turn.
+    pub fn spawn_update_checks(app: Arc<Mutex<AppState>>, interval: Duration) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(interval);
+            loop {
+                interval.tick().await;
+                let checking = Arc::clone(&app);
+                let (service, working_agents) = off_the_workers(move || {
+                    let app = checking.lock().unwrap();
+                    (app.update_service(), app.update_has_working_agents())
+                })
+                .await;
+                if let Some(service) = service {
+                    if let Err(error) = service.tick(working_agents).await {
+                        eprintln!("bridge update tick: {error}");
+                    }
+                }
+            }
+        });
     }
 
     pub(in crate::app) fn update_admission(&self) -> Option<Arc<AdmissionGate>> {

@@ -609,7 +609,7 @@ async fn run_daemon(
         Duration::from_secs(5),
     );
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
-    spawn_update_checks(app.clone());
+    AppState::spawn_update_checks(app.clone(), Duration::from_secs(5));
     // Measures every workspace and tells the project agent about quiet ones
     // (#135). It never removes a workspace; `workspace.reclaim` does. It drops
     // build output only when BRIDGE_WORKSPACE_PRUNE is on.
@@ -765,12 +765,17 @@ fn spawn_resume_after_restart(
                 WAIT_FOR_RELAY.as_secs()
             );
         }
-        let admission = {
-            app.lock()
+        // Read on the blocking pool: no runtime worker waits on the app mutex.
+        let reading = app.clone();
+        let admission = tokio::task::spawn_blocking(move || {
+            reading
+                .lock()
                 .unwrap()
                 .update_service()
                 .map(|service| service.admission())
-        };
+        })
+        .await
+        .expect("reading the update service panicked");
         // An unfinished helper may keep the gate closed beyond the relay
         // wait. Hold admission across the roster read so an idle handoff
         // cannot begin between the wake and the resumed turns.
@@ -796,24 +801,6 @@ async fn wait_for_update_probation(home: &std::path::Path) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-}
-
-fn spawn_update_checks(app: std::sync::Arc<std::sync::Mutex<AppState>>) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-            let (service, working_agents) = {
-                let app = app.lock().unwrap();
-                (app.update_service(), app.update_has_working_agents())
-            };
-            if let Some(service) = service {
-                if let Err(error) = service.tick(working_agents).await {
-                    eprintln!("bridge update tick: {error}");
-                }
-            }
-        }
-    });
 }
 
 fn spawn_update_heartbeat(

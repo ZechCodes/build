@@ -122,6 +122,7 @@ pub use self::runtime::lifecycle::{
     PlanWorkspaceRefused, ProjectAdded, ProjectRemoteSet, RestoredCheckout, RunAdopted,
     RunAdoptionSettled, WorktreeCreated,
 };
+pub(in crate::app) use self::runtime::off_the_workers::off_the_workers;
 pub(in crate::app) use self::runtime::pumps::{
     capture_conversation_names, spawn_tab_pumps, still_pumping_instance,
 };

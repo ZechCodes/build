@@ -1,4 +1,4 @@
-use crate::app::{require_str, AppState};
+use crate::app::{off_the_workers, require_str, AppState};
 use crate::timing::FrameTimer;
 use serde_json::{json, Value};
 use sha2::Digest as _;
@@ -60,30 +60,38 @@ pub(in crate::app) fn stream_start(
             if interval_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(interval_ms)).await;
             }
-            let mut s = state.lock().unwrap();
-            let Some(stream) = s.streams.get_mut(&producer_id) else {
+            let (state, producer_id) = (Arc::clone(&state), producer_id.clone());
+            let output = json!({ "index": i, "text": chunk_text(i) });
+            let appended =
+                off_the_workers(move || append_event(&state, &producer_id, "output", output)).await;
+            if !appended {
                 return;
-            };
-            let seq = stream.events.len() as u64 + 1;
-            stream.events.push(LogEvent {
-                seq,
-                kind: "output".into(),
-                data: json!({ "index": i, "text": chunk_text(i) }),
-            });
+            }
         }
-        let mut s = state.lock().unwrap();
-        if let Some(stream) = s.streams.get_mut(&producer_id) {
-            let seq = stream.events.len() as u64 + 1;
-            stream.events.push(LogEvent {
-                seq,
-                kind: "done".into(),
-                data: json!({ "count": count }),
-            });
-            stream.complete = true;
-        }
+        off_the_workers(move || {
+            append_event(&state, &producer_id, "done", json!({ "count": count }))
+        })
+        .await;
     });
 
     Ok(json!({ "stream_id": stream_id, "count": count }))
+}
+
+/// Append one event to a stream's log, completing it on `done`. Whether the
+/// stream is still there to append to.
+fn append_event(state: &Arc<Mutex<AppState>>, stream_id: &str, kind: &str, data: Value) -> bool {
+    let mut s = state.lock().unwrap();
+    let Some(stream) = s.streams.get_mut(stream_id) else {
+        return false;
+    };
+    let seq = stream.events.len() as u64 + 1;
+    stream.events.push(LogEvent {
+        seq,
+        kind: kind.into(),
+        data,
+    });
+    stream.complete = kind == "done";
+    true
 }
 
 /// The deterministic text of output chunk `i`. Both the bridge and the client can

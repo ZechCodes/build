@@ -1,8 +1,8 @@
 use crate::api::ApiError;
 use crate::app::runtime::lifecycle::{LifecycleOutcome, WorktreeLifecycleJob};
 use crate::app::{
-    diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, sha256_hex, worktree_diff_json,
-    AppState, DeferredGit,
+    diff_file_edited_at, diff_file_rows, diff_json, entity_ids_of, off_the_workers, sha256_hex,
+    worktree_diff_json, AppState, DeferredGit,
 };
 use crate::isolation::{Isolation, IsolationAvailability};
 use crate::lifecycle::{PendingRow, WorktreeChange};
@@ -505,7 +505,7 @@ impl ProjectListRow {
 }
 
 /// Run a claimed job on the runtime, off every lock, and apply it under the
-/// lock when it has decided.
+/// lock when it has decided — waiting for that lock on the blocking pool too.
 ///
 /// `spawn_blocking` on purpose: the decide phase is libgit2 walking a worktree
 /// or a bounded fetch, and it must not sit on a runtime worker the relay's read
@@ -521,11 +521,14 @@ pub(in crate::app) fn spawn_off_lock<J: OffLockJob>(
     runtime.spawn(async move {
         let claim = job.claim();
         let decided = tokio::task::spawn_blocking(move || job.decide()).await;
-        let mut app = state.lock().unwrap();
-        match decided {
-            Ok(decided) => J::apply(&mut app, claim, decided),
-            Err(_) => J::abandon(&mut app, claim),
-        }
+        off_the_workers(move || {
+            let mut app = state.lock().unwrap();
+            match decided {
+                Ok(decided) => J::apply(&mut app, claim, decided),
+                Err(_) => J::abandon(&mut app, claim),
+            }
+        })
+        .await;
     });
     Ok(())
 }

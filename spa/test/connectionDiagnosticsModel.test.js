@@ -46,6 +46,10 @@ describe("the machine a diagnostic is about", () => {
     expect(diagnosticDeviceLabel("relay-only", DEVICES)).toBe("unknown device");
     expect(diagnosticDeviceLabel(undefined, [])).toBe("unknown device");
   });
+
+  it("names the local cache's events as this browser's (#169)", () => {
+    expect(diagnosticDeviceLabel("local-cache", DEVICES)).toBe("this browser");
+  });
 });
 
 describe("the time on a row", () => {

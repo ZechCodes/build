@@ -408,6 +408,18 @@ describe("Settings → the build it is running", () => {
       .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
+  it("says whether the local cache is answering, beside the build line (#169)", async () => {
+    await renderSettings();
+    await flush();
+
+    const line = document.querySelector("#cachehealth");
+    expect(line).not.toBeNull();
+    expect(line.textContent).toContain("Local cache");
+    expect(document.querySelector("#cachehealthtext").textContent).toMatch(/^(Working\.|This browser has no IndexedDB)/);
+    expect(document.querySelector("#buildversion").compareDocumentPosition(line))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("copies the version when the button is pressed", async () => {
     const writeText = vi.fn(async () => {});
     const had = Object.getOwnPropertyDescriptor(navigator, "clipboard");

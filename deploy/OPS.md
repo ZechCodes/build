@@ -24,6 +24,14 @@ restart outcomes and deadlines. The history stays in that tab's memory and is
 cleared by a reload. It contains timestamps and connection identifiers, not SDP,
 candidate addresses, credentials or application content.
 
+A tab whose screens went blank while its connections look healthy may have lost
+its local cache instead: `buildCacheHealth()` answers `ready`, `recovering`,
+`resting` or `stood-down` with when and the error, and the dump above carries the
+cache's own events under `local-cache` (connection lost, resting, recovered,
+stood down, each with the page's visibility and `sinceShownMs`, how long after
+the page was last shown). On a phone both are in Settings: the dump under
+Diagnostics, and the "Local cache" line under the build line.
+
 To ask whether a tab that reads connected is still carried right now, run
 `await buildConnectionProbe()` there. It sends each machine the tab can talk to
 one `ping` over the path its session rides and answers

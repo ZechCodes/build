@@ -536,6 +536,21 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **A lost connection is weather, not a verdict** (#169). iOS drops a suspended
+  page's IndexedDB connection, and the first opens after a resume fail with
+  `UnknownError: Connection to Indexed Database server lost`. The cache reopens
+  on a backoff (`reopenDelaysMs`, about eight seconds) whose retries wait for
+  the page to be shown, then rests until the next wake (page shown, `pageshow`,
+  `online`, or 30 s) and tries again. A read is never answered "nothing"
+  because the database was away: it waits until a read really answers, so a
+  surface keeps what it painted and a merge never takes "unreadable" for
+  "empty". A write waits the same way, and one that keeps failing while the
+  database answers fails alone. Only an error no reopen can fix (a private
+  window refusing IndexedDB, a full quota, a schema error) stands the cache
+  down for the session. `cacheHealth()` answers the state now (Settings shows
+  it as the "Local cache" line, the console as `buildCacheHealth()`), and every
+  loss, rest, recovery and stand-down is recorded in the connection
+  diagnostics under `local-cache`.
 - **The sync layer** is `spa/src/core/cacheSync.js`, the main reader of the
   wire. On a greeting, a reconnect or a tab return, `syncDevice()` makes one
   ordered pass per device: the lists, then the workspace being viewed, then the

@@ -12,6 +12,10 @@
 
 import { deviceNameOf } from "./devicePolicy.js";
 
+/// What the local cache records its events under (core/localCache.js). Named
+/// here rather than imported so this pure model does not load the cache.
+const LOCAL_CACHE_DIAGNOSTIC = "local-cache";
+
 /// The two fields every entry has, which are therefore never detail.
 const ENVELOPE_FIELDS = new Set(["at", "connection", "event"]);
 
@@ -35,6 +39,8 @@ export const shortDeviceId = (deviceId) => (deviceId ? `${deviceId.slice(0, 8)}â
 /// is the whole point of the row: a phone screen has no room to correlate uuids
 /// by eye.
 export function diagnosticDeviceLabel(connection, devices) {
+  // The local cache's events are about this browser, not about any machine.
+  if (connection === LOCAL_CACHE_DIAGNOSTIC) return "this browser";
   const deviceId = deviceIdOfDiagnostic(connection);
   return deviceNameOf(devices, deviceId) || shortDeviceId(deviceId);
 }

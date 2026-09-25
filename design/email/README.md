@@ -7,8 +7,8 @@ declares each image's display size.
 
 | File | Shown at | Source |
 | --- | --- | --- |
-| `brand-mark.png` | 27 × 32 (1x, `srcset`) | `skriftapp/buildapp/landing/brand-mark.svg` |
-| `brand-mark@2x.png` | 27 × 32 (the `src`) | the same SVG |
+| `brand-mark.png` | 80 × 32 (1x, `srcset`) | `skriftapp/buildapp/landing/brand-mark.svg` |
+| `brand-mark@2x.png` | 80 × 32 (the `src`) | the same SVG |
 | `laptop.png` | 560 × 308, the layout's full width | `laptop-screen.png` on the landing's MacBook |
 
 The images are cached for a year under stable names. A replacement image may not show on a
@@ -17,13 +17,17 @@ everyone straight away, give the file a new name and update `email_template.py`.
 
 ## Brand mark
 
-From the repository root:
+The mark is 32 px tall and sits at the left of a transparent 80 × 32 box. A client that
+blocks images shows the alt text "Build" in that box, and at 27 px wide the mark alone
+would cut it to "Bui". From the repository root:
 
 ```sh
-rsvg-convert -h 32 skriftapp/buildapp/landing/brand-mark.svg \
-  -o skriftapp/buildapp/landing/email/brand-mark.png
-rsvg-convert -h 64 skriftapp/buildapp/landing/brand-mark.svg \
-  -o skriftapp/buildapp/landing/email/brand-mark@2x.png
+for scale in 1 2; do
+  suffix=$([ "$scale" = 2 ] && echo "@2x")
+  rsvg-convert -h $((32 * scale)) skriftapp/buildapp/landing/brand-mark.svg \
+    | magick png:- -background none -gravity west -extent $((80 * scale))x$((32 * scale)) \
+      -strip PNG32:skriftapp/buildapp/landing/email/brand-mark$suffix.png
+done
 ```
 
 ## Laptop

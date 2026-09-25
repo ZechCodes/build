@@ -121,11 +121,13 @@ class EmailImage:
         )
 
 
-#: The Build mark, 32 px tall. brand-mark.svg rendered by design/email/README.md.
+#: The Build mark, 32 px tall, at the left of a transparent 80 px box: wide enough for
+#: its alt text "Build" where a client blocks images. brand-mark.svg rendered by
+#: design/email/README.md.
 MARK_IMAGE = EmailImage(
     file="brand-mark@2x.png",
     file_1x="brand-mark.png",
-    width_px=27,
+    width_px=80,
     height_px=32,
     alt="Build",
 )

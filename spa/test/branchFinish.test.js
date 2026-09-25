@@ -57,19 +57,37 @@ describe("whether a branch can be closed out here", () => {
   });
 
   it("offers exactly one behavior: delete, named after the branch it deletes", () => {
+    const [only] = branchCloseout(branchRow(), { deletesBranch: true }).options;
+    expect(only.label).toBe("Done");
+    expect(only.menuLabel).toBe("Done — delete the branch");
+    expect(only.description).toBe("delete branch build/login and its checkout");
+    expect(only.danger).toBe(true);
+  });
+
+  // #87: a bridge without `branches.finishDelete` keeps the branch whatever it
+  // is sent, so the option promises only the checkout.
+  it("promises no deletion where the bridge keeps the branch", () => {
     const [only] = branchCloseout(branchRow()).options;
     expect(only.label).toBe("Done");
-    expect(only.description).toContain("build/login");
-    expect(only.danger).toBe(true);
+    expect(only.menuLabel).toBe("Done — remove the checkout");
+    expect(only.description).toBe("remove the checkout of build/login; the branch stays");
+    expect(`${only.menuLabel} ${only.description} ${only.busyLabel}`).not.toMatch(/delet/);
   });
 });
 
 describe("what Done sends", () => {
-  it("deletes the branch", () => {
-    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" })).toEqual({
+  it("deletes the branch where the bridge deletes it", () => {
+    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login", deletesBranch: true })).toEqual({
       project_id: "p1",
       branch: "build/login",
       action: "delete",
+    });
+  });
+
+  it("sends no action to a bridge that would drop it", () => {
+    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" })).toEqual({
+      project_id: "p1",
+      branch: "build/login",
     });
   });
 
@@ -103,11 +121,30 @@ describe("the facts Done speaks about", () => {
 });
 
 describe("what the confirmation promises", () => {
+  const deleting = (row) => ({ ...branchFinishFacts(row, "build/login"), deletesBranch: true });
+
   it("outlines the deletion, as the destructive verb it is", () => {
-    const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
+    const plan = branchFinishConfirm(deleting(branchRow()));
+    expect(plan.intro).toBe("Done deletes the branch. This cannot be undone.");
     expect(plan.actions[0]).toBe("Delete branch build/login");
     expect(plan.danger).toBe(true);
     expect(plan.confirmLabel).toBe("Delete");
+  });
+
+  it("says the bridge is too old, and promises only the checkout, where it keeps the branch", () => {
+    const plan = branchFinishConfirm({
+      ...branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"),
+      deviceName: "studio",
+    });
+    expect(plan.intro).toBe(
+      "Build cannot delete the branch on studio: the bridge is too old. Done removes its checkout and keeps the branch.",
+    );
+    expect(plan.actions).toEqual([
+      "Remove its checkout",
+      "Take its conversation off the inbox",
+      "Return the issue it implements to the inbox",
+    ]);
+    expect(plan.confirmLabel).toBe("Remove");
   });
 
   it("carries what the bridge says the deletion would cost", () => {
@@ -127,8 +164,8 @@ describe("what the confirmation promises", () => {
   // Deleting an unmerged branch hands its issue back to the inbox; merging
   // first files the issue away with it. The outline says which, before the click.
   it("says where the issue it implements ends up", () => {
-    const back = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"));
-    expect(back.actions.join(" ")).toContain("Return the issue");
+    const back = branchFinishConfirm(deleting(branchRow({ issue_id: "issue-1" })));
+    expect(back.actions.join(" ")).toContain("Return the issue it implements to the inbox, noting that build/login was deleted");
 
     const archived = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1", state: "merged" }), "build/login"));
     expect(archived.actions.join(" ")).toContain("Archive the issue");

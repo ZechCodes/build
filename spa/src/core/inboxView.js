@@ -19,6 +19,7 @@ import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { confirmAction } from "./confirm.js";
 import {
   activeEntryKey,
+  branchDeleteTooOld,
   branchDoneConfirm,
   captureEntries,
   dismissParamsOf,
@@ -35,6 +36,8 @@ import {
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
+import { readBranchDelete } from "./branchDeleteSupport.js";
+import { bridgeAdapter } from "./changeEvents.js";
 import { projectOptimistic, reconcileOptimistic, subscribeOptimistic } from "./optimistic.js";
 import { patchFeedRow, removeFeedRow } from "./cachedRows.js";
 import { notifyError } from "./notify.js";
@@ -783,14 +786,18 @@ async function dismissEntry(entry) {
   });
 }
 
-/** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
- *  its records go, which is what Done on a branch means. On an issue it
- *  archives. Neither is refused for the state of the work — what the
- *  destruction costs came down with the row and was confirmed through. */
+/** The RPC behind Done. On a branch it DELETES: the branch (where the bridge
+ *  deletes it, `target.deletesBranch`), its checkout and its records go,
+ *  which is what Done on a branch means. On an issue it archives. Neither is
+ *  refused for the state of the work — what the destruction costs came down
+ *  with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
-  const call = verbCall(target, target.kind === "issue" ? "archive this issue" : "delete this branch");
+  const call = verbCall(target, target.kind === "issue" ? "archive this issue" : "finish this branch");
   if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
-  else await call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
+  else {
+    const params = { projectId: target.projectId, branch: target.branch, deletesBranch: confirmedDeletion(target) };
+    await call("branch.finish", branchFinishParams(optionId, params));
+  }
   // Done ends the work, and an ending is an attention event. The user did this
   // here, so this entry is already read. The issue an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
@@ -798,15 +805,29 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
 }
 
+/** The deletion the user confirmed, held to the bridge answering now: one
+ *  that went back to keeping the branch is refused in words rather than sent
+ *  a word it would drop. Before any greeting the cache's answer stands. */
+function confirmedDeletion(target) {
+  if (!target.deletesBranch) return false;
+  const live = bridgeAdapter(target.deviceId);
+  if (live && live.capabilities?.branches?.finishDelete !== true) {
+    throw new Error(branchDeleteTooOld(target.deviceName));
+  }
+  return true;
+}
+
 async function finishEntry(entry) {
   if (!entry) return;
-  const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(entry);
+  // What Done on this machine does to the branch, from the cache (#87).
+  const target = entry.kind === "issue" ? entry : { ...entry, deletesBranch: await readBranchDelete(entry.deviceId) };
+  const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(target);
   if (!(await confirmAction(confirmation))) return;
   // Confirmation is the decisive moment: the row goes now, and the git work
   // (and the push that confirms it) carries on behind it.
   await optimisticVerb(entry, {
     write: () => removeFeedRow(entry.deviceId, entry),
-    call: () => finishWorkItem(entry),
+    call: () => finishWorkItem(target),
     failureSummary: branchFinishFailureSummary(entry.branch),
   });
 }

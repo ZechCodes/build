@@ -183,6 +183,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
     threads: { postOperations: names.has("threads.postOperations") },
+    branches: { finishDelete: names.has("branches.finishDelete") },
   };
 }
 

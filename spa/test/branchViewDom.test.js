@@ -22,6 +22,23 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 
+/** The confirmation Done opens, once it has read what that machine's bridge
+ *  does to the branch out of the cache. */
+const confirmScrim = () =>
+  vi.waitFor(() => {
+    const scrim = document.getElementById("confirm-scrim");
+    expect(scrim, "a confirmation was expected").toBeTruthy();
+    return scrim;
+  });
+
+/** What the cache says a machine's bridge does to the branch on Done (#87):
+ *  every machine in this file deletes it unless a case says otherwise. */
+async function cacheBranchDelete(deviceId, deletes) {
+  const { writeCached } = await import("../src/core/localCache.js");
+  const { branchDeleteAddress } = await import("../src/core/branchDeleteSupport.js");
+  await writeCached(branchDeleteAddress(deviceId), { deletes });
+}
+
 /** One pass of the sync layer, with the feed reading what it wrote. What
  *  `refreshFeed` did when the feed read the wire itself: the board, the two
  *  lists and a row per work item, on disk and delivered. */
@@ -117,6 +134,8 @@ beforeEach(async () => {
   // One database for the file, so each case starts on an empty one: the
   // surface stands on records, and another case's board is not this one's.
   await (await import("../src/core/localCache.js")).wipeCache();
+  await cacheBranchDelete("dev-1", true);
+  await cacheBranchDelete("dev-2", true);
   ({ renderBranch, shouldRetainDirtyFilesPane } = await import("../src/views/branchView.js"));
   // The feed polls device contexts, so this file's one device has one: its call
   // is whatever the case in hand scripted onto bridge.call. It is the home device
@@ -495,8 +514,7 @@ describe("a branch on another device", () => {
     theirRow = finishableRow({ branch: "main", run_id: "run-7" });
     await mountTheirs();
     document.querySelector("#tb-verb .btn.mini:not(.caret)").click();
-    await flush();
-    document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
+    (await confirmScrim()).querySelector("[data-confirm-ok]").click();
     await flush();
 
     expect(theirCall.mock.calls.find(([method]) => method === "branch.finish")[1]).toEqual({
@@ -673,9 +691,7 @@ describe("a branch on a device this client has not opened", () => {
 describe("closing the branch out", () => {
   /** Answer the confirmation modal every close-out opens. */
   const answerConfirm = async (ok) => {
-    await flush();
-    const scrim = document.getElementById("confirm-scrim");
-    expect(scrim, "a confirmation was expected").toBeTruthy();
+    const scrim = await confirmScrim();
     scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
     await flush();
   };
@@ -714,11 +730,41 @@ describe("closing the branch out", () => {
   it("deletes the branch, and says so before it does", async () => {
     await mountWith(finishableRow());
     doneButton().click();
-    await flush();
-    expect(document.getElementById("confirm-scrim").textContent).toContain("Delete branch build/login");
-    document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
+    const scrim = await confirmScrim();
+    expect(scrim.textContent).toContain("Delete branch build/login");
+    scrim.querySelector("[data-confirm-ok]").click();
     await flush();
     expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
+  });
+
+  // #87: a bridge that keeps the branch whatever it is sent is offered no
+  // deletion. The control and the confirmation say what will really happen,
+  // and the call carries no word the bridge would drop.
+  it("offers no deletion on a machine whose bridge keeps the branch, and says why", async () => {
+    await cacheBranchDelete("dev-1", false);
+    await mountWith(finishableRow());
+    expect(doneButton().textContent).toBe("Done");
+    doneButton().click();
+    const scrim = await confirmScrim();
+    expect(scrim.textContent).toContain(
+      "Build cannot delete the branch on This device: the bridge is too old. Done removes its checkout and keeps the branch.",
+    );
+    expect(scrim.textContent).toContain("Remove its checkout");
+    expect(scrim.textContent).not.toContain("Delete branch");
+    expect(scrim.querySelector("[data-confirm-ok]").textContent).toBe("Remove");
+    scrim.querySelector("[data-confirm-ok]").click();
+    await flush();
+    expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login" });
+  });
+
+  it("follows the cache when that machine's bridge starts deleting the branch", async () => {
+    await cacheBranchDelete("dev-1", false);
+    await mountWith(finishableRow());
+    await cacheBranchDelete("dev-1", true);
+    doneButton().click();
+    const scrim = await confirmScrim();
+    expect(scrim.textContent).toContain("Delete branch build/login");
+    expect(scrim.textContent).not.toContain("too old");
   });
 
   it("puts the bridge's warnings in the confirmation, above what it will do", async () => {
@@ -732,8 +778,7 @@ describe("closing the branch out", () => {
       }),
     );
     doneButton().click();
-    await flush();
-    const scrim = document.getElementById("confirm-scrim");
+    const scrim = await confirmScrim();
     expect(scrim.querySelector(".confirm-warnings").textContent).toContain("3 commits that main does not");
     expect(scrim.textContent.indexOf("3 commits")).toBeLessThan(scrim.textContent.indexOf("Delete branch"));
     scrim.querySelector("[data-confirm-cancel]").click();
@@ -765,6 +810,11 @@ describe("closing the branch out", () => {
 
     it("leaves the button standing through a poll that reads the same row", async () => {
       await mountWith(finishableRow());
+      // The control repaints once when the machine's cached answer about the
+      // branch lands after the first paint; a read queued behind the view's
+      // own answers after it.
+      await (await import("../src/core/branchDeleteSupport.js")).readBranchDelete("dev-1");
+      await flush();
       const before = doneButton();
       await pollTick();
       expect(doneButton(), "the button was rebuilt by the poll").toBe(before);

@@ -40,6 +40,8 @@ import { routeProjectKey } from "../core/deviceKey.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
+import { readBranchDelete } from "../core/branchDeleteSupport.js";
+import { deviceNameOf } from "../core/devicePolicy.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import {
   branchCloseout,
@@ -199,10 +201,18 @@ export async function renderBranch() {
   // repaint mid-flight would arm a second branch.finish over the first.
   const finishFlight = createSingleFlight();
 
+  // Whether this machine's bridge deletes the branch, as the cache last said
+  // (core/branchDeleteSupport.js). Read once on mount and again on every Done.
+  let deletesBranch = false;
+
   /** One close-out: read what the deletion costs off the freshest row, confirm
    *  the exact outline, send it, and leave for the inbox. */
   const runFinish = async (optionId) => {
-    const facts = branchFinishFacts(row, branch);
+    // What Done on this machine does to the branch is read fresh from the
+    // cache, so the confirmation promises what the bridge will do (#87).
+    deletesBranch = await readBranchDelete(deviceId);
+    const machine = deviceNameOf(App.devices, deviceId);
+    const facts = { ...branchFinishFacts(row, branch), deletesBranch, deviceName: machine };
     const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
     if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
@@ -225,6 +235,8 @@ export async function renderBranch() {
             // The issue ends with the branch only when the work landed;
             // otherwise the bridge hands it back to the inbox.
             issueEnded: facts.merged,
+            deletesBranch,
+            deviceName: machine,
           },
           optionId,
         ),
@@ -251,7 +263,7 @@ export async function renderBranch() {
     host = host || $("#tb-verb");
     if (!host || finishFlight.active()) return;
     if (host.querySelector(".splitmenu:not([hidden])")) return;
-    const closeout = branchCloseout(row);
+    const closeout = branchCloseout(row, { deletesBranch });
     const signature = JSON.stringify(closeout);
     if (signature === paintedFinish) return;
     paintedFinish = signature;
@@ -266,6 +278,10 @@ export async function renderBranch() {
     mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight, variant: "mini" });
   };
   setToolbarVerb(paintFinish);
+  void readBranchDelete(deviceId).then((deletes) => {
+    deletesBranch = deletes;
+    paintFinish();
+  });
 
   const navigate = {
     openFile: ({ path, line }) => go({ name: "branch", deviceId, projectId, branch, tab: "files", file: path, line }),

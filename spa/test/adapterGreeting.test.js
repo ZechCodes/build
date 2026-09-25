@@ -17,6 +17,7 @@ const NONE = {
   github: { repos: false },
   messages: { context: false },
   threads: { postOperations: false },
+  branches: { finishDelete: false },
 };
 
 const greeting11 = () => ({
@@ -64,6 +65,7 @@ describe("the adapter a greeting selects", () => {
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false },
+      branches: { finishDelete: false },
     });
   });
 

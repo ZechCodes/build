@@ -95,6 +95,7 @@ describe("adapter selection", () => {
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false },
+      branches: { finishDelete: false },
     });
   });
 
@@ -207,6 +208,7 @@ describe("adapter selection", () => {
         github: { repos: false },
         messages: { context: false },
         threads: { postOperations: false },
+        branches: { finishDelete: false },
       });
     }
   });

@@ -791,7 +791,7 @@ describe("the Done confirmations", () => {
   const warned = (warnings) => listed([branch({ finish: { warnings } })])[0];
 
   it("outlines the deletion, in the order it happens", () => {
-    const confirm = branchDoneConfirm(listed([branch()])[0]);
+    const confirm = branchDoneConfirm({ ...listed([branch()])[0], deletesBranch: true });
     expect(confirm.title).toContain("build/login");
     expect(confirm.actions).toEqual([
       "Delete branch build/login",
@@ -827,7 +827,7 @@ describe("the Done confirmations", () => {
   // event naming the branch it lost. The outline says so before the click.
   it("says the issue it implements comes back to the inbox", () => {
     const [entry] = listed([branch({ issue_id: "iss-7" })]);
-    const outline = branchDoneConfirm(entry).actions.join(" ");
+    const outline = branchDoneConfirm({ ...entry, deletesBranch: true }).actions.join(" ");
     expect(outline).toContain("issue");
     expect(outline).toContain("build/login");
   });

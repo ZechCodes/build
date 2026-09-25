@@ -42,8 +42,9 @@ const projectRowHtml = (project) => `
 /**
  * Mount the panel on one machine's caller, and read what that machine holds.
  *
- * Mounting is what reads, so a page that reconnects mounts again: a list read
- * over a connection that has gone is a list of what WAS there.
+ * The list paints from the cache and watches it, so every write to the
+ * machine's projects repaints it; `refresh` is the pull that asks the machine
+ * and writes its answer there. The panel stays mounted across a reconnect.
  */
 export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName, onProjectCreated }) {
   const panel = host.querySelector("[data-device-projects]");

@@ -483,6 +483,208 @@ mod tests {
         assert!(!ResumeRoster::path(dir.path()).exists());
     }
 
+    fn working(agent_id: &str) -> ResumingAgent {
+        ResumingAgent {
+            entity_id: "run-1".to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: agent_id.to_string(),
+            resume_session_id: Some(format!("sess-{agent_id}")),
+            was_working: true,
+        }
+    }
+
+    fn live_file(dir: &Path) -> Option<ResumeRoster> {
+        let raw = std::fs::read_to_string(live_path(dir)).ok()?;
+        Some(serde_json::from_str(&raw).expect("the live roster parses"))
+    }
+
+    /// Every file in the tasks directory, so a test can say no temp file was
+    /// left beside the roster.
+    fn files_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// While the daemon runs, who is working is on disk — not only at the
+    /// shutdown that a SIGKILL never runs.
+    #[test]
+    fn a_published_list_is_on_disk_in_the_live_roster() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = LiveRoster::start(dir.path(), "0.2.2");
+        live.publish(vec![working("agent-1")]);
+        live.settle();
+
+        let written = live_file(dir.path()).expect("the live roster was written");
+        assert_eq!(written.agents, vec![working("agent-1")]);
+        assert_eq!(written.version, "0.2.2");
+        assert!(
+            !ResumeRoster::path(dir.path()).exists(),
+            "the roster proper is the clean shutdown's alone"
+        );
+        assert_eq!(files_in(dir.path()), vec![LIVE_ROSTER_FILE.to_string()]);
+    }
+
+    /// The newest list replaces the last, and nobody working leaves no file.
+    #[test]
+    fn the_live_roster_follows_the_newest_list_and_goes_when_it_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = LiveRoster::start(dir.path(), "0.2.2");
+        live.publish(vec![working("agent-1")]);
+        live.publish(vec![working("agent-1"), working("agent-2")]);
+        live.settle();
+        assert_eq!(live_file(dir.path()).unwrap().agents.len(), 2);
+
+        live.publish(Vec::new());
+        live.settle();
+        assert!(!live_path(dir.path()).exists());
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+    }
+
+    /// The hard kill: the writer is simply never told to finish, which is all
+    /// a SIGKILL, a panic or the power going looks like from the disk. The
+    /// next boot promotes what the live roster held and resumes it.
+    #[test]
+    fn a_death_that_runs_no_shutdown_leaves_a_roster_for_the_next_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let live = LiveRoster::start(dir.path(), "0.2.2");
+            live.publish(vec![working("agent-1")]);
+            live.settle();
+        }
+
+        assert!(
+            promote_live_roster(dir.path()),
+            "the live roster is promoted"
+        );
+        assert!(!live_path(dir.path()).exists());
+        let roster = ResumeRoster::take(dir.path()).expect("a roster to resume from");
+        assert_eq!(roster.agents, vec![working("agent-1")]);
+    }
+
+    /// The clean shutdown writes the roster proper BEFORE it returns — the
+    /// daemon exits straight after — and clears the live file only after that
+    /// write. Nothing published afterwards, by harnesses dying on their way
+    /// down, brings the live file back.
+    #[test]
+    fn the_clean_shutdown_writes_the_roster_before_returning_then_clears_the_live_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = LiveRoster::start(dir.path(), "0.2.2");
+        live.publish(vec![working("agent-1")]);
+        live.publish(vec![working("agent-1"), working("agent-2")]);
+
+        assert_eq!(live.finish(true), Ok(2));
+        let roster = ResumeRoster::take(dir.path()).expect("the shutdown wrote a roster");
+        assert_eq!(
+            roster.agents,
+            vec![working("agent-1"), working("agent-2")],
+            "the newest list, written or not"
+        );
+        live.publish(Vec::new());
+        live.publish(vec![working("agent-3")]);
+        live.settle();
+        assert!(!live_path(dir.path()).exists());
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+        assert!(!promote_live_roster(dir.path()));
+    }
+
+    /// Races the writer: a list published a moment before shutdown may be
+    /// mid-write when `finish` runs, and that write must not land after the
+    /// live file has been removed.
+    #[test]
+    fn a_write_in_flight_at_shutdown_never_outlives_it() {
+        for round in 0..50 {
+            let dir = tempfile::tempdir().unwrap();
+            let live = LiveRoster::start(dir.path(), "0.2.2");
+            live.publish(vec![working(&format!("agent-{round}"))]);
+            assert_eq!(live.finish(true), Ok(1));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            assert!(!live_path(dir.path()).exists(), "round {round}");
+            assert!(ResumeRoster::path(dir.path()).exists(), "round {round}");
+        }
+    }
+
+    /// Opting out of a roll records nobody at either file.
+    #[test]
+    fn an_opted_out_shutdown_leaves_neither_roster() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = LiveRoster::start(dir.path(), "0.2.2");
+        live.publish(vec![working("agent-1")]);
+        live.settle();
+
+        assert_eq!(live.finish(false), Ok(0));
+        assert!(
+            files_in(dir.path()).is_empty(),
+            "{:?}",
+            files_in(dir.path())
+        );
+    }
+
+    /// Both on disk means the shutdown wrote its roster and died before it
+    /// removed the live one: the roster is the later word.
+    #[test]
+    fn a_clean_roster_wins_over_a_live_one_at_boot() {
+        let dir = tempfile::tempdir().unwrap();
+        roster().save(dir.path()).unwrap();
+        std::fs::write(live_path(dir.path()), "{ \"stale\": true }").unwrap();
+
+        assert!(!promote_live_roster(dir.path()));
+        assert!(!live_path(dir.path()).exists());
+        assert_eq!(ResumeRoster::take(dir.path()), Some(roster()));
+    }
+
+    /// The files are addresses, not content: ids, a session id, a time and a
+    /// version. Nothing an agent or a person said can ride along, because the
+    /// record has nowhere to put it.
+    #[test]
+    fn the_roster_file_holds_ids_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let live = LiveRoster::start(dir.path(), "0.2.2");
+        live.publish(vec![working("agent-1")]);
+        live.settle();
+
+        let raw = std::fs::read_to_string(live_path(dir.path())).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let mut top: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        top.sort_unstable();
+        assert_eq!(top, ["agents", "recorded_at", "version"]);
+        for agent in value["agents"].as_array().unwrap() {
+            let mut keys: Vec<&str> = agent
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                [
+                    "agent_id",
+                    "conversation_id",
+                    "entity_id",
+                    "resume_session_id",
+                    "was_working"
+                ]
+            );
+        }
+    }
+
     #[test]
     fn resuming_is_the_default_and_either_opt_out_turns_it_off() {
         let dir = tempfile::tempdir().unwrap();

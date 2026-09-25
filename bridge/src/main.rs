@@ -63,8 +63,8 @@ use build_bridge::notify::Notifier;
 use build_bridge::presence::PresenceReporter;
 use build_bridge::priority::ChildPlacement;
 use build_bridge::reachability::Reachability;
-use build_bridge::resume::{promote_live_roster, LiveRoster};
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::resume::{promote_live_roster, LiveRoster};
 use build_bridge::rtc::{IcePolicy, WebrtcPeerFactory};
 use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
@@ -537,7 +537,9 @@ async fn run_daemon(
     // run's live roster can overwrite it.
     let tasks_dir = &runtime.tasks_dir;
     if promote_live_roster(tasks_dir) {
-        eprintln!("resume: the last run ended without a clean shutdown; resuming from its live roster");
+        eprintln!(
+            "resume: the last run ended without a clean shutdown; resuming from its live roster"
+        );
     }
     let live_roster = LiveRoster::start(tasks_dir, env!("CARGO_PKG_VERSION"));
     let app = app.with_live_roster(live_roster.clone()).shared();

@@ -1,0 +1,7 @@
+{#- One invite state, as both admin pages say it: the phrase, then when — relative in
+    the text, exact on hover. `status` is a buildapp.invite_status.InviteStatus. -#}
+{% macro invite_status(status) -%}
+<span class="invite-status invite-status--{{ status.state.value }}">{{ status.label }}
+{%- if status.moment %} <time datetime="{{ status.moment.iso }}" title="{{ status.moment.absolute }}">{{ status.moment.relative }}</time>{% endif -%}
+</span>
+{%- endmacro %}

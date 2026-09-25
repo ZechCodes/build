@@ -1,0 +1,77 @@
+{% extends "admin/base.html" %}
+{% from "admin/_invite_status.html" import invite_status %}
+
+{% block title %}Waitlist - Admin - {{ site_name() }}{% endblock %}
+
+{% block admin_content %}
+<style>
+    .waitlist-confirm::backdrop { background: rgba(0, 0, 0, 0.6); }
+    .waitlist-confirm-actions { display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center; margin-top: 1rem; }
+    .waitlist-confirm-actions form { margin: 0; }
+    .waitlist-search { display: flex; gap: 0.5rem; align-items: center; margin: 0; }
+    /* skrift.css spaces every form's submit button from the field above it
+       (form button[type="submit"]); these sit beside theirs instead. */
+    .waitlist-search input,
+    form.waitlist-search button[type="submit"],
+    .waitlist-confirm-actions form button[type="submit"] { margin: 0; }
+</style>
+<div class="sk-admin-header">
+    <hgroup>
+        <h1>Waitlist</h1>
+        <p>Everyone who asked for an invite, newest first</p>
+    </hgroup>
+</div>
+
+<section class="sk-panel">
+    <div class="sk-panel-head">
+        <h2>Signups</h2>
+        <form class="waitlist-search" method="get" action="{{ page_path }}" role="search">
+            <input type="search" name="{{ search_field }}" value="{{ search }}"
+                   placeholder="Search by email" aria-label="Search by email" autocomplete="off">
+            <button class="sk-btn-outline" type="submit">Search</button>
+        </form>
+    </div>
+    <div class="sk-table-scroll">
+        <table class="sk-admin-table">
+            <thead>
+                <tr>
+                    <th>Address</th>
+                    <th>Signed up</th>
+                    <th>Invite</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for signup in signups %}
+                <tr>
+                    <td>{{ signup.email }}</td>
+                    <td><time datetime="{{ signup.signed_up.iso }}" title="{{ signup.signed_up.absolute }}">{{ signup.signed_up.relative }}</time></td>
+                    <td>{{ invite_status(signup.status) }}</td>
+                    <td>
+                        {% if signup.action %}
+                        <button class="sk-btn-outline" type="button" popovertarget="confirm-{{ signup.signup_id }}">{{ signup.action.label }}</button>
+                        <div popover id="confirm-{{ signup.signup_id }}" class="sk-dialog waitlist-confirm" role="dialog" aria-label="{{ signup.action.label }}">
+                            <div class="sk-dialog-body">
+                                <p>{{ signup.action.confirm }}</p>
+                                <div class="waitlist-confirm-actions">
+                                    <button class="sk-btn-outline" type="button" popovertarget="confirm-{{ signup.signup_id }}" popovertargetaction="hide">{{ cancel_label }}</button>
+                                    <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
+                                    <form method="post" action="{{ signup.send_path }}">
+                                        {{ csrf_field() }}
+                                        <input type="hidden" name="{{ search_field }}" value="{{ search }}">
+                                        <button class="sk-btn" type="submit">{{ send_label }}</button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">{% if search %}No signups match “{{ search }}”.{% else %}No one is on the waitlist yet.{% endif %}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

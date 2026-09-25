@@ -26,6 +26,7 @@ controllers:
   - buildapp.waitlist_controller:WaitlistController
   - buildapp.invites_controller:InvitesController
   - buildapp.invites_admin:InvitesAdminController
+  - buildapp.waitlist_admin:WaitlistAdminController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:
@@ -78,6 +79,20 @@ rate_limit:
       limits:
         - limit: 30
           per: minute
+    # Each send mails a real person from our domain. Administrator-only, but a
+    # stolen session or a runaway script should still not burn the sender's
+    # reputation: 20 a minute clears a batch by hand, 300 a day is a big day.
+    - name: waitlist_invite_send
+      match:
+        path: /admin/waitlist/
+        prefix: true
+        method: POST
+      key: ip
+      limits:
+        - limit: 20
+          per: minute
+        - limit: 300
+          per: day
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend
   from_address: $SMTP_FROM_ADDRESS

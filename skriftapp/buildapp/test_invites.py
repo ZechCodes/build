@@ -170,3 +170,48 @@ def test_redeem_matches_an_address_the_waitlist_itself_would_refuse():
 def test_redeem_still_refuses_a_different_address_of_that_shape():
     row = invite(email="qa@localhost")
     assert redeem(row, uuid4(), "someone@localhost", NOW).reason is EMAIL_MISMATCH
+
+
+@pytest.mark.asyncio
+async def test_newest_invites_by_email_keeps_only_each_addresss_latest(db):
+    older, _ = await invites.issue_invite(db, INVITED, None, NOW)
+    newer, _ = await invites.issue_invite(db, INVITED, None, NOW)
+    other, _ = await invites.issue_invite(db, "other@example.com", None, NOW)
+    older.created_at = NOW - timedelta(days=2)
+    newer.created_at = NOW - timedelta(days=1)
+    await db.commit()
+    newest = await invites.newest_invites_by_email(
+        db, [INVITED, "other@example.com", "never@example.com"]
+    )
+    assert newest == {INVITED: newer, "other@example.com": other}
+    assert await invites.newest_invites_by_email(db, []) == {}
+
+
+@pytest.mark.asyncio
+async def test_reissue_revokes_every_live_link_and_leaves_one_open(db):
+    first, first_raw = await invites.issue_invite(db, INVITED, None, NOW)
+    second, _ = await invites.issue_invite(db, INVITED, None, NOW)
+    fresh, fresh_raw = await invites.reissue_invite(db, INVITED, None, NOW)
+    assert first.revoked_at == NOW and second.revoked_at == NOW
+    assert invite_state(fresh, NOW) is InviteState.OPEN
+    assert fresh_raw != first_raw
+    assert invite_state(await invites.find_by_token(db, first_raw), NOW) is (
+        InviteState.REVOKED
+    )
+
+
+@pytest.mark.asyncio
+async def test_reissue_leaves_a_redeemed_invite_and_other_addresses_alone(db):
+    redeemed, _ = await invites.issue_invite(db, INVITED, None, NOW)
+    redeemed.redeemed_by, redeemed.redeemed_at = uuid4(), NOW
+    elsewhere, _ = await invites.issue_invite(db, "other@example.com", None, NOW)
+    await db.commit()
+    await invites.reissue_invite(db, INVITED, None, NOW)
+    assert redeemed.revoked_at is None
+    assert elsewhere.revoked_at is None
+
+
+@pytest.mark.asyncio
+async def test_reissue_refuses_an_address_the_waitlist_would_refuse(db):
+    with pytest.raises(ValueError):
+        await invites.reissue_invite(db, "not-an-address", None, NOW)

@@ -151,6 +151,14 @@ invite with its state — open, redeemed, expired, revoked. `POST /api/invites`
 does the same thing as JSON for scripts. An invite is bound to the address it was
 sent to, works once, and expires after 14 days.
 
+**/admin/waitlist** lists every waitlist signup, newest first, with the state of
+the newest invite sent to that address and one button per row: **Invite** for an
+address never invited, **Resend** once a link is out (or has expired or been
+revoked), none once they have joined. Both ask for confirmation first. A resend
+revokes the link the address still holds before mailing a fresh one, so only one
+live link exists. The send route is rate limited in `app.yaml`
+(`waitlist_invite_send`).
+
 Alpha membership has one definition, in `buildapp/alpha_membership.py`: a
 redeemed invite that has not been revoked. There is no members table — revoking
 someone's redeemed invite from /admin/invites is how they lose access.

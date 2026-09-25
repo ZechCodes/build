@@ -910,17 +910,20 @@ describe("per-device connections", () => {
     await connectDevice("dev-a");
     await flush();
     expect(App._watch).toBe(null);
-    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
+    // The hold kept the page, so the route is standing and is not built again
+    // (#170) — neither by the landing nor by a watch left armed behind it.
+    expect(routes.renderInbox).not.toHaveBeenCalled();
     account.fetchDevices.mockClear();
 
     await vi.advanceTimersByTimeAsync(7000);
 
     expect(account.fetchDevices).not.toHaveBeenCalled();
-    expect(routes.renderInbox).toHaveBeenCalledTimes(1);
+    expect(routes.renderInbox).not.toHaveBeenCalled();
   });
 
   // And the way back is the same signal: the machine that answers hands the
-  // reader their route back, with the feed reading it again — no reload.
+  // reader the app back, with the feed reading it again — no reload, and no
+  // remount of the route the hold kept standing (#170).
   it("hands the app back the moment one device answers again", async () => {
     initDevicePicker();
     await connectEveryDevice();
@@ -938,7 +941,7 @@ describe("per-device connections", () => {
 
     expect(held()).toBe(false);
     expect(nothingAnswersOnPicker()).toBe(false);
-    expect(routes.renderInbox).toHaveBeenCalledTimes(1); // the route is rendered once, not once per device state
+    expect(routes.renderInbox).not.toHaveBeenCalled(); // the page the hold kept is the route
 
     expect(document.getElementById("devpick").hidden).toBe(false);
     expect(feed.items.map((item) => item.deviceId)).toContain("dev-a");

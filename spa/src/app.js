@@ -18,7 +18,7 @@ import { standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { routeChanged } from "./core/cacheSync.js";
-import { resetDeviceContexts } from "./core/deviceContexts.js";
+import { deviceContextIdentity, resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
@@ -328,6 +328,10 @@ let settingsReturnRoute = { name: "inbox" };
 // mounted; the answer to "is the reader already here?", which is what closing a
 // modal has to ask before it rebuilds a page that never went away.
 let mountedRoute = null;
+// Which device context the mounted page was built over, as the registry names
+// it. A retired machine or a new account mints another, and a page still
+// holding the old one is standing over a machine the registry has let go of.
+let mountedIdentity = null;
 let disposeFocus = null;
 // The open modal's teardown, which is NOT App.viewDispose: that slot belongs to
 // the page underneath, and a modal that claimed it would tear that page down.
@@ -376,6 +380,31 @@ function closeSettings() {
   return true;
 }
 
+/**
+ * Stand the reader on App.route unless they already are.
+ *
+ * A session landing is news about the wire, not about the page (#170): the
+ * page in #root painted from the cache and repaints when a write announces, so
+ * the gate handing the app back after a reconnect leaves it where it is — its
+ * nodes, its scroll and the reader's focus. It is built again only when it is
+ * not the page for this route over this machine: nothing is mounted (a gate
+ * screen had #root, or the account changed), the route moved, or the machine
+ * it was built over was retired since.
+ *
+ * The terminals still follow the route's machine, which may be the one that
+ * has just landed: a render would have taken them there.
+ */
+export function renderUnlessStanding() {
+  if (!routeIsStanding()) {
+    render();
+    return;
+  }
+  followRouteDevice();
+}
+
+const routeIsStanding = () =>
+  sameRoute(mountedRoute, App.route) && mountedIdentity === deviceContextIdentity(App.route.deviceId);
+
 export function render() {
   if (isSettingsRoute(App.route)) {
     openSettingsOver();
@@ -402,6 +431,7 @@ function renderPage() {
   // page), so the outgoing view's never leaks into the incoming one.
   $("#root").className = "";
   mountedRoute = { ...App.route };
+  mountedIdentity = deviceContextIdentity(App.route.deviceId);
   (VIEWS[App.route.name] || renderInbox)();
   disposeFocus = mountFocusMemory($("#root"), hashFromRoute(App.route), {
     deviceId: App.route.deviceId || "",

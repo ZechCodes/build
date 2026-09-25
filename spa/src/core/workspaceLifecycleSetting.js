@@ -20,18 +20,29 @@ const PINNED_BY = Object.freeze({
   workspace_prune: "BRIDGE_WORKSPACE_PRUNE",
 });
 
-const SECONDS_PER_HOUR = 3600;
+/** The units the threshold is read in, largest first, and their seconds. */
+const UNITS = Object.freeze([["hours", 3600], ["minutes", 60], ["seconds", 1]]);
+const UNIT_SECONDS = Object.freeze(Object.fromEntries(UNITS));
+const SINGULAR = Object.freeze({ hours: "hour", minutes: "minute", seconds: "second" });
+
+/** The saved seconds in the largest unit that holds them exactly, so what the
+ *  panel shows is always what the bridge holds (review 1): 86400 is 24 hours,
+ *  5400 is 90 minutes, 17 is 17 seconds. */
+function idleReading(seconds) {
+  const [unit, size] = UNITS.find(([, unitSeconds]) => seconds % unitSeconds === 0);
+  return { amount: seconds / size, unit };
+}
 
 /**
  * What one settings answer says about the workspace lifecycle. `known` is
  * false before any answer and on a bridge that predates the settings.
  */
 export function workspaceLifecycleOf(settings) {
-  const known = Number.isFinite(settings?.workspace_idle_secs);
+  const known = Number.isInteger(settings?.workspace_idle_secs) && settings.workspace_idle_secs > 0;
   const pinned = new Set(Array.isArray(settings?.workspace_pinned) ? settings.workspace_pinned : []);
   return {
     known,
-    idleHours: known ? Math.round((settings.workspace_idle_secs / SECONDS_PER_HOUR) * 100) / 100 : null,
+    idle: known ? idleReading(settings.workspace_idle_secs) : null,
     prune: settings?.workspace_prune === true,
     idlePinned: pinned.has("workspace_idle_secs"),
     prunePinned: pinned.has("workspace_prune"),
@@ -50,7 +61,7 @@ export function workspaceLifecyclePanelHtml() {
         <label class="field-row" style="display:flex;gap:8px;align-items:center">
           <span>Quiet after</span>
           <input type="number" id="workspaceidlehours" min="0" step="any" inputmode="decimal" autocomplete="off" autocapitalize="off" style="width:6em" disabled />
-          <span>hours</span>
+          <span id="workspaceidleunit">hours</span>
         </label>
         <div class="dim" id="workspaceidlepinned" style="font-size:12px"></div>
         <label class="field-row" style="display:flex;gap:8px;align-items:center;margin-top:8px">
@@ -72,6 +83,7 @@ function panelParts(panel) {
   return {
     controls: find("[data-lifecycle-controls]"),
     hours: find("#workspaceidlehours"),
+    unit: find("#workspaceidleunit"),
     prune: find("#workspaceprune"),
     idlePinned: find("#workspaceidlepinned"),
     prunePinned: find("#workspaceprunepinned"),
@@ -89,7 +101,9 @@ function paint(parts, settings) {
     ? ""
     : "This machine's bridge is older than these settings. Update it to change them here.";
   if (!lifecycle.known) return;
-  parts.hours.value = String(lifecycle.idleHours);
+  parts.hours.value = String(lifecycle.idle.amount);
+  parts.hours.dataset.unit = lifecycle.idle.unit;
+  parts.unit.textContent = lifecycle.idle.amount === 1 ? SINGULAR[lifecycle.idle.unit] : lifecycle.idle.unit;
   parts.hours.disabled = lifecycle.idlePinned;
   parts.idlePinned.textContent = pinnedSentence(lifecycle.idlePinned, "workspace_idle_secs");
   parts.prune.checked = lifecycle.prune;
@@ -97,11 +111,10 @@ function paint(parts, settings) {
   parts.prunePinned.textContent = pinnedSentence(lifecycle.prunePinned, "workspace_prune");
 }
 
-/** The threshold the hours field asks for, in seconds, or null when it is not
- *  a number above zero. */
-function idleSecondsOf(value) {
-  const hours = Number(value);
-  const seconds = Math.round(hours * SECONDS_PER_HOUR);
+/** The threshold the field asks for, in the unit it is showing, as the whole
+ *  seconds the bridge holds, or null when that is not above zero. */
+function idleSecondsOf(value, unit) {
+  const seconds = Math.round(Number(value) * (UNIT_SECONDS[unit] || UNIT_SECONDS.hours));
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
 }
 
@@ -139,10 +152,10 @@ export async function mountWorkspaceLifecycleSetting(host, { callRpc, deviceId =
   };
 
   parts.hours.onchange = async () => {
-    const seconds = idleSecondsOf(parts.hours.value);
+    const seconds = idleSecondsOf(parts.hours.value, parts.hours.dataset.unit);
     if (seconds === null) {
       await record.read();
-      parts.failed.textContent = "Enter a number of hours above zero.";
+      parts.failed.textContent = "Enter a number above zero.";
       return;
     }
     await save({ workspace_idle_secs: seconds });

@@ -16,6 +16,7 @@ import {
 
 const host = () => document.querySelector("#panels");
 const hours = () => host().querySelector("#workspaceidlehours");
+const unit = () => host().querySelector("#workspaceidleunit").textContent;
 const prune = () => host().querySelector("#workspaceprune");
 const text = (selector) => host().querySelector(selector).textContent;
 const controlsShown = () => !host().querySelector("[data-lifecycle-controls]").hidden;
@@ -28,19 +29,31 @@ beforeEach(async () => {
 });
 
 describe("what the bridge's answer means", () => {
-  it("reads the threshold in hours, the switch, and what the environment pins", () => {
+  it("reads the threshold, the switch, and what the environment pins", () => {
     expect(workspaceLifecycleOf(DAY)).toEqual({
       known: true,
-      idleHours: 24,
+      idle: { amount: 24, unit: "hours" },
       prune: false,
       idlePinned: false,
       prunePinned: false,
     });
     expect(workspaceLifecycleOf({
-      workspace_idle_secs: 5400,
+      workspace_idle_secs: 3600,
       workspace_prune: true,
       workspace_pinned: ["workspace_idle_secs", "workspace_prune"],
-    })).toEqual({ known: true, idleHours: 1.5, prune: true, idlePinned: true, prunePinned: true });
+    })).toEqual({ known: true, idle: { amount: 1, unit: "hours" }, prune: true, idlePinned: true, prunePinned: true });
+  });
+
+  // Review 1 (P3): the bridge holds whole seconds, so the reading is in the
+  // largest unit that holds them exactly, and always says the saved value.
+  it("reads the threshold in the largest unit that holds it exactly", () => {
+    const idle = (secs) => workspaceLifecycleOf({ ...DAY, workspace_idle_secs: secs }).idle;
+    expect(idle(5400)).toEqual({ amount: 90, unit: "minutes" });
+    expect(idle(60)).toEqual({ amount: 1, unit: "minutes" });
+    expect(idle(17)).toEqual({ amount: 17, unit: "seconds" });
+    expect(idle(1)).toEqual({ amount: 1, unit: "seconds" });
+    expect(idle(5401)).toEqual({ amount: 5401, unit: "seconds" });
+    expect(idle(7 * 86_400)).toEqual({ amount: 168, unit: "hours" });
   });
 
   // A bridge from before 1.25.0 answers settings.get without the fields.
@@ -58,6 +71,7 @@ describe("the panel", () => {
 
     expect(callRpc).toHaveBeenCalledWith("settings.get");
     expect(hours().value).toBe("24");
+    expect(unit()).toBe("hours");
     expect(hours().disabled).toBe(false);
     expect(prune().checked).toBe(false);
     expect(prune().disabled).toBe(false);
@@ -113,6 +127,46 @@ describe("the panel", () => {
     expect(onSaved).toHaveBeenCalled();
   });
 
+  it("shows a threshold under an hour in the unit that holds it, and saves in that unit", async () => {
+    let saved = { ...DAY, workspace_idle_secs: 17 };
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "settings.set") saved = { ...saved, ...params };
+      return saved;
+    });
+    await mountWorkspaceLifecycleSetting(host(), { callRpc });
+    expect(hours().value).toBe("17");
+    expect(unit()).toBe("seconds");
+
+    hours().value = "90";
+    await hours().onchange();
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { workspace_idle_secs: 90 });
+    expect(hours().value).toBe("90");
+    expect(unit()).toBe("seconds");
+  });
+
+  // .001 hours is 3.6 s: the bridge holds 4, and the panel says 4 seconds,
+  // never a rounded 0 hours beside "Saved".
+  it("repaints what was saved when a fraction rounds to whole seconds", async () => {
+    let saved = DAY;
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "settings.set") saved = { ...saved, ...params };
+      return saved;
+    });
+    await mountWorkspaceLifecycleSetting(host(), { callRpc });
+
+    hours().value = "0.001";
+    await hours().onchange();
+
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { workspace_idle_secs: 4 });
+    expect(hours().value).toBe("4");
+    expect(unit()).toBe("seconds");
+
+    hours().value = "1.5";
+    await hours().onchange();
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { workspace_idle_secs: 2 });
+    expect(hours().value).toBe("2");
+  });
+
   it("saves the switch", async () => {
     const callRpc = vi.fn(async (method, params) =>
       method === "settings.set" ? { ...DAY, ...params } : DAY);
@@ -133,7 +187,7 @@ describe("the panel", () => {
     await hours().onchange();
 
     expect(callRpc).not.toHaveBeenCalledWith("settings.set", expect.anything());
-    expect(text("#workspacelifecycleerr")).toBe("Enter a number of hours above zero.");
+    expect(text("#workspacelifecycleerr")).toBe("Enter a number above zero.");
     expect(hours().value).toBe("24");
   });
 

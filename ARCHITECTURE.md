@@ -174,7 +174,8 @@ holding it across an `.await` is denied crate-wide
 the wedge that motivated it). No tokio worker waits on it either: a task that
 needs the lock (the pumps in `bridge/src/app/runtime/pumps.rs`, the MCP control
 socket in `bridge/src/app/mcp.rs`, the idle monitor, the terminal reaper, the
-update checks, an off-lock job's apply phase) takes it inside
+update checks, the workspace reclaim service's start and sweeps, an off-lock
+job's apply phase) takes it inside
 `off_the_workers` (`bridge/src/app/runtime/off_the_workers.rs`), which runs the
 section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`

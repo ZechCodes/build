@@ -630,7 +630,8 @@ async fn run_daemon(
     let reclaim_stop = AppState::spawn_workspace_reclaim(
         app.clone(),
         build_bridge::reclaim::ReclaimPolicy::from_env(),
-    );
+    )
+    .await;
 
     // Bring back whoever the last shutdown was holding. It waits for an
     // authenticated relay socket rather than firing here, because a resumed

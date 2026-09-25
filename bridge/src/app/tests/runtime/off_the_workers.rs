@@ -186,6 +186,75 @@ async fn the_update_check_waits_for_the_app_mutex_off_the_workers() {
     the_worker_naps_on_time_while_the_lock_is_held(&state, || {}).await;
 }
 
+/// The workspace reclaim service's policy: sweeps back to back, so one always
+/// falls due inside a hold.
+fn reclaiming_constantly() -> crate::reclaim::ReclaimPolicy {
+    crate::reclaim::ReclaimPolicy {
+        first_sweep_after: Duration::ZERO,
+        sweep_every: Duration::from_millis(1),
+        ..Default::default()
+    }
+}
+
+/// The reclaim service's start sets its policy under the app mutex (#135),
+/// and the daemon starts it from its own task: on the blocking pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn the_workspace_reclaim_start_waits_for_the_app_mutex_off_the_workers() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = unrooted_state(dir.path());
+
+    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+        let starting = Arc::clone(&state);
+        tokio::spawn(async move {
+            AppState::spawn_workspace_reclaim(starting, reclaiming_constantly()).await
+        });
+    })
+    .await;
+    AppState::stop_workspace_reclaim(&state);
+}
+
+/// Between sweeps the reclaim loop asks whether it has been stopped. A holder
+/// that takes the app mutex the moment a sweep has finished with it — the
+/// sweep's frame published — finds that question on the worker, if it waits
+/// on the mutex to ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn the_workspace_reclaim_loop_asks_whether_it_stopped_off_the_workers() {
+    /// Holds taken, each right after a sweep.
+    const HOLDS: usize = 3;
+    let dir = tempfile::tempdir().unwrap();
+    let state = unrooted_state(dir.path());
+    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+    let served = move || clock.stats()["frames_served"].as_u64().unwrap();
+    AppState::spawn_workspace_reclaim(Arc::clone(&state), reclaiming_constantly()).await;
+
+    let holder = {
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            for _ in 0..HOLDS {
+                let before = served();
+                while served() == before {
+                    std::hint::spin_loop();
+                }
+                let _guard = state.lock().unwrap();
+                std::thread::sleep(HOLD);
+            }
+        })
+    };
+    let mut longest = Duration::ZERO;
+    while !holder.is_finished() {
+        let started = std::time::Instant::now();
+        tokio::time::sleep(NAP).await;
+        longest = longest.max(started.elapsed());
+    }
+    holder.join().expect("the holder let go");
+    AppState::stop_workspace_reclaim(&state);
+    assert!(
+        longest < LATE,
+        "a {NAP:?} nap took {longest:?} while another thread held the app mutex: \
+         the reclaim loop parked the runtime's only worker on it"
+    );
+}
+
 /// One agent's end of the control socket, the daemon's end served the way
 /// `serve_done_listener` serves it.
 #[cfg(unix)]

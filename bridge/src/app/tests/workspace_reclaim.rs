@@ -42,7 +42,8 @@ async fn shutdown_can_cancel_reclaim_while_the_app_mutex_is_held() {
             first_sweep_after: std::time::Duration::from_secs(24 * 60 * 60),
             ..ReclaimPolicy::default()
         },
-    );
+    )
+    .await;
     let app = state.lock().unwrap();
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     assert!(app.reclaim_stop.load(std::sync::atomic::Ordering::Relaxed));

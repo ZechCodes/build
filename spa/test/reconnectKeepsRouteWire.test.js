@@ -163,6 +163,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (!modules) return;
   const { App, devices, feed, sync, connection } = modules;
   clearInterval(App._watch);
   App._watch = null;

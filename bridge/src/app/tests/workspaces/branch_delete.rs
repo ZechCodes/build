@@ -141,3 +141,64 @@ fn done_with_delete_never_deletes_main() {
     assert_eq!(still["ok"], true, "the workspace is untouched: {still:?}");
     assert!(local_branches(&repo).contains(&"main".to_string()));
 }
+
+/// Origin's `HEAD` is `trunk` and every base Build was given is `main`. A
+/// workspace switched onto `trunk` is finished with delete while this
+/// repository remembers origin's `HEAD` as `remembered` (`None`: not at all).
+/// The workspace goes; local `trunk` stays, with the reason in the answer.
+fn finish_trunk_remembering(remembered: Option<&str>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let (repo, origin) = repo_with_origin(tmp.path(), "repo");
+    git_in(&repo, &["branch", "trunk"]);
+    git_in(&repo, &["push", "-q", "origin", "trunk"]);
+    git_in(&origin, &["symbolic-ref", "HEAD", "refs/heads/trunk"]);
+    let mut state = app(tmp.path());
+    let added = state.handle(req("project.add", json!({"path": repo})));
+    let project_id = added["result"]["project_id"].as_str().unwrap().to_string();
+    let workspace = create_workspace(&mut state, &project_id, "on-trunk");
+    let workspace_id = workspace["workspace_id"].as_str().unwrap().to_string();
+    let checkout = PathBuf::from(workspace["directories"][0]["path"].as_str().unwrap());
+    git_in(&checkout, &["switch", "-q", "trunk"]);
+    let refreshed = state.handle(req("workspace.get", json!({"workspace_id": workspace_id})));
+    assert_eq!(
+        refreshed["result"]["directories"][0]["branch"], "trunk",
+        "{refreshed:?}"
+    );
+    let _ = std::process::Command::new("git")
+        .args(["symbolic-ref", "-d", "refs/remotes/origin/HEAD"])
+        .current_dir(&repo)
+        .status();
+    if let Some(remembered) = remembered {
+        git_in(
+            &repo,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                &format!("refs/remotes/origin/{remembered}"),
+            ],
+        );
+    }
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({"project_id": project_id, "branch": "trunk", "action": "delete"}),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["deleted"], true, "{finished:?}");
+    assert_eq!(finished["result"]["branch_deleted"], false, "{finished:?}");
+    assert_eq!(
+        finished["result"]["branch_reason"],
+        "Build cannot delete the branch trunk: it is a default branch."
+    );
+    assert!(local_branches(&repo).contains(&"trunk".to_string()));
+}
+
+#[test]
+fn done_with_delete_asks_the_remote_whose_head_is_not_remembered() {
+    finish_trunk_remembering(None);
+}
+
+#[test]
+fn done_with_delete_asks_the_remote_whose_head_is_remembered_stale() {
+    finish_trunk_remembering(Some("main"));
+}

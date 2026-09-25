@@ -1301,8 +1301,8 @@ pub struct BranchFinishParams {
     /// `delete` also deletes the local branch, once the workspace is gone
     /// (announced as `branches.finishDelete` since 1.24.0). Refused before
     /// anything is removed when the branch is a default branch (`main`,
-    /// `master`, a remote's `HEAD`, the project's base), is checked out
-    /// somewhere else or has commits no remote has. The delete names the tip
+    /// `master`, a remote's `HEAD` as the remote answers it, the project's
+    /// base), is checked out somewhere else or has commits no remote has. The delete names the tip
     /// those checks passed, so a branch that moved since is kept. Absent, or
     /// any other word (`cleanup`, `push`, `merge` from older clients), is
     /// Done alone: the workspace goes and the branch stays.

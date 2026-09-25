@@ -12,8 +12,9 @@
 //! or bisected somewhere other than the checkout Done is about to remove, or
 //! holds commits no remote has. Measured again in the drain once the
 //! checkout is gone, because the user's own checkout can move onto the branch
-//! in between; a refusal there leaves the branch and says why in the answer,
-//! since the workspace is already gone by then.
+//! in between, and there each remote is also asked which branch its `HEAD`
+//! names (`defaults`); a refusal there leaves the branch and says why in the
+//! answer, since the workspace is already gone by then.
 //!
 //! The measurement is of one commit, not of a name: the delete names the tip
 //! the checks passed and Git refuses it if the branch has moved since, so a
@@ -24,6 +25,7 @@
 //! back at the same commit.
 
 mod checkouts;
+mod defaults;
 
 use crate::git_process::run_git;
 use crate::workspace::Workspace;
@@ -32,16 +34,16 @@ use std::path::PathBuf;
 /// The `branch.finish` action that deletes the branch as well.
 pub(crate) const DELETE_ACTION: &str = "delete";
 
-/// Branch names Done never deletes, whatever the repository calls its default.
-const PROTECTED_NAMES: [&str; 2] = ["main", "master"];
-
 /// When the branch is measured: before the checkout Done removes has gone,
 /// or after.
 #[derive(Clone, Copy)]
 enum Moment {
     /// Done's own checkout still stands on the branch and does not count.
+    /// This runs under the app's lock, so no remote is asked anything.
     BeforeRemoval,
     /// Done's checkout is gone, so anything still on the branch holds it.
+    /// This runs in the drain, off the lock, and asks each remote which
+    /// branch its `HEAD` names.
     AfterRemoval,
 }
 
@@ -102,8 +104,14 @@ impl BranchDeletion {
                 self.branch
             ))
         };
-        if self.is_default() {
-            return refuse("it is a default branch");
+        let remotes = match moment {
+            Moment::BeforeRemoval => defaults::Remotes::Remembered,
+            Moment::AfterRemoval => defaults::Remotes::Asked,
+        };
+        if let Some(reason) =
+            defaults::default_refusal(&self.repo, &self.branch, &self.defaults, remotes)
+        {
+            return refuse(reason);
         }
         let Some(tip) = self.tip() else {
             return Ok(None);
@@ -170,37 +178,6 @@ impl BranchDeletion {
         .ok()
         .map(|oid| oid.trim().to_string())
         .filter(|oid| !oid.is_empty())
-    }
-
-    /// `main`, `master`, a configured default, or the branch a remote's
-    /// `HEAD` names.
-    fn is_default(&self) -> bool {
-        PROTECTED_NAMES.contains(&self.branch.as_str())
-            || self.defaults.contains(&self.branch)
-            || self.remote_defaults().contains(&self.branch)
-    }
-
-    /// The branch each remote's `HEAD` points at, as a local branch name:
-    /// `refs/remotes/origin/HEAD -> refs/remotes/origin/trunk` is `trunk`.
-    fn remote_defaults(&self) -> Vec<String> {
-        let Ok(listed) = run_git(
-            &self.repo,
-            &[
-                "for-each-ref",
-                "--format=%(refname) %(symref)",
-                "refs/remotes/",
-            ],
-        ) else {
-            return Vec::new();
-        };
-        listed
-            .lines()
-            .filter_map(|line| {
-                let (name, target) = line.split_once(' ')?;
-                let remote = name.strip_suffix("HEAD")?;
-                target.strip_prefix(remote).map(str::to_string)
-            })
-            .collect()
     }
 
     /// `Ok` while no checkout holds the branch, or why one does. Before the

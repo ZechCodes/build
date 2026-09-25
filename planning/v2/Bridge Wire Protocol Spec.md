@@ -668,7 +668,10 @@ in. It is refused before anything is removed (`conflict`, "Build cannot delete
 the branch <name>: it is a default branch." for `main`, `master`, the branch a
 remote's `HEAD` names or the project's base, "…: it is checked out at <path>."
 — or being rebased or bisected there — or "…: it has commits no remote has.")
-and measured again once the checkout is gone. The delete names the commit
+and measured again once the checkout is gone, when each remote is also asked
+which branch its `HEAD` names, since what the repository remembers of it can
+be missing or stale ("…: Build could not confirm it is not the remote's
+default branch." when one cannot be asked). The delete names the commit
 those checks passed, so a branch that gained commits in between is kept, and
 the checkouts are read again immediately before and after it, so a checkout
 that moved onto the branch keeps it. A branch that stayed then is

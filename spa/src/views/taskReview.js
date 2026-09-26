@@ -139,8 +139,10 @@ export function createTaskReview({
     },
     /** The hunks of the files the reader has open, out of this run's own
      *  changeset. Not a conditional read: the caller is asking BECAUSE it has
-     *  no body, so a key that says "unchanged" would answer nothing. */
-    fetchFiles: (paths) => callRpc("git.changeset_diff", { run_id: taskId, paths }),
+     *  no body, so a key that says "unchanged" would answer nothing. A `range`
+     *  asks for one page of one file's body (#95). */
+    fetchFiles: (paths, { range } = {}) =>
+      callRpc("git.changeset_diff", { run_id: taskId, paths, ...(range ? { range } : {}) }),
     submit: (messages) => {
       const context = viewingContext?.snapshot?.();
       return callRpc("run.request_changes", {

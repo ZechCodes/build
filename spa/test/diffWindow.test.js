@@ -321,3 +321,118 @@ describe("the diff viewport controller", () => {
     }
   });
 });
+
+// A body still arriving in pages (#95) is read on as the reader reaches the end
+// of what is drawn: a file's own marker when its inner scroller nears its end,
+// a marker outside every file when the stack's scroller nears its end.
+describe("reading more of a paged body", () => {
+  const geometry = (element, { scrollHeight, clientHeight, scrollTop = 0 }) => {
+    Object.defineProperty(element, "scrollHeight", { configurable: true, value: scrollHeight });
+    Object.defineProperty(element, "clientHeight", { configurable: true, value: clientHeight });
+    element.scrollTop = scrollTop;
+  };
+  const stack = (markup) => {
+    const scroller = document.createElement("div");
+    scroller.innerHTML = markup;
+    document.body.appendChild(scroller);
+    return scroller;
+  };
+  const fileWithMarker =
+    '<div class="file" data-key="EDIT:huge.js"><div class="dscroll dwindow" data-row-count="1000"></div>' +
+    '<div class="fmore" data-more-key="EDIT:huge.js">Showing 1.0 MB of 4.0 MB</div></div>';
+
+  it("asks for more of a file once its inner scroller reaches the end of its rows", () => {
+    const scroller = stack(fileWithMarker);
+    const box = scroller.querySelector(".dscroll");
+    geometry(scroller, { scrollHeight: 600, clientHeight: 600 });
+    geometry(box, { scrollHeight: 20_000, clientHeight: 700 });
+    const onNeedMore = vi.fn();
+    const viewport = createDiffViewport({ onNeedMore });
+    try {
+      viewport.attach(scroller);
+      expect(onNeedMore).not.toHaveBeenCalled();
+      box.scrollTop = 10_000;
+      box.dispatchEvent(new Event("scroll", { bubbles: true }));
+      expect(onNeedMore).not.toHaveBeenCalled();
+      box.scrollTop = 19_000;
+      box.dispatchEvent(new Event("scroll", { bubbles: true }));
+      expect(onNeedMore).toHaveBeenCalledWith("EDIT:huge.js");
+    } finally {
+      viewport.dispose();
+      scroller.remove();
+    }
+  });
+
+  it("asks after a paint where the rows it holds already end in view", async () => {
+    const scroller = stack(fileWithMarker);
+    geometry(scroller.querySelector(".dscroll"), { scrollHeight: 300, clientHeight: 300 });
+    const onNeedMore = vi.fn();
+    const viewport = createDiffViewport({ onNeedMore });
+    try {
+      viewport.attach(scroller);
+      await vi.waitFor(() => expect(onNeedMore).toHaveBeenCalledWith("EDIT:huge.js"));
+    } finally {
+      viewport.dispose();
+      scroller.remove();
+    }
+  });
+
+  // A page landing asks for nothing by itself: the owner may be holding its
+  // paint still (a comment draft, a git action), and an answer that moved
+  // nothing on screen must not be read as a reason to read again. Only the
+  // next paint, or the reader scrolling, asks again.
+  it("asks again only after another paint, however the read was answered", async () => {
+    const scroller = stack(fileWithMarker);
+    geometry(scroller.querySelector(".dscroll"), { scrollHeight: 300, clientHeight: 300 });
+    const onNeedMore = vi.fn(async () => true);
+    const viewport = createDiffViewport({ onNeedMore });
+    try {
+      viewport.attach(scroller);
+      await vi.waitFor(() => expect(onNeedMore).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(onNeedMore).toHaveBeenCalledTimes(1);
+
+      viewport.attach(scroller);
+      await vi.waitFor(() => expect(onNeedMore).toHaveBeenCalledTimes(2));
+    } finally {
+      viewport.dispose();
+      scroller.remove();
+    }
+  });
+
+  it("never asks for a file drawn capped, nor for a notice without a marker", async () => {
+    const scroller = stack(
+      '<div class="file capped" data-key="EDIT:a.js"><div class="dscroll" data-row-count="24"></div>' +
+      '<div class="fmore" data-more-key="EDIT:a.js">Showing 1.0 MB of 4.0 MB</div></div>' +
+      '<div class="file" data-key="EDIT:b.js"><div class="dscroll dwindow" data-row-count="5"></div>' +
+      '<div class="ftrunc">diff truncated at 1 MiB</div></div>',
+    );
+    const onNeedMore = vi.fn();
+    const viewport = createDiffViewport({ onNeedMore });
+    try {
+      viewport.attach(scroller);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(onNeedMore).not.toHaveBeenCalled();
+    } finally {
+      viewport.dispose();
+      scroller.remove();
+    }
+  });
+
+  it("asks for more of the changeset when the stack's own scroller nears its end", () => {
+    const scroller = stack('<div class="file" data-key="EDIT:a.js"></div><div class="fmore" data-more-key="commit">Showing</div>');
+    geometry(scroller, { scrollHeight: 10_000, clientHeight: 800 });
+    const onNeedMore = vi.fn();
+    const viewport = createDiffViewport({ onNeedMore });
+    try {
+      viewport.attach(scroller);
+      expect(onNeedMore).not.toHaveBeenCalled();
+      scroller.scrollTop = 9_000;
+      scroller.dispatchEvent(new Event("scroll"));
+      expect(onNeedMore).toHaveBeenCalledWith("commit");
+    } finally {
+      viewport.dispose();
+      scroller.remove();
+    }
+  });
+});

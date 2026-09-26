@@ -8,7 +8,7 @@
 //
 // What it draws comes off the cache: the `status`, `log` and `unpushed`
 // records a push keeps true, and a `patch` record per commit whose patch has
-// been read. It repaints when one of them moves, under a keyed freeze that
+// been read — beside the pages it is kept in where one record cannot hold it. It repaints when one of them moves, under a keyed freeze that
 // also holds while the reviewer is mid-comment, has a menu open, or has a git
 // action in flight.
 //
@@ -44,7 +44,7 @@ import { createAgentSelection } from "./agentSelection.js";
 import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { createFileFolds, fileKey, pathOf } from "./diff.js";
-import { fileFoldOf, stackClaims } from "./diffRender.js";
+import { fileFoldOf, pagesNoticeHtml, stackClaims } from "./diffRender.js";
 import { fileStackEntries, fileViewFromStatus } from "./fileEntries.js";
 import { watchEditedTimes } from "./editedTime.js";
 import { createFileDiffs } from "./fileDiffs.js";
@@ -56,9 +56,20 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { cachedSubKeys, mergeCached, readCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
+import { cachedSubKeys, mergeCached, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
 import { withinBytes } from "./cacheLifetime.js";
+import { WHOLE_ANSWER } from "./cachedBodies.js";
+import {
+  BODY_PAGE_BYTES,
+  joinedText,
+  pageFollows,
+  pageFromAnswer,
+  readBodyPages,
+  textPagesOf,
+  writeBodyPage,
+  writeBodyPages,
+} from "./bodyPages.js";
 import { patchList } from "./patchList.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
@@ -124,8 +135,10 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
       return { ...payload, commentable: Boolean(submit) };
     },
     /** The hunks of the files the reader has open, out of the same
-     *  unpublished changeset `git.unpushed` just described. */
-    fetchFiles: (paths) => callRpc("git.changeset_diff", { ...scope, paths }),
+     *  unpublished changeset `git.unpushed` just described. A `range` asks
+     *  for one page of one file's body (#95). */
+    fetchFiles: (paths, { range } = {}) =>
+      callRpc("git.changeset_diff", { ...scope, paths, ...(range ? { range } : {}) }),
   });
   return {
     ...plug,
@@ -550,7 +563,11 @@ export function mountGitPane(
     review = createWorkspaceReview({ scope, callRpc, cacheScope, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
   }
   const parsedDiffs = createParsedDiffCache();
-  const viewport = createDiffViewport({ repaint: () => renderAndFetch(), commentLayerBusy: () => commentLayer?.repaintBusy() });
+  const viewport = createDiffViewport({
+    repaint: () => renderAndFetch(),
+    commentLayerBusy: () => commentLayer?.repaintBusy(),
+    onNeedMore: (key) => readMoreOf(key),
+  });
   const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
   let visible = true;
@@ -570,14 +587,14 @@ export function mountGitPane(
   let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   // hash → the git.show payload held for that commit. A commit is immutable,
-  // so a patch once read is the patch: this is the `patch` records, plus
-  // whatever this pane read that was too big for one.
+  // so a patch once read is the patch: this is the `patch` records, a patch
+  // too big for one joined back from the pages it is kept in (#95).
   const patches = new Map();
   // The hashes among those whose payload is the file headers rather than the
-  // diff. A `patch` record is written under a cap, and past it `git.show`
-  // answers which files moved without saying how — enough to know the commit
-  // by, never enough to read it. The reader opening one is what asks for the
-  // patch itself.
+  // diff. A `patch` record written by an older client under a cap held what
+  // `git.show` answers past it: which files moved without saying how — enough
+  // to know the commit by, never enough to read it. The reader opening one is
+  // what asks for the patch itself.
   const headersOnly = new Set();
   /** Whether what is held for a commit is the commit's own diff. */
   const patchHeld = (hash) => patches.has(hash) && !headersOnly.has(hash);
@@ -921,22 +938,39 @@ export function mountGitPane(
       return;
     }
     // A commit's patch comes whole in its payload, so its files carry their own
-    // rows and need no body fetched for them.
+    // rows and need no body fetched for them. One still arriving in pages is
+    // parsed by each file's own text, so a page landing re-reads only the
+    // file it grew.
     renderedViews = parsedDiffs.views(detail.patch, {
-      revision: detail.hash || selected,
+      revision: detail.paged ? null : detail.hash || selected,
       defaultEditedAt: Number(detail.time) * 1000,
     });
     paintChangeset(detailHost, {
       bar: commitHeaderHtml(detail),
       views: renderedViews,
       stackOptions: stackFor(renderedViews),
+      trailer: commitPagesTrailer(detail),
     });
   };
 
-  const paintChangeset = (detailHost, { bar, views, stackOptions = {} }) => {
+  /** What ends a commit's stack while its patch is still arriving in pages:
+   *  how much is shown, marked for the viewport to read on at when the reader
+   *  reaches the rows of the file the pages end inside — the last the patch
+   *  names — not merely the stack's end: a file drawn capped keeps the stack
+   *  the same height however many pages land in it. It says so from the pages
+   *  alone; a bridge that cannot page answers the read with nothing. */
+  const COMMIT_MORE_KEY = "commit";
+  const commitPagesTrailer = (detail) => {
+    if (!detail.pages || detail.pages.complete) return [];
+    const last = renderedViews[renderedViews.length - 1];
+    const file = last ? fileKey(last) : null;
+    return [{ key: "more-pages", html: pagesNoticeHtml(detail.pages, COMMIT_MORE_KEY, { file }) }];
+  };
+
+  const paintChangeset = (detailHost, { bar, views, stackOptions = {}, trailer = [] }) => {
     paintChangesetInto({
       bar,
-      entries: fileStackEntries(views, stackOptions),
+      entries: [...fileStackEntries(views, stackOptions), ...trailer],
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
     viewport.attach(detailHost.closest(".cdetail-host") || detailHost);
@@ -1203,7 +1237,7 @@ export function mountGitPane(
   };
 
   const recordStill = async (address, before) =>
-    (await readCached(address))?.at === before?.at;
+    recordWriteOf(await readCached(address)) === recordWriteOf(before);
 
   const storeStatus = async (status, before, guarded) => {
     if (!status) return true;
@@ -1393,9 +1427,20 @@ export function mountGitPane(
    *  immutable, so there is no revalidation and never a second ask.
    *
    *  It names no `max_bytes`. The cap is what a caller caching a commit asks
-   *  under, and is answered with the headers; this read is a reader with the
-   *  commit open, so it takes the patch as the wire will carry it. */
+   *  under; this read is a reader with the commit open, so it takes the patch
+   *  as the wire will carry it, and keeps what one record cannot hold in
+   *  pages. */
+  const showReads = new Set(); // the commits whose patch is being read
   const fetchShow = async (hash) => {
+    if (showReads.has(hash)) return;
+    showReads.add(hash);
+    try {
+      await readShow(hash);
+    } finally {
+      showReads.delete(hash);
+    }
+  };
+  const readShow = async (hash) => {
     const address = cacheAddress(PATCH_RECORD_KIND, hash);
     const before = await cacheRecord(PATCH_RECORD_KIND, hash);
     let show;
@@ -1410,19 +1455,124 @@ export function mountGitPane(
       }
       return;
     }
-    // A patch the record cannot take stays in this mount's hand and nowhere
-    // else — the cap is the cache's rule, not the reader's — so the record
-    // goes on holding whichever files moved, and this mount holds how.
-    if (address && !show.truncated && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) {
-      if (await recordStill(address, before)) await writeCached(address, show);
-      await rereadRecords();
+    if (!address) {
+      // Cacheless mounts exist only in low-level fixtures: nothing to write.
+      patches.set(show.hash, show);
+      headersOnly.delete(show.hash);
+      if (!disposed && selected === hash) render();
       return;
     }
-    // #94: show a cut or oversized patch from this answer only. #95 will
-    // retain large bodies in pages rather than a truncated cache record.
-    patches.set(show.hash, show);
-    headersOnly.delete(show.hash);
-    if (!disposed && selected === hash) render();
+    const first = keptWhole(show) ? null : await firstCommitPage(hash);
+    if (await recordStill(address, before)) await storeShow(address, show, first);
+    await rereadRecords();
+  };
+
+  /** Whether one `git.show` answer is kept as it is, in one record. */
+  const keptWhole = (show) => !show.truncated && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES);
+
+  /** The bridge's own first page of a commit's patch, where it can cut one:
+   *  named by the digest of the patch it was cut from, which a commit hash is
+   *  not — the same commit renders another patch once attributes or diff
+   *  settings change — so only pages of that one patch are ever joined. */
+  const firstCommitPage = async (hash) => {
+    if (!fileDiffs.canPage()) return null;
+    const answer = await callRpc("git.show", { ...scope, hash, range: { offset: 0, bytes: BODY_PAGE_BYTES } }).catch(() => null);
+    const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
+    return page?.of && pageFollows(page, 0, page.of) ? page : null;
+  };
+
+  /** Keep one commit's `git.show` answer: whole where it fits one record, and
+   *  otherwise as a head — the answer without its patch — beside the patch in
+   *  pages (#95): the bridge's own from its `first`, where it can cut them,
+   *  and otherwise the answer split here, named `WHOLE_ANSWER` so no page a
+   *  bridge cuts later is joined to them. A cut answer keeps the whole lines
+   *  before its cut and weighs what the bridge said the whole patch does. */
+  const storeShow = async (address, show, first) => {
+    if (keptWhole(show)) {
+      await writeCached(address, show);
+      return;
+    }
+    const total = show.truncated ? show.patch_bytes : undefined;
+    const pages = first ? [first] : textPagesOf(show.patch, { of: WHOLE_ANSWER, cut: show.truncated, total });
+    await writeBodyPages(address, pages);
+    const head = { ...show, paged: true, of: first?.of ?? WHOLE_ANSWER };
+    delete head.patch;
+    await writeCached(address, head);
+  };
+
+  /** The page after the last one held of a commit's paged patch, read off a
+   *  bridge that can cut one and kept beside the others. The write moves this
+   *  checkout's records, and the repaint follows from there. `range` is never
+   *  sent beside `max_bytes`, which the bridge refuses. A page of another
+   *  patch than the one held says the commit renders differently now: it is
+   *  read again from the top. Answers whether the held pages moved on. */
+  const readNextCommitPage = async (hash) => {
+    const held = patches.get(hash);
+    const address = cacheAddress(PATCH_RECORD_KIND, hash);
+    if (!commitReadsOn(address, held)) return false;
+    const { of } = held;
+    const from = held.pages.end;
+    const answer = await callRpc("git.show", { ...scope, hash, range: { offset: from, bytes: BODY_PAGE_BYTES } });
+    const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
+    if (disposed || !page?.of) return false;
+    if (page.of !== of) {
+      await fetchShow(hash);
+      return false;
+    }
+    if (!pageFollows(page, from, of) || !(await stillPagedHead(address, of))) return false;
+    await writeBodyPage(address, page);
+    // The read stays in flight until the pane holds the page: an ask between
+    // the write and the pane taking it up would read this same page again,
+    // and a page written twice moves nothing, so no paint would ask on. The
+    // paint taking it up asks for the next, a frame on, once this is done.
+    await rereadRecords();
+    return page.end > from;
+  };
+
+  /** Whether a held commit has a page after its last that a bridge here can
+   *  cut now. */
+  const commitReadsOn = (address, held) =>
+    Boolean(address && held?.paged && held.pages && !held.pages.complete && fileDiffs.canPage());
+
+  /** Whether the record is still the paged head of `of`: a page that lands
+   *  after the pass let the commit go is not kept without its head. */
+  const stillPagedHead = async (address, of) => {
+    const head = (await readCached(address))?.value;
+    return Boolean(head?.paged) && head.of === of;
+  };
+  /** One page read of a commit at a time. An ask that lands while one is out
+   *  — the paint of the page it brought, or of the patch read again from the
+   *  top, still with the reader at the end — is answered by reading on once
+   *  it is done: that paint is the only one it causes, so nothing else would
+   *  ask. */
+  const commitPageReads = new Map(); // hash → { reading, again }
+  const readCommitPage = (hash) => {
+    const out = commitPageReads.get(hash);
+    if (out) {
+      out.again = true;
+      return out.reading;
+    }
+    const read = { again: false };
+    const of = patches.get(hash)?.of;
+    read.reading = readNextCommitPage(hash)
+      .catch(() => false)
+      .then((moved) => {
+        commitPageReads.delete(hash);
+        const onward = moved || patches.get(hash)?.of !== of;
+        if (onward && read.again && !disposed) void readCommitPage(hash);
+        return moved;
+      });
+    commitPageReads.set(hash, read);
+    return read.reading;
+  };
+
+  /** The viewport says the reader reached the end of a paged body: a file of
+   *  the uncommitted changeset, or the commit on screen. Answers whether a
+   *  page landed. */
+  const readMoreOf = async (key) => {
+    if (selected === "uncommitted") return fileDiffs.more(pathOf(key));
+    if (key === COMMIT_MORE_KEY && patchHeld(selected)) return readCommitPage(selected);
+    return false;
   };
 
   /** An older page of history, asked for by the reader. It goes into the
@@ -1805,12 +1955,42 @@ export function mountGitPane(
     if (addresses.some((address) => !address)) return null;
     const held = await readCachedMany(addresses);
     const [status, log, unpushed] = held;
+    const patchValues = await Promise.all(hashes.map((hash, index) => withPatchPages(hash, held[index + 3])));
     return {
       status: status?.value,
       log: log?.value,
       unpushed: unpushed?.value,
-      patches: hashes.map((hash, index) => [hash, held[index + 3]?.value]).filter(([, value]) => value),
+      patches: hashes.map((hash, index) => [hash, patchValues[index]]).filter(([, value]) => value),
     };
+  };
+
+  /** A commit's patch record as the pane draws it: a head kept beside its
+   *  patch in pages (#95) answers with the pages held joined back into
+   *  `patch`, and how far they reach in `pages`. */
+  const withPatchPages = async (hash, record) => {
+    const value = record?.value;
+    if (!value?.paged) return value;
+    const { found, text } = await joinCommitPages(hash, record);
+    const { end, total, complete } = found;
+    return { ...value, patch: text, pages: { end, total, complete } };
+  };
+
+  // hash → { write, found, text }: a paged commit's pages as last read, under
+  // the head that `write` names (recordWriteOf — never its time, which a head
+  // written on the same millisecond shares). A head is written after its
+  // pages every time they are replaced, so while it stands its pages only
+  // grow, and a reread reads on from here rather than every page of every
+  // paged commit again.
+  const commitPageJoins = new Map();
+  const joinCommitPages = async (hash, record) => {
+    const before = commitPageJoins.get(hash);
+    const known = before?.write === recordWriteOf(record) ? before : null;
+    const address = cacheAddress(PATCH_RECORD_KIND, hash);
+    const found = await readBodyPages(address, record.value.of, known?.found);
+    const onward = known && found.pages.length >= known.found.pages.length;
+    const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : joinedText(found.pages);
+    commitPageJoins.set(hash, { write: recordWriteOf(record), found, text });
+    return { found, text };
   };
 
   /** What the records say, on screen. The freeze is the same one every other
@@ -1829,14 +2009,39 @@ export function mountGitPane(
    *  the pane would else hold the frame it has, which for the commit the
    *  reader just opened is the loading one. */
   const takeUpPatch = (hash, value) => {
-    if (value.truncated && patchHeld(hash)) return;
-    if (!patches.has(hash) || (headersOnly.has(hash) && !value.truncated)) bodiesUnpainted = true;
+    const headers = headersOnlyRecord(value);
+    if (headers && patchHeld(hash)) return;
+    if (patchIsNews(hash, value, headers)) bodiesUnpainted = true;
     patches.set(hash, value);
-    if (value.truncated) headersOnly.add(hash);
+    if (headers) headersOnly.add(hash);
     else headersOnly.delete(hash);
   };
 
+  /** Whether a record holds a commit's file headers and not its diff: cut,
+   *  and not kept in pages. A paged head is cut too, and is the diff. */
+  const headersOnlyRecord = (value) => Boolean(value.truncated && !value.paged);
+
+  /** Whether taking `value` up changes what the commit draws: a commit not
+   *  held before, a diff where only its headers were, or another page. */
+  const patchIsNews = (hash, value, headers) =>
+    !patches.has(hash) || (headersOnly.has(hash) && !headers) || patches.get(hash).pages?.end !== value.pages?.end;
+
+  /** Let go of every commit whose record is gone — a pass drops a commit's
+   *  patch once it is published. Held on, it would still count as read, and
+   *  its pages be read on into a head that is no more. The commit on screen
+   *  is read again. */
+  const forgetGonePatches = (present) => {
+    for (const hash of [...patches.keys()]) {
+      if (present.has(hash)) continue;
+      patches.delete(hash);
+      headersOnly.delete(hash);
+      commitPageJoins.delete(hash);
+      if (hash === selected) void fetchShow(hash);
+    }
+  };
+
   const takeUpBesides = (held) => {
+    forgetGonePatches(new Set(held.patches.map(([hash]) => hash)));
     for (const [hash, value] of held.patches) takeUpPatch(hash, value);
     lastUnpushed = held.unpushed || lastUnpushed;
     if (lastUnpushed?.base) review?.seedBase?.(lastUnpushed.base);

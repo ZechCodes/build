@@ -203,6 +203,15 @@ impl GitScope {
         crate::gitgui::file_patches(&self.repo_path, paths)
             .map(|payload| self.namespace_payload_keys(payload))
     }
+
+    fn file_patch_page(
+        &self,
+        paths: &[String],
+        range: crate::body_page::BodyRange,
+    ) -> Result<Value, String> {
+        crate::gitgui::file_patch_page(&self.repo_path, paths, range)
+            .map(|payload| self.namespace_payload_keys(payload))
+    }
 }
 
 impl AppState {
@@ -270,11 +279,16 @@ impl AppState {
     /// is told `unchanged` on exactly the same terms as the whole-patch verb.
     pub(crate) fn changeset_diff(&mut self, params: &Value) -> Result<Value, String> {
         let paths = require_changeset_paths(params)?;
+        let range = crate::body_page::BodyRange::from_params(params)?;
+        if range.is_some() && paths.len() != 1 {
+            return Err("git.changeset_diff takes one path with a range".to_string());
+        }
         let subject = self.changeset_subject(params)?;
         Ok(self.defer_narrowed_read(
             subject,
             params.get("if_diff_key").and_then(Value::as_str),
             paths,
+            range,
         ))
     }
 
@@ -600,6 +614,12 @@ impl AppState {
     pub(crate) fn git_show(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let hash = require_str(params, "hash")?;
+            if let Some(range) = crate::body_page::BodyRange::from_params(params)? {
+                if params.get("max_bytes").is_some_and(|cap| !cap.is_null()) {
+                    return Err("git.show takes range or max_bytes, not both".to_string());
+                }
+                return crate::gitgui::show_commit_page(&scope.repo_path, &hash, range);
+            }
             // Clamped, never refused: a caller that asked for a byte wants a
             // small answer, and one that asked for the moon wants the most
             // the wire carries.
@@ -642,7 +662,10 @@ impl AppState {
     pub(crate) fn git_diff(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
             let paths = require_path_list(params)?;
-            scope.file_patches(&paths)
+            match crate::body_page::BodyRange::from_params(params)? {
+                Some(range) => scope.file_patch_page(&paths, range),
+                None => scope.file_patches(&paths),
+            }
         })
     }
 

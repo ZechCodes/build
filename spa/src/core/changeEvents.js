@@ -79,6 +79,7 @@ const NO_CAPABILITIES = Object.freeze({
   requests: Object.freeze({ priority: false }),
   errors: Object.freeze({ codes: false }),
   diffs: Object.freeze({ perFile: false }),
+  bodies: Object.freeze({ pages: false }),
   issues: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false,

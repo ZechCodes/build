@@ -1,5 +1,6 @@
 use super::history::{open_repo, truncate_at_utf8_boundary, GIT_SHOW_MAX_PATCH_BYTES};
 use super::status::ContentKeys;
+use crate::body_page::{text_page, BodyRange};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
@@ -28,6 +29,36 @@ pub fn file_patches(repo_path: &Path, paths: &[String]) -> Result<Value, String>
         GIT_SHOW_MAX_PATCH_BYTES,
         GIT_DIFF_MAX_ANSWER_BYTES,
     )
+}
+
+/// `git.diff` with a `range` (#95): one page of ONE path's patch, under the
+/// same content key the whole read answers. The per-file and per-answer caps
+/// give way to the page's own.
+pub fn file_patch_page(
+    repo_path: &Path,
+    paths: &[String],
+    range: BodyRange,
+) -> Result<Value, String> {
+    reject_unreadable_paths(paths)?;
+    let [path] = paths else {
+        return Err("git.diff takes one path with a range".to_string());
+    };
+    let repo = open_repo(repo_path)?;
+    let keys = content_keys_for_paths(&repo, paths)?;
+    let patch = crate::diff::patch_for_paths(repo_path, paths)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|file| &file.path == path)
+        .map(|file| file.patch)
+        .unwrap_or_default();
+    let (page, span) = text_page(&patch, range);
+    Ok(json!({ "files": [{
+        "path": path,
+        "content_key": keys.get(path).cloned().unwrap_or_default(),
+        "patch": page,
+        "truncated": false,
+        "range": span,
+    }] }))
 }
 
 /// [`file_patches`] with both caps injectable, so a test exercises the

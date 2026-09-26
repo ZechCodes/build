@@ -148,6 +148,31 @@ describe("fileEntry", () => {
     expect(fileEntry(view(), { fold: "open", body: bodyFor("src/a.js", 20) }).html).not.toContain("truncated");
   });
 
+  // A body kept in pages (#95) draws the rows it holds and ends on a notice
+  // of how much that is, marked for the viewport to read on at. What it says
+  // comes from the pages alone — never from whether the bridge can page right
+  // now — so a view painted before its bridge greets reads on once it has.
+  it("ends a body still arriving in pages on a notice of how much is shown, marked to read on", () => {
+    const paged = { ...bodyFor("src/a.js", 20), pages: { end: 1_200_000, total: 4_800_000, complete: false } };
+    const html = fileEntry(view(), { fold: "open", body: paged }).html;
+    expect(html).toContain("Showing 1.2 MB of 4.8 MB");
+    expect(html).toContain('data-more-key="EDIT:src/a.js"');
+    expect(rowCount(html)).toBe(23);
+
+    const whole = { ...paged, truncated: true, pages: { end: 4_800_000, total: 4_800_000, complete: true } };
+    const done = fileEntry(view(), { fold: "open", body: whole }).html;
+    expect(done).not.toMatch(/Showing|truncated/);
+    expect(done).not.toContain("data-more-key");
+  });
+
+  it("says a cut body whose whole weight nothing has said was truncated, still marked to read on", () => {
+    const cut = { ...bodyFor("src/a.js", 20), truncated: true, pages: { end: 1_048_000, total: null, complete: false } };
+    const html = fileEntry(view(), { fold: "open", body: cut }).html;
+    expect(html).toContain("diff truncated at 1 MiB");
+    expect(html).not.toContain("Showing");
+    expect(html).toContain('data-more-key="EDIT:src/a.js"');
+  });
+
   it("renders a git.show file from the rows the payload carried", () => {
     const parsed = parseDiff(patchFor("src/b.js", 4))[0];
     const { html } = fileEntry(fileViewFromParsedFile(parsed), { fold: "open" });

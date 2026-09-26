@@ -4,8 +4,9 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { pagedAnswer } from "./gitWireFixture.js";
 
-let fileDiffs, cache;
+let fileDiffs, cache, pages;
 
 const deferred = () => {
   let resolve;
@@ -57,6 +58,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   cache = await import("../src/core/localCache.js");
   fileDiffs = await import("../src/core/fileDiffs.js");
+  pages = await import("../src/core/bodyPages.js");
 });
 
 const mountDiffs = (call) =>
@@ -114,25 +116,81 @@ describe("createFileDiffs", () => {
     diffs.dispose();
   });
 
-  it("keeps a normal body but paints an oversized or truncated body only from the response", async () => {
+  it("keeps an oversized body in pages under its head and paints it from the cache", async () => {
+    const large = `${patchFor("b.js", "key-b")}${"+x\n".repeat(400_000)}`;
     const call = vi.fn(async () => ({ files: [
       { path: "a.js", content_key: "key-a", patch: "ok", truncated: false },
-      { path: "b.js", content_key: "key-b", patch: "x".repeat(fileDiffs.FILE_DIFF_MAX_BYTES + 1), truncated: false },
+      { path: "b.js", content_key: "key-b", patch: large, truncated: false },
     ] }));
     const diffs = mountDiffs(call);
     await diffs.sync({ status: TWO, openPaths: new Set(["a.js", "b.js"]) });
     expect((await cache.readCached(address("a.js"))).value.patch).toBe("ok");
-    expect(await cache.readCached(address("b.js"))).toBeUndefined();
-    expect(diffs.bodyOf("b.js").patch).toHaveLength(fileDiffs.FILE_DIFF_MAX_BYTES + 1);
+    const head = (await cache.readCached(address("b.js"))).value;
+    expect(head).toMatchObject({ content_key: "key-b", paged: true, of: "whole" });
+    expect(head.patch).toBeUndefined();
+    const held = await pages.readBodyPages(address("b.js"), "whole");
+    expect(held.pages.length).toBeGreaterThan(1);
+    expect(held.complete).toBe(true);
+    expect(diffs.bodyOf("b.js")).toMatchObject({ patch: large, pages: { complete: true } });
     diffs.dispose();
 
-    const cut = mountDiffs(vi.fn(async () => ({ files: [
-      { path: "a.js", content_key: "next", patch: "cut", truncated: true },
-    ] })));
-    await cut.sync({ status: status([statusFile("a.js", "next")]), openPaths: new Set(["a.js"]) });
-    expect(await cache.readCached(address("a.js"))).toBeUndefined();
-    expect(cut.bodyOf("a.js")).toMatchObject({ patch: "cut", truncated: true });
-    cut.dispose();
+    // A second mount paints the same body off the disk, with no wire call.
+    const again = vi.fn();
+    const remount = mountDiffs(again);
+    await remount.sync({ status: TWO, openPaths: new Set(["b.js"]) });
+    expect(again).not.toHaveBeenCalled();
+    expect(remount.bodyOf("b.js").patch).toBe(large);
+    remount.dispose();
+  });
+
+  // A bridge that pages names its pages by a digest of the whole patch, so the
+  // cache keeps its pages from the first — a content key does not name a patch.
+  const WHOLE = "diff --git a/a.js b/a.js\n@@ -1,4 +1,4 @@\n+first line\n+second line\n+third line\n";
+  const pagingDiff = (calls, { withRange = true } = {}) =>
+    vi.fn(async (method, params) => {
+      calls.push(params);
+      if (!params.range) return { files: [{ path: "a.js", content_key: "next", patch: WHOLE.slice(0, 50), truncated: true }] };
+      const page = pagedAnswer(WHOLE, params.range.offset, { version: "v-whole", pageBytes: 30 });
+      return { files: [{ path: "a.js", content_key: "next", patch: page.patch, ...(withRange ? { range: page.range } : {}) }] };
+    });
+  const pagingDiffs = (call) =>
+    fileDiffs.createFileDiffs({ deviceId: "dev-1", entityId: "run-1", scope: { run_id: "run-1" }, call, canPage: () => true });
+
+  it("keeps a cut body in the bridge's own pages, named by its version, and reads the rest a page at a time", async () => {
+    const calls = [];
+    const diffs = pagingDiffs(pagingDiff(calls));
+    await diffs.sync({ status: status([statusFile("a.js", "next")]), openPaths: new Set(["a.js"]) });
+    expect((await cache.readCached(address("a.js"))).value).toMatchObject({ paged: true, of: "v-whole" });
+    expect(diffs.bodyOf("a.js").pages).toMatchObject({ total: WHOLE.length, complete: false });
+
+    while (await diffs.more("a.js"));
+    expect(diffs.bodyOf("a.js")).toMatchObject({ patch: WHOLE, pages: { complete: true } });
+    const ranged = calls.filter((params) => params.range);
+    expect(ranged[0]).toEqual({ run_id: "run-1", paths: ["a.js"], range: { offset: 0, bytes: pages.BODY_PAGE_BYTES } });
+    expect(ranged.map((params) => params.range.offset)).toEqual([...new Set(ranged.map((params) => params.range.offset))]);
+    diffs.dispose();
+  });
+
+  it("takes a ranged answer that carries no range for no page at all", async () => {
+    const calls = [];
+    const diffs = pagingDiffs(pagingDiff(calls, { withRange: false }));
+    await diffs.sync({ status: status([statusFile("a.js", "next")]), openPaths: new Set(["a.js"]) });
+    const cutLines = WHOLE.slice(0, WHOLE.lastIndexOf("\n", 50) + 1);
+    expect((await cache.readCached(address("a.js"))).value).toMatchObject({ paged: true, of: "whole" });
+    expect(diffs.bodyOf("a.js")).toMatchObject({ patch: cutLines, pages: { total: null, complete: false } });
+    expect(await diffs.more("a.js")).toBe(false);
+    expect(diffs.bodyOf("a.js").patch).toBe(cutLines);
+    diffs.dispose();
+  });
+
+  it("pages only for a bridge whose greeting announced bodies.pages", async () => {
+    const events = await import("../src/core/changeEvents.js");
+    const diffs = mountDiffs(vi.fn());
+    expect(diffs.canPage()).toBe(false);
+    await events.greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
+    expect(diffs.canPage()).toBe(true);
+    events.resetChangeEvents();
+    diffs.dispose();
   });
 
   it("reads a body back from the local cache instead of the wire", async () => {

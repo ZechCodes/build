@@ -172,6 +172,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     requests: { priority: names.has("requests.priority") },
     errors: { codes: names.has("errors.codes") },
     diffs: { perFile: names.has("diffs.perFile") },
+    bodies: { pages: names.has("bodies.pages") },
     issues: {
       context: names.has("issues.context"),
       attachments: names.has("issues.attachments"),

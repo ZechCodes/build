@@ -15,6 +15,8 @@ const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, wipeCache, writeCached } = await import("../src/core/localCache.js");
 const { directoryCacheId } = await import("../src/core/directoryScope.js");
 const { renderFilesTab } = await import("../src/views/files.js");
+const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { BODY_PAGE_BYTES, readBodyPages } = await import("../src/core/bodyPages.js");
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
 
@@ -47,10 +49,10 @@ const ROOTS = [
 const LAYOUT = "workspace:ws-1";
 
 const mounted = [];
-const mountRoots = ({ roots = ROOTS, openAt = null, onFileOpen = vi.fn() } = {}) => {
+const mountRoots = ({ roots = ROOTS, openAt = null, onFileOpen = vi.fn(), callRpc = answer } = {}) => {
   const host = document.createElement("div");
   document.body.appendChild(host);
-  const files = renderFilesTab(host, { roots, layoutEntityId: LAYOUT, callRpc: answer, cacheScope: scopeFor("dev-1"), openAt, onFileOpen });
+  const files = renderFilesTab(host, { roots, layoutEntityId: LAYOUT, callRpc, cacheScope: scopeFor("dev-1"), openAt, onFileOpen });
   mounted.push(files);
   return { host, files, onFileOpen };
 };
@@ -89,6 +91,7 @@ beforeEach(async () => {
 afterEach(() => {
   mounted.splice(0).forEach((files) => files.dispose());
   delete window.matchMedia;
+  resetChangeEvents();
 });
 
 describe("one root per directory", () => {
@@ -207,5 +210,44 @@ describe("the keyboard across roots", () => {
     expect(document.activeElement).toBe(heads(host)[0]);
     key(heads(host)[0], "ArrowDown");
     expect(document.activeElement).toBe(rowFor(host, "repo", "src"));
+  });
+});
+
+// A file too big for one record (#95) in one of the roots: its pages are read
+// by range from that root's own directory, by its path there, and filed under
+// that directory's records.
+describe("a file over one record in a root", () => {
+  const BIG = Array.from({ length: 8000 }, (_, index) => `line ${index + 1} ${"x".repeat(180)}`).join("\n");
+  const bigAnswer = (params) => {
+    const bytes = Buffer.from(BIG);
+    const answered = { path: params.path, size: bytes.length, mime: "text/plain", editable: false, revision: null, truncated: false };
+    if (!params.range) return { ...answered, truncated: true, content_b64: bytes.subarray(0, 1024 * 1024).toString("base64") };
+    const { offset, bytes: size } = params.range;
+    let end = Math.min(bytes.length, offset + size);
+    if (end < bytes.length) end = bytes.lastIndexOf(10, end - 1) + 1;
+    return { ...answered, content_b64: bytes.subarray(offset, end).toString("base64"), range: { offset, end, total: bytes.length, version: "v1" } };
+  };
+  const machine = vi.fn(async (method, params) => {
+    if (method === "fs.tree" && params.source_id === "assets" && params.path === "") {
+      return { path: "", entries: [...TREES.assets[""], { name: "big.log", kind: "file", size: BIG.length }] };
+    }
+    if (method === "fs.read" && params.path === "big.log") return bigAnswer(params);
+    return answer(method, params);
+  });
+  const ranged = () => machine.mock.calls.filter(([method, params]) => method === "fs.read" && params.range).map(([, params]) => params);
+
+  it("reads its pages from that root's directory, by its path there, into that directory's records", async () => {
+    machine.mockClear();
+    await greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
+    const { host } = mountRoots({ callRpc: machine });
+    await tap(host, "assets", "big.log");
+    await vi.waitFor(() => expect(host.querySelector(".fpmore")?.hidden).toBe(false));
+    expect(ranged()).toEqual([{ workspace_id: "ws-1", source_id: "assets", path: "big.log", range: { offset: 0, bytes: BODY_PAGE_BYTES } }]);
+    const head = { deviceId: "dev-1", entityId: directoryCacheId(scopeOf("assets")), kind: "file", sub: "big.log" };
+    const [first] = (await readBodyPages(head, "v1")).pages;
+
+    host.querySelector(".fpmore").click();
+    await vi.waitFor(async () => expect((await readBodyPages(head, "v1")).pages).toHaveLength(2));
+    expect(ranged().at(-1)).toEqual({ workspace_id: "ws-1", source_id: "assets", path: "big.log", range: { offset: first.end, bytes: BODY_PAGE_BYTES } });
   });
 });

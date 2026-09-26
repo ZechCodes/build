@@ -88,6 +88,7 @@ describe("adapter selection", () => {
       // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
+      bodies: { pages: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
       issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       // A conversation's own compaction threshold arrived in 1.10.
@@ -203,6 +204,7 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
+        bodies: { pages: false },
         issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
         conversations: { settings: false },
         github: { repos: false },
@@ -430,5 +432,13 @@ describe("issues.listPaged", () => {
     expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.listPaged"] }).issues.listPaged).toBe(true);
     expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["issues.list"] }).issues.listPaged).toBe(false);
     expect(v1.capabilitiesOf({ api_version: "1.21.0" }).issues.listPaged).toBe(false);
+  });
+});
+
+describe("bodies.pages", () => {
+  it("is on only when the greeting names it, never inferred from a minor (#95)", () => {
+    expect(v1.capabilitiesOf({ api_version: "1.26.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "1.26.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).bodies.pages).toBe(false);
   });
 });

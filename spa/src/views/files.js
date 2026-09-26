@@ -16,6 +16,8 @@
 // is its `file` record, and one the cache holds opens with no round trip. Two
 // reads are left on the wire and both write through: `fs.tree` for a directory
 // nothing has ever been written for, and `fs.read` for a file nothing holds.
+// A file too large for one record is kept as pages beside it (#95), read a
+// page at a time by range as the reader scrolls (core/pagedFileView.js).
 //
 // A tab keeps its unsaved edits while another tab is active: switching away
 // holds them in memory (not in any record), closing that tab asks first, and so
@@ -32,10 +34,17 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
-import { FILE_RECORD_KIND, cacheFileBody } from "../core/cacheLifetime.js";
+import { deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
+import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
+import {
+  mountPagedFile,
+  sourceLinesPainter,
+  sourceRowsHtml,
+  wholeBytesPainter,
+  wholeTextPainter,
+} from "../core/pagedFileView.js";
 import { renderMarkdown } from "../core/markdown.js";
-import { highlightCode, langForPath } from "../core/highlight.js";
+import { langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
 import { isDotenvPath, renderDotenvSourceHtml, SPOILER_DOTS } from "../core/secrets.js";
 import { confirmAction } from "../core/confirm.js";
@@ -89,12 +98,7 @@ export function decodeBase64Text(contentB64) {
  *  the path's extension (langForPath) and, for an unknown extension, falls back
  *  to escaped plain text — highlightCode never emits a live tag either way. */
 export function sourcePreviewHtml(path, text) {
-  const lang = langForPath(path);
-  const rows = text
-    .split("\n")
-    .map((line, index) => `<tr data-new-line="${index + 1}"><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
-    .join("");
-  return `<div class="fsrc"><table>${rows}</table></div>`;
+  return `<div class="fsrc"><table>${sourceRowsHtml(text.split("\n"), langForPath(path))}</table></div>`;
 }
 
 export function mediaPreviewHtml(mode, mime, contentB64) {
@@ -326,15 +330,32 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
+  /** Whether `address` still holds the write `written` names (recordWriteOf),
+   *  asked after a wire call: its time is not which write it is. */
+  const recordStill = (address, written) => async () => recordWriteOf(await heldRecord(address)) === written;
+
   let unwatchFile = null;
 
   const stillSelected = (request, path) =>
     !disposed && request === fileRequest && selectedPath === path;
 
+  // Where the reader was in a paged file being painted again (a new version
+  // of it), carried over until the pages painted reach that far again.
+  let carriedScroll = null;
+
   const adoptFile = (path, file) => {
     editor?.dispose();
     editor = null;
+    if (file.paged && viewerState?.snapshot().file.paged) {
+      carriedScroll = previewEl.querySelector(".file-reading-layer")?.scrollTop || null;
+    }
     renderPreview(path, file);
+  };
+
+  const restoreCarriedScroll = (scroller) => {
+    if (!carriedScroll) return;
+    scroller.scrollTop = carriedScroll;
+    if (scroller.scrollTop >= carriedScroll) carriedScroll = null;
   };
 
   /** A record of the selected file arrived: the draft decides whether it is
@@ -365,37 +386,58 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     unwatchFile = subscribeCache(address, () => void rereadSelectedFile(path, request));
   };
 
-  const storedFileResult = async (address, file) => {
-    const stored = await heldRecord(address);
-    return stored?.value?.file ? { file: stored.value.file } : { file, direct: true };
-  };
+  /** The reader of one page of `path` by range (#95). It asks at each read
+   *  whether the bridge can page, so the view holding it never does. */
+  const pageReader = (path) =>
+    filePageReader(cacheScope?.deviceId, (range) => callRpc("fs.read", { ...scopeOf(path), path: pathOf(path), range }));
 
-  const discardSupersededFile = async (address, previousAt) => {
-    const after = await heldRecord(address);
-    if (after && after.at === previousAt) await deleteCached([address]);
-  };
+  /** What a store decides by, after an answer (so after a greeting): the page
+   *  reader where this bridge can page, or null where it cannot. */
+  const storePageReader = (path) => (filePagesReadable(cacheScope?.deviceId) ? pageReader(path) : null);
 
-  /** Store one pulled body and then read the stored record back. The narrow
-   *  direct result is the existing oversized/truncated exception: retention
-   *  policy forbids that body from entering IndexedDB, pending its owner
-   *  decision. */
-  const storePulledFile = async (path, file, request, previousAt) => {
+  /** Store one pulled body — whole, or as pages when it is too large for one
+   *  record — and then read the stored record back: the view paints what the
+   *  cache holds, never the answer. A mount handed no cache has nowhere to
+   *  store, so it shows the answer as it came. */
+  const storePulledFile = async (path, file, request, previousWrite) => {
     const address = fileAddress(path);
-    if (!address) return { file, direct: true };
+    if (!address) return { file };
     const current = await heldRecord(address);
     if (!stillSelected(request, path)) return {};
-    if (current?.at !== previousAt) return { file: current?.value?.file };
-    const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file });
+    if (recordWriteOf(current) !== previousWrite) return { file: current?.value?.file };
+    await cacheFileBody({
+      deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
+      readPage: storePageReader(path), still: recordStill(address, previousWrite),
+    });
     if (!stillSelected(request, path)) return {};
-    if (kept) return storedFileResult(address, file);
-    await discardSupersededFile(address, previousAt);
-    return { file, direct: true };
+    return { file: (await heldRecord(address))?.value?.file };
   };
 
-  const pullFile = async (path, request, previousAt) => {
+  // A paged file is started over from its first page at most once off each
+  // version, and never off the version its own start-over wrote: the next
+  // start goes with a record somebody else wrote (a push's refresh), so a
+  // file written to all the time cannot spin the view. `path\nof` keys.
+  let restartedFrom = null;
+  let restartedTo = null;
+
+  /** Read a paged file again from its first page: its next page was of a
+   *  changed file, or none of its pages are held any more. The new record's
+   *  announcement repaints. */
+  const restartPagedFile = async (path, file) => {
+    const address = fileAddress(path);
+    const key = `${path}\n${file.of}`;
+    const readPage = storePageReader(path);
+    if (!address || !readPage || key === restartedFrom || key === restartedTo) return;
+    restartedFrom = key;
+    const still = recordStill(address, recordWriteOf(await heldRecord(address)));
+    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage, still });
+    if (stored) restartedTo = `${path}\n${(await heldRecord(address))?.value?.file?.of}`;
+  };
+
+  const pullFile = async (path, request, previousWrite) => {
     try {
       const file = await callRpc("fs.read", { ...scopeOf(path), path: pathOf(path) });
-      return storePulledFile(path, file, request, previousAt);
+      return storePulledFile(path, file, request, previousWrite);
     } catch (error) {
       return { error };
     }
@@ -433,6 +475,8 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     drawer.refresh();
     viewingContext?.clearSelection?.();
     publishFileContext();
+    stopPagedView();
+    carriedScroll = null;
     showPlaceholder("loading");
   };
 
@@ -467,7 +511,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const record = await heldRecord(address);
     if (!stillSelected(request, path)) return;
     if (takeHeldFile(path, request, address, record)) return;
-    const result = await pullFile(path, request, record?.at);
+    const result = await pullFile(path, request, recordWriteOf(record));
     showFileResult(path, request, result);
   };
 
@@ -518,18 +562,18 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     }
     state.saveSucceeded(written);
     afterSave(path, state, written);
-    await storeWrittenFile(path, address, written, baseline, (await before)?.at);
+    await storeWrittenFile(path, address, written, baseline, recordWriteOf(await before));
   };
 
   /** A cache access refresh changes the timestamp without changing the file.
    *  Replace the submitted baseline, but keep a competing revision visible.
    *  If the record disappeared while saving, preserve that invalidation too. */
-  const storeWrittenFile = async (path, address, written, baseline, previousAt) => {
+  const storeWrittenFile = async (path, address, written, baseline, previousWrite) => {
     if (!address) return false;
     const current = await heldRecord(address);
     if (current?.value?.file) {
       if (!sameFile(current.value.file, baseline)) return false;
-    } else if (current?.at !== previousAt) return false;
+    } else if (recordWriteOf(current) !== previousWrite) return false;
     const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: written });
     if (!kept) await deleteCached([address]);
     return kept;
@@ -557,7 +601,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const request = ++fileRequest;
     watchFile(path, request);
     const before = await heldRecord(fileAddress(path));
-    const result = await pullFile(path, request, before?.at);
+    const result = await pullFile(path, request, recordWriteOf(before));
     showReloadResult(path, request, reloadingState, reloadingValue, result);
   };
 
@@ -598,17 +642,66 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     tabs.refresh();
   };
 
-  const previewFile = (snapshot) => snapshot.modes.length ? ({
+  const previewFile = (snapshot) => snapshot.modes.length && !snapshot.file.paged ? ({
       ...snapshot.file,
       content_b64: encodeBase64Text(snapshot.value),
       size: new TextEncoder().encode(snapshot.value).length,
     }) : snapshot.file;
+
+  let pagedView = null;
+  const stopPagedView = () => {
+    pagedView?.dispose();
+    pagedView = null;
+  };
+
+  /** How a paged file is painted in `mode`: its source a page at a time, a
+   *  dotenv file masked as a whole, or what the viewer shows whole once every
+   *  byte is held. Null for what shows as its size alone. */
+  const pagedPainter = (path, file, mode) => {
+    if (shouldMaskDotenv(path, mode, sourceOverride)) {
+      return wholeTextPainter((content, text) => {
+        const dotenv = renderDotenvSourceHtml(text);
+        content.innerHTML = dotenv.html;
+        wireDotenvSpoilers(dotenv.secrets);
+      });
+    }
+    if (sourceOverride || mode === "source" || mode === "markdown") return sourceLinesPainter(langForPath(path));
+    if (mode === "binary" || mode === "toolarge") return null;
+    return wholeBytesPainter((content, contentB64) => {
+      content.innerHTML = previewBodyHtml(path, { ...file, content_b64: contentB64 }, false);
+    });
+  };
+
+  /** A file kept as pages is painted from them, never from an answer. */
+  const paintPagedFile = (host, path, file) => {
+    const mode = previewModeFor(file.mime, file.truncated);
+    const painter = pagedPainter(pathOf(path), file, mode);
+    if (!painter) {
+      host.innerHTML = sizePlaceholder(mode, file.size);
+      return;
+    }
+    pagedView = mountPagedFile(host, {
+      head: fileAddress(path),
+      file,
+      readPage: pageReader(path),
+      restart: () => void restartPagedFile(path, file).catch(() => {}),
+      painter,
+      // A link to a line lands once the page holding it is painted, and a
+      // new version's reader is put back where they were.
+      onPaint: () => {
+        scrollRequestedLineIntoView(path);
+        restoreCarriedScroll(host);
+      },
+    });
+  };
 
   const paintReadingMode = (path, snapshot) => {
     const host = previewEl.querySelector(".file-reading-layer");
     const file = previewFile(snapshot);
     const mode = previewModeFor(file.mime, file.truncated);
     sourceOverride = snapshot.mode === "source";
+    stopPagedView();
+    if (file.paged) return paintPagedFile(host, path, file);
     const dotenv = shouldMaskDotenv(pathOf(path), mode, sourceOverride)
       ? renderDotenvSourceHtml(snapshot.value)
       : null;
@@ -637,6 +730,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   };
 
   const paintViewer = (path) => {
+    stopPagedView();
     const snapshot = viewerState.snapshot();
     previewEl.classList.remove("idle");
     const actions = snapshot.modes.includes("edit") ? '<div class="file-edit-actions" hidden><span class="file-dirty" hidden>Unsaved</span><span class="file-save-status"></span><button type="button" class="btn mini file-reload" hidden>Reload</button><button type="button" class="btn mini file-save">Save</button></div>' : "";
@@ -693,6 +787,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   const showNothing = () => {
     fileRequest += 1;
+    stopPagedView();
     unwatchFile?.();
     unwatchFile = null;
     editor?.dispose();
@@ -767,6 +862,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       tabs.dispose();
       unwatchFile?.();
       unwatchFile = null;
+      stopPagedView();
       stopPreviewHeadMeasurement();
       editor?.dispose();
       viewingContext?.clear?.();

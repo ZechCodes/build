@@ -22,12 +22,15 @@ export const REPAIRED_THREAD_ITEMS = 50;
 /** Unpushed commits whose patches are kept. */
 export const UNPUSHED_COMMITS_MAX = 20;
 
-/** The largest patch worth keeping, asked for on the wire and checked again
+/** The largest patch one record keeps, asked for on the wire and checked again
  *  on arrival — a bridge that ignored `max_bytes` must not put megabytes under
- *  a record this side says is 256 KB. */
+ *  a record this side says is 256 KB. A commit the reader opens past it is
+ *  kept in pages beside a head record (#95, core/bodyPages.js). */
 export const COMMIT_PATCH_MAX_BYTES = 262144;
 
-/** Largest aggregate working-tree diff body retained until #95 adds pages. */
+/** The largest aggregate working-tree patch the `diff` record holds. Past it
+ *  the record keeps the diff's shape alone, and each file's hunks are kept on
+ *  their own, in pages where one is too large for a record (#95). */
 export const WORKING_DIFF_MAX_BYTES = 1_048_576;
 
 /** How long the background tier holds a flush before sending it. */
@@ -39,7 +42,7 @@ export const PATCH_RECORD_KIND = "patch";
 /** The record one issue attachment's bytes are kept under, by path. */
 export const ATTACHMENT_RECORD_KIND = "attachment";
 
-/** The largest attachment body worth keeping: one bridge read's worth, which
- *  is every file a user can upload. An agent's longer recording is painted
- *  from the answer and never stored — #94's rule for an oversized body. */
+/** The largest attachment body kept as one record: one bridge read's worth,
+ *  which is every file a user can upload. An agent's longer recording is kept
+ *  as page records instead (#95, core/bodyPages.js). */
 export const ATTACHMENT_BODY_MAX_BYTES = 5 * 1_048_576;

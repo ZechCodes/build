@@ -12,6 +12,7 @@ import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { editedTimeLabel, editedTimestamp } from "./editedTime.js";
 import { DIFF_ROW_HEIGHT, fileBodyIsVisible, rowWindowFor, ROW_WINDOW_SIZE } from "./diffWindow.js";
 import { sortDiffFiles } from "./diffSort.js";
+import { humanBytes } from "./workspaceLifecycle.js";
 
 const sortedWhenRequested = (files, order) => (order ? sortDiffFiles(files, order) : files);
 
@@ -199,6 +200,24 @@ export function fileContentHtml(file, fold, options = {}) {
  *  peek's box, so a collapsed file says how to get them. */
 export function fileNoticeHtml(label) {
   return `<div class="${PEEK_BOX}"><div class="dload">${esc(label)}</div></div>`;
+}
+
+/** How much of a body kept in pages (#95) is drawn: "Showing 1.2 MB of 4.8 MB",
+ *  or only how much where nothing has said what the whole weighs. */
+export function pagesShownLabel({ end, total }) {
+  return total == null ? `Showing the first ${humanBytes(end)}` : `Showing ${humanBytes(end)} of ${humanBytes(total)}`;
+}
+
+/** The line a body still arriving in pages ends on: how much is drawn, or
+ *  `label` where the caller words it itself, in `className`. `marker` is what
+ *  the viewport names when the reader reaches it (core/diffViewport.js). It is
+ *  worn whatever the bridge can do right now — the paint is the cache's — and
+ *  a bridge that cannot page answers the read with nothing. `file`, for a
+ *  notice ending a stack, is the key of the file the pages end inside: the
+ *  notice is reached when that file's own rows are. */
+export function pagesNoticeHtml(pages, marker, { label = pagesShownLabel(pages), className = "fmore", file = null } = {}) {
+  const inside = file ? ` data-more-file="${esc(file)}"` : "";
+  return `<div class="${className}" data-more-key="${esc(marker)}"${inside}>${esc(label)}</div>`;
 }
 
 /** A file's header and the caller's choice of body, in the fold the reader put

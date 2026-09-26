@@ -40,7 +40,7 @@
 import { trailingRead } from "./trailingRead.js";
 import { App } from "../app.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
-import { onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
+import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
 import { forgetPushes, notePush, pushFence, pushedSince, removedSince } from "./pushFence.js";
 import { cacheableEntityIds, inboxEntries, isFinishedState, routedEntityId } from "./inbox.js";
 import { cachedRouteEntityId } from "./cachedRows.js";
@@ -69,6 +69,8 @@ import { inboxPushKinds } from "./trackerPush.js";
 import {
   FILE_RECORD_KIND,
   cacheFileBody,
+  filePageReader,
+  filePagesReadable,
   evictWorkspaceData,
   expireWorkspaceData,
   isWorkspaceDataKind,
@@ -82,6 +84,7 @@ import {
 } from "./surfacesCache.js";
 import { coordinatedRead, requestPriorityFields, rpcReadKey } from "./readRequests.js";
 import { pageVisible } from "./visibility.js";
+import { dropBodyPages } from "./bodyPages.js";
 import { writeUsageLimits } from "./usageLimits.js";
 import {
   BACKGROUND_COOLDOWN_MS,
@@ -966,10 +969,9 @@ async function syncUnpushed(context, entityId, scope, priority) {
  *  ones not already held.
  *
  *  Read under the cap, which is what a cache asks under: a commit over it is
- *  answered with the file headers, and those are kept. Holding which files
- *  moved is what stops the next pass asking after the commit again — and a
- *  reader opening it is what asks for the patch itself, uncapped, from the
- *  pane. */
+ *  answered with the file headers, which are not kept. A reader opening it is
+ *  what asks for the patch itself, uncapped, from the pane, which keeps it in
+ *  pages (#95). */
 async function syncPatches(context, entityId, scope, commits, priority) {
   const hashes = (commits || [])
     .map((commit) => commit.hash)
@@ -987,11 +989,14 @@ async function syncPatches(context, entityId, scope, commits, priority) {
 }
 
 /** A patch for a commit that is no longer unpushed has been published: it is
- *  in the log like every other commit, and nobody is reviewing it here. */
+ *  in the log like every other commit, and nobody is reviewing it here. One
+ *  kept in pages (#95) goes with them. */
 async function dropStalePatches(context, entityId, held, wanted) {
   if (!context.active()) return;
-  const stale = held.filter((hash) => !wanted.has(hash));
-  if (stale.length) await deleteCached(stale.map((hash) => addressOf(context, entityId, PATCH_RECORD_KIND, hash)));
+  const stale = held.filter((hash) => !wanted.has(hash)).map((hash) => addressOf(context, entityId, PATCH_RECORD_KIND, hash));
+  if (!stale.length) return;
+  for (const head of stale) await dropBodyPages(head);
+  await deleteCached(stale);
 }
 
 /** Which verb answers this row's working-tree diff, and what to name the read
@@ -1052,14 +1057,26 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
   await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
 }
 
+/** Whether a diff answer carries a patch the record can hold: one not cut, and
+ *  within the record's cap. A shape without one is a diff whose hunks are read
+ *  a file at a time, and the patch held from before it moved is not its own. */
+const carriesItsPatch = (diff) =>
+  diff.patch !== undefined && !diff.truncated && withinBytes(diff.patch, WORKING_DIFF_MAX_BYTES);
+
 /** The diff record after a new body, wherever the body came from. The body
  *  replaces what was held; which project the diff belongs to is nothing the
  *  wire knows about and stays where it was put. A body in hand is the end of
- *  whatever staleness put the record here. */
+ *  whatever staleness put the record here.
+ *
+ *  A patch too big for the record, or cut, is left out of it (#95), and so is
+ *  one the answer did not carry: the files, the stat and the key are still the
+ *  diff's own, and the review surface draws from them a file at a time, each
+ *  file's hunks kept on their own. */
 const diffRecord = (held, diff, row) => {
-  const oversized = diff.truncated || !withinBytes(diff.patch, WORKING_DIFF_MAX_BYTES);
-  const record = { ...held, ...diff, stale: Boolean(oversized), projectId: row?.project_id || held?.projectId || null };
-  if (oversized) delete record.patch; // #94: body pages are deferred to #95.
+  const record = { ...held, ...diff, stale: false, projectId: row?.project_id || held?.projectId || null };
+  if (carriesItsPatch(diff)) return record;
+  delete record.patch;
+  delete record.truncated;
   return record;
 };
 
@@ -1467,7 +1484,10 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   // round trip for the workspace on screen; the rest are marked, and read it
   // when a reader opens them.
   if (subscriptions.get(context.deviceId)?.activeId === entityId) {
-    await pullWorkingDiff(context, entityId, row, "foreground");
+    // Of a bridge that answers hunks per file, the shape alone: the surface on
+    // screen reads the hunks of the files the reader has open.
+    const patch = bridgeCapabilities(context.deviceId).diffs?.perFile !== true;
+    await pullWorkingDiff(context, entityId, row, "foreground", { patch });
     return;
   }
   await mergeCached(addressOf(context, entityId, "diff"), (current) =>
@@ -1582,25 +1602,43 @@ const missingFile = (error) => error?.code === "not_found" || error?.error_code 
 /** Passes and pushes can read the same body concurrently. Only its newest
  *  reader may write; a different file's refresh cannot supersede this one. */
 async function readFileBody(context, entityId, scope, path) {
-  const address = addressOf(context, entityId, FILE_RECORD_KIND, path);
-  const openedAt = (await readCached(address))?.value?.openedAt;
+  const held = (await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path)))?.value;
   if (!context.active()) return "cancelled";
-  // Unlike ask(), keep the refusal so recovery can distinguish a missing file.
-  const file = await context.call("fs.read", { ...scope, path }, requestPriorityFields("background"));
+  const readPage = backgroundPageReader(context, scope, path);
+  const file = await freshFileAnswer(context, scope, path, held?.file, readPage);
   if (!context.active()) return "cancelled";
   // A read that answered nothing is a file that moved out from under the
   // reader, or a machine that stopped answering. The body held is the last one
   // anybody saw; a delete here would blank an open preview on a hiccup.
   if (!file) return "failed";
-  // A body the cache may not keep — grown past the cap, or answered truncated —
-  // takes the record with it. The rule is about what may be STORED; the record
-  // is of a file that has since moved, and leaving it would hand the reader the
-  // body from before the change on their next open, with no round trip and
-  // nothing saying so.
-  const kept = await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt });
-  if (!kept) await deleteCached([addressOf(context, entityId, FILE_RECORD_KIND, path)]);
+  // A body too large for one record is kept as pages (#95), so every answer is
+  // kept: a record left over from before the change would hand the reader
+  // that body on their next open, with no round trip and nothing saying so.
+  await cacheFileBody({ deviceId: context.deviceId, entityId, path, file, openedAt: held?.openedAt, readPage });
   return context.active() ? "settled" : "cancelled";
 }
+
+/** One page of a held file by range, from a bridge that pages, at background
+ *  priority. A read answered after a newer reader took over gives nothing, so
+ *  the store gives up rather than write under it. */
+function backgroundPageReader(context, scope, path) {
+  if (!filePagesReadable(context.deviceId)) return null;
+  const readPage = filePageReader(context.deviceId, (range) =>
+    context.call("fs.read", { ...scope, path, range }, requestPriorityFields("background")));
+  return async (offset, bytes) => {
+    const page = await readPage(offset, bytes);
+    return context.active() ? page : null;
+  };
+}
+
+/** What the file is now. A paged record is refreshed from its first page
+ *  alone (the store reads it), where the bridge can page; anything else is
+ *  read whole, as it was opened. Unlike ask(), the refusal is kept, so
+ *  recovery can tell a missing file apart. */
+const freshFileAnswer = (context, scope, path, heldFile, readPage) =>
+  heldFile?.paged && readPage
+    ? heldFile
+    : context.call("fs.read", { ...scope, path }, requestPriorityFields("background"));
 
 const applyTerminals = (context, entityId, terminals) =>
   writePushed(addressOf(context, entityId, "terminals"), { tabs: terminals.tabs || [] });

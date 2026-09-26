@@ -43,7 +43,7 @@ it("wires a mounted issues pane to cached dashboard tabs and live counts", async
 
   host.querySelector('[data-dashboard-tab="inProgress"]').click();
   await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress"));
-  expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent is working on an issue.");
+  expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent holds an issue.");
 
   const assigned = issue({ id: "assigned", number: 8, title: "Take a look", assignee: { kind: "user" } });
   await writeIssuesRecord("dashboard-device", "dashboard-project", issuesRecord([assigned, review], columns()));

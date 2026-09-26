@@ -7,7 +7,7 @@ import { esc } from "./text.js";
 
 const SECTIONS = [
   { id: "needsYou", title: "Needs you", empty: "Nothing needs your look right now." },
-  { id: "inProgress", title: "In progress", empty: "No agent is working on an issue." },
+  { id: "inProgress", title: "In progress", empty: "No agent holds an issue." },
   { id: "backlog", title: "Backlog", empty: "Nothing in the backlog." },
   { id: "done", title: "Done", empty: "Nothing moved to Done in the last 24 hours." },
 ];
@@ -23,7 +23,7 @@ export const DEFAULT_DASHBOARD_TAB = SECTIONS[0].id;
 export const dashboardTabIds = SECTIONS.map((section) => section.id);
 
 const secondaryText = {
-  inProgress: (entry) => [entry.agentName, entry.activity].filter(Boolean).join(" · "),
+  inProgress: (entry) => [entry.agentName, entry.working ? "working now" : "", entry.activity].filter(Boolean).join(" · "),
   needsYou: (entry) => (entry.reasonLabels || []).join(" · "),
   backlog: (entry) => entry.holder ? `With ${entry.holder} · ${entry.columnName}` : entry.columnName,
   done: (entry) => entry.sha ? `Commit ${entry.sha.slice(0, 12)}` : "Moved to Done",

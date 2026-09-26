@@ -36,8 +36,24 @@ describe("Dashboard cache projection", () => {
     const sections = dashboardSections([work], {
       feed, projectKey: PROJECT, nowMs: NOW, activityByAgent: new Map([["agent-1", " Checking links "]]),
     });
-    expect(sections.inProgress).toEqual([{ issue: work, agentName: "Editor · Writer", activity: "Checking links" }]);
+    expect(sections.inProgress).toEqual([{ issue: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
     expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).inProgress[0].activity).toBe("");
+  });
+
+  // Zech, Sep 26: In progress is every issue a known agent holds, whatever its
+  // job and whether or not it is mid-turn; Done, the user's and unknown
+  // agents' issues stay out.
+  it("lists every issue a known agent holds, marking only the mid-turn one as working", () => {
+    const parked = issue("parked", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-idle" } });
+    const busy = issue("busy", { status: "in_progress", assignee: { kind: "agent", agent_id: "agent-busy" } });
+    const stranger = issue("stranger", { assignee: { kind: "agent", agent_id: "agent-gone" } });
+    const mine = issue("mine", { assignee: { kind: "user" } });
+    const finished = issue("finished", { status: "done", assignee: { kind: "agent", agent_id: "agent-idle" } });
+    const feed = { items: [{ projectKey: PROJECT, agents: [
+      { id: "agent-idle", working: false }, { id: "agent-busy", working: true },
+    ] }] };
+    const { inProgress } = dashboardSections([parked, busy, stranger, mine, finished], { feed, projectKey: PROJECT, nowMs: NOW });
+    expect(inProgress.map((row) => [row.issue.id, row.working])).toEqual([["parked", false], ["busy", true]]);
   });
 
   it("uses the list's shared Needs you reasons, including issues also assigned to working agents", () => {

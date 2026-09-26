@@ -1,6 +1,6 @@
 // The issue list's attention groups, from records already in the cache.
-// Feed rows say which agents are working and which watched issues are in the
-// user's inbox; a cached issue detail supplies comments and the read mark.
+// Feed rows say which agents hold issues, whether each is mid-turn, and which
+// watched issues are in the user's inbox; a cached issue detail supplies comments and the read mark.
 // This module neither reads the bridge nor decides when a cache record loads.
 //
 // Two rules for what needs the user, chosen by `askedOnly` (#144). A bridge
@@ -15,6 +15,8 @@ import { entityIdOf } from "./entityId.js";
 import { isFinished } from "./trackerAgentIssues.js";
 import { latestIssueMark } from "./trackerUnread.js";
 
+/** Issues held by an agent the feed lists for this project, mid-turn or not
+ *  and whatever its job, until they reach Done. The id predates the rule. */
 export const WORKING_GROUP = "working";
 export const NEEDS_YOU_GROUP = "needsYou";
 export const REST_GROUP = "rest";
@@ -70,28 +72,30 @@ export function hasUnreadInboxComment(issue, detail, inboxRow) {
   return unreadAgentComments(issue, detail).length > 0;
 }
 
-/** An agent's digest on a project-scoped feed row. The map is keyed by agent
- *  id so an issue's tagged assignee can find its own working digest. */
-export function workingAgentsOf(feed, projectKey) {
-  const working = new Map();
+/** Every agent the project's feed rows list, keyed by agent id so an issue's
+ *  tagged assignee can find its own digest, working or not. */
+export function knownAgentsOf(feed, projectKey) {
+  const known = new Map();
   for (const row of itemsOf(feed)) {
     if (row.projectKey !== projectKey) continue;
     for (const agent of row.agents || []) {
-      if (agent?.id && agent.working === true) working.set(agent.id, { agent, row });
+      if (agent?.id) known.set(agent.id, { agent, row });
     }
   }
-  return working;
+  return known;
 }
 
 /** A project-agent assignment has no agent id on the issue. When the feed
  *  carries the project owner's row, its owner id from project.list identifies
  *  that row without mistaking a workspace agent for the project's own. Some
- *  bridge snapshots omit the owner row; then its working state is unknown. */
-function workingProjectAgentOf(feed, projectKey) {
+ *  bridge snapshots omit the owner row; then the project agent is unknown. The
+ *  row's working agent is preferred, else its first. */
+function projectAgentOf(feed, projectKey) {
   const ownerId = projectOwnerId(feed, projectKey);
   if (!ownerId) return null;
   const row = itemsOf(feed).find((item) => item.projectKey === projectKey && entityIdOf(item) === ownerId);
-  const agent = (row?.agents || []).find((candidate) => candidate.working === true);
+  const agents = row?.agents || [];
+  const agent = agents.find((candidate) => candidate.working === true) || agents[0];
   return agent ? { agent, row } : null;
 }
 
@@ -100,9 +104,16 @@ const projectOwnerId = (feed, projectKey) => {
   return owner?.entity_id || owner?.run_id || null;
 };
 
-const workingAgentOf = (assignee, workingAgents, projectAgent) => {
+const knownHolderOf = (assignee, knownAgents, projectAgent) => {
   if (assignee?.kind === "project_agent") return projectAgent;
-  return assignee?.kind === "agent" ? workingAgents.get(assignee.agent_id) || null : null;
+  return assignee?.kind === "agent" ? knownAgents.get(assignee.agent_id) || null : null;
+};
+
+/** The known agent holding an unfinished issue, with whether it is mid-turn. */
+const holdingAgentOf = (issue, knownAgents, projectAgent) => {
+  if (isFinished(issue)) return null;
+  const holder = knownHolderOf(issue?.assignee, knownAgents, projectAgent);
+  return holder ? { ...holder, working: holder.agent.working === true } : null;
 };
 
 const reasonsOf = (issue, hasUnreadComment, askedOnly) => {
@@ -134,14 +145,14 @@ export const watchedIssueReasons = (issue, detail, askedOnly = false) =>
   issue?.watched === true ? reasonsOf(issue, unreadAsks(issue, detail, askedOnly).length > 0, askedOnly) : [];
 
 /** One issue's attention, with every reason available to a Dashboard row.
- *  Working wins for list placement, but the reasons are retained so the
+ *  Held by a known agent wins for list placement, but the reasons are retained so the
  *  Dashboard can still explain what needs the user's look. */
 export function issueAttention(issue, {
-  workingAgents = new Map(), projectAgent = null, detail = null, inboxRow = null, askedOnly = false,
+  knownAgents = new Map(), projectAgent = null, detail = null, inboxRow = null, askedOnly = false,
 } = {}) {
-  const workingAgent = workingAgentOf(issue?.assignee, workingAgents, projectAgent);
+  const holdingAgent = holdingAgentOf(issue, knownAgents, projectAgent);
   const reasons = attentionReasonsOf(issue, detail, inboxRow, askedOnly);
-  return { workingAgent, needsYou: reasons.length > 0, reasons, reason: reasons[0] || null };
+  return { holdingAgent, needsYou: reasons.length > 0, reasons, reason: reasons[0] || null };
 }
 
 const inboxRowsOf = (feed, projectKey) => new Map(itemsOf(feed)
@@ -149,20 +160,20 @@ const inboxRowsOf = (feed, projectKey) => new Map(itemsOf(feed)
   .map((row) => [row.issue_id, row]));
 
 const attentionGroupOf = (attention) =>
-  attention.workingAgent ? WORKING_GROUP : attention.needsYou ? NEEDS_YOU_GROUP : REST_GROUP;
+  attention.holdingAgent ? WORKING_GROUP : attention.needsYou ? NEEDS_YOU_GROUP : REST_GROUP;
 
 /** Stable partition of the list's existing order. `detailById` contains the
  *  cached `{issue,timeline}` records, keyed by issue id; it may be incomplete
  *  while an issue page has never been opened. */
 export function attentionGroups(issues, { feed = null, projectKey = "", detailById = new Map(), askedOnly = false } = {}) {
   const groups = { [WORKING_GROUP]: [], [NEEDS_YOU_GROUP]: [], [REST_GROUP]: [], attentionById: new Map() };
-  const workingAgents = workingAgentsOf(feed, projectKey);
-  const projectAgent = workingProjectAgentOf(feed, projectKey);
+  const knownAgents = knownAgentsOf(feed, projectKey);
+  const projectAgent = projectAgentOf(feed, projectKey);
   const inboxRows = inboxRowsOf(feed, projectKey);
   for (const issue of issues || []) {
     const detail = detailById.get(issue.id) || null;
     const attention = issueAttention(issue, {
-      workingAgents,
+      knownAgents,
       projectAgent,
       detail,
       inboxRow: inboxRows.get(issue.id) || null,

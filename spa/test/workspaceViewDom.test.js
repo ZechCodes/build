@@ -239,13 +239,27 @@ describe("workspace surface", () => {
     expect(renderFilesTab).toHaveBeenCalled();
   });
 
-  it("scopes Files to a directory while terminals stay workspace scoped", async () => {
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+  // #174: Files is one tree over every directory, a root each in the
+  // workspace's order; the route says which root the open file is in.
+  it("roots Files in every directory while terminals stay workspace scoped", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files", file: "logo.svg" };
     device("dev-1", async () => workspace);
     await standUp();
-    expect(renderFilesTab.mock.calls[0][1].scope).toEqual({ workspace_id: "ws-1", source_id: "assets" });
+    const options = renderFilesTab.mock.calls[0][1];
+    expect(options.roots).toEqual([
+      { id: "repo", label: "Repository", scope: { workspace_id: "ws-1", source_id: "repo" } },
+      { id: "assets", label: "Assets", scope: { workspace_id: "ws-1", source_id: "assets" } },
+    ]);
+    expect(options.layoutEntityId).toBe('workspace:["ws-1"]');
+    expect(options.openAt).toEqual({ rootId: "assets", path: "logo.svg", line: null });
     expect(App.routeLeaveGuard).toBe(renderFilesTab.mock.results[0].value.canLeave);
-    renderFilesTab.mock.calls[0][1].onFileOpen("logo.svg");
+    options.onFileOpen("src/app.js", "repo");
+    expect(App.route).toMatchObject({ sourceId: "repo", file: "src/app.js" });
+    // With nothing open the route stands on the first root.
+    options.onFileOpen(null);
+    expect(App.route.sourceId).toBe("repo");
+    expect(App.route.file).toBe(null);
+    options.onFileOpen("logo.svg", "assets");
     expect(App.route.file).toBe("logo.svg");
     expect(mountConsole).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       kind: "workspace", workspaceId: "ws-1", deviceId: "dev-1",
@@ -257,6 +271,14 @@ describe("workspace surface", () => {
     expect(mountAgentRail).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       kind: "workspace", workspaceId: "ws-1", projectId: "p-1",
     }));
+  });
+
+  it("stands Files with no file open on the first root", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    device("dev-1", async () => workspace);
+    await standUp();
+    expect(App.route.sourceId).toBe("repo");
+    expect(renderFilesTab.mock.calls[0][1].openAt).toBe(null);
   });
 
   it("keeps the current ref and explains a checkout that would overwrite changes", async () => {

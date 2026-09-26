@@ -13,7 +13,8 @@ import { mountGitPane } from "../core/gitPane.js";
 import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
-import { directoryId, directoryTab, selectedDirectory, workspaceScope } from "../core/workspaceModel.js";
+import { directoryId, directoryTab, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
+import { workspaceLayoutCacheId } from "../core/directoryScope.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { routeContext } from "../core/deviceContexts.js";
@@ -222,7 +223,32 @@ function mountIssuesTab(body, { canonical, callRpc, context, feed, agentSelectio
   });
 }
 
-function mountCheckoutPane(body, { directory, canonical, scope, callRpc, cacheScope, agentSelection }) {
+/** The workspace's directories as the Files tree's roots, in its own order. */
+const filesRoots = (workspace, workspaceId) =>
+  workspaceDirectoryModel(workspace).map((directory) => ({
+    id: directory.sourceId,
+    label: directory.label,
+    scope: workspaceScope(workspaceId, directory.sourceId, workspace),
+  }));
+
+/** Files over every directory of the workspace, one root each (#174). The
+ *  route's `sourceId` is the opened file's root and its `file` a path in that
+ *  root's directory; with no file open it is the first root. */
+function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
+  const roots = filesRoots(workspace, canonical.workspaceId);
+  const openAt = canonical.file ? { rootId: canonical.sourceId, path: canonical.file, line: canonical.line || null } : null;
+  return renderFilesTab(body, {
+    roots,
+    layoutEntityId: workspaceLayoutCacheId(canonical.workspaceId),
+    callRpc,
+    cacheScope,
+    openAt,
+    onFileOpen: (path, rootId) => markRoute({ ...canonical, sourceId: path ? rootId : roots[0].id, file: path }),
+    viewingContext: App.viewingContext,
+  });
+}
+
+function mountCheckoutPane(body, { canonical, workspace, scope, callRpc, cacheScope, agentSelection }) {
   const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
   const onCommitSelection = (commit) => {
     const route = { ...App.route };
@@ -230,27 +256,17 @@ function mountCheckoutPane(body, { directory, canonical, scope, callRpc, cacheSc
     if (commit) route.commit = commit;
     markRoute(route);
   };
-  if (canonical.tab !== "files") {
-    return mountChanges(body, {
-      scope,
-      callRpc,
-      cacheScope,
-      agentSelection,
-      projectId: canonical.projectId,
-      navigate,
-      viewingContext: App.viewingContext,
-      requestedCommit: canonical.commit || null,
-      onCommitSelection,
-    });
-  }
-  const openAt = canonical.file ? { path: canonical.file, line: canonical.line || null } : null;
-  return renderFilesTab(body, {
+  if (canonical.tab === "files") return mountFilesPane(body, { canonical, workspace, callRpc, cacheScope });
+  return mountChanges(body, {
     scope,
     callRpc,
     cacheScope,
-    openAt,
-    onFileOpen: (path) => markRoute({ ...canonical, file: path }),
+    agentSelection,
+    projectId: canonical.projectId,
+    navigate,
     viewingContext: App.viewingContext,
+    requestedCommit: canonical.commit || null,
+    onCommitSelection,
   });
 }
 
@@ -353,23 +369,30 @@ function observeTabs(body, state, paintTabs, dispose) {
   };
 }
 
-function refreshWorkspacePane(state, workspace) {
-  const directory = selectedDirectory(workspace, state.route.sourceId);
+/** Where the surface stands for a route over this workspace: the directory,
+ *  and the tab it can be on. Files with no file open stands on the first root,
+ *  since its tree is every directory's (#174). The issues tab is the
+ *  workspace's, not the checkout's, so it keeps the route's own tab rather than
+ *  being coerced to one of the directory's. */
+function canonicalRoute(route, workspace) {
+  const directory = selectedDirectory(workspace, route.tab === "files" && !route.file ? null : route.sourceId);
   const sourceId = directoryId(directory);
+  if (onIssuesTab(route)) return { ...route, sourceId };
+  return { ...route, sourceId, tab: directoryTab(directory, route.tab) };
+}
+
+function refreshWorkspacePane(state, workspace) {
+  const canonical = canonicalRoute(state.route, workspace);
+  const { sourceId } = canonical;
   if (!sourceId) return null;
-  // The issues tab is the workspace's, not the checkout's, so it keeps the
-  // route's own tab rather than being coerced to one of the directory's two.
-  const canonical = onIssuesTab(state.route)
-    ? { ...state.route, sourceId }
-    : { ...state.route, sourceId, tab: directoryTab(directory, state.route.tab) };
   const body = $("#tabbody");
   const previousGuard = state.pane?.canLeave;
   if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
   state.pane?.dispose?.();
   body.innerHTML = '<div class="empty">loading…</div>';
   state.pane = mountDirectoryPane(body, {
-    directory,
     canonical,
+    workspace: state.workspace,
     scope: workspaceScope(state.route.workspaceId, sourceId, state.workspace),
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
@@ -380,7 +403,7 @@ function refreshWorkspacePane(state, workspace) {
     feed: () => deviceFeedNow(state.route.deviceId),
   });
   App.routeLeaveGuard = state.pane?.canLeave || null;
-  return { directory, canonical, body };
+  return { canonical, body };
 }
 
 function mountWorkspace(workspace, state) {
@@ -388,16 +411,13 @@ function mountWorkspace(workspace, state) {
   const { route, callRpc } = state;
   state.workspace = workspace;
   installWorkspaceAction(state, workspace);
-  const directory = selectedDirectory(workspace, route.sourceId);
-  const sourceId = directoryId(directory);
+  const canonical = canonicalRoute(route, workspace);
+  const { sourceId } = canonical;
   if (!sourceId) {
     $("#tabbody").innerHTML = errorHtml("This workspace has no source directories.");
     return;
   }
 
-  const canonical = onIssuesTab(route)
-    ? { ...route, sourceId }
-    : { ...route, sourceId, tab: directoryTab(directory, route.tab) };
   // The issues tab is not about a directory, so none is written into its URL —
   // the sourceId on the canonical route is only there for the console's scope.
   if (!onIssuesTab(route) && (route.sourceId !== sourceId || route.tab !== canonical.tab)) markRoute(canonical);

@@ -566,6 +566,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }
+/* A face the surface hides (Issues, on a bridge that carries none) — the cell's
+   own display beats the UA's [hidden] rule, so it needs one of its own. */
+.dirtab[hidden] { display:none; }
+/* The open issues the workspace's agents hold, as the bubble the inbox rows
+   wear, on the icon's shoulder. Nothing waiting draws nothing. */
+.dirtab-count { position:absolute; top:1px; right:-3px; line-height:14px; }
+.dirtab-count:empty { display:none; }
 /* The faces are the tablist; the rail is the tablist plus the toggle. */
 .dirtabs { display:flex; flex-direction:column; align-items:center; gap:4px; }
 /* The sidebar toggle: a cell of the same idiom, parked at the very foot of the
@@ -574,6 +581,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    a column: the drawer's own media query takes it away where the drawer is the
    answer, which is also everywhere the phone's bubble strip lies over this foot. */
 .dirtoggle { margin-top:auto; flex:none; }
+/* A workspace's Settings stand at the foot too, directly above the toggle. */
+.dirsettings { margin-top:auto; flex:none; }
+.dirsettings + .dirtoggle { margin-top:0; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in

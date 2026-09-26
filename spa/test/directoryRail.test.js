@@ -7,9 +7,12 @@
 // Here is the markup and the behaviour; paneLayout.test.js holds the CSS half.
 
 import { describe, expect, it, beforeEach, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   DIRECTORY_TABS,
   SIDEBAR_COLLAPSED_KEY,
+  WORKSPACE_TABS,
   directoryRailHtml,
   paintDirectoryRail,
 } from "../src/core/directoryRail.js";
@@ -278,5 +281,87 @@ describe("the sidebar toggle", () => {
     expect(host.dataset.sidebar).toBe("expanded");
     toggle().click();
     expect(host.dataset.sidebar).toBe("collapsed");
+  });
+});
+
+// #174: "Issues moved to the rail as an icon along with the settings. Making the
+// left rail the workspace navigation." A workspace's rail is Changes, Files and
+// Issues, with Settings at its foot above the sidebar toggle.
+describe("the workspace's rail", () => {
+  beforeEach(() => {
+    document.body.innerHTML = "";
+    localStorage.clear();
+  });
+
+  const mountWorkspace = (options = {}) => {
+    const onOpen = vi.fn();
+    const mounted = mount({ tabs: WORKSPACE_TABS, settings: { onOpen }, ...options });
+    return { ...mounted, onOpen, settings: () => mounted.host.querySelector("[data-rail-settings]") };
+  };
+
+  it("lists Changes, Files and Issues, Issues as an icon wearing a count bubble", () => {
+    expect(WORKSPACE_TABS.map((tab) => tab.id)).toEqual(["changes", "files", "issues"]);
+    const { tabs } = mountWorkspace();
+    const issues = tabs()[2];
+    expect(issues.getAttribute("aria-label")).toBe("Issues");
+    expect(issues.innerHTML).toContain("lucide-circle-dot");
+    expect(issues.querySelector(".badge.dirtab-count")).not.toBeNull();
+    // Changes and Files carry no count.
+    expect(tabs()[0].querySelector(".badge")).toBeNull();
+  });
+
+  it("stands Settings at the foot, outside the tablist, above the sidebar toggle", () => {
+    const { host, tabs, settings, toggle } = mountWorkspace();
+    expect([...host.querySelector("[role='tablist']").children]).toEqual(tabs());
+    expect(settings().getAttribute("aria-label")).toBe("Workspace settings");
+    expect(settings().innerHTML).toContain("lucide-settings");
+    expect([...host.children].slice(1)).toEqual([settings(), toggle()]);
+  });
+
+  it("opens the settings from its cog, and changes no face doing it", () => {
+    const { onOpen, onSelect, settings } = mountWorkspace();
+    settings().click();
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("walks Changes, Files and Issues with the arrows, and never lands on Settings", () => {
+    const { onSelect, tabs } = mountWorkspace();
+    tabs()[1].focus();
+    press(tabs()[1], "ArrowDown");
+    expect(onSelect).toHaveBeenLastCalledWith("issues");
+    press(tabs()[2], "ArrowDown");
+    expect(onSelect).toHaveBeenLastCalledWith("changes");
+  });
+
+  // A bridge that carries no issues hides the Issues face; the arrows walk the
+  // faces that are drawn.
+  it("skips a hidden face", () => {
+    const { onSelect, tabs } = mountWorkspace();
+    tabs()[2].hidden = true;
+    tabs()[1].focus();
+    press(tabs()[1], "ArrowDown");
+    expect(onSelect).toHaveBeenLastCalledWith("changes");
+    press(tabs()[0], "End");
+    expect(onSelect).toHaveBeenLastCalledWith("files");
+  });
+
+  it("marks Issues as the face the workspace is standing on", () => {
+    const { tabs } = mountWorkspace({ active: "issues" });
+    expect(tabs().map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "false", "true"]);
+  });
+
+  it("is drawn with no Settings where the surface names none, as the branch checkout does", () => {
+    const { host } = mount();
+    expect(host.querySelector("[data-rail-settings]")).toBeNull();
+  });
+
+  // A CSS fact jsdom cannot see: `.dirtab` sets display, which beats the UA's
+  // [hidden] rule, so a hidden face needs a rule of its own.
+  it("hides a hidden face by its own rule, because the cell sets display", () => {
+    const css = readFileSync(resolve("src/styles/shell.css"), "utf8");
+    expect(css).toMatch(/\.dirtab \{[^}]*display:flex/);
+    expect(css).toMatch(/\.dirtab\[hidden\] \{[^}]*display:none/);
+    expect(css).toMatch(/\.dirtab-count:empty \{[^}]*display:none/);
   });
 });

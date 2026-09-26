@@ -792,6 +792,7 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Conversation and agent rail | `spa/src/core/shell.js`, `spa/src/core/agentRail.js` (+ `agentRailModel.js`, `agentRailRender.js`), `spa/src/core/chatRepository.js`, `spa/src/core/thread*.js` |
 | Issues list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerIssuesPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
 | Issue page | `spa/src/views/trackerIssueView.js` → `spa/src/core/trackerIssuePage.js` |
+| Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Issues, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js` |
 | Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/workspaceView.js` and `spa/src/views/branchView.js` |
 | Files | `spa/src/views/files.js`, `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |

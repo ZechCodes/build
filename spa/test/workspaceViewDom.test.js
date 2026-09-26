@@ -22,7 +22,8 @@ const { mountGitPane, mountConsole, mountAgentRail, mountWorkspaceIssuesTab, ren
 vi.mock("../src/core/gitPane.js", () => ({ mountGitPane }));
 vi.mock("../src/core/console.js", () => ({ mountConsole }));
 vi.mock("../src/core/agentRail.js", () => ({ mountAgentRail }));
-vi.mock("../src/core/workspaceIssuesTab.js", () => ({ mountWorkspaceIssuesTab }));
+// Only the tab's mount is stood in for; the routes it mints are the real ones.
+vi.mock("../src/core/workspaceIssuesTab.js", async (importOriginal) => ({ ...(await importOriginal()), mountWorkspaceIssuesTab }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab }));
 
 // The surface stands on this machine's cached workspace list. The feed is a
@@ -314,7 +315,7 @@ describe("workspace surface", () => {
       expect(options.agentSelection).toBe(selection);
       expect(options.agentSelection.scope()).toEqual({ agent_id: "second-agent" });
     }
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
   });
 
   // A link from a message to the conversation it came from names the agent on
@@ -343,7 +344,7 @@ describe("workspace surface", () => {
     expect(mountAgentRail.mock.calls[0][1].openAgentId).toBe(null);
   });
 
-  it("keeps the two faces on the shell's rail, never inside the pane it switches", async () => {
+  it("keeps the workspace's navigation on the shell's rail, never inside the pane it switches", async () => {
     // The reviewer's phone: the tabs used to be painted into the commit/file
     // list, which on a narrow viewport is a drawer — so they sat at the bottom
     // of something you had to open to reach them.
@@ -353,11 +354,50 @@ describe("workspace surface", () => {
     await flush();
     expect(document.querySelector("#tabbody [data-tab]")).toBeNull();
     expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("changes");
+    // #174: Changes, Files and Issues, then Settings at the foot above the
+    // sidebar toggle.
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect([...document.querySelector("#dir-rail").children].slice(1).map((cell) => cell.getAttribute("aria-label")))
+      .toEqual(["Workspace settings", "Collapse sidebar"]);
     // The rail belongs to the surface standing on it: leaving hands the shell's
     // column back empty.
     App.viewDispose();
     App.viewDispose = null;
     expect(document.querySelector("#dir-rail").children).toHaveLength(0);
+  });
+
+  // The rail is the workspace's, not a directory's: it stands on the route
+  // alone, before the record naming the workspace has landed.
+  it("stands the rail up before the workspace's record lands", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "files" };
+    device("dev-1", async () => workspace);
+    passRan = false;
+    await openWorkspace();
+    await flush();
+    expect(renderFilesTab).not.toHaveBeenCalled();
+    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
+    expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("files");
+  });
+
+  it("marks Issues on the rail on the workspace's Issues tab, and goes there from the rail", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+    device("dev-1", async () => workspace);
+    await standUp();
+    document.querySelector("#dir-rail [data-tab=issues]").click();
+    await flush();
+    expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/issues");
+    App.viewDispose();
+    App.viewDispose = null;
+
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "issues" };
+    await standUp();
+    expect(mountWorkspaceIssuesTab).toHaveBeenCalled();
+    expect(document.querySelector("#dir-rail .dirtab.active").dataset.tab).toBe("issues");
+    // The Issues tab names no directory, so neither does the way back to Files:
+    // the surface stands it on the first one.
+    document.querySelector("#dir-rail [data-tab=files]").click();
+    await flush();
+    expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/files");
   });
 
   it("does not remount a Git pane after its source has been left", async () => {
@@ -484,9 +524,8 @@ describe("workspace surface", () => {
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]));
+    await vi.waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("original source"));
     expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files"]);
     expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
     expect(pane.dispose).not.toHaveBeenCalled();
@@ -691,9 +730,8 @@ describe("workspace surface", () => {
       source: { id: "assets", is_git: false }, results: [{ target: "workspace", status: "initialized", is_git: true }],
     });
     await flush();
-    // A directory with no Git in it has no Changes; the workspace's Issues tab
-    // is not the directory's and is offered whatever the directory is (#29).
-    expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["files"]);
+    // The answer landed nowhere: the offer still says the directory has no Git.
+    expect(document.querySelector("[data-init-git]").textContent).toBe("Initialize Git…");
     expect(renderFilesTab).toHaveBeenCalledTimes(1);
   });
 

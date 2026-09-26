@@ -1,12 +1,14 @@
 // A workspace is a durable root containing one or more registered source
 // directories. Directory selection scopes Files and Changes; the console stays
 // scoped to the workspace, so navigating between directories or refs never
-// replaces its server sessions.
+// replaces its server sessions. The rail down the left edge is the workspace's
+// navigation — Changes, Files, Issues, Settings (core/workspaceRail.js) — and
+// stands on the route alone.
 
 import { $ } from "../dom.js";
 import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
-import { DIRECTORY_TABS, paintDirectoryRail } from "../core/directoryRail.js";
+import { mountWorkspaceRail } from "../core/workspaceRail.js";
 import { mountGitPane } from "../core/gitPane.js";
 import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
@@ -22,7 +24,7 @@ import { cachedFeedView } from "../core/cachedRows.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "../core/localCache.js";
 import { upsertSessionRow } from "../core/sessionListCache.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
-import { mountWorkspaceIssuesTab } from "../core/workspaceIssuesTab.js";
+import { mountWorkspaceIssuesTab, workspaceIssuesPlace } from "../core/workspaceIssuesTab.js";
 import { issueContextItem } from "../core/trackerViewingContext.js";
 import "../styles/issues.css";
 import "../styles/surfaces.css";
@@ -323,24 +325,11 @@ async function probeSourceGit(state, sourceId) {
  *  from scratch whenever the pane repaints. */
 const paneListColumn = (body) => body.querySelector(".crail-host, .ftree");
 
-/** Paint the directory's two faces onto the SHELL's rail, and hang the
- *  git-initialization offer off the pane's list column. The rail is not in the
- *  pane: a pane remount leaves it standing, and a phone — where the list column
- *  is a drawer — never buries the switch inside one. */
-function directoryTabsPainter(body, state, sourceId) {
+/** Hang the git-initialization offer off the pane's list column. */
+function gitOfferPainter(body, state, sourceId) {
   return () => {
     const directory = selectedDirectory(state.workspace, sourceId);
     if (!directory) return false;
-    // This rail is DIRECTORY scoped: Changes and Files are two faces of the
-    // checkout open in it. The workspace's issues are not a face of a directory
-    // — they belong to the workspace, beside its name — so they are in the bar
-    // now, with the directory tabs (#47, core/toolbarRender.js).
-    const faces = directory.is_git === false ? DIRECTORY_TABS.filter((entry) => entry.id === "files") : DIRECTORY_TABS;
-    paintDirectoryRail($("#dir-rail"), {
-      tabs: faces,
-      active: App.route.tab,
-      onSelect: (tab) => go({ ...App.route, tab }),
-    });
     const list = paneListColumn(body);
     if (list) paintGitInitialization(list, state, sourceId, directory);
     return true;
@@ -420,7 +409,8 @@ function mountWorkspace(workspace, state) {
     return;
   }
 
-  state.paintTabs = directoryTabsPainter(mounted.body, state, sourceId);
+  state.rail.paint(mounted.canonical.tab);
+  state.paintTabs = gitOfferPainter(mounted.body, state, sourceId);
   App.viewDispose = observeTabs(mounted.body, state, state.paintTabs, App.viewDispose);
 }
 
@@ -438,7 +428,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, rail: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });
@@ -448,6 +438,16 @@ export async function renderWorkspace() {
     state.gitOptionsRead = readGitOptions(state, address.sub);
   });
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  // The rail is the workspace's, not a directory's: it stands on the route
+  // alone, before the record naming the workspace has landed.
+  state.rail = mountWorkspaceRail($("#dir-rail"), {
+    route,
+    feed: () => deviceFeedNow(route.deviceId),
+    workspace: () => state.workspace,
+    onSelect: (tab) => go(tab === ISSUES_TAB ? workspaceIssuesPlace(App.route) : { ...App.route, tab }),
+    navigate: go,
+  });
+  state.rail.paint(route.tab);
   // While the machine cannot answer, what the records hold stays on screen and
   // the strip says whose state that is — but only once there is something to be
   // whose: until the workspace lands this frame says "loading…", and nothing on
@@ -464,7 +464,7 @@ export async function renderWorkspace() {
     // The rail is the shell's column, lent to whichever surface is standing on
     // it: leaving hands it back empty rather than leaving this workspace's
     // faces up over the next view.
-    $("#dir-rail").innerHTML = "";
+    state.rail.dispose();
     deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();
@@ -504,6 +504,8 @@ const workspaceNow = (deviceId, workspaceId) =>
 async function standOnWorkspace(state) {
   const take = () => {
     if (state.disposed) return;
+    // The Issues count on the rail reads the same roster.
+    state.rail.feedMoved();
     if (state.workspace) {
       // The workspace Issues pane derives its scope from the cached feed's
       // roster. Keep the cache announcement wired after mount so a later row

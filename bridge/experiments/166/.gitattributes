@@ -1,4 +1,0 @@
-# Patch files carry blank context lines as a single space.
-*.patch -whitespace
-# Soak logs are captured output, kept verbatim.
-runs/*.log -whitespace

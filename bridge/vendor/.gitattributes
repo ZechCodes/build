@@ -1,0 +1,5 @@
+# The crates as upstream published them: their whitespace is theirs, and the
+# patch's context lines repeat it. `git diff --check` skips both.
+webrtc/** -whitespace
+rtc-turn/** -whitespace
+*.patch -whitespace

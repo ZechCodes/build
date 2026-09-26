@@ -168,6 +168,8 @@ vendor/
 # ...but the interim vendored skrift wheel ships with the app image build
 !skriftapp/vendor/
 !skriftapp/vendor/*.whl
+# ...and the bridge's patched webrtc crates (bridge/vendor/README.md)
+!bridge/vendor/
 *.exe
 *.exe~
 

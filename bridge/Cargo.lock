@@ -2872,8 +2872,6 @@ dependencies = [
 [[package]]
 name = "rtc-turn"
 version = "0.20.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebf0b5fbb94085c86be7277c38ae8f1c21ec75ab47ba975be0984409732020dd"
 dependencies = [
  "bytes",
  "log",
@@ -3929,8 +3927,6 @@ dependencies = [
 [[package]]
 name = "webrtc"
 version = "0.20.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd"
 dependencies = [
  "async-broadcast",
  "async-channel",

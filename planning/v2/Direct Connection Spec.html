@@ -216,6 +216,7 @@ serves plain HTTP on a non-loopback address.</div>
   loopback connections.
 </p>
 <p>
+  <!-- nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket -- prose explaining why a ws:// LAN URL is refused -->
   <b>Why not bare LAN yet:</b> an <code>https://</code> page cannot open <code>ws://192.168.1.5</code> (mixed content),
   and a self-signed <code>wss://</code> needs a trust dialog on every device, which on iOS means installing a
   profile. Serving plain <code>http://</code> on a LAN would let anyone on that network substitute the page and

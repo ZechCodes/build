@@ -47,6 +47,7 @@ def api_json(url: str) -> Any:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is pinned to https://api.github.com/ above
     with urlopen(request, timeout=15) as response:  # noqa: S310 - URL constrained above
         return json.load(response)
 

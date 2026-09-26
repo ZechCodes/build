@@ -23,6 +23,7 @@ if (!["linux", "darwin", "win32"].includes(process.platform)) {
 
 const desktopDirectory = fileURLToPath(new URL("../desktop/", import.meta.url));
 function run(command, args, shell = false) {
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- only the fixed npm.cmd call below sets shell (Windows); the call carrying CLI arguments runs without one
   const result = spawnSync(command, args, { cwd: desktopDirectory, stdio: "inherit", shell });
   if (result.error) console.error(result.error.message);
   if (result.status !== 0) process.exit(result.status ?? 1);

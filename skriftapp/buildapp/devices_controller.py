@@ -157,7 +157,6 @@ class DevicesController(Controller):
                     transport_public_key_b64=tp_pub,
                     pairing_code_hash=code_hash,
                     approved=False,
-                    status="pending",
                 )
             )
         else:
@@ -293,7 +292,6 @@ class DevicesController(Controller):
         if device is None or device.owner_user_id != user_id:
             raise NotFoundException("device not found")
         device.approved = False
-        device.status = "offline"
         await db_session.commit()
         return Response({"device_id": str(device_id), "approved": False})
 

@@ -18,7 +18,7 @@ import { standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { routeChanged } from "./core/cacheSync.js";
-import { deviceContextIdentity, resetDeviceContexts } from "./core/deviceContexts.js";
+import { canAnswer, contextFor, deviceContextIdentity, onDeviceStateChanged, resetDeviceContexts } from "./core/deviceContexts.js";
 import { createViewingContext } from "./core/viewingContext.js";
 import { forgetHomeFollow, forgetRendezvousSockets, forgetSecurityStops } from "./connection.js";
 import { followTerminalDevice, resetTerminalManager, terminalDeviceId } from "./terminal/manager.js";
@@ -217,6 +217,7 @@ function readRoute() {
 
 export function initRouter() {
   App.route = readRoute();
+  onDeviceStateChanged(restandOverLandedMachine);
   document.addEventListener("click", followRouteLink);
   window.addEventListener("hashchange", async () => {
     const requestedHash = location.hash;
@@ -401,6 +402,24 @@ export function renderUnlessStanding() {
     return;
   }
   followRouteDevice();
+}
+
+/**
+ * The mounted route's machine was retired and has landed anew (#171): the page
+ * and its shell were built over the context the registry let go of, so they
+ * are built again over the one answering now, from the cache.
+ *
+ * Heard on its own rather than through the gate, which hands the app back only
+ * when the last machine answers again: one machine retired while another stays
+ * live never takes the app, so nothing else would rebuild the route. A gate
+ * screen holding #root rebuilds it on the way out, and a machine that has not
+ * landed yet leaves the page as it is.
+ */
+function restandOverLandedMachine() {
+  if (App.gated || !mountedRoute || !sameRoute(mountedRoute, App.route)) return;
+  const deviceId = App.route.deviceId;
+  if (!deviceId || mountedIdentity === deviceContextIdentity(deviceId)) return;
+  if (canAnswer(contextFor(deviceId))) render();
 }
 
 const routeIsStanding = () =>

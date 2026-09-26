@@ -24,7 +24,7 @@
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { filtersAreSet } from "./trackerFilters.js";
-import { issueUnreadCount, unreadBubbleHtml } from "./issueUnread.js";
+import { issueBubbleHtml } from "./issueUnread.js";
 import {
   ageHtml,
   assignPressLabel,
@@ -82,7 +82,7 @@ const factsHtml = (issue, columns, nowMs, reading) =>
  * wears its bubble at the line's end, where the inbox's rows wear theirs
  * (#104). `unreadOf` is the pane's count, which reads the cached timeline.
  */
-export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), unreadOf = issueUnreadCount, ...context }) => {
+export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), unreadOf, ...context }) => {
   const reading = { ...context, identities: issue.identities || {} };
   const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
   const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, reading))}" title="Assign this issue">${assigneeHref ? "Change" : rowAssigneeHtml(issue.assignee, reading)}</button>`;
@@ -91,7 +91,7 @@ export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), unreadO
     : assignButton;
   return (
   `<li class="issue-row" data-issue="${esc(issue.id)}">
-    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span>${unreadBubbleHtml(unreadOf(issue))}</a>
+    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span>${issueBubbleHtml(issue, unreadOf)}</a>
     <span class="issue-row-facts">${factsHtml(issue, columns, nowMs, reading)}${assignee}</span>
   </li>`);
 };

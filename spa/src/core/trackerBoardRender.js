@@ -22,7 +22,7 @@ import {
   assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, reviewerWords, stateDotHtml, statusChipHtml,
 } from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
-import { issueUnreadCount, unreadBubbleHtml } from "./issueUnread.js";
+import { issueBubbleHtml } from "./issueUnread.js";
 
 /** What the keyboard is told, once per board rather than once per card. */
 export const MOVE_HINT = "Use the left and right arrow keys to move this issue between columns.";
@@ -36,7 +36,7 @@ export const MOVE_HINT = "Use the left and right arrow keys to move this issue b
  * draggable anchor fights the browser's own drag of its href. A watched issue
  * with unread wears its bubble at the head's far end (#104).
  */
-export const issueCardHtml = (issue, { columns, href, unreadOf = issueUnreadCount, ...context }) => {
+export const issueCardHtml = (issue, { columns, href, unreadOf, ...context }) => {
   const reading = { ...context, identities: issue.identities || {} };
   const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
   const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="Assign #${esc(String(issue.number ?? ""))}" title="Assign this issue">${assigneeHref ? "Change" : assigneeHtml(issue.assignee, reading)}</button>`;
@@ -46,7 +46,7 @@ export const issueCardHtml = (issue, { columns, href, unreadOf = issueUnreadCoun
   `<li class="issue-card" draggable="true" tabindex="0"
       data-issue="${esc(issue.id)}" data-status="${esc(issue.status)}"
       aria-label="#${esc(String(issue.number ?? ""))} ${esc(issue.title)}">
-    <div class="issue-card-head">${stateDotHtml(issue.state)}${numberHtml(issue)}${priorityChipHtml(issue.priority)}${unreadBubbleHtml(unreadOf(issue))}</div>
+    <div class="issue-card-head">${stateDotHtml(issue.state)}${numberHtml(issue)}${priorityChipHtml(issue.priority)}${issueBubbleHtml(issue, unreadOf)}</div>
     <a class="issue-card-title" href="${esc(href(issue))}">${esc(issue.title)}</a>
     ${withWhom ? `<div class="issue-card-status">${statusChipHtml(columns, issue.status, withWhom)}</div>` : ""}
     ${issue.labels?.length ? `<div class="issue-card-labels">${labelsHtml(issue.labels)}</div>` : ""}

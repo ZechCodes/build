@@ -46,6 +46,10 @@ export function issueUnreadCount(issue, detail = null) {
 export const unreadBubbleHtml = (count) =>
   (count > 0 ? `<span class="badge inbox-unread issue-unread" title="${count} unread">${count}</span>` : "");
 
+/** One issue's bubble: `unreadOf` is the count the listing surface keeps
+ *  (the Issues pane reads its cached timelines), the list's own otherwise. */
+export const issueBubbleHtml = (issue, unreadOf = issueUnreadCount) => unreadBubbleHtml(unreadOf(issue));
+
 /** The unread over a list of issues, as an Issues tab wears it: `detailOf`
  *  finds an issue's cached timeline, `only` keeps the ones the tab is about. */
 export function watchedIssuesUnread(issues = [], { detailOf = () => null, only = () => true } = {}) {

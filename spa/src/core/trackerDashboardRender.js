@@ -4,7 +4,7 @@
 import { KEYED_LIST_ATTRIBUTE, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { esc } from "./text.js";
-import { issueUnreadCount, unreadBubbleHtml } from "./issueUnread.js";
+import { issueBubbleHtml } from "./issueUnread.js";
 
 const SECTIONS = [
   { id: "needsYou", title: "Needs you", empty: "Nothing needs your look right now." },
@@ -38,11 +38,10 @@ const GROUP_ATTRIBUTES = { backlog: "data-backlog-group", done: "data-done-group
  *  a watched issue's unread bubble at the right (#104). */
 const dashboardRowHtml = (entry, context, section) => {
   const issue = entry.issue;
-  const unreadOf = context.unreadOf || issueUnreadCount;
   return `<li class="issue-dashboard-row" data-issue="${esc(issue.id)}">
     <a href="${esc(context.href(issue))}" class="issue-dashboard-link">
       <span class="issue-dashboard-number">#${esc(String(issue.number ?? ""))}</span>
-      <span class="issue-dashboard-title">${esc(issue.title)}</span>${unreadBubbleHtml(unreadOf(issue))}
+      <span class="issue-dashboard-title">${esc(issue.title)}</span>${issueBubbleHtml(issue, context.unreadOf)}
       <span class="issue-dashboard-detail">${esc(secondaryText[section](entry))}</span>
     </a>
   </li>`;

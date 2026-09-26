@@ -1311,6 +1311,9 @@ pub struct ChangeBus {
     emitted_at: Mutex<HashMap<ChangeKey, tokio::time::Instant>>,
     #[cfg(test)]
     completed_test_cycles: tokio::sync::watch::Sender<(u64, bool)>,
+    /// Records the worker that completed each subscription frame's encryption.
+    #[cfg(test)]
+    delivered_test_threads: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Option<String>>>>,
 }
 
 impl ChangeBus {
@@ -1352,6 +1355,8 @@ impl ChangeBus {
             emitted_at: Mutex::new(HashMap::new()),
             #[cfg(test)]
             completed_test_cycles,
+            #[cfg(test)]
+            delivered_test_threads: Mutex::new(None),
         })
     }
 
@@ -1783,6 +1788,10 @@ impl ChangeBus {
         for frame in &due.frames {
             if frame.session.push(frame.payload(&by_entity, revision)) {
                 frames += 1;
+                #[cfg(test)]
+                if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
+                    let _ = observe.send(std::thread::current().name().map(str::to_owned));
+                }
                 self.stamp_thread_tips(frame, &by_entity);
                 self.rearm_unanswered_lists(frame, &by_entity);
             } else {
@@ -4025,9 +4034,10 @@ mod subscriptions {
     /// subscriber, and a frame can be large: a checkout's status and log, its
     /// root listing, the conversation tails (the diff body no longer rides,
     /// only its size). That is CPU on whichever thread runs it, so the daemon
-    /// runs the flusher on its push runtime: the main runtime's only worker
-    /// still wakes a 10 ms nap on time through a flush that encrypts 8 MiB.
-    /// On the main runtime the same flush held that worker 2.3 s (#131).
+    /// runs the flusher on its push runtime. Observe the worker immediately
+    /// after each frame is serialized and encrypted; the main runtime's only
+    /// worker must not do that work. On the main runtime the same flush held
+    /// that worker 2.3 s (#131).
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_heavy_flush_encrypts_off_the_main_runtime() {
         const SUBSCRIBERS: usize = 32;
@@ -4048,7 +4058,7 @@ mod subscriptions {
             Arc::new(|| vec!["run-7".to_string()]),
             facts,
         );
-        let mut receivers: Vec<_> = (0..SUBSCRIBERS)
+        let receivers: Vec<_> = (0..SUBSCRIBERS)
             .map(|n| {
                 let (sender, rx, _) = SessionSender::observable(format!("s-{n}"));
                 bus.subscribe(
@@ -4063,27 +4073,35 @@ mod subscriptions {
                 (sender, rx)
             })
             .collect();
+        let (observe, mut delivered) = tokio::sync::mpsc::unbounded_channel();
+        *bus.delivered_test_threads.lock().unwrap() = Some(observe);
         let push = crate::liveness::DedicatedRuntime::push().unwrap();
         ChangeBus::spawn_flusher_on(Arc::clone(&bus), Some(push.handle()));
 
         bus.note_kind("run-7", Kind::Git);
-        let started = std::time::Instant::now();
-        let mut longest = Duration::ZERO;
-        let mut heard = 0;
-        while heard < SUBSCRIBERS && started.elapsed() < Duration::from_secs(20) {
-            let nap = std::time::Instant::now();
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            longest = longest.max(nap.elapsed());
-            heard = receivers
-                .iter_mut()
-                .filter(|(_, rx)| !rx.is_empty())
-                .count();
-        }
-
-        assert_eq!(heard, SUBSCRIBERS, "every subscriber was sent its frame");
+        let workers = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut workers = Vec::with_capacity(SUBSCRIBERS);
+            for _ in 0..SUBSCRIBERS {
+                workers.push(
+                    delivered
+                        .recv()
+                        .await
+                        .expect("delivery observer remains alive"),
+                );
+            }
+            workers
+        })
+        .await
+        .expect("every subscriber was sent its frame within 20 seconds");
         assert!(
-            longest < Duration::from_millis(100),
-            "a 10 ms nap took {longest:?} while the flush encrypted: it ran on the main runtime"
+            receivers.iter().all(|(_, rx)| !rx.is_empty()),
+            "every subscriber received its encrypted frame"
+        );
+        assert!(
+            workers
+                .iter()
+                .all(|worker| worker.as_deref() == Some("bridge-push")),
+            "subscription frames were encrypted on {workers:?} instead of the push runtime"
         );
         push.stop();
     }

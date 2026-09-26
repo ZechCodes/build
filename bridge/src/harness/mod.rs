@@ -376,6 +376,15 @@ pub(crate) fn open_terminal_session(
     root: PathBuf,
     options: TerminalOpenOptions,
 ) -> Result<OpenedSession, HarnessError> {
+    open_terminal_session_with_ready_wait(spec, root, options, PtySession::ready_within)
+}
+
+fn open_terminal_session_with_ready_wait(
+    spec: &HarnessSpec,
+    root: PathBuf,
+    options: TerminalOpenOptions,
+    wait_for_ready: impl FnOnce(&PtySession, Duration) -> bool,
+) -> Result<OpenedSession, HarnessError> {
     let session = PtySession::spawn(spec, Some(root), options.size)?
         .with_session_identity(options.identity)
         .with_activity_locator(options.activity_locator);
@@ -386,7 +395,7 @@ pub(crate) fn open_terminal_session(
         None => SessionOutput::silent(),
     };
     if let Some(grace) = options.turn_ready_grace {
-        session.ready_within(grace);
+        wait_for_ready(&session, grace);
     }
     Ok(OpenedSession {
         session: Arc::new(session),
@@ -668,8 +677,8 @@ mod tests {
     #[test]
     fn a_session_that_will_be_handed_a_turn_opens_ready() {
         let root = tempfile::tempdir().expect("temp worktree");
-        let started = std::time::Instant::now();
-        let opened = open_terminal_session(
+        let ready = std::cell::Cell::new(None);
+        let opened = open_terminal_session_with_ready_wait(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
             TerminalOpenOptions {
@@ -678,13 +687,18 @@ mod tests {
                 identity: None,
                 activity_locator: None,
             },
+            |session, grace| {
+                let observed = session.ready_within(grace);
+                ready.set(Some(observed));
+                observed
+            },
         )
         .expect("the session opens");
-        let waited = started.elapsed();
         opened.session.end();
-        assert!(
-            waited >= Duration::from_millis(300),
-            "the open returned before the harness would take a turn, after {waited:?}"
+        assert_eq!(
+            ready.get(),
+            Some(true),
+            "a turn-bound session waits until the PTY reports readiness"
         );
     }
 
@@ -697,8 +711,7 @@ mod tests {
     #[test]
     fn a_session_with_no_turn_coming_is_not_waited_on() {
         let root = tempfile::tempdir().expect("temp worktree");
-        let started = std::time::Instant::now();
-        let opened = open_terminal_session(
+        let opened = open_terminal_session_with_ready_wait(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
             TerminalOpenOptions {
@@ -707,14 +720,10 @@ mod tests {
                 identity: None,
                 activity_locator: None,
             },
+            |_, _| panic!("a session with no turn must never wait for readiness"),
         )
         .expect("the session opens");
-        let waited = started.elapsed();
         opened.session.end();
-        assert!(
-            waited < Duration::from_millis(200),
-            "opening a session nobody will speak to waited {waited:?} for readiness"
-        );
     }
 
     /// The locator travels with the terminal that has a use for it: a terminal

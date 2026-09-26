@@ -122,6 +122,15 @@ final for this build unless the reviewer overrides them in the thread.
     projects rail list every machine's work at once, each row naming the
     machine it is on. The device picker filters that list ("All devices" or
     one machine) and nothing else — it does not move where anything runs.
+  - 2026-09-26 (#103): a workspace row's second line ends with how many of
+    its agents are running (`↑2 ↓0 +184 −37 · 2 running`), and its one unread
+    badge, right of Done, sums its watched agents only. Each project has a
+    row for its project agent: the project's name alone, no second line, no
+    Done, ordered among the workspace rows by the #98 session rule over the
+    project agent's own conversation, and moved to Recent after 24 h idle
+    (never out of the inbox). On the projects face that agent is the block's
+    head: its badge is the project agent's unread while the block is open,
+    and adds every watched workspace agent's unread while it is folded.
 - **Done button** on an entry when its branch is committed+pushed or its
   issue is marked implemented. Done archives the entry. For issue
   implementations it marks worktree + issue together, with a disclosure

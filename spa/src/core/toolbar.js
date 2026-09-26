@@ -658,6 +658,7 @@ export function stopToolbar() {
   unsubscribeFeed?.();
   unsubscribeFeed = null;
   workspacesByProject.clear();
+  projectIssues.dispose();
   closeMenu({ persist: false });
   return settled;
 }

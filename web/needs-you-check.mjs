@@ -45,7 +45,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { chromium } from "playwright";
-import { goOfflineWithNoOpenSocket, trackWebSockets } from "./offlineEvidence.mjs";
+import { freshDials, goOfflineWithNoOpenSocket, goOnline, trackWebSockets } from "./offlineEvidence.mjs";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const REPO = process.env.ISSUES_REPO;
@@ -161,13 +161,6 @@ const dashNeedsYou = (title) => dash.evaluate((wanted) => ({
   listed: [...document.querySelectorAll('[role="tabpanel"] .issue-dashboard-title')].some((one) => one.textContent.includes(wanted)),
 }), title);
 
-/** Each page's clock, and the times its peer links first connected a session
- *  (the `connected` / `initial` diagnostic core/peerLink.js records). */
-const pageNow = (page) => page.evaluate(() => Date.now());
-const freshDials = (page, since) => page.evaluate((after) =>
-  (globalThis.buildConnectionDiagnostics?.().events || [])
-    .filter((entry) => entry.event === "connected" && entry.phase === "initial" && entry.at >= after), since);
-
 let failed = false;
 const report = (ok, name, detail = "") => {
   if (!ok) failed = true;
@@ -265,16 +258,18 @@ async function reconnect() {
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
   if (!held) await dumpDiagnostics("reconnect-held");
-  await context.setOffline(false);
-  const onlineAt = await Promise.all([list, dash].map(pageNow));
+  // Each page's clock read before networking is back: a fresh dial can land
+  // before anything here could ask.
+  const onlineAt = await goOnline(context, [list, dash]);
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] ONLINE`);
   // The SPA's own reconnect backs off while it was offline, so the deadline
   // covers that backoff too; the time is from going back online.
   let dropped = await bothDrop("reconnect", target, 180000);
   // The restarted bridge holds none of the old sessions, so what brought the
-  // move in must be a session dialled after the page came back.
+  // move in must be a session to the seeded machine, dialled after the page
+  // came back.
   for (const [index, [name, page]] of [["list", list], ["dash", dash]].entries()) {
-    const dials = await freshDials(page, onlineAt[index]);
+    const dials = await freshDials(page, onlineAt[index], seed.deviceId);
     report(dials.length > 0, `reconnect: the ${name} page dialled a fresh session once online`,
       dials.map((entry) => entry.connection).join(", "));
     dropped &&= dials.length > 0;

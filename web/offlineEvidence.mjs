@@ -58,3 +58,22 @@ export async function goOfflineWithNoOpenSocket(context, pages, { waitMs = 60000
   await context.setOffline(true);
   await untilNoOpenSocket(pages, "every page to hold no open WebSocket once offline", waitMs);
 }
+
+/**
+ * Bring the context back online, and answer each page's clock as it stood
+ * just before. Read first: a fresh dial can land the moment networking is
+ * back, before anything here could ask a page the time.
+ */
+export async function goOnline(context, pages) {
+  const cutoffs = await Promise.all(pages.map((page) => page.evaluate(() => Date.now())));
+  await context.setOffline(false);
+  return cutoffs;
+}
+
+/** The sessions this page's peer links first connected to `deviceId` at or
+ *  after `since` — the `connected` / `initial` diagnostic core/peerLink.js
+ *  records, on a connection named `<deviceId>:<sessionId>`. */
+export const freshDials = (page, since, deviceId) => page.evaluate(({ after, device }) =>
+  (globalThis.buildConnectionDiagnostics?.().events || []).filter((entry) =>
+    entry.event === "connected" && entry.phase === "initial" && entry.at >= after
+    && String(entry.connection).startsWith(`${device}:`)), { after: since, device: deviceId });

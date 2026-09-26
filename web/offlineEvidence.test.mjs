@@ -1,4 +1,4 @@
-// The reconnect check's offline boundary, in a real Chromium against a local
+// The reconnect check's two boundaries, in a real Chromium against a local
 // WebSocket server — no stack needed (#130).
 //
 //   CHROMIUM_PATH=/usr/bin/chromium node --test offlineEvidence.test.mjs
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { chromium } from "playwright";
-import { goOfflineWithNoOpenSocket, openSocketCounts, trackWebSockets } from "./offlineEvidence.mjs";
+import { freshDials, goOfflineWithNoOpenSocket, goOnline, openSocketCounts, trackWebSockets } from "./offlineEvidence.mjs";
 
 /** A page to load and a WebSocket endpoint that accepts and holds sockets. */
 function localServer() {
@@ -83,6 +83,51 @@ describe("going offline with no socket open", () => {
       });
       assert.deepEqual(await openSocketCounts([page]), [0]);
       assert.equal(await page.evaluate(() => navigator.onLine), false);
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+describe("the evidence of a fresh dial", () => {
+  /** A page whose diagnostics record a dial for two machines the instant the
+   *  network is back — faster than anything outside the page can ask it. */
+  async function dialsOnOnline() {
+    const tracked = await trackedPage();
+    await tracked.page.evaluate(() => {
+      const events = [];
+      globalThis.buildConnectionDiagnostics = () => ({ since: 0, dropped: 0, events: [...events] });
+      addEventListener("online", () => {
+        for (const connection of ["dev-seed:sess-fresh", "dev-other:sess-fresh"])
+          events.push({ at: Date.now(), connection, event: "connected", phase: "initial" });
+      });
+    });
+    await tracked.context.setOffline(true);
+    return tracked;
+  }
+
+  it("counts a dial that lands the moment networking is back, for the seeded machine only", async () => {
+    const { context, page } = await dialsOnOnline();
+    try {
+      const [cutoff] = await goOnline(context, [page]);
+      await page.waitForFunction(() => globalThis.buildConnectionDiagnostics().events.length === 2);
+      const dials = await freshDials(page, cutoff, "dev-seed");
+      assert.deepEqual(dials.map((entry) => entry.connection), ["dev-seed:sess-fresh"]);
+    } finally {
+      await context.close();
+    }
+  });
+
+  // The ordering goOnline replaces: a cutoff read after the network is back
+  // can postdate the dial it is meant to admit.
+  it("would miss that dial with a cutoff read after networking is back", async () => {
+    const { context, page } = await dialsOnOnline();
+    try {
+      await context.setOffline(false);
+      await page.waitForFunction(() => globalThis.buildConnectionDiagnostics().events.length === 2);
+      await new Promise((done) => setTimeout(done, 20));
+      const late = await page.evaluate(() => Date.now());
+      assert.deepEqual(await freshDials(page, late, "dev-seed"), []);
     } finally {
       await context.close();
     }

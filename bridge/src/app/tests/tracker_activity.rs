@@ -328,14 +328,27 @@ fn an_agent_holding_no_issue_writes_on_none() {
     assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
 }
 
-/// Finishing a workspace closes every open issue that links it, and says why.
+/// A merged branch finish closes every open issue that links its workspace.
 #[test]
-fn done_on_a_workspace_closes_the_issues_that_link_it() {
+fn merged_branch_finish_closes_the_issues_that_link_its_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (mut state, project_id) = tracked_with_origin(&state_root);
     let ws = workspace(&mut state, &project_id, "here");
     let elsewhere = workspace(&mut state, &project_id, "elsewhere");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let run_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Merged;
 
     let worked = issue_id(&filed(&mut state, &project_id, "worked here"));
     state.handle(req(
@@ -349,7 +362,10 @@ fn done_on_a_workspace_closes_the_issues_that_link_it() {
     ));
     let unlinked = issue_id(&filed(&mut state, &project_id, "nowhere"));
 
-    let finished = state.handle(req("workspace.finish", json!({ "workspace_id": ws })));
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
     assert_eq!(finished["ok"], true, "{finished:?}");
 
     let read = |state: &mut AppState, id: &str| {
@@ -382,6 +398,61 @@ fn done_on_a_workspace_closes_the_issues_that_link_it() {
         .unwrap_or_else(|| panic!("no closed event"));
     assert_eq!(why["payload"]["reason"], "workspace_finished");
     assert_eq!(why["payload"]["workspace_id"], ws.as_str());
+}
+
+/// Finishing before merge removes the branch but keeps its linked issues live.
+#[test]
+fn unmerged_branch_finish_leaves_linked_issues_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (mut state, project_id) = tracked_with_origin(&state_root);
+    let ws = workspace(&mut state, &project_id, "unmerged");
+    let branch = state.handle(req("workspace.get", json!({ "workspace_id": ws })))["result"]
+        ["directories"][0]["branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let earlier_run_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    state.runs.get_mut(&earlier_run_id).unwrap().run.state = crate::run::RunState::Merged;
+    let run_id = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": ws }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(run_id, earlier_run_id, "a new review owns this workspace");
+    state.runs.get_mut(&run_id).unwrap().run.state = crate::run::RunState::Review;
+
+    let linked = ["first linked issue", "second linked issue"]
+        .map(|title| issue_id(&filed(&mut state, &project_id, title)));
+    for id in &linked {
+        let answer = state.handle(req(
+            "issues.link",
+            json!({ "issue_id": id, "workspace_id": ws }),
+        ));
+        assert_eq!(answer["ok"], true, "{answer:?}");
+    }
+
+    let finished = state.handle(req(
+        "branch.finish",
+        json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+    ));
+    assert_eq!(finished["ok"], true, "{finished:?}");
+    assert_eq!(finished["result"]["branch_deleted"], true, "{finished:?}");
+
+    for id in linked {
+        let read = state.handle(req("issues.get", json!({ "issue_id": id })));
+        assert_eq!(read["result"]["issue"]["state"], "open", "{read:?}");
+        assert_eq!(read["result"]["issue"]["closed_at"], Value::Null);
+        assert!(!event_kinds(&mut state, &id).contains(&"closed".to_string()));
+    }
 }
 
 /// The issue keeps an author's harness and name after Done removes the
@@ -1033,8 +1104,8 @@ fn a_report_on_a_turn_no_assignment_started_moves_nothing() {
     );
 }
 
-/// Done that deleted the branch says so on the issue it closed: the timeline
-/// names the branch that went, beside the close.
+/// Done that deleted an unmerged branch records the deletion while the linked
+/// issue stays open for more work.
 #[test]
 fn done_with_delete_logs_the_deleted_branch_on_the_linked_issue() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1071,6 +1142,10 @@ fn done_with_delete_logs_the_deleted_branch_on_the_linked_issue() {
         .unwrap_or_else(|| panic!("the deletion is on the issue: {timeline:?}"));
     assert_eq!(logged["payload"]["branch"], branch.as_str());
     assert_eq!(logged["payload"]["workspace_id"], ws.as_str());
-    assert!(event_kinds(&mut state, &id).contains(&"closed".to_string()));
+    assert_eq!(
+        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["issue"]["state"],
+        "open"
+    );
+    assert!(!event_kinds(&mut state, &id).contains(&"closed".to_string()));
     assert!(!event_kinds(&mut state, &untouched).contains(&"branch_deleted".to_string()));
 }

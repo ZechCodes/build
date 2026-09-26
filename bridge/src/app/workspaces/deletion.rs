@@ -59,6 +59,7 @@ pub(super) enum Removal {
 pub(super) struct Finishing {
     pub(super) registry_root: PathBuf,
     pub(super) branches: Vec<BranchDeletion>,
+    pub(super) merged: bool,
 }
 
 /// What a reclaim does beyond a delete: the branches it takes, and who
@@ -318,12 +319,12 @@ impl AppState {
         boundary: WorkspaceBoundary,
     ) -> Result<(), String> {
         self.preserve_project_issue_identities(&workspace.project_id)?;
-        // Done closes linked open issues only after identity preservation
-        // succeeds. Do this before retiring agents, so retirement also drops
-        // any notices the automatic close queues for this workspace.
-        // Eligibility has been accepted; a later disk failure does not undo
-        // the completed work or reopen its issues.
-        if matches!(removal, Removal::Finish(_)) {
+        // A merged Done closes linked open issues only after identity
+        // preservation succeeds. Do this before retiring agents, so
+        // retirement also drops any notices the automatic close queues for
+        // this workspace. Eligibility has been accepted; a later disk failure
+        // does not undo the completed work or reopen its issues.
+        if matches!(&removal, Removal::Finish(finishing) if finishing.merged) {
             self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
         }
         let root = boundary

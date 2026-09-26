@@ -626,6 +626,7 @@ impl AppState {
         let finishing = deletion::Finishing {
             registry_root: self.workspaces.root().to_path_buf(),
             branches,
+            merged: self.workspace_finished_after_merge(&workspace),
         };
         self.remove_workspace(
             &workspace,
@@ -634,6 +635,22 @@ impl AppState {
             boundary,
         )?;
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
+    }
+
+    /// A branch row calls a run `merged` from its run state. Use that same
+    /// state for Done, including a terminal run whose workspace still exists.
+    fn workspace_finished_after_merge(&self, workspace: &Workspace) -> bool {
+        if let Some(run_id) = self.workspace_conversation_owner(workspace) {
+            return self
+                .runs
+                .get(&run_id)
+                .is_some_and(|active| active.run.state == crate::run::RunState::Merged);
+        }
+        self.runs.iter().any(|(run_id, active)| {
+            self.projects.project_id_of(run_id) == Some(workspace.project_id.as_str())
+                && (run_id == &workspace.id || same_path(&active.worktree.path, &workspace.root))
+                && active.run.state == crate::run::RunState::Merged
+        })
     }
 
     /// What stands between this workspace and Done right now: an agent still

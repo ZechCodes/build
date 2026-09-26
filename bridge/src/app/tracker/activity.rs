@@ -7,8 +7,9 @@
 //!
 //! 1. **An agent holding a dispatched issue reports Complete.** The issue
 //!    moves to In review.
-//! 2. **A workspace an issue links is finished.** The issue closes, and when
-//!    Done deleted the branch too, the issue's timeline says which.
+//! 2. **A workspace an issue links is finished after a merge.** The issue
+//!    closes, and when Done deleted the branch too, its timeline says which.
+//!    Finishing before merge leaves the issue open.
 //!
 //! Neither moves the inbox anchor or crosses a dismissal line. They are the
 //! work happening, not somebody speaking to the human.
@@ -130,12 +131,11 @@ impl AppState {
             .map(str::to_string)
     }
 
-    /// A workspace is being finished: close every open issue that links it.
+    /// A merged workspace is being finished: close every open issue linking it.
     ///
     /// Called when Done is ACCEPTED rather than after the folder is gone,
-    /// because eligibility is what proves the work is somewhere else — every
-    /// commit already in the remote it pushes to — and a removal that later
-    /// fails on disk does not make the work un-done.
+    /// because the merged run state is already durable and a removal that
+    /// later fails on disk does not make the work un-done.
     ///
     /// Quiet about its own failure, for the reason the report is: Done is the
     /// user's action and it succeeded.

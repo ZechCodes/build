@@ -1063,13 +1063,12 @@ are the two things that write a comment and they are the only two; an agent
 that wants its report on the issue calls one of them, and the prompt asks it
 to. The timeline still records the move, and names the agent that caused it.
 
-**A workspace linked to an issue is finished.** `workspace.finish` closes every
-open issue that links that workspace, with a `closed` event whose payload is
-`{"reason": "workspace_finished", "workspace_id": …}`. It happens when Done is
-accepted — after the eligibility measure that proves every commit is already in
-the remote it pushes to — rather than after the folder is gone: eligibility is
-what proves the work is somewhere else, and a removal that later fails on disk
-does not make the work un-done.
+**A workspace linked to an issue is finished.** `workspace.finish` and the
+legacy branch Finish routes close linked open issues only when the workspace's
+run is merged. An unmerged finish leaves them open. The close has a `closed`
+event whose payload is `{"reason": "workspace_finished", "workspace_id": …}`.
+It happens when Done is accepted, before the folder is removed; a later disk
+failure does not undo the merged work or reopen its issues.
 
 Neither of these moves the inbox anchor or crosses a dismissal line. They are
 the work happening, not somebody speaking to the human.

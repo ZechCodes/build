@@ -6,6 +6,7 @@
 // says what the bar looks like for one identity.
 
 import { esc } from "./text.js";
+import { unreadBubbleHtml } from "./issueUnread.js";
 
 /** One of the bar's popup triggers. The workspace picker and the project
  *  selector are the same control wearing a different name, so the button is
@@ -47,13 +48,13 @@ const identityHtml = (shown) => (IDENTITIES[shown.kind] || (() => projectSelecto
 
 /** The project's two pages as tabs after its name — never collapsed into a
  *  menu: two short words fit a phone, and on a phone they are the way back to
- *  the list from an issue. */
+ *  the list from an issue. Issues wears its watched issues' unread (#104). */
 function projectTabsHtml(projectTabs) {
   if (!projectTabs.length) return "";
   const tabs = projectTabs
     .map(
       (tab) =>
-        `<button class="tb-directory tb-project-tab${tab.current ? " current" : ""}" data-project-tab="${esc(tab.id)}" type="button" role="tab" aria-selected="${tab.current ? "true" : "false"}">${esc(tab.label)}</button>`,
+        `<button class="tb-directory tb-project-tab${tab.current ? " current" : ""}" data-project-tab="${esc(tab.id)}" type="button" role="tab" aria-selected="${tab.current ? "true" : "false"}">${esc(tab.label)}${unreadBubbleHtml(tab.unread || 0)}</button>`,
     )
     .join("");
   return `<div class="tb-project-tabs" role="tablist" aria-label="Project pages">${tabs}</div>`;

@@ -704,6 +704,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    never collapsed — two short words fit a phone, where they are the way back
    to the list from an issue with the chat open over the page. */
 .tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
+/* Issues wears its watched issues' unread after the word (#104). */
+.tb-project-tab .issue-unread { margin-left:5px; vertical-align:1px; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized

@@ -915,6 +915,9 @@ const panelStartsOut = (context, pinned) =>
  * with #64, and a switch wired to one an older bridge does not know can only
  * refuse. `panelHeadHtml` reads null as "this head has no switch".
  */
+/** The verb that watches a conversation; its opposite unwatches it. */
+const WATCH_VERB = "conversation.watch";
+
 function watchStateFor(context, agent) {
   if (!agent || !carriesWatching(context.deviceId)) return null;
   return { watching: agent?.watched === true, watchers: agent?.watchers || 0, pending: false };
@@ -963,11 +966,21 @@ function mountRailOnContext(host, context, swap) {
   // mounted rail, because the rail stands on one conversation at a time — a
   // swap to the project's side mounts a rail of its own with its own.
   let watchState = watchStateFor(context, entity.agents.find((agent) => agent.id === selectedId));
+  /** A watch the bridge took, written into the cached row where nothing has
+   *  written it since the ask: the strip keeps a watched agent from the answer
+   *  on, not from whenever the push behind it lands (#105). */
+  const callWatch = async (method, params) => {
+    const captured = await records.rowWrite(params.entity_id);
+    const answer = await chatRepository.currentCall()(method, params);
+    const watched = method === WATCH_VERB;
+    if (standing()) await records.patchAgentIfUnwritten(captured, params.agent_id, (agent) => ({ ...agent, watched }));
+    return answer;
+  };
   const watchSwitch = createWatchToggle({
     ...watchState,
     entityId: () => context.entityId || entity.entityId || records.entityId(),
     agentId: () => selectedId,
-    call: (method, params) => chatRepository.currentCall()(method, params),
+    call: callWatch,
     onChange: (next, addressed) => {
       if (!standing() || addressed.agent_id !== selectedId) return;
       watchState = next;

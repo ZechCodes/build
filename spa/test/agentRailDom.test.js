@@ -1011,7 +1011,7 @@ describe("the rail over a machine that is asked nothing", () => {
     try {
       payload = branchRow({ agents: [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
       await writeRailWorkItem(payload);
-      rail = mountAgentRail(railHost(), railAddress());
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1" }));
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
 
       const pressedA = panel().querySelector(".rail-watch").onclick();
@@ -1028,7 +1028,12 @@ describe("the rail over a machine that is asked nothing", () => {
       expect(panel().querySelector(".rail-watch").title).toBe("Watching");
       expect(panel().querySelector(".rail-watch").disabled).toBe(false);
       expect(notifyError).not.toHaveBeenCalled();
-      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      // A was left unwatched, so its bubble went with it (#105); the overview
+      // is the way back to it.
+      expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]')).toBeNull();
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(railHost().querySelector('.rail-overview-row[data-overview-agent="ag-1"]')).toBeTruthy());
+      railHost().querySelector('.rail-overview-row[data-overview-agent="ag-1"]').click();
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
     } finally {
       resetChangeEvents();

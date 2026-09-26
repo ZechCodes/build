@@ -13,7 +13,9 @@
 // one whose agent is on screen (its panel paints through a controller, and the
 // retirement's own feed drop is delivered to it), and one beside a second
 // machine that stays live — so the app never takes the page, and the route is
-// stood up again without the gate handing it back.
+// stood up again without the gate handing it back. The last is retired again
+// under an open Settings modal: closing it lands on the page it was opened
+// over, which is stood up again only because its machine changed under it.
 //
 // Nothing between the wire and the rail is a stand-in: the real gate
 // (views/gate.js), router, shell and rail (app.js, core/shell.js,
@@ -259,6 +261,12 @@ const settle = async () => {
   for (let turn = 0; turn < 20; turn += 1) await new Promise((done) => setTimeout(done, 0));
 };
 
+/** Take the reader to a hash, as the address bar would. */
+async function navigate(hash) {
+  location.hash = hash;
+  await settle();
+}
+
 const sessionsOf = (deviceId) => wire.sessions.filter((session) => session.deviceId === deviceId);
 
 /** Boot onto the route with the rail's first catalog read — the harnesses and
@@ -333,4 +341,30 @@ it("stands the route's rail up again while another machine stays live", async ()
   expect(other.closed).toBe(false);
   await expectRestoodOnLanding(standing);
   expect(sessionsOf("dev-2").at(-1)).toBe(other);
+});
+
+it("stands the route's rail up again when Settings closes over a machine retired under it", async () => {
+  wire.listed = [online, otherOnline];
+  const standing = await standWithFirstReadHeld();
+  const openSettings = () => navigate("#/account/settings");
+  const closeSettings = () => navigate(ROUTE_HASH);
+
+  // Settings opened and closed over the page is not a navigation: the rail
+  // under it is the one that was there.
+  await openSettings();
+  await closeSettings();
+  expect(railStrip()).toBe(standing.retiredStrip);
+
+  await openSettings();
+  await retireAndRelease(standing);
+  modules.connection.openDeviceSessions();
+  await vi.waitFor(() => expect(modules.contexts.liveContexts()).toHaveLength(2));
+  const landed = sessionsOf(DEVICE).at(-1);
+  expect(landed).not.toBe(standing.retiredSession);
+  await settle();
+  // The modal still owns the route, so the page under it waits for it to close.
+  expect(askedOf(landed, "settings.get")).toBe(0);
+
+  await closeSettings();
+  await expectRestoodOnLanding(standing);
 });

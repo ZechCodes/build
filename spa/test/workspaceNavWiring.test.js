@@ -66,6 +66,10 @@ const machine = async (method, params = {}) => {
     const text = `${params.source_id}/${params.path}`;
     return { path: params.path, mime: "text/plain", size: text.length, truncated: false, editable: false, encoding: "utf-8", revision: "r1", content_b64: b64(text) };
   }
+  if (method === "git.status") return { branch: "main", head: "c0ffee1", repo_state: "clean", files: [], stat: { files_changed: 0, insertions: 0, deletions: 0 } };
+  if (method === "git.log") return { branch: "main", commits: [{ hash: "c0ffee1234567", short: "c0ffee1", subject: "Seed the repository", author: "Zech", time: 1_790_000_000 }], more: false };
+  if (method === "git.refs") return { current: { kind: "branch", name: "main", full_ref: "refs/heads/main" }, refs: [] };
+  if (method === "git.unpushed") return { commits: [], files: [] };
   if (method === "workspace.git_init_options") return {
     workspace_id: "ws-1", source_id: params.source_id,
     workspace: { path: "/w/ws-1/assets", is_git: false, available: true },
@@ -167,5 +171,40 @@ describe("a workspace with two directories, one not git", () => {
     expect(row.querySelector("[aria-selected=true]").textContent).toBe("Assets");
     // The original source still has no git, so its offer hangs off the rail.
     await vi.waitFor(() => expect(document.querySelector(".crail-host [data-init-git]")?.textContent).toBe("Initialize original source…"));
+  });
+
+  // Selecting a tab moves within Changes: a directory already shown is shown
+  // again over the records it holds, and nothing is asked of the machine.
+  it("goes back to a directory it has shown without asking the machine for anything", async () => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
+    const reads = (sourceId) => asked.filter(({ method, params }) => params.source_id === sourceId && method !== "fs.tree");
+    await vi.waitFor(() => expect(document.querySelector('[data-surface="repo"]')?.textContent).toContain("Seed the repository"));
+    await vi.waitFor(() => expect(reads("repo").map(({ method }) => method)).toEqual(expect.arrayContaining(["git.status", "git.log", "git.refs", "git.unpushed"])));
+    // Settled: the first visit's reads have all answered.
+    let seen = -1;
+    await vi.waitFor(async () => {
+      const now = asked.length;
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(asked.length === now && now === (seen = now)).toBe(true);
+    });
+    const repoSurface = document.querySelector('[data-surface="repo"]');
+    asked.length = 0;
+
+    document.querySelector('.workspace-dirtab[data-directory="assets"]').click();
+    expect(App.route).toMatchObject({ sourceId: "assets", tab: "changes" });
+    await vi.waitFor(() => expect(document.querySelector('[data-surface="assets"] .workspace-gitinit [data-init-git]')).not.toBeNull());
+    expect(repoSurface.hidden).toBe(true);
+
+    document.querySelector('.workspace-dirtab[data-directory="repo"]').click();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(App.route).toMatchObject({ sourceId: "repo", tab: "changes" });
+    // The very surface it left, showing, with what it held.
+    expect(document.querySelector('[data-surface="repo"]')).toBe(repoSurface);
+    expect(repoSurface.hidden).toBe(false);
+    expect(document.querySelector('[data-surface="assets"]').hidden).toBe(true);
+    expect(repoSurface.textContent).toContain("Seed the repository");
+    expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Repository");
+    expect(reads("repo")).toEqual([]);
+    expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
   });
 });

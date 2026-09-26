@@ -252,6 +252,10 @@
    .tb-directory): the name, and the accent under the current one. */
 .workspace-changes { display:flex; flex-direction:column; height:100%; min-height:0; }
 .workspace-changes-body { flex:1 1 auto; min-height:0; }
+/* One surface per directory the row has shown, kept hidden while another
+   stands (views/workspaceChanges.js). */
+.workspace-changes-surface { height:100%; min-height:0; }
+.workspace-changes-surface[hidden] { display:none; }
 .workspace-dirtabs { flex:none; display:flex; align-items:stretch; min-width:0; height:32px;
   padding:0 calc(var(--pane-gutter) - 10px); overflow-x:auto; scrollbar-width:none; }
 .workspace-dirtabs::-webkit-scrollbar { display:none; }

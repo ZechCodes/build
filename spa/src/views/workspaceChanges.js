@@ -13,6 +13,11 @@
 // surface's content, hung there by the view (views/workspaceView.js), and
 // becomes the commit rail and the detail when its record says it has git,
 // without the view being built again.
+//
+// Selecting a tab moves within the surface, not to another one: each
+// directory's surface is mounted the first time it is selected and kept, so
+// going back to one shows it again over the records its readers kept true
+// while it was hidden, and nothing it holds is asked for again.
 
 import { esc } from "../core/text.js";
 import { mountGitPane } from "../core/gitPane.js";
@@ -39,10 +44,6 @@ export function directoryTabsHtml(directories) {
   return `<div class="workspace-dirtabs" role="tablist" aria-label="Workspace directories">${tabs}</div>`;
 }
 
-/** A selection made from the keyboard navigates, and the next Changes to mount
- *  hands the keyboard back to the row — the arrows keep walking it. */
-let keyboardOnRow = false;
-
 function wireDirectoryTabs(row, onSelect) {
   const cells = () => [...row.querySelectorAll("[data-directory]")];
   row.onclick = (event) => {
@@ -58,11 +59,8 @@ function wireDirectoryTabs(row, onSelect) {
     event.preventDefault();
     const to = step === undefined ? all.at(end) : all[(from + step + all.length) % all.length];
     to.focus();
-    keyboardOnRow = true;
     onSelect(to.dataset.directory);
   };
-  if (keyboardOnRow) row.querySelector("[aria-selected='true']")?.focus();
-  keyboardOnRow = false;
 }
 
 /** The git surface of one directory: its ref picker at the head of the commit
@@ -105,42 +103,113 @@ export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navi
 const noGitHtml = (directory) =>
   `<div class="workspace-gitinit"><p class="workspace-gitinit-say">${esc(directory.label)} has no Git repository.</p><div class="workspace-gitinit-offer"></div></div>`;
 
-/**
- * mountWorkspaceChanges(body, { directories, git, onSelectDirectory }) — the
- * row and the surface under it. `directories` are the workspace's
- * (core/workspaceModel.js workspaceDirectoryModel), the route's one current;
- * `git` is the mountChanges options for it. Returns { dispose,
- * workspaceMoved(directories) }: a move repaints the row, and turns the offer
- * into the git surface once the current directory's record says it has git.
- */
-export function mountWorkspaceChanges(body, { directories, git, onSelectDirectory }) {
-  body.innerHTML = `<div class="workspace-changes">${directoryTabsHtml(directories)}<div class="workspace-changes-body"></div></div>`;
-  const surface = body.querySelector(".workspace-changes-body");
-  const current = () => directories.find((directory) => directory.current) || directories[0];
-  let pane = null;
-  const paintSurface = () => {
-    if (directoryHasGit(current())) pane = mountChanges(surface, git);
-    else surface.innerHTML = noGitHtml(current());
+/** What the reader is looking at, as a kept surface may say it: only the shown
+ *  one's word reaches the page. A hidden surface still repaints on a push, and
+ *  what it would say then is kept, and said when it is shown again. */
+const CONTEXT_ARTIFACT = new Set(["set", "clear", "setVisibleDiffs"]);
+const CONTEXT_SELECTION = new Set(["setSelection", "captureDomSelection", "clearSelection"]);
+
+function gatedViewingContext(viewingContext) {
+  if (!viewingContext) return { context: null, show() {}, hide() {} };
+  let shown = true;
+  let last = null;
+  const context = new Proxy(viewingContext, {
+    get(target, name) {
+      const value = target[name];
+      if (typeof value !== "function") return value;
+      if (CONTEXT_ARTIFACT.has(name)) return (...args) => {
+        last = () => target[name](...args);
+        if (shown) last();
+      };
+      if (CONTEXT_SELECTION.has(name)) return (...args) => (shown ? target[name](...args) : undefined);
+      return value.bind(target);
+    },
+  });
+  return {
+    context,
+    show() {
+      shown = true;
+      viewingContext.clear();
+      last?.();
+    },
+    hide() {
+      shown = false;
+    },
   };
-  let rowHtml = directoryTabsHtml(directories);
+}
+
+/**
+ * mountWorkspaceChanges(body, { directories, current, git, viewingContext,
+ * onSelectDirectory }) — the row and the surface under it. `directories` are
+ * the workspace's (core/workspaceModel.js workspaceDirectoryModel), `current`
+ * the source id standing; `git(sourceId, viewingContext)` is the mountChanges
+ * options for a directory. A tab calls `onSelectDirectory(sourceId)` once its
+ * surface is showing. Returns { dispose, workspaceMoved(directories) }: a move
+ * repaints the row, and turns a directory's offer into the git surface once its
+ * record says it has git.
+ */
+export function mountWorkspaceChanges(body, { directories, current, git, viewingContext = null, onSelectDirectory }) {
+  let standing = current;
+  const model = () => directories.map((directory) => ({ ...directory, current: directory.sourceId === standing }));
+  body.innerHTML = `<div class="workspace-changes">${directoryTabsHtml(model())}<div class="workspace-changes-body"></div></div>`;
+  const host = body.querySelector(".workspace-changes-body");
+  const surfaces = new Map(); // source id → { element, pane, gate }
+  const directoryOf = (sourceId) => directories.find((directory) => directory.sourceId === sourceId);
+
+  const paintSurface = (surface, sourceId) => {
+    const directory = directoryOf(sourceId);
+    if (!directory) return;
+    if (directoryHasGit(directory)) surface.pane = mountChanges(surface.element, git(sourceId, surface.gate.context));
+    else surface.element.innerHTML = noGitHtml(directory);
+  };
+  const surfaceFor = (sourceId) => {
+    if (surfaces.has(sourceId)) return surfaces.get(sourceId);
+    const element = document.createElement("div");
+    element.className = "workspace-changes-surface";
+    element.dataset.surface = sourceId;
+    host.appendChild(element);
+    const surface = { element, pane: null, gate: gatedViewingContext(viewingContext) };
+    surfaces.set(sourceId, surface);
+    paintSurface(surface, sourceId);
+    return surface;
+  };
+
+  let rowHtml = directoryTabsHtml(model());
   // Only a row that says something new is drawn again: the keyboard can be
   // standing on it.
   const paintRow = () => {
-    const next = directoryTabsHtml(directories);
+    const next = directoryTabsHtml(model());
     if (next === rowHtml) return;
     rowHtml = next;
+    // The keyboard on the row stays on it, on the tab now selected: the arrows
+    // keep walking it.
+    const focused = body.querySelector(".workspace-dirtabs").contains(document.activeElement);
     body.querySelector(".workspace-dirtabs").outerHTML = next;
-    wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), onSelectDirectory);
+    const row = body.querySelector(".workspace-dirtabs");
+    wireDirectoryTabs(row, select);
+    if (focused) row.querySelector("[aria-selected='true']")?.focus();
   };
-  wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), onSelectDirectory);
-  paintSurface();
+  function select(sourceId) {
+    if (sourceId === standing || !directoryOf(sourceId)) return;
+    surfaces.get(standing)?.gate.hide();
+    standing = sourceId;
+    const shown = surfaceFor(sourceId);
+    for (const surface of surfaces.values()) surface.element.hidden = surface !== shown;
+    paintRow();
+    onSelectDirectory(sourceId);
+    shown.gate.show();
+  }
+  wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), select);
+  surfaceFor(standing);
   return {
     workspaceMoved(next) {
-      const hadGit = directoryHasGit(current());
+      const hadGit = new Map([...surfaces.keys()].map((sourceId) => [sourceId, directoryHasGit(directoryOf(sourceId))]));
       directories = next;
       paintRow();
-      if (!hadGit && directoryHasGit(current())) paintSurface();
+      for (const [sourceId, surface] of surfaces) {
+        if (!hadGit.get(sourceId) && directoryHasGit(directoryOf(sourceId))) paintSurface(surface, sourceId);
+      }
     },
-    dispose: () => pane?.dispose(),
+    dispose: () => surfaces.forEach((surface) => surface.pane?.dispose()),
   };
 }

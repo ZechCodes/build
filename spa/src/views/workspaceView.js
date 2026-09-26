@@ -56,7 +56,16 @@ const routeHoldsWorkspace = (state) =>
   ownsWorkspace(state) && App.route.workspaceId === state.route.workspaceId;
 
 const selectedNeedsRetryRefresh = (state) =>
-  state.retryRefreshPending && selectedDirectory(state.workspace, state.route.sourceId)?.status !== "ready";
+  state.retryRefreshPending && selectedDirectory(state.workspace, state.sourceId)?.status !== "ready";
+
+/** What this view knows of one directory's Git initialization: every directory
+ *  Changes has shown keeps its own, so going back to one reads nothing again. */
+function gitInitOf(state, sourceId) {
+  if (!state.gitInit.has(sourceId)) {
+    state.gitInit.set(sourceId, { sourceGit: null, sourceNeedsReconciliation: false, workspaceNeedsReconciliation: false, painted: false, probePending: false, needsHost: false });
+  }
+  return state.gitInit.get(sourceId);
+}
 
 async function cachedWorkspaceResult(state) {
   const address = workspaceListAddress(state);
@@ -108,10 +117,11 @@ async function readGitOptions(state, sourceId) {
   const address = gitOptionsAddress(state, sourceId);
   if (!address) return;
   const options = (await readCached(address))?.value;
-  if (!options || !workspaceSourceIsActive(state, sourceId)) return;
-  state.sourceGit = options.source?.is_git !== false;
-  state.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
-  state.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
+  if (!options || !workspaceHoldsSource(state, sourceId)) return;
+  const git = gitInitOf(state, sourceId);
+  git.sourceGit = options.source?.is_git !== false;
+  git.sourceNeedsReconciliation = options.source?.needs_reconciliation === true;
+  git.workspaceNeedsReconciliation = options.workspace?.needs_reconciliation === true;
   state.paintTabs?.();
 }
 
@@ -217,45 +227,54 @@ function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
   });
 }
 
-function mountCheckoutPane(body, { canonical, workspace, scope, callRpc, cacheScope, agentSelection }) {
-  const navigate = { openFile: ({ path, line }) => go({ ...canonical, tab: "files", file: path, line }) };
-  const onCommitSelection = (commit) => {
-    const route = { ...App.route };
-    delete route.commit;
-    if (commit) route.commit = commit;
-    markRoute(route);
-  };
-  if (canonical.tab === "files") return mountFilesPane(body, { canonical, workspace, callRpc, cacheScope });
+/** The URL names the commit the standing directory's surface has selected. */
+const markCommit = (commit) => {
+  const { commit: _commit, ...route } = App.route;
+  markRoute(commit ? { ...route, commit } : route);
+};
+
+/** Changes over every directory of the workspace, a tab each (#174). A tab
+ *  moves within the surface: its directory is a place in the URL, and the
+ *  commit named there is the one that directory's surface has selected — one
+ *  named in another directory names nothing in this one. */
+function mountChangesPane(body, { canonical, workspace, callRpc, cacheScope, agentSelection, onSelectDirectory }) {
+  const commits = new Map([[canonical.sourceId, canonical.commit || null]]);
   const changes = mountWorkspaceChanges(body, {
-    directories: workspaceDirectoryModel(workspace, canonical.sourceId),
-    // A directory is a place in the URL: the tab row sets `sourceId`, and a
-    // commit named in another directory names nothing in this one.
-    onSelectDirectory: (sourceId) => {
-      const { commit: _commit, ...route } = App.route;
-      go({ ...route, sourceId, tab: "changes" });
-    },
-    git: {
-      scope,
+    directories: workspaceDirectoryModel(workspace),
+    current: canonical.sourceId,
+    viewingContext: App.viewingContext,
+    onSelectDirectory: (sourceId) => onSelectDirectory(sourceId, commits.get(sourceId) || null),
+    git: (sourceId, viewingContext) => ({
+      scope: workspaceScope(canonical.workspaceId, sourceId, workspace),
       callRpc,
       cacheScope,
       agentSelection,
       projectId: canonical.projectId,
-      navigate,
-      viewingContext: App.viewingContext,
-      requestedCommit: canonical.commit || null,
-      onCommitSelection,
-    },
+      navigate: { openFile: ({ path, line }) => go({ ...App.route, sourceId, tab: "files", file: path, line }) },
+      viewingContext,
+      requestedCommit: commits.get(sourceId) || null,
+      onCommitSelection: (commit) => {
+        commits.set(sourceId, commit);
+        if (App.route.sourceId === sourceId) markCommit(commit);
+      },
+    }),
   });
-  return { ...changes, workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next, canonical.sourceId)) };
+  return { ...changes, workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next)) };
+}
+
+function mountCheckoutPane(body, options) {
+  return options.canonical.tab === "files" ? mountFilesPane(body, options) : mountChangesPane(body, options);
 }
 
 function paintGitInitialization(rail, state, sourceId, directory) {
-  if (directory.is_git !== false && state.sourceGit == null) {
+  const git = gitInitOf(state, sourceId);
+  git.painted = true;
+  if (directory.is_git !== false && git.sourceGit == null) {
     probeSourceGit(state, sourceId);
     return;
   }
-  const canInitialize = directory.is_git === false || state.workspaceNeedsReconciliation || state.sourceGit === false || state.sourceNeedsReconciliation;
-  state.needsInitHost = canInitialize;
+  const canInitialize = directory.is_git === false || git.workspaceNeedsReconciliation || git.sourceGit === false || git.sourceNeedsReconciliation;
+  git.needsHost = canInitialize;
   let initHost = rail.querySelector(".workspace-init-host");
   if (!canInitialize) {
     initHost?.remove();
@@ -279,11 +298,11 @@ function paintGitInitialization(rail, state, sourceId, directory) {
     state.gitInitialization.push(controller);
   }
   const initButton = initHost.querySelector("[data-init-git]");
-  initButton.textContent = gitInitializationLabel(state, directory);
+  initButton.textContent = gitInitializationLabel(git, directory);
 }
 
-function gitInitializationLabel(state, directory) {
-  if (state.workspaceNeedsReconciliation) return "Finish Git initialization…";
+function gitInitializationLabel(git, directory) {
+  if (git.workspaceNeedsReconciliation) return "Finish Git initialization…";
   return directory.is_git === false ? "Initialize Git…" : "Initialize original source…";
 }
 
@@ -297,9 +316,16 @@ function workspaceSourceIsActive(state, sourceId) {
   return (state.workspace?.directories || []).some((directory) => directoryId(directory) === sourceId);
 }
 
+/** Still this view's, and a directory its workspace still has — whether or not
+ *  it is the one standing. */
+const workspaceHoldsSource = (state, sourceId) =>
+  ownsWorkspace(state) && App.route.workspaceId === state.route.workspaceId &&
+  (state.workspace?.directories || []).some((directory) => directoryId(directory) === sourceId);
+
 async function probeSourceGit(state, sourceId) {
-  if (state.sourceProbePending) return;
-  state.sourceProbePending = true;
+  const git = gitInitOf(state, sourceId);
+  if (git.probePending) return;
+  git.probePending = true;
   try {
     await readGitOptions(state, sourceId);
     const revision = state.gitOptionsRevision.get(sourceId) || 0;
@@ -311,23 +337,26 @@ async function probeSourceGit(state, sourceId) {
   } catch {
     // A failed probe adds no news; the cached source answer remains on screen.
   } finally {
-    state.sourceProbePending = false;
+    git.probePending = false;
   }
 }
 
-/** Where the git-initialization offer hangs on Changes: the surface itself for
- *  a directory with no git (views/workspaceChanges.js), the commit rail for one
- *  whose original source still has none. It is rebuilt from scratch whenever
- *  the pane repaints. Files, a tree over every directory, carries none. */
-const offerHost = (body) => body.querySelector(".workspace-gitinit-offer, .crail-host");
+/** Where the git-initialization offer hangs on Changes, in the directory
+ *  surface showing: the surface itself for a directory with no git
+ *  (views/workspaceChanges.js), the commit rail for one whose original source
+ *  still has none. It is rebuilt from scratch whenever the pane repaints.
+ *  Files, a tree over every directory, carries none. */
+const SHOWN_SURFACE = ".workspace-changes-surface:not([hidden])";
+const offerHost = (body) => body.querySelector(`${SHOWN_SURFACE} .workspace-gitinit-offer, ${SHOWN_SURFACE} .crail-host`);
 
-/** Hang the git-initialization offer where Changes keeps it. */
-function gitOfferPainter(body, state, sourceId) {
+/** Hang the git-initialization offer where Changes keeps it, for the directory
+ *  standing. */
+function gitOfferPainter(body, state) {
   return () => {
-    const directory = selectedDirectory(state.workspace, sourceId);
+    const directory = selectedDirectory(state.workspace, state.sourceId);
     if (!directory) return false;
     const list = offerHost(body);
-    if (list) paintGitInitialization(list, state, sourceId, directory);
+    if (list) paintGitInitialization(list, state, state.sourceId, directory);
     return true;
   };
 }
@@ -335,11 +364,13 @@ function gitOfferPainter(body, state, sourceId) {
 /** The offer lives inside the pane, and the pane rewrites itself — on a poll,
  *  on a ref checkout. Watch for the column coming back without it and put it
  *  there again; a directory that has nothing to initialize wants nothing put
- *  back, so it never repaints on its own DOM. */
+ *  back, so it never repaints on its own DOM. The column appearing for a
+ *  directory not painted yet is painted, once. */
 function observeTabs(body, state, paintTabs, dispose) {
   const observer = new MutationObserver(() => {
     const list = offerHost(body);
-    if (state.needsInitHost && list && !list.querySelector(".workspace-init-host")) paintTabs();
+    const git = gitInitOf(state, state.sourceId);
+    if (list && (!git.painted || (git.needsHost && !list.querySelector(".workspace-init-host")))) paintTabs();
   });
   paintTabs();
   observer.observe(body, { childList: true, subtree: true });
@@ -358,10 +389,21 @@ function canonicalRoute(route, workspace) {
   return { ...route, sourceId: directoryId(directory) };
 }
 
+/** A directory tab moved Changes onto another directory within the surface: the
+ *  URL names it, and its offer is hung. */
+function standOnDirectory(state, sourceId, commit) {
+  const { commit: _commit, ...route } = App.route;
+  state.route = { ...route, sourceId, tab: "changes", ...(commit && { commit }) };
+  state.sourceId = sourceId;
+  markRoute(state.route);
+  state.paintTabs?.();
+}
+
 function refreshWorkspacePane(state, workspace) {
   const canonical = canonicalRoute(state.route, workspace);
   const { sourceId } = canonical;
   if (!sourceId) return null;
+  state.sourceId = sourceId;
   const body = $("#tabbody");
   const previousGuard = state.pane?.canLeave;
   if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
@@ -370,11 +412,11 @@ function refreshWorkspacePane(state, workspace) {
   state.pane = mountDirectoryPane(body, {
     canonical,
     workspace: state.workspace,
-    scope: workspaceScope(state.route.workspaceId, sourceId, state.workspace),
     callRpc: state.callRpc,
     cacheScope: state.context.cacheScope,
     agentSelection: state.selection,
     context: state.context,
+    onSelectDirectory: (next, commit) => standOnDirectory(state, next, commit),
     // Read at every use, never captured: a workspace gains and loses agents
     // while the tab stands there, and the issues follow them.
     feed: () => deviceFeedNow(state.route.deviceId),
@@ -407,7 +449,7 @@ function mountWorkspace(workspace, state) {
   }
 
   state.rail.paint(mounted.canonical.tab);
-  state.paintTabs = gitOfferPainter(mounted.body, state, sourceId);
+  state.paintTabs = gitOfferPainter(mounted.body, state);
   App.viewDispose = observeTabs(mounted.body, state, state.paintTabs, App.viewDispose);
 }
 
@@ -425,7 +467,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, workspaceNeedsReconciliation: false, sourceGit: null, sourceNeedsReconciliation: false, sourceProbePending: false, paintTabs: null, rail: null, needsInitHost: false, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });

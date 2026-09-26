@@ -23,6 +23,9 @@
 // and its one badge, right of its Done, is the unread of its watched agents.
 // Each project's own agent has a row among them too (core/inboxProjectAgent.js):
 // the project's name alone, ordered by that agent's own conversation (#103).
+// A watched issue's unread counts in those badges like an agent's (#104,
+// core/issueUnread.js): on the workspace whose agent holds it, and on the
+// project's row when no workspace row does.
 //
 // A workspace or project agent whose last message is more than a day old goes
 // into Recent at the end of the list. Its rows keep the same anchor order there.
@@ -35,6 +38,7 @@ import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { freshestRosters, runningAgentCount, watchedUnreadCount } from "./inboxRoster.js";
+import { NO_ISSUE_UNREAD } from "./issueUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
@@ -154,26 +158,32 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
  * board deliberately left out of `items`. A pushed row can still be present
  * after that omission, so an item's presence is never evidence of watching.
  * A workspace with no agent stays visible only when it was user-created. */
-export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = []) {
+export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = [], issueUnread = NO_ISSUE_UNREAD) {
   const rosterOf = freshestRosters([...runs, ...items]);
   const agentCreated = new Set(workspaces.filter((workspace) => workspace.created_by_agent === true)
     .map((workspace) => workspace.workspaceKey));
   return workspaceEntries(workspaces, projects, items).flatMap((entry) => {
     const agents = rosterOf(entry.projectKey, entry.entityId)?.agents;
     if (!agents?.length) return agentCreated.has(entry.workspaceKey) ? [] : [entry];
-    return agents.some((agent) => agent.watched !== false) ? [withRosterTallies(entry, agents)] : [];
+    return agents.some((agent) => agent.watched !== false) ? [withRosterTallies(entry, agents, issueUnread)] : [];
   });
 }
 
 /** A workspace row with what its roster says (#103): how many agents are
  *  running, said after the git status on line two, and the unread of the
- *  watched agents alone, which is the one badge the row wears. */
-function withRosterTallies(entry, agents) {
+ *  watched agents, which is the one badge the row wears. The watched issues
+ *  its agents hold count in that badge like agents (#104, core/issueUnread.js),
+ *  and a row they alone are waiting on is unread. */
+function withRosterTallies(entry, agents, issueUnread) {
   const runningCount = runningAgentCount(agents);
+  const agentIds = agents.map((agent) => agent.id).filter(Boolean);
+  const issueUnreadCount = issueUnread.heldBy(entry.projectKey, agentIds);
   return {
     ...entry,
     runningCount,
-    unreadCount: watchedUnreadCount(agents),
+    agentIds,
+    unreadCount: watchedUnreadCount(agents) + issueUnreadCount,
+    state: issueUnreadCount > 0 ? "unread" : entry.state,
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }

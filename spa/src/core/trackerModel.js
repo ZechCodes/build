@@ -192,3 +192,19 @@ export function issueLinks(issue) {
     parent_issue_id: links.parent_issue_id || null,
   };
 }
+
+/** Whether an issue's row on the list is newer than its cached `issues.get`
+ *  record — which is when that record has to be read again, and when its
+ *  timeline no longer speaks for the issue. */
+export const changedSince = (listIssue, detail) => {
+  if (!detail?.issue) return true;
+  const listedAt = listIssue?.updated_at;
+  if (!listedAt) return false;
+  const detailedAt = detail.issue.updated_at;
+  if (!detailedAt) return true;
+  const listTime = Date.parse(listedAt);
+  const detailTime = Date.parse(detailedAt);
+  return Number.isFinite(listTime) && Number.isFinite(detailTime)
+    ? listTime > detailTime
+    : listedAt !== detailedAt;
+};

@@ -5,8 +5,9 @@
 //
 // The block's head opens the project's own page — its workspaces, and the agent
 // you talk to about the project. The head is that agent's entry (#103): its
-// badge is the project agent's unread while the block is open, and everything
-// inside it, the watched workspace agents' too, while it is folded. It offers
+// badge is the project agent's unread while the block is open, with the
+// project's watched issues no workspace wears (#104), and everything inside
+// it, the watched workspace agents' and their issues' too, while it is folded. It offers
 // the one create surface behind a +,
 // the project's settings, and a ⋯ menu that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened

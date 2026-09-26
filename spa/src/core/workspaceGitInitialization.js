@@ -70,7 +70,7 @@ function retryTarget(results) {
 }
 
 async function submitInitialization(context) {
-  const { state, options, modal, isActive, callRpc, workspaceId, sourceId, onUpdate, render } = context;
+  const { state, options, modal, isActive, holds, callRpc, workspaceId, sourceId, onUpdate, render } = context;
   if (state.pending) return;
   if (!requestBelongsToView(isActive)) {
     state.results = [{ target: state.target, status: "failed", error: "The active device changed. Reopen this dialog to continue." }];
@@ -81,19 +81,19 @@ async function submitInitialization(context) {
   render();
   try {
     const answer = await callRpc("workspace.init_git", { workspace_id: workspaceId, source_id: sourceId, target: state.target });
-    if (!requestBelongsToView(isActive)) return;
+    if (!holds()) return;
     state.results = resultList(answer);
     const cachedOptions = await onUpdate(answer);
     syncOptions(options, cachedOptions, sourceId);
     if (prepareRetry(state)) return;
     await modal.close();
   } catch (error) {
-    if (!requestBelongsToView(isActive)) return;
+    if (!holds()) return;
     state.results = [{ target: state.target, status: "failed", error: errorMessage(error) }];
     state.retryLabel = "Retry";
   } finally {
     state.pending = false;
-    if (isActive() && modal.body.isConnected) render();
+    if (holds()) render();
   }
 }
 
@@ -118,7 +118,7 @@ function prepareRetry(state) {
   return true;
 }
 
-function createDialogController({ options, callRpc, workspaceId, sourceId, isActive, onUpdate, onClosed }) {
+function createDialogController({ options, callRpc, workspaceId, sourceId, isActive, holds, onUpdate, onClosed }) {
   options = { ...options, workspace: { ...options.workspace }, source: { ...options.source } };
   const state = { target: availableTargets(options)[0], pending: false, results: [], retryLabel: "" };
   let modal;
@@ -129,7 +129,7 @@ function createDialogController({ options, callRpc, workspaceId, sourceId, isAct
     });
     modal.body.querySelector("[data-cancel-init-git]").onclick = () => modal.close();
     const confirm = modal.body.querySelector("[data-confirm-init-git]");
-    if (confirm) confirm.onclick = () => submitInitialization({ state, options, modal, isActive, callRpc, workspaceId, sourceId, onUpdate, render });
+    if (confirm) confirm.onclick = () => submitInitialization({ state, options, modal, isActive, holds, callRpc, workspaceId, sourceId, onUpdate, render });
   };
   modal = openModal({ dialogHtml: modalDialogHtml("", { className: "modal-workspace-init" }), onClose: onClosed });
   modal.updateOptions = (next) => {
@@ -151,6 +151,10 @@ function createDialogController({ options, callRpc, workspaceId, sourceId, isAct
  */
 export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, callRpc, cacheScope, isActive, holds = isActive, onUpdate }) {
   let dialog = null;
+  let disposed = false;
+  let visible = true;
+  const owns = () => !disposed && holds();
+  const active = () => visible && owns() && isActive();
   let loading = false;
   let opening = false;
   let revision = 0;
@@ -169,9 +173,10 @@ export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, c
   const paintFromCache = async () => {
     if (!address) return;
     const options = (await readCached(address))?.value;
-    if (!options || !opening || !isActive()) return;
+    if (!options || !opening || !owns()) return;
+    if (!dialog && !active()) return;
     if (dialog) dialog.updateOptions(options);
-    else dialog = createDialogController({ options, callRpc, workspaceId, sourceId, isActive, onUpdate, onClosed: () => {
+    else dialog = createDialogController({ options, callRpc, workspaceId, sourceId, isActive: active, holds: owns, onUpdate, onClosed: () => {
       dialog = null;
       opening = false;
       loading = false;
@@ -188,10 +193,10 @@ export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, c
   const settled = () => {
     loading = false;
     if (!dialog) opening = false;
-    if (holds()) button.disabled = false;
+    if (owns()) button.disabled = false;
   };
   button.onclick = async () => {
-    if (loading || dialog) return;
+    if (loading || dialog || !active()) return;
     loading = true;
     opening = true;
     button.disabled = true;
@@ -200,15 +205,28 @@ export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, c
       await paintFromCache();
       const startedAt = revision;
       const pulled = await callRpc("workspace.git_init_options", { workspace_id: workspaceId, source_id: sourceId });
-      if (!holds()) return;
+      if (!owns()) return;
       if (!address || revision !== startedAt) return;
       await writeCached(address, pulled);
       await latestRead;
     } catch (error) {
-      if (holds() && !dialog) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
+      if (owns() && !dialog) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
     } finally {
       settled();
     }
   };
-  return { dispose: () => { opening = false; unwatch(); dialog?.close(); } };
+  return {
+    setVisible(shown) {
+      visible = shown;
+      if (!shown && !dialog) opening = false;
+      dialog?.setVisible(shown);
+    },
+    dispose() {
+      disposed = true;
+      opening = false;
+      unwatch();
+      dialog?.setVisible(false);
+      dialog?.close();
+    },
+  };
 }

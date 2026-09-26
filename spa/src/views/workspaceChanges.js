@@ -73,6 +73,7 @@ export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navi
   let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
     requestedCommit, onCommitSelection });
   let disposed = false;
+  let visible = true;
   const attachRefbar = () => {
     const rail = gitHost.querySelector(".crail-host");
     if (!rail) return false;
@@ -89,8 +90,13 @@ export function mountChanges(body, { scope, callRpc, cacheScope, projectId, navi
       onCommitSelection?.(null);
       gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
         requestedCommit: null, onCommitSelection });
+      gitPane.setVisible?.(visible);
     } });
-  return { dispose: () => {
+  return { setVisible(shown) {
+    visible = shown;
+    refPicker.setVisible?.(shown);
+    gitPane.setVisible?.(shown);
+  }, dispose: () => {
     disposed = true;
     attachObserver.disconnect();
     refPicker.dispose();
@@ -107,16 +113,18 @@ const noGitHtml = (directory) =>
  *  one's word reaches the page. A hidden surface still repaints on a push, and
  *  what it would say then is kept, and said when it is shown again. */
 const CONTEXT_ARTIFACT = new Set(["set", "clear", "setVisibleDiffs"]);
-const CONTEXT_SELECTION = new Set(["setSelection", "captureDomSelection", "clearSelection"]);
+const CONTEXT_SELECTION = new Set(["setSelection", "captureDomSelection", "clearSelection", "clearSelectionIfMatches"]);
 
 function gatedViewingContext(viewingContext) {
   if (!viewingContext) return { context: null, show() {}, hide() {} };
   let shown = true;
   let last = null;
+  let snapshot = null;
   const context = new Proxy(viewingContext, {
     get(target, name) {
       const value = target[name];
       if (typeof value !== "function") return value;
+      if (name === "snapshot") return (...args) => shown ? value.apply(target, args) : snapshot;
       if (CONTEXT_ARTIFACT.has(name)) return (...args) => {
         last = () => target[name](...args);
         if (shown) last();
@@ -133,6 +141,7 @@ function gatedViewingContext(viewingContext) {
       last?.();
     },
     hide() {
+      snapshot = viewingContext.snapshot?.() || null;
       shown = false;
     },
   };
@@ -159,7 +168,10 @@ export function mountWorkspaceChanges(body, { directories, current, git, viewing
   const paintSurface = (surface, sourceId) => {
     const directory = directoryOf(sourceId);
     if (!directory) return;
-    if (directoryHasGit(directory)) surface.pane = mountChanges(surface.element, git(sourceId, surface.gate.context));
+    if (directoryHasGit(directory)) {
+      surface.pane = mountChanges(surface.element, git(sourceId, surface.gate.context));
+      surface.pane.setVisible(!surface.element.hidden);
+    }
     else surface.element.innerHTML = noGitHtml(directory);
   };
   const surfaceFor = (sourceId) => {
@@ -189,15 +201,26 @@ export function mountWorkspaceChanges(body, { directories, current, git, viewing
     wireDirectoryTabs(row, select);
     if (focused) row.querySelector("[aria-selected='true']")?.focus();
   };
+  // Visibility owns interactions; lifetime owns cache subscriptions and drafts.
+  // Suspend before hiding so each child can release focus and measure its place.
   function select(sourceId) {
     if (sourceId === standing || !directoryOf(sourceId)) return;
-    surfaces.get(standing)?.gate.hide();
+    const leaving = surfaces.get(standing);
+    if (leaving) {
+      leaving.gate.hide();
+      leaving.pane?.setVisible(false);
+      if (leaving.element.contains(document.activeElement)) document.activeElement.blur();
+    }
     standing = sourceId;
     const shown = surfaceFor(sourceId);
-    for (const surface of surfaces.values()) surface.element.hidden = surface !== shown;
+    for (const surface of surfaces.values()) {
+      surface.element.hidden = surface !== shown;
+      surface.element.inert = surface !== shown;
+    }
     paintRow();
     onSelectDirectory(sourceId);
     shown.gate.show();
+    shown.pane?.setVisible(true);
   }
   wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), select);
   surfaceFor(standing);

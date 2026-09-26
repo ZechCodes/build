@@ -91,7 +91,7 @@ async function readWorkspaceResult(state) {
 
 async function writeGitResult(state, sourceId, answer) {
   const address = gitOptionsAddress(state, sourceId);
-  if (!address || !workspaceSourceIsActive(state, sourceId)) return;
+  if (!address || !workspaceHoldsSource(state, sourceId)) return;
   const directory = answer.workspace?.directories?.find((entry) => directoryId(entry) === sourceId);
   const completed = new Set((answer.results || answer.outcomes || []).filter((result) => result.status !== "failed").map((result) => result.target));
   await mergeCached(address, (held) => ({
@@ -302,29 +302,40 @@ function paintGitInitialization(rail, state, sourceId, directory) {
   git.needsHost = canInitialize;
   let initHost = rail.querySelector(".workspace-init-host");
   if (!canInitialize) {
+    state.gitInitialization.get(sourceId)?.controller.dispose();
+    state.gitInitialization.delete(sourceId);
     initHost?.remove();
     return;
   }
-  if (!initHost) {
-    initHost = document.createElement("div");
-    initHost.className = "workspace-init-host";
-    rail.appendChild(initHost);
-    const controller = mountWorkspaceGitInitialization({
-      host: initHost, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
-      cacheScope: state.context.cacheScope,
-      isActive: () => workspaceSourceIsActive(state, sourceId),
-      holds: () => workspaceHoldsSource(state, sourceId),
-      onUpdate: async (answer) => {
-        if (answer.workspace) await writeWorkspaceResult(state, answer.workspace);
-        await writeGitResult(state, sourceId, answer);
-        const address = gitOptionsAddress(state, sourceId);
-        return address ? (await readCached(address))?.value : null;
-      },
-    });
-    state.gitInitialization.push(controller);
+  initHost = initHost || keepGitInitializationHost(rail, state, sourceId);
+  initHost.querySelector("[data-init-git]").textContent = gitInitializationLabel(git, directory);
+}
+
+/** Reuse the controller when the commit rail repaints; its modal and pending
+ * operation belong to the directory, not to a disposable rail element. */
+function keepGitInitializationHost(rail, state, sourceId) {
+  const held = state.gitInitialization.get(sourceId);
+  if (held) {
+    rail.appendChild(held.host);
+    return held.host;
   }
-  const initButton = initHost.querySelector("[data-init-git]");
-  initButton.textContent = gitInitializationLabel(git, directory);
+  const host = document.createElement("div");
+  host.className = "workspace-init-host";
+  rail.appendChild(host);
+  const controller = mountWorkspaceGitInitialization({
+    host, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
+    cacheScope: state.context.cacheScope,
+    isActive: () => workspaceSourceIsActive(state, sourceId),
+    holds: () => workspaceHoldsSource(state, sourceId),
+    onUpdate: async (answer) => {
+      if (answer.workspace) await writeWorkspaceResult(state, answer.workspace);
+      await writeGitResult(state, sourceId, answer);
+      const address = gitOptionsAddress(state, sourceId);
+      return address ? (await readCached(address))?.value : null;
+    },
+  });
+  state.gitInitialization.set(sourceId, { host, controller });
+  return host;
 }
 
 function gitInitializationLabel(git, directory) {
@@ -425,6 +436,7 @@ function standOnDirectory(state, sourceId, commit) {
   state.route = { ...route, sourceId, tab: "changes", ...(commit && { commit }) };
   state.sourceId = sourceId;
   markRoute(state.route);
+  state.gitInitialization.forEach((entry, id) => entry.controller.setVisible(id === sourceId));
   state.paintTabs?.();
 }
 
@@ -437,6 +449,8 @@ function refreshWorkspacePane(state, workspace) {
   const previousGuard = state.pane?.canLeave;
   if (App.routeLeaveGuard === previousGuard) App.routeLeaveGuard = null;
   state.pane?.dispose?.();
+  state.gitInitialization.forEach(({ controller }) => controller.dispose());
+  state.gitInitialization.clear();
   body.innerHTML = '<div class="empty">loading…</div>';
   state.pane = mountDirectoryPane(body, {
     canonical,
@@ -496,7 +510,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: new Map(), unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });
@@ -536,7 +550,7 @@ export async function renderWorkspace() {
     deviceStrip();
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();
-    state.gitInitialization.forEach((controller) => controller.dispose());
+    state.gitInitialization.forEach(({ controller }) => controller.dispose());
   };
   // The workspace is a record: the pass writes the machine's checkouts and a
   // board push rewrites them, so the surface stands on the list rather than

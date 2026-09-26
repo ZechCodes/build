@@ -270,6 +270,14 @@ function liftMenuOutOfScroll(container, menu, closeMenu, region) {
  *  that is no longer there. `onfocusout` would do the same in one line, but
  *  jsdom does not carry it, and the DOM suites are how the wiring is proven. */
 const focusWatchers = new WeakMap();
+const menuClosers = new WeakMap();
+
+/** Close every menu owned by a pane before its host is hidden. */
+export function closeSplitMenusWithin(root) {
+  for (const button of root.querySelectorAll(SPLIT_BUTTON_SELECTOR)) {
+    menuClosers.get(button.parentElement)?.();
+  }
+}
 
 function watchFocusLeaving(container, onLeft) {
   const previous = focusWatchers.get(container);
@@ -416,6 +424,7 @@ export function mountSplitMenu(container, { onChoose, onOpenChange = null, keepW
       settleLiftedMenu = null;
     });
   };
+  menuClosers.set(container, closeMenu);
   // Lifted out of a scrolling ancestor once per opening, and put back once
   // the menu has shut (`closeMenu`).
   const liftIfScrolling = () => {

@@ -40,6 +40,7 @@ import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { readCached, wipeCache } from "../src/core/localCache.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
+import { worktreeOf } from "./gitWireFixture.js";
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
 
@@ -208,6 +209,71 @@ describe("a workspace with two directories, one not git", () => {
     expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
   });
 
+  // A comment being written floats over the page, outside the surface it was
+  // opened on: it goes with that surface when another directory is selected,
+  // and nothing of it can be pressed over the one showing.
+  describe("a comment being written when another directory is selected", () => {
+    const repo = () => document.querySelector('[data-surface="repo"]');
+    const tab = (sourceId) => document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`);
+    const pop = () => document.querySelector("body > .comment-pop");
+    const press = (target) => target.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+
+    /** Repository's diff of repo-only.js, its file comment open and typed in. */
+    const draftOnRepository = async () => {
+      const tree = worktreeOf({ "repo-only.js": "changed in the repository" });
+      adoptDeviceSession({ ...fakeSession("dev-1"), call: vi.fn(async (method, params) => {
+        if (method === "git.status" && params.source_id === "repo") return tree.status();
+        if (method === "git.diff" && params.source_id === "repo") return tree.diff(params);
+        if (method === "git.unpushed" && params.source_id === "repo") return { patch: tree.wholePatch(), diff_key: "review-1", base: { kind: "push_target", label: "origin/main" }, file_edited_at: {} };
+        return machine(method, params);
+      }) });
+      await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
+      await vi.waitFor(() => expect(repo().querySelector('.file[data-key$="repo-only.js"] .fcmt')).not.toBeNull());
+      repo().querySelector('.file[data-key$="repo-only.js"] .fcmt').click();
+      await vi.waitFor(() => expect(pop()?.querySelector(".cp-input")).not.toBeNull());
+      pop().querySelector(".cp-input").value = "keep this comment";
+      // Its outside tap is listened for from the next turn on.
+      await flush();
+    };
+
+    const assetsShowsAlone = async () => {
+      expect(App.route.sourceId).toBe("assets");
+      expect(repo().hidden).toBe(true);
+      expect(pop()).toBeNull();
+      // Nothing pressed over Assets reaches the draft.
+      press(document.querySelector('[data-surface="assets"]'));
+      press(document.querySelector('[data-surface="assets"]'));
+      expect(pop()).toBeNull();
+    };
+
+    const backOnRepositoryWithIt = async () => {
+      tab("repo").click();
+      expect(repo().hidden).toBe(false);
+      expect(pop().querySelector(".cp-input").value).toBe("keep this comment");
+      expect(pop().classList.contains("cp-armed")).toBe(false);
+      pop().querySelector(".cp-save").click();
+      await vi.waitFor(() => expect(repo().textContent).toContain("keep this comment"));
+      expect(pop()).toBeNull();
+    };
+
+    it("goes with its directory on a press outside and a click on another tab, and comes back with it", async () => {
+      await draftOnRepository();
+      press(tab("assets"));
+      tab("assets").click();
+      await assetsShowsAlone();
+      await backOnRepositoryWithIt();
+    });
+
+    it("goes with its directory when the keyboard selects another tab", async () => {
+      await draftOnRepository();
+      tab("repo").focus();
+      tab("repo").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      expect(document.activeElement).toBe(tab("assets"));
+      await assetsShowsAlone();
+      await backOnRepositoryWithIt();
+    });
+  });
+
   // A kept surface's offer is still mounted while another directory shows: the
   // options it asked for settle it there, and open nothing over the other one.
   describe("Initialize Git asked for, then left before the machine answers", () => {
@@ -278,5 +344,66 @@ describe("a workspace with two directories, one not git", () => {
       await comeBackAndOpen();
       expect(document.querySelector('[data-surface="assets"] .workspace-init-open-status').textContent).toBe("");
     });
+  });
+});
+
+
+describe("kept Git initialization dialogs", () => {
+  const tab = (id) => document.querySelector(`.workspace-dirtab[data-directory="${id}"]`);
+  const dialog = () => document.querySelector(".modal-workspace-init");
+  const leave = () => {
+    tab("assets").focus();
+    tab("assets").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
+    expect(App.route.sourceId).toBe("repo");
+  };
+  const openDialog = async () => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" });
+    document.querySelector('[data-surface="assets"] [data-init-git]').click();
+    await vi.waitFor(() => expect(dialog()).not.toBeNull());
+  };
+
+  it("suspends an open dialog, its target and Escape handler, without stealing directory-tab focus on return", async () => {
+    await openDialog();
+    document.querySelector('[data-init-target="both"]').click();
+    const held = dialog();
+    leave();
+    expect(dialog()).toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(document.activeElement).toBe(tab("repo"));
+    tab("repo").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    expect(dialog()).toBe(held);
+    expect(dialog().querySelector('[data-init-target="both"]').getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(tab("assets"));
+  });
+
+  it.each(["success", "error"])("settles an init %s while hidden and keeps the result in its own directory", async (outcome) => {
+    let settle;
+    const pending = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    adoptDeviceSession({ ...fakeSession("dev-1"), call: vi.fn(async (method, params) => {
+      if (method === "workspace.init_git") { asked.push({ method, params }); return pending; }
+      return machine(method, params);
+    }) });
+    await openDialog();
+    document.querySelector("[data-confirm-init-git]").click();
+    expect(asked.filter(({ method }) => method === "workspace.init_git")).toHaveLength(1);
+    leave();
+    if (outcome === "success") {
+      settle.resolve(await machine("workspace.init_git", { source_id: "assets" }));
+      await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" }))?.value.workspace.is_git).toBe(true));
+      expect(document.querySelector('[data-surface="assets"] .gitpane')).not.toBeNull();
+    } else {
+      settle.reject(new Error("initialization refused"));
+      await flush();
+      await flush();
+    }
+    expect(dialog()).toBeNull();
+    expect(App.route.sourceId).toBe("repo");
+    expect(document.activeElement).toBe(tab("repo"));
+    tab("assets").click();
+    if (outcome === "success") expect(dialog()).toBeNull();
+    else {
+      await vi.waitFor(() => expect(dialog()?.textContent).toContain("initialization refused"));
+      expect(dialog().querySelector("[data-confirm-init-git]").disabled).toBe(false);
+    }
   });
 });

@@ -26,6 +26,7 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from 
 import {
   PROJECT_AGENT,
   RECENT_AFTER_MS,
+  TRACKER_ISSUE,
   clashingNames,
   dimDeviceHtml,
   menuItemHtml,
@@ -100,8 +101,11 @@ function workspaceBlockFor(project, rows, tag, nowMs) {
     // The head's badge, by the fold (#103): open, the project agent's unread
     // alone — the rows under it wear their own; folded, everything the block
     // is holding: the project agent's and every watched workspace agent's.
+    // A watched issue's unread is already in those (#104), so the issue's own
+    // row, when it has one, is not counted again.
     agentUnreadCount,
-    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, agentUnreadCount),
+    unreadCount: grouped.filter((entry) => entry.kind !== TRACKER_ISSUE)
+      .reduce((total, entry) => total + entry.unreadCount, agentUnreadCount),
   };
 }
 

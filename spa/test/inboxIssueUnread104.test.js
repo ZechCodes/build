@@ -3,7 +3,7 @@
 // workspace whose agent holds it, and otherwise on the project's own badge.
 import { describe, expect, it } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
-import { inboxRowHtml, watchedWorkspaceEntries } from "../src/core/inbox.js";
+import { TRACKER_ISSUE, inboxRowHtml, watchedWorkspaceEntries } from "../src/core/inbox.js";
 import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { projectHeadHtml, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { issueUnreadTally } from "../src/core/issueUnread.js";
@@ -107,5 +107,16 @@ describe("the projects face's head", () => {
 
   it("wears every issue, the workspace's too, while folded", () => {
     expect(headBadge(issues, true)).toBe(String(1 + 10 + 2 + 3));
+  });
+
+  // A watched issue asking for the user is a row in the block too (#125). Its
+  // unread is already in the badges above, so the fold does not count it twice.
+  it("does not count a watched issue's own row again while folded", () => {
+    const current = view();
+    const { rows } = railRows(current, issues);
+    const issueRow = { kind: TRACKER_ISSUE, key: "tracker_issue:i-2", projectKey: PROJECT_KEY, unreadCount: 10,
+      anchorMs: HOUR, lastActivityMs: HOUR };
+    const block = workspaceProjectBlocks([...rows, issueRow], current.projects, [], null, 2 * HOUR).blocks[0];
+    expect(block.unreadCount).toBe(1 + 10 + 2 + 3);
   });
 });

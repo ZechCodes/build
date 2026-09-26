@@ -13,6 +13,11 @@ export function directoryCacheId(scope) {
   return null;
 }
 
+/** The cache entity a workspace's own Files state is filed under — the open
+ *  tabs and the folded roots that stand across its directories (#174). Apart
+ *  from every directory's own (`workspace:[id, source]`), and from any run's. */
+export const workspaceLayoutCacheId = (workspaceId) => `workspace:${JSON.stringify([workspaceId])}`;
+
 /**
  * Whether the sync layer walks this checkout — which decides whether a record
  * filed under it is the answer or only a seed.

@@ -11,16 +11,43 @@ import { fieldTraits } from "./core/fieldTraits.js";
 
 let activePop = null;
 
-export function hasCommentPop() {
-  return activePop !== null;
+export function hasCommentPop(owner) {
+  return activePop !== null && (owner === undefined || activePop._owner === owner);
 }
 
-export function hideCommentPop() {
-  if (activePop) {
+export function hideCommentPop(owner) {
+  if (activePop && (owner === undefined || activePop._owner === owner)) {
     if (activePop._onDown) document.removeEventListener("pointerdown", activePop._onDown);
     activePop.remove();
     activePop = null;
   }
+}
+
+/**
+ * Take the open popover off the page for a surface that is being hidden
+ * (views/workspaceChanges.js keeps a directory's surface while another shows).
+ * A composer's draft goes with it, disarmed, and nothing of it stays over
+ * whatever shows instead; a bare Comment button holds nothing and is just
+ * closed. Returns what puts the draft back — over any popover opened since —
+ * or null when there was none to keep.
+ */
+export function suspendCommentPop(owner) {
+  const pop = activePop;
+  if (!pop || (owner !== undefined && pop._owner !== owner)) return null;
+  if (!pop?._composer) {
+    hideCommentPop();
+    return null;
+  }
+  pop._composer.disarm();
+  document.removeEventListener("pointerdown", pop._onDown);
+  pop.remove();
+  activePop = null;
+  return () => {
+    hideCommentPop();
+    document.body.appendChild(pop);
+    document.addEventListener("pointerdown", pop._onDown);
+    activePop = pop;
+  };
 }
 
 /** Pure decision for an outside tap on the composer: with no text a tap always
@@ -42,26 +69,32 @@ export function commentComposerHtml(placeholder = "Comment on this passage…", 
  *  touch selections often end at the screen edge. The composer is taller
  *  (textarea + button + arm hint) and wider (min 240px textarea) than a bare
  *  button, so the clamps leave room for it. */
-function openPop(rect) {
+function openPop(rect, owner) {
   hideCommentPop();
   const pop = document.createElement("div");
   pop.className = "comment-pop";
+  pop._owner = owner;
   pop.style.top = Math.min(rect.bottom + 6, window.innerHeight - 140) + "px";
   pop.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 300)) + "px";
   document.body.appendChild(pop);
 
   const onDown = (e) => {
-    if (!activePop || activePop.contains(e.target)) return;
+    if (activePop !== pop || pop.contains(e.target)) return;
     const composer = activePop._composer;
     if (!composer) {
-      hideCommentPop();
+      hideCommentPop(pop._owner);
       return;
     }
     const hasText = composer.input.value.trim() !== "";
-    if (outsideTapAction(hasText, composer.isArmed()) === "discard") hideCommentPop();
+    if (outsideTapAction(hasText, composer.isArmed()) === "discard") hideCommentPop(pop._owner);
     else composer.arm();
   };
-  setTimeout(() => document.addEventListener("pointerdown", onDown), 0);
+  // From the next turn, so the press that opened it is not its first outside
+  // tap — and only while it is still the one open: a popover closed or put
+  // away in the turn it opened must not leave a listener acting on the next.
+  setTimeout(() => {
+    if (activePop === pop) document.addEventListener("pointerdown", onDown);
+  }, 0);
   pop._onDown = onDown;
   activePop = pop;
   return pop;
@@ -70,6 +103,7 @@ function openPop(rect) {
 /** Turn an open popover into the composer stage. An empty comment is nothing,
  *  so pressing the button with nothing typed submits nothing. */
 function mountComposer(pop, { placeholder, confirmLabel, onSubmit }) {
+  if (activePop !== pop) return;
   pop.innerHTML = commentComposerHtml(placeholder, confirmLabel);
   const input = pop.querySelector(".cp-input");
   input.focus();
@@ -93,9 +127,10 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit }) {
   };
 
   const save = () => {
+    if (activePop !== pop) return;
     const value = input.value.trim();
     if (value) onSubmit(value);
-    hideCommentPop();
+    hideCommentPop(pop._owner);
   };
   pop.querySelector(".cp-save").onclick = save;
 
@@ -105,7 +140,7 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit }) {
       save();
     } else if (e.key === "Escape") {
       // Escape discards even with text — the deliberate keyboard exit.
-      hideCommentPop();
+      hideCommentPop(pop._owner);
     } else {
       // Any other keystroke (typing/editing) disarms a pending discard.
       disarm();
@@ -114,7 +149,7 @@ function mountComposer(pop, { placeholder, confirmLabel, onSubmit }) {
   // A click inside the pop (e.g. re-focusing the textarea) also disarms.
   pop.addEventListener("pointerdown", disarm);
 
-  pop._composer = { input, arm, isArmed: () => armed };
+  pop._composer = { input, arm, disarm, isArmed: () => armed };
 }
 
 const COMMENT_COMPOSER = { placeholder: "Comment on this passage…", confirmLabel: "Add" };
@@ -127,8 +162,8 @@ const COMMENT_COMPOSER = { placeholder: "Comment on this passage…", confirmLab
  * they let go would collapse the very selection the comment is about. Pressing
  * Comment is them saying they meant it — and by then the selection is safe.
  */
-export function showCommentPop(rect, onAdd) {
-  const pop = openPop(rect);
+export function showCommentPop(rect, onAdd, owner) {
+  const pop = openPop(rect, owner);
   pop.innerHTML = `<button class="cp-add">💬 Comment</button>`;
   pop.querySelector(".cp-add").onclick = () => mountComposer(pop, { ...COMMENT_COMPOSER, onSubmit: onAdd });
 }
@@ -140,6 +175,6 @@ export function showCommentPop(rect, onAdd) {
  * They have already said what they want, so a button that opens a field is a
  * second press for nothing.
  */
-export function openCommentComposer(rect, onAdd) {
-  mountComposer(openPop(rect), { ...COMMENT_COMPOSER, onSubmit: onAdd });
+export function openCommentComposer(rect, onAdd, owner) {
+  mountComposer(openPop(rect, owner), { ...COMMENT_COMPOSER, onSubmit: onAdd });
 }

@@ -1,7 +1,7 @@
 // `issues.list` a page at a time (#85): each page lands under its own address,
 // is read back from there, and is laid over the held list for the stretch of
 // numbers it answers — never over a row something newer wrote.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 const issue = (number, over = {}) => ({
@@ -379,6 +379,67 @@ describe("across tabs sharing the cache", () => {
     await cache.writeCached(ADDRESS, { issues: [issue(20, { status: "done" })], columns: [] });
     await old.answer(answer([issue(20, { status: "backlog" })]));
     expect((await held()).map((one) => one.status)).toEqual(["done"]);
+  });
+
+  // #129: the list says how new it is by when its newest pull was asked, so
+  // an older pull's page landing last does not make it look older.
+  it("stays stamped with the newer pull when an older one's page lands after it", async () => {
+    const old = heldPull();
+    await old.asked;
+    await pull(await anotherTab(), async () => answer([issue(20)]));
+    const newer = (await cache.readCached(ADDRESS)).value.read_order;
+    await old.answer(answer([issue(19)]));
+    expect(Number.isFinite(newer)).toBe(true);
+    expect((await cache.readCached(ADDRESS)).value.read_order).toBe(newer);
+  });
+
+  it("stamps the list with when the pull that laid it was asked", async () => {
+    const old = heldPull();
+    await old.asked;
+    const landed = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await old.answer(answer([issue(20)]));
+    expect((await cache.readCached(ADDRESS)).value.read_order).toBeLessThanOrEqual(landed);
+  });
+
+  // A list written here, or by a build from before #129, has no read of its
+  // own: it is as new as the cache's stamp on it. A page from an older pull
+  // lands under it and must not make the list look older than that.
+  describe("over a list with no read of its own", () => {
+    const clock = (at) => vi.spyOn(Date, "now").mockReturnValue(at);
+    const heldStamp = async () => trackerCache.listAskedAt(await cache.readCached(ADDRESS));
+    afterEach(() => vi.restoreAllMocks());
+
+    it("keeps its stamp when a page from an older pull lands after it", async () => {
+      clock(1_000_100);
+      const old = heldPull();
+      await old.asked;
+      clock(1_000_120);
+      await cache.writeCached(ADDRESS, { issues: [issue(20, { status: "done" })], columns: [] });
+      clock(1_000_130);
+      await old.answer(answer([issue(20)]));
+      expect(await heldStamp()).toBe(1_000_120);
+    });
+
+    it("takes the stamp of a pull asked after it", async () => {
+      clock(1_000_120);
+      await cache.writeCached(ADDRESS, { issues: [issue(20)], columns: [] });
+      clock(1_000_130);
+      await pull(pages, async () => answer([issue(20)]));
+      expect(await heldStamp()).toBe(1_000_130);
+    });
+  });
+
+  // The count is the cache's, not the tab's: a write here in another tab, or
+  // after a reload, still orders after a read asked in the same millisecond.
+  it("numbers a write in another tab after a read on a clock that does not move", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const order = await import("../src/core/issueReadOrder.js");
+    const asked = await order.nextIssueRead();
+    vi.resetModules();
+    const otherTab = await import("../src/core/issueReadOrder.js");
+    expect(await otherTab.noteWritten([ADDRESS], ["issue-20"])).toBeGreaterThan(asked);
+    vi.restoreAllMocks();
   });
 
   it("still lays a page asked after another tab's read", async () => {

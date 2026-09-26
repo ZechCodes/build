@@ -962,12 +962,12 @@ function mountRailOnContext(host, context, swap) {
     agentId: () => selectedId,
     call: (method, params) => chatRepository.currentCall()(method, params),
     onChange: (next, addressed) => {
-      if (disposed || addressed.agent_id !== selectedId) return;
+      if (!standing() || addressed.agent_id !== selectedId) return;
       watchState = next;
       syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
     },
     onFailure: (error, addressed) => {
-      if (!disposed && addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
+      if (standing() && addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
     },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge
@@ -978,8 +978,10 @@ function mountRailOnContext(host, context, swap) {
     call: (method, params) => chatRepository.currentCall()(method, params),
     capture: (entityId) => records.rowWrite(entityId),
     write: (captured, agentId, rewrite) => motionSettled().then(() =>
-      disposed ? undefined : records.patchAgentIfUnwritten(captured, agentId, rewrite)),
-    onFailure: (error) => notifyError(COMPACTION_REFUSED, error.message || String(error)),
+      standing() ? records.patchAgentIfUnwritten(captured, agentId, rewrite) : undefined),
+    onFailure: (error) => {
+      if (standing()) notifyError(COMPACTION_REFUSED, error.message || String(error));
+    },
   });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
@@ -1011,6 +1013,14 @@ function mountRailOnContext(host, context, swap) {
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
+  // A rail stands until it is disposed, or until the machine it was mounted
+  // over is retired under it: that retires the machine's chat repository
+  // (core/deviceContexts.js), and a read landing afterwards — its first
+  // catalog read, the cached pin choice, a row — is about a scope nothing can
+  // be minted in or asked through. It resolves to nothing and paints nothing;
+  // the shell stands the route's rail up again over whatever context lands
+  // next (core/shell.js).
+  const standing = () => !disposed && chatRepository.active;
   const pinnedRecord = watchUiState(PINNED_ADDRESS, (saved) => {
     if (typeof saved?.pinned !== "boolean") return;
     pinned = saved.pinned;
@@ -1020,7 +1030,7 @@ function mountRailOnContext(host, context, swap) {
     paint();
   });
   void pinnedRecord.ready.then(() => {
-    if (pinnedKnown || disposed) return;
+    if (pinnedKnown || !standing()) return;
     pinnedKnown = true;
     paint();
   });
@@ -1076,7 +1086,7 @@ function mountRailOnContext(host, context, swap) {
   const provisionalController = () => chatOwnership.provisional();
 
   const cacheIdentity = () => {
-    if (disposed) return null;
+    if (!standing()) return null;
     const addressed = addressedCacheIdentity({
       cacheScope,
       context,
@@ -1097,7 +1107,7 @@ function mountRailOnContext(host, context, swap) {
     addressOf: cacheIdentity,
     threadCache,
     onThreadSeeded: (seededFor) => {
-      if (disposed) return;
+      if (!standing()) return;
       threadAgentId = seededFor;
       // Edits and local delivery changes can keep the same cursor/count.
       // Compare only the drawn tail, preserving the unchanged-record fast path.
@@ -1110,7 +1120,7 @@ function mountRailOnContext(host, context, swap) {
       paintRailStatus();
     },
     onSurfacesSeeded: (seen) => {
-      if (disposed) return;
+      if (!standing()) return;
       seededSurfaces = {
         surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()),
         generation: seen.generation,
@@ -1412,7 +1422,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const paintRailStatus = () => {
-    if (!panelVisible) return;
+    if (!panelVisible || !standing()) return;
     const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
@@ -1449,7 +1459,7 @@ function mountRailOnContext(host, context, swap) {
       paintedChat = null;
       paintChat();
     },
-    alive: () => !disposed,
+    alive: standing,
   });
 
   const workspaceNameFor = (workspaceId) =>
@@ -1530,7 +1540,7 @@ function mountRailOnContext(host, context, swap) {
   /// that says what it did, and the record is where that lands.
   const refresh = async () => {
     const entityId = await records.entityIdFor(railContext);
-    if (disposed) return;
+    if (!standing()) return;
     const ownerChanged = records.entityId() !== entityId;
     records.watch(entityId);
     // A workspace's cached list can name its conversation owner before the
@@ -1543,7 +1553,7 @@ function mountRailOnContext(host, context, swap) {
     }
     paintChat();
     const row = await records.read(entityId);
-    if (disposed) return;
+    if (!standing()) return;
     if (row) standOnRow(row);
     await refreshAlongside();
   };
@@ -1597,7 +1607,7 @@ function mountRailOnContext(host, context, swap) {
   const readProjectPageName = async () => {
     if (projectAgent || !projectId) return;
     const row = await listedProject();
-    if (disposed || !row?.name) return;
+    if (!standing() || !row?.name) return;
     projectName = row.name;
     paint();
   };
@@ -1611,7 +1621,7 @@ function mountRailOnContext(host, context, swap) {
   const readProjectAgent = async () => {
     if (!projectAgent || (projectOwner && projectName)) return;
     const row = await listedProject();
-    if (disposed || !row) return;
+    if (!standing() || !row) return;
     learnProjectFacts({ entityId: row.entity_id || row.run_id, name: row.name });
     paint();
     await refreshAlongside();
@@ -1625,7 +1635,7 @@ function mountRailOnContext(host, context, swap) {
   /// answer offers — the catalog's own default harness then stands, exactly as
   /// it does for a device that has chosen nothing.
   const readProjectAgentSetting = async () => {
-    if (!onProjectRail()) return null;
+    if (!onProjectRail() || !standing()) return null;
     const call = chatRepository.currentCall();
     const settings = await call("settings.get", {}).catch(() => null);
     return settings && projectAgentChoiceOf(settings);
@@ -1639,12 +1649,12 @@ function mountRailOnContext(host, context, swap) {
   const refreshAlongside = async () => {
     if (!alongside || (alongside.kind === "project" && !projectOwner)) return;
     const entityId = await records.entityIdFor(alongside);
-    if (disposed) return;
+    if (!standing()) return;
     watchAlongsideRow(entityId);
     // A row this device does not hold leaves the strip saying what it said: a
     // bubble that blanks because one record is cold is worse than one behind.
     const row = await records.cachedRow(entityId);
-    if (disposed || !row) return;
+    if (!standing() || !row) return;
     alongsideEntity = railEntity(row, alongside.kind);
     keepForSwap(alongside.kind, row);
     paint();
@@ -1903,7 +1913,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const paint = () => {
-    if (disposed) return;
+    if (!standing()) return;
     if (!host.querySelector(".rail-strip")) {
       releaseFaces();
       host.innerHTML = `<div class="rail-strip"></div>`;
@@ -2296,7 +2306,7 @@ function mountRailOnContext(host, context, swap) {
     await syncThreadWindow({
       deviceId: identity.deviceId,
       call: chatRepository.currentCall(),
-      active: () => !disposed && askedKey === threadAddressKey(conversation.address()),
+      active: () => standing() && askedKey === threadAddressKey(conversation.address()),
       entityId: identity.entityId,
       agentId: identity.agentId,
       conversationId: identity.conversationId,
@@ -2405,7 +2415,7 @@ function mountRailOnContext(host, context, swap) {
     loadingOlderItems = true;
     const page = await fetchOlderPage(request);
     loadingOlderItems = false;
-    if (!page || disposed || request.asked !== selectedId) return;
+    if (!page || !standing() || request.asked !== selectedId) return;
     // The record is what the page went into; this is the paint that keeps the
     // reader's place as the history arrives above them.
     olderItemsAwaitingPaint = true;
@@ -2413,7 +2423,7 @@ function mountRailOnContext(host, context, swap) {
     // entries would have been from the cache.
     timelineSlice.showEarlier();
     await bindConversationCache().reread();
-    if (!disposed) paintChat({ olderItemsPrepended: true });
+    if (standing()) paintChat({ olderItemsPrepended: true });
   };
 
   /// The chat tab of a work item with no agent: which harness to make one on,
@@ -2512,7 +2522,7 @@ function mountRailOnContext(host, context, swap) {
         agentId: identity.agentId,
         call: (method, params) => chatRepository.currentCall()(method, params),
         onChange: () => {
-          if (disposed || activityRunsFor !== runsFor) return;
+          if (!standing() || activityRunsFor !== runsFor) return;
           // Presence alone is in the ordinary paint fingerprint; a later
           // announcement can replace the rows under the same run key, so the
           // record moving explicitly invalidates that fingerprint.
@@ -2526,7 +2536,7 @@ function mountRailOnContext(host, context, swap) {
       leaveUnreadMarker();
       if (!unreadMarkers.has(runsFor)) unreadMarkers.set(runsFor, createUnreadMarker(() => {
         unreadFrom = null;
-        if (!disposed) paintChat();
+        if (standing()) paintChat();
       }));
       unreadMarker = unreadMarkers.get(runsFor);
       reportedRead = 0;
@@ -2720,7 +2730,7 @@ function mountRailOnContext(host, context, swap) {
     });
   };
 
-  const chatIsVisible = () => panelVisible && !document.hidden && shownPanelMode() === "chat";
+  const chatIsVisible = () => standing() && panelVisible && !document.hidden && shownPanelMode() === "chat";
 
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     if (!chatIsVisible()) return;
@@ -3138,6 +3148,7 @@ function mountRailOnContext(host, context, swap) {
   /** The menu is kept within the panel: on a phone the panel stops on the
    *  bubble strip, which is drawn over it and would cover the menu's tail. */
   const paintSurfaceMenu = () => {
+    if (!standing()) return;
     const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
     closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuGroupsInFocus()), {
@@ -3574,10 +3585,10 @@ function mountRailOnContext(host, context, swap) {
     mintingProjectAgent = true;
     try {
       const entityId = await mintProjectConversation();
-      if (!disposed && entityId) swap.toProject(entityId);
+      if (standing() && entityId) swap.toProject(entityId);
     } catch (error) {
       mintingProjectAgent = false;
-      if (!disposed) notifyError("No conversation for this project", error.message || String(error));
+      if (standing()) notifyError("No conversation for this project", error.message || String(error));
     }
   };
 
@@ -3681,7 +3692,7 @@ function mountRailOnContext(host, context, swap) {
     const entityId = entity.entityId;
     const call = chatRepository.currentCall();
     if (!(await confirmActionAt(anchor, removeAgentConfirm(agent, entity.kind)))) return;
-    if (disposed || entity.entityId !== entityId || settledAgentInFocus()?.id !== agent.id) return;
+    if (!standing() || entity.entityId !== entityId || settledAgentInFocus()?.id !== agent.id) return;
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
     const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
@@ -3818,12 +3829,12 @@ function mountRailOnContext(host, context, swap) {
     paint();
   };
   const stopFollowingCatalog = followDeviceCatalog(context.deviceId, (held) => {
-    if (disposed || !held) return;
+    if (!standing() || !held) return;
     if (catalogSettled) takeCatalog(held);
     else catalogHeard = held;
   });
   Promise.all([deviceCatalog(context.deviceId), readProjectAgentSetting()]).then(([offered, setting]) => {
-    if (disposed) return;
+    if (!standing()) return;
     projectAgentSetting = setting;
     catalogSettled = true;
     takeCatalog(catalogHeard || offered);
@@ -3847,6 +3858,36 @@ function mountRailOnContext(host, context, swap) {
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
 
+  /// Everything the rail hears — the cache, the feed, the machine's catalog,
+  /// the composer's controller, the clock and the reader coming back — stopped
+  /// once: when the rail is disposed, or before that, the moment the machine it
+  /// stands over is retired and its repository with it. A feed or a cache
+  /// write delivered during the retirement then finds nobody to paint through
+  /// the retired scope, and the rail keeps its last paint until the shell
+  /// stands the route's rail up again (core/shell.js).
+  let listening = true;
+  const stopListening = () => {
+    if (!listening) return;
+    listening = false;
+    overview.close();
+    activityRuns?.dispose();
+    activityRuns = null;
+    for (const record of detailRecords.values()) record.dispose();
+    pinnedRecord.dispose({ flushPending: false });
+    overviewScopeRecord.dispose({ flushPending: false });
+    document.removeEventListener("visibilitychange", visibilityChanged);
+    stopWaitingForReader();
+    unwatchCache();
+    clearInterval(statusTicker);
+    statusTicker = null;
+    stopFollowingCatalog();
+    unsubscribePending();
+    unsubscribeFeed();
+    unsubscribeComposerController?.();
+    unsubscribeComposerController = null;
+  };
+  const stopHearingRetirement = chatRepository.onRetired(stopListening);
+
   return {
     /** Put the panel away without touching the docked/card preference — what a
      *  toolbar tab press means on a phone, where the chat covers the page it
@@ -3859,23 +3900,11 @@ function mountRailOnContext(host, context, swap) {
     },
     dispose() {
       disposed = true;
-      overview.close();
-      activityRuns?.dispose();
-      for (const record of detailRecords.values()) record.dispose();
-      pinnedRecord.dispose({ flushPending: false });
-      overviewScopeRecord.dispose({ flushPending: false });
-      activityRuns = null;
+      stopHearingRetirement();
+      stopListening();
       for (const marker of unreadMarkers.values()) marker.leave();
-      document.removeEventListener("visibilitychange", visibilityChanged);
-      stopWaitingForReader();
       panelMotion.cancel();
-      unwatchCache();
-      clearInterval(statusTicker);
-      statusTicker = null;
       usageLimitBanner.dispose();
-      stopFollowingCatalog();
-      unsubscribePending();
-      unsubscribeFeed();
       disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
@@ -3886,8 +3915,6 @@ function mountRailOnContext(host, context, swap) {
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
       disposeComposerModelMenu();
-      unsubscribeComposerController?.();
-      unsubscribeComposerController = null;
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
       document.removeEventListener("pointerdown", dismissOnOutsidePointer);

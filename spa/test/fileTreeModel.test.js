@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   ancestorsOf,
   fileTreeHtml,
+  treeEdge,
   treeKeyMove,
   visibleTreeRows,
 } from "../src/core/fileTreeModel.js";
@@ -178,5 +179,29 @@ describe("ancestorsOf", () => {
   it("names every directory above a path, outermost first", () => {
     expect(ancestorsOf("a/b/c.txt")).toEqual(["a", "a/b"]);
     expect(ancestorsOf("c.txt")).toEqual([]);
+  });
+});
+
+// #174: a workspace's Files is one tree with a root per directory, so a
+// directory's rows stand one level under its root's row, and the arrows walk
+// out of one root's rows to the roots beside it.
+describe("a tree under a root", () => {
+  it("indents every row one level under the root it stands in", () => {
+    const rows = visibleTreeRows(TREE, new Set(["src"]), "", 1);
+    expect(shape(rows)).toEqual(["  dir:src", "    dir:src/core", "    file:src/a.js", "  symlink:link", "  file:README.md"]);
+    expect(fileTreeHtml(rows, {})).toContain('aria-level="2"');
+  });
+
+  it("says where the arrows leave the rows: up from the first, down from the last, left from a top row", () => {
+    const rows = visibleTreeRows(TREE, new Set(["src"]), "", 1);
+    expect(treeEdge(rows, "src", "ArrowUp")).toBe("up");
+    expect(treeEdge(rows, "README.md", "ArrowDown")).toBe("down");
+    expect(treeEdge(rows, "link", "ArrowLeft")).toBe("out");
+    // An expanded directory collapses on Left rather than leaving; a nested row
+    // steps out to its parent; the middle rows move within.
+    expect(treeEdge(rows, "src", "ArrowLeft")).toBe(null);
+    expect(treeEdge(rows, "src/a.js", "ArrowLeft")).toBe(null);
+    expect(treeEdge(rows, "src/a.js", "ArrowDown")).toBe(null);
+    expect(treeEdge(rows, "src", "Enter")).toBe(null);
   });
 });

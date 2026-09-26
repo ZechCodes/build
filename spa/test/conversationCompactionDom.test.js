@@ -34,7 +34,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { resetApplication } = await import("../src/app.js");
-const { adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
+const { adoptDeviceSession, contextFor, retireDeviceContext } = await import("../src/core/deviceContexts.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
@@ -310,6 +310,30 @@ describe("compaction on the conversation's menu", () => {
     // answer was written to, not the row that was pressed.
     expect(await cachedAgent()).toMatchObject({ id: "wa-1", max_context_tokens: 300000, compact_at_tokens: 300000 });
     expect(markedRow().dataset.action).toBe("compact:300000");
+  });
+
+  it.each(["answer", "refusal"])("ignores a late compaction %s after the device retires", async (outcome) => {
+    let release;
+    answerSettings = ({ agent_id, max_context_tokens }) => new Promise((resolve, reject) => {
+      release = () => outcome === "refusal"
+        ? reject(new Error("retired settings call"))
+        : resolve({ agent_id, max_context_tokens, compact_at_tokens: max_context_tokens });
+    });
+    await mountWorkspaceRail();
+    const address = { deviceId: DEVICE_ID, entityId: WORKSPACE_OWNER, kind: "row", sub: "" };
+    const before = await readCached(address);
+
+    await choose("compact:off");
+    await vi.waitFor(() => expect(settingsAsked).toHaveLength(1));
+    const repository = contextFor(DEVICE_ID).chatRepository;
+    retireDeviceContext(DEVICE_ID);
+    expect(repository.active).toBe(false);
+    expect(panel()).not.toBeNull(); // retired, but not yet disposed by the shell
+    release();
+    await flush();
+
+    expect(await readCached(address)).toEqual(before);
+    expect(errorNotices()).toEqual([]);
   });
 
   // The bridge's sequence at its worst: the answer, then a row it read before

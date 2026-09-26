@@ -1541,12 +1541,12 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
         "{:?}",
         session.status()
     );
-    assert!(
-        session
-            .epitaph()
-            .is_some_and(|epitaph| epitaph.contains("did not announce itself")),
-        "{:?}",
-        session.epitaph()
+    let refused = "Build stopped this agent's Claude Code session because it did not start within 0.2 seconds.";
+    assert_eq!(session.epitaph().as_deref(), Some(refused));
+    assert_eq!(
+        session.start_refused().as_deref(),
+        Some(refused),
+        "and the agent's start_error says it in the same sentence (issue #73)"
     );
 
     // A child that DOES announce itself in time is left alone past the deadline.

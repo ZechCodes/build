@@ -100,6 +100,11 @@ export function initPaneDrawer(split, { list, closeOnSelect, summary }) {
     close,
     isOpen,
     refresh,
+    setVisible(visible) {
+      document.removeEventListener("keydown", onKeyDown);
+      if (visible) document.addEventListener("keydown", onKeyDown);
+      else close();
+    },
     dispose() {
       document.removeEventListener("keydown", onKeyDown);
     },

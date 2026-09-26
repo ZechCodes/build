@@ -7,6 +7,9 @@ self-healing: a bridge that dies, loses its network or is killed writes no
 "offline" — it simply stops writing, and every reader after the window sees
 ``offline``. The relay is not involved.
 
+Only ``last_seen_at`` matters. There is no stored status: the ``devices.status``
+column the relay once wrote is gone.
+
 The challenge and the freshness/replay scheme are the push notify's, one scheme
 for every device-signed request; ``bridge/src/presence.rs`` produces the same
 bytes, and ``bridge/tests/fixtures/presence_challenge.txt`` is the fixture both
@@ -50,11 +53,13 @@ def derived_status(device, now: datetime) -> str:
     """The status a reader sees: ``pending`` while the device waits for approval,
     ``online`` iff it heartbeated within :data:`ONLINE_WINDOW`, else ``offline``.
 
-    A device that lost its approval (revoked) is ``offline``, never ``pending``:
-    it is not waiting for anyone.
+    Pending is a device no account has claimed: registration leaves
+    ``owner_user_id`` null and approval sets it. A device that lost its approval
+    (revoked) keeps its owner, so it is ``offline``, never ``pending``: it is not
+    waiting for anyone.
     """
     if not device.approved:
-        return PENDING if device.status == PENDING else OFFLINE
+        return PENDING if device.owner_user_id is None else OFFLINE
     last_seen_at = device.last_seen_at
     if last_seen_at is None:
         return OFFLINE

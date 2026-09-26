@@ -33,3 +33,14 @@ planning/v1/session-10/02-privacy-filtering.md:generic-api-key:141
 planning/v1/session-8/04-security-testing.md:generic-api-key:273
 planning/v1/session-8/04-security-testing.md:generic-api-key:502
 planning/v1/session-8/04-security-testing.md:generic-api-key:508
+
+# v2 wire contract fixtures (#79): `diff_key`/`if_diff_key` is the fnv1a64 hex
+# of a changeset (bridge/src/diff.rs) — it names content, never grants access.
+# c1d2e3f405162738 is a made-up example key (c1 d2 e3 f4 05 16 27 38), not a
+# hash of anything real. Commit-scoped to the commit that added the fixtures.
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/issue.diff.json:generic-api-key:6
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/issue.diff.json:generic-api-key:24
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/run.diff.json:generic-api-key:6
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/run.diff.json:generic-api-key:10
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/worktree.diff.json:generic-api-key:7
+6af3fba5b267c2fd021c9a73175a8091668b05d8:fixtures/api/v1/worktree.diff.json:generic-api-key:32

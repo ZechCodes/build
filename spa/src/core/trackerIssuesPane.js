@@ -19,17 +19,16 @@ import { notifyError } from "./notify.js";
 import {
   issuesAddress,
   issuesQueryAddress,
-  issuesQueryRecordAt,
   issuesRecord,
-  issuesRecordAt,
-  readIssuesQueryRecord,
-  readIssuesRecord,
+  listAskedAt,
+  readIssuesCached,
+  readIssuesQueryCached,
   writeIssuesQueryRecord,
   writeIssuesRecord,
 } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
 import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
-import { noteWritten } from "./issueReadOrder.js";
+import { nextIssueRead, noteWritten } from "./issueReadOrder.js";
 import { createReadRetry } from "./transientRead.js";
 import { trailingRead } from "./trailingRead.js";
 import { deviceSession, deviceWatch } from "./deviceReconnect.js";
@@ -84,9 +83,10 @@ export function mountIssuesPane(host, options) {
     picker: null,
     composer: null,
     focusIssue: null,
-    // When the cache took each list this pane can paint from (#119).
-    queryAt: 0,
-    wholeAt: 0,
+    // When the bridge was asked for each list this pane can paint from
+    // (#119, #129).
+    queryAsked: 0,
+    wholeAsked: 0,
     userSession: null, // the bridge's, from the device's cache
     askedOnly: false, // the device's cached Needs you rule (#144)
   };
@@ -307,20 +307,21 @@ export function mountIssuesPane(host, options) {
   let querySerial = 0;
   let queryLoaded = false;
 
-  /** Whether the whole list landed no earlier than the filtered answer. The pass
-   *  behind this tab (core/cacheSync.js) pulls only the whole list, so after a
-   *  gap no push described, it is the newer news about these same issues and
-   *  the filters are applied to it locally, as before the first answer (#119). */
-  const wholeListIsNewer = () => state.wholeAt >= state.queryAt;
+  /** Whether the whole list was asked for no earlier than the filtered answer.
+   *  The pass behind this tab (core/cacheSync.js) pulls only the whole list, so
+   *  after a gap no push described, it is the newer news about these same
+   *  issues and the filters are applied to it locally, as before the first
+   *  answer (#119). By when each was asked, not when each landed: that pass's
+   *  read is large, and one asked before this tab's small one can land after
+   *  it still the older news (#129). */
+  const wholeListIsNewer = () => state.wholeAsked >= state.queryAsked;
 
   async function paintFromQuery(params, serial = querySerial) {
-    const [record, at] = await Promise.all([
-      readIssuesQueryRecord(state.deviceId, state.projectId, params),
-      issuesQueryRecordAt(state.deviceId, state.projectId, params),
-    ]);
-    if (state.disposed || serial !== querySerial || !record) return;
+    const cached = await readIssuesQueryCached(state.deviceId, state.projectId, params);
+    if (state.disposed || serial !== querySerial || !cached) return;
+    const record = cached.value;
     queryLoaded = true;
-    state.queryAt = at;
+    state.queryAsked = listAskedAt(cached);
     state.unscopedShown = wholeListIsNewer()
       ? filterIssues(state.unscoped, shownFilters())
       : sortIssues(record.issues);
@@ -354,15 +355,13 @@ export function mountIssuesPane(host, options) {
   /** What the cache holds, painted before anything is asked. A project never
    *  opened on this device holds nothing, and the tab simply waits. */
   async function paintFromCache() {
-    const [record, at] = await Promise.all([
-      readIssuesRecord(state.deviceId, state.projectId),
-      issuesRecordAt(state.deviceId, state.projectId),
-    ]);
-    if (state.disposed || !record) return;
+    const cached = await readIssuesCached(state.deviceId, state.projectId);
+    if (state.disposed || !cached) return;
+    const { at, value: record } = cached;
     state.unscoped = sortIssues(record.issues);
     state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);
-    state.wholeAt = at;
+    state.wholeAsked = listAskedAt(cached);
     if (!queryLoaded || wholeListIsNewer()) {
       state.unscopedShown = filterIssues(state.unscoped, shownFilters());
       state.shown = kept(state.unscopedShown);
@@ -439,15 +438,15 @@ export function mountIssuesPane(host, options) {
   }
 
   async function readWholeList(params, filters) {
+    const read = await nextIssueRead();
     const answer = await state.callRpc("issues.list", params);
     if (state.disposed) return;
-    const columns = state.columns;
+    const record = issuesRecord(answer?.issues, state.columns, read);
     // The fetch is a writer only. The matching cache announcement above is
     // what re-reads this record and repaints the pane.
-    await writeIssuesQueryRecord(state.deviceId, state.projectId, params, issuesRecord(answer?.issues, columns));
+    await writeIssuesQueryRecord(state.deviceId, state.projectId, params, record);
     // An unnarrowed answer is also the authoritative whole-list record.
-    if (!narrowsTheRead(filters))
-      await writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(answer?.issues, columns));
+    if (!narrowsTheRead(filters)) await writeIssuesRecord(state.deviceId, state.projectId, record);
     await writeUserSession(state.deviceId, answer);
   }
 
@@ -497,21 +496,22 @@ export function mountIssuesPane(host, options) {
     state.focusIssue = issueId;
     const moved = [issuesQueryAddress(state.deviceId, state.projectId, queryParams()), issuesAddress(state.deviceId, state.projectId)];
     // Newer than any page still out, in this tab or another: one landing
-    // after this does not put the card back (core/issueReadOrder.js).
-    await noteWritten(moved, [issueId]);
+    // after this does not put the card back (core/issueReadOrder.js), and
+    // both lists carry that number, so neither reads as older than the other.
+    const movedAs = await noteWritten(moved, [issueId]);
     await Promise.all([
-      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns)),
-      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns)),
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns, movedAs)),
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns, movedAs)),
     ]);
     try {
       await state.callRpc("issues.update", moveParams(issueId, status));
     } catch (error) {
       if (state.disposed) return;
       state.focusIssue = issueId;
-      await noteWritten(moved, [issueId]);
+      const restoredAs = await noteWritten(moved, [issueId]);
       await Promise.all([
-        writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns)),
-        writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns)),
+        writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns, restoredAs)),
+        writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns, restoredAs)),
       ]);
       notifyError("Could not move this issue", messageOf(error));
     }
@@ -590,9 +590,10 @@ export function mountIssuesPane(host, options) {
     const catalogue = sortIssues([...state.unscoped.filter((one) => one.id !== issue.id), issue]);
     const query = sortIssues([...state.unscopedShown.filter((one) => one.id !== issue.id), issue]);
     state.focusIssue = issue.id;
+    const filedAs = await nextIssueRead();
     await Promise.all([
-      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(catalogue, state.columns)),
-      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(query, state.columns)),
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(catalogue, state.columns, filedAs)),
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(query, state.columns, filedAs)),
     ]);
   }
 

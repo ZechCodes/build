@@ -1,7 +1,7 @@
 // Pure identities and menu rows for the view-area toolbar. Workspace routes
-// show one workspace switcher and directory tabs; its popup moves between the
-// scoped project's workspaces and the project list. core/toolbar.js renders and
-// wires it.
+// show one picker reading `project / workspace`; its popup moves between the
+// scoped project's workspaces and the project list, and reaches the project's
+// own page. core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
 import { deviceTags, projectNameOf } from "./inboxProjects.js";
@@ -88,18 +88,6 @@ export function workspaceMenuModel({ workspaces = [], projectKey = null, workspa
   return fuzzyRank(entries, query, (entry) => entry.name).sort(compareWorkspaceStatus);
 }
 
-/** The source directories mounted into the selected workspace. `source_id` is
- * the stable route identity; `id` is the concrete workspace-directory record
- * and remains available for RPCs that need it. */
-export function workspaceDirectoryModel(workspace, sourceId = null) {
-  return ((workspace && workspace.directories) || []).map((directory) => ({
-    ...directory,
-    sourceId: directory.source_id || directory.id,
-    label: directory.name || directory.mount || directory.source_id || directory.id,
-    current: (directory.source_id || directory.id) === sourceId,
-  }));
-}
-
 /** What each kind of work route is: the row it stands on, what the bar calls it,
  *  and whatever else that kind carries. A route names one kind, so the bar reads
  *  its answer here rather than walking the kinds. */
@@ -114,19 +102,13 @@ const STANDING = {
     // is the only honest stand-in.
     label: (route, row, carried) =>
       (carried.workspace ? workspaceDisplayName(carried.workspace, route.workspaceId) : route.workspaceId) ?? "Workspace",
-    carries: (route, { workspaces }) => {
-      const workspace = workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null;
-      return {
-        workspaceId: route.workspaceId,
-        workspace,
-        directories: workspaceDirectoryModel(workspace, route.sourceId),
-        // The workspace's own Issues, beside its directory tabs rather than in
-        // the directory rail: a directory scopes Changes and Files, and it does
-        // not scope these (#47). Current on the tab and on an issue opened from
-        // it, both of which are `tab: "issues"` on a workspace route (#29).
-        workspaceIssues: { current: route.tab === "issues" },
-      };
-    },
+    // The picker is the bar's one control on a workspace: the directories, the
+    // Issues and the settings are the workspace's navigation, and stand in its
+    // rail (core/directoryRail.js), not here.
+    carries: (route, { workspaces }) => ({
+      workspaceId: route.workspaceId,
+      workspace: workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null,
+    }),
   },
   branch: {
     // The machine and the project together name a branch row: both machines

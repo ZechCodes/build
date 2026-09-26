@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { workspaceRoute } from "../src/core/projectModel.js";
-import { directoryId, selectedDirectory, workspaceScope } from "../src/core/workspaceModel.js";
+import { directoryId, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../src/core/workspaceModel.js";
 
 const workspace = {
   id: "ws-1",
@@ -35,5 +35,12 @@ describe("workspace navigation model", () => {
     expect(selectedDirectory(workspace, "docs")).toBe(workspace.directories[0]);
     expect(selectedDirectory(workspace, "missing")).toBe(workspace.directories[0]);
     expect(workspaceScope("ws-1", "app")).toEqual({ workspace_id: "ws-1", source_id: "app" });
+  });
+
+  it("turns workspace directories into persistent tab identities, in the workspace's order", () => {
+    expect(workspaceDirectoryModel(workspace, "app").map((row) => [row.sourceId, row.label, row.current])).toEqual([
+      ["docs", "Docs", false],
+      ["app", "App", true],
+    ]);
   });
 });

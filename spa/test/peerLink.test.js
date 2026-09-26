@@ -541,6 +541,30 @@ describe("openPeerLink", () => {
     expect(peer.closed).toBe(false);
   });
 
+  // #130: the failure watcher is latched while the carry check runs, so a path
+  // failing again inside it raises no second restart. The link must not then
+  // report the restart landed on a failed path.
+  it("closes the link when the path fails again while the carry is checked", async () => {
+    clearConnectionDiagnosticHistory();
+    let confirm;
+    const restored = [];
+    const { peer, resolved } = await upgrade({
+      onConnected: () => restored.push("up"),
+      confirmCarried: () => new Promise((resolve) => { confirm = resolve; }),
+    });
+    resolved.onRestored(() => restored.push("restored"));
+    peer.fail();
+    await vi.waitFor(() => expect(confirm).toBeTypeOf("function"));
+    peer.fail(); // heard by the latched watcher, which starts nothing
+    confirm(true);
+    await vi.waitFor(() => expect(peer.closed).toBe(true));
+    expect(restored).toEqual([]);
+    expect(resolved.restoring()).toBe(false);
+    const history = connectionDiagnosticHistory();
+    expect(history.find((entry) => entry.event === "restart-failed")?.reason).toBe("failed");
+    expect(history.filter((entry) => entry.event === "connected").map((entry) => entry.phase)).toEqual(["initial"]);
+  });
+
   // #123: the restart can land on a NEW bridge process that answers it and
   // carries — and holds nothing of this session: no greeting, so no
   // subscriptions and no pushes. Whoever owns the session greets it again.

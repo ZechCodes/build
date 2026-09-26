@@ -35,6 +35,17 @@ export function refreshEditedTimes(root, now = Date.now()) {
 
 export function watchEditedTimes(root, intervalMs = 30_000) {
   refreshEditedTimes(root);
-  const timer = setInterval(() => refreshEditedTimes(root), intervalMs);
-  return { dispose: () => clearInterval(timer) };
+  let timer = setInterval(() => refreshEditedTimes(root), intervalMs);
+  return {
+    setVisible(visible) {
+      if (!visible && timer) {
+        clearInterval(timer);
+        timer = null;
+      } else if (visible && !timer) {
+        refreshEditedTimes(root);
+        timer = setInterval(() => refreshEditedTimes(root), intervalMs);
+      }
+    },
+    dispose: () => clearInterval(timer),
+  };
 }

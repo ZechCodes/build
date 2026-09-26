@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout } from "../src/core/fileTabsModel.js";
+import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout, tabLabels } from "../src/core/fileTabsModel.js";
 
 const layout = (tabs, active) => ({ tabs, active });
 
@@ -78,5 +78,44 @@ describe("fileTabsHtml", () => {
     expect(html).not.toContain('onfocus="alert(2)"');
     const host = paint(html);
     expect(host.querySelector("[data-tab-path]").dataset.tabPath).toBe(hostile);
+  });
+});
+
+// #174: open-file tabs work across a workspace's roots. A tab is named by its
+// file; when two open files share a name, each says its root before it.
+describe("tabs across roots", () => {
+  const roots = { repo: "Repository", assets: "Assets" };
+  const key = (root, path) => JSON.stringify([root, path]);
+  const locate = (tab) => {
+    const [root, path] = JSON.parse(tab);
+    return { root: { id: root, label: roots[root] }, path };
+  };
+
+  it("names a tab by its file, and by `root / name` when another open file shares it", () => {
+    const tabs = [key("repo", "src/index.js"), key("assets", "index.js"), key("repo", "README.md")];
+    const labels = tabLabels(tabs, locate);
+    expect(tabs.map((tab) => labels.get(tab).name)).toEqual(["Repository / index.js", "Assets / index.js", "README.md"]);
+    expect(labels.get(tabs[0]).title).toBe("Repository / src/index.js");
+  });
+
+  it("draws those names and keeps the tab's own key", () => {
+    const tabs = [key("repo", "index.js"), key("assets", "index.js")];
+    const host = document.createElement("div");
+    host.innerHTML = fileTabsHtml(layout(tabs, tabs[0]), new Set(), tabLabels(tabs, locate));
+    expect([...host.querySelectorAll(".ftab-name")].map((tab) => [tab.textContent, tab.dataset.tabPath])).toEqual([
+      ["Repository / index.js", tabs[0]],
+      ["Assets / index.js", tabs[1]],
+    ]);
+  });
+
+  it("reads a remembered layout keeping only the tabs the reader can still open", () => {
+    const kept = key("repo", "a.js");
+    const gone = key("elsewhere", "b.js");
+    expect(readTabLayout({ tabs: [kept, gone], active: gone }, (tab) => tab !== gone)).toEqual(layout([kept], kept));
+  });
+
+  it("names a single checkout's tabs by path, as it always has", () => {
+    const labels = tabLabels(["src/a.js", "lib/a.js"], (tab) => ({ root: { id: null, label: "" }, path: tab }));
+    expect(labels.get("src/a.js")).toEqual({ name: "a.js", title: "src/a.js" });
   });
 });

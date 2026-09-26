@@ -1,16 +1,14 @@
 /** @vitest-environment jsdom */
-// The issues icon beside the workspace's settings cog: its count, and where it
-// goes.
+// The Issues face on the workspace's rail: its count, and whether it is drawn.
 //
 // The count reads the project's cached issue list and listens to that record,
-// so an `issues` push moves the badge on the bar with nothing asked of the
+// so an `issues` push moves the badge on the rail with nothing asked of the
 // bridge.
 //
-// It no longer opens an overlay (#16 → #29). A modal is a thing you must close
-// before you can act on what is in it, and closing it is leaving the issue, so
-// the press now goes to the workspace's Issues TAB — which is the full tracker
-// with the workspace's agents still in the rail beside it. What that tab shows
-// is tested in trackerWorkspaceIssuesTab.test.js and workspaceViewDom.
+// It no longer opens an overlay (#16 → #29), and it no longer owns its press
+// (#174): it is a face of the rail, and the rail's own press goes to the
+// workspace's Issues tab. What that tab shows is tested in
+// trackerWorkspaceIssuesTab.test.js and workspaceViewDom.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -26,9 +24,6 @@ const TWO = "agent-01M2TWO";
 const ELSEWHERE = "agent-01M2ELSE";
 
 let button, trackerCache, mountWorkspaceIssues, block, agents;
-/** Where the press said to go. The icon does not know the router — the toolbar
- *  passes `open`, because the toolbar is what knows where it is standing. */
-let opened = [];
 
 const flush = async () => {
   for (let i = 0; i < 20; i++) await new Promise((done) => setTimeout(done, 0));
@@ -43,14 +38,14 @@ const mount = async (over = {}) => {
     projectId: "proj-1",
     workspaceId: "ws-1",
     agents: () => agents,
-    open: (where) => opened.push(where),
     ...over,
   });
   await flush();
   return block;
 };
 
-const badge = () => button.querySelector(".tb-issues-count").textContent;
+const badge = () => button.querySelector(".dirtab-count").textContent;
+const cellHtml = '<button data-tab="issues" hidden><span class="badge dirtab-count"></span></button>';
 const overlay = () => document.querySelector(".modal-workspace-issues");
 const agentSections = () =>
   [...document.querySelectorAll("[data-issues-agent]")].map((one) => one.querySelector("h3").textContent);
@@ -68,10 +63,8 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   carriedKinds = ["state", "thread", "git", "files", "terminals", "issues"];
   agents = [{ id: ONE, ordinal: 1 }, { id: TWO, ordinal: 2 }];
-  opened = [];
-  document.body.innerHTML =
-    '<button data-workspace-issues hidden><span class="tb-issues-count"></span></button>';
-  button = document.querySelector("[data-workspace-issues]");
+  document.body.innerHTML = cellHtml;
+  button = document.querySelector("[data-tab=issues]");
   trackerCache = await import("../src/core/trackerCache.js");
   ({ mountWorkspaceIssues } = await import("../src/core/trackerWorkspaceIssuesView.js"));
 });
@@ -136,30 +129,28 @@ describe("the badge", () => {
   });
 });
 
-describe("the press", () => {
-  it("goes to this workspace's issues tab rather than opening anything", async () => {
+describe("the rail's cell", () => {
+  // The rail's own press goes to the Issues tab; the badge block wires none.
+  it("leaves the press to the rail", async () => {
     await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
+    expect(button.onclick).toBeNull();
     button.click();
     await flush();
-    expect(opened).toEqual([{ deviceId: "dev-1", projectId: "proj-1", workspaceId: "ws-1" }]);
-  });
-
-  // The overlay is gone: nothing is mounted over the page at all.
-  it("puts no overlay over the page", async () => {
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
-    await mount();
-    button.click();
-    await flush();
-    expect(document.querySelector(".modal-workspace-issues")).toBeNull();
+    expect(overlay()).toBeNull();
     expect(document.querySelector("dialog")).toBeNull();
   });
 
-  it("goes there even when the workspace's agents are holding nothing", async () => {
-    await putIssues([held(ELSEWHERE, { number: 1, id: "i1", status: "in_progress" })]);
+  // A paint of the rail rewrites its cells: the block moves onto the new one
+  // and says the count it already holds, with nothing read again.
+  it("follows the rail onto a repainted cell, keeping its count", async () => {
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
     await mount();
-    button.click();
-    await flush();
-    expect(opened).toHaveLength(1);
+    expect(badge()).toBe("1");
+    document.body.innerHTML = cellHtml;
+    button = document.querySelector("[data-tab=issues]");
+    block.retarget(button);
+    expect(badge()).toBe("1");
+    expect(button.hidden).toBe(false);
   });
 });

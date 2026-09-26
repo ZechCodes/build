@@ -1,3 +1,7 @@
+// Frozen historical cache module for mixed-version compaction regressions.
+// Source: 1e012587:spa/src/core/localCache.js; only import paths are relocated.
+// Keep its module-local clock and real IndexedDB writers independent of current code.
+
 // The local cache: one IndexedDB store holding what each surface last saw.
 // Surfaces paint from it while the sync layer asks the bridge for newer data.
 // A suspended browser can close its connection without losing those records;
@@ -16,8 +20,8 @@
 // wrote, and what eviction took away — for one frame of latency on a revisit.
 // The store is read directly, and every writer announces what it changed.
 
-import { feedWithObservations } from "./cacheFreshness.js";
-import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
+import { feedWithObservations } from "../../src/core/cacheFreshness.js";
+import { recordConnectionDiagnostic } from "../../src/core/connectionDiagnostics.js";
 
 const DB_NAME = "build-cache";
 // v3: the cache-first client's shapes, and the write-time index the lifetime
@@ -36,15 +40,6 @@ const nextWriteOrder = () => {
   lastWriteOrder = Math.max(now, lastWriteOrder + 0.001);
   return lastWriteOrder;
 };
-const randomToken = () => globalThis.crypto?.randomUUID?.() ||
-  `${Date.now()}-${Math.random()}-${Math.random()}`;
-// `order` is a clock, and two tabs can read the same tick. `write` names the
-// write itself — this page's own id and its count of writes — so a reader
-// that captured it can tell whether any writer, in any tab, has put the
-// record since. Every record this module writes carries both.
-const WRITER = randomToken();
-let writesMade = 0;
-const writeStamp = () => ({ at: Date.now(), order: nextWriteOrder(), write: `${WRITER}:${(writesMade += 1)}` });
 
 /** The index on each record's write time. It exists so "how old is what this
  *  workspace holds" can be answered from index keys alone: a key cursor
@@ -720,43 +715,32 @@ export function readCachedMany(addresses) {
  * them, less any row it names as superseded — one a push wrote after the read
  * was asked, whose own record is the newer word. An undo can merge into the
  * current value inside the same transaction. */
-function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow, unchanged = [] } = {}) {
+function writeFeed(address, update, { observedFeedRows = false, supersededFeedRow } = {}) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
     changed = false;
     // Read and put in the same transaction: another tab can write between a
     // separate read and write, and its newer row observation must survive.
-    readRecordsInStore(store, [key, ...unchanged.map(({ address }) => recordKey(address))], ([previous, ...guards]) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
       try {
-        if (!unchanged.every(({ written }, index) => isCachedWrite(guards[index], written))) return;
+        const previous = request.result;
         const next = update(previous?.value, previous);
         if (next == null) return;
-        const { write, ...stamp } = writeStamp();
-        const record = { ...stamp, write, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
+        const at = Date.now();
+        const order = nextWriteOrder();
+        const stamp = { at, order };
+        const record = { at, order, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
       }
-    });
+    };
     return null;
   }).then((committed) => {
     if (committed && changed) announce(partsOfKey(key));
     return Boolean(committed && changed);
-  });
-}
-
-/** Read the records needed by one conditional write without leaving its
- * transaction. A writer cannot change a guard between these reads and put. */
-function readRecordsInStore(store, keys, read) {
-  const records = new Array(keys.length);
-  let remaining = keys.length;
-  keys.forEach((key, index) => {
-    const request = store.get(key);
-    request.onsuccess = () => {
-      records[index] = request.result;
-      if (--remaining === 0) read(records);
-    };
   });
 }
 
@@ -766,7 +750,7 @@ export function writeCached(address, value, { source, sequence, observedFeedRows
   if (address.kind === "feed") return writeFeed(address, () => value, { observedFeedRows });
   if (address.kind === "bridge-update") return writeBridgeUpdate(address, value);
   const key = recordKey(address);
-  const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}) };
+  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
   return wroteStore((store) => {
     store.put(record, key);
     return null;
@@ -778,37 +762,35 @@ export function writeCached(address, value, { source, sequence, observedFeedRows
 /** An absent record differs from an older record without a generation. */
 export const cachedGeneration = (record) => record ? (record.generation || 0) : -1;
 export const cacheAvailable = async () => Boolean(await openDb());
-const newCacheGeneration = randomToken;
+const newCacheGeneration = () => globalThis.crypto?.randomUUID?.() ||
+  `${Date.now()}-${Math.random()}-${Math.random()}`;
 const withBridgeGeneration = (address, record) => address.kind === "bridge-update"
   ? { ...record, generation: newCacheGeneration() } : record;
 
-/** Capture a record before a conditional mutation. An absent record gets a
- * stamped null placeholder, so a write followed by deletion cannot look
- * unchanged. Readers continue to treat its null value as absent. */
-export function captureCachedRecord(address) {
+/** Snapshot a bridge record before its RPC starts. An absent record gets a
+ * stored token so deletion after this point cannot look absent again to the
+ * request that captured it. The null value paints as unavailable. */
+export function captureCachedGeneration(address) {
   const key = recordKey(address);
-  let record;
+  let generation = -1;
   return wroteStore((store) => {
-    record = undefined;
+    generation = -1;
     const request = store.get(key);
     request.onsuccess = () => {
       try {
         if (request.result) {
-          record = request.result;
+          generation = cachedGeneration(request.result);
           return;
         }
-        record = { ...writeStamp(), value: null, generation: newCacheGeneration() };
-        putOrAbort(store, record, key);
+        generation = newCacheGeneration();
+        putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
       } catch (error) {
         abortForError(store, error);
       }
     };
     return null;
-  }).then((committed) => committed ? record : undefined);
+  }).then((committed) => committed ? generation : -1);
 }
-
-/** Snapshot a bridge record before its RPC starts, fencing deletion too. */
-export const captureCachedGeneration = (address) => captureCachedRecord(address).then(cachedGeneration);
 
 function writeBridgeUpdate(address, value, expectedGeneration) {
   const key = recordKey(address);
@@ -821,7 +803,7 @@ function writeBridgeUpdate(address, value, expectedGeneration) {
         const current = request.result;
         if (expectedGeneration !== undefined && cachedGeneration(current) !== expectedGeneration) return;
         changed = putOrAbort(store, {
-          ...writeStamp(), value,
+          at: Date.now(), order: nextWriteOrder(), value,
           generation: newCacheGeneration(),
         }, key);
       } catch (error) {
@@ -844,8 +826,7 @@ export function writeCachedIfGeneration(address, value, generation) {
 
 /** Merge a local undo — or a board read racing the pushes — into the current
  * feed inside the same transaction that preserves its row observation times.
- * Null leaves the feed untouched. `unchanged` fences any other captured
- * records the update depends on, checked in this same transaction. */
+ * Null leaves the feed untouched. */
 export const updateCachedFeed = (address, update, options) => writeFeed(address, update, options);
 
 /** Replay one page-exit UI edit only if it is still the newest edit. The get
@@ -867,7 +848,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        const record = withBridgeGeneration(address, { ...writeStamp(), value, source, sequence });
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence });
         applied = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -932,20 +913,12 @@ export function mergeCachedAtomically(address, merge) {
   return mergeRecordAtomically(address, (record) => merge(record?.value));
 }
 
-/** Which write a record is, as `readCached` answered it: to find the record
- * still that write later, inside a transaction (`isCachedWrite`). A record
- * stored before writes were named has none — and a page still running that
- * code can write another like it on the same tick — so it is never found
- * unchanged, and neither is an absent one. */
-export const cachedWriteOf = (record) => record?.write;
-export const isCachedWrite = (record, written) => typeof written === "string" && record?.write === written;
-
-/** The same merge, only while the record is still the write `written` names
- * (`cachedWriteOf`). Any writer since, in any tab, leaves the record alone:
- * for a verb's answer that must not land over what arrived after the verb was
- * sent. */
-export function mergeCachedIfUnwritten(address, written, merge) {
-  return mergeRecordAtomically(address, (record) => (isCachedWrite(record, written) ? merge(record?.value) : null));
+/** The same merge, only while the record is still the write `order` names —
+ * the `order` a `readCached` answered. Any writer since, in any tab, leaves
+ * the record alone: for a verb's answer that must not land over what arrived
+ * after the verb was sent. An absent record matches an undefined order. */
+export function mergeCachedIfUnwritten(address, order, merge) {
+  return mergeRecordAtomically(address, (record) => (record?.order === order ? merge(record?.value) : null));
 }
 
 function mergeRecordAtomically(address, merge) {
@@ -958,7 +931,7 @@ function mergeRecordAtomically(address, merge) {
       try {
         const next = merge(request.result);
         if (next == null) return;
-        const record = withBridgeGeneration(address, { ...writeStamp(), value: next });
+        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next });
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -992,7 +965,7 @@ function mergeTogetherInStore(addresses, keys, merge) {
         const next = merge(held.map((record) => record?.value));
         for (const [index, key] of keys.entries()) {
           if (next?.[index] == null) continue;
-          const record = withBridgeGeneration(addresses[index], { ...writeStamp(), value: next[index] });
+          const record = withBridgeGeneration(addresses[index], { at: Date.now(), order: nextWriteOrder(), value: next[index] });
           if (!putOrAbort(store, record, key)) return;
           changed.push(key);
         }
@@ -1032,7 +1005,7 @@ async function takeCountInStore(key, floor) {
     request.onsuccess = () => {
       const held = Number(request.result?.value) || 0;
       const next = Math.max(held + 1, floor);
-      if (putOrAbort(store, { ...writeStamp(), value: next }, key)) taken = next;
+      if (putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: next }, key)) taken = next;
     };
     return null;
   }, true);

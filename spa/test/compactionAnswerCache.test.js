@@ -15,34 +15,22 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { createRailWorkItem } = await import("../src/core/railWorkItem.js");
 const { createCompactionChoice } = await import("../src/core/conversationCompaction.js");
-const { readCached, subscribeCache, wipeCache, writeCached } = await import("../src/core/localCache.js");
+const { deleteCached, readCached, subscribeCache, wipeCache, writeCached } = await import("../src/core/localCache.js");
 
 // A second tab: its own instance of the cache module — its own write clock —
 // over the same database.
 vi.resetModules();
 const otherTab = await import("../src/core/localCache.js");
 
-/** Hold the clock both tabs stamp `order` from on one tick, ahead of anything
- *  written so far, so their next writes carry the same order. */
-const oneTick = () => vi.spyOn(globalThis.performance, "now").mockReturnValue(performance.now() + 1e9);
+// Two independently loaded old tabs use the historical writers, sharing the
+// current tab's database. Neither legacy writer knows about write IDs.
+const legacyTab = await import("./fixtures/localCache-1e012587.js");
+vi.resetModules();
+const otherLegacyTab = await import("./fixtures/localCache-1e012587.js");
 
-/** A record as a page still running the code from before writes were named
- *  puts it: stamped with a time and an order, and no `write`. */
-const writeUnnamed = (address, value, order) => new Promise((done, fail) => {
-  const opening = indexedDB.open("build-cache");
-  opening.onerror = () => fail(opening.error);
-  opening.onsuccess = () => {
-    const db = opening.result;
-    const transaction = db.transaction("records", "readwrite");
-    const key = [address.deviceId, address.entityId, address.kind, address.sub].map(encodeURIComponent).join("|");
-    transaction.objectStore("records").put({ at: Date.now(), order, value }, key);
-    transaction.oncomplete = () => {
-      db.close();
-      done();
-    };
-    transaction.onerror = () => fail(transaction.error);
-  };
-});
+/** Move all module clocks onto one new tick, beyond every preceding test. */
+let tickTime = performance.now();
+const oneTick = () => vi.spyOn(globalThis.performance, "now").mockReturnValue(tickTime += 1e9);
 
 const DEVICE = "dev-1";
 const ENTITY = "run-7";
@@ -237,26 +225,33 @@ describe("the answer in the cached row", () => {
     expect(await cachedLimit()).toBe(150000);
   });
 
-  // Another tab still on the code from before writes were named: its records
-  // carry an order and nothing else, and two of its writes can share a tick.
-  // A row captured with no name can never be told unchanged, so the answer
-  // is left to the push.
-  it("stands down over a row an older page wrote, where another writes the same tick", async () => {
-    const ORDER = 42;
-    const agents = (max_context_tokens) => [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }];
-    await writeUnnamed(ROW_ADDRESS, { kind: "branch", run_id: ENTITY, agents: agents(null) }, ORDER);
-    const rail = observer({
-      answer: async (params) => {
-        await writeUnnamed(ROW_ADDRESS, { kind: "branch", run_id: ENTITY, agents: agents(150000) }, ORDER);
-        return answering(params);
-      },
-    });
+  it("rejects a legacy row capture after an equal-tick legacy write", async () => {
+    const tick = oneTick();
+    try {
+      const row = (max_context_tokens) => ({
+        kind: "branch", run_id: ENTITY,
+        agents: [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }],
+      });
+      await legacyTab.writeCached(ROW_ADDRESS, row(null));
+      const captured = await readCached(ROW_ADDRESS);
+      expect(captured.write).toBeUndefined();
+      let intervening;
+      const rail = observer({
+        answer: async (params) => {
+          await otherLegacyTab.writeCached(ROW_ADDRESS, row(150000));
+          intervening = await readCached(ROW_ADDRESS);
+          return answering(params);
+        },
+      });
 
-    await rail.choose(0);
-    await flush();
-
-    expect((await readCached(ROW_ADDRESS)).order).toBe(ORDER);
-    expect(await cachedLimit()).toBe(150000);
+      await rail.choose(0);
+      expect(intervening.write).toBeUndefined();
+      expect(intervening.order).toBe(captured.order);
+      expect(await cachedLimit()).toBe(150000);
+      expect(await readCached(ROW_ADDRESS)).toEqual(intervening);
+    } finally {
+      tick.mockRestore();
+    }
   });
 
   it("writes each of two successive choices once, the later last", async () => {
@@ -384,24 +379,51 @@ describe("the answer on the board's runs", () => {
     expect(await runsLimit()).toBe(150000);
   });
 
-  it("stands down over a board an older page wrote, where another writes the same tick", async () => {
-    const ORDER = 42;
-    const board = (max_context_tokens) => ({
-      items: [],
-      runs: [OTHER, { run_id: ENTITY, agents: [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }] }],
-    });
-    await writeUnnamed(FEED_ADDRESS, board(null), ORDER);
+  it.each([false, true])("keeps the feed untouched when a newer row arrives (then deleted: %s)", async (deleted) => {
+    const before = await readCached(FEED_ADDRESS);
     const rail = observer({
       kind: "workspace",
       answer: async (params) => {
-        await writeUnnamed(FEED_ADDRESS, board(150000), ORDER);
+        await pushRow(150000);
+        if (deleted) await deleteCached([ROW_ADDRESS]);
         return answering(params);
       },
     });
 
     await rail.choose(0);
 
-    expect((await readCached(FEED_ADDRESS)).order).toBe(ORDER);
-    expect(await runsLimit()).toBe(150000);
+    expect(await runsLimit()).toBe(null);
+    expect(await readCached(FEED_ADDRESS)).toEqual(before);
+    if (!deleted) expect(await cachedLimit()).toBe(150000);
+  });
+
+  it("rejects a legacy feed capture after an equal-tick legacy write", async () => {
+    const tick = oneTick();
+    try {
+      const board = (max_context_tokens) => ({
+        items: [],
+        runs: [OTHER, { run_id: ENTITY, agents: [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }] }],
+      });
+      await legacyTab.writeCached(FEED_ADDRESS, board(null));
+      const captured = await readCached(FEED_ADDRESS);
+      expect(captured.write).toBeUndefined();
+      let intervening;
+      const rail = observer({
+        kind: "workspace",
+        answer: async (params) => {
+          await otherLegacyTab.writeCached(FEED_ADDRESS, board(150000));
+          intervening = await readCached(FEED_ADDRESS);
+          return answering(params);
+        },
+      });
+
+      await rail.choose(0);
+      expect(intervening.write).toBeUndefined();
+      expect(intervening.order).toBe(captured.order);
+      expect(await runsLimit()).toBe(150000);
+      expect(await readCached(FEED_ADDRESS)).toEqual(intervening);
+    } finally {
+      tick.mockRestore();
+    }
   });
 });

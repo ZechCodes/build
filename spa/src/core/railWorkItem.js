@@ -18,6 +18,7 @@ import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import {
   cachedWriteOf,
+  captureCachedRecord,
   isCachedWrite,
   mergeCachedIfUnwritten,
   readCached,
@@ -105,10 +106,16 @@ export function createRailWorkItem({
   const rowWrite = async (entityId) => {
     const address = rowAddress(entityId);
     if (!address) return null;
-    const record = await readCached(address);
-    if (record?.value || !READS_BOARD_RUNS.includes(context.kind)) return { entityId, address, written: cachedWriteOf(record) };
+    const readsRuns = READS_BOARD_RUNS.includes(context.kind);
+    const record = await (readsRuns ? captureCachedRecord(address) : readCached(address));
+    if (record?.value || !readsRuns) return { entityId, address, written: cachedWriteOf(record) };
     const feed = feedAddress();
-    return { entityId, address: feed, written: cachedWriteOf(await readCached(feed)), runs: true };
+    return {
+      entityId, address: feed, written: cachedWriteOf(await readCached(feed)), runs: true,
+      // The null row must stay the same write too: a push may create a row
+      // while the feed stays unchanged, and cleanup may then delete that row.
+      row: { address, written: cachedWriteOf(record) },
+    };
   };
 
   /// Lay `rewrite(agent)` over one agent of this rail's row, in the record
@@ -134,7 +141,7 @@ export function createRailWorkItem({
         return rewritten || run;
       });
       return moved ? { ...feed, runs } : null;
-    });
+    }, { unchanged: [seen.row] });
   };
 
   /// What the workspace list says about the workspace this rail is standing on:

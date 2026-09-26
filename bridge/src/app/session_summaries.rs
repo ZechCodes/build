@@ -8,15 +8,6 @@ impl AppState {
     /// keeps its creation sequence and therefore cannot move an inbox row.
     pub(in crate::app) fn note_run_messages(&mut self, run_id: &str, active: &ActiveRun) {
         let project_id = self.projects.project_id_of(run_id).map(str::to_owned);
-        let project_owner = project_id
-            .as_deref()
-            .and_then(|id| self.projects.get(id))
-            .is_some_and(|project| {
-                crate::app::workspaces::same_path(
-                    &active.worktree.path,
-                    &crate::app::projects::scratch_dir(&self.state_root, &project.repo_path),
-                )
-            });
         for agent in active.agents.agents() {
             let key = (run_id.to_owned(), agent.id.clone());
             let seen = self.session_seen.get(&key).copied().unwrap_or(0);
@@ -36,26 +27,21 @@ impl AppState {
                 }
             }
             for ts in fresh.into_iter().rev() {
-                self.note_owner_message(run_id, project_id.as_deref(), project_owner, ts);
+                self.note_owner_message(run_id, project_id.as_deref(), ts);
             }
             self.session_seen.insert(key, newest);
         }
     }
 
-    fn note_owner_message(
-        &mut self,
-        owner_id: &str,
-        project_id: Option<&str>,
-        project_owner: bool,
-        ts: i64,
-    ) {
-        if !project_owner {
-            let summary = self
-                .session_summaries
-                .entry(owner_id.to_owned())
-                .or_default();
-            *summary = summary.updated(ts);
-        }
+    /// Every conversation owner keeps its own summary — the project's own
+    /// conversation included, whose board row the inbox orders by it (#103)
+    /// — and the project pools them all.
+    fn note_owner_message(&mut self, owner_id: &str, project_id: Option<&str>, ts: i64) {
+        let summary = self
+            .session_summaries
+            .entry(owner_id.to_owned())
+            .or_default();
+        *summary = summary.updated(ts);
         if let Some(project_id) = project_id {
             let summary = self
                 .session_summaries
@@ -84,8 +70,7 @@ impl AppState {
         for (owner, retained_project_id, agent, sequence, ts) in rows {
             if let Some(owner) = owner {
                 let project_id = self.projects.project_id_of(&owner).map(str::to_owned);
-                let project_owner = self.is_project_conversation_owner(&owner);
-                self.note_owner_message(&owner, project_id.as_deref(), project_owner, ts);
+                self.note_owner_message(&owner, project_id.as_deref(), ts);
                 self.session_seen
                     .entry((owner, agent))
                     .and_modify(|seen| *seen = (*seen).max(sequence))

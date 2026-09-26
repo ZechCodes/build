@@ -18,6 +18,7 @@ import {
   railEntity,
   railStatusShape,
   railWorkStatus,
+  rememberedAgentId,
   removeAgentConfirm,
   selectAgentId,
   startFailuresLearned,
@@ -226,6 +227,72 @@ describe("the bubble strip", () => {
     expect(bubbles.map((b) => b.type)).toEqual(["ghost"]);
     expect(bubbles[0].label).toBe("");
     expect(bubbles[0].pattern).toBe(1);
+  });
+});
+
+// The strip carries the agents the reader watches (#105). One they do not is
+// on it only while it is the conversation open, as a temporary bubble marked
+// unwatched, and leaving it takes the bubble away.
+describe("the strip's watched agents (#105)", () => {
+  const agents = () => [
+    agent({ id: "ag-1", watched: true }),
+    agent({ id: "ag-2", ordinal: 2, watched: false }),
+    agent({ id: "ag-3", ordinal: 3 }),
+  ];
+  const strip = (over) => railBubbles({ agents: agents(), kind: "workspace", ...over })
+    .map((bubble) => [bubble.type, bubble.id, !!bubble.unwatched]);
+
+  it("carries only watched agents, and those from a bridge that says nothing about watching", () => {
+    expect(strip({ selectedId: "ag-1" })).toEqual([
+      ["agent", "ag-1", false],
+      ["agent", "ag-3", false],
+      ["add", "", false],
+    ]);
+  });
+
+  it("adds the open unwatched agent in its place, marked and said to be unwatched", () => {
+    const bubbles = railBubbles({ agents: agents(), selectedId: "ag-2", kind: "workspace" });
+    expect(bubbles.map((bubble) => [bubble.id, !!bubble.unwatched, bubble.active])).toEqual([
+      ["ag-1", false, false],
+      ["ag-2", true, true],
+      ["ag-3", false, false],
+      ["", false, false],
+    ]);
+    expect(bubbles[1].pattern).toBe(2);
+    expect(bubbles[1].title).toMatch(/Not watching$/);
+  });
+
+  it("drops the temporary bubble once the overview or the + is what is open", () => {
+    expect(strip({ selectedId: "ag-2", selectedKind: "overview" }).map(([, id]) => id)).not.toContain("ag-2");
+    expect(strip({ selectedId: "ag-2", selectedKind: "add" }).map(([, id]) => id)).not.toContain("ag-2");
+  });
+
+  it("keeps the + and no ghost on a work item whose agents are all unwatched", () => {
+    const quiet = railBubbles({ agents: [agent({ watched: false })], selectedId: null, selectedKind: "overview", kind: "workspace" });
+    expect(quiet.map((bubble) => bubble.type)).toEqual(["add"]);
+  });
+
+  it("keeps an unwatched agent under the project's agent off the strip", () => {
+    const bubbles = railBubbles({
+      agents: [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })],
+      selectedId: "ag-project", kind: "workspace",
+      projectAgent: { name: "build", entityId: "run-project", agents: [], active: true },
+    });
+    expect(bubbles.map((bubble) => bubble.id)).toEqual(["run-project", "", "ag-2", ""]);
+  });
+
+  it("opens a watched agent before an unwatched one when nothing is chosen", () => {
+    expect(selectAgentId([agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })], null)).toBe("ag-2");
+    expect(selectAgentId([agent({ watched: false })], null)).toBe("ag-1");
+    expect(selectAgentId([agent({ watched: false }), agent({ id: "ag-2", ordinal: 2 })], "ag-1")).toBe("ag-1");
+  });
+
+  it("forgets a remembered conversation the reader does not watch", () => {
+    const listed = [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })];
+    expect(rememberedAgentId(listed, "ag-1")).toBe(null);
+    expect(rememberedAgentId(listed, "ag-2")).toBe("ag-2");
+    expect(rememberedAgentId([agent()], "ag-1")).toBe("ag-1");
+    expect(rememberedAgentId([], "ag-1")).toBe("ag-1");
   });
 });
 

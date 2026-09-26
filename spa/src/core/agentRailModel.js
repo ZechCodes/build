@@ -279,6 +279,18 @@ function underTheProject(own, projectAgent) {
   return [projectAgentBubble(projectAgent), RAIL_SEPARATOR_ENTRY, ...beside];
 }
 
+/** Whether the reader watches this agent. A bridge that says nothing about
+ *  watching leaves `watched` unset, and every agent of it counts as watched. */
+export const agentIsWatched = (agent) => agent?.watched !== false;
+
+/** Whether an agent has a bubble on the strip (#105): the ones the reader
+ *  watches, and an unwatched one only while its conversation is the one open.
+ *  Leaving it — for another agent, the overview or the `+` — takes it off. */
+const onTheStrip = (agent, selectedId, selectedKind) =>
+  agentIsWatched(agent) || (selectedKind === "agent" && agent.id === selectedId);
+
+const UNWATCHED_TIP = "Not watching";
+
 /** The bubbles of the work item the rail is standing on, and nothing else. */
 function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName }) {
   const onProjectPage = kind === "project";
@@ -296,14 +308,15 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
       },
     ];
   }
-  const bubbles = agents.map((agent) => ({
+  const bubbles = agents.filter((agent) => onTheStrip(agent, selectedId, selectedKind)).map((agent) => ({
     type: "agent",
     id: agent.id,
     ...face(agentPattern(agent.ordinal)),
     // A named agent wears its initials; an unnamed one keeps the painted
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
-    title: bubbleTip(agent),
+    title: agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
+    unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
@@ -372,11 +385,19 @@ export function removeAgentConfirm(agent, kind = "branch") {
 }
 
 /** The conversation that is open: the one the human chose while it still
- *  exists, else the first — the rail is never open on nothing. */
+ *  exists, else the first they watch, else the first — the rail is never open
+ *  on nothing. */
 export function selectAgentId(agents = [], wanted = null) {
   if (wanted && agents.some((agent) => agent.id === wanted)) return wanted;
-  return agents.length ? agents[0].id : null;
+  return (agents.find(agentIsWatched) || agents[0])?.id ?? null;
 }
+
+/** The conversation a page was last left on, unless the reader does not watch
+ *  it: its bubble went when they left (#105), so coming back does not bring it
+ *  back. Kept while the agents are not known yet, to be asked again once they
+ *  are. */
+export const rememberedAgentId = (agents = [], remembered = null) =>
+  agents.find((agent) => agent.id === remembered && !agentIsWatched(agent)) ? null : remembered;
 
 // ---- the pinned status line -------------------------------------------------
 

@@ -785,6 +785,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   text-overflow:ellipsis; white-space:nowrap; color:var(--ink2); }
 .rail-overview-state { color:var(--accent); font-size:11px; font-weight:650; }
 .rail-overview-empty { color:var(--dim); }
+/* The agents the reader does not watch (#105): after everything watched, under
+   a rule and a quieter heading than a section's, sectioned the same way. */
+.rail-overview-group { display:flex; flex-direction:column; gap:20px;
+  padding-top:16px; border-top:1px solid var(--line); }
+.rail-overview-group-title { margin:0; color:var(--dim); font-size:11px; font-weight:650;
+  letter-spacing:.06em; text-transform:uppercase; }
 /* position:relative — the strip rises above the card it anchors, so pressing
    the bubble beside the open one reaches that agent. */
 /* The foot of the column is the connection icon's (spa/src/styles.css), so the
@@ -821,6 +827,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-bubble.is-dropping > * { pointer-events:none; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
+/* An agent the reader does not watch, on the strip only while its conversation
+   is open (#105): a dashed ring and a face dropped back, so it reads as passing
+   through rather than one of the watched. */
+.rail-bubble-unwatched { border-style:dashed; border-color:var(--line3); }
+.rail-bubble-unwatched .rail-glyph { opacity:.45; }
 /* The chat overview's control (#117): right after the `+`, and a bare icon —
    no face, no ring, no slab — because it is not a conversation. The box stays
    bubble-sized so the strip's rhythm and the press target do not shrink. It is

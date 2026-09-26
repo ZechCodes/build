@@ -106,16 +106,34 @@ const addButtonHtml = (section) => `<button type="button" class="iconbtn rail-ov
 const seeAllHtml = (section, count) => `<button type="button" class="rail-overview-see-all" data-overview-scope="${esc(section.workspaceId)}" aria-label="See all ${count} agents in ${esc(section.name)}">See all</button>`;
 
 /** One section. On the project's scope a workspace shows its first few agents
- *  by the overview's own order, and its heading and See all open the rest. */
-function sectionHtml(section, projectScope) {
+ *  by the overview's own order, and its heading and See all open the rest. An
+ *  agent is added where the watched agents are, so the unwatched group's
+ *  sections (`adds` false) carry no +. */
+function sectionHtml(section, projectScope, adds = true) {
   const workspace = section.section === "workspace";
   const capped = projectScope && workspace;
   const sorted = section.rows.sort(byLatestAgentMessage);
   const listed = capped ? sorted.slice(0, WORKSPACE_PREVIEW_AGENTS) : sorted;
   const more = listed.length < sorted.length ? seeAllHtml(section, sorted.length) : "";
   return `<section class="rail-overview-section" aria-label="${esc(section.name)}">
-    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${workspace ? addButtonHtml(section) : ""}</div>
+    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${workspace && adds ? addButtonHtml(section) : ""}</div>
     ${listed.map(rowHtml).join("")}${more}</section>`;
+}
+
+/** Whether the reader watches the agent on this row. A row from a bridge that
+ *  says nothing about watching counts as watched. */
+const isUnwatched = (row) => row.watching === false;
+
+const UNWATCHED_GROUP = "Not watching";
+
+/** The agents the reader does not watch (#105): off the strip, and here after
+ *  everything watched, sectioned and sorted as the watched ones are. Only the
+ *  sections with such an agent in them are drawn. */
+function unwatchedGroupHtml(rows, projectScope) {
+  if (!rows.length) return "";
+  const sections = overviewSections(rows, false, []).map((section) => sectionHtml(section, projectScope, false)).join("");
+  return `<div class="rail-overview-group" role="group" aria-label="${UNWATCHED_GROUP}">
+    <h2 class="rail-overview-group-title">${UNWATCHED_GROUP}</h2>${sections}</div>`;
 }
 
 /** `scope` is the rail's overview scope: `{ kind: "project" }` shows every
@@ -127,7 +145,9 @@ export function overviewHtml(rows, { showProjectAgents = false, scope = null, wo
   const named = workspaces.filter((workspace) => inScope(scope, workspace.workspaceId));
   if (!shown.length && !showProjectAgents && !named.length) return '<p class="rail-overview-empty">No agents here yet.</p>';
   const projectScope = scope?.kind === "project";
-  return overviewSections(shown, showProjectAgents, named).map((section) => sectionHtml(section, projectScope)).join("");
+  const watched = overviewSections(shown.filter((row) => !isUnwatched(row)), showProjectAgents, named)
+    .map((section) => sectionHtml(section, projectScope)).join("");
+  return watched + unwatchedGroupHtml(shown.filter(isUnwatched), projectScope);
 }
 
 const cachedConversationId = (agent, execution) => execution

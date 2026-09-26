@@ -1309,6 +1309,8 @@ pub struct ChangeBus {
     /// [`ENTITY_SETTLE_WINDOW`] on every flush: an older entry can hold
     /// nothing back, so this never grows with the entities a bridge has seen.
     emitted_at: Mutex<HashMap<ChangeKey, tokio::time::Instant>>,
+    #[cfg(test)]
+    completed_test_cycles: tokio::sync::watch::Sender<(u64, bool)>,
 }
 
 impl ChangeBus {
@@ -1335,6 +1337,8 @@ impl ChangeBus {
         board_entities: BoardEntities,
         facts: Option<FactsSource>,
     ) -> Arc<Self> {
+        #[cfg(test)]
+        let (completed_test_cycles, _) = tokio::sync::watch::channel((0, true));
         Arc::new(ChangeBus {
             subscribers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(Vec::new()),
@@ -1346,7 +1350,41 @@ impl ChangeBus {
             board_entities,
             facts,
             emitted_at: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            completed_test_cycles,
         })
+    }
+
+    /// Wait for a flusher cycle that starts after this call. Two completions
+    /// cover a cycle already in flight when the test registers its barrier.
+    #[cfg(test)]
+    pub async fn settle_for_test(&self) {
+        let mut completed = self.completed_test_cycles.subscribe();
+        let target = completed.borrow().0 + 2;
+        self.wake.notify_one();
+        while {
+            let (cycle, drained) = *completed.borrow_and_update();
+            cycle < target || !drained
+        } {
+            completed
+                .changed()
+                .await
+                .expect("the flusher remains alive");
+        }
+    }
+
+    /// Whether every sendable change has completed its flush. A subscription
+    /// in Off mode deliberately holds changes until it is enabled again.
+    #[cfg(test)]
+    fn has_test_pending(&self) -> bool {
+        let legacy_pending = !self.pending.lock().unwrap().keys.is_empty();
+        legacy_pending
+            || self
+                .subscriptions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|sub| sub.spec.mode != Mode::Off && !sub.pending.is_empty())
     }
 
     /// How long changes collapse together before the next flush.
@@ -1881,6 +1919,15 @@ impl ChangeBus {
         loop {
             bus.wait_for_work().await;
             ChangeBus::flush_off_thread(&bus).await;
+            #[cfg(test)]
+            {
+                let completed = bus.completed_test_cycles.borrow().0 + 1;
+                bus.completed_test_cycles
+                    .send_replace((completed, !bus.has_test_pending()));
+                if bus.completed_test_cycles.receiver_count() > 0 {
+                    bus.wake.notify_one();
+                }
+            }
             tokio::time::sleep(bus.window).await;
         }
     }

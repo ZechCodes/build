@@ -20,6 +20,7 @@ import { confirmAction } from "./confirm.js";
 import {
   activeEntryKey,
   branchDeleteTooOld,
+  byAnchor,
   branchDoneConfirm,
   captureEntries,
   dismissParamsOf,
@@ -34,6 +35,7 @@ import {
   workspaceEntryKey,
   workspaceIsRecent,
 } from "./inbox.js";
+import { projectAgentEntries } from "./inboxProjectAgent.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchFinishNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
@@ -160,9 +162,19 @@ function drawFromFeed() {
 }
 
 function publishAttentionCount() {
-  const unread = [...watchedIssueRows(), ...watchedWorkspaceEntries(workspaces, projects, items, runs)]
+  const unread = [...watchedIssueRows(), ...workRows(items)]
     .filter((entry) => entry.state === "unread");
   publishInboxAttentionCount(new Set(unread.map((entry) => entry.entityId || entry.key)).size);
+}
+
+/** The workspace rows and each project's own agent row (#103), together in
+ *  the inbox's anchor order. On the projects face the project agent's row is
+ *  its block's head rather than a row (core/inboxProjects.js). */
+function workRows(rows) {
+  return [
+    ...watchedWorkspaceEntries(workspaces, projects, rows, runs),
+    ...projectAgentEntries(projects, rows, runs),
+  ].sort(byAnchor);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */
@@ -204,7 +216,7 @@ function draw() {
   const shown = withDeviceNames([
     ...captureEntries(rows),
     ...watchedIssueRows(),
-    ...watchedWorkspaceEntries(workspaces, projects, rows, runs),
+    ...workRows(rows),
   ]);
   list.onclick = onListClick;
   list.onkeydown = onListKeydown;

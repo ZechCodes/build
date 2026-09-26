@@ -4,7 +4,10 @@
 // where two machines use that name.
 //
 // The block's head opens the project's own page — its workspaces, and the agent
-// you talk to about the project — and offers the one create surface behind a +,
+// you talk to about the project. The head is that agent's entry (#103): its
+// badge is the project agent's unread while the block is open, and everything
+// inside it, the watched workspace agents' too, while it is folded. It offers
+// the one create surface behind a +,
 // the project's settings, and a ⋯ menu that puts the block away.
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
@@ -20,6 +23,7 @@
 import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from "./icons.js";
 import {
+  PROJECT_AGENT,
   RECENT_AFTER_MS,
   clashingNames,
   dimDeviceHtml,
@@ -67,12 +71,15 @@ function projectsNamed(projects, rows) {
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
  *  always routable, however empty it is. */
-function workspaceBlockFor(project, grouped, tag, nowMs) {
-  grouped = [...grouped].sort((left, right) =>
+function workspaceBlockFor(project, rows, tag, nowMs) {
+  // The project agent's entry is the block's head, not one of its rows (#103).
+  const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
+  const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort((left, right) =>
     (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity));
   const { anchorMs, lastActivityMs } = sessionTimes(project, nowMs);
   const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
   const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
+  const agentUnreadCount = agentEntry?.unreadCount || 0;
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -88,9 +95,18 @@ function workspaceBlockFor(project, grouped, tag, nowMs) {
     isRecent: lastActivityMs !== null && nowMs - lastActivityMs > RECENT_AFTER_MS,
     flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
-    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, 0),
+    agentEntry,
+    // The head's badge, by the fold (#103): open, the project agent's unread
+    // alone — the rows under it wear their own; folded, everything the block
+    // is holding: the project agent's and every watched workspace agent's.
+    agentUnreadCount,
+    unreadCount: grouped.reduce((total, entry) => total + entry.unreadCount, agentUnreadCount),
   };
 }
+
+/** The count a block's head wears: the project agent's alone while the block
+ *  is open, everything inside it while it is folded. */
+export const headUnreadCount = (block, folded) => (folded ? block.unreadCount : block.agentUnreadCount);
 
 /** Group the landing rail's workspace rows by the project they are in. A
  *  project belongs to one machine, so the grouping is by the account-wide
@@ -235,7 +251,8 @@ const blockMenuHtml = (block, open) => railMenuHtml(open, `Actions for ${block.n
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
   const menuOpen = ui.openMenuKey === block.key;
-  const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
+  const count = headUnreadCount(block, folded);
+  const unread = count > 0 ? `<span class="badge inbox-unread">${count}</span>` : "";
   const title = `Open ${block.name}`;
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
   const device = deviceTagHtml(block);

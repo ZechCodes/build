@@ -19,8 +19,13 @@
 // edge, and what it weighs — files touched, ahead/behind, +/−. A row with
 // nothing to weigh yet says so.
 //
-// A workspace whose last message is more than a day old goes into Recent at
-// the end of the list. Its rows keep the same anchor order there.
+// A workspace row's second line ends with how many of its agents are running,
+// and its one badge, right of its Done, is the unread of its watched agents.
+// Each project's own agent has a row among them too (core/inboxProjectAgent.js):
+// the project's name alone, ordered by that agent's own conversation (#103).
+//
+// A workspace or project agent whose last message is more than a day old goes
+// into Recent at the end of the list. Its rows keep the same anchor order there.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -29,7 +34,7 @@ import { carriesWatching } from "./trackerWatch.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { isAtLeastAsFresh } from "./cacheFreshness.js";
+import { freshestRosters, runningAgentCount, watchedUnreadCount } from "./inboxRoster.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
 import { sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
@@ -150,32 +155,51 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
  * after that omission, so an item's presence is never evidence of watching.
  * A workspace with no agent stays visible only when it was user-created. */
 export function watchedWorkspaceEntries(workspaces = [], projects = [], items = [], runs = []) {
-  const rosterByEntity = new Map();
+  const rosterOf = freshestRosters([...runs, ...items]);
   const agentCreated = new Set(workspaces.filter((workspace) => workspace.created_by_agent === true)
     .map((workspace) => workspace.workspaceKey));
-  for (const row of [...runs, ...items]) {
-    const entityId = entityIdOf(row);
-    if (entityId && Array.isArray(row.agents)) {
-      const key = JSON.stringify([row.projectKey, entityId]);
-      const current = rosterByEntity.get(key);
-      if (!current || isAtLeastAsFresh(row, current)) rosterByEntity.set(key, row);
-    }
-  }
-  return workspaceEntries(workspaces, projects, items).filter((entry) => {
-    const agents = rosterByEntity.get(JSON.stringify([entry.projectKey, entry.entityId]))?.agents;
-    return agents?.length ? agents.some((agent) => agent.watched !== false) : !agentCreated.has(entry.workspaceKey);
+  return workspaceEntries(workspaces, projects, items).flatMap((entry) => {
+    const agents = rosterOf(entry.projectKey, entry.entityId)?.agents;
+    if (!agents?.length) return agentCreated.has(entry.workspaceKey) ? [] : [entry];
+    return agents.some((agent) => agent.watched !== false) ? [withRosterTallies(entry, agents)] : [];
   });
+}
+
+/** A workspace row with what its roster says (#103): how many agents are
+ *  running, said after the git status on line two, and the unread of the
+ *  watched agents alone, which is the one badge the row wears. */
+function withRosterTallies(entry, agents) {
+  const runningCount = runningAgentCount(agents);
+  return {
+    ...entry,
+    runningCount,
+    unreadCount: watchedUnreadCount(agents),
+    facts: `${entry.facts} · ${runningCount} running`,
+  };
 }
 
 /** How long a row can say nothing before it belongs to Recent rather than to
  *  the list proper. */
 export const RECENT_AFTER_MS = DAY_MS;
 
-/** A workspace belongs in Recent once its newest message is over a day old.
- * An older bridge is anchored today; an empty new workspace uses creation. */
+/** The project agent's row (#103): one per project, named by the project. */
+export const PROJECT_AGENT = "project_agent";
+
+const quietForADay = (entry, nowMs) => nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
+
+/** When each kind of row the rail's workspace list holds belongs in Recent.
+ *  A workspace goes once its newest message is over a day old; an older
+ *  bridge anchors it today, and unknown activity keeps it in the list. The
+ *  project agent's row goes the same way, and a project agent with nothing
+ *  said yet has never been active, so it starts there. */
+const RECENT_RULES = {
+  workspace: (entry, nowMs) => entry.lastActivityMs !== null && quietForADay(entry, nowMs),
+  [PROJECT_AGENT]: (entry, nowMs) => entry.lastActivityMs === null || quietForADay(entry, nowMs),
+};
+
+/** Whether a row of the rail's workspace list belongs in Recent. */
 export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
-  entry.kind === "workspace" && entry.lastActivityMs !== null
-  && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
+  RECENT_RULES[entry.kind]?.(entry, nowMs) ?? false;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";
@@ -686,7 +710,7 @@ function pinAssignedIssues(rows) {
 
 /** Oldest anchor first. A row nobody can date sorts under the ones somebody
  *  can — unknown age is not evidence of being old. */
-function byAnchor(left, right) {
+export function byAnchor(left, right) {
   if (left.anchorMs === right.anchorMs) return 0;
   if (left.anchorMs === null) return 1;
   if (right.anchorMs === null) return -1;
@@ -764,9 +788,13 @@ const STANDS_ON = {
   // layer neither leads its pass with nor watches in realtime: the reader
   // watching their project agent work would be the one reader on a page that
   // hears nothing.
+  //
+  // The project agent's own row (#103) stands on it too, by the project it is
+  // for: the list marks it without a snapshot to look the conversation up in.
   project: (route, view) => {
     const conversation = projectConversationId(route, view);
-    return (entry) => Boolean(conversation) && entry.entityId === conversation;
+    return (entry) => (Boolean(conversation) && entry.entityId === conversation)
+      || (entry.kind === PROJECT_AGENT && entry.deviceId === route.deviceId && entry.projectId === route.projectId);
   },
 };
 
@@ -970,17 +998,34 @@ const dotClass = (entry) => (entry.kind === "issue" ? "sdot-issue" : `sdot-${ent
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
  *  line instead (quietRowHtml). */
 export function inboxRowHtml(entry, ui = {}) {
-  if (entry.kind === "capture") return captureRowHtml(entry, ui);
+  const ownPainter = ROW_PAINTERS[entry.kind];
+  if (ownPainter) return ownPainter(entry, ui);
   if (ui.quiet) return quietRowHtml(entry, ui);
-  const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
+  const badge = badgePlacement(entry);
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's
   // own block (`showProject: false`) has already been told.
   const projectTag = projectTagHtml(entry, ui);
+  return `${rowOpenHtml(entry, ui)}
+    <span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>
+    <div class="inbox-body">
+      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${badge.line}</div>
+      <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
+      <span class="warn" data-done-error hidden></span>
+    </div>
+    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${badge.actions}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+  </div>`;
+}
+
+/** The element every row stands in: its classes, the key the reconciler
+ *  matches it by, its entity, and the tooltip saying what its lines leave out.
+ *  `extra` is the classes of a row's own shape. */
+function rowOpenHtml(entry, ui, extra = []) {
   const classes = [
     "srow",
     "inbox-entry",
+    ...extra,
     entry.key === ui.activeKey ? "active" : "",
     entry.muted ? "inbox-muted" : "",
     entry.route ? "" : "inbox-unroutable",
@@ -989,16 +1034,40 @@ export function inboxRowHtml(entry, ui = {}) {
     .join(" ");
   return `<div class="${classes}" data-key="${esc(entry.key)}"${
     entry.entityId ? ` data-entity="${esc(entry.entityId)}"` : ""
-  } title="${esc(rowTooltip(entry))}">
-    <span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>
-    <div class="inbox-body">
-      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
-      <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
-      <span class="warn" data-done-error hidden></span>
+  } title="${esc(rowTooltip(entry))}">`;
+}
+
+/** How many messages are waiting, as the badge every kind of row wears. */
+const unreadBadgeHtml = (entry) =>
+  (entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "");
+
+/** Where a live row wears its badge. A workspace wears it right of its Done,
+ *  in the actions cluster (#103); every other row pulls it to line one's far
+ *  edge. */
+const badgePlacement = (entry) => (entry.kind === "workspace"
+  ? { line: "", actions: unreadBadgeHtml(entry) }
+  : { line: unreadBadgeHtml(entry), actions: "" });
+
+/** The project agent's row (#103): the project's name and nothing more — no
+ *  second line, no Done, no menu. Its badge stands at the right edge where a
+ *  workspace's does, and in Recent it is one quiet line like every other. The
+ *  project is already its name, so it wears no project tag; the machine is
+ *  said after it only where two machines share the name. */
+function projectAgentRowHtml(entry, ui) {
+  const dot = ui.quiet ? "" : `<span class="sdot ${dotClass(entry)}" title="${entry.state}"></span>`;
+  return `${rowOpenHtml(entry, ui, ["inbox-project-agent", ui.quiet ? "inbox-quiet" : ""])}
+    ${dot}<div class="inbox-body">
+      <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span>${dimDeviceHtml(entry.deviceName)}</div>
     </div>
-    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${unreadBadgeHtml(entry)}</div>
   </div>`;
 }
+
+/** The kinds of row that paint in a shape of their own. */
+const ROW_PAINTERS = {
+  capture: (entry, ui) => captureRowHtml(entry, ui),
+  [PROJECT_AGENT]: projectAgentRowHtml,
+};
 
 /** A quiet row, which is what Recent holds: one line — what this is, with
  *  what it weighs floating over the line's right edge — and no state dot. A
@@ -1007,21 +1076,9 @@ export function inboxRowHtml(entry, ui = {}) {
  *  the way the unread count does on a live row. Same key, same verbs, same
  *  element shape, so a row going quiet keeps its element. */
 function quietRowHtml(entry, ui) {
-  const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
+  const unread = unreadBadgeHtml(entry);
   const projectTag = projectTagHtml(entry, ui);
-  const classes = [
-    "srow",
-    "inbox-entry",
-    "inbox-quiet",
-    entry.key === ui.activeKey ? "active" : "",
-    entry.muted ? "inbox-muted" : "",
-    entry.route ? "" : "inbox-unroutable",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  return `<div class="${classes}" data-key="${esc(entry.key)}"${
-    entry.entityId ? ` data-entity="${esc(entry.entityId)}"` : ""
-  } title="${esc(rowTooltip(entry))}">
+  return `${rowOpenHtml(entry, ui, ["inbox-quiet"])}
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
       <span class="warn" data-done-error hidden></span>

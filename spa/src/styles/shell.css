@@ -390,6 +390,18 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry.active .inbox-actions,
 .inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+/* A workspace's unread badge stands right of its Done, and the project agent's
+   at the same edge (#103): in the cluster, and shown whatever the rest of the
+   cluster is doing, since it is news rather than a control. Line one keeps
+   clear of it, as it kept clear of the badge when the badge sat on the line. */
+.inbox-entry { --inbox-badge-width:28px; }
+.inbox-actions > .inbox-unread { margin-left:4px; }
+.inbox-actions:has(> .inbox-unread) { opacity:1; pointer-events:auto; }
+.inbox-entry:has(.inbox-actions > .inbox-unread) {
+  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-badge-width)); }
+.inbox-entry:has(.inbox-workspace-done):has(.inbox-actions > .inbox-unread) {
+  --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-done-width) + var(--inbox-badge-width)); }
+.inbox-entry:has(.inbox-actions > .inbox-unread) > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 /* Inside a project block the rows stand on the block's step of tone, so the
    overlays that carry a row's own fill carry that one. */
@@ -403,6 +415,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
   .inbox-entry .inbox-actions:has(.inbox-workspace-done),
+  .inbox-entry .inbox-actions:has(> .inbox-unread),
   .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather

@@ -9,6 +9,19 @@ export function selectedDirectory(workspace, sourceId) {
   return directories.find((entry) => directoryId(entry) === sourceId) || directories[0] || null;
 }
 
+/** The source directories mounted into a workspace, in its own order — the
+ * rows its Files roots and its Changes tabs are drawn from. `source_id` is
+ * the stable route identity; `id` is the concrete workspace-directory record
+ * and remains available for RPCs that need it. */
+export function workspaceDirectoryModel(workspace, sourceId = null) {
+  return ((workspace && workspace.directories) || []).map((directory) => ({
+    ...directory,
+    sourceId: directory.source_id || directory.id,
+    label: directory.name || directory.mount || directory.source_id || directory.id,
+    current: (directory.source_id || directory.id) === sourceId,
+  }));
+}
+
 /** Which tab a workspace directory can be standing on. A directory with no
  * repository in it has no Changes to show, so Files is the only surface it
  * has — whatever the URL, the row or the menu asked for. Everything that mints

@@ -23,7 +23,7 @@ const GUTTER_COMMENT_HTML = `<button class="dcmt" type="button" title="Comment o
 import { pathOf } from "./diff.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
-import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer } from "../commentPop.js";
+import { showCommentPop, hideCommentPop, hasCommentPop, openCommentComposer, suspendCommentPop } from "../commentPop.js";
 import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 import { watchUiState } from "./localUiState.js";
@@ -57,6 +57,9 @@ export function createCommentLayer({
   let sending = false;
   let draftRecord = null;
   let draftWrites = Promise.resolve();
+  const popOwner = Symbol("changes comments");
+  let visible = true;
+  let restorePop = null;
 
   const q = (sel) => (host ? host.querySelector(sel) : null);
 
@@ -142,7 +145,7 @@ export function createCommentLayer({
   };
 
   const clear = () => {
-    hideCommentPop();
+    hideCommentPop(popOwner);
     return changeComments((next) => { next.length = 0; });
   };
 
@@ -200,7 +203,7 @@ export function createCommentLayer({
     busy: () =>
       commentLayerBusy({
         pending: comments.length,
-        popOpen: hasCommentPop(),
+        popOpen: hasCommentPop(popOwner),
         generalText: readNote(),
         selecting: Boolean(selectionInside(host)),
       }),
@@ -211,7 +214,7 @@ export function createCommentLayer({
      *  not. */
     repaintBusy: () =>
       commentLayerBusy({
-        popOpen: hasCommentPop(),
+        popOpen: hasCommentPop(popOwner),
         generalText: readNote(),
         selecting: Boolean(selectionInside(host)),
       }),
@@ -236,10 +239,10 @@ export function createCommentLayer({
           onChange();
         });
       }
-      host.onmouseover = (event) => offerGutterComment(event.target);
+      host.onmouseover = visible ? (event) => offerGutterComment(event.target) : null;
       if (selectionWatcher) selectionWatcher();
       // eslint-disable-next-line complexity -- ratchet: this callback is at 11, cap 10 — reduce it, then drop this line
-      selectionWatcher = watchSelection(host, (selection) => {
+      selectionWatcher = visible ? watchSelection(host, (selection) => {
         const fileEl = rowOf(selection.anchorNode, host)?.closest(".file");
         if (!fileEl || fileEl.classList.contains("capped")) return;
         const table = fileEl.querySelector("table");
@@ -253,8 +256,8 @@ export function createCommentLayer({
         const side = (startRow || endRow).dataset.side || "new";
         showCommentPop(selection.getRangeAt(0).getBoundingClientRect(), (comment) =>
           addComment(pathOf(fileEl.dataset.key), from, to, text, comment, side),
-        );
-      });
+        popOwner);
+      }) : null;
       host.querySelectorAll(".pcx").forEach((remove) => {
         remove.onclick = () => removeComment(+remove.dataset.id);
       });
@@ -279,7 +282,7 @@ export function createCommentLayer({
         if (row && file)
           openCommentComposer(row.getBoundingClientRect(), (comment) =>
             addComment(pathOf(file.dataset.key), +row.dataset.ln, +row.dataset.ln, row.querySelector(".code").textContent, comment, row.dataset.side || "new"),
-          );
+          popOwner);
         return true;
       }
       const commentButton = target.closest(".fcmt");
@@ -288,7 +291,7 @@ export function createCommentLayer({
         if (fileEl)
           openCommentComposer(commentButton.getBoundingClientRect(), (comment) =>
             addComment(pathOf(fileEl.dataset.key), 0, 0, "(entire file)", comment),
-          );
+          popOwner);
         return true;
       }
       const selection = window.getSelection();
@@ -303,18 +306,35 @@ export function createCommentLayer({
       const snippet = row.querySelector(".code").textContent;
       showCommentPop(row.getBoundingClientRect(), (comment) =>
         addComment(pathOf(fileEl.dataset.key), line, line, snippet, comment, row.dataset.side || "new"),
-      );
+      popOwner);
       return true;
     },
 
     clear,
+
+    setVisible(next) {
+      if (visible === next) return;
+      visible = next;
+      if (!visible) {
+        restorePop = suspendCommentPop(popOwner);
+        if (selectionWatcher) selectionWatcher();
+        selectionWatcher = null;
+        if (host) host.onmouseover = null;
+        hideGutterComment();
+      } else {
+        if (host) this.attach(host);
+        restorePop?.();
+        restorePop = null;
+      }
+    },
 
     dispose() {
       draftRecord?.dispose({ flushPending: false });
       draftRecord = null;
       if (selectionWatcher) selectionWatcher();
       selectionWatcher = null;
-      hideCommentPop();
+      hideCommentPop(popOwner);
+      restorePop = null;
       if (host) host.onmouseover = null;
       host = null;
     },

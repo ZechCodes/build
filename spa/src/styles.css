@@ -1412,6 +1412,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    would otherwise run past the tree's divider and under the preview. */
 .frow .fname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow .fsize { margin-left:auto; font-size:11px; color:var(--dim); }
+/* A workspace's Files: one root row per directory (core/fileRoots.js), the
+   directory's rows a level under it. The row says the directory's name, so it
+   reads as a heading over its rows rather than one of them. */
+.froot-head .fname { font-weight:600; }
 /* The open files: one row that scrolls sideways and never wraps. */
 .ftabs { flex:none; display:flex; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin;
   border-bottom:1px solid var(--line); }

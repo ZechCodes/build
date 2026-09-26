@@ -126,6 +126,22 @@ describe("the modal's motion", () => {
     }
   });
 
+  it("detaches immediately when its owner hides during a closing animation", async () => {
+    const onClose = vi.fn();
+    const modal = openModal({ dialogHtml: DIALOG, onClose });
+    await settleMotion();
+    const closing = modal.close();
+    await motionBeat();
+    expect(scrimOnScreen()).not.toBeNull();
+    modal.setVisible(false);
+    expect(scrimOnScreen()).toBeNull();
+    modal.setVisible(true);
+    expect(scrimOnScreen()).toBeNull();
+    await settleMotion();
+    await closing;
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   const keyframedProperties = (run) => Object.keys(run.keyframes[0]);
 
   it("leaves a key that is not Escape to whatever is under it", async () => {

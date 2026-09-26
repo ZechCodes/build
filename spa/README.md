@@ -14,12 +14,18 @@ src/core/       runtime-agnostic logic, fully unit-tested:
   markdown.js     safe markdown rendering for plans/notifications
   notes.js        batched plan/diff comments → agent notes
   router.js       hash routes (#/board, #/task/<id>/<tab>, …)
-src/views/      board, notifications, settings, task (plan+diff), gate
+src/views/      board, workspace (Changes/Files/Issues), notifications, settings, task, gate
 src/sheets/     modal sheets: new task, repo browser/new/clone/remote, add device
 src/terminal/   the PTY drawer (ghostty-web) + its reconnecting E2EE session
 src/            app shell: state+render dispatch, connection lifecycle,
                 device store/picker, api client, comment popover
 ```
+
+Workspace Changes retains each directory's pane between tab selections. Its
+visibility lifecycle suspends owned floating editors, dialogs, focus and visual
+work; drafts, review marks, scroll and cache readers stay with the directory.
+Hidden read/mutation results settle in their own records, and a deferred
+checkout invalidation refreshes when that directory is shown.
 
 ## Prereqs
 

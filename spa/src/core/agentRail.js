@@ -1418,7 +1418,7 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const paintRailStatus = () => {
-    if (!panelVisible) return;
+    if (!panelVisible || !standing()) return;
     const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
@@ -2726,7 +2726,7 @@ function mountRailOnContext(host, context, swap) {
     });
   };
 
-  const chatIsVisible = () => panelVisible && !document.hidden && shownPanelMode() === "chat";
+  const chatIsVisible = () => standing() && panelVisible && !document.hidden && shownPanelMode() === "chat";
 
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     if (!chatIsVisible()) return;
@@ -3144,6 +3144,7 @@ function mountRailOnContext(host, context, swap) {
   /** The menu is kept within the panel: on a phone the panel stops on the
    *  bubble strip, which is drawn over it and would cover the menu's tail. */
   const paintSurfaceMenu = () => {
+    if (!standing()) return;
     const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
     closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuGroupsInFocus()), {
@@ -3853,6 +3854,36 @@ function mountRailOnContext(host, context, swap) {
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
 
+  /// Everything the rail hears — the cache, the feed, the machine's catalog,
+  /// the composer's controller, the clock and the reader coming back — stopped
+  /// once: when the rail is disposed, or before that, the moment the machine it
+  /// stands over is retired and its repository with it. A feed or a cache
+  /// write delivered during the retirement then finds nobody to paint through
+  /// the retired scope, and the rail keeps its last paint until the shell
+  /// stands the route's rail up again (core/shell.js).
+  let listening = true;
+  const stopListening = () => {
+    if (!listening) return;
+    listening = false;
+    overview.close();
+    activityRuns?.dispose();
+    activityRuns = null;
+    for (const record of detailRecords.values()) record.dispose();
+    pinnedRecord.dispose({ flushPending: false });
+    overviewScopeRecord.dispose({ flushPending: false });
+    document.removeEventListener("visibilitychange", visibilityChanged);
+    stopWaitingForReader();
+    unwatchCache();
+    clearInterval(statusTicker);
+    statusTicker = null;
+    stopFollowingCatalog();
+    unsubscribePending();
+    unsubscribeFeed();
+    unsubscribeComposerController?.();
+    unsubscribeComposerController = null;
+  };
+  const stopHearingRetirement = chatRepository.onRetired(stopListening);
+
   return {
     /** Put the panel away without touching the docked/card preference — what a
      *  toolbar tab press means on a phone, where the chat covers the page it
@@ -3865,23 +3896,11 @@ function mountRailOnContext(host, context, swap) {
     },
     dispose() {
       disposed = true;
-      overview.close();
-      activityRuns?.dispose();
-      for (const record of detailRecords.values()) record.dispose();
-      pinnedRecord.dispose({ flushPending: false });
-      overviewScopeRecord.dispose({ flushPending: false });
-      activityRuns = null;
+      stopHearingRetirement();
+      stopListening();
       for (const marker of unreadMarkers.values()) marker.leave();
-      document.removeEventListener("visibilitychange", visibilityChanged);
-      stopWaitingForReader();
       panelMotion.cancel();
-      unwatchCache();
-      clearInterval(statusTicker);
-      statusTicker = null;
       usageLimitBanner.dispose();
-      stopFollowingCatalog();
-      unsubscribePending();
-      unsubscribeFeed();
       disposeTitleMotion();
       disposeTui();
       disposeSurfaces();
@@ -3892,8 +3911,6 @@ function mountRailOnContext(host, context, swap) {
       closeSurfaceMenu?.();
       composerControl?.dispose?.();
       disposeComposerModelMenu();
-      unsubscribeComposerController?.();
-      unsubscribeComposerController = null;
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
       document.removeEventListener("pointerdown", dismissOnOutsidePointer);

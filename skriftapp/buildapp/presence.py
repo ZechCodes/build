@@ -7,6 +7,9 @@ self-healing: a bridge that dies, loses its network or is killed writes no
 "offline" — it simply stops writing, and every reader after the window sees
 ``offline``. The relay is not involved.
 
+Only ``last_seen_at`` matters. There is no stored status: the ``devices.status``
+column the relay once wrote is NULL and unmapped, and goes in a later revision.
+
 The challenge and the freshness/replay scheme are the push notify's, one scheme
 for every device-signed request; ``bridge/src/presence.rs`` produces the same
 bytes, and ``bridge/tests/fixtures/presence_challenge.txt`` is the fixture both

@@ -432,7 +432,9 @@ export function render() {
   }
   // Closing a modal is not a navigation: the page under it never left, so it is
   // not built again around the same rail, the same reads and the same scroll.
-  if (closeSettings() && sameRoute(mountedRoute, App.route)) return;
+  // Unless its machine was retired while the modal was open (#171): the page
+  // under it stands over a context the registry has let go of.
+  if (closeSettings() && routeIsStanding()) return;
   renderPage();
 }
 

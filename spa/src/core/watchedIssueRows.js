@@ -1,8 +1,8 @@
 // Watched issues as inbox rows (#125), as a pure model.
 //
 // A watched issue is a row only while there is something in it for the user:
-// it is assigned to them, or an agent mentioned or asked them in a comment
-// they have not read — the Issues tab's "Needs you" rules
+// it is assigned to them, or an agent asked them in an unread comment or
+// when filing the issue — the Issues tab's "Needs you" rules
 // (core/trackerAttentionModel.js, which also keeps the earlier rule for a
 // bridge that cannot say which comments asked). When the reason goes, so does the row, and
 // nothing that is Done or closed is ever one.
@@ -20,9 +20,11 @@ import { ATTENTION_REASONS, unreadAsks, watchedIssueReasons } from "./trackerAtt
 /** Why the row is there, in the inbox's words. */
 const REASON_WORDS = Object.freeze({
   [ATTENTION_REASONS.inReview]: "In review",
-  [ATTENTION_REASONS.inbox]: "New comment",
   [ATTENTION_REASONS.assigned]: "Assigned to you",
 });
+
+const reasonWord = (reason, askedOnly) => reason === ATTENTION_REASONS.inbox
+  ? (askedOnly ? "Mentioned you" : "New comment") : REASON_WORDS[reason];
 
 const ms = (iso) => {
   const parsed = Date.parse(iso || "");
@@ -45,7 +47,7 @@ const NOT_A_CHECKOUT = Object.freeze({
 });
 
 function toEntry(project, issue, detail, reasons, askedOnly) {
-  const facts = reasons.map((reason) => REASON_WORDS[reason]).join(" · ");
+  const facts = reasons.map((reason) => reasonWord(reason, askedOnly)).join(" · ");
   const changedMs = ms(issue.updated_at);
   return {
     ...NOT_A_CHECKOUT,

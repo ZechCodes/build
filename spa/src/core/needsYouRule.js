@@ -3,8 +3,8 @@
 //
 // The rule is a fact about the bridge: one that keeps `notify_user` on
 // comments announces `issues.commentUserNotifies`, and its issues need the user
-// only when assigned to them, or when an unread agent comment mentioned or
-// asked them (core/trackerAttentionModel.js). A greeting writes it here; views
+// only when assigned to them, or when an unread agent comment or created event
+// asks them (core/trackerAttentionModel.js). A greeting writes it here; views
 // read it with the records they paint, never from the live greeting, so a
 // cold reload draws the same Needs you it will draw once connected.
 

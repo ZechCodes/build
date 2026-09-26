@@ -574,6 +574,9 @@ pub struct IssueEvent {
     pub at: String,
     pub actor: Actor,
     pub kind: IssueEventKind,
+    /// A created issue that asks the user to read or answer its body.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub mentions_user: bool,
     /// What this kind needs said. An empty object where the kind is the whole
     /// fact.
     #[serde(default)]
@@ -594,6 +597,7 @@ impl IssueEvent {
             at: now.to_string(),
             actor,
             kind,
+            mentions_user: false,
             payload,
         }
     }

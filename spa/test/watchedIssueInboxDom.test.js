@@ -169,6 +169,40 @@ describe("a watched issue's inbox row before any machine answers (#144)", () => 
   });
 });
 
+describe("a mentioned creation on a cold reload", () => {
+  const asked = issue({ id: "issue-created-ask", number: 11, title: "Choose the route", watched: true,
+    status: "backlog", updated_at: "2026-09-24T01:00:00Z" });
+  const created = { type: "event", id: "ie-01K5Z3", issue_id: asked.id, kind: "created",
+    actor: { kind: "agent", agent_id: "agent-astra" }, mentions_user: true,
+    payload: { title: asked.title }, at: "2026-09-24T01:00:00Z" };
+  let pane;
+
+  beforeEach(() => boot({ greet: false, issues: [asked], timelines: { [asked.id]: [created] },
+    rule: { issues: { commentUserNotifies: true } } }));
+  afterEach(() => pane?.dispose());
+
+  it("paints Needs you and the inbox from cache, then drops both when the read mark passes creation", async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    pane = modules.issuesPane.mountIssuesPane(host, {
+      projectId: PROJECT, projectName: "Build", deviceId: DEVICE, projectKey: project.projectKey,
+      callRpc: call, catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
+      feed: () => ({ workspaces: [], items: [], projects: [] }), defaultView: "dashboard", navigate: () => {},
+    });
+    const needsYou = () => [...host.querySelectorAll('[data-dashboard-section="needsYou"] .issue-dashboard-row')]
+      .map((row) => row.dataset.issue);
+    await vi.waitFor(() => expect(rowFor(asked.id)?.querySelector(".inbox-facts")?.textContent).toBe("Mentioned you"), WAIT);
+    await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
+    expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
+
+    const read = { ...asked, read_through: created.id, updated_at: "2026-09-24T01:01:00Z" };
+    await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([read], []));
+    await modules.tracker.writeIssueRecord(DEVICE, PROJECT, read.id, issueDetail(read, [created]));
+    await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+    await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
+    expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
+  });
+});
+
 describe("Stop watching an issue an agent asked the user about (#144)", () => {
   // Agent work, so only the unread question put it in Needs you, and the
   // board's feed row for it is from before the question: it counts nothing.

@@ -1,6 +1,6 @@
 {
-  "api_version": "1.25.0",
-  "commit": "c07a9d3b",
+  "api_version": "1.26.0",
+  "commit": "7f0a858b",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -183,6 +183,7 @@
     "archived.list",
     "board.list",
     "board.usageLimits",
+    "bodies.pages",
     "branch.dispatch",
     "branch.finish",
     "branch.get",

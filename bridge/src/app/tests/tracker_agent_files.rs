@@ -229,6 +229,7 @@ fn an_agent_files_an_issue_with_a_file_it_made() {
             attachments: vec![json!({ "path": shot })],
             track: None,
             notify_user: None,
+            mention_user: None,
         },
     )
     .unwrap();

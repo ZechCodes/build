@@ -316,9 +316,10 @@ pub enum BridgeAction {
         /// and nowhere else: an agent that files an issue almost always wants
         /// to know how it goes.
         track: Option<bool>,
-        /// And put it in the USER's inbox. For an issue the user asked for,
-        /// or will want to see.
+        /// Watch it for the user, without asking them for a decision.
         notify_user: Option<bool>,
+        /// File this issue as a question for the user.
+        mention_user: Option<bool>,
     },
     /// Say something on one, with typed references fenced by what it is about.
     TrackerCommentIssue {
@@ -947,7 +948,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "create_issue",
-                "description": "File an issue in your project. Two things it is for: work you have found and are NOT doing — an issue is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included.",
+                "description": "File an issue in your project. Two things it is for: work you have found and are NOT doing — an issue is cheap, and something you noticed and did not write down exists only in this conversation — and work you ARE doing that runs to more than one step, filed and assigned to yourself so the user can see what is in progress without opening your conversation. It is filed, not started; assign it to start anyone on it, yourself included. If its body asks the user for a decision, pass mention_user: true so it reaches Needs you until they read it; a question in the body alone does not.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -963,7 +964,11 @@ impl DoneServer {
                         },
                         "notify_user": {
                             "type": "boolean",
-                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                            "description": "Watch this issue for the user and put it in their inbox. This does not ask them for a decision; use mention_user to ask in the issue body, comment_issue with mention_user after filing, or assign_issue to the user."
+                        },
+                        "mention_user": {
+                            "type": "boolean",
+                            "description": "Put this new issue in the user's Needs you until they read it, and watch it for them. Use when the issue body asks the user to read or answer a decision; leave it off for bookkeeping."
                         }
                     },
                     "required": ["title"]
@@ -971,7 +976,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. Use mention_user when the comment needs the user to read or answer it; leave it off for bookkeeping.",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the issue in Needs you until the user reads it. A question left only in the issue body or a notify_user watch does not ask them.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -985,7 +990,7 @@ impl DoneServer {
                         },
                         "mention_user": {
                             "type": "boolean",
-                            "description": "Highlight this comment for the user and put the issue in the user's inbox. Use when the comment needs the user to read or answer it; leave it off for bookkeeping."
+                            "description": "Put this issue in the user's Needs you until they read this comment, and watch it for them. Use for any decision the user must read or answer; leave it off for bookkeeping."
                         },
                         "refs": {
                             "type": "array",
@@ -1147,6 +1152,7 @@ impl DoneServer {
                         attachments: value_list_argument(params, "attachments"),
                         track: optional_flag(params, "track"),
                         notify_user: optional_flag(params, "notify_user"),
+                        mention_user: optional_flag(params, "mention_user"),
                     },
                 ),
                 Err(message) => refused(id.clone(), message),
@@ -2830,6 +2836,38 @@ mod tests {
         "track_issue",
         "untrack_issue",
     ];
+
+    #[test]
+    fn both_issue_surfaces_explain_how_a_new_issue_asks_the_user() {
+        for owner in ["agent-01H", "project-01H"] {
+            let tools = DoneServer::for_owner(owner).tools();
+            let tools = tools.as_array().unwrap();
+            let create = tools
+                .iter()
+                .find(|tool| tool["name"] == "create_issue")
+                .unwrap();
+            let comment = tools
+                .iter()
+                .find(|tool| tool["name"] == "comment_issue")
+                .unwrap();
+            let properties = &create["inputSchema"]["properties"];
+            assert_eq!(properties["mention_user"]["type"], "boolean");
+            assert!(properties["mention_user"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Needs you"));
+            assert!(properties["notify_user"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("does not ask"));
+            assert!(
+                comment["inputSchema"]["properties"]["mention_user"]["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("until they read")
+            );
+        }
+    }
 
     /// Every write the tracker offers takes `track`, so following an issue is
     /// never a second call — and `create_issue` says its default is the other

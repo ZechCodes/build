@@ -58,7 +58,7 @@ describe("which watched issues are rows by the narrow rule (#144)", () => {
     const listed = narrow([mine, asked], new Map([[asked.id, issueDetail(asked, timeline)]]));
     expect(listed.map((row) => [row.issueId, row.facts, row.unreadCount])).toEqual([
       ["i-mine", "Assigned to you", 0],
-      ["i-asked", "New comment", 1],
+      ["i-asked", "Mentioned you", 1],
     ]);
   });
 });

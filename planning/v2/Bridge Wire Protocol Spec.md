@@ -652,6 +652,9 @@ Issues spec), `messages.issueNotices`, `board.usageLimits`,
 `issues.agentIdentities`, `issues.attachmentChunks`,
 `issues.commentUserNotifies` (`notifies_user` on issue comments, and the
 narrower "needs you" rule it makes possible; see the Issues spec),
+`issues.createdUserMentions` (`mentions_user` on an agent's `created` issue
+event, so an issue filed with `create_issue` and `mention_user: true` needs the
+user until that event is read; see the Issues spec),
 `params.strict` (an undeclared param is refused; step 2.2),
 `workspaces.lifecycle` (see below),
 `branches.finishDelete` (`branch.finish` honours `action: "delete"`),
@@ -857,6 +860,7 @@ other names announce support for clients that choose to consume them:
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
 | `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
 | `bodies.pages` | `fs.read`, `git.diff`, `git.show` and `git.changeset_diff` accept `range` and answer one page of whole lines with its `range` | 1.26.0 |
+| `issues.createdUserMentions` | An agent's `create_issue` with `mention_user: true` marks the `created` event with optional `mentions_user: true` and watches the issue for the user | 1.27.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

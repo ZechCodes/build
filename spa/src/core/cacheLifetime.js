@@ -233,6 +233,16 @@ async function fileRecordOf(head, file, readPage) {
   return readPage ? readFilePages(head, file, readPage) : splitWholeAnswer(head, file);
 }
 
+/** `readPage`, answering no page once the record it reads for is not the
+ *  one it started from (`still`); as it is where nothing is asked. */
+const readingWhileStill = (readPage, still) => readPage && still ? async (...range) => {
+  const page = await readPage(...range);
+  return page && (await still()) ? page : null;
+} : readPage;
+
+/** Whether nothing asks, or the record is still the one started from. */
+const stillStands = async (still) => !still || still();
+
 /** Put one file's body in the cache, under both of the owner's rules for it:
  *  a body over `FILE_MAX_BYTES` is kept as pages beside a record saying what
  *  the file is, and a write leaves at most `RECENT_FILES` bodies behind it.
@@ -247,12 +257,18 @@ async function fileRecordOf(head, file, readPage) {
  *  Records table.
  *
  *  The pages are written before the record, so a viewer that hears of the
- *  record finds the bytes it names already there. */
-export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null }) {
+ *  record finds the bytes it names already there.
+ *
+ *  `still()`, where given, says whether the record is still the one the
+ *  caller started from. A page is a wire call, and a record written or
+ *  dropped while one was out is left as it is now: no page it brings is
+ *  kept — the first would let go of the newer record's pages — and no record
+ *  is written over it. */
+export async function cacheFileBody({ deviceId, entityId, path, file, openedAt = Date.now(), readPage = null, still = null }) {
   if (!deviceId || !entityId || !file) return false;
   const head = { deviceId, entityId, kind: FILE_RECORD_KIND, sub: path || "" };
-  const record = await fileRecordOf(head, file, readPage);
-  if (!record) return false;
+  const record = await fileRecordOf(head, file, readingWhileStill(readPage, still));
+  if (!record || !(await stillStands(still))) return false;
   await writeCached(head, { file: record, openedAt });
   await trimRecentFiles(deviceId, entityId);
   return true;

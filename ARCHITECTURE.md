@@ -646,9 +646,14 @@ In practice:
   it, painted as far as it has come; media is read whole into
   pages, since a picture cannot be shown half loaded. An older bridge's whole
   or cut answer is split into pages here and painted the same way, with the
-  truncation notice where it was cut. Pages live and die with their head:
-  the five recent files per workspace, the workspace's data TTL. An oversized
-  aggregate diff is kept without its patch and painted file by file.
+  truncation notice where it was cut. A page read is a wire call: what it
+  brings is kept only while the head is still the write it started from, and
+  pages joined under a head are read on from only under that same write —
+  both told by the record's write name (`recordWriteOf`, `record.write`),
+  never its `at`, which two writes on one millisecond share. Pages live and
+  die with their head: the five recent files per workspace, the workspace's
+  data TTL. An oversized aggregate diff is kept without its patch and
+  painted file by file.
 - **Paged issue lists.** From a bridge announcing `issues.listPaged`, the sync
   pass and the Issues tab pull `issues.list` a page at a time
   (`spa/src/core/trackerPages.js`): each page read is written under its own

@@ -36,7 +36,7 @@
 // held pages joined into `field` and `pages: { end, total, complete }`.
 // `more(key)` reads the next page. Nothing is ever painted from an answer.
 
-import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { deleteCached, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import {
   dropBodyPages,
   joinedText,
@@ -62,13 +62,13 @@ export function createCachedBodies({
 }) {
   const held = new Map(); // key → body
   const consulted = new Set(); // keys whose stored record has been looked at
-  const observedAt = new Map(); // key → write stamp seen before a fetch
+  const observedWrite = new Map(); // key → the write seen before a fetch (recordWriteOf)
   const unwatches = new Map();
   const rereads = new Map();
   let disposed = false;
 
   const join = pages?.join || joinedText;
-  const joined = new Map(); // key → { headAt, found, text }: the pages read so far, joined
+  const joined = new Map(); // key → { headWrite, found, text }: the pages read so far, joined
 
   /** The held pages of a head joined, read on from what was joined under the
    *  same head before: its pages never change while it stands (a head is
@@ -77,11 +77,11 @@ export function createCachedBodies({
    *  anything else is joined whole again. */
   const joinPages = async (key, at, record) => {
     const before = joined.get(key);
-    const known = before?.headAt === record.at ? before : null;
+    const known = before?.headWrite === recordWriteOf(record) ? before : null;
     const found = await readBodyPages(at, record.value.of, known?.found);
     const onward = known && found.pages.length >= known.found.pages.length && join === joinedText;
     const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : join(found.pages);
-    joined.set(key, { headAt: record.at, found, text });
+    joined.set(key, { headWrite: recordWriteOf(record), found, text });
     return { found, text };
   };
 
@@ -100,7 +100,7 @@ export function createCachedBodies({
   };
 
   const takeRecord = (key, record) => {
-    observedAt.set(key, record?.at);
+    observedWrite.set(key, recordWriteOf(record));
     if (record) held.set(key, record.value);
     else held.delete(key);
     return Boolean(record);
@@ -155,12 +155,12 @@ export function createCachedBodies({
     return filled;
   }
 
-  const acceptFetched = async (item, startedAt) => {
+  const acceptFetched = async (item, startedFrom) => {
     const { key, value } = valueOf(item);
     const stringKey = String(key);
     const at = addressOf(stringKey);
     const current = at ? await readCached(at) : undefined;
-    if (at && current?.at !== startedAt.get(stringKey)) {
+    if (at && recordWriteOf(current) !== startedFrom.get(stringKey)) {
       await reread(stringKey);
       return stringKey;
     }
@@ -169,7 +169,7 @@ export function createCachedBodies({
       onChange(stringKey);
       return stringKey;
     }
-    const stored = await storeFetched(stringKey, at, value, current?.at);
+    const stored = await storeFetched(stringKey, at, value, recordWriteOf(current));
     await reread(stringKey, !stored);
     return stringKey;
   };
@@ -178,9 +178,9 @@ export function createCachedBodies({
    *  at all when this configuration has no pages to keep it in — the older
    *  record goes, so a revisit cannot show what the file said before.
    *  Answers whether it kept it: the first page is one more wire call, and a
-   *  record written or dropped while it was out (stamped other than
-   *  `startedAt`) is left as it is now, heads and pages alike. */
-  const storeFetched = async (key, at, value, startedAt) => {
+   *  record written or dropped while it was out (another write than
+   *  `startedFrom`) is left as it is now, heads and pages alike. */
+  const storeFetched = async (key, at, value, startedFrom) => {
     if (cacheable(value)) {
       if (pages) await dropBodyPages(at);
       await writeCached(at, value);
@@ -191,7 +191,7 @@ export function createCachedBodies({
       return true;
     }
     const first = await firstPage(key, value);
-    if (disposed || (await readCached(at))?.at !== startedAt) return false;
+    if (disposed || recordWriteOf(await readCached(at)) !== startedFrom) return false;
     await dropBodyPages(at);
     const stored = first ? [first] : pages.split(value, WHOLE_ANSWER);
     await writeBodyPages(at, stored);
@@ -274,10 +274,10 @@ export function createCachedBodies({
   /** The wire, then the write-through. Batching belongs to the caller. */
   async function fetchBodies(keys) {
     if (!keys.length) return [];
-    const startedAt = new Map(keys.map((key) => [String(key), observedAt.get(String(key))]));
+    const startedFrom = new Map(keys.map((key) => [String(key), observedWrite.get(String(key)) ?? null]));
     const filled = [];
     for (const item of await fetchMissing(keys)) {
-      const accepted = await acceptFetched(item, startedAt);
+      const accepted = await acceptFetched(item, startedFrom);
       if (accepted) filled.push(accepted);
     }
     return filled;

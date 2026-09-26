@@ -321,6 +321,88 @@ describe("createCachedBodies with pages (#95)", () => {
     bodies.dispose();
   });
 
+  // Two writes on one millisecond share `at`; only the write's own name
+  // (`record.write`) tells them apart. A guard or a joined prefix keyed on the
+  // time takes a replaced head for the one it knew (#95 round 4).
+  const ONE_MILLISECOND = 1_789_000_000_000;
+
+  it("keeps nothing a first page brings back over a head written on the same millisecond while it was out (#95 round 4)", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const now = vi.spyOn(Date, "now").mockReturnValue(ONE_MILLISECOND);
+    try {
+      const at = address("big.txt");
+      const old = pages.textPagesOf(WHOLE, { of: "old-version", bytes: 512 });
+      const newer = pages.textPagesOf(WHOLE, { of: "new-version", bytes: 512 });
+      let meanwhile = async () => {};
+      const bodies = createCachedBodies({
+        addressOf: address,
+        fetchMissing: async (keys) => keys.map((key) => ({ path: key, patch: WHOLE.slice(0, 1000), truncated: true })),
+        valueOf: (item) => ({ key: item.path, value: { patch: item.patch, truncated: item.truncated } }),
+        cacheable: (value) => !value.truncated,
+        pages: {
+          field: "patch",
+          split: () => [],
+          readPage: async (_key, offset) => {
+            await meanwhile();
+            return old.find((page) => page.offset === offset);
+          },
+        },
+      });
+      await bodies.ensure(["big.txt"]);
+      const first = await cache.readCached(at);
+      expect(first.value.of).toBe("old-version");
+
+      // Asked again; while its first page is out, another writer puts the
+      // next version's page and head, on the same millisecond.
+      meanwhile = async () => {
+        await pages.writeBodyPage(at, newer[0]);
+        await cache.writeCached(at, { truncated: true, paged: true, of: "new-version" });
+      };
+      await bodies.ensure(["big.txt"]);
+
+      const head = await cache.readCached(at);
+      expect(head.at).toBe(first.at);
+      expect(head.write).not.toBe(first.write);
+      expect(head.value.of).toBe("new-version");
+      expect((await pages.readBodyPages(at, "new-version")).pages).toEqual([newer[0]]);
+      expect((await pages.readBodyPages(at, "old-version")).pages).toEqual([]);
+      expect(bodies.read("big.txt")).toMatchObject({ of: "new-version", patch: newer[0].body });
+      bodies.dispose();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("joins no page held under one head onto the pages of another written on the same millisecond (#95 round 4)", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const now = vi.spyOn(Date, "now").mockReturnValue(ONE_MILLISECOND);
+    try {
+      const at = address("big.txt");
+      const page = (of, offset, body) => ({ of, offset, end: offset + body.length, total: 8, body });
+      await pages.writeBodyPage(at, page("v1", 0, "OLD\n"));
+      await cache.writeCached(at, { paged: true, of: "v1" });
+      const bodies = createCachedBodies({
+        addressOf: address,
+        fetchMissing: async () => [],
+        valueOf: (item) => item,
+        pages: { field: "patch", split: () => [] },
+      });
+      await bodies.ensure(["big.txt"]);
+      expect(bodies.read("big.txt")).toMatchObject({ of: "v1", patch: "OLD\n", pages: { complete: false } });
+      const first = await cache.readCached(at);
+
+      await pages.writeBodyPages(at, [page("v2", 0, "NEW\n"), page("v2", 4, "END\n")]);
+      await cache.writeCached(at, { paged: true, of: "v2" });
+      expect((await cache.readCached(at)).at).toBe(first.at);
+
+      await vi.waitFor(() => expect(bodies.read("big.txt")?.of).toBe("v2"));
+      expect(bodies.read("big.txt")).toMatchObject({ patch: "NEW\nEND\n", pages: { end: 8, total: 8, complete: true } });
+      bodies.dispose();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("lets the pages go when the body fits one record again", async () => {
     const pages = await import("../src/core/bodyPages.js");
     const bodies = await pagedOver([], []);

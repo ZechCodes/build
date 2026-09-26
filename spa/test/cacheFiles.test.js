@@ -694,6 +694,32 @@ describe("a file over one record", () => {
     expect(await cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
   });
 
+  // A first page is a wire call: a record written while it was out — a push's
+  // refresh, another tab — is left as it is, with its pages (#95 round 4).
+  it("keeps no first page, nor its record, over a newer record written while the page was read", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const answered = machine(file);
+    let releaseFirstPage = null;
+    const call = vi.fn(async (method, params) => {
+      if (params.range?.offset === 0) await new Promise((resolve) => { releaseFirstPage = resolve; });
+      return answered(method, params);
+    });
+    const newerPage = { of: "v2", offset: 0, end: 8, total: 8, body: b64("newer!\n\n") };
+    const newer = { path: "big.log", mime: "text/plain", size: 8, editable: false, revision: null, paged: true, of: "v2" };
+
+    await open(call);
+    await vi.waitFor(() => expect(releaseFirstPage).toBeTypeOf("function"));
+    await writeBodyPage(head("big.log"), newerPage);
+    await writeCached(head("big.log"), { file: newer, openedAt: Date.now() });
+    releaseFirstPage();
+    await settle();
+
+    expect((await readCached(head("big.log"))).value.file).toEqual(newer);
+    expect((await readBodyPages(head("big.log"), "v2")).pages).toEqual([newerPage]);
+    expect(await cachedSubKeys("dev-1", "run-1", "page")).toEqual(["file:big.log@0"]);
+  });
+
   it("paints a file emptied under it as the one empty line it is, and reads no more", async () => {
     bridgePages = true;
     const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };

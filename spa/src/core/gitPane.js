@@ -56,7 +56,7 @@ import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { cachedSubKeys, mergeCached, readCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
+import { cachedSubKeys, mergeCached, readCached, readCachedMany, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WHOLE_ANSWER } from "./cachedBodies.js";
@@ -1237,7 +1237,7 @@ export function mountGitPane(
   };
 
   const recordStill = async (address, before) =>
-    (await readCached(address))?.at === before?.at;
+    recordWriteOf(await readCached(address)) === recordWriteOf(before);
 
   const storeStatus = async (status, before, guarded) => {
     if (!status) return true;
@@ -1975,19 +1975,21 @@ export function mountGitPane(
     return { ...value, patch: text, pages: { end, total, complete } };
   };
 
-  // hash → { at, found, text }: a paged commit's pages as last read, under the
-  // head written at `at`. A head is written after its pages every time they
-  // are replaced, so while it stands its pages only grow, and a reread reads
-  // on from here rather than every page of every paged commit again.
+  // hash → { write, found, text }: a paged commit's pages as last read, under
+  // the head that `write` names (recordWriteOf — never its time, which a head
+  // written on the same millisecond shares). A head is written after its
+  // pages every time they are replaced, so while it stands its pages only
+  // grow, and a reread reads on from here rather than every page of every
+  // paged commit again.
   const commitPageJoins = new Map();
   const joinCommitPages = async (hash, record) => {
     const before = commitPageJoins.get(hash);
-    const known = before?.at === record.at ? before : null;
+    const known = before?.write === recordWriteOf(record) ? before : null;
     const address = cacheAddress(PATCH_RECORD_KIND, hash);
     const found = await readBodyPages(address, record.value.of, known?.found);
     const onward = known && found.pages.length >= known.found.pages.length;
     const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : joinedText(found.pages);
-    commitPageJoins.set(hash, { at: record.at, found, text });
+    commitPageJoins.set(hash, { write: recordWriteOf(record), found, text });
     return { found, text };
   };
 

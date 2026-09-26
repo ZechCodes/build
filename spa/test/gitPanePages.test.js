@@ -300,6 +300,53 @@ describe("a commit patch too big for one record", () => {
     pane.dispose();
   });
 
+  // Two heads written on one millisecond share `at`: the pages joined under
+  // the first are not read on from under the second (#95 round 4).
+  it("joins no page held under one head onto the pages of a head written on the same millisecond", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_789_000_000_000);
+    try {
+      await seedShape();
+      const oldPart = patchFor("src/old.js", "old line");
+      const newPart = patchFor("src/new.js", "new line");
+      const endPart = patchFor("src/end.js", "end line");
+      expect(bytes(oldPart)).toBe(bytes(newPart));
+      const cut = bytes(newPart);
+      const total = cut + bytes(endPart);
+      const head = (of) => {
+        const value = { ...show(), paged: true, of };
+        delete value.patch;
+        return value;
+      };
+      await pages.writeBodyPage(patchAddress, { of: "v1", offset: 0, end: cut, total, body: oldPart });
+      await cache.writeCached(patchAddress, head("v1"));
+      const first = await cache.readCached(patchAddress);
+      // A bridge that never answers: what is painted is the cache's alone.
+      const callRpc = vi.fn(async (method, params) => {
+        if (method === "git.status") return tree.status();
+        if (method === "git.diff") return tree.diff(params);
+        if (method === "git.log") return log();
+        return new Promise(() => {});
+      });
+      const { container, pane } = await mountPane(callRpc);
+      await openCommit(container);
+      await vi.waitFor(() => expect(container.textContent).toContain("src/old.js"));
+
+      await pages.writeBodyPages(patchAddress, [
+        { of: "v2", offset: 0, end: cut, total, body: newPart },
+        { of: "v2", offset: cut, end: total, total, body: endPart },
+      ]);
+      await cache.writeCached(patchAddress, head("v2"));
+      expect((await cache.readCached(patchAddress)).at).toBe(first.at);
+
+      await vi.waitFor(() => expect(container.textContent).toContain("src/end.js"));
+      expect(container.textContent).toContain("src/new.js");
+      expect(container.textContent).not.toContain("src/old.js");
+      pane.dispose();
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   // A page that lands after the commit's head was let go of — a pass dropped
   // the commit once it was published — is not kept without a head, and the
   // pane stops holding the commit it no longer has a record of.

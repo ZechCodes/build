@@ -940,6 +940,13 @@ export function mergeCachedAtomically(address, merge) {
 export const cachedWriteOf = (record) => record?.write;
 export const isCachedWrite = (record, written) => typeof written === "string" && record?.write === written;
 
+/** Which write a record is, for a guard held across a wire call outside any
+ * transaction: its name, or for a record stored before writes were named its
+ * stamp and order, and null for no record. Equal only for the same write, so
+ * a record replaced on the same millisecond, or dropped, is not the one a
+ * guard captured (#95). `at` is when; this is which. */
+export const recordWriteOf = (record) => (record ? record.write ?? `${record.at}:${record.order}` : null);
+
 /** The same merge, only while the record is still the write `written` names
  * (`cachedWriteOf`). Any writer since, in any tab, leaves the record alone:
  * for a verb's answer that must not land over what arrived after the verb was

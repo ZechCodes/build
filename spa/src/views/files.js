@@ -34,7 +34,7 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { deleteCached, readCached, subscribeCache } from "../core/localCache.js";
+import { deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
 import {
   mountPagedFile,
@@ -330,6 +330,10 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
+  /** Whether `address` still holds the write `written` names (recordWriteOf),
+   *  asked after a wire call: its time is not which write it is. */
+  const recordStill = (address, written) => async () => recordWriteOf(await heldRecord(address)) === written;
+
   let unwatchFile = null;
 
   const stillSelected = (request, path) =>
@@ -395,13 +399,16 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
    *  record — and then read the stored record back: the view paints what the
    *  cache holds, never the answer. A mount handed no cache has nowhere to
    *  store, so it shows the answer as it came. */
-  const storePulledFile = async (path, file, request, previousAt) => {
+  const storePulledFile = async (path, file, request, previousWrite) => {
     const address = fileAddress(path);
     if (!address) return { file };
     const current = await heldRecord(address);
     if (!stillSelected(request, path)) return {};
-    if (current?.at !== previousAt) return { file: current?.value?.file };
-    await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage: storePageReader(path) });
+    if (recordWriteOf(current) !== previousWrite) return { file: current?.value?.file };
+    await cacheFileBody({
+      deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
+      readPage: storePageReader(path), still: recordStill(address, previousWrite),
+    });
     if (!stillSelected(request, path)) return {};
     return { file: (await heldRecord(address))?.value?.file };
   };
@@ -422,14 +429,15 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const readPage = storePageReader(path);
     if (!address || !readPage || key === restartedFrom || key === restartedTo) return;
     restartedFrom = key;
-    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage });
+    const still = recordStill(address, recordWriteOf(await heldRecord(address)));
+    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage, still });
     if (stored) restartedTo = `${path}\n${(await heldRecord(address))?.value?.file?.of}`;
   };
 
-  const pullFile = async (path, request, previousAt) => {
+  const pullFile = async (path, request, previousWrite) => {
     try {
       const file = await callRpc("fs.read", { ...scopeOf(path), path: pathOf(path) });
-      return storePulledFile(path, file, request, previousAt);
+      return storePulledFile(path, file, request, previousWrite);
     } catch (error) {
       return { error };
     }
@@ -503,7 +511,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const record = await heldRecord(address);
     if (!stillSelected(request, path)) return;
     if (takeHeldFile(path, request, address, record)) return;
-    const result = await pullFile(path, request, record?.at);
+    const result = await pullFile(path, request, recordWriteOf(record));
     showFileResult(path, request, result);
   };
 
@@ -554,18 +562,18 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     }
     state.saveSucceeded(written);
     afterSave(path, state, written);
-    await storeWrittenFile(path, address, written, baseline, (await before)?.at);
+    await storeWrittenFile(path, address, written, baseline, recordWriteOf(await before));
   };
 
   /** A cache access refresh changes the timestamp without changing the file.
    *  Replace the submitted baseline, but keep a competing revision visible.
    *  If the record disappeared while saving, preserve that invalidation too. */
-  const storeWrittenFile = async (path, address, written, baseline, previousAt) => {
+  const storeWrittenFile = async (path, address, written, baseline, previousWrite) => {
     if (!address) return false;
     const current = await heldRecord(address);
     if (current?.value?.file) {
       if (!sameFile(current.value.file, baseline)) return false;
-    } else if (current?.at !== previousAt) return false;
+    } else if (recordWriteOf(current) !== previousWrite) return false;
     const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: written });
     if (!kept) await deleteCached([address]);
     return kept;
@@ -593,7 +601,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     const request = ++fileRequest;
     watchFile(path, request);
     const before = await heldRecord(fileAddress(path));
-    const result = await pullFile(path, request, before?.at);
+    const result = await pullFile(path, request, recordWriteOf(before));
     showReloadResult(path, request, reloadingState, reloadingValue, result);
   };
 

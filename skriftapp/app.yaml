@@ -18,6 +18,7 @@ controllers:
   - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
   - buildapp.health_controller:HealthController
+  - buildapp.health_controller:ReadinessController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
   - buildapp.rtc_controller:RtcController

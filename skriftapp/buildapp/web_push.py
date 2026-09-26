@@ -148,7 +148,8 @@ class NotifyReplayGuard:
 
     The memory spans **twice** the freshness window: a notify stamped a full
     window in the future stays fresh for another full window after receipt.
-    In-process state — matches the single-replica api deployment.
+    In-process state — matches the single-replica api deployment (a deploy's
+    two pods overlap for seconds; see ``deploy/k8s/app.yaml``).
     """
 
     def __init__(self, ttl: timedelta = 2 * NOTIFY_FRESHNESS_WINDOW):

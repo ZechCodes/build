@@ -81,7 +81,9 @@ The SPA bundle is served same-origin; build it with
 `VITE_RELAY_URL=wss://relay.getbuild.ing` for production.
 
 Container (migrates then serves — `skrift db upgrade heads` runs framework +
-app migrations against `$DATABASE_URL` on every start):
+app migrations against `$DATABASE_URL` on every start; production sets
+`BUILD_MIGRATE_ON_START=0` and migrates in a Job instead, see
+`deploy/k8s/migrate.yaml`):
 
 ```bash
 podman build -t build-app -f skriftapp/Containerfile .   # from the repo root

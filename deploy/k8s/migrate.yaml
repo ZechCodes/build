@@ -1,0 +1,64 @@
+# The app's schema migrations (Skrift core + buildapp), once per deploy, from
+# the image the deploy is about to roll. The serving pods no longer migrate on
+# start (BUILD_MIGRATE_ON_START=0 in app.yaml), so a rolling update's two pods
+# never both write the schema.
+#
+# Not in kustomization.yaml, on purpose: a Job's pod template is immutable, so
+# re-applying this over last deploy's Job fails. Every deploy deletes the old
+# Job, applies this one with the image pinned like app.yaml's (`sed
+# "s|:latest|:<sha>|"`), waits for it to complete, and only then applies app.yaml.
+# The exact sequence is in deploy/OPS.md ("Deploying the app") and the
+# deploy-app job in .github/workflows/ci.yml.
+#
+# The env is the app container's: every key of the build-app Secret (the config
+# load interpolates the SMTP_* keys and refuses to start without them, exactly
+# as the app does) plus RELEASES_REPO. BUILD_MIGRATE_ON_START does not apply:
+# this container runs the migration as its command.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: build-app-migrate
+spec:
+  # One retry covers a transient database blip. Skrift's alembic env runs the
+  # whole upgrade in one transaction, and Postgres DDL is transactional, so a
+  # failed attempt leaves nothing half-applied.
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  # Kept a day for its logs; the next deploy deletes it first either way.
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: build-app-migrate
+    spec:
+      restartPolicy: Never
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: ghcr.io/zechcodes/build-app:latest
+          imagePullPolicy: Always
+          command: ["skrift", "db", "upgrade", "heads"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - secretRef:
+                name: build-app
+          env:
+            - name: RELEASES_REPO
+              value: ZechCodes/build-releases
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

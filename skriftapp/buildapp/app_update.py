@@ -1,11 +1,12 @@
-"""Deploy announcements over web push — run once at container start.
+"""Deploy announcements over web push — run once per container, 90 s after start.
 
 The frontend version system is client-driven (the bundle embeds its version;
 clients compare against ``static/version.json`` on an interval and on PWA
 resume). This module is the accelerant for clients that are open RIGHT NOW:
-container start is the first moment the new ``version.json`` is being served,
-so a push here tells every subscription to re-check immediately instead of on
-its next poll. Suspended PWAs cannot receive it usefully — for them the wake
+once a rolling deploy has taken the old pod out of the route, the new
+``version.json`` is the only one being served, so a push then tells every
+subscription to re-check immediately instead of on its next poll (the delay
+and its arithmetic are in ``entrypoint.sh``). Suspended PWAs cannot receive it usefully — for them the wake
 is a visible notification, and the resume check does the real work.
 
 E2EE invariant: the payload is ``{"kind": "app_update", "url": "/app/"}`` and
@@ -16,7 +17,7 @@ Announcements are deduplicated through the ``announced_app_versions`` table:
 a pod restart or scale-up serving the SAME build must not re-notify anyone.
 
 Pure helpers up top; the DB/engine glue below is the ``python -m`` entry the
-container entrypoint runs between migrations and serve.
+container entrypoint runs in the background beside ``skrift serve``.
 """
 
 from __future__ import annotations

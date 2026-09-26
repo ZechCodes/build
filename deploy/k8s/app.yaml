@@ -10,9 +10,26 @@ metadata:
   name: build-app
 spec:
   replicas: 1
-  # Migrations run in the entrypoint; don't race two schema writers.
+  # Rolling, so a deploy never leaves the route without a ready pod (Recreate
+  # did, for 25-40 s: Traefik answered 404 and dropped in-flight requests, #168).
+  # The new pod starts beside the old one and takes traffic once /readyz
+  # passes; only then is the old one taken out of the route and drained.
+  # Both take new requests for seconds, and the old one answers stragglers for
+  # the 15 s preStop. Nothing in the app must be single any more: migrations
+  # run in the build-app-migrate Job before the rollout (migrate.yaml), and the
+  # deploy announcement waits until the old pod is out of the route
+  # (skriftapp/entrypoint.sh). The per-process state that remains (Skrift's
+  # rate-limit and failed-login counters, the device-signed replay guards, the
+  # permission and site-settings caches, in-memory notifications) was already
+  # reset by every Recreate; the overlap only lets both copies answer for those
+  # seconds. A migration must keep working for the previous image, which serves
+  # on the new schema until the rollout ends (deploy/OPS.md, "Deploying the
+  # app").
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: build-app
@@ -21,6 +38,9 @@ spec:
       labels:
         app.kubernetes.io/name: build-app
     spec:
+      # Above the preStop sleep (15 s) plus hypercorn's graceful shutdown
+      # (3 s to finish in-flight requests after SIGTERM), with room to spare.
+      terminationGracePeriodSeconds: 30
       imagePullSecrets:
         - name: ghcr-pull
       securityContext:
@@ -94,6 +114,10 @@ spec:
                   name: build-app
                   key: CF_TURN_KEY_API_TOKEN
                   optional: true
+            # Migrations run in the build-app-migrate Job before each rollout
+            # (migrate.yaml), not on start: see skriftapp/entrypoint.sh.
+            - name: BUILD_MIGRATE_ON_START
+              value: "0"
             # Public release repository; keep aligned with the Actions variable.
             - name: RELEASES_REPO
               value: ZechCodes/build-releases
@@ -127,20 +151,37 @@ spec:
                   name: build-app
                   key: WAITLIST_NOTIFY_ADDRESS
                   optional: true
+          # Keep serving while Traefik drops this pod. On deletion the kubelet
+          # runs this hook while the EndpointSlice controller removes the pod,
+          # and Traefik rebuilds its routes from that change (about 2 s: its
+          # provider throttle, plus the watch). SIGTERM only comes after the
+          # hook, so for 15 s, several times that propagation, every request
+          # Traefik still routes here is answered. Then hypercorn stops
+          # accepting and finishes what is in flight.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "15"]
           # NOT `/`: that's Skrift's CMS home page, which 404s on a fresh site
           # (post-setup, pre-content) — failing readiness drops every traefik
-          # route and liveness crash-loops the pod. /healthz always exists.
+          # route and liveness crash-loops the pod. /healthz always exists and
+          # never touches the database, so liveness never restarts a pod over
+          # a database outage; /readyz passes once this process has reached
+          # the database and stays passing (buildapp/health_controller.py), so
+          # a rollout waits for a pod that can serve, and a later outage never
+          # drops the only pod (and the static site with it) from the route.
           startupProbe:
             httpGet:
               path: /healthz
               port: http
             periodSeconds: 5
-            failureThreshold: 30 # up to 150s for migrations on first boot
+            failureThreshold: 12 # 60s to boot; migrations run in the Job, not here
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
-            periodSeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
           livenessProbe:
             httpGet:
               path: /healthz

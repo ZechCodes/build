@@ -12,7 +12,9 @@ spec:
   # attached to the old one, so its rendezvous fails and its peer connection is
   # never negotiated. Recreate preserves the locked "single broker" topology; it
   # costs the in-flight negotiations, not held connections, since an established
-  # peer connection does not pass through here at all.
+  # peer connection does not pass through here at all. build-app rolls (its
+  # pods share nothing but Postgres, #168); this one cannot until the broker's
+  # rendezvous state lives outside the pod.
   strategy:
     type: Recreate
   selector:

@@ -44,6 +44,16 @@ describe("the compaction rows", () => {
     expect(compactionMenuOptions(custom)[4].description).toBe("Compact once a turn fills 250k tokens of context");
   });
 
+  // The wire's limit is a u64; 2^53 is the first one Number.isSafeInteger
+  // refuses, and past it the parse rounds — the row is checked against the
+  // same Number the digest holds either way.
+  it.each([2 ** 53, 2 ** 64, 1e21])("checks a custom row for a limit of %s and reads its id back", (limit) => {
+    const options = compactionMenuOptions({ max_context_tokens: limit, compact_at_tokens: limit });
+
+    expect(options.filter((option) => option.selected)).toEqual([expect.objectContaining({ id: `compact:${limit}` })]);
+    expect(compactionLimitOfOptionId(`compact:${limit}`)).toEqual({ maxContextTokens: limit });
+  });
+
   it("offers no custom row where the limit is one of the offered ones", () => {
     for (const max_context_tokens of [null, 150000, 200000, 300000, 0]) {
       expect(compactionMenuOptions({ max_context_tokens, compact_at_tokens: 200000 })).toHaveLength(5);
@@ -81,6 +91,10 @@ describe("reading a row back", () => {
     expect(compactionLimitOfOptionId("compact:-5")).toBe(null);
     expect(compactionLimitOfOptionId("compact:0")).toBe(null);
     expect(compactionLimitOfOptionId("compact:1.5")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:0x10")).toBe(null);
+    expect(compactionLimitOfOptionId("compact: 5")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:Infinity")).toBe(null);
     expect(compactionLimitOfOptionId(undefined)).toBe(null);
   });
 

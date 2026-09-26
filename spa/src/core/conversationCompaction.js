@@ -20,8 +20,11 @@ export const COMPACT_OPTION_PREFIX = "compact:";
 const LIMITS = [null, 150000, 200000, 300000, 0];
 
 /** A limit of the conversation's own that none of the offered rows sends —
- *  set elsewhere, by another client or the bridge's own tooling. */
-const isCustomLimit = (limit) => Number.isSafeInteger(limit) && limit > 0 && !LIMITS.includes(limit);
+ *  set elsewhere, by another client or the bridge's own tooling. Any positive
+ *  whole number the digest carries: the wire's u64 arrives as whatever Number
+ *  the JSON parse made of it, and that same Number is what the row is checked
+ *  against, so one past 2^53 is no less a limit. */
+const isCustomLimit = (limit) => Number.isInteger(limit) && limit > 0 && !LIMITS.includes(limit);
 
 /** A row's id, by the limit it sends. */
 const optionIdOf = (limit) => {
@@ -86,12 +89,14 @@ export function compactionMenuGroup(agent) {
   return { id: "compact", label: "Compact at", options: compactionMenuOptions(agent) };
 }
 
-/** The limit a custom row's id stands for, or null for any other id. */
+/** The limit a custom row's id stands for, or null for any other id. Read
+ *  back only where the id is exactly what `optionIdOf` writes for it — which
+ *  for a limit past 1e21 is the exponent form `String` gives a Number. */
 function customLimitOfOptionId(id) {
   if (!id.startsWith(COMPACT_OPTION_PREFIX)) return null;
-  const digits = id.slice(COMPACT_OPTION_PREFIX.length);
-  const limit = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : null;
-  return isCustomLimit(limit) ? limit : null;
+  const written = id.slice(COMPACT_OPTION_PREFIX.length);
+  const limit = Number(written);
+  return isCustomLimit(limit) && String(limit) === written ? limit : null;
 }
 
 /** The limit a menu id stands for, as `{ maxContextTokens }`, or null for an id

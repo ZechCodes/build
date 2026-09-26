@@ -52,6 +52,7 @@ import { readUserSession, userSessionAddress, writeUserSession } from "./userSes
 import { needsYouRuleAddress, readNeedsYouRule } from "./needsYouRule.js";
 import { DEFAULT_DASHBOARD_TAB, dashboardTabIds, paintIssueDashboard } from "./trackerDashboardRender.js";
 import { createTrackerIssueDetailsFeed } from "./trackerIssueDetailsFeed.js";
+import { issueUnreadCount } from "./issueUnread.js";
 import { createTrackerAgentActivityFeed } from "./trackerAgentActivityFeed.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { openIssueComposer } from "./issueComposer.js";
@@ -187,6 +188,7 @@ export function mountIssuesPane(host, options) {
 
   const paintContext = () => ({
     columns: state.columns,
+    unreadOf: unreadCounter(),
     deviceId: state.deviceId,
     projectId: state.projectId,
     agentGroups: groups(),
@@ -228,6 +230,13 @@ export function mountIssuesPane(host, options) {
   ];
   let details;
   let activity;
+  /** Each watched issue's unread, as the bubble on its row, card or dashboard
+   *  line says it (#104): off the cached timeline while it is current, and
+   *  the list's own count otherwise (core/issueUnread.js). */
+  function unreadCounter() {
+    const detailById = details?.read() || new Map();
+    return (issue) => issueUnreadCount(issue, detailById.get(issue.id) || null);
+  }
   const groupedRows = () => {
     const attention = attentionGroups(state.shown, {
       feed: state.feed(), projectKey: state.projectKey, detailById: details?.read(), askedOnly: state.askedOnly,

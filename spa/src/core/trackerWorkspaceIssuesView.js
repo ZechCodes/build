@@ -1,9 +1,11 @@
 // The workspace's Issues face on its rail (core/directoryRail.js): the count of
 // what its agents hold, and whether the face is drawn at all.
 //
-// It wears a count of the open issues this workspace's agents hold — open
-// meaning not finished, because a badge is a call to look and finished work is
-// not one.
+// It wears the unread of the watched issues this workspace's agents hold
+// (#104): "The issues tab should carry the watched issue unread count … for
+// workspaces it is only unreads on issues assigned to an agent in that
+// workspace." How many of those issues are open — not finished — is said in
+// its tooltip, which is where the count it wore before #104 went.
 //
 // It used to open an overlay of those issues (#16), then became a word in the
 // bar beside the directory tabs (#47). It is an icon on the rail now (#174):
@@ -23,7 +25,7 @@
 import { subscribeCache } from "./localCache.js";
 import { issuesAddress, readIssuesRecord } from "./trackerCache.js";
 import { carriesIssuesPush } from "./trackerPush.js";
-import { workspaceOpenIssueCount } from "./trackerWorkspaceIssues.js";
+import { workspaceIssuesTitle, workspaceIssuesUnread, workspaceOpenIssueCount } from "./trackerWorkspaceIssues.js";
 
 /**
  * Mount the face's badge.
@@ -38,17 +40,15 @@ export function mountWorkspaceIssues(button, { deviceId, projectId, agents }) {
 
   const paintBadge = () => {
     if (state.disposed || !button) return;
-    const count = carries ? workspaceOpenIssueCount(state.issues, agents()) : 0;
+    const unread = carries ? workspaceIssuesUnread(state.issues, agents()) : 0;
+    const open = carries ? workspaceOpenIssueCount(state.issues, agents()) : 0;
     const badge = button.querySelector(".dirtab-count");
-    if (badge) badge.textContent = count ? String(count) : "";
-    // The entry stays whether or not anything is open — it is how the view is
-    // reached — but its bubble says nothing when there is nothing waiting.
+    if (badge) badge.textContent = unread ? String(unread) : "";
+    // The entry stays whether or not anything is waiting — it is how the view
+    // is reached — but its bubble says nothing when nothing is unread.
     button.hidden = !carries;
-    button.classList.toggle("has-issues", count > 0);
-    button.setAttribute(
-      "title",
-      count ? `${count} open issue${count === 1 ? "" : "s"} in this workspace` : "Issues in this workspace",
-    );
+    button.classList.toggle("has-issues", open > 0);
+    button.setAttribute("title", workspaceIssuesTitle(unread, open));
   };
 
   async function reread() {

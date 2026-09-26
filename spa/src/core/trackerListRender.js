@@ -24,6 +24,7 @@
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { filtersAreSet } from "./trackerFilters.js";
+import { issueUnreadCount, unreadBubbleHtml } from "./issueUnread.js";
 import {
   ageHtml,
   assignPressLabel,
@@ -77,9 +78,11 @@ const factsHtml = (issue, columns, nowMs, reading) =>
  * Line one is `#12 Title` with, at most, one more thing on it: the mark a
  * pressing priority wears, between the two. It sits there rather than among
  * the facts because it says how to READ the title, and the eye going down a
- * column of titles meets it on the way in (#45).
+ * column of titles meets it on the way in (#45). A watched issue with unread
+ * wears its bubble at the line's end, where the inbox's rows wear theirs
+ * (#104). `unreadOf` is the pane's count, which reads the cached timeline.
  */
-export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...context }) => {
+export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), unreadOf = issueUnreadCount, ...context }) => {
   const reading = { ...context, identities: issue.identities || {} };
   const assigneeHref = issue.assignee && actorHref(issue.assignee, reading);
   const assignButton = `<button class="issue-assign" type="button" data-issue-assign="${esc(issue.id)}" aria-label="${esc(assignPressLabel(issue, reading))}" title="Assign this issue">${assigneeHref ? "Change" : rowAssigneeHtml(issue.assignee, reading)}</button>`;
@@ -88,7 +91,7 @@ export const issueRowHtml = (issue, { columns, href, nowMs = Date.now(), ...cont
     : assignButton;
   return (
   `<li class="issue-row" data-issue="${esc(issue.id)}">
-    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span></a>
+    <a class="issue-row-open" href="${esc(href(issue))}">${numberHtml(issue)}${priorityMarkHtml(issue.priority)}<span class="issue-title">${esc(issue.title)}</span>${unreadBubbleHtml(unreadOf(issue))}</a>
     <span class="issue-row-facts">${factsHtml(issue, columns, nowMs, reading)}${assignee}</span>
   </li>`);
 };

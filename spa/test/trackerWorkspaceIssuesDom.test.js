@@ -76,50 +76,52 @@ afterEach(() => {
 });
 
 describe("the badge", () => {
-  // A badge is a call to look, and finished work is not one.
-  it("counts the open issues this workspace's agents hold", async () => {
+  // #104: the tab carries the unread of the watched issues this workspace's
+  // agents hold. An issue nobody watches never shows a count.
+  it("counts the unread of the watched issues this workspace's agents hold", async () => {
     await putIssues([
-      held(ONE, { number: 1, id: "i1", status: "in_progress" }),
-      held(TWO, { number: 2, id: "i2", status: "ready" }),
-      held(ONE, { number: 3, id: "i3", status: "done" }),
-      held(ELSEWHERE, { number: 4, id: "i4", status: "in_progress" }),
+      held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 2 }),
+      held(TWO, { number: 2, id: "i2", status: "done", watched: true, unread_count: 1 }),
+      held(ONE, { number: 3, id: "i3", status: "ready", unread_count: 5 }),
+      held(ELSEWHERE, { number: 4, id: "i4", status: "in_progress", watched: true, unread_count: 4 }),
     ]);
     await mount();
-    expect(badge()).toBe("2");
+    expect(badge()).toBe("3");
     expect(button.hidden).toBe(false);
+    expect(button.title).toBe("3 unread · 2 open issues in this workspace");
   });
 
-  it("says nothing when nothing is open, but keeps the way in", async () => {
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "done" })]);
+  it("says nothing when nothing is unread, but keeps the way in and says what is open", async () => {
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 0 })]);
     await mount();
     expect(badge()).toBe("");
     expect(button.hidden).toBe(false);
+    expect(button.title).toBe("1 open issue in this workspace");
   });
 
   // No icon at all, rather than one reading zero.
   it("is not drawn on a bridge that does not carry issues", async () => {
     carriedKinds = ["state", "thread", "git", "files", "terminals"];
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
     await mount();
     expect(button.hidden).toBe(true);
     expect(badge()).toBe("");
   });
 
   it("moves on the push, with nothing asked of the bridge", async () => {
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "ready" })]);
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 1 })]);
     await mount();
     expect(badge()).toBe("1");
     await putIssues([
-      held(ONE, { number: 1, id: "i1", status: "ready" }),
-      held(TWO, { number: 2, id: "i2", status: "in_progress" }),
+      held(ONE, { number: 1, id: "i1", status: "ready", watched: true, unread_count: 0 }),
+      held(TWO, { number: 2, id: "i2", status: "in_progress", watched: true, unread_count: 2 }),
     ]);
-    await flush();
-    expect(badge()).toBe("2");
+    await vi.waitFor(() => expect(badge()).toBe("2"));
   });
 
   // A workspace gains and loses agents while the bar stands there.
   it("re-reads the agents when the bar says they moved", async () => {
-    await putIssues([held(TWO, { number: 1, id: "i1", status: "in_progress" })]);
+    await putIssues([held(TWO, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
     agents = [{ id: ONE, ordinal: 1 }];
     await mount();
     expect(badge()).toBe("");
@@ -144,7 +146,7 @@ describe("the rail's cell", () => {
   // A paint of the rail rewrites its cells: the block moves onto the new one
   // and says the count it already holds, with nothing read again.
   it("follows the rail onto a repainted cell, keeping its count", async () => {
-    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress" })]);
+    await putIssues([held(ONE, { number: 1, id: "i1", status: "in_progress", watched: true, unread_count: 1 })]);
     await mount();
     expect(badge()).toBe("1");
     document.body.innerHTML = cellHtml;

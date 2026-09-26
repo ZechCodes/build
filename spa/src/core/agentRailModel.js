@@ -213,16 +213,23 @@ function projectAgentNews(agents) {
  * one every workspace in the project talks to. Until an agent has been born on
  * it the tip says how to start it, the way a ghost's does, rather than reading
  * as a bubble with nothing behind it.
+ *
+ * A project whose agents the reader watches none of is marked the way an
+ * unwatched agent's bubble is (#105); `projectAgentOnTheStrip` says when the
+ * strip carries it at all.
  */
 export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false } = {}) {
   const news = projectAgentNews(agents);
   const who = `Project agent for ${name}`;
+  const unwatched = !projectAgentWatched(agents);
+  const title = agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`;
   return {
     type: "project",
     id: entityId || "",
     label: projectInitial(name),
     pattern: null,
-    title: agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`,
+    title: unwatched ? `${title} · ${UNWATCHED_TIP}` : title,
+    unwatched,
     active,
     unread: agents.reduce((total, agent) => total + (agent.unread_count || 0), 0),
     working: agents.some((agent) => !!agent.working),
@@ -275,9 +282,19 @@ const projectFace = (projectName) => ({ label: projectInitial(projectName), patt
  *  one conversation, so while it is the project's nothing below the line is the
  *  open one. */
 function underTheProject(own, projectAgent) {
+  if (!projectAgentOnTheStrip(projectAgent)) return own;
   const beside = projectAgent.active ? own.map((bubble) => ({ ...bubble, active: false })) : own;
   return [projectAgentBubble(projectAgent), RAIL_SEPARATOR_ENTRY, ...beside];
 }
+
+/** Whether the reader watches the project's agent: one of its agents is
+ *  watched, or none has been born yet to be unwatched. */
+const projectAgentWatched = (agents = []) => !agents.length || agents.some(agentIsWatched);
+
+/** Whether a workspace's strip carries the project's bubble, and the line
+ *  under it (#105): while the reader watches the project's agent, and an
+ *  unwatched one only while its conversation is the one open. */
+export const projectAgentOnTheStrip = ({ agents = [], active = false } = {}) => active || projectAgentWatched(agents);
 
 /** Whether the reader watches this agent. A bridge that says nothing about
  *  watching leaves `watched` unset, and every agent of it counts as watched. */

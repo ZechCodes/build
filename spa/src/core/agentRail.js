@@ -972,12 +972,14 @@ function mountRailOnContext(host, context, swap) {
   let watchState = watchStateFor(context, entity.agents.find((agent) => agent.id === selectedId));
   /** A watch the bridge took, written into the cached row where nothing has
    *  written it since the ask: the strip keeps a watched agent from the answer
-   *  on, not from whenever the push behind it lands (#105). */
+   *  on, not from whenever the push behind it lands (#105). The answer is the
+   *  device's, not this mount's, so a reader who left before it came still
+   *  finds it on return; only a retired device's cache is left alone. */
   const callWatch = async (method, params) => {
     const captured = await records.rowWrite(params.entity_id);
     const answer = await chatRepository.currentCall()(method, params);
     const watched = method === WATCH_VERB;
-    if (standing()) await records.patchAgentIfUnwritten(captured, params.agent_id, (agent) => ({ ...agent, watched }));
+    if (cacheScope?.active()) await records.patchAgentIfUnwritten(captured, params.agent_id, (agent) => ({ ...agent, watched }));
     return answer;
   };
   const watchSwitch = createWatchToggle({
@@ -1752,7 +1754,7 @@ function mountRailOnContext(host, context, swap) {
     projectAgent && {
       name: projectName || projectAgent.projectId,
       entityId: projectOwner,
-      agents: onProjectAgentRail ? visibleAgents() : alongsideEntity.agents,
+      agents: onProjectAgentRail ? stripAgents() : alongsideEntity.agents,
       active: onProjectAgentRail && selectedKind === "agent",
     };
 

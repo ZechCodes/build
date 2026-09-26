@@ -162,7 +162,8 @@ final for this build unless the reviewer overrides them in the thread.
   add-agent on branches only. An unwatched agent is listed under "Not
   watching" in the chat overview; opening one gives it a temporary bubble,
   marked unwatched, that goes when the reader leaves it unless they watched
-  it meanwhile (#105). Tapping expands that agent's conversation panel. Panel
+  it meanwhile (#105). The project's agent above a workspace's strip follows
+  the same rule. Tapping expands that agent's conversation panel. Panel
   header: agent identity, Chat/TUI toggle, collapse. TUI mode attaches the
   same panel to the agent's PTY (`term.resize` to panel geometry).
 - **Routing**: `#/inbox` is the landing route. Branch/issue routes lose the

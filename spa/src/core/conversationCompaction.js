@@ -19,6 +19,10 @@ export const COMPACT_OPTION_PREFIX = "compact:";
  *  default and 0 is never — the wire's own words for both. */
 const LIMITS = [null, 150000, 200000, 300000, 0];
 
+/** A limit of the conversation's own that none of the offered rows sends —
+ *  set elsewhere, by another client or the bridge's own tooling. */
+const isCustomLimit = (limit) => Number.isSafeInteger(limit) && limit > 0 && !LIMITS.includes(limit);
+
 /** A row's id, by the limit it sends. */
 const optionIdOf = (limit) => {
   if (limit === null) return `${COMPACT_OPTION_PREFIX}default`;
@@ -44,21 +48,33 @@ function defaultRowLabel(agent) {
 const ROW_COPY = {
   default: (agent) => ({ word: defaultRowLabel(agent), description: "This device's setting" }),
   off: () => ({ word: "Off", description: "Never compact this chat" }),
-  size: (_agent, limit) => ({
-    word: thresholdWord(limit),
-    description: `Compact once a turn fills ${thresholdWord(limit)} tokens of context`,
-  }),
+  size: (_agent, limit) => ({ word: thresholdWord(limit), description: sizeDescription(limit) }),
+  custom: (_agent, limit) => ({ word: `Custom (${thresholdWord(limit)})`, description: sizeDescription(limit) }),
 };
+
+function sizeDescription(limit) {
+  return `Compact once a turn fills ${thresholdWord(limit)} tokens of context`;
+}
 
 function copyKindOf(limit) {
   if (limit === null) return "default";
-  return limit === 0 ? "off" : "size";
+  if (limit === 0) return "off";
+  return isCustomLimit(limit) ? "custom" : "size";
+}
+
+/** The limits the rows stand for: the offered ones, and a limit set elsewhere
+ *  on a row of its own ahead of never, so one row is always the checked one. */
+function limitsFor(agent) {
+  const standing = ownLimitOf(agent);
+  if (!isCustomLimit(standing)) return LIMITS;
+  const never = LIMITS.length - 1;
+  return [...LIMITS.slice(0, never), standing, ...LIMITS.slice(never)];
 }
 
 /** The menu's rows: one per limit, the standing one marked. */
 export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
-  return LIMITS.map((limit) => {
+  return limitsFor(agent).map((limit) => {
     const { word, description } = ROW_COPY[copyKindOf(limit)](agent, limit);
     return { id: optionIdOf(limit), label: word, description, selected: limit === standing };
   });
@@ -70,11 +86,22 @@ export function compactionMenuGroup(agent) {
   return { id: "compact", label: "Compact at", options: compactionMenuOptions(agent) };
 }
 
+/** The limit a custom row's id stands for, or null for any other id. */
+function customLimitOfOptionId(id) {
+  if (!id.startsWith(COMPACT_OPTION_PREFIX)) return null;
+  const digits = id.slice(COMPACT_OPTION_PREFIX.length);
+  const limit = /^[1-9][0-9]*$/.test(digits) ? Number(digits) : null;
+  return isCustomLimit(limit) ? limit : null;
+}
+
 /** The limit a menu id stands for, as `{ maxContextTokens }`, or null for an id
  *  that is not one of these rows. Wrapped because null is itself a limit. */
 export function compactionLimitOfOptionId(optionId) {
-  const limit = LIMITS.find((each) => optionIdOf(each) === String(optionId || ""));
-  return limit === undefined ? null : { maxContextTokens: limit };
+  const id = String(optionId || "");
+  const offered = LIMITS.find((each) => optionIdOf(each) === id);
+  if (offered !== undefined) return { maxContextTokens: offered };
+  const custom = customLimitOfOptionId(id);
+  return custom === null ? null : { maxContextTokens: custom };
 }
 
 /** `conversation.settings`'s params, in the fixture's shape. */

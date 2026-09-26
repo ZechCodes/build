@@ -34,6 +34,22 @@ describe("the compaction rows", () => {
     expect(marked({ max_context_tokens: 0, compact_at_tokens: 0 })).toEqual(["compact:off"]);
   });
 
+  // A limit set elsewhere — another client, the bridge's own tooling — is
+  // none of the offered sizes, and still has to stand as the checked row.
+  it("marks a limit set elsewhere on a row of its own, ahead of off", () => {
+    const custom = { max_context_tokens: 250000, compact_at_tokens: 250000 };
+
+    expect(labels(custom)).toEqual(["Default", "150k", "200k", "300k", "Custom (250k)", "Off"]);
+    expect(marked(custom)).toEqual(["compact:250000"]);
+    expect(compactionMenuOptions(custom)[4].description).toBe("Compact once a turn fills 250k tokens of context");
+  });
+
+  it("offers no custom row where the limit is one of the offered ones", () => {
+    for (const max_context_tokens of [null, 150000, 200000, 300000, 0]) {
+      expect(compactionMenuOptions({ max_context_tokens, compact_at_tokens: 200000 })).toHaveLength(5);
+    }
+  });
+
   it("names the default by the threshold in effect, which may be off", () => {
     expect(labels({ max_context_tokens: null, compact_at_tokens: 0 })[0]).toBe("Default (off)");
     expect(labels({ max_context_tokens: null, compact_at_tokens: 250000 })[0]).toBe("Default (250k)");
@@ -55,9 +71,16 @@ describe("reading a row back", () => {
     ).toEqual([{ maxContextTokens: null }, { maxContextTokens: 150000 }, { maxContextTokens: 200000 }, { maxContextTokens: 300000 }, { maxContextTokens: 0 }]);
   });
 
+  it("answers the limit a custom row stands for", () => {
+    expect(compactionLimitOfOptionId("compact:250000")).toEqual({ maxContextTokens: 250000 });
+  });
+
   it("answers null for a row that is not one of these", () => {
     expect(compactionLimitOfOptionId("detail:all")).toBe(null);
-    expect(compactionLimitOfOptionId("compact:123")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:abc")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:-5")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:0")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:1.5")).toBe(null);
     expect(compactionLimitOfOptionId(undefined)).toBe(null);
   });
 

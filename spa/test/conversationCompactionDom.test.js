@@ -230,6 +230,38 @@ describe("compaction on the conversation's menu", () => {
     expect(markedRow().dataset.action).toBe("compact:300000");
   });
 
+  it("checks a limit set elsewhere on a row of its own, with its value", async () => {
+    digestCompaction = { max_context_tokens: 250000, compact_at_tokens: 250000 };
+    await mountWorkspaceRail();
+
+    expect(compactionRows().map((row) => row.dataset.action)).toEqual([
+      "compact:default",
+      "compact:150000",
+      "compact:200000",
+      "compact:300000",
+      "compact:250000",
+      "compact:off",
+    ]);
+    expect(compactionRows().filter((row) => row.getAttribute("aria-checked") === "true")).toEqual([markedRow()]);
+    expect(markedRow().dataset.action).toBe("compact:250000");
+    expect(rowLabel(markedRow())).toBe("Custom (250k)");
+  });
+
+  it("sends nothing for the custom row already standing, and leaves it for an offered size", async () => {
+    digestCompaction = { max_context_tokens: 250000, compact_at_tokens: 250000 };
+    await mountWorkspaceRail();
+
+    await choose("compact:250000");
+    expect(settingsAsked).toEqual([]);
+    // A row this menu drew never falls through to opening a surface.
+    expect(document.querySelector(".modal-scrim")).toBe(null);
+
+    await choose("compact:150000");
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: 150000 }]);
+    expect(markedRow().dataset.action).toBe("compact:150000");
+    expect(compactionRows().map((row) => row.dataset.action)).not.toContain("compact:250000");
+  });
+
   it("is not offered by a bridge that predates conversation.settings", async () => {
     await mountWorkspaceRail("1.9.0");
 

@@ -1,0 +1,9 @@
+# The vendored crate's own workspace, for its own tests (see README.md). The
+# bridge does not build through this file: bridge/Cargo.toml reaches the crate
+# with a [patch.crates-io] path entry, and its gates stop at the bridge's own
+# package. Here the patched webrtc is tested on a lockfile of its own.
+[workspace]
+members = ["webrtc"]
+# The bridge's resolver (edition 2021), so features unify the way they do in
+# the daemon.
+resolver = "2"

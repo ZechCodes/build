@@ -1,0 +1,4 @@
+# The crate as upstream published it: its whitespace is theirs, and the
+# patch's context lines repeat it. `git diff --check` skips both.
+webrtc/** -whitespace
+*.patch -whitespace

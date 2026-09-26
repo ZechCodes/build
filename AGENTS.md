@@ -115,6 +115,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | tier | from | commands |
 | --- | --- | --- |
 | bridge | `bridge/` | `nice -n 10 cargo test` · `nice -n 10 cargo clippy --all-targets -- -D warnings` · `nice -n 10 cargo fmt --check` |
+| bridge vendored webrtc | `bridge/` | `nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib` (the patched webrtc, `bridge/vendor/README.md`) |
 | SPA | `spa/` | `nice -n 10 npm install --legacy-peer-deps` (when `package.json` changed) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |

@@ -116,7 +116,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             bridge/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock') }}
+            bridge/vendor/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock', 'bridge/vendor/Cargo.lock') }}
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -126,6 +127,13 @@ jobs:
 
       - name: Test
         run: cargo test --all
+
+      # The patched webrtc the bridge builds from bridge/vendor/ (#166). The
+      # steps above stop at the bridge's own package, so the crate's unit
+      # tests, the driver's drain tests among them, run from its own workspace
+      # (bridge/vendor/README.md).
+      - name: Vendored webrtc
+        run: cargo test --locked --manifest-path vendor/Cargo.toml --lib
 
   interop:
     name: Crypto interop (Rust ↔ Python)

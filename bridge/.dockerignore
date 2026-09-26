@@ -1,2 +1,4 @@
 target/
 **/*.rs.bk
+# The vendored crates' own test builds (bridge/vendor/Cargo.toml).
+vendor/target/

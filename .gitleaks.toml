@@ -12,6 +12,8 @@
 #     (crypto_kdf_blake2b_BYTES_MAX, ...) misread as generic API keys
 #   - bridge/target: gitignored Cargo build output; the `pem` crate bakes its
 #     own doc-example RSA key into the rmeta it compiles
+#   - bridge/vendor webrtc example: RFC 6455's WebSocket GUID, a public
+#     constant the generic-api-key rule misreads as a key
 #   - v2 wire fixtures and push-bus tests: `status_key`, `content_key`,
 #     `highlight_key` and `diff_key` are fnv1a64 hashes OF A PAYLOAD, and the
 #     example payloads hash to the made-up sixteen hex characters allowlisted
@@ -41,4 +43,8 @@ regexes = [
   '''9f3c1a0b7e2d4c55''',
   '''3f9a1c0b7e2d4c55''',
   '''5c6d7e8f90123456''',
+  # RFC 6455's WebSocket GUID, a public protocol constant: the vendored webrtc
+  # crate's example signalling server (bridge/vendor/) hashes it into the
+  # handshake's Sec-WebSocket-Accept.
+  '''258EAFA5-E914-47DA-95CA-C5AB0DC85B11''',
 ]

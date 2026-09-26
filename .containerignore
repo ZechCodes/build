@@ -10,6 +10,7 @@ spa/package-lock.json
 landing/node_modules
 landing/.astro
 bridge/target
+bridge/vendor/target
 skriftapp/.venv
 skriftapp/.env
 skriftapp/app.db

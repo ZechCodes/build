@@ -567,9 +567,13 @@ impl PtySession {
     /// deciding whether a PTY write error means "crashed" (benign) rather
     /// than "wedged" (fatal) wait out that reap lag here instead.
     pub fn exited_within(&self, timeout: Duration) -> bool {
+        Self::exited_within_polling(timeout, || self.has_exited())
+    }
+
+    fn exited_within_polling(timeout: Duration, mut has_exited: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.has_exited() {
+            if has_exited() {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -990,9 +994,8 @@ mod tests {
 
     #[tokio::test]
     async fn child_inherits_the_daemon_environment() {
-        // Assert inheritance with a test-private marker instead of PATH. Another
-        // parallel test extends PATH to exercise binary lookup, so comparing two
-        // unsynchronised PATH snapshots made this test environment-sensitive.
+        // Assert inheritance with a test-private marker instead of depending on
+        // the machine's environment.
         let marker = format!("inherit-{}", uuid::Uuid::new_v4());
         std::env::set_var("BUILD_BRIDGE_ENV_INHERITANCE_TEST", &marker);
         // The harness waits for a line before it prints, as
@@ -1022,25 +1025,58 @@ mod tests {
         // ("/usr/bin:/bin:/usr/sbin:/sbin"). That is why `sh` spawned fine but
         // `claude` — installed under ~/.local/bin, a toolbox shim, mise, nvm —
         // died with "No viable candidates found in PATH".
+        // Run PATH variants in separate processes: changing this test runner's
+        // environment can race every other harness or Git child it starts.
+        const CHILD: &str = "BUILD_PATH_LOOKUP_TEST_CHILD";
+        if let Ok(mode) = std::env::var(CHILD) {
+            let binary = std::env::var("BUILD_PATH_LOOKUP_TEST_BINARY").unwrap();
+            let spec = HarnessSpec::new(&binary);
+            if mode == "missing" {
+                assert!(matches!(
+                    resolve_binary(&spec),
+                    Err(HarnessError::NotFound { .. })
+                ));
+                return;
+            }
+            let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+            let mut rx = session.subscribe();
+            // The marker is produced only after the subscription exists.
+            session.write_input(b"go\r").unwrap();
+            let out = read_until(&mut rx, "HARNESS_OK").await;
+            session.end();
+            assert!(out.contains("HARNESS_OK"), "got: {out:?}");
+            return;
+        }
+
         let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("build-test-harness");
-        std::fs::write(&bin, "#!/bin/sh\nprintf 'HARNESS_OK'\n").unwrap();
+        let binary = format!("build-test-harness-{}", uuid::Uuid::new_v4());
+        let bin = dir.path().join(&binary);
+        std::fs::write(&bin, "#!/bin/sh\nread _; printf 'HARNESS_OK'\n").unwrap();
         std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
-        // Only ever *append* to PATH so concurrent tests stay unaffected.
-        let path = format!(
-            "{}:{}",
-            std::env::var("PATH").unwrap(),
-            dir.path().display()
-        );
-        std::env::set_var("PATH", &path);
-
-        let spec = HarnessSpec::new("build-test-harness");
-        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
-        let mut rx = session.subscribe();
-
-        let out = read_until(&mut rx, "HARNESS_OK").await;
-        assert!(out.contains("HARNESS_OK"), "got: {out:?}");
+        let inherited = std::env::var("PATH").unwrap();
+        let with_fixture = format!("{inherited}:{}", dir.path().display());
+        // Negative control: the same executable must be unavailable without
+        // its directory on the daemon's PATH.
+        for (mode, path) in [("present", with_fixture.as_str()), ("missing", &inherited)] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "pty::tests::resolves_the_binary_through_the_daemon_path",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .env("BUILD_PATH_LOOKUP_TEST_BINARY", &binary)
+                .env("PATH", path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode} PATH child failed: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+        }
     }
 
     #[tokio::test]
@@ -1149,21 +1185,36 @@ mod tests {
 
     #[tokio::test]
     async fn exited_within_bridges_the_gap_until_the_exit_is_reapable() {
-        // The prompt-write race, with the reap lag under our control: a child
-        // that is still un-reapable right now but exits shortly after models
-        // the kernel window where the PTY already returned EIO while
-        // `try_wait` still says "running".
-        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 0.15");
+        // The child announces it is running, then waits for our input before
+        // it can exit. This pins the first poll before the exit, regardless of
+        // how long spawn or the test thread was delayed by the scheduler.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("IFS= read -r arm; printf 'armed\\n'; IFS= read -r release; exit 3");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut output = session.subscribe();
+        session.write_input(b"arm\n").unwrap();
+        read_until(&mut output, "armed").await;
 
         assert!(
             !session.has_exited(),
             "precondition: the exit status must not be reapable yet"
         );
+        let mut first_poll = true;
         assert!(
-            session.exited_within(Duration::from_millis(500)),
+            PtySession::exited_within_polling(Duration::from_millis(500), || {
+                let exited = session.has_exited();
+                if first_poll {
+                    assert!(!exited, "the first poll must precede the child's exit");
+                    first_poll = false;
+                    session.write_input(b"go\n").unwrap();
+                }
+                exited
+            }),
             "the bounded wait must observe the exit that a single poll misses"
         );
+        assert!(!first_poll, "the wait polled the child at least once");
+        assert_eq!(session.exit_code(), Some(3));
     }
 
     #[tokio::test]
@@ -1682,20 +1733,70 @@ mod tests {
         );
     }
 
-    /// A spec that prints the nice it runs at the moment it starts, then
-    /// waits to be reaped. No pause first: the child is lowered at its gate,
-    /// before it runs a thing, so its first fork already sees the nice.
+    /// A spec that captures its nice at startup, waits for the test to
+    /// subscribe, then reports that captured value. The child is lowered at
+    /// its gate before it runs a thing, so its first fork sees the nice.
     fn nice_reporting_spec() -> HarnessSpec {
         let mut spec = HarnessSpec::new("sh");
-        spec.args = vec!["-c".into(), "echo NICE=$(nice); sleep 2".into()];
+        spec.args = vec![
+            "-c".into(),
+            "started_nice=$(nice); IFS= read -r arm; printf 'NICE=%s\\n' \"$started_nice\"; IFS= read -r hold"
+                .into(),
+        ];
         spec
     }
 
-    async fn reported_nice(session: &PtySession) -> String {
+    struct EndNiceSession(PtySession);
+
+    impl Drop for EndNiceSession {
+        fn drop(&mut self) {
+            self.0.end();
+        }
+    }
+
+    fn nice_from_complete_record(seen: &str) -> Option<String> {
+        let after = seen.split_once("NICE=")?.1;
+        let line = after.split_once('\n')?.0.trim_end_matches('\r');
+        (!line.is_empty() && line.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| line.to_string())
+    }
+
+    async fn nice_report(session: &PtySession) -> (String, String) {
         let mut output = session.subscribe();
-        let seen = read_until(&mut output, "NICE=").await;
-        let after = seen.split("NICE=").nth(1).unwrap_or_default();
-        after.chars().take_while(|c| c.is_ascii_digit()).collect()
+        session.write_input(b"report\n").unwrap();
+        let mut seen = String::new();
+        let nice = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match output.recv().await {
+                    Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(error) => panic!("nice report stream ended: {error}; got {seen:?}"),
+                }
+                if let Some(nice) = nice_from_complete_record(&seen) {
+                    return nice;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for a complete NICE record; got {seen:?}"));
+        (seen, nice)
+    }
+
+    async fn reported_nice(session: &PtySession) -> String {
+        nice_report(session).await.1
+    }
+
+    #[test]
+    fn nice_report_waits_for_a_complete_numeric_record() {
+        let mut seen = "NICE=".to_string();
+        assert_eq!(nice_from_complete_record(&seen), None);
+        seen.push('1');
+        assert_eq!(nice_from_complete_record(&seen), None);
+        seen.push('9');
+        assert_eq!(nice_from_complete_record(&seen), None);
+        seen.push_str("\r\n");
+        assert_eq!(nice_from_complete_record(&seen), Some("19".to_string()));
+        assert_eq!(nice_from_complete_record("NICE=wrong\r\n"), None);
     }
 
     /// A stand-in for `busctl` that refuses every scope, and a placement that
@@ -1732,8 +1833,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_spawned_agent_runs_ten_below_the_daemon() {
-        let session = PtySession::spawn(&nice_reporting_spec(), None, small_pty()).unwrap();
-        assert_eq!(reported_nice(&session).await, agent_nice());
+        let session =
+            EndNiceSession(PtySession::spawn(&nice_reporting_spec(), None, small_pty()).unwrap());
+        assert_eq!(reported_nice(&session.0).await, agent_nice());
     }
 
     #[cfg(target_os = "linux")]
@@ -1743,9 +1845,9 @@ mod tests {
         // user's shell runs half a step down: below the daemon, above the
         // agents.
         let spec = nice_reporting_spec().as_terminal();
-        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let session = EndNiceSession(PtySession::spawn(&spec, None, small_pty()).unwrap());
         assert_eq!(
-            reported_nice(&session).await,
+            reported_nice(&session.0).await,
             crate::priority::child_nice_for(
                 crate::priority::own_nice(),
                 crate::priority::TERMINAL_NICE_WITHOUT_SCOPE
@@ -1763,16 +1865,14 @@ mod tests {
     async fn a_refused_scope_is_silent_on_the_terminal_and_the_child_runs_niced() {
         let dir = tempfile::tempdir().unwrap();
         let placement = refusing_busctl(dir.path());
-        let session =
-            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap();
-        let mut output = session.subscribe();
-        let seen = read_until(&mut output, "NICE=").await;
+        let session = EndNiceSession(
+            PtySession::spawn_placed(&nice_reporting_spec(), None, small_pty(), placement).unwrap(),
+        );
+        let (seen, nice) = nice_report(&session.0).await;
         assert!(
             !seen.contains("Failed") && !seen.contains("bus"),
             "the refusal reached the terminal: {seen:?}"
         );
-        let after = seen.split("NICE=").nth(1).unwrap_or_default();
-        let nice: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
         assert_eq!(nice, agent_nice());
     }
 }

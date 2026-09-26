@@ -20,8 +20,8 @@ import { confirmAction } from "./confirm.js";
 import {
   activeEntryKey,
   branchDeleteTooOld,
-  byAnchor,
   branchDoneConfirm,
+  byAnchor,
   captureEntries,
   dismissParamsOf,
   entryKeyOf,

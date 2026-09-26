@@ -566,6 +566,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }
+/* A face the surface hides (Issues, on a bridge that carries none) — the cell's
+   own display beats the UA's [hidden] rule, so it needs one of its own. */
+.dirtab[hidden] { display:none; }
+/* The open issues the workspace's agents hold, as the bubble the inbox rows
+   wear, on the icon's shoulder. Nothing waiting draws nothing. */
+.dirtab-count { position:absolute; top:1px; right:-3px; line-height:14px; }
+.dirtab-count:empty { display:none; }
 /* The faces are the tablist; the rail is the tablist plus the toggle. */
 .dirtabs { display:flex; flex-direction:column; align-items:center; gap:4px; }
 /* The sidebar toggle: a cell of the same idiom, parked at the very foot of the
@@ -574,6 +581,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    a column: the drawer's own media query takes it away where the drawer is the
    answer, which is also everywhere the phone's bubble strip lies over this foot. */
 .dirtoggle { margin-top:auto; flex:none; }
+/* A workspace's Settings stand at the foot too, directly above the toggle. */
+.dirsettings { margin-top:auto; flex:none; }
+.dirsettings + .dirtoggle { margin-top:0; }
 /* #root is a grid cell now, not a flex child: it fills its share. A reading
    page scrolls itself; a view that wants the full-height tab shell adds
    `.surface` and hands scrolling to its own body (that geometry lives in
@@ -652,9 +662,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
   border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
 .tb-sel:hover { background:var(--panel2); }
-/* Leave the workspace name at its natural width so its directory tabs begin
-   immediately after it. Long names still yield before the action cluster. */
+/* The workspace picker is the bar's one control on a workspace, and reads as a
+   breadcrumb: the project said quietly, then the workspace. Long names yield
+   before the action cluster, the project's first. */
 .tb-workspace { flex:0 1 auto; max-width:55%; font-weight:600; }
+.tb-crumb { flex:0 3 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  font-weight:400; color:var(--ink2); }
 .tb-project .tb-name { font-weight:600; }
 .tb-legacy-item { display:flex; align-items:center; min-width:0; padding:4px var(--tbsel-inset);
   font-size:13px; color:var(--ink); }
@@ -662,9 +675,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-workspace .tb-name { white-space:pre; }
 .tb-caret { flex:none; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
-.tb-directories { display:flex; align-self:stretch; align-items:stretch; min-width:0;
-  overflow-x:auto; scrollbar-width:none; margin-left:14px; }
-.tb-directories::-webkit-scrollbar { display:none; }
 .tb-directory { flex:none; position:relative; max-width:170px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
   background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
@@ -672,33 +682,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-directory.current { color:var(--ink); }
 .tb-directory.current::after { content:""; position:absolute; left:9px; right:9px;
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
-.tb-directory-menu { display:none; }
-/* The project's two pages as tabs after its name (core/toolbarRender.js): the
-   same tab its workspaces' directories are, and never collapsed — two short
-   words fit a phone, where they are the way back to the list from an issue
-   with the chat open over the page. */
+/* The project's two pages as tabs after its name (core/toolbarRender.js),
+   never collapsed — two short words fit a phone, where they are the way back
+   to the list from an issue with the chat open over the page. */
 .tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
-/* The workspace's own Issues, beside the directory tabs rather than by the cog
-   (#47). It is a `.tb-directory` — the same tab, the same current underline —
-   with the count bubble the inbox rows wear, and no icon. Outside
-   `.tb-directories` deliberately: that collapses into a menu on a phone, and
-   the issues stay reachable at every width. */
-.tb-issues { flex:none; display:flex; align-items:center; gap:6px; margin-left:4px; }
-/* Setting `display` here would beat the UA's [hidden] rule, and a bridge that
-   carries no issues hides this entry rather than drawing one (see
-   core/trackerWorkspaceIssuesView.js). The old icon button set none and so
-   needed no such line. */
-.tb-issues[hidden] { display:none; }
-/* Nothing waiting says nothing: an empty bubble would still draw its pill. */
-.tb-issues-count:empty { display:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
-/* The pack ships 24x24, which is twice this row's font — size it here, once. */
-.tb-settings { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; }
-.tb-settings svg { width:16px; height:16px; display:block; }
-/* The way back out of a workspace, at the bar's left edge before the switcher:
-   the same quiet icon button as the cog opposite it. */
-.tb-back { flex:none; display:flex; align-items:center; padding:4px; border-radius:6px; margin-right:2px; }
-.tb-back svg { width:16px; height:16px; display:block; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
    down from the surface's old primary-button treatment: this is a fact in a
@@ -1333,13 +1321,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 
 @media (prefers-reduced-motion: reduce) {
   .surface-agent-summary::before { transition:none; }
-}
-
-@container toolbar-shell (max-width: 760px) {
-  /* Directory tabs consume the entire toolbar surprisingly quickly. Keep the
-     selected directory in place and put every directory in its popup menu. */
-  .tb-directories { display:none; }
-  .tb-directory-menu { display:flex; flex:0 1 auto; max-width:34%; }
 }
 
 @media (max-width: 760px) {

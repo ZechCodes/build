@@ -1080,6 +1080,16 @@ describe("every project's issues", () => {
     expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }]);
   });
 
+  // #129: the Issues tab weighs this list against its own filtered answer by
+  // when each was asked, and this read is large enough to land well after.
+  it("stamps the list with when it was asked, not when it landed", async () => {
+    script["issues.list"] = () => new Promise((resolve) => setTimeout(() => resolve({ issues: [] }), 50));
+    await boot([]);
+    await vi.waitFor(async () => expect(await issuesOf("p1")).toBeTruthy());
+    const landed = await issuesOf("p1");
+    expect(landed.value.read_order).toBeLessThan(landed.at - 25);
+  });
+
   it("holds the project's columns beside its issues", async () => {
     await boot([]);
     expect((await issuesOf("p1")).value.columns).toEqual([{ id: "backlog", name: "Backlog" }]);

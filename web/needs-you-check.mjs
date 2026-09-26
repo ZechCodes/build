@@ -9,6 +9,8 @@
 //   reconnect  the SPA is offline while the bridge restarts and the move is
 //              made; the greeting's refetch must bring it in. Run after
 //              churn, this is #123's churn → offline → restart → online.
+//              Offline only once no page holds a relay socket, and each page
+//              must dial a fresh session after it is back online (#130).
 //   killed     the bridge is SIGKILLed while the page is online and comes
 //              straight back (#123). No close reaches the page, so its ICE
 //              restart reaches the NEW process, which answers it: the restart
@@ -43,6 +45,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { chromium } from "playwright";
+import { freshDials, goOfflineWithNoOpenSocket, goOnline, trackWebSockets } from "./offlineEvidence.mjs";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const REPO = process.env.ISSUES_REPO;
@@ -110,6 +113,9 @@ const netem = (verb) => docker(`docker run --rm --net container:${PROJECT}-bridg
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+// Every WebSocket each page opens, and whether it is still open: the
+// reconnect scenario's offline precondition (web/offlineEvidence.mjs, #130).
+await context.addInitScript(trackWebSockets);
 const login = await context.newPage();
 await login.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
 await login.fill('input[name="email"]', "qa@localhost");
@@ -234,7 +240,10 @@ console.log("CHURN_END " + n);`);
 
 async function reconnect() {
   const target = await inReview("reconnect");
-  await context.setOffline(true);
+  // A socket still open would carry signalling through the "offline" page.
+  // The SPA closes each once nothing negotiates on it; checked again once
+  // offline has applied, so it holds when the bridge restarts.
+  await goOfflineWithNoOpenSocket(context, [list, dash]);
   docker(`${compose} restart bridge`);
   await until("the restarted bridge to answer", async () => {
     try {
@@ -249,11 +258,23 @@ async function reconnect() {
   const held = (await listNeedsYou(target.title)) && (await dashNeedsYou(target.title)).listed;
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
   if (!held) await dumpDiagnostics("reconnect-held");
-  await context.setOffline(false);
+  // Each page's clock read before networking is back: a fresh dial can land
+  // before anything here could ask.
+  const onlineAt = await goOnline(context, [list, dash]);
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] ONLINE`);
   // The SPA's own reconnect backs off while it was offline, so the deadline
   // covers that backoff too; the time is from going back online.
-  if (!(await bothDrop("reconnect", target, 180000))) await dumpDiagnostics("reconnect");
+  let dropped = await bothDrop("reconnect", target, 180000);
+  // The restarted bridge holds none of the old sessions, so what brought the
+  // move in must be a session to the seeded machine, dialled after the page
+  // came back.
+  for (const [index, [name, page]] of [["list", list], ["dash", dash]].entries()) {
+    const dials = await freshDials(page, onlineAt[index], seed.deviceId);
+    report(dials.length > 0, `reconnect: the ${name} page dialled a fresh session once online`,
+      dials.map((entry) => entry.connection).join(", "));
+    dropped &&= dials.length > 0;
+  }
+  if (!dropped) await dumpDiagnostics("reconnect");
   await list.screenshot({ path: `${SHOTS}/${LABEL}-reconnect-list.png` });
 }
 

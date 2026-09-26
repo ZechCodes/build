@@ -6,6 +6,7 @@ const browser = await chromium.launch({ executablePath: "/usr/bin/chromium" });
 const shot = async (file, width, height, openMenu, search) => {
   const p = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
   p.on("pageerror", (e) => console.log("PAGEERROR", e.message));
+  // nosemgrep: javascript.playwright.security.audit.playwright-goto-injection.playwright-goto-injection -- `file` is a literal passed by this script, never input
   await p.goto(`http://localhost:4188/app/static/__${file}.html`);
   await p.waitForFunction(() => window.__ready === true, { timeout: 8000 });
   await p.click(`[data-filter-menu="${openMenu}"] .fmenu-press`);

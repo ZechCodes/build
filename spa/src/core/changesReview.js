@@ -131,6 +131,8 @@ export function createReviewPlug({
 }) {
   const openFile = (navigate && navigate.openFile) || null;
   let host = null;
+  let visible = true;
+  let needsPaint = false;
   let unwatchDiff = null;
   let editedTimeWatcher = null;
   let diffKey = null;
@@ -236,7 +238,7 @@ export function createReviewPlug({
    *  diff. The two live in different bars now — merging in the toolbar above
    *  the stack, sending comments in the tray below it — so both are painted. */
   const paintActions = () => {
-    if (!host) return;
+    if (!host || !visible) return;
     if (trayMounted && commentLayer) commentLayer.refreshActions();
     const gitActions = gitActionsHost();
     if (gitActions && !renderIdleActions(gitActions)) gitActions.innerHTML = "";
@@ -245,12 +247,17 @@ export function createReviewPlug({
   let paintChangeset = null;
   // The reader reached the end of a file whose body is still arriving in
   // pages: read the next one into the cache, and the paint follows from there.
-  const viewport = createDiffViewport({ repaint: render, onNeedMore: async (key) => Boolean(await bodies?.more(pathOf(key))) });
+  const viewport = createDiffViewport({
+    repaint: render,
+    commentLayerBusy: () => commentLayer?.repaintBusy(),
+    onNeedMore: async (key) => Boolean(await bodies?.more(pathOf(key))),
+  });
   const contextScroller = () => host?.closest(".cdetail-host") || host;
   let contextForce = false;
   const composerFocused = () => Boolean(host?.ownerDocument.activeElement?.closest?.(".composer"));
   const syncViewingContext = () => {
     contextFrame = 0;
+    if (!visible) return;
     const forced = contextForce;
     contextForce = false;
     if (!forced && composerFocused()) return;
@@ -259,7 +266,7 @@ export function createReviewPlug({
   };
   const scheduleViewingContext = (force = false) => {
     contextForce = contextForce || force;
-    if (!viewingContext || contextFrame || !host) return;
+    if (!visible || !viewingContext || contextFrame || !host) return;
     const view = host.ownerDocument.defaultView || globalThis;
     const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
     contextFrame = schedule(syncViewingContext);
@@ -309,6 +316,11 @@ export function createReviewPlug({
 
   function render() {
     if (!host) return;
+    if (!visible) {
+      needsPaint = true;
+      return;
+    }
+    needsPaint = false;
     paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
     refreshBodies();
   }
@@ -328,7 +340,7 @@ export function createReviewPlug({
    *  while a comment draft holds the DOM still is news kept for the turn the
    *  surface is free to paint. */
   const refreshBodies = () => {
-    if (!bodies || !host) return;
+    if (!visible || !bodies || !host) return;
     void bodies.sync(renderedFiles, openPaths()).then(
       () => {},
       () => {
@@ -533,7 +545,14 @@ export function createReviewPlug({
     const record = await heldDiff();
     if (!record || host !== mounted) return;
     if (record.stale) {
-      paint();
+      if (visible) paint();
+      else refreshHeld = true;
+      return;
+    }
+    if (!visible) {
+      applyCachedDiff(record);
+      diffKey = null;
+      needsPaint = true;
       return;
     }
     if (repaintFrozen()) {
@@ -652,6 +671,10 @@ export function createReviewPlug({
   let paintFlight = null;
   let repaintRequested = false;
   const paint = () => {
+    if (!visible) {
+      repaintRequested = true;
+      return;
+    }
     if (paintFlight) {
       repaintRequested = true;
       return;
@@ -660,9 +683,10 @@ export function createReviewPlug({
       do {
         repaintRequested = false;
         await paintOnce();
-      } while (repaintRequested && host);
+      } while (repaintRequested && host && visible);
     })().finally(() => {
       paintFlight = null;
+      if (repaintRequested && visible) paint();
     });
   };
 
@@ -672,7 +696,7 @@ export function createReviewPlug({
    *  moved is re-read off the disk; only an answer this plug asked for and
    *  then could not paint is asked for again. */
   const resumeHeldRefresh = () => {
-    if (!host || repaintFrozen()) return;
+    if (!visible || !host || repaintFrozen()) return;
     if (bodiesHeld) {
       bodiesHeld = false;
       render();
@@ -687,6 +711,25 @@ export function createReviewPlug({
   };
 
   return {
+    setVisible(next) {
+      if (visible === next) return;
+      visible = next;
+      commentLayer?.setVisible(next);
+      viewport.setVisible(next);
+      editedTimeWatcher?.setVisible(next);
+      if (!next) {
+        detachViewingContext();
+      } else {
+        if (host) attachViewingContext();
+        if (host && needsPaint) render();
+        scheduleViewingContext(true);
+        resumeHeldRefresh();
+        if (repaintRequested) {
+          repaintRequested = false;
+          paint();
+        }
+      }
+    },
     /** Redraw the actionbar — what a surface calls when its own verbs change
      *  (an action settled, a flash message expired) but the diff has not. */
     refreshActions: paintActions,

@@ -36,7 +36,6 @@ def _device(**overrides) -> Device:
         "identity_public_key_b64": "aWRlbnRpdHk",
         "transport_public_key_b64": "dHJhbnNwb3J0",
         "approved": True,
-        "status": "online",
         "last_seen_at": None,
     }
     defaults.update(overrides)
@@ -77,29 +76,22 @@ def test_the_window_edge_is_online_and_one_second_past_it_is_offline():
     assert presence.derived_status(just_past, now) == "offline"
 
 
-def test_a_stale_last_seen_beats_a_stale_column():
-    """The column may still say ``online`` from the relay's writer; the window wins."""
-    now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    device = _device(status="online", last_seen_at=now - timedelta(minutes=2))
-    assert presence.derived_status(device, now) == "offline"
-
-
 def test_a_device_never_seen_is_offline():
     now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
     assert presence.derived_status(_device(last_seen_at=None), now) == "offline"
 
 
-def test_an_unapproved_device_is_pending():
+def test_an_unclaimed_device_is_pending():
     now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    pending = _device(approved=False, owner_user_id=None, status="pending")
+    pending = _device(approved=False, owner_user_id=None)
     assert presence.derived_status(pending, now) == "pending"
 
 
 def test_a_revoked_device_is_offline_not_pending():
-    """Revoke clears ``approved`` and writes ``offline``; it must not read as a
+    """Revoke clears ``approved`` and keeps the owner; it must not read as a
     device waiting to be paired."""
     now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    revoked = _device(approved=False, status="offline", last_seen_at=now)
+    revoked = _device(approved=False, last_seen_at=now)
     assert presence.derived_status(revoked, now) == "offline"
 
 

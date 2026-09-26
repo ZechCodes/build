@@ -21,7 +21,7 @@ import { App } from "./app.js";
 import { esc } from "./core/text.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "./connection.js";
 import { liveContexts, onDeviceStateChanged } from "./core/deviceContexts.js";
-import { connectionStatus } from "./core/connectionStatusModel.js";
+import { connectionStatus, isRestoringInPlace } from "./core/connectionStatusModel.js";
 import { uiAddress, watchUiState } from "./core/localUiState.js";
 
 /** How often the countdown is redrawn while a machine waits for its next try. */
@@ -53,7 +53,7 @@ function devicesNow() {
     live: live.has(device.id),
     // Its link is putting a failed path right in place (#123): held, but not
     // answering until the restart lands.
-    restoring: live.get(device.id)?.peerLink?.restoring?.() === true,
+    restoring: isRestoringInPlace(live.get(device.id)),
     // How that machine is carrying, as its own peer link measured it
     // (core/transportPath.js). Null until the first sample lands, which the
     // row says as the plain word.

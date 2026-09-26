@@ -19,6 +19,13 @@ export const COMPACT_OPTION_PREFIX = "compact:";
  *  default and 0 is never — the wire's own words for both. */
 const LIMITS = [null, 150000, 200000, 300000, 0];
 
+/** A limit of the conversation's own that none of the offered rows sends —
+ *  set elsewhere, by another client or the bridge's own tooling. Any positive
+ *  whole number the digest carries: the wire's u64 arrives as whatever Number
+ *  the JSON parse made of it, and that same Number is what the row is checked
+ *  against, so one past 2^53 is no less a limit. */
+const isCustomLimit = (limit) => Number.isInteger(limit) && limit > 0 && !LIMITS.includes(limit);
+
 /** A row's id, by the limit it sends. */
 const optionIdOf = (limit) => {
   if (limit === null) return `${COMPACT_OPTION_PREFIX}default`;
@@ -44,21 +51,33 @@ function defaultRowLabel(agent) {
 const ROW_COPY = {
   default: (agent) => ({ word: defaultRowLabel(agent), description: "This device's setting" }),
   off: () => ({ word: "Off", description: "Never compact this chat" }),
-  size: (_agent, limit) => ({
-    word: thresholdWord(limit),
-    description: `Compact once a turn fills ${thresholdWord(limit)} tokens of context`,
-  }),
+  size: (_agent, limit) => ({ word: thresholdWord(limit), description: sizeDescription(limit) }),
+  custom: (_agent, limit) => ({ word: `Custom (${thresholdWord(limit)})`, description: sizeDescription(limit) }),
 };
+
+function sizeDescription(limit) {
+  return `Compact once a turn fills ${thresholdWord(limit)} tokens of context`;
+}
 
 function copyKindOf(limit) {
   if (limit === null) return "default";
-  return limit === 0 ? "off" : "size";
+  if (limit === 0) return "off";
+  return isCustomLimit(limit) ? "custom" : "size";
+}
+
+/** The limits the rows stand for: the offered ones, and a limit set elsewhere
+ *  on a row of its own ahead of never, so one row is always the checked one. */
+function limitsFor(agent) {
+  const standing = ownLimitOf(agent);
+  if (!isCustomLimit(standing)) return LIMITS;
+  const never = LIMITS.length - 1;
+  return [...LIMITS.slice(0, never), standing, ...LIMITS.slice(never)];
 }
 
 /** The menu's rows: one per limit, the standing one marked. */
 export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
-  return LIMITS.map((limit) => {
+  return limitsFor(agent).map((limit) => {
     const { word, description } = ROW_COPY[copyKindOf(limit)](agent, limit);
     return { id: optionIdOf(limit), label: word, description, selected: limit === standing };
   });
@@ -70,11 +89,24 @@ export function compactionMenuGroup(agent) {
   return { id: "compact", label: "Compact at", options: compactionMenuOptions(agent) };
 }
 
+/** The limit a custom row's id stands for, or null for any other id. Read
+ *  back only where the id is exactly what `optionIdOf` writes for it — which
+ *  for a limit past 1e21 is the exponent form `String` gives a Number. */
+function customLimitOfOptionId(id) {
+  if (!id.startsWith(COMPACT_OPTION_PREFIX)) return null;
+  const written = id.slice(COMPACT_OPTION_PREFIX.length);
+  const limit = Number(written);
+  return isCustomLimit(limit) && String(limit) === written ? limit : null;
+}
+
 /** The limit a menu id stands for, as `{ maxContextTokens }`, or null for an id
  *  that is not one of these rows. Wrapped because null is itself a limit. */
 export function compactionLimitOfOptionId(optionId) {
-  const limit = LIMITS.find((each) => optionIdOf(each) === String(optionId || ""));
-  return limit === undefined ? null : { maxContextTokens: limit };
+  const id = String(optionId || "");
+  const offered = LIMITS.find((each) => optionIdOf(each) === id);
+  if (offered !== undefined) return { maxContextTokens: offered };
+  const custom = customLimitOfOptionId(id);
+  return custom === null ? null : { maxContextTokens: custom };
 }
 
 /** `conversation.settings`'s params, in the fixture's shape. */
@@ -89,51 +121,70 @@ export function carriesCompactionSettings(deviceId) {
 }
 
 /**
- * The rail's hold on what it asked for, per agent.
+ * Choosing when a conversation compacts, and writing what the bridge answered
+ * into the cache the rail paints from.
  *
- * What the bridge answers is shown until the digest says the same: the push
- * that carries the new limit can land after the reply, and a menu read off the
- * older digest in between would put the tick back where it was. Once the two
- * agree the digest is the truth again, so a change made elsewhere shows.
+ * The answer lands only where the agent's row has not been written since the
+ * verb went out (`capture` before, `write` after, compared inside the cache's
+ * own transaction). Nothing on the wire orders a push against a reply: the
+ * bridge builds a push's row under its lock, lets go, and sends the row later,
+ * so a row read before the change can reach the device after the answer to
+ * it. A row carries no revision to tell the two apart. What the bridge does
+ * promise is that the change itself is noted, so a push carrying the new limit
+ * follows; a row written in between — stale or newer, from a push or another
+ * tab — keeps its place, and that push settles it. Nothing is held and nothing
+ * is written twice, so no answer can land over a newer value or chase another
+ * tab's answer through the shared cache.
+ *
+ * `capture(entityId)` answers the row's write as it stands; `write(captured,
+ * agentId, rewrite)` lays `rewrite(agent)` over the agent while the row still
+ * holds that write, and `rewrite` answers null to leave it alone.
  *
  * Not optimistic, unlike the watch switch (core/watchToggle.js): the menu has
  * shut by the time a choice is sent, so there is no control under the finger
  * to move early. A choice while one is in flight is ignored, as a second press
- * of the switch is. `choose` resolves when the verb has settled or been
- * refused and never rejects — a refusal is `onFailure`'s.
+ * of the switch is. `choose` resolves when the answer has been offered to the
+ * cache or the verb has been refused, and never rejects — a refusal is
+ * `onFailure`'s.
  */
-export function createCompactionChoice({ call, onSettled = () => {}, onFailure = () => {} }) {
-  const answered = new Map(); // agent id → what conversation.settings answered
+export function createCompactionChoice({ call, capture, write, onFailure = () => {} }) {
   let pending = false;
 
-  const agentAsKnown = (agent) => {
-    const answer = agent && answered.get(agent.id);
-    if (!answer) return agent;
-    if (ownLimitOf(agent) === answer.max_context_tokens) {
-      answered.delete(agent.id);
-      return agent;
+  const ask = async (entityId, agentId, maxContextTokens) => {
+    try {
+      return await call("conversation.settings", compactionSettingsParams(entityId, agentId, maxContextTokens));
+    } catch (error) {
+      onFailure(error);
+      return null;
     }
-    return { ...agent, ...answer };
   };
 
   return {
-    agentAsKnown,
-
     async choose({ entityId, agent, maxContextTokens }) {
-      if (pending || ownLimitOf(agentAsKnown(agent)) === maxContextTokens) return;
+      if (pending || ownLimitOf(agent) === maxContextTokens) return;
       pending = true;
       try {
-        const answer = await call("conversation.settings", compactionSettingsParams(entityId, agent.id, maxContextTokens));
-        answered.set(agent.id, {
-          max_context_tokens: answer?.max_context_tokens ?? null,
-          compact_at_tokens: answer?.compact_at_tokens,
-        });
-        onSettled();
-      } catch (error) {
-        onFailure(error);
+        const captured = await capture(entityId).catch(() => null);
+        const reply = await ask(entityId, agent.id, maxContextTokens);
+        if (!reply || !captured) return;
+        const fields = answeredFields(reply);
+        // The bridge has it once it answers: a cache that cannot take the
+        // answer is not a refusal, and the push brings the same word.
+        await write(captured, agent.id, (held) => (sameCompaction(held, fields) ? null : { ...held, ...fields }))
+          .catch(() => {});
       } finally {
         pending = false;
       }
     },
   };
 }
+
+/** What `conversation.settings` answered, as the digest's own fields. */
+function answeredFields(reply) {
+  const fields = { max_context_tokens: reply.max_context_tokens ?? null };
+  if (reply.compact_at_tokens !== undefined) fields.compact_at_tokens = reply.compact_at_tokens;
+  return fields;
+}
+
+const sameCompaction = (agent, fields) =>
+  Object.entries(fields).every(([field, value]) => (agent[field] ?? null) === value);

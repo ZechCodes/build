@@ -5,6 +5,12 @@
 // Which directories are expanded, which files are open and which one is active
 // are UI state, remembered per checkout.
 //
+// A workspace's Files is one tree over every directory the workspace has, one
+// collapsible root per directory (#174, core/fileRoots.js). There a file is
+// named by its root and its path together, each root reads and writes its own
+// directory's records, and the open-file tabs stand across the roots,
+// remembered per workspace.
+//
 // Both columns read the cache. A directory's listing is its `tree` record, and
 // a `files` push rewriting one moves the tree under the reader; a file's body
 // is its `file` record, and one the cache holds opens with no round trip. Two
@@ -47,6 +53,7 @@ import { mountFileEditor } from "../core/fileEditor.js";
 import { captureFileSelection } from "../core/fileSelection.js";
 import { mountMeasuredHeight } from "../core/measuredInset.js";
 import { mountFileTree } from "../core/fileTree.js";
+import { locateRooted, mountFileRoots, rootedKey } from "../core/fileRoots.js";
 import { mountFileTabs } from "../core/fileTabs.js";
 
 const FS_READ_MAX_BYTES = 1_048_576;
@@ -137,6 +144,21 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
   return `<div class="fpidle${kind === "error" ? " fpidle-error" : ""}"><p class="fpidle-msg">${esc(message)}</p>${hintLine}</div>`;
 }
 
+/** One checkout: a file is its path, under one root with no name. The root
+ *  reads the scope at every use, because an adopted checkout moves it
+ *  (`retargetScope`). */
+const singleCheckout = (scopeNow) => {
+  const root = { id: null, label: "", get scope() { return scopeNow(); } };
+  return { roots: [root], locate: (key) => (key ? { root, path: key } : null), keyOf: (_root, path) => path };
+};
+
+/** A workspace's directories as roots: a file is its root and its path. */
+const rootedCheckout = (roots) => ({
+  roots,
+  locate: (key) => (key ? locateRooted(roots, key) : null),
+  keyOf: (root, path) => rootedKey(root.id, path),
+});
+
 /**
  * renderFilesTab(body, { scope, callRpc, cacheScope }) — mount the browser into
  * `body`. `scope` is the plain server-resolved scope object ({task_id} /
@@ -145,8 +167,14 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * `cacheScope` is the cache of the machine that checkout is on, handed down by
  * the view, and a mount without one saves nothing. No polling — fetches only on
  * navigation/selection. Returns { dispose() }.
+ *
+ * A workspace passes `roots` ([{ id, label, scope }], its directories in order)
+ * instead of one `scope`, and `layoutEntityId`, the cache entity its
+ * workspace-wide UI state (open tabs, folded roots) is filed under. `openAt`
+ * then names its root too ({ rootId, path, line }), and `onFileOpen(path,
+ * rootId)` hears which root the opened file is in.
  */
-export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
+export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, cacheScope = null, openAt = null, onFileOpen = null, viewingContext = null }) {
   let disposed = false;
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
@@ -179,7 +207,14 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   const showIdle = () => showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
   showIdle();
 
-  let requestedLine = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
+  // What the files here are named by: a path, or a root and a path. Everything
+  // below holds a file by that key and asks here for its root and its path.
+  const checkout = roots ? rootedCheckout(roots) : singleCheckout(() => scope);
+  const { locate } = checkout;
+  const pathOf = (key) => locate(key)?.path ?? key;
+  const openKey = openedKey(checkout, openAt);
+
+  let requestedLine = openAt && openAt.line ? { path: openKey, line: openAt.line } : null;
   let sourceOverride = false; // per-selected-file "view source" toggle
   let viewerState = null;
   let editor = null;
@@ -197,7 +232,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   // preview is behind the drawer.
   const drawer = initPaneDrawer(body.querySelector(".files"), {
     list: treeEl,
-    summary: () => selectedPath || pickAFileText,
+    summary: () => (selectedPath ? pathOf(selectedPath) : pickAFileText),
   });
 
   /** Every open file holding unsaved edits: the active one and any tab
@@ -217,7 +252,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const confirmDiscard = (paths) => confirmAction({
     title: "Discard file edits?",
-    intro: `Your unsaved changes to ${[...paths].join(", ")} will be lost.`,
+    intro: `Your unsaved changes to ${[...paths].map(pathOf).join(", ")} will be lost.`,
     confirmLabel: "Discard edits",
     danger: true,
   });
@@ -232,13 +267,13 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const publishFileContext = () => {
     if (!viewingContext || !selectedPath) return;
-    viewingContext.set({ version: 1, items: [{ kind: "file", path: selectedPath }] });
+    viewingContext.set({ version: 1, items: [{ kind: "file", path: pathOf(selectedPath) }] });
   };
 
   const publishContextSelection = (items) => {
     if (!viewingContext) return;
     if (viewingContext.setSelection) viewingContext.setSelection(items);
-    else viewingContext.set({ version: 1, items: [{ kind: "file", path: selectedPath }, ...items] });
+    else viewingContext.set({ version: 1, items: [{ kind: "file", path: pathOf(selectedPath) }, ...items] });
   };
 
   const publishEditorSelection = () => {
@@ -247,7 +282,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (snapshot?.mode === "edit" && snapshot.selection.end > snapshot.selection.start) {
       items.push({
         kind: "selection",
-        path: selectedPath,
+        path: pathOf(selectedPath),
         text: snapshot.value.slice(snapshot.selection.start, snapshot.selection.end),
         ...(snapshot.unsaved ? { unsaved: true } : {}),
       });
@@ -263,7 +298,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (!selectedPath || viewerState?.snapshot().mode === "edit") return;
     const readingLayer = previewEl.querySelector(".file-reading-layer");
     const selection = document.getSelection();
-    const items = captureFileSelection(readingLayer, selectedPath, selection);
+    const items = captureFileSelection(readingLayer, pathOf(selectedPath), selection);
     if (items.length) {
       publishContextSelection(items);
       return;
@@ -272,21 +307,26 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   };
   document.addEventListener("selectionchange", onDocumentSelectionChange);
 
-  // The local cache's address for one directory's listing. A project-scoped
-  // one names no entity and takes no part.
-  const cacheEntityId = () => directoryCacheId(scope);
+  // The local cache's address for one of a root's records. A project-scoped
+  // checkout names no entity and takes no part.
+  const rootAddress = (root, kind, sub) => {
+    const entityId = directoryCacheId(root.scope);
+    return entityId ? cacheScope?.address({ entityId, kind, sub }) || null : null;
+  };
 
-  /** Whether this tab is the only reader of its checkout. A run's or an
+  /** Whether this tab is the only reader of a root's checkout. A run's or an
    *  external worktree's records are kept true by the sync layer, so what they
    *  hold is the answer. A workspace source's and a project's are not walked by
    *  anybody, so what they hold is the last visit's own work: a seed to paint
    *  at once, and never a reason to skip the read. */
-  const readsForItself = () => !syncWalksCheckout(scope);
-  const treeAddress = (path) =>
-    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "tree", sub: path }) || null : null;
+  const rootReadsForItself = (root) => !syncWalksCheckout(root.scope);
+  const readsForItself = (key) => rootReadsForItself(locate(key).root);
+  const scopeOf = (key) => locate(key).root.scope;
 
-  const fileAddress = (path) =>
-    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: FILE_RECORD_KIND, sub: path }) || null : null;
+  const fileAddress = (key) => {
+    const at = locate(key);
+    return at ? rootAddress(at.root, FILE_RECORD_KIND, at.path) : null;
+  };
 
   const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
@@ -345,7 +385,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   /** The reader of one page of `path` by range (#95). It asks at each read
    *  whether the bridge can page, so the view holding it never does. */
   const pageReader = (path) =>
-    filePageReader(cacheScope?.deviceId, (range) => callRpc("fs.read", { ...scope, path, range }));
+    filePageReader(cacheScope?.deviceId, (range) => callRpc("fs.read", { ...scopeOf(path), path: pathOf(path), range }));
 
   /** What a store decides by, after an answer (so after a greeting): the page
    *  reader where this bridge can page, or null where it cannot. */
@@ -361,7 +401,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const current = await heldRecord(address);
     if (!stillSelected(request, path)) return {};
     if (current?.at !== previousAt) return { file: current?.value?.file };
-    await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file, readPage: storePageReader(path) });
+    await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage: storePageReader(path) });
     if (!stillSelected(request, path)) return {};
     return { file: (await heldRecord(address))?.value?.file };
   };
@@ -382,13 +422,13 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const readPage = storePageReader(path);
     if (!address || !readPage || key === restartedFrom || key === restartedTo) return;
     restartedFrom = key;
-    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file, readPage });
+    const stored = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage });
     if (stored) restartedTo = `${path}\n${(await heldRecord(address))?.value?.file?.of}`;
   };
 
   const pullFile = async (path, request, previousAt) => {
     try {
-      const file = await callRpc("fs.read", { ...scope, path });
+      const file = await callRpc("fs.read", { ...scopeOf(path), path: pathOf(path) });
       return storePulledFile(path, file, request, previousAt);
     } catch (error) {
       return { error };
@@ -417,7 +457,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
 
   const beginFileSelection = (path) => {
     if (requestedLine?.path !== path) requestedLine = null;
-    onFileOpen?.(path);
+    onFileOpen?.(pathOf(path), locate(path).root.id);
     tree.setOpenPath(path);
     sourceOverride = false;
     editor?.dispose();
@@ -448,8 +488,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const held = record?.value?.file;
     if (!held) return false;
     takeSelectedFile(path, request, held);
-    if (readsForItself()) return false;
-    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: held });
+    if (readsForItself(path)) return false;
+    if (address) void cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: held });
     return true;
   };
 
@@ -503,8 +543,8 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     let written;
     try {
       written = await callRpc("fs.write", {
-        ...scope,
-        path,
+        ...scopeOf(path),
+        path: pathOf(path),
         content_b64: encodeBase64Text(write.value),
         expected_revision: write.revision,
       });
@@ -526,7 +566,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (current?.value?.file) {
       if (!sameFile(current.value.file, baseline)) return false;
     } else if (current?.at !== previousAt) return false;
-    const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path, file: written });
+    const kept = await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file: written });
     if (!kept) await deleteCached([address]);
     return kept;
   };
@@ -627,7 +667,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
   /** A file kept as pages is painted from them, never from an answer. */
   const paintPagedFile = (host, path, file) => {
     const mode = previewModeFor(file.mime, file.truncated);
-    const painter = pagedPainter(path, file, mode);
+    const painter = pagedPainter(pathOf(path), file, mode);
     if (!painter) {
       host.innerHTML = sizePlaceholder(mode, file.size);
       return;
@@ -654,11 +694,11 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     sourceOverride = snapshot.mode === "source";
     stopPagedView();
     if (file.paged) return paintPagedFile(host, path, file);
-    const dotenv = shouldMaskDotenv(path, mode, sourceOverride)
+    const dotenv = shouldMaskDotenv(pathOf(path), mode, sourceOverride)
       ? renderDotenvSourceHtml(snapshot.value)
       : null;
     const truncNotice = dotenv && file.truncated ? `<div class="ftrunc">truncated at 1 MiB</div>` : "";
-    host.innerHTML = dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride);
+    host.innerHTML = dotenv ? dotenv.html + truncNotice : previewBodyHtml(pathOf(path), file, sourceOverride);
     if (dotenv) wireDotenvSpoilers(dotenv.secrets);
     scrollRequestedLineIntoView(path);
   };
@@ -689,7 +729,7 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     const tray = fileModeTrayHtml(snapshot.modes, snapshot.mode);
     const file = snapshot.file;
     previewEl.innerHTML = `
-      <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${tray}${actions}</div>
+      <div class="fphead"><span class="fppath mono">${esc(pathOf(path))}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${tray}${actions}</div>
       <div class="fpbody file-reading-layer"></div><div class="fpbody file-editor-layer"></div>`;
     measurePreviewHead();
     previewEl.querySelectorAll("[data-file-mode]").forEach((button) => {
@@ -770,33 +810,41 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
     if (path === selectedPath) viewerState?.revert();
   };
 
-  const uiStateAddress = (sub) =>
-    cacheEntityId() ? cacheScope?.address({ entityId: cacheEntityId(), kind: "ui-files", sub }) || null : null;
+  // The checkout's own UI state (open tabs, expanded directories), or — across
+  // a workspace's roots — the workspace's.
+  const layoutAddress = (sub) =>
+    roots ? cacheScope?.address({ entityId: layoutEntityId, kind: "ui-files", sub }) || null : rootAddress(checkout.roots[0], "ui-files", sub);
 
   const finePointer = () => window.matchMedia?.("(pointer: fine)").matches === true;
 
-  const tree = mountFileTree(treeListEl, {
-    listingAddress: treeAddress,
-    stateAddress: uiStateAddress("tree"),
-    readsForItself,
-    listDirectory: (path) => callRpc("fs.tree", { ...scope, path }),
+  /** One root's explorer: its listings, its expanded set, its reads. */
+  const treeFor = (root) => ({
+    listingAddress: (dir) => rootAddress(root, "tree", dir),
+    stateAddress: rootAddress(root, "ui-files", "tree"),
+    readsForItself: () => rootReadsForItself(root),
+    listDirectory: (dir) => callRpc("fs.tree", { ...root.scope, path: dir }),
     finePointer,
-    onOpen: (path) => {
-      drawer.close();
-      void tabs.open(path);
-    },
   });
+  const openFromTree = (key) => {
+    drawer.close();
+    void tabs.open(key);
+  };
+
+  const tree = roots
+    ? mountFileRoots(treeListEl, { roots, collapsedAddress: layoutAddress("roots"), treeFor, onOpen: openFromTree })
+    : mountFileTree(treeListEl, { ...treeFor(checkout.roots[0]), onOpen: (path) => openFromTree(path) });
 
   const tabs = mountFileTabs(tabStripEl, {
-    stateAddress: uiStateAddress("tabs"),
+    stateAddress: layoutAddress("tabs"),
     dirtyPaths,
     confirmClose: (path) => confirmDiscard([path]),
     onClose: forgetFile,
     onShow: showFile,
-    initial: openAt?.path || null,
+    initial: openKey,
+    locate,
   });
 
-  if (openAt) void tree.reveal(openAt.path);
+  if (openKey) void tree.reveal(openKey);
 
   return {
     dispose() {
@@ -826,6 +874,15 @@ export function renderFilesTab(body, { scope, callRpc, cacheScope = null, openAt
       }
     },
   };
+}
+
+/** The key the file a route names is held by, or null for none: its path in a
+ *  single checkout, its root and path across a workspace's (the route's root,
+ *  else the first). */
+function openedKey(checkout, openAt) {
+  if (!openAt?.path) return null;
+  const root = checkout.roots.find((candidate) => candidate.id === openAt.rootId) || checkout.roots[0];
+  return checkout.keyOf(root, openAt.path);
 }
 
 export { FS_READ_MAX_BYTES };

@@ -738,6 +738,7 @@ export function createChatRepository({
   const railViews = new Map();
   let provisionalSequence = 0;
   let epoch = 1;
+  const retirementListeners = new Set();
   let threadPostOperations = null;
   let messageContext = false;
   const optimisticStore = createOptimisticStore();
@@ -755,6 +756,21 @@ export function createChatRepository({
     },
     get epoch() {
       return epoch;
+    },
+
+    /** False once the scope is retired (`dispose`): nothing is minted or
+     *  asked through it again, and a read that lands after is about nothing. */
+    get active() {
+      return active;
+    },
+
+    /** Hear this scope being retired, before its controllers are disposed: a
+     *  surface built over it stops listening there, so nothing a controller
+     *  or a retirement announces on its way out paints through a dead scope.
+     *  Returns unsubscribe. */
+    onRetired(listener) {
+      retirementListeners.add(listener);
+      return () => retirementListeners.delete(listener);
     },
 
     get scopeKey() {
@@ -1026,6 +1042,8 @@ export function createChatRepository({
       active = false;
       epoch += 1;
       currentCall = null;
+      for (const listener of [...retirementListeners]) listener();
+      retirementListeners.clear();
       for (const controller of controllers.values()) controller.dispose();
       for (const history of histories.values()) history.threadState.dispose();
       controllers.clear();

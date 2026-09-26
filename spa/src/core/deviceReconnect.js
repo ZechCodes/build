@@ -14,7 +14,7 @@
 
 import { canAnswer, contextFor, onDeviceStateChanged } from "./deviceContexts.js";
 import { deviceRecoverySnapshot, onDeviceRecoveryChanged } from "../connection.js";
-import { isRecovering } from "./connectionStatusModel.js";
+import { isRecovering, isRestoringInPlace } from "./connectionStatusModel.js";
 
 /** Hear whenever anything about any machine's reachability moves. Returns the
  *  unsubscribe, which takes both subscriptions with it. */
@@ -24,9 +24,11 @@ export function onDeviceMoved(fn) {
 }
 
 /** Whether something is being done about this machine right now, in the
- *  connection model's own reading of its recovery record — the same reading
- *  the ring in the header is drawn from. */
-export const deviceIsReconnecting = (deviceId) => isRecovering(deviceRecoverySnapshot(deviceId));
+ *  connection model's own reading — the same reading the ring in the header is
+ *  drawn from: its recovery record, or its link restarting a failed path in
+ *  place, which leaves no record because the session is still held (#130). */
+export const deviceIsReconnecting = (deviceId) =>
+  isRecovering(deviceRecoverySnapshot(deviceId)) || isRestoringInPlace(contextFor(deviceId));
 
 /**
  * Whether this machine cannot answer right now.

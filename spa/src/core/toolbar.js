@@ -1,11 +1,14 @@
 // The view area's toolbar: where you are standing, how to go somewhere else,
 // and what the work you are standing in is doing.
 //
-// Left: a workspace switcher followed immediately by that workspace's directory
-// tabs. Its popup starts with the active project's workspaces; Switch project
-// moves the same popup to the project list, and a project choice moves it back
-// after loading that project's workspaces. Legacy branch and issue links retain
-// their project selector and static item identity while those routes remain supported.
+// Left: on a workspace, one picker reading `project / workspace` and nothing
+// else — the workspace's directories, its Issues and its settings are its
+// navigation, and stand in the rail down its left edge (core/directoryRail.js).
+// The picker's popup starts with the active project's workspaces and the way to
+// the project's own page; Switch project moves the same popup to the project
+// list, and a project choice moves it back after loading that project's
+// workspaces. Legacy branch and issue links retain their project selector and
+// static item identity while those routes remain supported.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
 // Done, say. The working-time ticker
@@ -25,23 +28,12 @@
 import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
-import { refreshFeed, subscribeFeed } from "./taskFeed.js";
-import { workspaceAgents } from "./trackerAssignee.js";
-import { WORKSPACE_ISSUES_SELECTOR, mountWorkspaceIssues } from "./trackerWorkspaceIssuesView.js";
+import { subscribeFeed } from "./taskFeed.js";
 import { collapseChatOverPage } from "./shell.js";
-import { workspaceIssuesPlace } from "./workspaceIssuesTab.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
-import { openWorkspaceSettings } from "../sheets/workspaceSettings.js";
-import { deviceCatalog } from "./inboxDevices.js";
-import {
-  projectMenuModel,
-  toolbarIdentity,
-  workspaceDirectoryModel,
-  workspaceMenuModel,
-} from "./toolbarModel.js";
+import { projectMenuModel, toolbarIdentity, workspaceMenuModel } from "./toolbarModel.js";
 import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
-import { canAnswer, contextFor } from "./deviceContexts.js";
 import { filterByDevice } from "./deviceFilter.js";
 import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { deviceView } from "./feedMerge.js";
@@ -49,7 +41,7 @@ import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
 import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
 import { projectRoute, workspaceRoute } from "./projectModel.js";
-import { directoryTab, standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
+import { standsOnProjectCheckout, workspaceStatusText } from "./workspaceModel.js";
 import "../styles/shell.css";
 import { fieldTraits } from "./fieldTraits.js";
 
@@ -68,13 +60,10 @@ let scopedProjectKey = null;
 // Each project's workspaces as its own machine last listed them, by project
 // key — two machines' `proj-1` are two projects with two sets.
 const workspacesByProject = new Map();
-/** The issues icon's block, while the bar is standing in a workspace. */
-let issuesBlock = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
 let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
 let verbRender = null; // (host) => void, the standing view's own verb-slot paint
-let toolbarResizeObserver = null;
 let scopeRecord = null;
 let menuRecord = null;
 let scopeReady = false;
@@ -211,68 +200,7 @@ const loadStandingWorkspaces = () => {
   if (App.route.name === "workspace") loadWorkspaces(routeProject());
 };
 
-/** The workspace the route is standing in, off the rows its project's machine
- *  last listed. */
-const standingWorkspace = () =>
-  (workspacesByProject.get(routeProjectKey(App.route)) || []).find(
-    (candidate) => candidate.workspaceKey === routeWorkspaceKey(App.route),
-  ) || null;
-
-/** Its directories, marked with the one the route is on. */
-const standingDirectories = () =>
-  App.route.name === "workspace" ? workspaceDirectoryModel(standingWorkspace(), App.route.sourceId) : [];
-
 // ---- the bar ----------------------------------------------------------------
-
-/** The agents of the workspace the bar is standing in, in the order its row
- *  lists them — the same order the rail's bubbles read across. Read at every
- *  paint rather than captured: a workspace gains and loses agents while the bar
- *  stands there. */
-function agentsInFocus() {
-  const route = App.route;
-  if (route.name !== "workspace" || !route.workspaceId) return [];
-  const group = workspaceAgents(feed, routeProjectKey(route))
-    .find((candidate) => candidate.workspaceId === route.workspaceId);
-  return (group?.agents || []).map((agent, index) => ({ id: agent.id, ordinal: index + 1 }));
-}
-
-/**
- * The issues icon beside the cog, kept in step with the bar.
- *
- * Mounted against the button the last repaint drew — a repaint replaces that
- * element, so the block is remounted onto the new one rather than left holding
- * a detached node. Where the bar drew no button (every identity but a
- * workspace) whatever was mounted is disposed.
- *
- * The count itself is not painted from here: the block listens to the project's
- * cached issue list and moves its own badge, so an `issues` push never has to
- * repaint the bar — the verb slot beside it can be holding a view's open menu
- * or an action in flight.
- */
-function syncIssuesButton(host) {
-  const button = host.querySelector(WORKSPACE_ISSUES_SELECTOR);
-  if (!button) {
-    issuesBlock?.dispose();
-    issuesBlock = null;
-    return;
-  }
-  if (issuesBlock?.button === button) {
-    issuesBlock.refresh();
-    return;
-  }
-  issuesBlock?.dispose();
-  const block = mountWorkspaceIssues(button, {
-    deviceId: App.route.deviceId,
-    projectId: App.route.projectId,
-    workspaceId: App.route.workspaceId,
-    agents: agentsInFocus,
-    // The icon is a shortcut to the workspace's Issues tab (#29), not a place
-    // of its own: the overlay it used to open was a modal you had to close
-    // before you could do anything about what was in it.
-    open: () => go(workspaceIssuesPlace(App.route)),
-  });
-  issuesBlock = { ...block, button };
-}
 
 function identity() {
   return toolbarIdentity(App.route, {
@@ -317,7 +245,6 @@ function paint({ entering = false } = {}) {
       open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
       open.anchor.setAttribute("aria-expanded", "true");
     }
-    syncIssuesButton(host);
     host.querySelectorAll("[data-select]").forEach((control) => {
       control.onclick = (event) => {
         event.stopPropagation();
@@ -331,54 +258,32 @@ function paint({ entering = false } = {}) {
         if (menuRecord) void menuRecord.write({ open: true, select, list, query: "" });
       };
     });
-    host.querySelectorAll("[data-directory]").forEach((control) => {
-      control.onclick = () => openWorkspaceDirectory(control.dataset.directory);
-    });
     host.querySelectorAll("[data-project-tab]").forEach((control) => {
       control.onclick = () => pressProjectTab(control.dataset.projectTab);
     });
-    const settings = host.querySelector("[data-workspace-settings]");
-    if (settings) settings.onclick = () => openStandingWorkspaceSettings();
-    const back = host.querySelector("[data-project-back]");
-    if (back) back.onclick = () => goBackToProject();
   }
   paintVerb();
   if (open) paintMenu();
 }
 
 /** What the bar draws for where the route stands: the project (the scoped one
- *  where the route names none), the kind, the work item's label, and the tabs
- *  after it — a workspace's directories, or a project's two pages. */
+ *  where the route names none), the kind, the work item's label, and a
+ *  project's two pages after it. */
 const shownIdentity = (standing) => ({
   project: standing.project || nameOf(scopedProject()),
   kind: standing.kind,
   label: standing.label,
-  directories: standing.directories || [],
   projectTabs: standing.projectTabs || [],
-  // In the signature, so moving onto the Issues tab repaints the bar and the
-  // mark moves with the reader (#47).
-  workspaceIssues: standing.workspaceIssues || {},
 });
 
-/** Out of the workspace, back to the project it was cut from — the project's
- *  own page, on the machine the workspace is on: the same place the project's
- *  name in the inbox opens (core/projectModel.js mints both). */
-function goBackToProject() {
-  const { deviceId, projectId } = App.route;
-  return go(projectRoute({ id: projectId, deviceId }));
-}
-
-function openWorkspaceDirectory(sourceId) {
-  const directory = sourceId ? standingDirectories().find((candidate) => candidate.sourceId === sourceId) : null;
-  if (!directory) return;
-  go({
-    name: "workspace",
-    deviceId: App.route.deviceId,
-    projectId: App.route.projectId,
-    workspaceId: App.route.workspaceId,
-    sourceId,
-    tab: directoryTab(directory),
-  });
+/** Out of the workspaces to the scoped project's own page, on the machine that
+ *  project is on: the same place the project's name in the inbox opens
+ *  (core/projectModel.js mints both). It replaces the back chevron the bar used
+ *  to carry before the picker. */
+function openProjectPage() {
+  const project = scopedProject();
+  closeMenu();
+  if (project) go(projectRoute({ id: project.id, deviceId: project.deviceId }));
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -432,21 +337,6 @@ function removeMenu(restoreFocus) {
   open.element.remove();
   open = null;
   if (restoreFocus && anchor?.isConnected) anchor.focus();
-}
-
-/** A directory popup can be open while the toolbar crosses its container
- * breakpoint. Dismiss it when its trigger becomes hidden so focus and menu
- * state never remain attached to an unavailable control. */
-function reconcileOpenMenu() {
-  if (open?.select !== "directory") return;
-  if (getComputedStyle(open.anchor).display === "none") closeMenu();
-}
-
-function observeToolbar(host) {
-  toolbarResizeObserver?.disconnect();
-  if (typeof ResizeObserver !== "function") return;
-  toolbarResizeObserver = new ResizeObserver(reconcileOpenMenu);
-  toolbarResizeObserver.observe(host);
 }
 
 function openJumpMenu(anchor, { list = MENU_FOR_SELECTOR[anchor.dataset.select] || "workspaces", query = "", focus = false } = {}) {
@@ -578,12 +468,7 @@ function pickWorkspace(element) {
 function onMenuClick(event) {
   const { target } = event;
   if (target.closest("[data-projects]")) return showList("projects");
-  const directory = target.closest("[data-menu-directory]");
-  if (directory) {
-    closeMenu();
-    openWorkspaceDirectory(directory.dataset.menuDirectory);
-    return;
-  }
+  if (target.closest("[data-project-page]")) return openProjectPage();
   if (pickProject(target.closest("[data-project]"))) return;
   if (pickWorkspace(target.closest("[data-workspace]"))) return;
   const create = target.closest("[data-create]");
@@ -601,60 +486,6 @@ function openCreate() {
     return;
   }
   openCreateWork({ projectId: project.id, deviceId: project.deviceId, projectName: nameOf(project), navigate: go });
-}
-
-/** The cog's sheet, on the workspace the route is standing in and the machine
- *  that workspace is on.
- *
- *  The row the switcher last listed carries the name; a route whose list has
- *  not answered yet still has the name the bar is printing, so the sheet opens
- *  either way rather than making the reader wait for a read they can already
- *  see the result of. */
-function openStandingWorkspaceSettings() {
-  const { deviceId, workspaceId } = App.route;
-  const context = contextFor(deviceId);
-  if (!canAnswer(context)) {
-    notifyError("That machine is not reachable.", "Workspace settings are read and written on the device the workspace is on.");
-    return;
-  }
-  openWorkspaceSettings(
-    {
-      id: workspaceId,
-      name: standingWorkspace()?.name || identity().label,
-      workspaceKey: routeWorkspaceKey(App.route),
-    },
-    {
-      callRpc: context.rpc,
-      deviceId,
-      catalog: deviceCatalog(deviceId),
-      // The name is printed by this bar and by every inbox row, so both are
-      // told rather than left to their next poll.
-      onRenamed: async () => {
-        await refreshFeed(deviceId);
-        loadWorkspaces(routeProject());
-      },
-      // Standing in a workspace that no longer exists is standing nowhere.
-      onDeleted: async () => {
-        workspacesByProject.delete(routeProjectKey(App.route));
-        go({ name: "inbox" });
-        await refreshFeed(deviceId);
-      },
-    },
-  );
-}
-
-/** The directories of the workspace the route is standing in, as menu rows for
- *  the collapsed toolbar. */
-function directoryMenuEntries() {
-  return standingDirectories().map((directory) => ({
-    key: `directory:${directory.sourceId}`,
-    html: `<button class="mi${directory.current ? " current" : ""}" data-menu-directory="${esc(directory.sourceId)}" type="button" role="menuitemradio" aria-checked="${directory.current ? "true" : "false"}">
-      <span class="mt">${esc(directory.label)}</span></button>`,
-  }));
-}
-
-function directoryMenuShellHtml() {
-  return `<div class="tbmenu-list" aria-label="Workspace directories"></div>`;
 }
 
 /** The project half's rows: which project — said with its machine when another
@@ -720,6 +551,8 @@ function workspaceMenuShellHtml() {
     </div>
     <div class="tbmenu-list"></div>
     <div class="tbmenu-foot">
+      <button class="mi" data-project-page type="button" role="menuitem"><span class="mt">Project page</span>
+        <span class="md">The issues and workspaces of ${esc(scopedName())}</span></button>
       <button class="mi" data-create="workspace" type="button" role="menuitem"><span class="mt">New workspace…</span>
         <span class="md">Materialize every source in ${esc(scopedName())}</span></button>
     </div>`;
@@ -730,7 +563,6 @@ function workspaceMenuShellHtml() {
  *  list, which is the bar's own. */
 const MENU_FOR_SELECTOR = {
   project: "projects",
-  directory: "directories",
   workspace: "workspaces",
 };
 
@@ -738,13 +570,11 @@ const MENU_FOR_SELECTOR = {
  *  A list is a kind, so it is a table rather than a chain. */
 const MENU_LISTS = {
   projects: projectMenuEntries,
-  directories: directoryMenuEntries,
   workspaces: workspaceMenuEntries,
 };
 
 const MENU_SHELLS = {
   projects: projectMenuShellHtml,
-  directories: directoryMenuShellHtml,
   workspaces: workspaceMenuShellHtml,
 };
 
@@ -754,7 +584,6 @@ const MENU_SHELLS = {
 export function initToolbar() {
   if (mounted) {
     paint({ entering: true });
-    observeToolbar($("#toolbar"));
     return toolbarReady;
   }
   mounted = true;
@@ -780,7 +609,6 @@ export function initToolbar() {
     if (routeKey) await rememberScope(routeKey);
     if (!mounted || run !== toolbarRun) return;
     paint({ entering: true });
-    observeToolbar($("#toolbar"));
     loadStandingWorkspaces();
     menuRecord = watchUiState(MENU_ADDRESS, applyMenuRecord);
     return menuRecord.ready;
@@ -813,10 +641,6 @@ export function stopToolbar() {
   unsubscribeFeed?.();
   unsubscribeFeed = null;
   workspacesByProject.clear();
-  toolbarResizeObserver?.disconnect();
-  toolbarResizeObserver = null;
-  issuesBlock?.dispose();
-  issuesBlock = null;
   closeMenu({ persist: false });
   return settled;
 }

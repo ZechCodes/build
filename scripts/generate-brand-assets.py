@@ -32,6 +32,7 @@ VARIANTS = {
 
 
 def read_source_geometry() -> tuple[tuple[float, float, float, float], str]:
+    # nosemgrep: python.lang.security.use-defused-xml-parse.use-defused-xml-parse -- parses the repo's own committed brand SVG, never outside input
     source_root = ElementTree.parse(SOURCE).getroot()
     viewbox = tuple(float(value) for value in source_root.attrib["viewBox"].split())
     if len(viewbox) != 4:

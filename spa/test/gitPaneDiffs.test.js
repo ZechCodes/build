@@ -9,7 +9,8 @@ import { mountGitPane } from "../src/core/gitPane.js";
 import { refetchEverything } from "../src/core/changeEvents.js";
 import { COLLAPSED_PREVIEW_ROWS } from "../src/core/fileEntries.js";
 import { scopeFor } from "../src/core/cacheScope.js";
-import { wipeCache } from "../src/core/localCache.js";
+import { wipeCache, writeCached } from "../src/core/localCache.js";
+import { FILE_DIFF_RECORD_KIND } from "../src/core/fileDiffs.js";
 import { unchangedStatus, worktreeOf } from "./gitWireFixture.js";
 
 globalThis.indexedDB = new IDBFactory();
@@ -80,6 +81,42 @@ afterEach(() => {
 });
 
 describe("the shape and its bodies", () => {
+  it("defers hidden cache changes and resumes from records without another wire read", async () => {
+    const tree = worktreeOf({ "src/a.js": "before" });
+    const { container, pane, calls } = await mount({ tree, cacheScope: testCacheScope, scope: { worktree_id: "wt-1", project_id: "p1" } });
+    await vi.waitFor(() => expect(container.textContent).toContain("before"));
+    pane.setVisible(false);
+    const before = container.innerHTML;
+    tree.write("src/a.js", "after");
+    await writeCached(testCacheScope.address({ entityId: "wt-1", kind: "status" }), tree.status());
+    const [body] = tree.diff({ paths: ["src/a.js"] }).files;
+    await writeCached(testCacheScope.address({ entityId: "wt-1", kind: FILE_DIFF_RECORD_KIND, sub: "src/a.js" }), {
+      content_key: body.content_key, patch: body.patch, truncated: false,
+    });
+    await settle();
+    expect(container.innerHTML).toBe(before);
+    const wireCount = calls.length;
+    pane.setVisible(true);
+    await vi.waitFor(() => expect(container.textContent).toContain("after"));
+    expect(calls.length).toBe(wireCount);
+    pane.dispose();
+  });
+
+  it("remembers a hidden push for a checkout only this pane reads", async () => {
+    const tree = worktreeOf({ "src/a.js": "before" });
+    const { container, pane, calls } = await mount({ tree, cacheScope: testCacheScope });
+    pane.setVisible(false);
+    const before = calls.filter(({ method }) => method === "git.status").length;
+    tree.write("src/a.js", "after");
+    refetchEverything();
+    await settle();
+    expect(calls.filter(({ method }) => method === "git.status")).toHaveLength(before);
+    pane.setVisible(true);
+    await settle();
+    expect(calls.filter(({ method }) => method === "git.status")).toHaveLength(before + 1);
+    expect(container.textContent).toContain("after");
+    pane.dispose();
+  });
   it("opens workspace directories on every change not represented by their push target", async () => {
     const tree = worktreeOf({ "dirty.js": "dirty" });
     const aggregatePatch = tree.wholePatch();

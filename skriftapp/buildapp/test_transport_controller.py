@@ -76,7 +76,6 @@ def paired_bridge(client: TestClient, *, approved: bool = True) -> Bridge:
         identity_public_key_b64=public_b64,
         transport_public_key_b64="x25519-public",
         approved=approved,
-        status="online",
     )
 
     async def store() -> None:

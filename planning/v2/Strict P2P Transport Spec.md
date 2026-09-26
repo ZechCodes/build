@@ -172,8 +172,9 @@ gone; their two ratchet annotations are retired (`RATCHETED_FUNCTIONS` 28 → 26
 - `POST /api/devices/heartbeat` — public, device-signed, replay-guarded (copy of the
   notify sequence: parse → approved+owned → challenge → `verify_registration` →
   `notify_timestamp_fresh` → `NotifyReplayGuard`). Sets `last_seen_at`.
-- `device_summary` derives `status`; `Device.status` column keeps `pending` until
-  approval and is otherwise ignored (no migration; a later cleanup may drop it).
+- `device_summary` derives `status`: presence from `last_seen_at`, `pending` from
+  an unset `owner_user_id`. There is no `devices.status` column (dropped by
+  `7c34bee528bd` and `198bbccf0ca3`).
 - `POST /internal/devices/{id}/status` deleted.
 
 ## QA and deploy after this plan

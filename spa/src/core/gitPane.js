@@ -51,7 +51,7 @@ import { createFileDiffs } from "./fileDiffs.js";
 import { timedPaint } from "./paintTiming.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
-import { mountSplitButton } from "./splitButton.js";
+import { closeSplitMenusWithin, mountSplitButton } from "./splitButton.js";
 import { mountChangesComposer } from "./changesComposer.js";
 import { commitPaths, createReviewMarks } from "./reviewMarks.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -563,9 +563,16 @@ export function mountGitPane(
     review = createWorkspaceReview({ scope, callRpc, cacheScope, navigate, viewingContext, submit: submitComments, onBaseChange: () => render() });
   }
   const parsedDiffs = createParsedDiffCache();
-  const viewport = createDiffViewport({ repaint: () => renderAndFetch(), onNeedMore: (key) => readMoreOf(key) });
+  const viewport = createDiffViewport({
+    repaint: () => renderAndFetch(),
+    commentLayerBusy: () => commentLayer?.repaintBusy(),
+    onNeedMore: (key) => readMoreOf(key),
+  });
   const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
+  let visible = true;
+  let needsPaint = false;
+  let checkoutRefreshPending = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let bodiesUnpainted = false; // a body the pane draws landed unpainted: a file's, or a commit's patch
   let lastStatus = null;
@@ -698,7 +705,7 @@ export function mountGitPane(
   };
   const syncViewingContext = () => {
     contextFrame = 0;
-    if (!viewingContext || disposed) return;
+    if (!viewingContext || disposed || !visible) return;
     const forced = contextForce;
     contextForce = false;
     if (!forced && composerFocused()) return;
@@ -706,7 +713,7 @@ export function mountGitPane(
   };
   const scheduleViewingContext = (force = false) => {
     contextForce = contextForce || force;
-    if (!viewingContext || contextFrame) return;
+    if (!visible || !viewingContext || contextFrame) return;
     const view = container.ownerDocument.defaultView || globalThis;
     const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
     contextFrame = schedule(syncViewingContext);
@@ -738,6 +745,7 @@ export function mountGitPane(
   };
   const setHint = (text) => {
     hint = text || "";
+    if (!visible) return;
     container.querySelectorAll(".githint").forEach((el) => (el.textContent = hint));
   };
   const actionError = (e) => setHint("error: " + ((e && e.message) || "error").slice(0, 70));
@@ -762,7 +770,7 @@ export function mountGitPane(
     disarmTimer();
     confirmTimer = setTimeout(() => {
       confirmTimer = null;
-      if (disposed || !confirmExpired(armedAt, Date.now())) return;
+      if (disposed || !visible || !confirmExpired(armedAt, Date.now())) return;
       clearConfirm();
       render();
     }, INLINE_CONFIRM_TTL_MS);
@@ -974,7 +982,7 @@ export function mountGitPane(
    *  body that lands while a repaint is held stays unpainted news until the
    *  next turn the pane is free to paint. */
   const refreshBodies = () => {
-    if (disposed || !lastStatus || selected !== "uncommitted") return;
+    if (disposed || !visible || !lastStatus || selected !== "uncommitted") return;
     const views = uncommittedViews();
     const folds = foldsOfOpenChangeset();
     const openPaths = new Set(
@@ -1046,6 +1054,7 @@ export function mountGitPane(
    *  a long stack never takes it off screen. Mounted once and kept — it holds a
    *  draft, and rebuilding it would take the caret with it. */
   const renderComposer = () => {
+    if (!visible) return;
     const commitHost = container.querySelector(".gp-commit");
     if (!commitHost) return;
     if (!composer)
@@ -1080,6 +1089,11 @@ export function mountGitPane(
   // eslint-disable-next-line complexity -- ratchet: this callback is at 14, cap 10 — reduce it, then drop this line
   const render = () => {
     if (disposed || !lastStatus || !lastLog) return;
+    if (!visible) {
+      needsPaint = true;
+      return;
+    }
+    needsPaint = false;
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
     // Always drawn, even against a bridge too old to manage the repo: the merge
@@ -1205,7 +1219,7 @@ export function mountGitPane(
    *  toolbar verb AND the commit primary from a single selector list, so no
    *  action can settle leaving another action's button stuck disabled (S1). */
   const reenableAllControls = () =>
-    settleReenableSelectors().forEach((selector) =>
+    visible && settleReenableSelectors().forEach((selector) =>
       container.querySelectorAll(selector).forEach((button) => (button.disabled = false)),
     );
 
@@ -1866,6 +1880,11 @@ export function mountGitPane(
   /** A permanent scope rejection replaces the pane body (there is nothing to
    *  retry: the task/project this scope named no longer resolves). */
   const renderScopeError = (message) => {
+    if (!visible) {
+      scopeErrorShown = message;
+      needsPaint = true;
+      return;
+    }
     if (scopeErrorShown === message) return;
     scopeErrorShown = message;
     unmountReview(); // its host is about to be wiped with the skeleton
@@ -2030,6 +2049,10 @@ export function mountGitPane(
    *  is holding the DOM still — the same freeze every other repaint asks
    *  about, and a record moving under a reviewer mid-comment waits for them. */
   const repaintFromRecords = () => {
+    if (!visible) {
+      needsPaint = true;
+      return;
+    }
     const key = gitPollKey(lastStatus, lastLog);
     if (repaintHeld({ keyUnchanged: key === renderedKey && !bodiesUnpainted })) return;
     renderedKey = key;
@@ -2044,6 +2067,10 @@ export function mountGitPane(
     lastLog = held.log;
     lastHighlightKey = held.log.highlight_key ?? null;
     selected = recordSelection();
+    if (!visible) {
+      needsPaint = true;
+      return true;
+    }
     // A direct link stays pending after a miss. Any log or patch announcement
     // can now answer it, including while this checkout's refresh is still on
     // the wire; the diff is requested from this cached selection immediately.
@@ -2119,7 +2146,7 @@ export function mountGitPane(
     if (disposed) return;
     if (!painted && !refresh) await forceRefresh();
     else if (refresh) await refresh;
-    await openRequestedCommit();
+    if (visible) await openRequestedCommit();
   };
 
   /**
@@ -2136,6 +2163,11 @@ export function mountGitPane(
   const watchedEntity = scope.entity_id || (scope.workspace_id ? null : scope.run_id || scope.worktree_id || null);
 
   const refreshCheckout = () => {
+    if (!visible) {
+      checkoutRefreshPending = true;
+      return;
+    }
+    checkoutRefreshPending = false;
     void forceRefresh();
     // The plug over a workspace source reads the same uncovered checkout.
     if (scope.workspace_id && reviewMounted) review?.refreshDiff?.();
@@ -2143,7 +2175,7 @@ export function mountGitPane(
 
   if (uiAddress) uiRecord = watchUiState(uiAddress, (saved) => {
     if (disposed || !saved) return;
-    fileMenuPath = saved.fileMenuPath || null;
+    fileMenuPath = visible ? saved.fileMenuPath || null : null;
     noiseExpanded.clear();
     for (const key of saved.noiseExpanded || []) noiseExpanded.add(key);
     fileFolds.clear();
@@ -2170,7 +2202,56 @@ export function mountGitPane(
     : null;
   const editedTimeWatcher = watchEditedTimes(container);
 
+  const hidePane = () => {
+    needsPaint = true;
+    closeSplitMenusWithin(container);
+    drawer?.setVisible(false);
+    clearConfirm();
+    fileMenuPath = null;
+    saveUi();
+    cancelViewingContextFrame();
+    stopCommitMeasurement();
+    stopToolbarMeasurement();
+    container.removeEventListener("scroll", onContextScroll, true);
+    document.removeEventListener("selectionchange", captureViewingSelection);
+    document.removeEventListener("pointerdown", onOutsidePointerDown);
+    if (container.contains(document.activeElement)) document.activeElement.blur();
+    const selection = document.getSelection?.();
+    if (selection && (container.contains(selection.anchorNode) || container.contains(selection.focusNode))) selection.removeAllRanges();
+  };
+
+  const showPane = () => {
+    drawer?.setVisible(true);
+    container.addEventListener("scroll", onContextScroll, true);
+    document.addEventListener("selectionchange", captureViewingSelection);
+    document.addEventListener("pointerdown", onOutsidePointerDown);
+    if (scopeErrorShown) {
+      const message = scopeErrorShown;
+      scopeErrorShown = null;
+      renderScopeError(message);
+    } else if (needsPaint) {
+      renderAndFetch();
+    }
+    measureCommitHost(container.querySelector(".gp-commit"));
+    measureToolbar(container.querySelector(".gp-toolbar"));
+    setHint(hint);
+    if (actionSettleReenables(inFlightActions)) reenableAllControls();
+    scheduleViewingContext(true);
+    if (requestedCommit) void openRequestedCommit();
+    if (checkoutRefreshPending) refreshCheckout();
+  };
+
   return {
+    setVisible(next) {
+      if (disposed || visible === next) return;
+      visible = next;
+      commentLayer?.setVisible(next);
+      review?.setVisible?.(next);
+      viewport.setVisible(next);
+      editedTimeWatcher.setVisible(next);
+      if (next) showPane();
+      else hidePane();
+    },
     dispose() {
       disposed = true;
       draftRecord?.dispose();

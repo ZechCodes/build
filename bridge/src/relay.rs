@@ -741,6 +741,8 @@ mod redial_tests {
     /// where it was for the failures that deserve it.
     #[tokio::test]
     async fn a_name_that_does_not_resolve_is_redialed_soon_and_grows_nothing() {
+        // A name under .invalid never resolves, so no plaintext frame is ever sent.
+        // nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket
         let failed = tokio_tungstenite::connect_async("ws://relay.b131.invalid/ws/device")
             .await
             .map(|_| ())

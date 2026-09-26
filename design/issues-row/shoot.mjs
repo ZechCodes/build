@@ -9,6 +9,7 @@ const shots = [];
 for (const prefix of ["before", "after"]) {
   for (const [width, theme] of [[390, "dark"], [1440, "dark"], [390, "light"], [1440, "light"]]) {
     const page = await browser.newPage({ viewport: { width, height: 900 }, deviceScaleFactor: 2 });
+    // nosemgrep: javascript.playwright.security.audit.playwright-goto-injection.playwright-goto-injection -- a /tmp file named from the literal lists above
     await page.goto(`file:///tmp/rowshot/${prefix}-${width}-${theme}.html`);
     await page.waitForTimeout(150);
     const out = `/tmp/rowshot/${prefix}-${width}-${theme}.png`;

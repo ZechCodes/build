@@ -58,6 +58,18 @@ deploy fails with the site up.
 process. A later database outage fails the app's pages but never takes the only
 pod out of the route, so the landing page, docs and installers stay up.
 
+**The first deploy of this change blips once, for about 2 s.** The pod it
+replaces was started from the Recreate-era spec, which has no `preStop` hook, so
+it is sent SIGTERM while Traefik still routes to it. Every later deploy replaces
+a pod that carries the hook, and is clean.
+
+Each pod start also runs Skrift's `sync_roles_to_database`: it upserts each
+configured role and deletes and re-inserts its permission rows, all in one
+transaction. The end state is the same every time, and the old pod reading
+permissions meanwhile sees either the old rows or the new ones, never a gap, so
+running it beside the old pod is harmless. With `maxSurge: 1` only one new pod
+starts at a time, so two syncs never race.
+
 Don't save Skrift's site settings (admin → settings) while a deploy rolls. Each
 pod caches them at start, and a save on the old pod never reaches the new
 pod's copy; if one did, `k rollout restart deployment/build-app` reloads it.

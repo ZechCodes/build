@@ -293,14 +293,26 @@ fn write_failure_is_latched_and_terminates_pi() {
     let (output, _temp, _log, _pid) = run_driver("write_failure", "latched_write");
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        value["failure"]
-            .as_str()
-            .unwrap()
-            .contains("Build MCP write failed"),
-        "{value}"
-    );
-    assert_eq!(value["terminationSignals"][0]["signal"], "SIGTERM");
+    assert_latched_write_failure(&value);
+
+    // A live MCP child is the control: the same assertion must reject a call
+    // that succeeds instead of latching a write failure and terminating Pi.
+    let (control, _temp, _log, _pid) = run_driver("normal", "latched_write");
+    assert!(control.status.success(), "{control:?}");
+    let control: Value = serde_json::from_slice(&control.stdout).unwrap();
+    assert!(!is_latched_write_failure(&control), "{control}");
+}
+
+fn assert_latched_write_failure(value: &Value) {
+    assert!(is_latched_write_failure(value), "{value}");
+}
+
+fn is_latched_write_failure(value: &Value) -> bool {
+    value["failure"]
+        .as_str()
+        .is_some_and(|failure| failure.contains("Build MCP write failed"))
+        && value["futureFailure"] == value["failure"]
+        && value["terminationSignals"][0]["signal"] == "SIGTERM"
 }
 
 #[test]

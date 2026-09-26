@@ -197,6 +197,8 @@ pub(in crate::app) struct DeferredRead {
     /// reader with one file open asks for that file: same changeset, same
     /// key, none of the hunks behind the files nobody opened.
     pub(in crate::app) paths: Option<Vec<String>>,
+    /// One page of a narrowed read's patch (#95), or `None` for all of it.
+    pub(in crate::app) range: Option<crate::body_page::BodyRange>,
     #[cfg(test)]
     pub(in crate::app) gate: Option<OffLockGate>,
 }
@@ -248,8 +250,21 @@ impl DeferredRead {
                 object.retain(|field, _| CHANGESET_FIELDS.contains(&field.as_str()));
             }
         }
+        if let Some(range) = self.range {
+            page_the_patch(&mut rendered, range)?;
+        }
         Ok(rendered)
     }
+}
+
+/// Cut a rendered answer's patch down to one page of it, and say where the
+/// page sits.
+fn page_the_patch(rendered: &mut Value, range: crate::body_page::BodyRange) -> Result<(), String> {
+    let patch = rendered.get("patch").and_then(Value::as_str).unwrap_or("");
+    let (page, span) = crate::body_page::text_page(patch, range);
+    rendered["patch"] = json!(page);
+    rendered["range"] = json!(span);
+    Ok(())
 }
 
 /// Which diff a deferred read renders.
@@ -760,6 +775,7 @@ impl AppState {
         subject: ReadSubject,
         if_diff_key: Option<&str>,
         paths: Vec<String>,
+        range: Option<crate::body_page::BodyRange>,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject,
@@ -767,6 +783,7 @@ impl AppState {
             if_diff_key: if_diff_key.map(str::to_string),
             with_patch: true,
             paths: Some(paths),
+            range,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));
@@ -801,6 +818,7 @@ impl AppState {
             if_diff_key: if_diff_key.map(str::to_string),
             with_patch,
             paths: None,
+            range: None,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         })));

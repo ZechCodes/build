@@ -20,14 +20,14 @@
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WORKING_DIFF_MAX_BYTES } from "./cacheThresholds.js";
 import { createCommentLayer } from "./changesComments.js";
 import { fileKey, createFileFolds, pathOf } from "./diff.js";
 import { fileFoldOf, stackClaims } from "./diffRender.js";
 import { fileStackEntries, fileViewFromDiffRow } from "./fileEntries.js";
-import { CHANGESET_DIFF_RECORD_KIND, createChangesetBodies } from "./changesetBodies.js";
+import { CHANGESET_DIFF_RECORD_KIND, createChangesetBodies, filePatchesByPath } from "./changesetBodies.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -38,6 +38,26 @@ import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { diffSortHtml, DIFF_SORT_LATEST } from "./diffSort.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { bridgeCapabilities } from "./changeEvents.js";
+
+/** Whether an aggregate answer is too big for one record, or was cut: its
+ *  shape is kept and its patch is not (#95). */
+const oversizedDiff = (payload) => Boolean(payload.truncated) || !withinBytes(payload.patch, WORKING_DIFF_MAX_BYTES);
+
+/** An answer as the record keeps it when its patch will not fit: the shape —
+ *  the files, the stat, the key — and no patch, so the stack is drawn a file
+ *  at a time and each file's hunks are kept on their own. */
+const withoutPatch = (payload) => {
+  const shape = { ...payload };
+  delete shape.patch;
+  delete shape.truncated;
+  return shape;
+};
+
+/** The paths an aggregate answer names: its file rows, or the files its
+ *  patch holds where a bridge sent no rows. */
+const pathsOfDiff = (payload) =>
+  payload.files ? payload.files.map((file) => file.path) : [...filePatchesByPath(payload.patch).keys()];
 
 const fileEditedAtOf = (payload) => payload.file_edited_at || {};
 
@@ -111,13 +131,15 @@ export function createReviewPlug({
 }) {
   const openFile = (navigate && navigate.openFile) || null;
   let host = null;
+  let visible = true;
+  let needsPaint = false;
   let unwatchDiff = null;
   let editedTimeWatcher = null;
   let diffKey = null;
   let responseDiffKey = null;
   const parsedDiffs = createParsedDiffCache();
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
-  let renderedPatch = ""; // the patch those files came from
+  let renderedPatch = ""; // the patch those files came from; none for a stack drawn a file at a time
   let bodiesHeld = false; // hunks landed while repainting was frozen
   let commentableNow = false;
   let trayMounted = false;
@@ -171,6 +193,7 @@ export function createReviewPlug({
         },
         fetchFiles,
         keyFor: (path) => renderedFiles.find((view) => view.path === path)?.contentKey,
+        canPage: () => bridgeCapabilities(cacheScope?.deviceId).bodies?.pages === true,
         onChange: () => {
           if (!host) return;
           if (repaintFrozen()) {
@@ -215,19 +238,26 @@ export function createReviewPlug({
    *  diff. The two live in different bars now — merging in the toolbar above
    *  the stack, sending comments in the tray below it — so both are painted. */
   const paintActions = () => {
-    if (!host) return;
+    if (!host || !visible) return;
     if (trayMounted && commentLayer) commentLayer.refreshActions();
     const gitActions = gitActionsHost();
     if (gitActions && !renderIdleActions(gitActions)) gitActions.innerHTML = "";
   };
 
   let paintChangeset = null;
-  const viewport = createDiffViewport({ repaint: render });
+  // The reader reached the end of a file whose body is still arriving in
+  // pages: read the next one into the cache, and the paint follows from there.
+  const viewport = createDiffViewport({
+    repaint: render,
+    commentLayerBusy: () => commentLayer?.repaintBusy(),
+    onNeedMore: async (key) => Boolean(await bodies?.more(pathOf(key))),
+  });
   const contextScroller = () => host?.closest(".cdetail-host") || host;
   let contextForce = false;
   const composerFocused = () => Boolean(host?.ownerDocument.activeElement?.closest?.(".composer"));
   const syncViewingContext = () => {
     contextFrame = 0;
+    if (!visible) return;
     const forced = contextForce;
     contextForce = false;
     if (!forced && composerFocused()) return;
@@ -236,7 +266,7 @@ export function createReviewPlug({
   };
   const scheduleViewingContext = (force = false) => {
     contextForce = contextForce || force;
-    if (!viewingContext || contextFrame || !host) return;
+    if (!visible || !viewingContext || contextFrame || !host) return;
     const view = host.ownerDocument.defaultView || globalThis;
     const schedule = view.requestAnimationFrame || ((callback) => view.setTimeout(callback, 0));
     contextFrame = schedule(syncViewingContext);
@@ -286,6 +316,11 @@ export function createReviewPlug({
 
   function render() {
     if (!host) return;
+    if (!visible) {
+      needsPaint = true;
+      return;
+    }
+    needsPaint = false;
     paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
     refreshBodies();
   }
@@ -305,7 +340,7 @@ export function createReviewPlug({
    *  while a comment draft holds the DOM still is news kept for the turn the
    *  surface is free to paint. */
   const refreshBodies = () => {
-    if (!bodies || !host) return;
+    if (!visible || !bodies || !host) return;
     void bodies.sync(renderedFiles, openPaths()).then(
       () => {},
       () => {
@@ -464,7 +499,9 @@ export function createReviewPlug({
   const applyCachedDiff = (value) => {
     fileEditedAt = fileEditedAtOf(value);
     renderedFiles = viewsOf(value);
-    renderedPatch = value.patch || "";
+    // A record drawn a file at a time holds no patch, and an unchanged answer
+    // over it must not give it an empty one.
+    renderedPatch = value.patch;
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
   };
@@ -508,7 +545,14 @@ export function createReviewPlug({
     const record = await heldDiff();
     if (!record || host !== mounted) return;
     if (record.stale) {
-      paint();
+      if (visible) paint();
+      else refreshHeld = true;
+      return;
+    }
+    if (!visible) {
+      applyCachedDiff(record);
+      diffKey = null;
+      needsPaint = true;
       return;
     }
     if (repaintFrozen()) {
@@ -583,23 +627,21 @@ export function createReviewPlug({
     render();
   };
 
+  /** Keep what was read: the record takes it whole where it fits, and its
+   *  shape alone where it does not — the files' hunks then kept on their own,
+   *  out of the answer in hand, before the record that draws them moves. Only
+   *  a surface with no record to keep is drawn from the answer. */
   const acceptPulledDiff = async (address, before, payload, patchUnchanged) => {
-    if (payload.truncated || !withinBytes(payload.patch, WORKING_DIFF_MAX_BYTES)) {
-      // #94: show this response only in this mount. #95 will retain large
-      // diffs as pages; neither an oversized body nor a cut one enters cache.
-      if (address) {
-        const current = await readCached(address);
-        if (current?.at !== before?.at) return;
-        await deleteCached([address]);
-      }
+    if (!address) {
       paintCachelessDiff(payload, patchUnchanged);
       return;
     }
-    if (address) {
+    if (!oversizedDiff(payload)) {
       await writePulledDiff(address, before, payload, patchUnchanged);
       return;
     }
-    paintCachelessDiff(payload, patchUnchanged);
+    await bodies?.seed(payload, pathsOfDiff(payload));
+    await writePulledDiff(address, before, withoutPatch(payload), patchUnchanged);
   };
 
   const paintOnce = async () => {
@@ -629,6 +671,10 @@ export function createReviewPlug({
   let paintFlight = null;
   let repaintRequested = false;
   const paint = () => {
+    if (!visible) {
+      repaintRequested = true;
+      return;
+    }
     if (paintFlight) {
       repaintRequested = true;
       return;
@@ -637,9 +683,10 @@ export function createReviewPlug({
       do {
         repaintRequested = false;
         await paintOnce();
-      } while (repaintRequested && host);
+      } while (repaintRequested && host && visible);
     })().finally(() => {
       paintFlight = null;
+      if (repaintRequested && visible) paint();
     });
   };
 
@@ -649,7 +696,7 @@ export function createReviewPlug({
    *  moved is re-read off the disk; only an answer this plug asked for and
    *  then could not paint is asked for again. */
   const resumeHeldRefresh = () => {
-    if (!host || repaintFrozen()) return;
+    if (!visible || !host || repaintFrozen()) return;
     if (bodiesHeld) {
       bodiesHeld = false;
       render();
@@ -664,6 +711,25 @@ export function createReviewPlug({
   };
 
   return {
+    setVisible(next) {
+      if (visible === next) return;
+      visible = next;
+      commentLayer?.setVisible(next);
+      viewport.setVisible(next);
+      editedTimeWatcher?.setVisible(next);
+      if (!next) {
+        detachViewingContext();
+      } else {
+        if (host) attachViewingContext();
+        if (host && needsPaint) render();
+        scheduleViewingContext(true);
+        resumeHeldRefresh();
+        if (repaintRequested) {
+          repaintRequested = false;
+          paint();
+        }
+      }
+    },
     /** Redraw the actionbar — what a surface calls when its own verbs change
      *  (an action settled, a flash message expired) but the diff has not. */
     refreshActions: paintActions,

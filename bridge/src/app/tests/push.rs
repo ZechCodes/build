@@ -8,6 +8,27 @@ use crate::api::API_VERSION;
 /// there being one.
 const TEST_CHANGE_WINDOW: Duration = Duration::from_millis(60);
 
+/// The captured channel and the bus driving it belong to the same session.
+/// Keeping them together lets assertions wait for a completed flush.
+pub(in crate::app::tests) struct PushReceiver {
+    rx: tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    bus: Arc<crate::changes::ChangeBus>,
+}
+
+impl std::ops::Deref for PushReceiver {
+    type Target = tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rx
+    }
+}
+
+impl std::ops::DerefMut for PushReceiver {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rx
+    }
+}
+
 /// A QA daemon plus one browser session that greeted it — the shape every
 /// push-invalidation test starts from. The sender comes back because a test
 /// that also opens a terminal has to attach on the SAME session.
@@ -18,7 +39,7 @@ pub(in crate::app::tests) fn greeted_push_session(
     Arc<Mutex<AppState>>,
     FrameHandler,
     SessionSender,
-    tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    PushReceiver,
     String,
 ) {
     let mut app = qa_state(repo, dir).with_change_window(TEST_CHANGE_WINDOW);
@@ -28,15 +49,19 @@ pub(in crate::app::tests) fn greeted_push_session(
     let (sender, rx, key) = SessionSender::observable("browser");
     let hello = handler.call(sender.clone(), req("session.hello", json!({})));
     assert_eq!(hello["ok"], true, "{hello:?}");
-    (state, handler, sender, rx, key)
+    let bus = state.lock().unwrap().changes();
+    (state, handler, sender, PushReceiver { rx, bus }, key)
 }
 
-/// Give the flusher several windows, then take everything it sent.
+/// Drain only after the flusher has completed a cycle that began after this
+/// call. This also makes an empty result a meaningful negative assertion.
 pub(in crate::app::tests) async fn settled_pushes(
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    rx: &mut PushReceiver,
     session_key: &str,
 ) -> Vec<Value> {
-    tokio::time::sleep(TEST_CHANGE_WINDOW * 5).await;
+    tokio::time::timeout(Duration::from_secs(10), rx.bus.settle_for_test())
+        .await
+        .expect("the push flusher completed its test barrier");
     let mut seen = Vec::new();
     while let Ok(message) = rx.try_recv() {
         seen.push(SessionSender::decrypt_push(session_key, &message));
@@ -142,7 +167,7 @@ async fn the_greeting_announces_push_events() {
     // number, so the number moving with the announcement is the contract —
     // which is why it is a literal here and an edit every time it moves. 1.3.0
     // is the issue tracker: ten `issues.*` verbs and an `issues` change kind.
-    assert_eq!(hello["result"]["api_version"], "1.25.0", "{hello:?}");
+    assert_eq!(hello["result"]["api_version"], "1.26.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()
@@ -264,7 +289,13 @@ async fn a_state_change_reaches_the_browser_unasked() {
 
     let plan_id = publish_legacy_issue(&state, "push me");
 
-    let events = change_events(&settled_pushes(&mut rx, &key).await);
+    let pushes = pushes_until(&mut rx, &key, |pushes| {
+        let events = change_events(pushes);
+        events.contains(&json!({ "type": "board.changed" }))
+            && events.contains(&json!({ "type": "entity.changed", "id": plan_id }))
+    })
+    .await;
+    let events = change_events(&pushes);
     assert!(
         events.contains(&json!({ "type": "board.changed" })),
         "{events:?}"
@@ -300,7 +331,11 @@ async fn a_deferred_verb_announces_from_its_apply_half() {
     );
     assert_eq!(committed["ok"], true, "{committed:?}");
 
-    let events = change_events(&settled_pushes(&mut rx, &key).await);
+    let pushes = pushes_until(&mut rx, &key, |pushes| {
+        change_events(pushes).contains(&json!({ "type": "board.changed" }))
+    })
+    .await;
+    let events = change_events(&pushes);
     assert!(
         events.contains(&json!({ "type": "board.changed" })),
         "a commit moved the tree the board summarises: {events:?}"
@@ -352,10 +387,11 @@ async fn a_terminal_byte_storm_is_not_a_change_event() {
         json!({ "term_id": "term-1", "data": input }),
     );
     assert_eq!(wrote["ok"], true, "{wrote:?}");
-    let seen = wait_for_pushes(&mut rx, &key, |seen| {
+    let mut seen = wait_for_pushes(&mut rx, &key, |seen| {
         output_text(seen, "term-1").contains("storm-400")
     })
     .await;
+    seen.extend(settled_pushes(&mut rx, &key).await);
 
     assert!(
         seen.iter().any(|push| push["type"] == "term.output"),
@@ -603,12 +639,19 @@ async fn a_state_item_carries_the_row_the_board_would_paint() {
 
     state.lock().unwrap().note_entity_changed(&plan_id);
 
-    let pushes = settled_pushes(&mut rx, &key).await;
+    let pushes = pushes_until(&mut rx, &key, |pushes| {
+        pushes
+            .iter()
+            .filter(|push| push["type"] == "changes")
+            .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+            .any(|item| item["entity_id"] == plan_id && item["state"]["working_time"].is_object())
+    })
+    .await;
     let item = pushes
         .iter()
         .filter(|push| push["type"] == "changes")
         .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == plan_id)
+        .find(|item| item["entity_id"] == plan_id && item["state"]["working_time"].is_object())
         .unwrap_or_else(|| panic!("no changes item for the issue: {pushes:?}"));
     let board = call(&handler, "board.list", json!({}));
     let row = board["result"]["items"]
@@ -1068,7 +1111,7 @@ async fn a_git_item_past_the_diff_cap_names_the_size_and_carries_no_diff() {
 /// so a git surface may take a second to arrive.
 async fn pushed_git_item(
     state: &Arc<Mutex<AppState>>,
-    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+    rx: &mut PushReceiver,
     key: &str,
     entity_id: &str,
     ready: impl Fn(&Value) -> bool,
@@ -1118,14 +1161,16 @@ async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
         ),
     );
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
-    settled_pushes(&mut rx, &key).await;
+    let mut initial_pushes = settled_pushes(&mut rx, &key).await;
 
-    // A flush with nothing said since the last one: the tip, and no items to
-    // place against it.
+    // The subscription's first flush establishes its cursor with a tip alone.
+    // Agent delivery may also advance that cursor while this fixture settles.
     state.lock().unwrap().note_entity_changed(&run_id);
-    let first = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
-    assert_eq!(first["items"], json!([]), "{first:?}");
-    let tip = first["last_sequence"]
+    initial_pushes.extend(settled_pushes(&mut rx, &key).await);
+    let initial_tips = thread_tips(&initial_pushes, &run_id);
+    assert!(!initial_tips.is_empty(), "{initial_pushes:?}");
+    assert_eq!(initial_tips[0]["items"], json!([]), "{initial_tips:?}");
+    let tip = initial_tips.last().unwrap()["last_sequence"]
         .as_u64()
         .expect("a tip is a sequence");
 
@@ -1136,8 +1181,19 @@ async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
         json!({ "entity_id": run_id, "body": "the item carries this" }),
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
-    let second = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
-    assert_eq!(second["since_sequence"], json!(tip), "{second:?}");
+    let second_pushes = pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_with_message(pushes, &run_id, "the item carries this", None).is_some()
+    })
+    .await;
+    let mut previous_sequence = tip;
+    for next in thread_tips(&second_pushes, &run_id) {
+        assert_eq!(next["since_sequence"], json!(previous_sequence), "{next:?}");
+        previous_sequence = next["last_sequence"]
+            .as_u64()
+            .expect("a thread tip carries its last sequence");
+    }
+    let second = thread_tip_with_message(&second_pushes, &run_id, "the item carries this", None)
+        .expect("the posted message arrives on a thread push");
     let bodies: Vec<&str> = second["items"]
         .as_array()
         .expect("the item carries items")
@@ -1145,9 +1201,12 @@ async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
         .filter_map(|item| item["data"]["body"].as_str())
         .collect();
     assert!(bodies.contains(&"the item carries this"), "{second:?}");
+    // The receiver can see a frame before its cursor is stamped. Complete
+    // that flush before the burst tests the next cursor's cap.
+    settled_pushes(&mut rx, &key).await;
 
     // A burst wider than the cap: the tip alone, and the client pages.
-    {
+    let burst_sequence = {
         let mut app = state.lock().unwrap();
         let active = app.runs.get_mut(&run_id).expect("the run");
         for turn in 0..(crate::changes::THREAD_PUSH_MAX_ITEMS + 5) {
@@ -1157,9 +1216,30 @@ async fn a_thread_item_carries_what_was_said_since_the_last_flush() {
                 crate::store::now_rfc3339(),
             );
         }
+        let burst_sequence = primary_thread(&active.agents).last_sequence();
         app.note_entity_changed(&run_id);
-    }
-    let third = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+        burst_sequence
+    };
+    let third_pushes = pushes_until(&mut rx, &key, |pushes| {
+        thread_tips(pushes, &run_id).iter().any(|thread| {
+            thread["since_sequence"].is_null()
+                && thread["items"] == json!([])
+                && thread["last_sequence"]
+                    .as_u64()
+                    .is_some_and(|last| last >= burst_sequence)
+        })
+    })
+    .await;
+    let third = thread_tips(&third_pushes, &run_id)
+        .into_iter()
+        .find(|thread| {
+            thread["since_sequence"].is_null()
+                && thread["items"] == json!([])
+                && thread["last_sequence"]
+                    .as_u64()
+                    .is_some_and(|last| last >= burst_sequence)
+        })
+        .expect("the capped burst arrives as a tip-only thread push");
     assert_eq!(third["items"], json!([]), "{third:?}");
     assert_eq!(third["since_sequence"], Value::Null, "{third:?}");
     assert!(
@@ -1200,6 +1280,10 @@ async fn a_message_posted_under_an_operation_carries_it_on_the_item() {
     // The first flush is the tip alone; the cursor it leaves is what the next
     // one carries items against.
     state.lock().unwrap().note_entity_changed(&run_id);
+    pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_if_any(pushes, &run_id).is_some()
+    })
+    .await;
     settled_pushes(&mut rx, &key).await;
 
     let posted = call(
@@ -1213,7 +1297,12 @@ async fn a_message_posted_under_an_operation_carries_it_on_the_item() {
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let pushed = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    let pushed_frames = pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_with_message(pushes, &run_id, "ship it", None).is_some()
+    })
+    .await;
+    let pushed = thread_tip_with_message(&pushed_frames, &run_id, "ship it", None)
+        .expect("the posted message arrives on a thread push");
     let sent = pushed["items"]
         .as_array()
         .expect("the item carries items")
@@ -1266,13 +1355,30 @@ async fn a_delivery_status_moving_pushes_the_message_it_moved_on() {
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
     settled_pushes(&mut rx, &key).await;
 
+    // The first thread flush establishes the subscription's cursor and
+    // intentionally carries a tip alone. Establish it before posting the
+    // message whose body this test expects to receive on the next flush.
+    state.lock().unwrap().note_entity_changed(&run_id);
+    pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_if_any(pushes, &run_id).is_some()
+    })
+    .await;
+    // Sending precedes cursor stamping inside one flush. Wait for its
+    // completion before the next note can take a snapshot of that cursor.
+    settled_pushes(&mut rx, &key).await;
+
     let posted = call(
         &handler,
         "thread.post",
         json!({ "entity_id": run_id, "operation_id": "op-watched", "body": "take a look" }),
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
-    let arrival = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    let arrival_pushes = pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_with_message(pushes, &run_id, "take a look", None).is_some()
+    })
+    .await;
+    let arrival = thread_tip_with_message(&arrival_pushes, &run_id, "take a look", None)
+        .expect("the message arrived on a thread push");
     let agent_id = arrival["agent_id"]
         .as_str()
         .expect("a tip names its agent")
@@ -1299,7 +1405,13 @@ async fn a_delivery_status_moving_pushes_the_message_it_moved_on() {
         .record_native_operation_seen(&run_id, &agent_id, "op-watched")
         .expect("the operation is this conversation's");
 
-    let delivered = thread_tip(&settled_pushes(&mut rx, &key).await, &run_id);
+    let delivered_pushes = pushes_until(&mut rx, &key, |pushes| {
+        thread_tip_with_message(pushes, &run_id, "take a look", Some("seen")).is_some()
+    })
+    .await;
+    let delivered =
+        thread_tip_with_message(&delivered_pushes, &run_id, "take a look", Some("seen"))
+            .expect("the seen message arrived on a thread push");
     assert!(
         delivered["last_sequence"].as_u64().unwrap() > cursor,
         "the conversation moved, so its tip moved: {delivered:?}"
@@ -1319,14 +1431,44 @@ async fn a_delivery_status_moving_pushes_the_message_it_moved_on() {
 }
 
 /// The first `thread` tip one entity's items carry, out of a push history.
-fn thread_tip(pushes: &[Value], entity_id: &str) -> Value {
+fn thread_tip_if_any(pushes: &[Value], entity_id: &str) -> Option<Value> {
+    thread_tips(pushes, entity_id).into_iter().next()
+}
+
+fn thread_tips(pushes: &[Value], entity_id: &str) -> Vec<Value> {
     pushes
         .iter()
         .filter(|push| push["type"] == "changes")
         .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == entity_id && item["thread"][0].is_object())
+        .filter(|item| item["entity_id"] == entity_id && item["thread"][0].is_object())
         .map(|item| item["thread"][0].clone())
-        .unwrap_or_else(|| panic!("no thread item for {entity_id}: {pushes:?}"))
+        .collect()
+}
+
+fn thread_tip_with_message(
+    pushes: &[Value],
+    entity_id: &str,
+    body: &str,
+    status: Option<&str>,
+) -> Option<Value> {
+    pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
+        .filter(|item| item["entity_id"] == entity_id)
+        .filter_map(|item| {
+            item["thread"][0]
+                .as_object()
+                .map(|_| item["thread"][0].clone())
+        })
+        .find(|tip| {
+            tip["items"].as_array().is_some_and(|items| {
+                items.iter().any(|item| {
+                    item["data"]["body"] == body
+                        && status.is_none_or(|status| item["data"]["delivery_status"] == status)
+                })
+            })
+        })
 }
 
 /// A tab opening and a tab closing both move the `terminals` kind, and the
@@ -1353,7 +1495,12 @@ async fn a_terminals_item_carries_the_tabs_a_checkout_holds() {
 
     let created = call(&handler, "term.create", json!({ "project_id": project_id }));
     assert_eq!(created["ok"], true, "{created:?}");
-    let opened = terminals_item(&settled_pushes(&mut rx, &key).await, &project_id);
+    let opened_pushes = pushes_until(&mut rx, &key, |pushes| {
+        terminals_item(pushes, &project_id).and_then(|item| item["tabs"].as_array().map(Vec::len))
+            == Some(1)
+    })
+    .await;
+    let opened = terminals_item(&opened_pushes, &project_id).expect("the open tab is pushed");
     let listed = call(&handler, "term.list", json!({ "project_id": project_id }));
     assert_eq!(opened["tabs"], listed["result"]["terminals"], "{opened:?}");
     assert_eq!(
@@ -1364,19 +1511,23 @@ async fn a_terminals_item_carries_the_tabs_a_checkout_holds() {
 
     let closed = call(&handler, "term.close", json!({ "term_id": "term-1" }));
     assert_eq!(closed["ok"], true, "{closed:?}");
-    let after = terminals_item(&settled_pushes(&mut rx, &key).await, &project_id);
+    let closed_pushes = pushes_until(&mut rx, &key, |pushes| {
+        terminals_item(pushes, &project_id).and_then(|item| item["tabs"].as_array().map(Vec::len))
+            == Some(0)
+    })
+    .await;
+    let after = terminals_item(&closed_pushes, &project_id).expect("the closed tab is pushed");
     assert_eq!(after["tabs"], json!([]), "{after:?}");
 }
 
 /// The `terminals` half of one entity's items out of a push history.
-fn terminals_item(pushes: &[Value], entity_id: &str) -> Value {
+fn terminals_item(pushes: &[Value], entity_id: &str) -> Option<Value> {
     pushes
         .iter()
         .filter(|push| push["type"] == "changes")
         .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == entity_id && item.get("terminals").is_some())
+        .rfind(|item| item["entity_id"] == entity_id && item.get("terminals").is_some())
         .map(|item| item["terminals"].clone())
-        .unwrap_or_else(|| panic!("no terminals item for {entity_id}: {pushes:?}"))
 }
 
 /// Step 1.5, the legacy default: a client that greets with NO `changes`
@@ -1392,7 +1543,11 @@ async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
     let (dir, repo) = init_repo();
     let (state, handler, _sender, mut legacy_rx, legacy_key) =
         greeted_push_session(&repo, dir.path());
-    let (opted_in, mut opted_in_rx, opted_in_key) = SessionSender::observable("opted-in");
+    let (opted_in, opted_in_rx, opted_in_key) = SessionSender::observable("opted-in");
+    let mut opted_in_rx = PushReceiver {
+        rx: opted_in_rx,
+        bus: state.lock().unwrap().changes(),
+    };
     let greeting = handler.call(
         opted_in.clone(),
         req("session.hello", json!({ "changes": "subscriptions" })),
@@ -1413,9 +1568,13 @@ async fn a_legacy_greeting_hears_only_the_legacy_frames_for_a_real_mutation() {
     );
     assert_eq!(posted["ok"], true, "{posted:?}");
 
-    let legacy = settled_pushes(&mut legacy_rx, &legacy_key).await;
     let board = json!({ "type": "board.changed" });
     let entity = json!({ "type": "entity.changed", "id": run_id });
+    let mut legacy = pushes_until(&mut legacy_rx, &legacy_key, |pushes| {
+        pushes.contains(&board) && pushes.contains(&entity)
+    })
+    .await;
+    legacy.extend(settled_pushes(&mut legacy_rx, &legacy_key).await);
     for frame in &legacy {
         assert!(
             *frame == board || *frame == entity,

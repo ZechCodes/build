@@ -12,6 +12,8 @@
 mod directory;
 pub mod probe;
 pub mod rift;
+#[cfg(all(test, unix))]
+mod test_fixture;
 pub mod worktree;
 
 use std::path::{Path, PathBuf};

@@ -12,6 +12,7 @@ const HOUR = 60 * 60 * 1000;
 
 let cache;
 let lifetime;
+let pages;
 
 /** A record written as if at a given moment: `at` is the TTL clock. */
 const writeAt = async (address, value, at) => {
@@ -30,6 +31,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   cache = await import("../src/core/localCache.js");
   lifetime = await import("../src/core/cacheLifetime.js");
+  pages = await import("../src/core/bodyPages.js");
 });
 
 describe("the 72 h expiry", () => {
@@ -177,9 +179,10 @@ describe("what a sweep reads", () => {
 });
 
 describe("the recent files", () => {
-  it("keeps 5, of at most 1 MB each", () => {
+  it("keeps 5, of at most 1 MB a record, and media of at most 32 MB in pages", () => {
     expect(lifetime.RECENT_FILES).toBe(5);
     expect(lifetime.FILE_MAX_BYTES).toBe(1048576);
+    expect(lifetime.FILE_MEDIA_MAX_BYTES).toBe(32 * 1048576);
   });
 
   it("keeps the five most recently opened and drops the rest", async () => {
@@ -203,6 +206,16 @@ describe("the recent files", () => {
     await lifetime.trimRecentFiles("dev-1", "ws-1");
     expect(await held(address("ws-1", "file", "old.js"))).toBe(false);
     expect(await held(address("ws-1", "file", "new-0.js"))).toBe(true);
+  });
+
+  it("lets go of the pages of every body it drops", async () => {
+    for (let index = 0; index < 6; index += 1) {
+      await writeAt(address("ws-1", "file", `src/${index}.js`), { file: { paged: true, of: "v1" }, openedAt: NOW + index }, NOW);
+      await pages.writeBodyPage(address("ws-1", "file", `src/${index}.js`), { of: "v1", offset: 0, end: 1, total: 2, body: "eA==" });
+    }
+    await lifetime.trimRecentFiles("dev-1", "ws-1");
+    expect((await pages.readBodyPages(address("ws-1", "file", "src/0.js"), "v1")).pages).toHaveLength(0);
+    expect((await pages.readBodyPages(address("ws-1", "file", "src/1.js"), "v1")).pages).toHaveLength(1);
   });
 
   it("leaves five or fewer alone, and touches no other kind", async () => {
@@ -240,23 +253,161 @@ describe("putting a file body in the cache", () => {
     expect(await bodyOf("src/a.js")).toEqual({ file: read(), openedAt: NOW });
   });
 
-  it("refuses a body over 1 MB, and leaves the one it holds alone", async () => {
-    await keep("big.js", read({ path: "big.js" }));
-    expect(await keep("big.js", read({ path: "big.js", size: lifetime.FILE_MAX_BYTES + 1 }))).toBe(false);
-    expect((await bodyOf("big.js")).file.size).toBe(5);
+  const fileHead = (path) => address("ws-1", "file", path);
+
+  /** A bridge that pages: `bytes` of `whole` from `offset`, cut after a line
+   *  end the way the bridge cuts one, all of version `version`. */
+  const pager = (whole, { version = "v1" } = {}) => {
+    const bytes = Buffer.from(whole, "utf8");
+    return vi.fn(async (offset, size = pages.BODY_PAGE_BYTES) => {
+      let end = Math.min(bytes.length, offset + size);
+      if (end < bytes.length) {
+        const newline = bytes.lastIndexOf(10, end - 1);
+        if (newline >= offset) end = newline + 1;
+      }
+      return { of: version, offset, end, total: bytes.length, body: bytes.subarray(offset, end).toString("base64") };
+    });
+  };
+
+  const bigText = (lines) => Array.from({ length: lines }, (_, index) => `line ${index + 1} ${"x".repeat(60)}`).join("\n");
+
+  // A body over the cap is no longer turned away (#95): the record says what
+  // the file is, and its bytes are pages beside it, the first read by range.
+  it("keeps a body over 1 MB as a head and its first page, read by range", async () => {
+    const whole = bigText(20_000);
+    const size = Buffer.byteLength(whole);
+    const readPage = pager(whole);
+    const answer = read({ path: "big.js", size, truncated: true, editable: false, content_b64: "cut", revision: null });
+    expect(await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: answer, openedAt: NOW, readPage }))
+      .toBe(true);
+
+    expect(readPage).toHaveBeenCalledTimes(1);
+    expect(readPage).toHaveBeenCalledWith(0, pages.BODY_PAGE_BYTES);
+    const record = await bodyOf("big.js");
+    expect(record.openedAt).toBe(NOW);
+    expect(record.file).toEqual({
+      path: "big.js", size, mime: "text/plain", truncated: false, editable: false, paged: true, of: "v1",
+    });
+    const held = await pages.readBodyPages(fileHead("big.js"), "v1");
+    expect(held.pages).toHaveLength(1);
+    expect(held.total).toBe(size);
+    expect(held.complete).toBe(false);
   });
 
-  // A truncated read is a piece of a file. Kept, it would open again as the
-  // whole of one, with nothing on screen saying which piece.
-  it("refuses a read that came back truncated, whatever it weighs", async () => {
-    expect(await keep("part.js", read({ path: "part.js", truncated: true }))).toBe(false);
+  // An older bridge refuses `range`, so its answer — cut at its wire cap — is
+  // what there is. Kept, split into pages, and named incomplete by the file's
+  // own size, so nothing opens it as the whole file.
+  it("keeps what a bridge that cannot page carried, as pages that do not reach the file's size", async () => {
+    const carried = Buffer.from("the first megabyte\n").toString("base64");
+    const answer = read({ path: "part.js", size: 2 * lifetime.FILE_MAX_BYTES, truncated: true, content_b64: carried });
+    expect(await keep("part.js", answer)).toBe(true);
+    const record = await bodyOf("part.js");
+    expect(record.file).toMatchObject({ paged: true, of: lifetime.WHOLE_READ, truncated: true, editable: false });
+    expect(record.file.content_b64).toBeUndefined();
+    const held = await pages.readBodyPages(fileHead("part.js"), lifetime.WHOLE_READ);
+    expect(pages.joinedBase64(held.pages)).toBe(carried);
+    expect(held.total).toBe(2 * lifetime.FILE_MAX_BYTES);
+    expect(held.complete).toBe(false);
+  });
+
+  // Every whole read is of the same "version", so a shorter body split over a
+  // longer one would chain on into the longer one's last pages.
+  it("lets go of the last whole read's pages before splitting the next", async () => {
+    const longer = Buffer.from("a".repeat(7 * pages.BODY_PAGE_BYTES)).toString("base64");
+    const shorter = Buffer.from("b".repeat(5 * pages.BODY_PAGE_BYTES)).toString("base64");
+    await keep("clip.mp3", read({ path: "clip.mp3", mime: "audio/mpeg", size: 7 * pages.BODY_PAGE_BYTES, content_b64: longer }));
+    await keep("clip.mp3", read({ path: "clip.mp3", mime: "audio/mpeg", size: 5 * pages.BODY_PAGE_BYTES, content_b64: shorter }));
+    const held = await pages.readBodyPages(fileHead("clip.mp3"), lifetime.WHOLE_READ);
+    expect(pages.joinedBase64(held.pages)).toBe(shorter);
   });
 
   it("measures an answer with no size of its own in bytes, not in characters", async () => {
-    // Three bytes each: a body of a third of the cap in characters is at it.
-    const content = "な".repeat(Math.ceil(lifetime.FILE_MAX_BYTES / 3));
-    expect(content.length).toBeLessThan(lifetime.FILE_MAX_BYTES);
-    expect(await keep("jp.txt", read({ size: null, content_b64: content }))).toBe(false);
+    // Three bytes each: a body of a third of the cap in characters is over it.
+    const content = Buffer.from("な".repeat(Math.ceil(lifetime.FILE_MAX_BYTES / 3) + 1)).toString("base64");
+    expect(await keep("jp.txt", read({ size: null, content_b64: content }))).toBe(true);
+    expect((await bodyOf("jp.txt")).file.paged).toBe(true);
+  });
+
+  it("lets go of the pages when a body that fits is written over a paged one", async () => {
+    const whole = bigText(20_000);
+    await lifetime.cacheFileBody({
+      deviceId: "dev-1", entityId: "ws-1", path: "big.js", openedAt: NOW, readPage: pager(whole),
+      file: read({ path: "big.js", size: Buffer.byteLength(whole), truncated: true }),
+    });
+    expect(await keep("big.js", read({ path: "big.js" }))).toBe(true);
+    expect((await bodyOf("big.js")).file).toEqual(read({ path: "big.js" }));
+    expect(await cache.cachedSubKeys("dev-1", "ws-1", pages.PAGE_RECORD_KIND)).toEqual([]);
+  });
+
+  // The viewer shows an image or a video from every one of its bytes, so a
+  // part of one is worth nothing: all of it is read into pages, up to the
+  // bridge's own media cap.
+  it("reads every page of a media file over the cap, a megabyte at a time", async () => {
+    const png = "p".repeat(3 * lifetime.FILE_MAX_BYTES + 10);
+    const readPage = pager(png);
+    const answer = read({ path: "shot.png", mime: "image/png", size: png.length, content_b64: "whole" });
+    expect(await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "shot.png", file: answer, openedAt: NOW, readPage }))
+      .toBe(true);
+    expect(readPage.mock.calls.map(([offset, bytes]) => [offset, bytes])).toEqual([0, 1, 2, 3].map((index) =>
+      [index * lifetime.FILE_MAX_BYTES, lifetime.FILE_MAX_BYTES]));
+    const held = await pages.readBodyPages(fileHead("shot.png"), "v1");
+    expect(held.complete).toBe(true);
+    expect(pages.joinedBase64(held.pages)).toBe(Buffer.from(png).toString("base64"));
+    expect((await bodyOf("shot.png")).file).toMatchObject({ paged: true, of: "v1", mime: "image/png" });
+  });
+
+  it("keeps only what a media file past the media cap is, and reads none of it", async () => {
+    const readPage = pager("x");
+    const answer = read({ path: "film.mp4", mime: "video/mp4", size: lifetime.FILE_MEDIA_MAX_BYTES + 1, truncated: true, content_b64: "" });
+    expect(await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "film.mp4", file: answer, openedAt: NOW, readPage }))
+      .toBe(true);
+    expect(readPage).not.toHaveBeenCalled();
+    const record = await bodyOf("film.mp4");
+    expect(record.file).toMatchObject({ truncated: true, size: lifetime.FILE_MEDIA_MAX_BYTES + 1 });
+    expect(record.file.paged).toBeUndefined();
+    expect(await cache.cachedSubKeys("dev-1", "ws-1", pages.PAGE_RECORD_KIND)).toEqual([]);
+  });
+
+  it("keeps only the size of a binary file over the cap: the viewer shows nothing else", async () => {
+    const readPage = pager("x");
+    const answer = read({ path: "blob.bin", mime: "application/octet-stream", size: 5 * lifetime.FILE_MAX_BYTES, truncated: true });
+    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "blob.bin", file: answer, openedAt: NOW, readPage });
+    expect(readPage).not.toHaveBeenCalled();
+    expect((await bodyOf("blob.bin")).file.content_b64).toBeUndefined();
+  });
+
+  it("re-stamps a paged head handed back with no reader, and reads nothing", async () => {
+    const whole = bigText(20_000);
+    await lifetime.cacheFileBody({
+      deviceId: "dev-1", entityId: "ws-1", path: "big.js", openedAt: NOW, readPage: pager(whole),
+      file: read({ path: "big.js", size: Buffer.byteLength(whole), truncated: true }),
+    });
+    const head = (await bodyOf("big.js")).file;
+    expect(await keep("big.js", head, NOW + 1)).toBe(true);
+    expect(await bodyOf("big.js")).toEqual({ file: head, openedAt: NOW + 1 });
+    expect((await pages.readBodyPages(fileHead("big.js"), "v1")).pages).toHaveLength(1);
+  });
+
+  // A refresh reads the first page again. The same version keeps every page
+  // read since; another version starts the body over.
+  it("refreshes a paged head from its first page, keeping the pages of the same version", async () => {
+    const whole = bigText(20_000);
+    const first = pager(whole);
+    const file = read({ path: "big.js", size: Buffer.byteLength(whole), truncated: true });
+    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", file, openedAt: NOW, readPage: first });
+    const firstPage = await first.mock.results[0].value;
+    await pages.writeBodyPage(fileHead("big.js"), await first(firstPage.end));
+    const head = (await bodyOf("big.js")).file;
+
+    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: head, openedAt: NOW, readPage: pager(whole) });
+    expect((await pages.readBodyPages(fileHead("big.js"), "v1")).pages).toHaveLength(2);
+
+    const changed = pager(`${whole}\nmore`, { version: "v2" });
+    await lifetime.cacheFileBody({ deviceId: "dev-1", entityId: "ws-1", path: "big.js", file: head, openedAt: NOW, readPage: changed });
+    expect(changed).toHaveBeenCalledWith(0, pages.BODY_PAGE_BYTES);
+    expect((await bodyOf("big.js")).file.of).toBe("v2");
+    expect((await pages.readBodyPages(fileHead("big.js"), "v1")).pages).toHaveLength(0);
+    expect((await pages.readBodyPages(fileHead("big.js"), "v2")).pages).toHaveLength(1);
   });
 
   it("leaves at most five bodies behind it", async () => {

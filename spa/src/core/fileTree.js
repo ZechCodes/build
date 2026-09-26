@@ -17,7 +17,7 @@
 
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { watchUiState } from "./localUiState.js";
-import { ancestorsOf, fileTreeHtml, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
+import { ancestorsOf, fileTreeHtml, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
 
 const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
@@ -57,11 +57,15 @@ const markRows = (listEl, openPath, cursorPath) => {
  *   keeps this checkout's records true), so it is painted and read anyway;
  * - `listDirectory(dir)`: the `fs.tree` read;
  * - `finePointer()`: whether a click selects rather than opens;
- * - `onOpen(path)`: open a file.
+ * - `onOpen(path)`: open a file;
+ * - `baseDepth`: how many levels the rows stand under (1 under a workspace's
+ *   root row, core/fileRoots.js);
+ * - `onEdge(direction)`: the arrows walked out of the rows ("up", "down",
+ *   "out"); a tree with nothing around it keeps them, as it always has.
  *
  * Returns { ready, setOpenPath, reveal, relist, dispose }.
  */
-export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen }) {
+export function mountFileTree(listEl, { listingAddress, stateAddress = null, readsForItself, listDirectory, finePointer, onOpen, baseDepth = 0, onEdge = null }) {
   let disposed = false;
   const listings = new Map();
   let expanded = new Set();
@@ -80,7 +84,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       return;
     }
     const hadFocus = listEl.contains(document.activeElement);
-    rows = visibleTreeRows(listings, expanded);
+    rows = visibleTreeRows(listings, expanded, "", baseDepth);
     listEl.innerHTML = fileTreeHtml(rows, { openPath, cursorPath });
     if (hadFocus) focusCursor();
   };
@@ -208,6 +212,12 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   };
 
   const onKeyDown = (event) => {
+    const edge = onEdge && treeEdge(rows, cursorPath, event.key);
+    if (edge) {
+      event.preventDefault();
+      onEdge(edge);
+      return;
+    }
     const move = treeKeyMove(rows, cursorPath, event.key);
     if (!move) return;
     event.preventDefault();
@@ -234,6 +244,19 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
       openPath = path;
       if (path) cursorPath = path;
       markRows(listEl, openPath, cursorPath);
+    },
+    /** Put the keyboard on the selection (or the first row), for the roots
+     *  around this tree handing the arrows back. False when nothing is drawn. */
+    focus() {
+      const row = rowsIn(listEl).find((candidate) => candidate.tabIndex === 0);
+      row?.focus();
+      return Boolean(row);
+    },
+    /** Put the keyboard on the last row drawn. */
+    focusLast() {
+      const row = rowsIn(listEl).at(-1);
+      if (row) setCursor(row.dataset.path, { focus: true });
+      return Boolean(row);
     },
     /** Expand every directory above `path`, so its row is drawn. */
     async reveal(path) {

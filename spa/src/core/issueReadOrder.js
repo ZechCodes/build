@@ -98,9 +98,11 @@ export const withWritten = (reads, issueIds, read) => ({
 
 /** These issues were written under these list records here — a card moved
  *  before the bridge said so — which is newer than any read already out, in
- *  this tab or another. Noted before the write it is about. */
+ *  this tab or another. Noted before the write it is about, and answers the
+ *  number it was noted as, which the write stamps its lists with. */
 export async function noteWritten(addresses, issueIds) {
   const read = await nextIssueRead();
   await Promise.all(addresses.map((address) =>
     mergeCachedAtomically(readsAddress(address), (reads) => withWritten(reads, issueIds, read))));
+  return read;
 }

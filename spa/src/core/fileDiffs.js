@@ -10,7 +10,9 @@
 // one thing that talks to the wire and the cache.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { BODY_PAGE_BYTES, pageFromAnswer, textPagesOf } from "./bodyPages.js";
 import { withinBytes } from "./cacheLifetime.js";
+import { bridgeCapabilities } from "./changeEvents.js";
 import { coordinatedRead, rpcReadKey } from "./readRequests.js";
 
 /** The local-cache kind one file's body is stored under, sub-keyed by path. */
@@ -77,6 +79,12 @@ function createFillQueue() {
  * paint asks it and never waits. `sync` keeps the open files' bodies current
  * against a status shape, `warm` fills the rest in the background, and both
  * answer how many bodies were filled so a caller can repaint only on news.
+ *
+ * A body over the cap, or one the bridge cut, is kept in pages (#95,
+ * core/bodyPages.js), and `bodyOf` then also answers `pages: { end, total,
+ * complete }`. `more(path)` reads the page after the last one held, which only
+ * a bridge announcing `bodies.pages` can answer (`canPage`); one that cannot
+ * is never sent a `range`, and the cut body stays what its answer carried.
  */
 export function createFileDiffs({
   deviceId,
@@ -85,6 +93,7 @@ export function createFileDiffs({
   call,
   requestPriority = "foreground",
   requestScope = call,
+  canPage = () => bridgeCapabilities(deviceId).bodies?.pages === true,
   onChange = () => {},
 }) {
   let disposed = false;
@@ -94,26 +103,46 @@ export function createFileDiffs({
     : scope.worktree_id
       ? `worktree:${scope.project_id || ""}:${scope.worktree_id}`
       : `project:${scope.project_id || ""}`;
+  /** One `git.diff` read, shared with any other caller asking the same thing
+   *  of the same checkout at once. */
+  const readDiff = (params) => {
+    const key = rpcReadKey({ deviceId, requestScope, repository, call, method: "git.diff", params });
+    return coordinatedRead({
+      key,
+      priority: requestPriority,
+      load: (envelope) => call("git.diff", params, envelope),
+    });
+  };
+
+  /** The page of `path`'s diff the bridge cuts from `offset`, named by the
+   *  version the bridge gives the whole patch; null where the bridge cannot
+   *  cut one — asked as the page is wanted, so a bridge greeted after this
+   *  checkout mounted is read on from — or where its answer is no page. */
+  const readPage = async (path, offset) => {
+    if (!canPage()) return null;
+    const answer = await readDiff({ ...scope, paths: [path], range: { offset, bytes: BODY_PAGE_BYTES } });
+    const file = (answer.files || [])[0];
+    return file?.range ? pageFromAnswer(file, "patch") : null;
+  };
+
   const bodies = createCachedBodies({
     addressOf: (path) =>
       deviceId && entityId ? { deviceId, entityId, kind: FILE_DIFF_RECORD_KIND, sub: path } : null,
-    fetchMissing: async (paths) => {
-      const params = { ...scope, paths };
-      const key = rpcReadKey({ deviceId, requestScope, repository, call, method: "git.diff", params });
-      const answer = await coordinatedRead({
-        key,
-        priority: requestPriority,
-        load: (envelope) => call("git.diff", params, envelope),
-      });
-      return answer.files || [];
-    },
+    fetchMissing: async (paths) => (await readDiff({ ...scope, paths })).files || [],
     valueOf: (file) => ({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, truncated: Boolean(file.truncated) },
     }),
-    // #94: never retain a shortened or oversized patch. Until #95 adds
-    // pages, createCachedBodies paints that response directly in this mount.
     cacheable: (body) => !body.truncated && withinBytes(body.patch, FILE_DIFF_MAX_BYTES),
+    // A body over the cap, or cut, is kept in pages named by the version the
+    // bridge gives the whole patch — a content key does not name a patch, which
+    // moves with HEAD and the base while the file stands still — or, from a
+    // bridge that cannot page, split here out of the answer.
+    pages: {
+      field: "patch",
+      split: (body, of) => textPagesOf(body.patch, { of, cut: body.truncated }),
+      readPage,
+    },
     onChange,
   });
 
@@ -148,6 +177,10 @@ export function createFileDiffs({
 
   return {
     bodyOf,
+    canPage,
+    /** Read the next page of `path`'s paged body into the cache. Answers
+     *  whether one landed; the repaint comes through `onChange`. */
+    more: (path) => bodies.more(path),
     sync: ({ status, openPaths = null }) => enqueue(() => fill(status, { openPaths })),
     warm: (status, { budget = GIT_DIFF_MAX_PATHS } = {}) =>
       enqueue(() => fill(status, { openPaths: new Set(statusPaths(status)), budget })),

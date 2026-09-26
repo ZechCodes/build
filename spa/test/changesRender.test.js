@@ -188,6 +188,18 @@ describe("commitHeaderHtml", () => {
     expect(commitHeaderHtml(show({ truncated: true }))).toContain("diff truncated");
     expect(commitHeaderHtml(show())).not.toContain("diff truncated");
   });
+
+  // A patch kept in pages (#95) says it was cut only where nothing has said
+  // what the whole weighs; one whose total is known shows how much is drawn at
+  // the end of its stack instead, and is read on from there.
+  it("says a paged patch was cut only where its whole weight is unknown", () => {
+    const partial = show({ truncated: true, paged: true, pages: { end: 1_048_000, total: 4_000_000, complete: false } });
+    expect(commitHeaderHtml(partial)).not.toContain("diff truncated");
+    const unknown = show({ truncated: true, paged: true, pages: { end: 1_048_000, total: null, complete: false } });
+    expect(commitHeaderHtml(unknown)).toContain("diff truncated at 1 MiB — the counts above are exact");
+    const whole = show({ truncated: true, paged: true, pages: { end: 4_000_000, total: 4_000_000, complete: true } });
+    expect(commitHeaderHtml(whole)).not.toContain("diff truncated");
+  });
 });
 
 describe("commentTrayHtml", () => {

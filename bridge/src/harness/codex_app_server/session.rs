@@ -243,6 +243,8 @@ struct SessionCore {
     connection: SharedConnection,
     process: Arc<AppServerProcess>,
     state: Mutex<CodexSessionState>,
+    #[cfg(test)]
+    state_changed: Condvar,
     translator: Mutex<CodexActivityTranslator>,
     surfaces: Mutex<CodexSurfaces>,
     surfaces_revision: SurfaceRevision,
@@ -251,6 +253,10 @@ struct SessionCore {
     receipts: watch::Sender<TurnReceiptSnapshot>,
     pending_receipts: Mutex<PendingTurnReceipts>,
     terminal: Mutex<TerminalSnapshot>,
+    #[cfg(test)]
+    terminal_processed: Mutex<TerminalSnapshot>,
+    #[cfg(test)]
+    terminal_processed_changed: Condvar,
     published: Mutex<Option<TerminalOutcome>>,
     last_message: Mutex<Instant>,
     started: Instant,
@@ -271,13 +277,29 @@ impl CodexAppServerSession {
         resume_id: Option<String>,
         limits: AppServerLimits,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_with_grace_wait(spec, root, choice, resume_id, limits, std::thread::sleep)
+    }
+
+    fn spawn_with_grace_wait(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        wait_for_grace: impl FnOnce(Duration) + Send + 'static,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let binary = crate::pty::resolve_binary(spec)?;
         let (terminal_sender, terminal_events) = mpsc::channel();
         let events: TerminalEventSink = Arc::new(move |event| {
             let _ = terminal_sender.send(event);
         });
-        let (process, pipes) =
-            AppServerProcess::spawn(spec, root.clone(), limits.process(), Arc::clone(&events))?;
+        let (process, pipes) = AppServerProcess::spawn_with_grace_wait(
+            spec,
+            root.clone(),
+            limits.process(),
+            Arc::clone(&events),
+            wait_for_grace,
+        )?;
         let connection = Arc::new(AppServerConnection::new(
             Box::new(pipes.stdin),
             limits.connection(),
@@ -294,6 +316,8 @@ impl CodexAppServerSession {
                 choice.effort,
                 resume_id,
             )),
+            #[cfg(test)]
+            state_changed: Condvar::new(),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
             surfaces: Mutex::new(CodexSurfaces::default()),
             surfaces_revision: SurfaceRevision::default(),
@@ -302,6 +326,10 @@ impl CodexAppServerSession {
             receipts,
             pending_receipts: Mutex::new(PendingTurnReceipts::default()),
             terminal: Mutex::new(TerminalSnapshot::default()),
+            #[cfg(test)]
+            terminal_processed: Mutex::new(TerminalSnapshot::default()),
+            #[cfg(test)]
+            terminal_processed_changed: Condvar::new(),
             published: Mutex::new(None),
             last_message: Mutex::new(Instant::now()),
             started: Instant::now(),
@@ -386,6 +414,8 @@ impl SessionCore {
                 }
             }
             *state = transition.state;
+            #[cfg(test)]
+            self.state_changed.notify_all();
             if let Some(status) = state.live_status() {
                 let previous = self.status.borrow().clone();
                 if let Some(next) = previous.transition(status) {
@@ -840,6 +870,11 @@ impl SessionCore {
         let outcome = self.terminal.lock().unwrap().outcome();
         if let Some(outcome) = outcome {
             self.publish_terminal(outcome);
+        }
+        #[cfg(test)]
+        {
+            *self.terminal_processed.lock().unwrap() = self.terminal.lock().unwrap().clone();
+            self.terminal_processed_changed.notify_all();
         }
     }
 
@@ -1485,18 +1520,40 @@ mod tests {
         let turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
         let script = opened_thread_script(
             root.path(),
-            &format!("read turn; printf '%s\\n' '{}'; read hold", turn_response),
+            &format!(
+                "read turn; printf '%s\\n' '{}'; cat >/dev/null",
+                turn_response
+            ),
         );
         let (session, _activity) = scripted_session(root.path(), &script);
-        wait_until("opened its thread", || session.session_id().is_some());
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.session_id().is_none()
+            })
+            .unwrap();
+        assert!(
+            state.session_id().is_some(),
+            "the session never opened its thread"
+        );
+        drop(state);
         let receipts = session.turn_receipts().unwrap();
         assert_eq!(session.turn_receipt_support(), TurnReceiptSupport::Seen);
         session
             .send_turn(&Turn::new("go").with_operation_id("operation-go"))
             .unwrap();
-        wait_until("accepted turn/start response", || {
-            session.core.state.lock().unwrap().diagnostic_phase() == "working"
-        });
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.diagnostic_phase() != "working"
+            })
+            .unwrap();
+        assert_eq!(state.diagnostic_phase(), "working");
+        drop(state);
         assert!(receipts.borrow().seen_operation_ids.is_empty());
 
         session
@@ -1860,6 +1917,50 @@ mod tests {
         let spec = HarnessSpec::new("sh").arg("-c").arg(script);
         CodexAppServerSession::spawn(&spec, root.to_path_buf(), selected_choice(), None, limits)
             .unwrap()
+    }
+
+    fn scripted_session_with_gated_grace(
+        root: &Path,
+        script: &str,
+    ) -> (
+        CodexAppServerSession,
+        broadcast::Receiver<ActivityReport>,
+        mpsc::Sender<()>,
+    ) {
+        let spec = HarnessSpec::new("sh").arg("-c").arg(script);
+        let (release, wait) = mpsc::channel();
+        let (session, activity) = CodexAppServerSession::spawn_with_grace_wait(
+            &spec,
+            root.to_path_buf(),
+            selected_choice(),
+            None,
+            AppServerLimits {
+                source_settle_grace: Duration::from_millis(100),
+                ..AppServerLimits::default()
+            },
+            move |_| {
+                // Sender drop releases the monitor too if an assertion panics.
+                let _ = wait.recv();
+            },
+        )
+        .unwrap();
+        (session, activity, release)
+    }
+
+    fn wait_for_terminal_sources(
+        session: &CodexAppServerSession,
+        expectation: &str,
+        ready: impl Fn(&TerminalSnapshot) -> bool,
+    ) {
+        let snapshot = session.core.terminal_processed.lock().unwrap();
+        let (snapshot, _) = session
+            .core
+            .terminal_processed_changed
+            .wait_timeout_while(snapshot, Duration::from_secs(2), |snapshot| {
+                !ready(snapshot)
+            })
+            .unwrap();
+        assert!(ready(&snapshot), "the session never {expectation}");
     }
 
     fn opened_thread_script(root: &Path, thread_traffic: &str) -> String {
@@ -2405,15 +2506,27 @@ mod tests {
     fn ended_is_published_only_after_stdout_process_and_stderr_settle() {
         let root = tempfile::tempdir().unwrap();
         let stderr_release = root.path().join("release-stderr");
+        struct ReleaseStderrOnDrop(PathBuf);
+        impl Drop for ReleaseStderrOnDrop {
+            fn drop(&mut self) {
+                let _ = std::fs::write(&self.0, b"");
+            }
+        }
+        let _release_on_drop = ReleaseStderrOnDrop(stderr_release.clone());
         let script = format!(
-            "(until [ -e '{}' ]; do sleep 0.01; done; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
+            "(while [ -d '{}' ] && [ ! -e '{}' ]; do sleep 0.01; done; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
+            root.path().display(),
             stderr_release.display()
         );
-        let (session, mut activity) = scripted_session(root.path(), &script);
-        wait_until("settled stdout and reaped its process", || {
-            let snapshot = session.core.terminal.lock().unwrap();
-            snapshot.stdout_settled && snapshot.process.is_some()
-        });
+        let (session, mut activity, release_grace) = scripted_session_with_gated_grace(
+            root.path(),
+            &opened_thread_script(root.path(), &script),
+        );
+        wait_for_terminal_sources(
+            &session,
+            "settled stdout and reaped its process",
+            |snapshot| snapshot.stdout_settled && snapshot.process.is_some(),
+        );
         assert!(
             !matches!(session.status(), AgentStatus::Ended { .. }),
             "{:?}",
@@ -2426,6 +2539,10 @@ mod tests {
         ));
 
         std::fs::write(&stderr_release, b"").unwrap();
+        wait_for_terminal_sources(&session, "settled stderr", |snapshot| {
+            snapshot.stderr.is_some()
+        });
+        release_grace.send(()).unwrap();
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })
         });
@@ -2447,14 +2564,21 @@ mod tests {
     #[test]
     fn stderr_held_open_past_the_grace_still_publishes_ended() {
         let root = tempfile::tempdir().unwrap();
-        let (session, mut activity) = scripted_session_under(
+        let (session, mut activity, release_grace) = scripted_session_with_gated_grace(
             root.path(),
-            "(sleep 30; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
-            AppServerLimits {
-                source_settle_grace: Duration::from_millis(100),
-                ..AppServerLimits::default()
-            },
+            &opened_thread_script(
+                root.path(),
+                "(sleep 30; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
+            ),
         );
+
+        wait_for_terminal_sources(
+            &session,
+            "settled stdout and reaped its process",
+            |snapshot| snapshot.stdout_settled && snapshot.process.is_some(),
+        );
+        assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
+        release_grace.send(()).unwrap();
 
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })
@@ -2474,14 +2598,18 @@ mod tests {
     #[test]
     fn stdout_held_open_past_the_grace_still_publishes_ended() {
         let root = tempfile::tempdir().unwrap();
-        let (session, mut activity) = scripted_session_under(
+        let (session, mut activity, release_grace) = scripted_session_with_gated_grace(
             root.path(),
-            "exec 2>&-; (sleep 30) & sleep 0.2",
-            AppServerLimits {
-                source_settle_grace: Duration::from_millis(100),
-                ..AppServerLimits::default()
-            },
+            &opened_thread_script(root.path(), "exec 2>&-; (sleep 30) & exit 0"),
         );
+
+        wait_for_terminal_sources(
+            &session,
+            "settled stderr and reaped its process",
+            |snapshot| snapshot.stderr.is_some() && snapshot.process.is_some(),
+        );
+        assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
+        release_grace.send(()).unwrap();
 
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })
@@ -2501,14 +2629,18 @@ mod tests {
     #[test]
     fn stdout_expiry_does_not_mask_the_retained_stderr_tail() {
         let root = tempfile::tempdir().unwrap();
-        let (session, _activity) = scripted_session_under(
+        let (session, _activity, release_grace) = scripted_session_with_gated_grace(
             root.path(),
-            "echo boom >&2; exec 2>&-; (sleep 30) & sleep 0.2",
-            AppServerLimits {
-                source_settle_grace: Duration::from_millis(100),
-                ..AppServerLimits::default()
-            },
+            &opened_thread_script(root.path(), "echo boom >&2; exec 2>&-; (sleep 30) & exit 0"),
         );
+
+        wait_for_terminal_sources(
+            &session,
+            "settled stderr and reaped its process",
+            |snapshot| snapshot.stderr.is_some() && snapshot.process.is_some(),
+        );
+        assert!(!matches!(session.status(), AgentStatus::Ended { .. }));
+        release_grace.send(()).unwrap();
 
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })

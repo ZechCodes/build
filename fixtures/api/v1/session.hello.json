@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "1.25.0",
+    "api_version": "1.26.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -17,6 +17,7 @@
       "archived.list",
       "board.list",
       "board.usageLimits",
+      "bodies.pages",
       "branch.dispatch",
       "branch.finish",
       "branch.get",

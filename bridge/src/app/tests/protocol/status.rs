@@ -353,7 +353,7 @@ pub(in crate::app::tests) fn insert_agent_tab(
     root: &std::path::Path,
     owner: &str,
     agent_id: &str,
-    session: DictatedSession,
+    session: impl AgentSession + 'static,
 ) -> TabKey {
     let key = TabKey::agent(root, agent_id);
     if let Some(previous) = state

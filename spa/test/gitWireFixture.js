@@ -91,3 +91,22 @@ export function worktreeOf(lines = {}, { base = {}, patchOf = patchFor } = {}) {
 
 /** The unchanged answer git.status gives when the key it was sent still stands. */
 export const unchangedStatus = (status) => ({ unchanged: true, status_key: status.status_key });
+
+/** The page a bridge that pages (`bodies.pages`, #95) cuts out of `whole`
+ *  from `offset`: at most `pageBytes` bytes, ending on a line end unless one
+ *  line is longer, and named by `version` — which a bridge takes from the
+ *  whole text, never from the file's content key. The page's text is `patch`
+ *  and where it sits is `range`, as `git.diff`'s file, `git.show` and
+ *  `git.changeset_diff` answer it. */
+export function pagedAnswer(whole, offset, { version = "v1", pageBytes = 262144 } = {}) {
+  const bytes = new TextEncoder().encode(whole);
+  let end = Math.min(bytes.length, offset + pageBytes);
+  if (end < bytes.length) {
+    const lineEnd = bytes.lastIndexOf(10, end - 1);
+    if (lineEnd >= offset) end = lineEnd + 1;
+  }
+  return {
+    patch: new TextDecoder().decode(bytes.subarray(offset, end)),
+    range: { offset, end, total: bytes.length, version },
+  };
+}

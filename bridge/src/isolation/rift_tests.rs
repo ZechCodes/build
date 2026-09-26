@@ -2,10 +2,8 @@ use super::*;
 use crate::git_fixture::{git_in, init_repo};
 
 fn fake_rift(dir: &std::path::Path) -> std::path::PathBuf {
-    use std::os::unix::fs::PermissionsExt;
-
     let executable = dir.join("fake-rift");
-    std::fs::write(
+    super::super::test_fixture::write_executable(
         &executable,
         r#"#!/bin/sh
 set -eu
@@ -81,11 +79,7 @@ case "$command" in
     ;;
 esac
 "#,
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+    );
     executable
 }
 
@@ -276,18 +270,12 @@ fn assert_cli_lifecycle(backend: &RiftBackend, project: &Path, root: &Path, chec
 
 #[test]
 fn a_failing_cli_reports_rifts_stderr() {
-    use std::os::unix::fs::PermissionsExt;
-
     let (dir, project) = init_repo();
     let executable = dir.path().join("failing-rift");
-    std::fs::write(
+    super::super::test_fixture::write_executable(
         &executable,
         "#!/bin/sh\nprintf 'fixture failure' >&2\nexit 23\n",
-    )
-    .unwrap();
-    let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(&executable, permissions).unwrap();
+    );
     let backend = RiftBackend::with_executable(dir.path().join("worktrees"), executable);
 
     let error = backend

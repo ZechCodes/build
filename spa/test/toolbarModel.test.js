@@ -6,7 +6,6 @@ import {
   branchNamePreview,
   projectMenuModel,
   toolbarIdentity,
-  workspaceDirectoryModel,
   workspaceMenuModel,
 } from "../src/core/toolbarModel.js";
 import { deviceKey, workspaceKey } from "../src/core/deviceKey.js";
@@ -338,14 +337,7 @@ describe("workspace navigation", () => {
     ).toEqual(["ws-1", "ws-2"]);
   });
 
-  it("turns workspace directories into persistent tab identities", () => {
-    expect(workspaceDirectoryModel(workspaces[0], "assets").map((row) => [row.sourceId, row.label, row.current])).toEqual([
-      ["frontend", "Frontend", false],
-      ["assets", "Design assets", true],
-    ]);
-  });
-
-  it("names a workspace and its selected directory from the canonical route", () => {
+  it("names the project and the workspace from the canonical route, and nothing else of the workspace", () => {
     const identity = toolbarIdentity(
       { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" },
       { items: [], projects, workspaces },
@@ -358,9 +350,9 @@ describe("workspace navigation", () => {
       label: "payment-work",
       workspaceId: "ws-1",
     });
-    expect(identity.directories.map((row) => [row.sourceId, row.current])).toEqual([
-      ["frontend", true],
-      ["assets", false],
-    ]);
+    // The directories and the Issues are the workspace's navigation, drawn in
+    // its rail rather than carried into the bar (#174).
+    expect(identity.directories).toBeUndefined();
+    expect(identity.workspaceIssues).toBeUndefined();
   });
 });

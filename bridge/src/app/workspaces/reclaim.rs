@@ -112,6 +112,49 @@ fn now_ms() -> i64 {
     i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX)
 }
 
+#[cfg(test)]
+struct StopCheckProbe {
+    before: tokio::sync::oneshot::Sender<()>,
+    proceed: tokio::sync::oneshot::Receiver<()>,
+    after: tokio::sync::oneshot::Sender<()>,
+}
+
+#[cfg(test)]
+fn stop_check_probes() -> &'static Mutex<HashMap<tokio::runtime::Id, StopCheckProbe>> {
+    static PROBES: std::sync::OnceLock<Mutex<HashMap<tokio::runtime::Id, StopCheckProbe>>> =
+        std::sync::OnceLock::new();
+    PROBES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Pause the first sweep immediately before the loop checks its stop flag.
+#[cfg(test)]
+pub(in crate::app) fn probe_reclaim_stop_for_test() -> (
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (before, reached) = tokio::sync::oneshot::channel();
+    let (proceed, allowed) = tokio::sync::oneshot::channel();
+    let (after, checked) = tokio::sync::oneshot::channel();
+    let runtime = tokio::runtime::Handle::current().id();
+    assert!(
+        stop_check_probes()
+            .lock()
+            .unwrap()
+            .insert(
+                runtime,
+                StopCheckProbe {
+                    before,
+                    proceed: allowed,
+                    after
+                }
+            )
+            .is_none(),
+        "only one reclaim stop probe per test runtime"
+    );
+    (reached, proceed, checked)
+}
+
 impl AppState {
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
@@ -123,6 +166,11 @@ impl AppState {
         state: Arc<Mutex<AppState>>,
         policy: ReclaimPolicy,
     ) -> Arc<AtomicBool> {
+        #[cfg(test)]
+        let mut stop_probe = stop_check_probes()
+            .lock()
+            .unwrap()
+            .remove(&tokio::runtime::Handle::current().id());
         let (nudge, stop) = {
             let state = Arc::clone(&state);
             let policy = policy.clone();
@@ -149,7 +197,20 @@ impl AppState {
                 if let Err(joined) = sweep.await {
                     eprintln!("workspace reclaim: sweep failed: {joined}");
                 }
-                if stopped.load(Ordering::Relaxed) {
+                #[cfg(test)]
+                let after_check = if let Some(probe) = stop_probe.take() {
+                    let _ = probe.before.send(());
+                    let _ = probe.proceed.await;
+                    Some(probe.after)
+                } else {
+                    None
+                };
+                let should_stop = stopped.load(Ordering::Relaxed);
+                #[cfg(test)]
+                if let Some(after) = after_check {
+                    let _ = after.send(());
+                }
+                if should_stop {
                     return;
                 }
                 tokio::select! {

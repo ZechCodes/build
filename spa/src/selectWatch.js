@@ -29,11 +29,15 @@ export function selectionInside(container) {
  */
 export function watchSelection(container, onSelect) {
   let timer = null;
+  let pointerTimer = null;
   const consider = () => {
     const selection = selectionInside(container);
     if (selection) onSelect(selection);
   };
-  const onPointerUp = () => setTimeout(consider, 0);
+  const onPointerUp = () => {
+    clearTimeout(pointerTimer);
+    pointerTimer = setTimeout(consider, 0);
+  };
   const onSelectionChange = () => {
     clearTimeout(timer);
     timer = setTimeout(consider, 350);
@@ -44,5 +48,6 @@ export function watchSelection(container, onSelect) {
     container.removeEventListener("pointerup", onPointerUp);
     document.removeEventListener("selectionchange", onSelectionChange);
     clearTimeout(timer);
+    clearTimeout(pointerTimer);
   };
 }

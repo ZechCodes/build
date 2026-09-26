@@ -194,10 +194,13 @@ fn the_init_line_names_the_model_the_session_is_running() {
 /// silence is still working, and only its result line says otherwise.
 #[test]
 fn a_turn_is_working_until_its_result_line_arrives() {
-    // This fake takes its time answering and says NOTHING while it does —
-    // the silence a terminal could only read as "waiting for you".
+    // The child cannot answer until the test opens this gate. Its silence is
+    // the state under test, independent of scheduler speed.
+    let directory = tempfile::tempdir().unwrap();
+    let release = directory.path().join("release");
     let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
-            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r turn; do sleep 0.4; printf '%s\\n' '{RESULT}'; done\n"
+            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r turn; do while [ -d '{}' ] && [ ! -e '{}' ]; do sleep 0.01; done; printf '%s\\n' '{RESULT}'; done\n",
+            directory.path().display(), release.display()
         )));
     wait_for_status(&session, AgentStatus::Waiting);
 
@@ -209,13 +212,13 @@ fn a_turn_is_working_until_its_result_line_arrives() {
         AgentStatus::Working,
         "the turn started the moment it was accepted"
     );
-    std::thread::sleep(Duration::from_millis(150));
     assert_eq!(
         session.status(),
         AgentStatus::Working,
         "a silent model mid-turn is working, not waiting for the human"
     );
 
+    std::fs::write(&release, "go").unwrap();
     wait_for_status(&session, AgentStatus::Waiting);
     session.end();
 }
@@ -538,28 +541,28 @@ fn ending_a_session_reaps_the_child() {
 /// would stall every RPC, every pump and the idle sweep with it.
 #[test]
 fn send_turn_returns_on_the_write_even_when_the_child_never_answers() {
+    let directory = tempfile::tempdir().unwrap();
+    let release = directory.path().join("release");
     let session = open(
         &HarnessSpec::new("sh")
             .arg("-c")
-            .arg(format!("printf '%s\\n' '{INIT}'; cat >/dev/null")),
+            .arg(format!(
+                "printf '%s\\n' '{INIT}'; while IFS= read -r turn; do while [ -d '{}' ] && [ ! -e '{}' ]; do sleep 0.01; done; printf '%s\\n' '{RESULT}'; done",
+                directory.path().display(), release.display()
+            )),
     );
     wait_for_status(&session, AgentStatus::Waiting);
 
-    let started = Instant::now();
     session
-        .send_turn(&Turn::new("this turn is never answered"))
-        .expect("the write is accepted");
-    let took = started.elapsed();
-
-    assert!(
-        took < Duration::from_millis(250),
-        "handing over a turn took {took:?} — a caller holding the state lock would be stalled"
-    );
+        .send_turn(&Turn::new("this turn is not answered yet"))
+        .expect("the write returns before the child can answer");
     assert_eq!(
         session.status(),
         AgentStatus::Working,
         "an unanswered turn is still a turn in progress"
     );
+    std::fs::write(&release, "go").unwrap();
+    wait_for_status(&session, AgentStatus::Waiting);
     session.end();
 }
 /// The capability is the CHILD's answer, not the provider's: the same CLI
@@ -1522,7 +1525,30 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
     let (session, _activity) =
         AdkSession::spawn_with_startup_deadline(&silent, None, &adk_choice(), deadline)
             .expect("the silent child spawns");
-    std::thread::sleep(deadline * 2);
+    let now = Instant::now();
+    let mut unprompted = ProtocolState::new(&adk_choice());
+    assert!(
+        !super::super::session::startup_deadline_elapsed(&unprompted, deadline, now + deadline * 2),
+        "silence before the first turn has no deadline"
+    );
+    unprompted.first_turn_at = Some(now);
+    assert!(
+        !super::super::session::startup_deadline_elapsed(
+            &unprompted,
+            deadline,
+            now + deadline - Duration::from_nanos(1)
+        ),
+        "a turn still inside the deadline is allowed to start"
+    );
+    assert!(
+        super::super::session::startup_deadline_elapsed(&unprompted, deadline, now + deadline),
+        "a silent turn expires exactly at the deadline"
+    );
+    unprompted.closed = true;
+    assert!(
+        !super::super::session::startup_deadline_elapsed(&unprompted, deadline, now + deadline),
+        "an ended child cannot expire twice"
+    );
     assert_eq!(
         session.status(),
         AgentStatus::Starting,
@@ -1541,12 +1567,12 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
         "{:?}",
         session.status()
     );
-    assert!(
-        session
-            .epitaph()
-            .is_some_and(|epitaph| epitaph.contains("did not announce itself")),
-        "{:?}",
-        session.epitaph()
+    let refused = "Build stopped this agent's Claude Code session because it did not start within 0.2 seconds.";
+    assert_eq!(session.epitaph().as_deref(), Some(refused));
+    assert_eq!(
+        session.start_refused().as_deref(),
+        Some(refused),
+        "and the agent's start_error says it in the same sentence (issue #73)"
     );
 
     // A child that DOES announce itself in time is left alone past the deadline.
@@ -1561,7 +1587,17 @@ fn a_child_that_never_announces_itself_is_ended_at_the_deadline_after_its_first_
         .send_turn(&Turn::new("go"))
         .expect("the turn is written");
     wait_for_status(&session, AgentStatus::Waiting);
-    std::thread::sleep(Duration::from_millis(2300));
+    let mut announced = ProtocolState::new(&adk_choice());
+    announced.first_turn_at = Some(now);
+    announced.announced = true;
+    assert!(
+        !super::super::session::startup_deadline_elapsed(
+            &announced,
+            Duration::from_secs(2),
+            now + Duration::from_secs(3)
+        ),
+        "an announced child is exempt even after the deadline"
+    );
     assert_eq!(session.status(), AgentStatus::Waiting);
     assert_eq!(session.epitaph(), None);
     session.end();

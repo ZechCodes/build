@@ -297,7 +297,7 @@ pub(in crate::app::tests) fn dictated_agent_tab(
     root: &std::path::Path,
     owner: &str,
     agent_id: &str,
-    session: DictatedSession,
+    session: impl AgentSession + 'static,
 ) -> Tab {
     Tab {
         tab_id: agent_tab_id(agent_id),

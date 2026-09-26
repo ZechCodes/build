@@ -1,9 +1,35 @@
 const RENDERED_MIMES = new Set(["text/markdown", "text/html", "image/svg+xml"]);
 
+const SIZE_ONLY_MIMES = new Set(["application/octet-stream", "application/pdf"]);
+
+const mediaMime = (mime) =>
+  ["image/", "audio/", "video/"].some((prefix) => (mime || "").startsWith(prefix)) && mime !== "image/svg+xml";
+
 function binaryMime(mime = "") {
-  if (mime === "application/octet-stream" || mime === "application/pdf") return true;
-  return ["image/", "audio/", "video/"].some((prefix) => mime.startsWith(prefix)) && mime !== "image/svg+xml";
+  return SIZE_ONLY_MIMES.has(mime) || mediaMime(mime);
 }
+
+/**
+ * How much of a file the viewer needs, which is how much of a file too large
+ * for one cache record is read into pages (#95):
+ *
+ * - `none`: a binary the viewer shows as its size alone, so no bytes at all;
+ * - `media`: an image, a sound or a film, shown whole from every byte and
+ *   never as source;
+ * - `rendered`: an HTML page or an SVG, shown whole too, with a source view;
+ * - `lines`: everything else, shown as source a page at a time. Markdown is
+ *   among them: a part of a document cannot be rendered as one.
+ */
+export function fileBodyReading(mime = "") {
+  if (SIZE_ONLY_MIMES.has(mime)) return "none";
+  if (mediaMime(mime)) return "media";
+  return mime === "text/html" || mime === "image/svg+xml" ? "rendered" : "lines";
+}
+
+/** A rendered view needs the whole of a file, which a paged one read as lines
+ *  never has in hand: its markdown is shown as source. */
+const renderedView = (file) =>
+  RENDERED_MIMES.has(file.mime) && !(file.paged && fileBodyReading(file.mime) === "lines");
 
 function sourceAvailable(file, rendered) {
   if (rendered || file.encoding === "utf-8" || file.editable === true) return true;
@@ -11,22 +37,25 @@ function sourceAvailable(file, rendered) {
 }
 
 function editAvailable(file) {
-  if (file.truncated || file.editable !== true || !file.revision) return false;
+  if (file.truncated || file.paged || file.editable !== true || !file.revision) return false;
   return file.encoding == null || file.encoding === "utf-8";
 }
 
 export function fileViewerModes(file) {
   if (!file) return [];
-  const rendered = RENDERED_MIMES.has(file.mime);
+  const rendered = renderedView(file);
   if (binaryMime(file.mime)) return [];
   return [...(rendered ? ["preview"] : []), ...(sourceAvailable(file, rendered) ? ["source"] : []), ...(editAvailable(file) ? ["edit"] : [])];
 }
 
 const REVISION_CONFLICT = "revision conflict";
 
-/** Whether a record is the very file a baseline was read as. */
+/** Whether a record is the very file a baseline was read as. A paged file's
+ *  record carries no body and no revision, so the version its pages are of
+ *  is what tells two of them apart. */
 export const sameFile = (a, b) =>
-  a.revision === b.revision && a.content_b64 === b.content_b64 && Boolean(a.truncated) === Boolean(b.truncated);
+  a.revision === b.revision && a.content_b64 === b.content_b64 && Boolean(a.truncated) === Boolean(b.truncated)
+  && a.of === b.of;
 
 /**
  * One open file's viewer and its draft. Every transition of the draft is here,

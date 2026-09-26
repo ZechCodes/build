@@ -588,6 +588,18 @@ describe("the two bodies that never ride a push", () => {
     expect(await read("run-1", "patch", "gone")).toBeUndefined();
   });
 
+  // A patch too big for one record is a head beside its pages (#95): letting
+  // go of the commit lets go of both.
+  it("lets go of the pages of a paged patch whose commit is no longer unpushed", async () => {
+    const head = { deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "gone" };
+    const pages = await import("../src/core/bodyPages.js");
+    await pages.writeBodyPages(head, pages.textPagesOf("diff --git a/x b/x\n+one\n", { of: "gone", bytes: 8 }));
+    await cache.writeCached(head, { hash: "gone", paged: true });
+    await boot([branchItem()]);
+    expect(await read("run-1", "patch", "gone")).toBeUndefined();
+    expect((await pages.readBodyPages(head, "gone")).pages).toEqual([]);
+  });
+
   // The hunks are the largest thing a workspace holds and nobody is looking
   // at them during a pass: the record gets the stat, the files and the key,
   // and the Changes surface reads the body when it opens over it.
@@ -1066,6 +1078,16 @@ describe("every project's issues", () => {
   it("asks for the whole list, narrowed by nothing", async () => {
     await boot([]);
     expect(paramsOf("issues.list")).toEqual([{ project_id: "p1" }]);
+  });
+
+  // #129: the Issues tab weighs this list against its own filtered answer by
+  // when each was asked, and this read is large enough to land well after.
+  it("stamps the list with when it was asked, not when it landed", async () => {
+    script["issues.list"] = () => new Promise((resolve) => setTimeout(() => resolve({ issues: [] }), 50));
+    await boot([]);
+    await vi.waitFor(async () => expect(await issuesOf("p1")).toBeTruthy());
+    const landed = await issuesOf("p1");
+    expect(landed.value.read_order).toBeLessThan(landed.at - 25);
   });
 
   it("holds the project's columns beside its issues", async () => {

@@ -58,6 +58,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
   let current = null;
   let activeKind = "branch";
   let disposed = false;
+  let visible = true;
   let pending = false;
   let loadRequest = 0;
   let readRequest = 0;
@@ -156,7 +157,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     void whenGreeted(context, () => load());
   }) : null;
   const checkout = async (fullRef) => {
-    if (pending) return;
+    if (pending || !visible) return;
     pending = true;
     trigger.disabled = true;
     picker.classList.add("pending");
@@ -178,6 +179,7 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     }
   };
   trigger.onclick = () => {
+    if (!visible) return;
     const opening = menu.hidden;
     menu.hidden = !opening;
     trigger.setAttribute("aria-expanded", String(opening));
@@ -195,12 +197,20 @@ export function mountWorkspaceRefPicker(host, { scope, callRpc, cacheScope, onCh
     if (row) void checkout(row.dataset.ref);
   };
   const outside = (event) => { if (!picker.contains(event.target)) close(); };
-  const keydown = (event) => { if (event.key === "Escape") { close(); trigger.focus(); } };
+  const keydown = (event) => { if (visible && event.key === "Escape") { close(); trigger.focus(); } };
   document.addEventListener("pointerdown", outside);
   picker.addEventListener("keydown", keydown);
   void readRecord();
   void load();
-  return { dispose() {
+  return { setVisible(shown) {
+    if (disposed || shown === visible) return;
+    visible = shown;
+    if (!shown) {
+      close();
+      if (picker.contains(document.activeElement)) document.activeElement.blur();
+      document.removeEventListener("pointerdown", outside);
+    } else document.addEventListener("pointerdown", outside);
+  }, dispose() {
     disposed = true;
     unwatch?.();
     unwatchDevice?.();

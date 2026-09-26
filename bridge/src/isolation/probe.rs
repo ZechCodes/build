@@ -224,12 +224,10 @@ pub(crate) fn rift_or_skip(dir: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::git_fixture::init_repo;
-    use std::os::unix::fs::PermissionsExt;
 
     fn fake_rift(dir: &Path, body: &str) -> PathBuf {
         let executable = dir.join("rift");
-        std::fs::write(&executable, body).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::super::test_fixture::write_executable(&executable, body);
         executable
     }
 

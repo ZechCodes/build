@@ -182,8 +182,15 @@ export function createWorktreeReview({
       return worktreePayload(res);
     },
     /** The hunks of the files the reader has open, out of this checkout's own
-     *  changeset against its merge base. */
-    fetchFiles: (paths) => callRpc("git.changeset_diff", { project_id: projectId, worktree_id: worktreeId, paths }),
+     *  changeset against its merge base. A `range` asks for one page of one
+     *  file's body (#95). */
+    fetchFiles: (paths, { range } = {}) =>
+      callRpc("git.changeset_diff", {
+        project_id: projectId,
+        worktree_id: worktreeId,
+        paths,
+        ...(range ? { range } : {}),
+      }),
     submit: async (messages) => {
       try {
         const context = viewingContext?.snapshot?.();

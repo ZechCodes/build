@@ -1,5 +1,9 @@
-// A checkout's two faces — what moved (Changes) and what is there (Files) — as
-// a rail of icons down the left edge of the surface.
+// A checkout's faces — what moved (Changes) and what is there (Files) — as a
+// rail of icons down the left edge of the surface. On a workspace the rail is
+// the workspace's whole navigation (#174): Changes, Files and the Issues its
+// agents hold, with the workspace's Settings at the foot. It is workspace
+// scoped: which directory Changes or Files is standing in is said inside the
+// pane, below it in the hierarchy.
 //
 // It is the SHELL's column (#dir-rail, between the inbox and the work), not a
 // row inside the commit list or the file tree. That is the whole point of it:
@@ -8,17 +12,17 @@
 // drawer, and every pane remount took them down with it. A column of the shell
 // stands at every width, above nothing and inside nothing.
 //
-// One renderer, both surfaces: the workspace directory and the legacy branch
-// checkout are the same two faces of one checkout, and a second copy of this
-// rail is how the two would drift apart.
+// One renderer, both surfaces: the workspace and the legacy branch checkout
+// share Changes and Files, and a second copy of this rail is how the two would
+// drift apart. The branch checkout draws those two and nothing else.
 //
 // Icon-only, so the words are the tooltip and the accessible name (core/text.js)
 // rather than a label under the glyph. The faces are a tablist: one tab stop for
 // all of them, the arrows walking within it, which is what a rail of two
 // controls owes the keyboard.
 //
-// At the rail's foot, outside the tablist, is one more control: the sidebar
-// toggle, which folds the list column beside the rail (the file tree, the
+// At the rail's foot, outside the tablist, are the workspace's Settings (where
+// the surface names them) and, under them, the sidebar toggle, which folds the list column beside the rail (the file tree, the
 // commit rail) away so the detail takes the whole width. It is the rail's, not
 // a face's, so switching faces keeps it; it is this browser's preference, kept
 // in localStorage and never in the cache. The rail says which way it stands on
@@ -26,14 +30,26 @@
 // the column — where the column is a drawer, that rule is not in force and the
 // toggle is not drawn.
 
-import { ICON_FOLDER, ICON_GIT_GRAPH, ICON_PANEL_LEFT_CLOSE, ICON_PANEL_LEFT_OPEN } from "./icons.js";
-import { changesTabLabel, esc, filesTabLabel, sidebarToggleLabel } from "./text.js";
+import {
+  ICON_CIRCLE_DOT,
+  ICON_FOLDER,
+  ICON_GIT_GRAPH,
+  ICON_PANEL_LEFT_CLOSE,
+  ICON_PANEL_LEFT_OPEN,
+  ICON_SETTINGS,
+} from "./icons.js";
+import { changesTabLabel, esc, filesTabLabel, issuesTabLabel, sidebarToggleLabel, workspaceSettingsLabel } from "./text.js";
 
-/** The rail's faces, in reading order: what moved, then what is there. */
+/** A checkout's faces, in reading order: what moved, then what is there. */
 export const DIRECTORY_TABS = [
   { id: "changes", label: changesTabLabel, icon: ICON_GIT_GRAPH },
   { id: "files", label: filesTabLabel, icon: ICON_FOLDER },
 ];
+
+/** A workspace's faces: the checkout's two, then the issues its agents hold,
+ *  which wears the count of the open ones (core/trackerWorkspaceIssuesView.js
+ *  fills it). */
+export const WORKSPACE_TABS = [...DIRECTORY_TABS, { id: "issues", label: issuesTabLabel, icon: ICON_CIRCLE_DOT, badge: true }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */
@@ -72,10 +88,17 @@ export function directoryRailHtml(tabs, active) {
   return tabs
     .map((tab) => {
       const selected = tab.id === active;
-      return `<button class="dirtab${selected ? " active" : ""}" type="button" role="tab" data-tab="${esc(tab.id)}" title="${esc(tab.label)}" aria-label="${esc(tab.label)}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}">${tab.icon}</button>`;
+      const badge = tab.badge ? '<span class="badge dirtab-count"></span>' : "";
+      return `<button class="dirtab${selected ? " active" : ""}" type="button" role="tab" data-tab="${esc(tab.id)}" title="${esc(tab.label)}" aria-label="${esc(tab.label)}" aria-selected="${selected}" tabindex="${selected ? 0 : -1}">${tab.icon}${badge}</button>`;
     })
     .join("");
 }
+
+/** The cog above the toggle, where the surface has settings to open. */
+const settingsHtml = (settings) =>
+  settings
+    ? `<button class="dirtab dirsettings" type="button" data-rail-settings="1" title="${esc(workspaceSettingsLabel)}" aria-label="${esc(workspaceSettingsLabel)}">${ICON_SETTINGS}</button>`
+    : "";
 
 /** The toggle's parts for a state: its words and its glyph, which show what a
  *  press does (fold the panel away, or bring it back). */
@@ -95,25 +118,29 @@ function paintSidebarState(host, toggle, collapsed) {
   toggle.innerHTML = icon;
 }
 
+/** The controls outside the tablist, which a paint rewrites like the faces. */
+const FOOT_CELLS = ["[data-sidebar-toggle]", "[data-rail-settings]"];
+
 /** Where the keyboard stood before a paint rewrote the rail, as the cell to
- *  hand it back to afterwards: the toggle, the open face, or nothing. */
+ *  hand it back to afterwards: a control at the foot, the open face, or
+ *  nothing. */
 function keyboardCellIn(host) {
   if (!host.contains(document.activeElement)) return null;
-  return document.activeElement.matches("[data-sidebar-toggle]") ? "[data-sidebar-toggle]" : "[aria-selected='true']";
+  return FOOT_CELLS.find((cell) => document.activeElement.matches(cell)) || "[aria-selected='true']";
 }
 
 /**
- * paintDirectoryRail(host, { tabs, active, onSelect, storage }) — draw the rail
- * into the shell's column and wire it. Idempotent: every paint rewrites the row
- * and its handlers, so a surface repaints by calling it again and there is
- * nothing to dispose. A directory with no git has one face, and passes the one
- * tab. The sidebar toggle is painted from `storage` (localStorage when absent)
- * each time.
+ * paintDirectoryRail(host, { tabs, active, onSelect, settings, storage }) —
+ * draw the rail into the shell's column and wire it. Idempotent: every paint
+ * rewrites the row and its handlers, so a surface repaints by calling it again
+ * and there is nothing to dispose. `settings` ({ onOpen }) draws the cog above
+ * the toggle; a surface with nothing to settle passes none. The sidebar toggle
+ * is painted from `storage` (localStorage when absent) each time.
  *
  * Automatic activation, the way a tablist of two behaves: an arrow both moves
  * the focus and opens what it lands on.
  */
-export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, storage }) {
+export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, settings = null, storage }) {
   // A paint answering a press rewrites the cell the keyboard stands on; the
   // keyboard is handed the cell that replaces it, or it lands on nothing.
   const keyboardCell = keyboardCellIn(host);
@@ -122,6 +149,7 @@ export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSele
   delete host.dataset.sidebarMotion;
   host.innerHTML =
     `<div class="dirtabs" role="tablist" aria-orientation="vertical">${directoryRailHtml(tabs, active)}</div>` +
+    settingsHtml(settings) +
     `<button class="dirtab dirtoggle" type="button" data-sidebar-toggle="1"></button>`;
   const toggle = host.querySelector("[data-sidebar-toggle]");
   paintSidebarState(host, toggle, readSidebarCollapsed(storage));
@@ -132,13 +160,16 @@ export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSele
     host.dataset.sidebarMotion = "press";
     paintSidebarState(host, toggle, collapsed);
   };
+  const cog = host.querySelector("[data-rail-settings]");
+  if (cog) cog.onclick = () => settings.onOpen();
   wireFaces(host, onSelect);
 }
 
-/** The faces' presses and the arrow ring. The ring is the tab cells and
- *  nothing else: a key pressed anywhere else on the rail is the page's. */
+/** The faces' presses and the arrow ring. The ring is the drawn tab cells and
+ *  nothing else: a key pressed anywhere else on the rail is the page's, and a
+ *  face the surface has hidden is not one to land on. */
 function wireFaces(host, onSelect) {
-  const cells = () => [...host.querySelectorAll("[data-tab]")];
+  const cells = () => [...host.querySelectorAll("[data-tab]:not([hidden])")];
   const openAt = (cell) => {
     cell.focus();
     onSelect(cell.dataset.tab);

@@ -1,8 +1,7 @@
 """``POST /api/devices/heartbeat`` end to end: a heartbeat signed by an approved
 device's identity key sets ``last_seen_at`` and nothing else, anything else is
-refused, and the listing reports a status derived from that stamp rather than from
-the ``status`` column, which no longer has a liveness writer at all
-(``planning/v2/Strict P2P Transport Spec.md`` rule 6)."""
+refused, and the listing reports a status derived from that stamp — the api
+stores no status at all (``planning/v2/Strict P2P Transport Spec.md`` rule 6)."""
 
 from __future__ import annotations
 
@@ -90,7 +89,6 @@ def paired_bridge(
         identity_public_key_b64=public_b64,
         transport_public_key_b64="x25519-public",
         approved=approved,
-        status="online" if approved else "pending",
     )
 
     async def store() -> None:
@@ -114,21 +112,6 @@ def stored(client: TestClient, device_id: UUID) -> Device:
         return portal.call(read)
 
 
-def set_status(client: TestClient, device_id: UUID, value: str) -> None:
-    """Write the column directly — no route does any more."""
-
-    async def write() -> None:
-        async with client.app.state.make_session() as session:
-            device = (
-                await session.execute(select(Device).where(Device.id == device_id))
-            ).scalar_one()
-            device.status = value
-            await session.commit()
-
-    with client.portal() as portal:
-        portal.call(write)
-
-
 def set_last_seen(client: TestClient, device_id: UUID, moment: datetime | None) -> None:
     async def write() -> None:
         async with client.app.state.make_session() as session:
@@ -143,12 +126,10 @@ def set_last_seen(client: TestClient, device_id: UUID, moment: datetime | None) 
 
 
 def test_a_signed_heartbeat_stamps_last_seen_and_writes_nothing_else(client):
-    """``last_seen_at`` is the whole write. The ``status`` column keeps whatever it
-    held — it is nobody's liveness now that the relay's writer is gone — and the
-    listing is online regardless, because it derives status from the stamp."""
+    """``last_seen_at`` is the whole write, and the listing is online because it
+    derives status from the stamp."""
     bridge = paired_bridge(client)
     set_last_seen(client, bridge.device.id, None)
-    set_status(client, bridge.device.id, "offline")
 
     response = client.post(HEARTBEAT_ROUTE_PATH, json=bridge.heartbeat())
 
@@ -156,7 +137,6 @@ def test_a_signed_heartbeat_stamps_last_seen_and_writes_nothing_else(client):
     assert response.json() == {"ok": True}
     device = stored(client, bridge.device.id)
     assert device.last_seen_at is not None
-    assert device.status == "offline"
     (listed,) = client.get("/api/devices").json()["devices"]
     assert listed["status"] == "online"
 
@@ -169,19 +149,15 @@ def test_a_heartbeat_makes_the_listing_report_online(client):
     assert listed["status"] == "online"
 
 
-def test_a_device_that_stopped_heartbeating_reads_offline_whatever_the_column_says(
-    client,
-):
-    """The column can say anything — pairing leaves "pending" there, a revoke
-    leaves "offline" — but the derived window is what the SPA sees, so a bridge
-    that went away two minutes ago is offline."""
+def test_a_device_that_stopped_heartbeating_reads_offline(client):
+    """Nothing writes "offline" when a bridge goes away; the derived window is
+    what the SPA sees, so a bridge last seen two minutes ago is offline."""
     bridge = paired_bridge(client)
     set_last_seen(
         client,
         bridge.device.id,
         datetime.now(timezone.utc) - timedelta(minutes=2),
     )
-    assert stored(client, bridge.device.id).status == "online"
     (listed,) = client.get("/api/devices").json()["devices"]
     assert listed["status"] == "offline"
 

@@ -953,6 +953,10 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .drow-spacer td { padding:0; border:0; }
 /* a file whose body has not been fetched yet: one dim line where the diff goes */
 .file .dload { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
+/* The line a diff still arriving in pages ends on — a file's, or a commit's at
+   the end of its stack — saying how much of it is drawn; the next page is read
+   as the reader reaches it (#95). */
+.fmore { padding:10px var(--pane-gutter); color:var(--dim); font-family:var(--mono); font-size:11.5px; }
 /* The header's controls. All three are the same button — icon, optional label,
    the same hover — so the row reads as one set of affordances rather than three
    glyphs at three sizes. The icons come from the app's pack (core/icons.js) and
@@ -1412,6 +1416,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
    would otherwise run past the tree's divider and under the preview. */
 .frow .fname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow .fsize { margin-left:auto; font-size:11px; color:var(--dim); }
+/* A workspace's Files: one root row per directory (core/fileRoots.js), the
+   directory's rows a level under it. The row says the directory's name, so it
+   reads as a heading over its rows rather than one of them. */
+.froot-head .fname { font-weight:600; }
 /* The open files: one row that scrolls sideways and never wraps. */
 .ftabs { flex:none; display:flex; overflow-x:auto; overflow-y:hidden; scrollbar-width:thin;
   border-bottom:1px solid var(--line); }
@@ -1457,6 +1465,10 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 .faudio { width:min(680px, 100%); margin:24px auto; }
 .fvideo { width:min(960px, 100%); max-height:calc(100vh - 190px); margin:0 auto; background:#111; }
 .fbinary { color:var(--dim); font-size:13px; padding:8px 0; }
+/* The line under a file too large for one record, saying how much of it is
+   painted; the next page is read as it scrolls into view (#95). No display
+   of its own, so its hidden attribute still hides it. */
+.fpmore { color:var(--dim); font-family:var(--mono); font-size:11.5px; padding:10px 0 4px; cursor:pointer; }
 .ftrunc { margin-top:10px; color:var(--amber); font-size:12px; }
 /* ---- Secret-value spoilers (dotenv screen-privacy) ----
    A masked dotenv value shows a fixed dot block; a click reveals/re-hides it.

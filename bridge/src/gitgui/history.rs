@@ -1,3 +1,4 @@
+use crate::body_page::{text_page, BodyRange};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
@@ -436,6 +437,43 @@ pub fn show_commit(
     hash: &str,
     max_bytes: Option<usize>,
 ) -> Result<Value, String> {
+    show_commit_as(repo_path, hash, PatchCut::Capped(max_bytes))
+}
+
+/// `git.show` with a `range` (#95): the commit, its exact stat, and one page
+/// of its whole patch — never cut at a cap, never truncated.
+pub fn show_commit_page(repo_path: &Path, hash: &str, range: BodyRange) -> Result<Value, String> {
+    show_commit_as(repo_path, hash, PatchCut::Page(range))
+}
+
+/// How much of a commit's patch `git.show` carries.
+enum PatchCut {
+    /// The whole patch up to the caller's cap, or the wire cap.
+    Capped(Option<usize>),
+    /// One page of it.
+    Page(BodyRange),
+}
+
+impl PatchCut {
+    fn apply(self, patch: String, headers: String, result: &mut Value) -> Result<(), String> {
+        match self {
+            Self::Capped(max_bytes) => {
+                let (patch, truncated) = capped_patch(patch, headers, max_bytes);
+                result["patch"] = json!(patch);
+                result["truncated"] = json!(truncated);
+            }
+            Self::Page(range) => {
+                let (page, span) = text_page(&patch, range);
+                result["patch"] = json!(page);
+                result["truncated"] = json!(false);
+                result["range"] = json!(span);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn show_commit_as(repo_path: &Path, hash: &str, cut: PatchCut) -> Result<Value, String> {
     if !is_valid_hash_prefix(hash) {
         return Err("invalid hash: expected 4-40 lowercase hex characters".to_string());
     }
@@ -464,8 +502,6 @@ pub fn show_commit(
     result["body"] = json!(body);
     result["stat"] = stat;
     result["patch_bytes"] = json!(patch.len());
-    let (patch, truncated) = capped_patch(patch, headers, max_bytes);
-    result["patch"] = json!(patch);
-    result["truncated"] = json!(truncated);
+    cut.apply(patch, headers, &mut result)?;
     Ok(result)
 }

@@ -464,6 +464,119 @@ fn fs_read_truncates_oversized_files() {
     assert_eq!(media_decoded.len(), real_size);
 }
 
+/// One page of `big.log` from `offset`: its bytes and its `range`, checked
+/// against what every page of a `size`-byte file answers.
+fn read_file_page(
+    state: &mut AppState,
+    project_id: &str,
+    offset: u64,
+    size: u64,
+) -> (Vec<u8>, Value) {
+    let res = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id,
+            "path": "big.log",
+            "range": { "offset": offset, "bytes": 262_144 },
+        }),
+    ));
+    assert_eq!(res["ok"], true, "{res:?}");
+    let result = &res["result"];
+    assert_eq!(result["size"], size);
+    assert_eq!(result["truncated"], false);
+    assert_eq!(result["editable"], false);
+    assert_eq!(result["mime"], "text/plain");
+    assert!(result["revision"].is_null());
+    let page = base64::engine::general_purpose::STANDARD
+        .decode(result["content_b64"].as_str().unwrap())
+        .unwrap();
+    assert!(page.len() <= 262_144);
+    let range = result["range"].clone();
+    assert_eq!(range["offset"], offset);
+    assert_eq!(range["total"], size);
+    assert_eq!(range["end"], offset + page.len() as u64);
+    (page, range)
+}
+
+/// The pages of a file, read on from each `end`, are the file (#95): whole
+/// lines each, past the whole-read cap, and a page is never truncated.
+#[test]
+fn fs_read_answers_a_range_in_pages_of_whole_lines() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    let body: String = (0..200_000)
+        .map(|line| format!("line {line:06}\n"))
+        .collect();
+    assert!(body.len() as u64 > FS_READ_MAX_BYTES);
+    std::fs::write(repo.join("big.log"), &body).unwrap();
+
+    let mut offset = 0u64;
+    let mut joined = Vec::new();
+    let mut versions = std::collections::BTreeSet::new();
+    loop {
+        let (page, range) = read_file_page(&mut state, &project_id, offset, body.len() as u64);
+        versions.insert(range["version"].as_str().unwrap().to_string());
+        joined.extend_from_slice(&page);
+        offset = range["end"].as_u64().unwrap();
+        if offset == body.len() as u64 {
+            break;
+        }
+        assert!(
+            page.ends_with(b"\n"),
+            "a page that is not the last ends a line"
+        );
+    }
+    assert_eq!(joined, body.as_bytes());
+    assert_eq!(versions.len(), 1, "every page names the same file");
+}
+
+/// A range past the file's end is the empty last page, and the version moves
+/// when the file does, so a client knows its pages no longer belong together.
+#[test]
+fn fs_read_range_names_the_file_version_and_answers_past_the_end() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+    let mut read = |offset: u64| {
+        state.handle(req(
+            "fs.read",
+            json!({
+                "project_id": project_id.clone(),
+                "path": "a.txt",
+                "range": { "offset": offset, "bytes": 4096 },
+            }),
+        ))["result"]
+            .clone()
+    };
+    let past = read(100);
+    assert_eq!(past["content_b64"], "");
+    assert_eq!(past["range"]["offset"], 8);
+    assert_eq!(past["range"]["end"], 8);
+    let before = read(0)["range"]["version"].clone();
+    std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    assert_ne!(read(0)["range"]["version"], before);
+
+    let refused = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "a.txt", "range": { "offset": 0 } }),
+    ));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+}
+
 #[test]
 fn fs_read_rejects_lexical_and_symlink_escapes() {
     let (dir, repo) = init_repo();

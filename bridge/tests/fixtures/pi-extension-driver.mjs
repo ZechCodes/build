@@ -166,8 +166,13 @@ async function realMcpScenario() {
 
 async function latchedWriteScenario() {
   const failure = await caught({ kind: "write_failure" });
-  await waitForTermination();
-  await writeOutput({ failure, terminationSignals });
+  const futureFailure = await caught({ kind: "after_write_failure" });
+  if (failure === "unexpected success") {
+    await handlers.get("session_shutdown")();
+  } else {
+    await waitForTermination();
+  }
+  await writeOutput({ failure, futureFailure, terminationSignals });
   process.exit(0);
 }
 

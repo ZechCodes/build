@@ -99,11 +99,6 @@ const malformedToolStrategies = new Map([
 
 const toolListEffects = new Map([
   ["stderr_saturation", () => process.stderr.write("warning\n".repeat(200000))],
-  ["write_failure", () => {
-    process.stdin.destroy();
-    closeSync(0);
-    setInterval(() => {}, 1000);
-  }],
 ]);
 
 function handleToolList(request) {
@@ -113,6 +108,13 @@ function handleToolList(request) {
   ];
   const strategy = malformedToolStrategies.get(mode);
   const tools = strategy ? strategy(validTools) : validTools;
+  if (mode === "write_failure") {
+    // Close the pipe before telling the extension discovery is complete.
+    // Otherwise its first tool call can be written before this close runs.
+    process.stdin.destroy();
+    closeSync(0);
+    setInterval(() => {}, 1000);
+  }
   reply(request.id, { tools });
   toolListEffects.get(mode)?.();
 }

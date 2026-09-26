@@ -15,9 +15,10 @@ planning/v1/
 # template; semgrep matches only on the {{slot}} syntax.
 skriftapp/buildapp/landing/unsubscribe-form.html
 
-# A third-party crate vendored with a small patch (bridge/vendor/README.md).
+# Third-party crates vendored with small patches (bridge/vendor/README.md).
 # The rules that fire there are upstream's own CI workflows (unpinned action
-# tags) and a browser example's ws:// URL, neither of which ships or runs here;
-# the patched file itself (src/) scans clean. The patch is reviewed as
-# bridge/vendor/webrtc-driver-drain.patch.
+# tags) and examples (a browser example's ws:// URL), none of which ships or
+# runs here; the patched files themselves scan clean. The patches are
+# reviewed as bridge/vendor/webrtc-driver-drain.patch and
+# bridge/vendor/rtc-dtls-client-hello.patch.
 bridge/vendor/

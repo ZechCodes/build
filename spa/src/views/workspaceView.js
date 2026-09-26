@@ -9,13 +9,12 @@ import { $ } from "../dom.js";
 import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
 import { mountWorkspaceRail } from "../core/workspaceRail.js";
-import { mountGitPane } from "../core/gitPane.js";
 import { shellSelection } from "../core/shell.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
-import { directoryId, directoryTab, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
+import { directoryId, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
 import { workspaceLayoutCacheId } from "../core/directoryScope.js";
-import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
+import { mountWorkspaceChanges } from "./workspaceChanges.js";
 import { mountWorkspaceGitInitialization } from "../core/workspaceGitInitialization.js";
 import { routeContext } from "../core/deviceContexts.js";
 import { surfaceContext } from "../core/surfaceContext.js";
@@ -35,39 +34,6 @@ import "../styles/surfaces.css";
  *  Files; it does not scope this. */
 const ISSUES_TAB = "issues";
 const onIssuesTab = (route) => route.tab === ISSUES_TAB;
-
-function mountChanges(body, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection, requestedCommit, onCommitSelection }) {
-  body.innerHTML = `<div class="workspace-gitpane"></div>`;
-  const refbar = document.createElement("div");
-  refbar.className = "workspace-refbar";
-  const gitHost = body.querySelector(".workspace-gitpane");
-  let gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
-    requestedCommit, onCommitSelection });
-  let disposed = false;
-  const attachRefbar = () => {
-    const rail = gitHost.querySelector(".crail-host");
-    if (!rail) return false;
-    if (refbar.parentElement === rail && rail.firstElementChild === refbar) return true;
-    rail.prepend(refbar);
-    return true;
-  };
-  const attachObserver = new MutationObserver(attachRefbar);
-  attachRefbar();
-  attachObserver.observe(gitHost, { childList: true, subtree: true });
-  const refPicker = mountWorkspaceRefPicker(refbar, { scope, callRpc, cacheScope, onCheckout: async () => {
-      if (disposed) return;
-      gitPane.dispose();
-      onCommitSelection?.(null);
-      gitPane = mountGitPane(gitHost, { scope, callRpc, cacheScope, projectId, navigate, viewingContext, agentSelection,
-        requestedCommit: null, onCommitSelection });
-    } });
-  return { dispose: () => {
-    disposed = true;
-    attachObserver.disconnect();
-    refPicker.dispose();
-    gitPane.dispose();
-  } };
-}
 
 function errorHtml(message) {
   return `<div class="empty"><h2>Workspace unavailable</h2><p>${esc(message)}</p></div>`;
@@ -108,6 +74,9 @@ async function readWorkspaceResult(state) {
   state.workspace = workspace;
   state.retryRefreshPending = false;
   if (refresh) state.refreshPane?.(workspace);
+  // Changes redraws its tab row, and turns a directory's offer into its commit
+  // rail once the record says it has git — the view is not built again.
+  else state.pane?.workspaceMoved?.(workspace);
   state.paintTabs?.();
   state.onWorkspaceCached?.(workspace);
 }
@@ -257,17 +226,27 @@ function mountCheckoutPane(body, { canonical, workspace, scope, callRpc, cacheSc
     markRoute(route);
   };
   if (canonical.tab === "files") return mountFilesPane(body, { canonical, workspace, callRpc, cacheScope });
-  return mountChanges(body, {
-    scope,
-    callRpc,
-    cacheScope,
-    agentSelection,
-    projectId: canonical.projectId,
-    navigate,
-    viewingContext: App.viewingContext,
-    requestedCommit: canonical.commit || null,
-    onCommitSelection,
+  const changes = mountWorkspaceChanges(body, {
+    directories: workspaceDirectoryModel(workspace, canonical.sourceId),
+    // A directory is a place in the URL: the tab row sets `sourceId`, and a
+    // commit named in another directory names nothing in this one.
+    onSelectDirectory: (sourceId) => {
+      const { commit: _commit, ...route } = App.route;
+      go({ ...route, sourceId, tab: "changes" });
+    },
+    git: {
+      scope,
+      callRpc,
+      cacheScope,
+      agentSelection,
+      projectId: canonical.projectId,
+      navigate,
+      viewingContext: App.viewingContext,
+      requestedCommit: canonical.commit || null,
+      onCommitSelection,
+    },
   });
+  return { ...changes, workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next, canonical.sourceId)) };
 }
 
 function paintGitInitialization(rail, state, sourceId, directory) {
@@ -336,17 +315,18 @@ async function probeSourceGit(state, sourceId) {
   }
 }
 
-/** The pane's list column — the commit rail or the file tree — whichever tab is
- *  mounted. It is where the git-initialization offer hangs, and it is rebuilt
- *  from scratch whenever the pane repaints. */
-const paneListColumn = (body) => body.querySelector(".crail-host, .ftree");
+/** Where the git-initialization offer hangs on Changes: the surface itself for
+ *  a directory with no git (views/workspaceChanges.js), the commit rail for one
+ *  whose original source still has none. It is rebuilt from scratch whenever
+ *  the pane repaints. Files, a tree over every directory, carries none. */
+const offerHost = (body) => body.querySelector(".workspace-gitinit-offer, .crail-host");
 
-/** Hang the git-initialization offer off the pane's list column. */
+/** Hang the git-initialization offer where Changes keeps it. */
 function gitOfferPainter(body, state, sourceId) {
   return () => {
     const directory = selectedDirectory(state.workspace, sourceId);
     if (!directory) return false;
-    const list = paneListColumn(body);
+    const list = offerHost(body);
     if (list) paintGitInitialization(list, state, sourceId, directory);
     return true;
   };
@@ -358,7 +338,7 @@ function gitOfferPainter(body, state, sourceId) {
  *  back, so it never repaints on its own DOM. */
 function observeTabs(body, state, paintTabs, dispose) {
   const observer = new MutationObserver(() => {
-    const list = paneListColumn(body);
+    const list = offerHost(body);
     if (state.needsInitHost && list && !list.querySelector(".workspace-init-host")) paintTabs();
   });
   paintTabs();
@@ -369,16 +349,13 @@ function observeTabs(body, state, paintTabs, dispose) {
   };
 }
 
-/** Where the surface stands for a route over this workspace: the directory,
- *  and the tab it can be on. Files with no file open stands on the first root,
- *  since its tree is every directory's (#174). The issues tab is the
- *  workspace's, not the checkout's, so it keeps the route's own tab rather than
- *  being coerced to one of the directory's. */
+/** Where the surface stands for a route over this workspace: the directory.
+ *  Files with no file open stands on the first root, since its tree is every
+ *  directory's; any directory, git or not, stands on Changes, which offers to
+ *  initialize one that has no git (#174). */
 function canonicalRoute(route, workspace) {
   const directory = selectedDirectory(workspace, route.tab === "files" && !route.file ? null : route.sourceId);
-  const sourceId = directoryId(directory);
-  if (onIssuesTab(route)) return { ...route, sourceId };
-  return { ...route, sourceId, tab: directoryTab(directory, route.tab) };
+  return { ...route, sourceId: directoryId(directory) };
 }
 
 function refreshWorkspacePane(state, workspace) {

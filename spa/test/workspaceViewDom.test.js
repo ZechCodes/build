@@ -422,6 +422,73 @@ describe("workspace surface", () => {
     expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/files");
   });
 
+  // #174: "For git I want to add a tab row above the git surface for each
+  // directory in the workspace (git or not)."
+  describe("the Changes tab row", () => {
+    const tabs = () => [...document.querySelectorAll("#tabbody .workspace-dirtab")];
+
+    it("names every directory in the workspace's order, git or not, over the surface", async () => {
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+      device("dev-1", async () => workspace);
+      await standUp();
+      const row = document.querySelector("#tabbody .workspace-dirtabs");
+      expect(row.getAttribute("role")).toBe("tablist");
+      expect(tabs().map((tab) => [tab.textContent, tab.getAttribute("aria-selected"), tab.tabIndex])).toEqual([
+        ["Repository", "true", 0],
+        ["Assets", "false", -1],
+      ]);
+      // In the pane, above the git surface: not the toolbar's, not the rail's.
+      expect(row.nextElementSibling.querySelector(".workspace-gitpane")).not.toBeNull();
+      expect(document.querySelector("#toolbar .workspace-dirtabs, #dir-rail .workspace-dirtabs")).toBeNull();
+    });
+
+    it("sets the route's directory, and leaves a commit of the other directory behind", async () => {
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes", commit: "abc" };
+      device("dev-1", async () => workspace);
+      await standUp();
+      tabs()[1].click();
+      await flush();
+      expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/directory/assets/changes");
+    });
+
+    it("walks with the arrows like the rail, and keeps the keyboard on the row across the move", async () => {
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+      device("dev-1", async () => workspace);
+      await standUp();
+      tabs()[0].focus();
+      tabs()[0].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      await flush();
+      expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/directory/assets/changes");
+      // The move builds the surface again (the app answers the new hash); the
+      // keyboard is handed the new row.
+      await vi.waitFor(() => expect(tabs()[1]?.getAttribute("aria-selected")).toBe("true"));
+      expect(document.activeElement).toBe(tabs()[1]);
+      tabs()[1].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true }));
+      await flush();
+      expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/ws-1/directory/repo/changes");
+    });
+
+    it("stands on a directory without git, offering to initialize it", async () => {
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
+      device("dev-1", async () => workspace);
+      await standUp();
+      expect(App.route.tab).toBe("changes");
+      expect(tabs().map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "true"]);
+      expect(document.querySelector(".workspace-gitinit").textContent).toContain("Assets has no Git repository.");
+      expect(document.querySelector(".workspace-gitinit [data-init-git]").textContent).toBe("Initialize Git…");
+      expect(mountGitPane).not.toHaveBeenCalled();
+    });
+
+    it("is Changes' alone: Files, a tree over every directory, has no row and no offer", async () => {
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+      device("dev-1", async () => workspace);
+      await standUp();
+      await flush();
+      expect(document.querySelector(".workspace-dirtabs")).toBeNull();
+      expect(document.querySelector("[data-init-git]")).toBeNull();
+    });
+  });
+
   it("does not remount a Git pane after its source has been left", async () => {
     let finishCheckout;
     const checkout = new Promise((resolve) => { finishCheckout = resolve; });
@@ -532,26 +599,35 @@ describe("workspace surface", () => {
     expect(mountConsole).toHaveBeenCalledTimes(1);
   });
 
-  it("initializes a workspace copy without remounting Files or navigating away", async () => {
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files", file: "draft.md" };
+  // #174: "Just make sure that non-git directories are shown with the option
+  // to init git." The offer is Changes' surface for such a directory, and once
+  // it has git the surface is its commit rail — the view is not built again.
+  it("offers Git as the surface of a directory without it, and becomes its commit rail once initialized", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? {
       workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] },
       outcomes: [{ target: "workspace", status: "initialized", is_git: true }],
       source: { source_id: "assets", path: "/srv/projects/assets", is_git: false },
     } : plainWorkspace);
     await standUp();
-    const pane = renderFilesTab.mock.results[0].value;
-    const guard = App.routeLeaveGuard;
+    expect(mountGitPane).not.toHaveBeenCalled();
+    expect(document.querySelector(".workspace-gitinit [data-init-git]").textContent).toBe("Initialize Git…");
+    expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Assets");
     document.querySelector("[data-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("original source"));
     expect(call).toHaveBeenCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "workspace" });
-    expect(App.route).toMatchObject({ tab: "files", file: "draft.md" });
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
-    expect(pane.dispose).not.toHaveBeenCalled();
-    expect(App.routeLeaveGuard).toBe(guard);
+    // The surface is the commit rail now, with the source's offer hung off it.
+    expect(document.querySelector(".workspace-gitinit")).toBeNull();
+    expect(mountGitPane).toHaveBeenCalledTimes(1);
+    expect(mountGitPane.mock.calls[0][1].scope).toEqual({ workspace_id: "ws-1", source_id: "assets" });
+    expect(document.querySelector(".crail-host [data-init-git]")).not.toBeNull();
+    // …under the same tab row, on the same route, in the same view.
+    expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Assets");
+    expect(App.route).toMatchObject({ tab: "changes", sourceId: "assets" });
+    expect(renderFilesTab).not.toHaveBeenCalled();
     expect(mountConsole).toHaveBeenCalledTimes(1);
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
     expect(document.querySelector("[data-init-git]").textContent).toContain("original source");
@@ -559,7 +635,7 @@ describe("workspace surface", () => {
 
   it("opens Git options from cache while their pull has no answer", async () => {
     const pending = new Promise(() => {});
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? pending : plainWorkspace);
     const address = { deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" };
     await writeCached(address, initOptions);
@@ -572,7 +648,7 @@ describe("workspace surface", () => {
 
   it("updates an open Git dialog through a real cache announcement and readback", async () => {
     const pending = new Promise(() => {});
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? pending : plainWorkspace);
     const address = { deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" };
     await writeCached(address, initOptions);
@@ -587,7 +663,7 @@ describe("workspace surface", () => {
 
   it("describes independent repositories and lets a failed target be retried", async () => {
     let calls = 0;
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async (method) => {
       if (method === "workspace.git_init_options") return initOptions;
       if (method !== "workspace.init_git") return plainWorkspace;
@@ -623,7 +699,7 @@ describe("workspace surface", () => {
   it("ignores an initialization response after the workspace view is disposed", async () => {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
     await standUp();
     document.querySelector("[data-init-git]").click();
@@ -633,13 +709,13 @@ describe("workspace surface", () => {
     App.viewDispose();
     finish({ workspace: { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] }, outcomes: [] });
     await flush();
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(mountGitPane).not.toHaveBeenCalled();
     expect(document.querySelector(".modal-scrim")).toBeNull();
   });
 
   it("keeps both failures visible and retries both targets together", async () => {
     let attempts = 0;
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async (method) => {
       if (method === "workspace.git_init_options") return initOptions;
       if (method !== "workspace.init_git") return plainWorkspace;
@@ -668,7 +744,7 @@ describe("workspace surface", () => {
   });
 
   it("can reopen initialization after Escape dismisses the dialog", async () => {
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : plainWorkspace);
     await standUp();
     document.querySelector("[data-init-git]").click();
@@ -683,20 +759,22 @@ describe("workspace surface", () => {
 
   it("discovers a plain original source after reloading a Git workspace copy", async () => {
     const initializedCopy = { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? {
       ...initOptions, workspace: { ...initOptions.workspace, is_git: true },
     } : initializedCopy);
     await standUp();
     await vi.waitFor(() => expect(document.querySelector("[data-init-git]")?.textContent).toContain("original source"));
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    // A copy with git is the commit rail; the source's offer hangs off it.
+    expect(mountGitPane).toHaveBeenCalledTimes(1);
+    expect(document.querySelector(".crail-host [data-init-git]")).not.toBeNull();
   });
 
   it("keeps a newer cached source option over a late Git probe", async () => {
     let finishProbe;
     const pending = new Promise((resolve) => { finishProbe = resolve; });
     const initializedCopy = { ...plainWorkspace, directories: [{ ...plainWorkspace.directories[0], is_git: true }] };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async (method) => method === "workspace.git_init_options" ? pending : initializedCopy);
     const address = { deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" };
     await writeCached(address, initOptions);
@@ -717,7 +795,7 @@ describe("workspace surface", () => {
       workspace: { ...initOptions.workspace, is_git: true, needs_reconciliation: true },
       source: { ...initOptions.source, is_git: true },
     };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.git_init_options" ? reconciliationOptions : method === "workspace.init_git" ? {
       workspace: initializedCopy, source: { id: "assets", is_git: true },
       results: [{ target: "workspace", status: "already_initialized", is_git: true }],
@@ -729,7 +807,7 @@ describe("workspace surface", () => {
     document.querySelector('[data-init-target="workspace"]').click();
     document.querySelector("[data-confirm-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector("[data-init-git]")).toBeNull());
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(mountGitPane).toHaveBeenCalledTimes(1);
   });
 
   // A late answer is published only where it was asked for. The machine the
@@ -740,7 +818,7 @@ describe("workspace surface", () => {
     let finish;
     const pending = new Promise((resolve) => { finish = resolve; });
     device("dev-1", async (method) => method === "workspace.git_init_options" ? initOptions : method === "workspace.init_git" ? pending : plainWorkspace);
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     await standUp();
     document.querySelector("[data-init-git]").click();
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
@@ -754,7 +832,7 @@ describe("workspace surface", () => {
     await flush();
     // The answer landed nowhere: the offer still says the directory has no Git.
     expect(document.querySelector("[data-init-git]").textContent).toBe("Initialize Git…");
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(mountGitPane).not.toHaveBeenCalled();
   });
 
   // A machine that goes while its workspace is open is a different case from a

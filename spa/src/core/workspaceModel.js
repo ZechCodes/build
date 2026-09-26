@@ -22,10 +22,10 @@ export function workspaceDirectoryModel(workspace, sourceId = null) {
   }));
 }
 
-/** Which tab a workspace directory can be standing on. A directory with no
- * repository in it has no Changes to show, so Files is the only surface it
- * has — whatever the URL, the row or the menu asked for. Everything that mints
- * a workspace route or opens a directory asks here, so the rule is one rule. */
+/** Which tab a link into a workspace lands on for a directory: Changes where
+ * it has a repository, Files where it has none. A directory with no repository
+ * can still stand on Changes, which offers to initialize one there (#174); this
+ * is only where a link that names no tab of its own lands. */
 export const directoryTab = (directory, wanted = "changes") =>
   directory?.is_git === false ? "files" : wanted || "changes";
 

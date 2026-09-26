@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
 // The workspace surface over a workspace with two directories, one of them not
-// git (#174), with its panes mounted for real: the Files tree and the rail are
-// the production modules, answering from one scripted machine. Only what is
-// beside the surface — the console, the agent rail, and the feed delivering
-// the machine's checkout list — is stood in for; workspaceViewDom holds the
-// cases that need the panes stood in for.
+// git (#174), with its panes mounted for real: the Files tree, the Changes tab
+// row over the git pane, and the rail are the production modules, answering
+// from one scripted machine. Only what is beside the surface — the console,
+// the agent rail, and the feed delivering the machine's checkout list — is
+// stood in for; workspaceViewDom holds the cases that need the panes stood in
+// for.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -38,6 +39,7 @@ import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceConte
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { wipeCache } from "../src/core/localCache.js";
+import { createViewingContext } from "../src/core/viewingContext.js";
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
 
@@ -64,6 +66,16 @@ const machine = async (method, params = {}) => {
     const text = `${params.source_id}/${params.path}`;
     return { path: params.path, mime: "text/plain", size: text.length, truncated: false, editable: false, encoding: "utf-8", revision: "r1", content_b64: b64(text) };
   }
+  if (method === "workspace.git_init_options") return {
+    workspace_id: "ws-1", source_id: params.source_id,
+    workspace: { path: "/w/ws-1/assets", is_git: false, available: true },
+    source: { path: "/src/assets", is_git: false, available: true },
+  };
+  if (method === "workspace.init_git") return {
+    workspace: { ...workspace, directories: [workspace.directories[0], { ...workspace.directories[1], is_git: true }] },
+    outcomes: [{ target: "workspace", status: "initialized", is_git: true }],
+    source: { source_id: "assets", path: "/src/assets", is_git: false },
+  };
   return {};
 };
 
@@ -82,7 +94,7 @@ beforeEach(async () => {
   await wipeCache();
   document.body.innerHTML = '<div id="toolbar"><span id="tb-verb"></span></div><nav id="dir-rail"></nav><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   App.viewDispose = null;
-  App.viewingContext = { set() {}, clear() {}, clearSelection() {} };
+  App.viewingContext = createViewingContext({ enabled: false });
   App.devices = [{ id: "dev-1", name: "this machine", status: "online" }];
   asked.length = 0;
   feedSubscribers = new Set();
@@ -119,5 +131,41 @@ describe("a workspace with two directories, one not git", () => {
     await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", tab: "files" });
     expect([...document.querySelectorAll("#dir-rail [data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["changes", "files", "issues"]);
     expect(document.querySelector("#dir-rail [data-rail-settings]")).not.toBeNull();
+  });
+
+  it("names both directories over Changes, and offers Git as the surface of the one without it", async () => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" });
+    expect([...document.querySelectorAll(".workspace-dirtab")].map((tab) => [tab.textContent, tab.getAttribute("aria-selected")])).toEqual([
+      ["Repository", "false"],
+      ["Assets", "true"],
+    ]);
+    expect(document.querySelector(".workspace-gitinit [data-init-git]").textContent).toBe("Initialize Git…");
+    expect(document.querySelector(".crail-host")).toBeNull();
+  });
+
+  it("stands the git pane of the directory with git under the same row", async () => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" });
+    const row = document.querySelector(".workspace-dirtabs");
+    expect(row.querySelector("[aria-selected=true]").textContent).toBe("Repository");
+    await vi.waitFor(() => expect(row.nextElementSibling.querySelector(".gitpane .crail-host")).not.toBeNull());
+    await vi.waitFor(() => expect(asked.some(({ method, params }) => method.startsWith("git.") && params.source_id === "repo")).toBe(true));
+    expect(document.querySelector(".workspace-gitinit")).toBeNull();
+  });
+
+  it("initializes the directory without git, and its surface becomes the commit rail", async () => {
+    await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" });
+    const row = document.querySelector(".workspace-dirtabs");
+    document.querySelector(".workspace-gitinit [data-init-git]").click();
+    await vi.waitFor(() => expect(document.querySelector('[data-init-target="workspace"]')).not.toBeNull());
+    document.querySelector('[data-init-target="workspace"]').click();
+    document.querySelector("[data-confirm-init-git]").click();
+    await vi.waitFor(() => expect(document.querySelector(".gitpane .crail-host")).not.toBeNull());
+    expect(document.querySelector(".workspace-gitinit")).toBeNull();
+    expect(asked).toContainEqual({ method: "workspace.init_git", params: { workspace_id: "ws-1", source_id: "assets", target: "workspace" } });
+    // The same row, still on Assets: the surface changed under it, not the view.
+    expect(document.querySelector(".workspace-dirtabs")).toBe(row);
+    expect(row.querySelector("[aria-selected=true]").textContent).toBe("Assets");
+    // The original source still has no git, so its offer hangs off the rail.
+    await vi.waitFor(() => expect(document.querySelector(".crail-host [data-init-git]")?.textContent).toBe("Initialize original source…"));
   });
 });

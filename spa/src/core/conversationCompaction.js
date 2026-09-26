@@ -88,49 +88,81 @@ export function carriesCompactionSettings(deviceId) {
   return bridgeCapabilities(deviceId)?.conversations?.settings === true;
 }
 
+/** Marks an agent in the cache as carrying what `conversation.settings`
+ *  answered rather than what a digest said. A push rewrites the row whole, so
+ *  the mark is gone the moment the bridge's own word arrives. */
+const ANSWERED_MARK = "__compactionAnswered";
+
 /**
  * The rail's hold on what it asked for, per agent.
  *
- * What the bridge answers is shown until the digest says the same: the push
- * that carries the new limit can land after the reply, and a menu read off the
- * older digest in between would put the tick back where it was. Once the two
- * agree the digest is the truth again, so a change made elsewhere shows.
+ * What the bridge answers is written into the cached agent (`write`), and the
+ * rail repaints off that write as it does off any other. The push that carries
+ * the new limit can land after the reply, and one built before the change can
+ * land after it too: a row taken up (`takeUp`) whose agent still says the old
+ * limit has the answer written back over it, and the repaint that follows puts
+ * the tick back on the answer. (The stale row is painted once in between; the
+ * menu has shut by then, so what shows it is the gauge, for one frame.) Once
+ * a digest of the bridge's own — unmarked — says the same, the digest is the
+ * truth again, so a change made elsewhere shows.
+ *
+ * `write(entityId, agentId, rewrite)` lays `rewrite(agent)` over the agent
+ * wherever the rail reads it; `rewrite` answers null to leave it alone.
  *
  * Not optimistic, unlike the watch switch (core/watchToggle.js): the menu has
  * shut by the time a choice is sent, so there is no control under the finger
  * to move early. A choice while one is in flight is ignored, as a second press
- * of the switch is. `choose` resolves when the verb has settled or been
- * refused and never rejects — a refusal is `onFailure`'s.
+ * of the switch is. `choose` resolves when the answer is in the cache or the
+ * verb has been refused, and never rejects — a refusal is `onFailure`'s.
  */
-export function createCompactionChoice({ call, onSettled = () => {}, onFailure = () => {} }) {
-  const answered = new Map(); // agent id → what conversation.settings answered
+export function createCompactionChoice({ call, write, onFailure = () => {} }) {
+  const answered = new Map(); // agent id → { entityId, fields } conversation.settings answered
   let pending = false;
 
-  const agentAsKnown = (agent) => {
-    const answer = agent && answered.get(agent.id);
-    if (!answer) return agent;
-    if (ownLimitOf(agent) === answer.max_context_tokens) {
-      answered.delete(agent.id);
-      return agent;
-    }
-    return { ...agent, ...answer };
+  /** Whether an agent's digest is the bridge's own word agreeing with the
+   *  answer, which ends the hold. */
+  const confirms = (agent, answer) =>
+    ownLimitOf(agent) === answer.fields.max_context_tokens && agent[ANSWERED_MARK] !== true;
+
+  const writeAnswer = async (agentId, answer) => {
+    let confirmed = false;
+    await write(answer.entityId, agentId, (agent) => {
+      confirmed = confirms(agent, answer);
+      if (ownLimitOf(agent) === answer.fields.max_context_tokens) return null;
+      return { ...agent, ...answer.fields, [ANSWERED_MARK]: true };
+    });
+    if (confirmed && answered.get(agentId) === answer) answered.delete(agentId);
   };
 
   return {
-    agentAsKnown,
+    /** A row the rail has just stood on: its agents, as the cache holds them. */
+    takeUp(agents) {
+      for (const agent of agents || []) {
+        const answer = agent && answered.get(agent.id);
+        if (!answer) continue;
+        if (confirms(agent, answer)) answered.delete(agent.id);
+        else if (ownLimitOf(agent) !== answer.fields.max_context_tokens) void writeAnswer(agent.id, answer);
+      }
+    },
 
     async choose({ entityId, agent, maxContextTokens }) {
-      if (pending || ownLimitOf(agentAsKnown(agent)) === maxContextTokens) return;
+      if (pending || ownLimitOf(agent) === maxContextTokens) return;
       pending = true;
       try {
-        const answer = await call("conversation.settings", compactionSettingsParams(entityId, agent.id, maxContextTokens));
-        answered.set(agent.id, {
-          max_context_tokens: answer?.max_context_tokens ?? null,
-          compact_at_tokens: answer?.compact_at_tokens,
-        });
-        onSettled();
-      } catch (error) {
-        onFailure(error);
+        let reply;
+        try {
+          reply = await call("conversation.settings", compactionSettingsParams(entityId, agent.id, maxContextTokens));
+        } catch (error) {
+          onFailure(error);
+          return;
+        }
+        const fields = { max_context_tokens: reply?.max_context_tokens ?? null };
+        if (reply?.compact_at_tokens !== undefined) fields.compact_at_tokens = reply.compact_at_tokens;
+        const answer = { entityId, fields };
+        answered.set(agent.id, answer);
+        // The bridge has it: a cache that cannot take the answer is not a
+        // refusal, and the push brings the same word.
+        await writeAnswer(agent.id, answer).catch(() => {});
       } finally {
         pending = false;
       }

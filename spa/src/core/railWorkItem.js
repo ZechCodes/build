@@ -9,16 +9,34 @@
 //
 // This is the whole of the rail's reading: one row address, the watch on it,
 // and the workspace list beside it for the one thing a row cannot say. Nothing
-// here paints; it hands the rail a row and tells it when there is another.
+// here paints; it hands the rail a row and tells it when there is another. A
+// verb's answer about one agent is written here too, into the same record the
+// rail reads, so the rail paints it the way it paints a push.
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
-import { readCached, subscribeCache } from "./localCache.js";
+import { mergeCachedAtomically, readCached, subscribeCache, updateCachedFeed } from "./localCache.js";
 import { issueAddress, readIssueRecord } from "./issueCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
  *  thing that says what a workspace is mounted out of. */
 const WORKSPACES_RECORD_KIND = "workspaces";
+
+/** Kinds whose row, where the device holds none of its own, is read off the
+ *  board's `runs` instead (`cachedRow`). */
+const READS_BOARD_RUNS = ["workspace", "project"];
+
+/** A row with one agent rewritten, or null where the row does not name it or
+ *  `rewrite` leaves it alone. The agents are on the row, or on its run. */
+function rowWithAgent(row, agentId, rewrite) {
+  const holder = Array.isArray(row?.agents) ? row : Array.isArray(row?.run?.agents) ? row.run : null;
+  const index = holder ? holder.agents.findIndex((agent) => agent?.id === agentId) : -1;
+  if (index < 0) return null;
+  const rewritten = rewrite(holder.agents[index]);
+  if (!rewritten) return null;
+  const agents = holder.agents.map((agent, at) => (at === index ? rewritten : agent));
+  return holder === row ? { ...row, agents } : { ...row, run: { ...row.run, agents } };
+}
 
 /**
  * One rail's reading of the cache.
@@ -62,13 +80,35 @@ export function createRailWorkItem({
     const address = rowAddress(entityId);
     if (!address) return null;
     const row = (await readCached(address))?.value;
-    if (row || !["workspace", "project"].includes(context.kind)) return row || null;
+    if (row || !READS_BOARD_RUNS.includes(context.kind)) return row || null;
     // An unwatched conversation still has an agent, but its
     // run is deliberately absent from the inbox's `items`. The same board
     // record keeps it in `runs`; read that cached roster for the workspace
     // without putting it back into the inbox as a visible row.
     const feed = (await readCached(cacheScope.address({ entityId: "", kind: "feed" })))?.value;
     return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
+  };
+
+  /// Lay `rewrite(agent)` over one agent of this rail's row, in the record
+  /// `cachedRow` reads it from: the row's own, else the board's `runs`. The
+  /// record's watch then hands the rail the row again.
+  const patchAgent = async (entityId, agentId, rewrite) => {
+    const address = rowAddress(entityId);
+    if (!address) return;
+    if ((await readCached(address))?.value || !READS_BOARD_RUNS.includes(context.kind)) {
+      await mergeCachedAtomically(address, (row) => rowWithAgent(row, agentId, rewrite));
+      return;
+    }
+    await updateCachedFeed(cacheScope.address({ entityId: "", kind: "feed" }), (feed) => {
+      let moved = false;
+      const runs = (feed?.runs || []).map((run) => {
+        if (entityIdOf(run) !== entityId) return run;
+        const rewritten = rowWithAgent(run, agentId, rewrite);
+        moved ||= Boolean(rewritten);
+        return rewritten || run;
+      });
+      return moved ? { ...feed, runs } : null;
+    });
   };
 
   /// What the workspace list says about the workspace this rail is standing on:
@@ -161,7 +201,7 @@ export function createRailWorkItem({
     unwatchRow = address
       ? subscribeCache(address, () => void takeUpRow(entityId))
       : watchForARowOfOurOwn();
-    if (address && ["workspace", "project"].includes(context.kind)) {
+    if (address && READS_BOARD_RUNS.includes(context.kind)) {
       unwatchFeed = subscribeCache(cacheScope.address({ entityId: "", kind: "feed" }), () => void takeUpRow(entityId));
     }
   };
@@ -192,6 +232,7 @@ export function createRailWorkItem({
     read,
     cachedRow,
     rowAddress,
+    patchAgent,
 
     /** The entity the row watch is pointed at, for a reader that needs a name
      *  for this rail before any row has answered. */

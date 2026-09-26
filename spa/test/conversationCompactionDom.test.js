@@ -39,7 +39,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { resetOptimistic } = await import("../src/core/optimistic.js");
 const { dismissAllNotices } = await import("../src/core/notify.js");
-const { wipeCache } = await import("../src/core/localCache.js");
+const { readCached, wipeCache } = await import("../src/core/localCache.js");
 const { writeRailBoard, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 const DEVICE_ID = "device-1";
@@ -102,6 +102,8 @@ const menuCaret = () => panel().querySelector(".rail-surface-menu .caret");
 const compactionRows = () => [...panel().querySelectorAll('.rail-surface-menu .mi[data-action^="compact:"]')];
 const markedRow = () => compactionRows().find((row) => row.classList.contains("on"));
 const rowLabel = (row) => row?.querySelector(".mt").textContent;
+const cachedAgent = async () =>
+  (await readCached({ deviceId: DEVICE_ID, entityId: WORKSPACE_OWNER, kind: "row", sub: "" }))?.value.agents[0];
 const errorNotices = () => [...document.querySelectorAll("#notices .notice")].map((notice) => notice.textContent);
 
 let rail;
@@ -264,6 +266,44 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:off");
 
     expect(markedRow().dataset.action).toBe("compact:off");
+  });
+
+  it("writes the answer into the cached row, which is what the tick is painted from", async () => {
+    answerSettings = ({ agent_id }) => ({ agent_id, max_context_tokens: 300000, compact_at_tokens: 300000 });
+    await mountWorkspaceRail();
+
+    await choose("compact:150000");
+
+    // The bridge answered 300k for a 150k ask: the tick follows the cache the
+    // answer was written to, not the row that was pressed.
+    expect(await cachedAgent()).toMatchObject({ id: "wa-1", max_context_tokens: 300000, compact_at_tokens: 300000 });
+    expect(markedRow().dataset.action).toBe("compact:300000");
+  });
+
+  it("keeps the answer over a push built before it", async () => {
+    await mountWorkspaceRail();
+    await choose("compact:off");
+
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 0, compact_at_tokens: 0 });
+    expect(markedRow().dataset.action).toBe("compact:off");
+  });
+
+  it("shows a change made elsewhere once a push has said the answer", async () => {
+    await mountWorkspaceRail();
+    await choose("compact:off");
+
+    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+    digestCompaction = { max_context_tokens: 150000, compact_at_tokens: 150000 };
+    await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+    await flush();
+
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 150000 });
+    expect(markedRow().dataset.action).toBe("compact:150000");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {

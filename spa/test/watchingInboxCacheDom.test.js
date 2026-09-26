@@ -15,7 +15,9 @@ let liveFeedSnapshot, stampRow;
 let removeFeedRow, patchFeedRow, feedRowTarget, hideProject;
 const deviceId = "watching-device";
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
-const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
+// Every project also has its project agent's row (#103); watching is about
+// the workspace rows.
+const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry:not(.inbox-project-agent)")];
 
 async function seed({ watched, agents = [{ id: "agent-1", watched }], createdByAgent = false, entityId = "run-1" } = {}) {
   const project = { id: "project-1", project_id: "project-1", name: "Payments", deviceId, projectKey: `${deviceId}/project-1` };

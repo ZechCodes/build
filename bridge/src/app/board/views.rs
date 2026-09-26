@@ -668,6 +668,7 @@ impl AppState {
         let working_since = working
             .then(|| self.working_since_for(run_id, thread))
             .flatten();
+        let session = self.session_summary(run_id);
         let title = if active.run.goal.trim().is_empty() {
             branch.clone()
         } else {
@@ -696,6 +697,11 @@ impl AppState {
             // Every row carries both, whatever it was read off.
             "anchor": self.anchor_of(run_id),
             "last_activity": self.last_activity_of(Some(run_id), thread),
+            // This conversation's own message session (#98's rule). The inbox
+            // orders the project agent's row by it (#103); a workspace's row
+            // reads the same numbers off its workspace.
+            "session_started_ms": session.session_started_ms,
+            "last_activity_ms": session.last_activity_ms,
             // Done deletes the branch and its records. What the deletion
             // would cost is `finish.warnings`, which the client confirms
             // through — never a refusal here.

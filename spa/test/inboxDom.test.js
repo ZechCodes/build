@@ -123,7 +123,9 @@ const feed = (
   deliver();
 };
 
-const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
+// Every project also has its project agent's row (#103, inboxRows103.test.js);
+// these tests are about the workspace and capture rows.
+const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry:not(.inbox-project-agent)")];
 const blocks = () => [...document.querySelectorAll("#inbox-list .inbox-project")];
 
 let App;

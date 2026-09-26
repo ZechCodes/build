@@ -110,7 +110,9 @@ async function warmCache(devices = [device("dev-1")]) {
 /** A turn of the event loop, which is what the cache answers on. */
 const tick = () => new Promise((done) => setTimeout(done, 5));
 
-const railEntries = () => [...document.querySelectorAll("#inbox-list .inbox-entry")].map((row) => row.dataset.key);
+// Every project also has its project agent's row (#103); these tests are
+// about the workspace and capture rows.
+const railEntries = () => [...document.querySelectorAll("#inbox-list .inbox-entry:not(.inbox-project-agent)")].map((row) => row.dataset.key);
 const unreachableMark = () => document.querySelector(".device-picker-unreachable");
 
 beforeEach(async () => {

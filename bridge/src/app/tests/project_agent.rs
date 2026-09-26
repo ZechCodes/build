@@ -185,6 +185,103 @@ fn a_workspaces_message_anchors_the_project_session_after_a_long_gap() {
     assert_eq!(before["last_activity_ms"], last);
 }
 
+/// The inbox orders the project agent's row by its own conversation (#103):
+/// the board row carries that conversation's session alone, while the
+/// project's own summary keeps pooling every workspace.
+#[test]
+fn the_project_conversation_row_carries_its_own_session() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let (project_owner, project_agent_id) = project_agent(&mut state, &project_id);
+    let workspace_id = workspace(&mut state, &project_id, "own-session");
+    let workspace_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace_id}),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let workspace_agent_id = state.handle(req("agent.add", json!({"entity_id": workspace_owner})))
+        ["result"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for (owner, agent_id, body, at) in [
+        (
+            &project_owner,
+            &project_agent_id,
+            "project start",
+            "2026-09-01T00:00:00Z",
+        ),
+        (
+            &project_owner,
+            &project_agent_id,
+            "project again",
+            "2026-09-02T00:00:00Z",
+        ),
+        (
+            &workspace_owner,
+            &workspace_agent_id,
+            "workspace",
+            "2026-09-03T00:00:00Z",
+        ),
+    ] {
+        let mut run = state.runs.remove(owner.as_str()).unwrap();
+        run.agents
+            .by_id_mut(agent_id)
+            .unwrap()
+            .thread
+            .post_user(body, None, at);
+        state.finish_run_mutation(owner.clone(), run).unwrap();
+    }
+
+    let millis = |at| crate::session_summary::message_millis(at).unwrap();
+    let board = state.board_list();
+    let row = board["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["run_id"] == project_owner.as_str())
+        .expect("the project conversation is a board row");
+    assert_eq!(row["session_started_ms"], millis("2026-09-02T00:00:00Z"));
+    assert_eq!(row["last_activity_ms"], millis("2026-09-02T00:00:00Z"));
+    let project = state.project_list()["projects"][0].clone();
+    assert_eq!(project["last_activity_ms"], millis("2026-09-03T00:00:00Z"));
+}
+
+/// Deleting a project forgets its conversation's session and its own, so a
+/// long-running bridge that adds, talks in and deletes projects keeps no
+/// summary for any of them (#103).
+#[test]
+fn project_delete_forgets_the_project_conversation_session() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+    let mut run = state.runs.remove(owner.as_str()).unwrap();
+    run.agents.by_id_mut(&agent_id).unwrap().thread.post_user(
+        "hello",
+        None,
+        "2026-09-01T00:00:00Z",
+    );
+    state.finish_run_mutation(owner.clone(), run).unwrap();
+    assert!(state.session_summaries.contains_key(&owner));
+    assert!(state.session_summaries.contains_key(&project_id));
+
+    let deleted = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted:?}");
+    assert!(state.project(&project_id).is_none());
+    assert!(!state.session_summaries.contains_key(&owner));
+    assert!(!state.session_summaries.contains_key(&project_id));
+    assert!(!state.session_seen.keys().any(|(seen, _)| seen == &owner));
+}
+
 /// The two reads answer what the client verbs answer, for the project the
 /// agent's owner is bound to — no project id is passed, because there is
 /// nowhere for one to come from.

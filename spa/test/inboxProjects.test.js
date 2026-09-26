@@ -157,6 +157,7 @@ describe("the project header actions", () => {
       route: { name: "workspace" },
       entries: [],
       recent: [],
+      agentUnreadCount: 4,
       unreadCount: 4,
       clash: true,
       deviceName: "workshop",

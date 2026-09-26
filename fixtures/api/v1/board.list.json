@@ -16,6 +16,8 @@
         "anchor": "2026-09-13T09:12:44.108Z",
         "resume_at": "2026-09-13T09:20:01.002Z",
         "last_activity": "2026-09-13T09:31:02.774Z",
+        "session_started_ms": 1789290764108,
+        "last_activity_ms": 1789291862774,
         "unread_count": 0,
         "unread_reason": null,
         "branch": "fix-flaky-login",
@@ -279,6 +281,14 @@
         "resets_at": "2026-09-20T22:20:00Z",
         "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
       }
+    ]
+  },
+  "conversation_sessions": {
+    "since": "1.28.0",
+    "note": "A conversation's row carries its own message session, #98's rule: session_started_ms and last_activity_ms. The project conversation's row orders the project agent in the inbox (#103).",
+    "fields": [
+      "session_started_ms",
+      "last_activity_ms"
     ]
   },
   "errors": [

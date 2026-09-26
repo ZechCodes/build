@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.27.0";
+pub const API_VERSION: &str = "1.28.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -45,6 +45,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
     "agents.names",
+    "board.conversationSessions", // Since 1.28.0: a conversation row's own session_started_ms/last_activity_ms.
     "board.usageLimits",
     "bodies.pages", // Since 1.26.0: range on fs.read, git.diff, git.show, git.changeset_diff.
     "branches.finishDelete",

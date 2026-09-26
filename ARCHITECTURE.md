@@ -210,7 +210,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `1.27.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `1.28.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -220,6 +220,9 @@ runtime that starts them.
   `bridge/src/body_page.rs`); 1.27.0 adds `issues.createdUserMentions`:
   an agent's `create_issue` can mark its `created` timeline event with optional
   `mentions_user`, making the watched issue need the user until it is read.
+  1.28.0 adds `board.conversationSessions`: a conversation's feed row carries
+  its own `session_started_ms` and `last_activity_ms` (the project agent's
+  inbox row is ordered by them, #103).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.

@@ -653,6 +653,12 @@ pub struct FeedItemRow {
     pub anchor: Option<String>,
     pub resume_at: Option<String>,
     pub last_activity: Option<String>,
+    /// A conversation row's own message session, #98's rule (since 1.28.0).
+    /// The inbox orders the project agent's row by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     #[serde(flatten)]
     pub rest: OtherKeys,
 }

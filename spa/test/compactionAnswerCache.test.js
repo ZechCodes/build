@@ -7,7 +7,7 @@
 // so a push carrying the new limit follows. No row carries a revision, so the
 // answer lands only where nothing has written the row since the verb went out.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 globalThis.indexedDB = new IDBFactory();
@@ -16,6 +16,15 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { createRailWorkItem } = await import("../src/core/railWorkItem.js");
 const { createCompactionChoice } = await import("../src/core/conversationCompaction.js");
 const { readCached, subscribeCache, wipeCache, writeCached } = await import("../src/core/localCache.js");
+
+// A second tab: its own instance of the cache module — its own write clock —
+// over the same database.
+vi.resetModules();
+const otherTab = await import("../src/core/localCache.js");
+
+/** Hold the clock both tabs stamp `order` from on one tick, ahead of anything
+ *  written so far, so their next writes carry the same order. */
+const oneTick = () => vi.spyOn(globalThis.performance, "now").mockReturnValue(performance.now() + 1e9);
 
 const DEVICE = "dev-1";
 const ENTITY = "run-7";
@@ -179,6 +188,37 @@ describe("the answer in the cached row", () => {
     expect(await cachedLimit()).toBe(null);
   });
 
+  // Two tabs keep their own write clocks, and both can read the same tick: a
+  // row another tab wrote since the ask can carry the very order this tab
+  // captured. It is still a different write, and the answer stands down.
+  it("stands down for another tab's write stamped on the same tick", async () => {
+    const tick = oneTick();
+    try {
+      await pushRow(null);
+      const { order } = await readCached(ROW_ADDRESS);
+      let stamped;
+      const rail = observer({
+        answer: async (params) => {
+          await otherTab.writeCached(ROW_ADDRESS, {
+            kind: "branch",
+            run_id: ENTITY,
+            agents: [{ id: "agent-2", max_context_tokens: 150000, compact_at_tokens: 150000 }],
+          });
+          stamped = (await readCached(ROW_ADDRESS)).order;
+          return answering(params);
+        },
+      });
+
+      await rail.choose(0);
+      await flush();
+      expect(stamped).toBe(order);
+    } finally {
+      tick.mockRestore();
+    }
+
+    expect(await cachedLimit()).toBe(150000);
+  });
+
   it("writes each of two successive choices once, the later last", async () => {
     const rail = observer({ answer: answering });
 
@@ -273,6 +313,33 @@ describe("the answer on the board's runs", () => {
     await pushFeed(150000);
     shut.open();
     await choosing;
+
+    expect(await runsLimit()).toBe(150000);
+  });
+
+  it("stands down for another tab's board stamped on the same tick", async () => {
+    const tick = oneTick();
+    try {
+      await pushFeed(null);
+      const { order } = await readCached(FEED_ADDRESS);
+      let stamped;
+      const rail = observer({
+        kind: "workspace",
+        answer: async (params) => {
+          await otherTab.writeCached(FEED_ADDRESS, {
+            items: [],
+            runs: [OTHER, { run_id: ENTITY, agents: [{ id: "agent-2", max_context_tokens: 150000, compact_at_tokens: 150000 }] }],
+          });
+          stamped = (await readCached(FEED_ADDRESS)).order;
+          return answering(params);
+        },
+      });
+
+      await rail.choose(0);
+      expect(stamped).toBe(order);
+    } finally {
+      tick.mockRestore();
+    }
 
     expect(await runsLimit()).toBe(150000);
   });

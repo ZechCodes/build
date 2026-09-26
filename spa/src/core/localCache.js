@@ -36,6 +36,15 @@ const nextWriteOrder = () => {
   lastWriteOrder = Math.max(now, lastWriteOrder + 0.001);
   return lastWriteOrder;
 };
+const randomToken = () => globalThis.crypto?.randomUUID?.() ||
+  `${Date.now()}-${Math.random()}-${Math.random()}`;
+// `order` is a clock, and two tabs can read the same tick. `write` names the
+// write itself — this page's own id and its count of writes — so a reader
+// that captured it can tell whether any writer, in any tab, has put the
+// record since. Every record this module writes carries both.
+const WRITER = randomToken();
+let writesMade = 0;
+const writeStamp = () => ({ at: Date.now(), order: nextWriteOrder(), write: `${WRITER}:${(writesMade += 1)}` });
 
 /** The index on each record's write time. It exists so "how old is what this
  *  workspace holds" can be answered from index keys alone: a key cursor
@@ -724,10 +733,8 @@ function writeFeed(address, update, { observedFeedRows = false, supersededFeedRo
         const previous = request.result;
         const next = update(previous?.value, previous);
         if (next == null) return;
-        const at = Date.now();
-        const order = nextWriteOrder();
-        const stamp = { at, order };
-        const record = { at, order, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
+        const { write, ...stamp } = writeStamp();
+        const record = { ...stamp, write, value: feedWithObservations(next, previous, stamp, observedFeedRows, supersededFeedRow) };
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -746,7 +753,7 @@ export function writeCached(address, value, { source, sequence, observedFeedRows
   if (address.kind === "feed") return writeFeed(address, () => value, { observedFeedRows });
   if (address.kind === "bridge-update") return writeBridgeUpdate(address, value);
   const key = recordKey(address);
-  const record = { at: Date.now(), order: nextWriteOrder(), value, ...(source ? { source, sequence } : {}) };
+  const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}) };
   return wroteStore((store) => {
     store.put(record, key);
     return null;
@@ -758,8 +765,7 @@ export function writeCached(address, value, { source, sequence, observedFeedRows
 /** An absent record differs from an older record without a generation. */
 export const cachedGeneration = (record) => record ? (record.generation || 0) : -1;
 export const cacheAvailable = async () => Boolean(await openDb());
-const newCacheGeneration = () => globalThis.crypto?.randomUUID?.() ||
-  `${Date.now()}-${Math.random()}-${Math.random()}`;
+const newCacheGeneration = randomToken;
 const withBridgeGeneration = (address, record) => address.kind === "bridge-update"
   ? { ...record, generation: newCacheGeneration() } : record;
 
@@ -779,7 +785,7 @@ export function captureCachedGeneration(address) {
           return;
         }
         generation = newCacheGeneration();
-        putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: null, generation }, key);
+        putOrAbort(store, { ...writeStamp(), value: null, generation }, key);
       } catch (error) {
         abortForError(store, error);
       }
@@ -799,7 +805,7 @@ function writeBridgeUpdate(address, value, expectedGeneration) {
         const current = request.result;
         if (expectedGeneration !== undefined && cachedGeneration(current) !== expectedGeneration) return;
         changed = putOrAbort(store, {
-          at: Date.now(), order: nextWriteOrder(), value,
+          ...writeStamp(), value,
           generation: newCacheGeneration(),
         }, key);
       } catch (error) {
@@ -844,7 +850,7 @@ export function writeCachedIfNewer(address, value, { at, source, sequence }) {
         : (Number(current.at) || 0) < at);
       if (!newer) return;
       try {
-        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value, source, sequence });
+        const record = withBridgeGeneration(address, { ...writeStamp(), value, source, sequence });
         applied = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -909,12 +915,20 @@ export function mergeCachedAtomically(address, merge) {
   return mergeRecordAtomically(address, (record) => merge(record?.value));
 }
 
-/** The same merge, only while the record is still the write `order` names —
- * the `order` a `readCached` answered. Any writer since, in any tab, leaves
- * the record alone: for a verb's answer that must not land over what arrived
- * after the verb was sent. An absent record matches an undefined order. */
-export function mergeCachedIfUnwritten(address, order, merge) {
-  return mergeRecordAtomically(address, (record) => (record?.order === order ? merge(record?.value) : null));
+/** Which write a record is, as `readCached` answered it: to find the record
+ * still that write later, inside a transaction (`isCachedWrite`). The order
+ * rides along for a record stored before writes were named, which a page
+ * still running that code can also write. An absent record is its own. */
+export const cachedWriteOf = (record) => ({ write: record?.write, order: record?.order });
+export const isCachedWrite = (record, written) =>
+  record?.write === written?.write && record?.order === written?.order;
+
+/** The same merge, only while the record is still the write `written` names
+ * (`cachedWriteOf`). Any writer since, in any tab, leaves the record alone:
+ * for a verb's answer that must not land over what arrived after the verb was
+ * sent. */
+export function mergeCachedIfUnwritten(address, written, merge) {
+  return mergeRecordAtomically(address, (record) => (isCachedWrite(record, written) ? merge(record?.value) : null));
 }
 
 function mergeRecordAtomically(address, merge) {
@@ -927,7 +941,7 @@ function mergeRecordAtomically(address, merge) {
       try {
         const next = merge(request.result);
         if (next == null) return;
-        const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next });
+        const record = withBridgeGeneration(address, { ...writeStamp(), value: next });
         changed = putOrAbort(store, record, key);
       } catch (error) {
         abortForError(store, error);
@@ -961,7 +975,7 @@ function mergeTogetherInStore(addresses, keys, merge) {
         const next = merge(held.map((record) => record?.value));
         for (const [index, key] of keys.entries()) {
           if (next?.[index] == null) continue;
-          const record = withBridgeGeneration(addresses[index], { at: Date.now(), order: nextWriteOrder(), value: next[index] });
+          const record = withBridgeGeneration(addresses[index], { ...writeStamp(), value: next[index] });
           if (!putOrAbort(store, record, key)) return;
           changed.push(key);
         }
@@ -1001,7 +1015,7 @@ async function takeCountInStore(key, floor) {
     request.onsuccess = () => {
       const held = Number(request.result?.value) || 0;
       const next = Math.max(held + 1, floor);
-      if (putOrAbort(store, { at: Date.now(), order: nextWriteOrder(), value: next }, key)) taken = next;
+      if (putOrAbort(store, { ...writeStamp(), value: next }, key)) taken = next;
     };
     return null;
   }, true);

@@ -16,7 +16,14 @@
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
-import { mergeCachedIfUnwritten, readCached, subscribeCache, updateCachedFeed } from "./localCache.js";
+import {
+  cachedWriteOf,
+  isCachedWrite,
+  mergeCachedIfUnwritten,
+  readCached,
+  subscribeCache,
+  updateCachedFeed,
+} from "./localCache.js";
 import { issueAddress, readIssueRecord } from "./issueCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
@@ -99,9 +106,9 @@ export function createRailWorkItem({
     const address = rowAddress(entityId);
     if (!address) return null;
     const record = await readCached(address);
-    if (record?.value || !READS_BOARD_RUNS.includes(context.kind)) return { entityId, address, order: record?.order };
+    if (record?.value || !READS_BOARD_RUNS.includes(context.kind)) return { entityId, address, written: cachedWriteOf(record) };
     const feed = feedAddress();
-    return { entityId, address: feed, order: (await readCached(feed))?.order, runs: true };
+    return { entityId, address: feed, written: cachedWriteOf(await readCached(feed)), runs: true };
   };
 
   /// Lay `rewrite(agent)` over one agent of this rail's row, in the record
@@ -113,11 +120,11 @@ export function createRailWorkItem({
   const patchAgentIfUnwritten = async (seen, agentId, rewrite) => {
     if (!seen) return;
     if (!seen.runs) {
-      await mergeCachedIfUnwritten(seen.address, seen.order, (row) => rowWithAgent(row, agentId, rewrite));
+      await mergeCachedIfUnwritten(seen.address, seen.written, (row) => rowWithAgent(row, agentId, rewrite));
       return;
     }
     await updateCachedFeed(seen.address, (feed, record) => {
-      if (record?.order !== seen.order) return null;
+      if (!isCachedWrite(record, seen.written)) return null;
       let moved = false;
       const runs = (feed?.runs || []).map((run) => {
         if (entityIdOf(run) !== seen.entityId) return run;

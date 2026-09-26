@@ -9,6 +9,12 @@
 // anew the route's rail is stood up again over it and paints what the cache
 // holds. Nothing rejects unhandled on the way.
 //
+// Three standings are retired under the rail: an empty project conversation,
+// one whose agent is on screen (its panel paints through a controller, and the
+// retirement's own feed drop is delivered to it), and one beside a second
+// machine that stays live — so the app never takes the page, and the route is
+// stood up again without the gate handing it back.
+//
 // Nothing between the wire and the rail is a stand-in: the real gate
 // (views/gate.js), router, shell and rail (app.js, core/shell.js,
 // core/agentRail.js), device registry and connection layer (connection.js),
@@ -34,6 +40,9 @@ const wire = vi.hoisted(() => ({
   // listener told the moment one of them is asked.
   held: new Map(),
   asked: () => {},
+  // The project's conversation the bridge and the cache hold, when a case has
+  // an agent on screen; null for a project with none.
+  conversation: null,
 }));
 
 vi.mock("../src/api.js", async (importOriginal) => ({
@@ -96,13 +105,26 @@ const cachedWorkspace = {
   workspaceKey: `${DEVICE}/ws-1`,
 };
 
+/** A project conversation with one agent on it, as the feed and its row hold it. */
+const conversationWithAgent = {
+  kind: "branch",
+  entity_id: "run-project",
+  run_id: "run-project",
+  project_id: "proj-1",
+  deviceId: DEVICE,
+  projectKey: `${DEVICE}/proj-1`,
+  agents: [{ id: "ag-1", ordinal: 1, topic: "Existing agent", conversation_id: "conv-1", provider: "claude_adk", state: "live", unread_count: 0, working: false }],
+};
+
 /** The machine's bridge. An answer the case is holding waits for its release. */
 function bridgeSession(deviceId) {
+  const conversation = wire.conversation;
   const answers = {
     "session.hello": () => ({}),
     "project.list": () => ({ projects: [{ project_id: "proj-1", name: "Payments" }] }),
     "workspace.list": () => ({ workspaces: [{ workspace_id: "ws-1", project_id: "proj-1", title: "Checkout", state: "ready" }] }),
-    "board.list": () => ({ items: [] }),
+    "board.list": () => ({ items: conversation ? [conversation] : [] }),
+    "project.ensure_conversation": () => (conversation ? { project_id: "proj-1", entity_id: conversation.entity_id, run_id: conversation.run_id } : {}),
     "models.list": () => ({ models: [], efforts: [] }),
     "settings.get": () => ({}),
   };
@@ -164,6 +186,7 @@ function whenAsked(method) {
 }
 
 const online = { id: DEVICE, name: "studio", status: "online", fingerprint: "dev-1-fingerprint", last_seen_at: new Date().toISOString() };
+const otherOnline = { ...online, id: "dev-2", name: "other", fingerprint: "dev-2-fingerprint" };
 
 let modules;
 let unhandled;
@@ -179,7 +202,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
   history.replaceState(null, "", ROUTE_HASH);
-  Object.assign(wire, { listed: [online], sessions: [], held: new Map(), asked: () => {} });
+  Object.assign(wire, { listed: [online], sessions: [], held: new Map(), asked: () => {}, conversation: null });
   unhandled = [];
   process.on("unhandledRejection", noteUnhandled);
   const app = await import("../src/app.js");
@@ -213,9 +236,11 @@ afterEach(async () => {
 /** Everything the page paints from, as the last session left it on disk. */
 async function warmCache() {
   const { writeCached, DEVICES_ADDRESS } = modules.cache;
-  await writeCached(DEVICES_ADDRESS, [online]);
+  const conversation = wire.conversation;
+  await writeCached(DEVICES_ADDRESS, wire.listed);
+  if (conversation) await writeCached({ deviceId: DEVICE, entityId: conversation.entity_id, kind: "row" }, conversation);
   await writeCached({ deviceId: DEVICE, entityId: "", kind: "feed" }, {
-    items: [],
+    items: conversation ? [conversation] : [],
     plans: [],
     runs: [],
     externalWorktrees: [],
@@ -234,10 +259,13 @@ const settle = async () => {
   for (let turn = 0; turn < 20; turn += 1) await new Promise((done) => setTimeout(done, 0));
 };
 
-it("resolves the rail's first catalog read to nothing when its machine is retired under it", async () => {
-  const { app, connection, contexts, devices, gate } = modules;
-  // The rail's first catalog read — the harnesses and the project agent's
-  // setting — is held on the wire from the moment the rail asks it.
+const sessionsOf = (deviceId) => wire.sessions.filter((session) => session.deviceId === deviceId);
+
+/** Boot onto the route with the rail's first catalog read — the harnesses and
+ *  the project agent's setting — held on the wire from the moment it is asked,
+ *  and hand back what the case retires and releases. */
+async function standWithFirstReadHeld() {
+  const { app, contexts, devices, gate } = modules;
   const release = hold("models.list", "settings.get");
   const asked = whenAsked("settings.get");
   await warmCache();
@@ -245,30 +273,64 @@ it("resolves the rail's first catalog read to nothing when its machine is retire
   devices.initDevicePicker();
   await gate.boot();
   await asked;
-  const retiredSession = wire.sessions.at(-1);
+  await vi.waitFor(() => expect(contexts.liveContexts()).toHaveLength(wire.listed.length));
   const retiredStrip = railStrip();
   expect(retiredStrip).not.toBeNull();
+  return { release, retiredSession: sessionsOf(DEVICE).at(-1), retiredStrip };
+}
 
-  // The account drops the machine while the read is out, and then the read
-  // comes back.
-  connection.retireDevice(DEVICE);
+/** The account drops the machine while the read is out — the retirement runs
+ *  to its end — and then the read comes back. */
+async function retireAndRelease({ release, retiredSession }) {
+  expect(() => modules.connection.retireDevice(DEVICE)).not.toThrow();
+  // The reader coming back to the tab is a repaint the rail asks for itself.
+  document.dispatchEvent(new Event("visibilitychange"));
   release();
   await settle();
-
   expect(unhandled).toEqual([]);
   expect(retiredSession.closed).toBe(true);
+}
 
-  // The machine lands anew: the route's rail is stood up again over it, from
-  // what the cache holds, and asks the machine now standing for its catalog.
+/** The machine lands anew: the route's rail is stood up again over it, from
+ *  what the cache holds, and asks the machine now standing for its catalog. */
+async function expectRestoodOnLanding({ retiredSession, retiredStrip }) {
+  const { connection, contexts } = modules;
   connection.openDeviceSessions();
-  await vi.waitFor(() => expect(contexts.liveContexts()).toHaveLength(1));
-  const landed = wire.sessions.at(-1);
+  await vi.waitFor(() => expect(contexts.liveContexts()).toHaveLength(wire.listed.length));
+  const landed = sessionsOf(DEVICE).at(-1);
   expect(landed).not.toBe(retiredSession);
   await vi.waitFor(() => expect(askedOf(landed, "settings.get")).toBe(1));
   await settle();
-
   expect(retiredStrip.isConnected).toBe(false);
   expect(railStrip()).not.toBeNull();
   expect(document.querySelector("#agent-rail #rail-panel")).not.toBeNull();
   expect(unhandled).toEqual([]);
+}
+
+it("resolves the rail's first catalog read to nothing when its machine is retired under it", async () => {
+  const standing = await standWithFirstReadHeld();
+  await retireAndRelease(standing);
+  await expectRestoodOnLanding(standing);
+});
+
+it("finishes the retirement with an agent's conversation on screen", async () => {
+  wire.conversation = conversationWithAgent;
+  const standing = await standWithFirstReadHeld();
+  await settle();
+  expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
+
+  await retireAndRelease(standing);
+  await expectRestoodOnLanding(standing);
+  expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
+});
+
+it("stands the route's rail up again while another machine stays live", async () => {
+  wire.listed = [online, otherOnline];
+  const standing = await standWithFirstReadHeld();
+  const other = sessionsOf("dev-2").at(-1);
+
+  await retireAndRelease(standing);
+  expect(other.closed).toBe(false);
+  await expectRestoodOnLanding(standing);
+  expect(sessionsOf("dev-2").at(-1)).toBe(other);
 });

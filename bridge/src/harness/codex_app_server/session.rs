@@ -243,6 +243,8 @@ struct SessionCore {
     connection: SharedConnection,
     process: Arc<AppServerProcess>,
     state: Mutex<CodexSessionState>,
+    #[cfg(test)]
+    state_changed: Condvar,
     translator: Mutex<CodexActivityTranslator>,
     surfaces: Mutex<CodexSurfaces>,
     surfaces_revision: SurfaceRevision,
@@ -294,6 +296,8 @@ impl CodexAppServerSession {
                 choice.effort,
                 resume_id,
             )),
+            #[cfg(test)]
+            state_changed: Condvar::new(),
             translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
             surfaces: Mutex::new(CodexSurfaces::default()),
             surfaces_revision: SurfaceRevision::default(),
@@ -386,6 +390,8 @@ impl SessionCore {
                 }
             }
             *state = transition.state;
+            #[cfg(test)]
+            self.state_changed.notify_all();
             if let Some(status) = state.live_status() {
                 let previous = self.status.borrow().clone();
                 if let Some(next) = previous.transition(status) {
@@ -1485,18 +1491,40 @@ mod tests {
         let turn_response = json!({"id":4,"result":{"turn":{"id":TURN_ID}}});
         let script = opened_thread_script(
             root.path(),
-            &format!("read turn; printf '%s\\n' '{}'; read hold", turn_response),
+            &format!(
+                "read turn; printf '%s\\n' '{}'; cat >/dev/null",
+                turn_response
+            ),
         );
         let (session, _activity) = scripted_session(root.path(), &script);
-        wait_until("opened its thread", || session.session_id().is_some());
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.session_id().is_none()
+            })
+            .unwrap();
+        assert!(
+            state.session_id().is_some(),
+            "the session never opened its thread"
+        );
+        drop(state);
         let receipts = session.turn_receipts().unwrap();
         assert_eq!(session.turn_receipt_support(), TurnReceiptSupport::Seen);
         session
             .send_turn(&Turn::new("go").with_operation_id("operation-go"))
             .unwrap();
-        wait_until("accepted turn/start response", || {
-            session.core.state.lock().unwrap().diagnostic_phase() == "working"
-        });
+        let state = session.core.state.lock().unwrap();
+        let (state, _) = session
+            .core
+            .state_changed
+            .wait_timeout_while(state, Duration::from_secs(2), |state| {
+                state.diagnostic_phase() != "working"
+            })
+            .unwrap();
+        assert_eq!(state.diagnostic_phase(), "working");
+        drop(state);
         assert!(receipts.borrow().seen_operation_ids.is_empty());
 
         session

@@ -11,11 +11,12 @@
 // and the workspace list beside it for the one thing a row cannot say. Nothing
 // here paints; it hands the rail a row and tells it when there is another. A
 // verb's answer about one agent is written here too, into the same record the
-// rail reads, so the rail paints it the way it paints a push.
+// rail reads, so the rail paints it the way it paints a push — and only where
+// nothing has written that record since the verb went out.
 
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
-import { mergeCachedAtomically, readCached, subscribeCache, updateCachedFeed } from "./localCache.js";
+import { mergeCachedIfUnwritten, readCached, subscribeCache, updateCachedFeed } from "./localCache.js";
 import { issueAddress, readIssueRecord } from "./issueCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
@@ -73,6 +74,8 @@ export function createRailWorkItem({
       ? cacheScope?.address(issueAddress(context.deviceId, entityId, "get"))
       : cacheScope?.address({ entityId, kind: ROW_RECORD_KIND }))) || null;
 
+  const feedAddress = () => cacheScope.address({ entityId: "", kind: "feed" });
+
   /// The row itself, or nothing where this device holds none — a checkout
   /// nobody has claimed has no row anywhere, and the rail on it is the one that
   /// adopts on its first message.
@@ -85,24 +88,39 @@ export function createRailWorkItem({
     // run is deliberately absent from the inbox's `items`. The same board
     // record keeps it in `runs`; read that cached roster for the workspace
     // without putting it back into the inbox as a visible row.
-    const feed = (await readCached(cacheScope.address({ entityId: "", kind: "feed" })))?.value;
+    const feed = (await readCached(feedAddress()))?.value;
     return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
   };
 
-  /// Lay `rewrite(agent)` over one agent of this rail's row, in the record
-  /// `cachedRow` reads it from: the row's own, else the board's `runs`. The
-  /// record's watch then hands the rail the row again.
-  const patchAgent = async (entityId, agentId, rewrite) => {
+  /// The record `cachedRow` reads this rail's row from, and the write it holds
+  /// right now: the row's own, else the board's `runs`. Taken before a verb is
+  /// sent, for `patchAgentIfUnwritten` to find unchanged after its answer.
+  const rowWrite = async (entityId) => {
     const address = rowAddress(entityId);
-    if (!address) return;
-    if ((await readCached(address))?.value || !READS_BOARD_RUNS.includes(context.kind)) {
-      await mergeCachedAtomically(address, (row) => rowWithAgent(row, agentId, rewrite));
+    if (!address) return null;
+    const record = await readCached(address);
+    if (record?.value || !READS_BOARD_RUNS.includes(context.kind)) return { entityId, address, order: record?.order };
+    const feed = feedAddress();
+    return { entityId, address: feed, order: (await readCached(feed))?.order, runs: true };
+  };
+
+  /// Lay `rewrite(agent)` over one agent of this rail's row, in the record
+  /// `rowWrite` named — only while that record still holds the write it saw.
+  /// Whatever was written since — a push, another tab's answer — may be newer
+  /// word than this answer, and nothing on a row says which, so the answer
+  /// stands down and the record keeps what came. The record's watch hands the
+  /// rail the row again.
+  const patchAgentIfUnwritten = async (seen, agentId, rewrite) => {
+    if (!seen) return;
+    if (!seen.runs) {
+      await mergeCachedIfUnwritten(seen.address, seen.order, (row) => rowWithAgent(row, agentId, rewrite));
       return;
     }
-    await updateCachedFeed(cacheScope.address({ entityId: "", kind: "feed" }), (feed) => {
+    await updateCachedFeed(seen.address, (feed, record) => {
+      if (record?.order !== seen.order) return null;
       let moved = false;
       const runs = (feed?.runs || []).map((run) => {
-        if (entityIdOf(run) !== entityId) return run;
+        if (entityIdOf(run) !== seen.entityId) return run;
         const rewritten = rowWithAgent(run, agentId, rewrite);
         moved ||= Boolean(rewritten);
         return rewritten || run;
@@ -202,7 +220,7 @@ export function createRailWorkItem({
       ? subscribeCache(address, () => void takeUpRow(entityId))
       : watchForARowOfOurOwn();
     if (address && READS_BOARD_RUNS.includes(context.kind)) {
-      unwatchFeed = subscribeCache(cacheScope.address({ entityId: "", kind: "feed" }), () => void takeUpRow(entityId));
+      unwatchFeed = subscribeCache(feedAddress(), () => void takeUpRow(entityId));
     }
   };
 
@@ -232,7 +250,8 @@ export function createRailWorkItem({
     read,
     cachedRow,
     rowAddress,
-    patchAgent,
+    rowWrite,
+    patchAgentIfUnwritten,
 
     /** The entity the row watch is pointed at, for a reader that needs a name
      *  for this rail before any row has answered. */

@@ -906,6 +906,18 @@ export function mergeCached(address, merge) {
  * when another tab writes the same address at the same time. `merge` is sync
  * and returns null to leave the record alone. */
 export function mergeCachedAtomically(address, merge) {
+  return mergeRecordAtomically(address, (record) => merge(record?.value));
+}
+
+/** The same merge, only while the record is still the write `order` names —
+ * the `order` a `readCached` answered. Any writer since, in any tab, leaves
+ * the record alone: for a verb's answer that must not land over what arrived
+ * after the verb was sent. An absent record matches an undefined order. */
+export function mergeCachedIfUnwritten(address, order, merge) {
+  return mergeRecordAtomically(address, (record) => (record?.order === order ? merge(record?.value) : null));
+}
+
+function mergeRecordAtomically(address, merge) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -913,7 +925,7 @@ export function mergeCachedAtomically(address, merge) {
     const request = store.get(key);
     request.onsuccess = () => {
       try {
-        const next = merge(request.result?.value);
+        const next = merge(request.result);
         if (next == null) return;
         const record = withBridgeGeneration(address, { at: Date.now(), order: nextWriteOrder(), value: next });
         changed = putOrAbort(store, record, key);

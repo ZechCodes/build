@@ -971,13 +971,14 @@ function mountRailOnContext(host, context, swap) {
     },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge
-  // answered, written into the cached row and held until the digest says the
-  // same. Written once the menu has finished shutting — the row's watch
+  // answered, written into the cached row where nothing has written it since
+  // the ask. Written once the menu has finished shutting — the row's watch
   // repaints the menu, and remounting it mid-animation would lose the movement.
   const compactionChoice = createCompactionChoice({
     call: (method, params) => chatRepository.currentCall()(method, params),
-    write: (entityId, agentId, rewrite) => motionSettled().then(() =>
-      disposed ? undefined : records.patchAgent(entityId, agentId, rewrite)),
+    capture: (entityId) => records.rowWrite(entityId),
+    write: (captured, agentId, rewrite) => motionSettled().then(() =>
+      disposed ? undefined : records.patchAgentIfUnwritten(captured, agentId, rewrite)),
     onFailure: (error) => notifyError(COMPACTION_REFUSED, error.message || String(error)),
   });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
@@ -1514,7 +1515,6 @@ function mountRailOnContext(host, context, swap) {
     }
     agentlessOnce = false;
     entity = answered;
-    compactionChoice.takeUp(answered.agents);
     keepForSwap(context.kind, row);
     for (const agent of answered.agents) controllerForAgent(agent);
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });

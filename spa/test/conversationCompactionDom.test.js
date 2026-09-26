@@ -312,30 +312,47 @@ describe("compaction on the conversation's menu", () => {
     expect(markedRow().dataset.action).toBe("compact:300000");
   });
 
-  it("keeps the answer over a push built before it", async () => {
+  // The bridge's sequence at its worst: the answer, then a row it read before
+  // the change, then the row its note of the change flushes. The tick follows
+  // the cache through all three; nothing writes the answer back.
+  it("follows the pushes that come after the answer, stale one included", async () => {
     await mountWorkspaceRail();
     await choose("compact:off");
 
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
-
-    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 0, compact_at_tokens: 0 });
-    expect(markedRow().dataset.action).toBe("compact:off");
-  });
-
-  it("shows a change made elsewhere once a push has said the answer", async () => {
-    await mountWorkspaceRail();
-    await choose("compact:off");
+    expect(markedRow().dataset.action).toBe("compact:default");
 
     digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
+    expect(markedRow().dataset.action).toBe("compact:off");
+  });
+
+  it("shows a change made elsewhere after the answer, with no echo of the answer first", async () => {
+    await mountWorkspaceRail();
+    await choose("compact:off");
+
     digestCompaction = { max_context_tokens: 150000, compact_at_tokens: 150000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: 150000 });
     expect(markedRow().dataset.action).toBe("compact:150000");
+  });
+
+  it("leaves a row a push wrote while the verb was in flight to that push", async () => {
+    answerSettings = async ({ agent_id, max_context_tokens }) => {
+      digestCompaction = { ...digestCompaction, last_context_tokens: 130000 };
+      await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
+      return { agent_id, max_context_tokens, compact_at_tokens: 0 };
+    };
+    await mountWorkspaceRail();
+
+    await choose("compact:off");
+
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: null, last_context_tokens: 130000 });
+    expect(markedRow().dataset.action).toBe("compact:default");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {

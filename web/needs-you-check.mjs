@@ -9,6 +9,8 @@
 //   reconnect  the SPA is offline while the bridge restarts and the move is
 //              made; the greeting's refetch must bring it in. Run after
 //              churn, this is #123's churn → offline → restart → online.
+//              Offline only once no page holds a relay socket, and each page
+//              must dial a fresh session after it is back online (#130).
 //   killed     the bridge is SIGKILLed while the page is online and comes
 //              straight back (#123). No close reaches the page, so its ICE
 //              restart reaches the NEW process, which answers it: the restart
@@ -110,6 +112,23 @@ const netem = (verb) => docker(`docker run --rm --net container:${PROJECT}-bridg
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+// Every WebSocket each page opens, and whether it is still open (#130).
+// `setOffline` refuses new connections but leaves an open socket alive, so a
+// page still holding its relay socket can signal a restart through it while
+// "offline" — and reach the restarted bridge without the fresh dial the
+// reconnect scenario is there to prove.
+await context.addInitScript(() => {
+  const Native = globalThis.WebSocket;
+  const sockets = new Set();
+  globalThis.__openSockets = () => [...sockets].filter((socket) => socket.readyState <= Native.OPEN).length;
+  globalThis.WebSocket = class TrackedWebSocket extends Native {
+    constructor(...args) {
+      super(...args);
+      sockets.add(this);
+      this.addEventListener("close", () => sockets.delete(this));
+    }
+  };
+});
 const login = await context.newPage();
 await login.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
 await login.fill('input[name="email"]', "qa@localhost");
@@ -154,6 +173,16 @@ const dashNeedsYou = (title) => dash.evaluate((wanted) => ({
   count: Number(document.querySelector('[data-dashboard-tab="needsYou"] .issue-dashboard-count')?.textContent ?? NaN),
   listed: [...document.querySelectorAll('[role="tabpanel"] .issue-dashboard-title')].some((one) => one.textContent.includes(wanted)),
 }), title);
+
+/** How many WebSockets each page holds open (or opening) right now. */
+const openSockets = () => Promise.all([list, dash].map((page) =>
+  page.evaluate(() => globalThis.__openSockets?.() ?? NaN)));
+/** Each page's clock, and the times its peer links first connected a session
+ *  (the `connected` / `initial` diagnostic core/peerLink.js records). */
+const pageNow = (page) => page.evaluate(() => Date.now());
+const freshDials = (page, since) => page.evaluate((after) =>
+  (globalThis.buildConnectionDiagnostics?.().events || [])
+    .filter((entry) => entry.event === "connected" && entry.phase === "initial" && entry.at >= after), since);
 
 let failed = false;
 const report = (ok, name, detail = "") => {
@@ -234,6 +263,10 @@ console.log("CHURN_END " + n);`);
 
 async function reconnect() {
   const target = await inReview("reconnect");
+  // A socket still open would carry signalling through the "offline" page;
+  // see the init script. The SPA closes each once nothing negotiates on it.
+  await until("every page to hold no open WebSocket", async () =>
+    (await openSockets()).every((count) => count === 0), 60000);
   await context.setOffline(true);
   docker(`${compose} restart bridge`);
   await until("the restarted bridge to answer", async () => {
@@ -250,10 +283,20 @@ async function reconnect() {
   report(held, "reconnect: the move had not reached the offline page (the gap is real)");
   if (!held) await dumpDiagnostics("reconnect-held");
   await context.setOffline(false);
+  const onlineAt = await Promise.all([list, dash].map(pageNow));
   console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}] ONLINE`);
   // The SPA's own reconnect backs off while it was offline, so the deadline
   // covers that backoff too; the time is from going back online.
-  if (!(await bothDrop("reconnect", target, 180000))) await dumpDiagnostics("reconnect");
+  let dropped = await bothDrop("reconnect", target, 180000);
+  // The restarted bridge holds none of the old sessions, so what brought the
+  // move in must be a session dialled after the page came back.
+  for (const [index, [name, page]] of [["list", list], ["dash", dash]].entries()) {
+    const dials = await freshDials(page, onlineAt[index]);
+    report(dials.length > 0, `reconnect: the ${name} page dialled a fresh session once online`,
+      dials.map((entry) => entry.connection).join(", "));
+    dropped &&= dials.length > 0;
+  }
+  if (!dropped) await dumpDiagnostics("reconnect");
   await list.screenshot({ path: `${SHOTS}/${LABEL}-reconnect-list.png` });
 }
 

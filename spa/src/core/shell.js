@@ -170,9 +170,13 @@ export function standShell(route) {
   // ever held stands the reader nowhere; the page names it (core/deviceNotice.js).
   const context = parts ? surfaceContext(route) : null;
   const key = parts && context ? parts.key : null;
-  if (live && live.key === key && key) return live.selection;
+  // The same standing over the same machine's context is kept. A machine
+  // retired and landed anew is a new context, and the rail over the old one
+  // stands on a retired repository (core/agentRail.js `standing`), so the
+  // route's shell is stood up again over the new one, from the cache.
+  if (live && live.key === key && key && live.context === context) return live.selection;
   teardown();
-  live = { key, selection: createAgentSelection(), late: {}, rail: null, console: null };
+  live = { key, context, selection: createAgentSelection(), late: {}, rail: null, console: null };
   if (!key) return live.selection;
   mountShellParts(parts, context);
   return live.selection;

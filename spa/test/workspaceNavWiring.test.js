@@ -38,7 +38,7 @@ import { renderWorkspace } from "../src/views/workspaceView.js";
 import { adoptDeviceSession, resetDeviceContexts } from "../src/core/deviceContexts.js";
 import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
-import { wipeCache } from "../src/core/localCache.js";
+import { readCached, wipeCache } from "../src/core/localCache.js";
 import { createViewingContext } from "../src/core/viewingContext.js";
 
 const b64 = (text) => Buffer.from(text, "utf8").toString("base64");
@@ -206,5 +206,77 @@ describe("a workspace with two directories, one not git", () => {
     expect(document.querySelector(".workspace-dirtab.current").textContent).toBe("Repository");
     expect(reads("repo")).toEqual([]);
     expect(asked.filter(({ method }) => method.startsWith("git."))).toEqual([]);
+  });
+
+  // A kept surface's offer is still mounted while another directory shows: the
+  // options it asked for settle it there, and open nothing over the other one.
+  describe("Initialize Git asked for, then left before the machine answers", () => {
+    const offer = () => document.querySelector('[data-surface="assets"] [data-init-git]');
+    const dialog = () => document.querySelector(".modal-workspace-init");
+    const tab = (sourceId) => document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`);
+    const optionsAddress = { deviceId: "dev-1", entityId: "ws-1", kind: "git-init-options", sub: "assets" };
+
+    /** The machine, holding its first answer to the options until `settle`. */
+    const holdFirstOptions = () => {
+      let settle;
+      const held = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      let first = true;
+      adoptDeviceSession({ ...fakeSession("dev-1"), call: vi.fn(async (method, params) => {
+        if (method === "workspace.git_init_options" && first) {
+          first = false;
+          asked.push({ method, params });
+          return held;
+        }
+        return machine(method, params);
+      }) });
+      return settle;
+    };
+
+    const askThenLeave = async () => {
+      await open({ name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" });
+      offer().click();
+      expect(offer().disabled).toBe(true);
+      tab("repo").click();
+      await vi.waitFor(() => expect(document.querySelector('[data-surface="repo"] .gitpane .crail-host')).not.toBeNull());
+      expect(App.route.sourceId).toBe("repo");
+    };
+
+    const comeBackAndOpen = async () => {
+      tab("assets").click();
+      expect(App.route.sourceId).toBe("assets");
+      await flush();
+      expect(dialog()).toBeNull();
+      expect(offer().disabled).toBe(false);
+      offer().click();
+      await vi.waitFor(() => expect(dialog()?.textContent).toContain("/src/assets"));
+    };
+
+    it("settles on the answer while hidden, files it, and opens only when asked again", async () => {
+      const settle = holdFirstOptions();
+      await askThenLeave();
+      settle.resolve({
+        workspace_id: "ws-1", source_id: "assets",
+        workspace: { path: "/w/ws-1/assets", is_git: false, available: true },
+        source: { path: "/src/assets", is_git: false, available: true },
+      });
+      await vi.waitFor(async () => expect((await readCached(optionsAddress))?.value.source.path).toBe("/src/assets"));
+      await vi.waitFor(() => expect(offer().disabled).toBe(false));
+      // Nothing opened over Repository.
+      expect(dialog()).toBeNull();
+      expect(document.querySelector('[data-surface="assets"]').hidden).toBe(true);
+      await comeBackAndOpen();
+    });
+
+    it("says a failure beside its own offer while hidden, and the offer is usable again", async () => {
+      const settle = holdFirstOptions();
+      await askThenLeave();
+      settle.reject(new Error("the machine went away"));
+      await vi.waitFor(() => expect(offer().disabled).toBe(false));
+      expect(dialog()).toBeNull();
+      expect(document.querySelector('[data-surface="assets"] .workspace-init-open-status').textContent)
+        .toBe("Could not load Git options: the machine went away");
+      await comeBackAndOpen();
+      expect(document.querySelector('[data-surface="assets"] .workspace-init-open-status').textContent).toBe("");
+    });
   });
 });

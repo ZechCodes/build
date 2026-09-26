@@ -623,6 +623,64 @@ describe("workspace surface", () => {
     expect(mountConsole).toHaveBeenCalledTimes(1);
   });
 
+  // Every directory Changes has shown keeps its surface, and each carries a
+  // Retry: they are one action, and the one showing says what it is doing.
+  describe("Retry across kept surfaces", () => {
+    const mixed = {
+      ...workspace,
+      status: "failed",
+      directories: [
+        { source_id: "repo", name: "Repository", is_git: true, status: "ready" },
+        { source_id: "assets", name: "Assets", is_git: false, status: "failed" },
+      ],
+    };
+    const repaired = { ...mixed, status: "ready", directories: mixed.directories.map((directory) => ({ ...directory, status: "ready" })) };
+    const shown = (selector) => document.querySelector(`.workspace-changes-surface:not([hidden]) ${selector}`);
+    const hidden = (selector) => document.querySelector(`.workspace-changes-surface[hidden] ${selector}`);
+
+    /** Repository → Assets → Repository, with the machine holding its answer
+     *  to Retry until `settle`; then Retry pressed twice on the surface showing. */
+    const revisitAndPressTwice = async () => {
+      let settle;
+      const held = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+      App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
+      const call = device("dev-1", async (method) => method === "workspace.retry" ? held : mixed);
+      await standUp();
+      for (const sourceId of ["assets", "repo"]) {
+        document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`).click();
+        await vi.waitFor(() => expect(shown("[data-workspace-action]")).not.toBeNull());
+      }
+      expect(document.querySelectorAll("[data-workspace-action]")).toHaveLength(2);
+      expect(shown("[data-workspace-action]").closest("[data-surface]").dataset.surface).toBe("repo");
+      const pressed = shown("[data-workspace-action]");
+      pressed.click();
+      pressed.click();
+      shown("[data-workspace-action]").click();
+      return { call, settle };
+    };
+    const retries = (call) => call.mock.calls.filter(([method]) => method === "workspace.retry");
+
+    it("asks once however often it is pressed, and says it is asking on the surface showing", async () => {
+      const { call, settle } = await revisitAndPressTwice();
+      expect(shown("[data-workspace-action]").disabled).toBe(true);
+      expect(hidden("[data-workspace-action]").disabled).toBe(true);
+      settle.resolve(repaired);
+      await vi.waitFor(() => expect(shown(".workspace-action-status")?.textContent).toBe("Workspace ready."));
+      expect(retries(call)).toEqual([["workspace.retry", { workspace_id: "ws-1" }]]);
+      expect(shown("[data-workspace-action]")).toBeNull();
+      expect(hidden(".workspace-action-status").textContent).toBe("Workspace ready.");
+    });
+
+    it("says a failure on the surface showing, and can be pressed again", async () => {
+      const { call, settle } = await revisitAndPressTwice();
+      settle.reject(new Error("The workspace could not be prepared."));
+      await vi.waitFor(() => expect(shown(".workspace-action-status.error")?.textContent).toBe("The workspace could not be prepared."));
+      expect(retries(call)).toHaveLength(1);
+      expect(shown("[data-workspace-action]").disabled).toBe(false);
+      expect(hidden(".workspace-action-status.error").textContent).toBe("The workspace could not be prepared.");
+    });
+  });
+
   // #174: "Just make sure that non-git directories are shown with the option
   // to init git." The offer is Changes' surface for such a directory, and once
   // it has git the surface is its commit rail — the view is not built again.

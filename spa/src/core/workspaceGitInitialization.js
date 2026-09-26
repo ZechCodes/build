@@ -140,7 +140,16 @@ function createDialogController({ options, callRpc, workspaceId, sourceId, isAct
   return modal;
 }
 
-export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, callRpc, cacheScope, isActive, onUpdate }) {
+/**
+ * The offer to initialize Git for one directory: a button, and the dialog it
+ * opens. `isActive()` is whether its directory is the one showing — the only
+ * place a dialog may open over; `holds()` whether the offer is still mounted at
+ * all (it defaults to `isActive`). A kept surface is mounted while another
+ * directory shows (views/workspaceChanges.js): an answer landing while it is
+ * hidden still settles it — its options are filed, its button is usable again,
+ * a failure is said beside it — and opens nothing.
+ */
+export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, callRpc, cacheScope, isActive, holds = isActive, onUpdate }) {
   let dialog = null;
   let loading = false;
   let opening = false;
@@ -173,24 +182,32 @@ export function mountWorkspaceGitInitialization({ host, workspaceId, sourceId, c
     revision += 1;
     latestRead = paintFromCache();
   }) : () => {};
+  // Asked for while its directory showed, and answered after it was left: no
+  // dialog opened, and none opens later on a push the reader never asked to
+  // see. The button is theirs again when they come back.
+  const settled = () => {
+    loading = false;
+    if (!dialog) opening = false;
+    if (holds()) button.disabled = false;
+  };
   button.onclick = async () => {
     if (loading || dialog) return;
     loading = true;
     opening = true;
     button.disabled = true;
+    status.textContent = "";
     try {
       await paintFromCache();
       const startedAt = revision;
       const pulled = await callRpc("workspace.git_init_options", { workspace_id: workspaceId, source_id: sourceId });
-      if (!isActive()) return;
+      if (!holds()) return;
       if (!address || revision !== startedAt) return;
       await writeCached(address, pulled);
       await latestRead;
     } catch (error) {
-      if (isActive() && !dialog) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
+      if (holds() && !dialog) status.textContent = `Could not load Git options: ${errorMessage(error)}`;
     } finally {
-      loading = false;
-      if (isActive()) button.disabled = false;
+      settled();
     }
   };
   return { dispose: () => { opening = false; unwatch(); dialog?.close(); } };

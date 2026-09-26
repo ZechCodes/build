@@ -124,50 +124,64 @@ async function readGitOptions(state, sourceId) {
   state.paintTabs?.();
 }
 
+/** A failed workspace's Retry is one action, however many kept surfaces carry
+ *  its button: each directory Changes has shown holds a host of its own, and
+ *  every one of them says the same thing — pending, what came of it — so the
+ *  one showing is never behind the others, and a second press while one is
+ *  asking asks nothing. */
 function installWorkspaceAction(state, workspace) {
   if (workspace?.status !== "failed") return;
-  let current = workspace;
-  let host = null;
-  let pending = false;
-  let message = "";
-  let failed = false;
-  const render = (target) => {
-    host = target;
-    if (current?.status !== "failed") {
-      host.innerHTML = `<span class="workspace-action-status" role="status">${esc(message)}</span>`;
-      return;
+  const retry = { current: workspace, pending: false, message: "", failed: false };
+  const hosts = new Set();
+  const paintAll = () => {
+    for (const host of hosts) {
+      if (host.isConnected) paintRetry(host, retry, submit);
+      else hosts.delete(host);
     }
-    host.innerHTML = `<span class="workspace-action-status ${failed ? "error" : ""}" role="status">${esc(message)}</span>
-      <button class="btn mini" type="button" data-workspace-action${pending ? " disabled" : ""}>Retry</button>`;
-    host.querySelector("[data-workspace-action]").onclick = async () => {
-      pending = true;
-      message = "";
-      failed = false;
-      render(host);
-      try {
-        const answer = await state.callRpc("workspace.retry", { workspace_id: state.route.workspaceId });
-        if (state.disposed) return;
-        state.retryRefreshPending = true;
-        await writeWorkspaceResult(state, answer.workspace || answer);
-        message = current?.status === "ready" ? "Workspace ready." : "Retry finished.";
-      } catch (error) {
-        if (state.disposed) return;
-        failed = true;
-        message = error.message || String(error);
-      } finally {
-        state.retryRefreshPending = false;
-        pending = false;
-        if (!state.disposed) render(host);
-      }
-    };
   };
+  const submit = () => submitRetry(state, retry, paintAll);
   state.onWorkspaceCached = (workspaceRow) => {
-    current = workspaceRow;
-    if (host?.isConnected) render(host);
+    retry.current = workspaceRow;
+    paintAll();
   };
   // On the surface, where the Git offer hangs (paintWorkspaceAction) — the bar
   // over a workspace is its picker and nothing else (#174).
-  state.workspaceAction = render;
+  state.workspaceAction = (host) => {
+    hosts.add(host);
+    paintRetry(host, retry, submit);
+  };
+}
+
+function paintRetry(host, retry, submit) {
+  const status = `<span class="workspace-action-status${retry.failed ? " error" : ""}" role="status">${esc(retry.message)}</span>`;
+  if (retry.current?.status !== "failed") {
+    host.innerHTML = status;
+    return;
+  }
+  host.innerHTML = `${status}
+      <button class="btn mini" type="button" data-workspace-action${retry.pending ? " disabled" : ""}>Retry</button>`;
+  host.querySelector("[data-workspace-action]").onclick = submit;
+}
+
+async function submitRetry(state, retry, paintAll) {
+  if (retry.pending) return;
+  Object.assign(retry, { pending: true, message: "", failed: false });
+  paintAll();
+  try {
+    const answer = await state.callRpc("workspace.retry", { workspace_id: state.route.workspaceId });
+    if (state.disposed) return;
+    state.retryRefreshPending = true;
+    await writeWorkspaceResult(state, answer.workspace || answer);
+    retry.message = retry.current?.status === "ready" ? "Workspace ready." : "Retry finished.";
+  } catch (error) {
+    if (state.disposed) return;
+    retry.failed = true;
+    retry.message = error.message || String(error);
+  } finally {
+    state.retryRefreshPending = false;
+    retry.pending = false;
+    if (!state.disposed) paintAll();
+  }
 }
 
 /** A failed workspace's Retry, and what came of it, where Changes keeps its
@@ -299,6 +313,7 @@ function paintGitInitialization(rail, state, sourceId, directory) {
       host: initHost, workspaceId: state.route.workspaceId, sourceId, callRpc: state.callRpc,
       cacheScope: state.context.cacheScope,
       isActive: () => workspaceSourceIsActive(state, sourceId),
+      holds: () => workspaceHoldsSource(state, sourceId),
       onUpdate: async (answer) => {
         if (answer.workspace) await writeWorkspaceResult(state, answer.workspace);
         await writeGitResult(state, sourceId, answer);

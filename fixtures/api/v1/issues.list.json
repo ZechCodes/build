@@ -61,6 +61,9 @@
           }
         },
         "attachments": [],
+        "watched": true,
+        "read_through": "ic-01K5ZQ9A1B2C3D4E5F6G7H8J9K",
+        "unread_count": 2,
         "created_by": {
           "kind": "user"
         },
@@ -76,6 +79,11 @@
       "gap_ms": 21600000,
       "now_ms": 1758277020000
     }
+  },
+  "unread_counts": {
+    "since": "1.29.0",
+    "note": "A watched issue's row says how many timeline entries after its read_through are not the user's own, the count its inbox row carries (#104). An unwatched issue carries no count.",
+    "fields": ["unread_count"]
   },
   "paging": {
     "since": "1.25.0",

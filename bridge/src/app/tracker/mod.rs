@@ -188,7 +188,15 @@ impl AppState {
             let issue = self.backfill_issue_identities(issue, &timeline, &rosters)?;
             let issue = self.backfill_done_at(issue, &timeline)?;
             let issue = self.issue_with_read_identities(issue, &timeline, &rosters);
-            rows.push(issue_json(project_id, &issue));
+            let mut row = issue_json(project_id, &issue);
+            // A watched issue says how much of it is unread, counted as its
+            // inbox row counts it, so the Issues tab and the rail's badges
+            // read it off the list without a timeline each (#104). An issue
+            // nobody watches never shows a count, so it carries none.
+            if issue.watched {
+                row["unread_count"] = Value::from(inbox::unread_since_mark(&issue, &timeline));
+            }
+            rows.push(row);
         }
         Ok(rows)
     }

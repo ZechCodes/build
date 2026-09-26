@@ -862,6 +862,7 @@ other names announce support for clients that choose to consume them:
 | `bodies.pages` | `fs.read`, `git.diff`, `git.show` and `git.changeset_diff` accept `range` and answer one page of whole lines with its `range` | 1.26.0 |
 | `issues.createdUserMentions` | An agent's `create_issue` with `mention_user: true` marks the `created` event with optional `mentions_user: true` and watches the issue for the user | 1.27.0 |
 | `board.conversationSessions` | A conversation's feed row (`board.list` items, `state` pushes) carries its own `session_started_ms` and `last_activity_ms`; the project conversation's row is how the inbox orders the project agent (#103) | 1.28.0 |
+| `issues.unreadCounts` | Each watched issue on `issues.list` carries `unread_count`: the timeline entries after its `read_through` that are not the user's own, the count its inbox row says. An unwatched issue carries none (#104) | 1.29.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

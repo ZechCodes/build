@@ -271,6 +271,15 @@
 .workspace-gitinit { padding:var(--pane-top) var(--pane-gutter); }
 .workspace-gitinit-say { margin:0 0 6px; color:var(--dim); font-size:13px; }
 .workspace-gitinit .workspace-init-host { margin-top:0; padding:0; }
+/* A failed workspace's Retry and its outcome (views/workspaceView.js), just
+   before the Git offer: at the foot of a commit rail, under the sentence on a
+   directory without Git. */
+.workspace-action-host { display:flex; align-items:center; gap:8px; min-width:0;
+  padding:10px 13px 0 var(--pane-gutter); font-size:12px; }
+.workspace-gitinit .workspace-action-host { padding:0 0 8px; }
+.workspace-action-status { min-width:0; color:var(--ink2); }
+.workspace-action-status:empty { display:none; }
+.workspace-action-status.error { color:var(--red); }
 
 /* ---- work surfaces: a project -----------------------------------------------
    The project's own page: the workspaces it holds, listed in the rail's row

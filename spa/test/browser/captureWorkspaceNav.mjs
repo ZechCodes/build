@@ -1,7 +1,8 @@
 // Capture the workspace view's navigation for #174, in a real Chromium against
 // the production app shell: the toolbar's `project / workspace` picker, the
 // rail (Changes, Files, Issues, Settings), the Files tree with a root per
-// directory, and the Changes tab row standing on the directory without git.
+// directory, and the Changes tab row standing on the directory without git —
+// and a failed workspace's Retry on that surface, where the bar has none.
 // A workspace with two directories, one of them not git, on one scripted
 // machine; everything else is the app's own modules and sheets.
 // Run from spa/: node test/browser/captureWorkspaceNav.mjs [output directory]
@@ -16,7 +17,7 @@ const bodyHtml = indexHtml.match(/<body>([\s\S]*)<\/body>/)[1];
 
 /** Runs in the page: the machine's records, a session answering it, and the
  *  app standing on the workspace. */
-async function standOnWorkspace({ hash, theme }) {
+async function standOnWorkspace({ hash, theme, status }) {
   document.documentElement.dataset.theme = theme;
   // The inbox folded away, as a reader working in a workspace keeps it: the
   // capture is of the workspace, and the inbox is not mounted here.
@@ -24,7 +25,7 @@ async function standOnWorkspace({ hash, theme }) {
   const { app, cache, feed, merge, contexts, toolbar, events, router } = window.__layoutModules;
   const project = { project_id: "p-1", name: "Build", path: "/home/zech/Projects/build" };
   const workspace = {
-    id: "ws-1", workspace_id: "ws-1", project_id: "p-1", name: "Workspace nav", status: "ready",
+    id: "ws-1", workspace_id: "ws-1", project_id: "p-1", name: "Workspace nav", status,
     root: "/home/zech/.build/workspaces/ws-1", entity_id: "run-1",
     directories: [
       { source_id: "build", name: "Build", is_git: true },
@@ -111,14 +112,14 @@ async function mountApp(page, basePath) {
   await page.evaluate(() => document.fonts.ready);
 }
 
-async function open(page, basePath, hash, theme) {
+async function open(page, basePath, hash, theme, status = "ready") {
   await mountApp(page, basePath);
   // The app first, the way main.js imports it: its module graph has cycles
   // that only settle in that order.
   await loadBrowserModules(page, { app: MODULES.app }, basePath);
   await page.evaluate(() => { window.__app = window.__layoutModules.app; });
   await loadBrowserModules(page, MODULES, basePath);
-  await page.evaluate(standOnWorkspace, { hash, theme });
+  await page.evaluate(standOnWorkspace, { hash, theme, status });
 }
 
 const FILES = "#/device/dev-1/project/p-1/workspace/ws-1/directory/design/files?path=palette.md";
@@ -154,15 +155,36 @@ async function captureWidth(page, basePath, { name, theme, phone = false }) {
   await page.screenshot({ path: `${output}/${name}-changes-nongit-${theme}.png` });
 }
 
+/** A workspace whose setup failed: Retry on Changes, under the sentence on the
+ *  directory without git and at the foot of the commit rail on the one with it. */
+async function captureFailed(page, basePath, { name, theme, phone = false }) {
+  await open(page, basePath, CHANGES, theme, "failed");
+  await page.waitForSelector(".workspace-gitinit [data-workspace-action]");
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${output}/${name}-failed-nongit-${theme}.png` });
+  await page.locator('.workspace-dirtab[data-directory="build"]').click();
+  await page.waitForSelector('[data-surface="build"] .crail-host [data-workspace-action]', { state: "attached" });
+  await page.waitForTimeout(1200);
+  // On a phone the commit rail is a drawer, and the offers are in it.
+  if (phone) {
+    await page.locator('[data-surface="build"] [data-pane-handle]').tap();
+    await page.waitForTimeout(400);
+  } else await page.mouse.move(5, 5);
+  await page.screenshot({ path: `${output}/${name}-failed-git-${theme}.png` });
+}
+
 for (const theme of ["dark"]) {
   await withLayoutPage(async ({ page, basePath }) => {
     await captureWidth(page, basePath, { name: "desktop", theme });
+    await captureFailed(page, basePath, { name: "desktop", theme });
     const phone = await page.context().browser().newContext({
       viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, hasTouch: true, isMobile: true,
     });
     const tap = await phone.newPage();
     await tap.goto(page.url());
     await captureWidth(tap, basePath, { name: "phone", theme, phone: true });
+    await captureFailed(tap, basePath, { name: "phone", theme, phone: true });
     await phone.close();
   }, { width: 1600, height: 900 });
 }

@@ -86,7 +86,7 @@ const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 
 const { App } = await import("../src/app.js");
-const { clearProjectTabHandler, initToolbar, setProjectTabHandler, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { clearProjectTabHandler, clearToolbarVerb, initToolbar, setProjectTabHandler, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { routeFromHash } = await import("../src/core/router.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
@@ -276,8 +276,9 @@ describe("the workspace picker", () => {
     for (const gone of [".tb-directories", "[data-directory]", "[data-workspace-issues]", "[data-workspace-settings]", ".tb-back", "[data-project-back]"]) {
       expect([gone, bar().querySelector(gone)]).toEqual([gone, null]);
     }
-    // The verb slot stays: a failed workspace's Retry is written there.
-    expect(bar().querySelector("#tb-verb")).not.toBeNull();
+    // No verb slot either: a failed workspace's Retry is on its surface.
+    expect(bar().querySelector("#tb-verb")).toBeNull();
+    expect(bar().querySelector(".tb-right")).toBeNull();
   });
 
   // The back chevron is gone; the way to the project's own page is the
@@ -420,6 +421,16 @@ describe("the workspace toolbar", () => {
   it("leaves finish and contextual actions out of the navigation toolbar", async () => {
     expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
     expect(bar().querySelector('[data-select="more"]')).toBeNull();
+  });
+
+  // Only a workspace's bar lost its verb slot (#174): a branch still stands its
+  // Done there (views/branchView.js).
+  it("keeps the verb slot on a branch, where its view writes Done", async () => {
+    const done = (host) => { host.innerHTML = '<button class="btn mini" type="button">Done</button>'; };
+    setToolbarVerb(done);
+    expect(bar().querySelector("#tb-verb .btn").textContent).toBe("Done");
+    clearToolbarVerb(done);
+    expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
   });
 });
 

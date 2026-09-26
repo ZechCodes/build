@@ -10,7 +10,6 @@ import { App, go, markRoute } from "../app.js";
 import { esc } from "../core/text.js";
 import { mountWorkspaceRail } from "../core/workspaceRail.js";
 import { shellSelection } from "../core/shell.js";
-import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { renderFilesTab } from "./files.js";
 import { directoryId, selectedDirectory, workspaceDirectoryModel, workspaceScope } from "../core/workspaceModel.js";
 import { workspaceLayoutCacheId } from "../core/directoryScope.js";
@@ -166,8 +165,20 @@ function installWorkspaceAction(state, workspace) {
     current = workspaceRow;
     if (host?.isConnected) render(host);
   };
-  state.toolbarAction = render;
-  setToolbarVerb(render);
+  // On the surface, where the Git offer hangs (paintWorkspaceAction) — the bar
+  // over a workspace is its picker and nothing else (#174).
+  state.workspaceAction = render;
+}
+
+/** A failed workspace's Retry, and what came of it, where Changes keeps its
+ *  offers: just before the Git offer where there is one — at the foot of a
+ *  commit rail, under the sentence on a directory without Git. */
+function paintWorkspaceAction(list, state) {
+  if (!state.workspaceAction || list.querySelector(".workspace-action-host")) return;
+  const host = document.createElement("div");
+  host.className = "workspace-action-host";
+  list.insertBefore(host, list.querySelector(":scope > .workspace-init-host"));
+  state.workspaceAction(host);
 }
 
 function mountDirectoryPane(body, options) {
@@ -349,14 +360,16 @@ async function probeSourceGit(state, sourceId) {
 const SHOWN_SURFACE = ".workspace-changes-surface:not([hidden])";
 const offerHost = (body) => body.querySelector(`${SHOWN_SURFACE} .workspace-gitinit-offer, ${SHOWN_SURFACE} .crail-host`);
 
-/** Hang the git-initialization offer where Changes keeps it, for the directory
- *  standing. */
+/** Hang a failed workspace's Retry and the git-initialization offer where
+ *  Changes keeps them, for the directory standing. */
 function gitOfferPainter(body, state) {
   return () => {
     const directory = selectedDirectory(state.workspace, state.sourceId);
     if (!directory) return false;
     const list = offerHost(body);
-    if (list) paintGitInitialization(list, state, state.sourceId, directory);
+    if (!list) return true;
+    paintWorkspaceAction(list, state);
+    paintGitInitialization(list, state, state.sourceId, directory);
     return true;
   };
 }
@@ -370,7 +383,8 @@ function observeTabs(body, state, paintTabs, dispose) {
   const observer = new MutationObserver(() => {
     const list = offerHost(body);
     const git = gitInitOf(state, state.sourceId);
-    if (list && (!git.painted || (git.needsHost && !list.querySelector(".workspace-init-host")))) paintTabs();
+    const lost = (git.needsHost && !list?.querySelector(".workspace-init-host")) || (state.workspaceAction && !list?.querySelector(".workspace-action-host"));
+    if (list && (!git.painted || lost)) paintTabs();
   });
   paintTabs();
   observer.observe(body, { childList: true, subtree: true });
@@ -467,7 +481,7 @@ export async function renderWorkspace() {
     mountDeviceNotice(root, route.deviceId);
     return;
   }
-  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, toolbarAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
+  const state = { selection: shellSelection(), route, context, callRpc: context.rpc, disposed: false, pane: null, workspaceAction: null, refreshPane: null, workspace: null, sourceId: null, gitInit: new Map(), paintTabs: null, rail: null, gitInitialization: [], unwatchFeed: null, workspaceRead: null, gitOptionsRead: null, gitOptionsRevision: new Map(), retryRefreshPending: false };
   const unwatchWorkspace = subscribeCache(workspaceListAddress(state), () => {
     state.workspaceRead = readWorkspaceResult(state);
   });
@@ -508,7 +522,6 @@ export async function renderWorkspace() {
     if (App.routeLeaveGuard === state.pane?.canLeave) App.routeLeaveGuard = null;
     state.pane?.dispose?.();
     state.gitInitialization.forEach((controller) => controller.dispose());
-    clearToolbarVerb(state.toolbarAction);
   };
   // The workspace is a record: the pass writes the machine's checkouts and a
   // board push rewrites them, so the surface stands on the list rather than

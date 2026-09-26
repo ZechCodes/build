@@ -59,13 +59,19 @@ function projectTabsHtml(projectTabs) {
   return `<div class="tb-project-tabs" role="tablist" aria-label="Project pages">${tabs}</div>`;
 }
 
+/** The verb slot a standing view writes into (core/toolbar.js setToolbarVerb)
+ *  — Done on a branch. A workspace's bar is its picker and nothing else (#174):
+ *  what a workspace can do is on its own surface. */
+const verbSlotHtml = (kind) =>
+  kind === "workspace" ? "" : '<div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>';
+
 /** Pure: the toolbar's markup for one identity. Names come from repos, agents
  *  and the user, so every one of them is escaped. */
 export function toolbarHtml({ project, kind, label, projectTabs = [] }) {
   return `<div class="toolbar">
     ${identityHtml({ project, kind, label })}
     ${projectTabsHtml(projectTabs)}
-    <div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>
+    ${verbSlotHtml(kind)}
   </div>`;
 }
 

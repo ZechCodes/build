@@ -514,19 +514,44 @@ describe("workspace surface", () => {
     expect(mountGitPane).toHaveBeenCalledTimes(1);
   });
 
-  it("does not offer Finish for a ready workspace", async () => {
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+  // #174: the bar over a workspace is its picker and nothing else, so a failed
+  // workspace's Retry is on its Changes surface, where the Git offer hangs.
+  const retry = () => document.querySelector("#tabbody [data-workspace-action]");
+  const inBar = () => document.querySelector("#toolbar [data-workspace-action], #toolbar .workspace-action-status");
+
+  it("does not offer Retry for a ready workspace", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async () => ({ ...workspace, status: "ready" }));
     await standUp();
     expect(document.querySelector("[data-workspace-action]")).toBeNull();
   });
 
+  it("offers Retry for a failed workspace on its Changes surface, and nothing in the bar", async () => {
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
+    device("dev-1", async () => ({ ...workspace, status: "failed" }));
+    await standUp();
+    // Under the sentence on a directory without Git, beside its offer…
+    const offer = document.querySelector(".workspace-gitinit .workspace-gitinit-offer");
+    expect(offer.querySelector(".workspace-action-host [data-workspace-action]").textContent).toBe("Retry");
+    expect(offer.querySelector("[data-init-git]")).not.toBeNull();
+    expect(inBar()).toBeNull();
+    expect(document.querySelector("#tb-verb").innerHTML).toBe("");
+
+    expect(offer.querySelector(".workspace-action-host").nextElementSibling.className).toBe("workspace-init-host");
+
+    // …and at the foot of the commit rail on one with it, where its offer hangs.
+    document.querySelector('.workspace-dirtab[data-directory="repo"]').click();
+    await vi.waitFor(() => expect(document.querySelector('[data-surface="repo"] .crail-host > .workspace-action-host [data-workspace-action]')).not.toBeNull());
+    expect(document.querySelector('[data-surface="repo"] .crail-host').lastElementChild.className).toBe("workspace-action-host");
+    expect(inBar()).toBeNull();
+  });
+
   it("redraws a failed workspace from a real cache write and announcement", async () => {
     const failed = { ...workspace, status: "failed" };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     const call = device("dev-1", async () => failed);
     await standUp();
-    expect(document.querySelector("[data-workspace-action]").textContent).toBe("Retry");
+    expect(retry().textContent).toBe("Retry");
 
     const address = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
     await writeCached(address, [{ ...failed, status: "ready" }]);
@@ -537,24 +562,25 @@ describe("workspace surface", () => {
 
   it("refreshes a failed workspace pane after Retry without replacing its terminal console", async () => {
     const failedWorkspace = { ...workspace, status: "failed" };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     const call = device("dev-1", async (method) => method === "workspace.retry" ? { ...workspace, status: "ready" } : failedWorkspace);
     await standUp();
-    const firstGuard = App.routeLeaveGuard;
-    expect(document.querySelector("[data-workspace-action]").textContent).toBe("Retry");
-    document.querySelector("[data-workspace-action]").click();
-    await vi.waitFor(() => expect(renderFilesTab).toHaveBeenCalledTimes(2));
+    expect(retry().textContent).toBe("Retry");
+    retry().click();
+    await vi.waitFor(() => expect(mountGitPane).toHaveBeenCalledTimes(2));
+    expect(mountGitPane.mock.results[0].value.dispose).toHaveBeenCalled();
     expect((await readCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }))?.value[0].status).toBe("ready");
     expect(call).toHaveBeenCalledWith("workspace.retry", { workspace_id: "ws-1" });
-    expect(App.routeLeaveGuard).not.toBe(firstGuard);
     expect(mountConsole).toHaveBeenCalledTimes(1);
+    // What came of it stands on the surface built again, and nothing in the bar.
+    await vi.waitFor(() => expect(document.querySelector("#tabbody .workspace-action-status")?.textContent).toBe("Workspace ready."));
     expect(document.querySelector("[data-workspace-action]")).toBeNull();
-    expect(document.querySelector(".workspace-action-status").textContent).toBe("Workspace ready.");
+    expect(inBar()).toBeNull();
   });
 
   it("keeps a newer summary and another workspace through a late retry result", async () => {
     const failed = { ...workspace, status: "failed", session_started_ms: 100, last_activity_ms: 200 };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.retry"
       ? { ...workspace, status: "ready", session_started_ms: 100, last_activity_ms: 200 }
       : failed);
@@ -564,7 +590,7 @@ describe("workspace surface", () => {
       { ...failed, session_started_ms: 50_000_000, last_activity_ms: 50_000_000 },
       { id: "ws-2", project_id: "p-1", status: "ready" },
     ]);
-    document.querySelector("[data-workspace-action]").click();
+    retry().click();
     await vi.waitFor(async () => {
       const rows = (await readCached(address))?.value;
       expect(rows?.[0]).toMatchObject({ status: "ready", session_started_ms: 50_000_000, last_activity_ms: 50_000_000 });
@@ -572,13 +598,13 @@ describe("workspace surface", () => {
     });
   });
 
-  it("preserves edits in an already-ready source while Retry repairs another source", async () => {
+  it("keeps an already-ready directory's Changes standing while Retry repairs another", async () => {
     const mixedWorkspace = {
       ...workspace,
       status: "failed",
       directories: [
-        { source_id: "repo", name: "Repository", is_git: true, status: "failed" },
-        { source_id: "assets", name: "Assets", is_git: false, status: "ready" },
+        { source_id: "repo", name: "Repository", is_git: true, status: "ready" },
+        { source_id: "assets", name: "Assets", is_git: false, status: "failed" },
       ],
     };
     const repaired = {
@@ -586,16 +612,14 @@ describe("workspace surface", () => {
       status: "ready",
       directories: mixedWorkspace.directories.map((directory) => ({ ...directory, status: "ready" })),
     };
-    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "assets", tab: "files" };
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "ws-1", sourceId: "repo", tab: "changes" };
     device("dev-1", async (method) => method === "workspace.retry" ? repaired : mixedWorkspace);
     await standUp();
-    const originalPane = renderFilesTab.mock.results[0].value;
-    const originalGuard = App.routeLeaveGuard;
-    document.querySelector("[data-workspace-action]").click();
-    await flush();
-    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    const originalPane = mountGitPane.mock.results[0].value;
+    retry().click();
+    await vi.waitFor(() => expect(document.querySelector("#tabbody .workspace-action-status")?.textContent).toBe("Workspace ready."));
+    expect(mountGitPane).toHaveBeenCalledTimes(1);
     expect(originalPane.dispose).not.toHaveBeenCalled();
-    expect(App.routeLeaveGuard).toBe(originalGuard);
     expect(mountConsole).toHaveBeenCalledTimes(1);
   });
 

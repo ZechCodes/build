@@ -96,6 +96,16 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     });
   });
 
+  it("dates the body ranges at 1.26.0 on each body read, keeping each verb's own arrival (#95)", () => {
+    const arrivals = { "fs.read": "1.0.0", "git.diff": "1.0.0", "git.show": "1.0.0", "git.changeset_diff": "1.4.0" };
+    for (const [method, since] of Object.entries(arrivals)) {
+      const fixture = methodFixtures.find(({ body }) => body.method === method).body;
+      expect(fixture.since, method).toBe(since);
+      expect(fixture.ranges, method).toEqual({ since: "1.26.0", params: ["range"], fields: ["range"] });
+      expect(fixture.examples.some((example) => example.params.range), method).toBe(true);
+    }
+  });
+
   it("was introduced within this adapter's major, no later than current", () => {
     // The adapter's floor is where it stops serving OLD bridges; a verb that
     // predates the floor is still one it speaks. What must hold is the major.

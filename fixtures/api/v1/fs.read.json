@@ -15,6 +15,41 @@
     "encoding": "utf-8",
     "revision": "3d2a1f0b9c8e7d6a"
   },
+  "ranges": {
+    "since": "1.26.0",
+    "params": [
+      "range"
+    ],
+    "fields": [
+      "range"
+    ]
+  },
+  "examples": [
+    {
+      "params": {
+        "run_id": "run-7",
+        "path": "logs/build.log",
+        "range": {
+          "offset": 262144,
+          "bytes": 262144
+        }
+      },
+      "result": {
+        "path": "logs/build.log",
+        "size": 4194304,
+        "truncated": false,
+        "mime": "text/plain",
+        "content_b64": "bGluZSA0MDk2CmxpbmUgNDA5Nwo=",
+        "editable": false,
+        "range": {
+          "offset": 262144,
+          "end": 262164,
+          "total": 4194304,
+          "version": "1789012345000000000-4194304"
+        }
+      }
+    }
+  ],
   "errors": [
     "not_found",
     "invalid_params",

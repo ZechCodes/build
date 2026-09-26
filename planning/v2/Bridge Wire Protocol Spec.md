@@ -657,8 +657,9 @@ narrower "needs you" rule it makes possible; see the Issues spec),
 `branches.finishDelete` (`branch.finish` honours `action: "delete"`),
 `workspaces.reclaimBranches` (`workspace.reclaim` deletes the workspace's local
 branches, see below), `settings.workspaceLifecycle` (the reclaim service's
-idle threshold and prune switch on `settings.*`, see below), and
-`issues.listPaged` (`issues.list` pages; see below). The method registry
+idle threshold and prune switch on `settings.*`, see below),
+`issues.listPaged` (`issues.list` pages; see below), and `bodies.pages`
+(body reads in byte ranges; see below). The method registry
 supplies typed verb names, and a small explicit list supplies legacy and
 session-scoped verbs. Contract tests require every method fixture to have an
 announced name and compare an actual `session.hello` reply with that
@@ -701,6 +702,31 @@ ref at a newer commit is left untouched and reported as a refusal.
 Absent or any other action keeps the branch. A bridge that does not announce
 the name keeps the branch whatever the action says, so a client must not
 promise the deletion to one.
+
+`bodies.pages` (since 1.26.0, #95) announces `range` on the body reads:
+`fs.read`, `git.diff`, `git.show` and `git.changeset_diff`. `range` is
+`{offset, bytes}`: the byte offset the page starts at (0, or the `end` of the
+page before) and the most it may carry, clamped to 4 KiB..1 MiB. The answer
+carries the page where the whole body would ride (`content_b64`, `patch`) and
+`range: {offset, end, total}`: where the page's bytes sit in the whole body,
+`end` being the next page's offset and equal to `total` on the last. A page
+ends after its last line end, so each is whole lines a client paints alone;
+only a line longer than a page is cut, at a character boundary. An offset past
+the end answers an empty page at the end; one inside a character is refused.
+`git.diff` and `git.changeset_diff` take exactly one path beside `range`
+(`files[0]`, or the top-level `patch`, is that path's page, under the same
+`content_key` and `diff_key` a whole read answers); `git.show` refuses `range`
+beside `max_bytes`, and still answers the exact `stat` and `patch_bytes`. An
+`fs.read` page is never `editable` and names no `revision` (it is not the
+file), and its `range.version` names the file's modification time and size;
+a patch page's `range.version` is a digest of the whole patch, which moves
+with HEAD and the merge base even where the file's `content_key` does not.
+Pages whose versions differ were cut from different contents. A ranged answer
+is never `truncated`. Offsets are bytes rather than lines because the bridge
+seeks a file to one without reading what comes before it, and the whole
+body's size is known before the first page. A bridge that does not announce
+the name refuses `range` as undeclared, so a client sends it only to one that
+does.
 
 `issues.listPaged` (since 1.25.0, #85) announces `limit` and `cursor` on
 `issues.list` and `next_cursor` in its answer. `limit` is 1 to 500 and asks for
@@ -822,6 +848,7 @@ other names announce support for clients that choose to consume them:
 | `settings.workspaceLifecycle` | `workspace_idle_secs`, `workspace_prune` and `workspace_pinned` on `settings.*` | 1.25.0 |
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
 | `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
+| `bodies.pages` | `fs.read`, `git.diff`, `git.show` and `git.changeset_diff` accept `range` and answer one page of whole lines with its `range` | 1.26.0 |
 
 For a greeting at 1.22.0 or newer, the array is authoritative for the feature
 gates implemented by the current SPA adapter: an absent name leaves its

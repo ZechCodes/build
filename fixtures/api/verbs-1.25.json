@@ -1,6 +1,6 @@
 {
-  "api_version": "1.24.0",
-  "commit": "29cfed3b",
+  "api_version": "1.25.0",
+  "commit": "c07a9d3b",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -279,6 +279,7 @@
     "issues.get",
     "issues.link",
     "issues.list",
+    "issues.listPaged",
     "issues.read_through",
     "issues.reopen",
     "issues.track",
@@ -346,6 +347,7 @@
     "settings.projectAgent",
     "settings.roleModels",
     "settings.set",
+    "settings.workspaceLifecycle",
     "term.ack",
     "term.attach",
     "term.close",
@@ -377,6 +379,7 @@
     "workspace.rename",
     "workspace.retry",
     "workspaces.lifecycle",
+    "workspaces.reclaimBranches",
     "worktree.create",
     "worktree.diff",
     "worktree.finish"

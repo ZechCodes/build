@@ -971,13 +971,17 @@ function mountRailOnContext(host, context, swap) {
     },
   });
   // When this rail's conversations compact (wire 1.10): what the bridge
-  // answered, held until the digest says the same.
+  // answered, written into the cached row where nothing has written it since
+  // the ask. Written once the menu has finished shutting — the row's watch
+  // repaints the menu, and remounting it mid-animation would lose the movement.
   const compactionChoice = createCompactionChoice({
     call: (method, params) => chatRepository.currentCall()(method, params),
-    onSettled: () => {
-      if (standing()) motionSettled().then(paintSurfaceMenu);
+    capture: (entityId) => records.rowWrite(entityId),
+    write: (captured, agentId, rewrite) => motionSettled().then(() =>
+      standing() ? records.patchAgentIfUnwritten(captured, agentId, rewrite) : undefined),
+    onFailure: (error) => {
+      if (standing()) notifyError(COMPACTION_REFUSED, error.message || String(error));
     },
-    onFailure: (error) => notifyError(COMPACTION_REFUSED, error.message || String(error)),
   });
   const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
@@ -3078,7 +3082,7 @@ function mountRailOnContext(host, context, swap) {
   const compactionMenuGroupInFocus = () => {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId || !carriesCompactionSettings(context.deviceId)) return null;
-    return compactionMenuGroup(compactionChoice.agentAsKnown(agent));
+    return compactionMenuGroup(agent);
   };
 
   const mountSurfaces = (panel) => {

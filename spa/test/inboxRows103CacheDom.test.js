@@ -99,6 +99,19 @@ describe("#103 inbox rows, from the cache", () => {
     await vi.waitFor(() => expect(badgeIn(rowByKey(`project-agent:${projectKey}`))).toBe("6"));
   });
 
+  it("lists a project nobody has talked to yet in the inbox proper, not in Recent", async () => {
+    const fresh = { id: "project-2", project_id: "project-2", name: "Fresh", deviceId,
+      projectKey: `${deviceId}/project-2` };
+    await writeCached(address("feed"), { items: [], runs: [], projects: [fresh], workspaces: [] });
+    await writeCached(address("projects"), [fresh]);
+    mountInboxList();
+    await startFeed();
+    const key = `project-agent:${deviceId}/project-2`;
+    await vi.waitFor(() => expect(rowByKey(key)?.parentElement.id).toBe("inbox-list"));
+    expect(rowByKey(key).classList.contains("inbox-quiet")).toBe(false);
+    expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
+  });
+
   it("makes the project agent the head of its block, badged by the fold", async () => {
     await seed();
     mountInboxList();

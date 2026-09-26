@@ -128,7 +128,8 @@ final for this build unless the reviewer overrides them in the thread.
     row for its project agent: the project's name alone, no second line, no
     Done, ordered among the workspace rows by the #98 session rule over the
     project agent's own conversation, and moved to Recent after 24 h idle
-    (never out of the inbox). On the projects face that agent is the block's
+    (never out of the inbox); a project nobody has talked to yet stays in
+    the list, since unknown activity is not age. On the projects face that agent is the block's
     head: its badge is the project agent's unread while the block is open,
     and adds every watched workspace agent's unread while it is folded.
 - **Done button** on an entry when its branch is committed+pushed or its

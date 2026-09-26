@@ -148,10 +148,10 @@ describe("the project agent's row", () => {
     expect(workspaceIsRecent(entry, 200 + RECENT_AFTER_MS + 1)).toBe(true);
   });
 
-  it("stands in Recent for a project nobody has talked to yet", () => {
+  it("stays in the inbox for a project nobody has talked to yet", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project({ entity_id: null, run_id: null })] }));
     expect(entry).toMatchObject({ entityId: null, unreadCount: 0, anchorMs: null, lastActivityMs: null });
-    expect(workspaceIsRecent(entry)).toBe(true);
+    expect(workspaceIsRecent(entry, 1000 * RECENT_AFTER_MS)).toBe(false);
   });
 
   it("reads the freshest roster the board holds, even one it left out of the items", () => {

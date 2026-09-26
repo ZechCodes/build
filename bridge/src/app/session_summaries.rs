@@ -51,6 +51,13 @@ impl AppState {
         }
     }
 
+    /// A deleted conversation, or a deleted project, keeps no summary: the
+    /// map lives as long as the bridge does.
+    pub(in crate::app) fn forget_session_owner(&mut self, owner_id: &str) {
+        self.session_summaries.remove(owner_id);
+        self.session_seen.retain(|(owner, _), _| owner != owner_id);
+    }
+
     pub(in crate::app) fn session_summary(&self, id: &str) -> SessionSummary {
         self.session_summaries.get(id).copied().unwrap_or_default()
     }

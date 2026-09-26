@@ -185,21 +185,17 @@ export const RECENT_AFTER_MS = DAY_MS;
 /** The project agent's row (#103): one per project, named by the project. */
 export const PROJECT_AGENT = "project_agent";
 
-const quietForADay = (entry, nowMs) => nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
+/** The rows of the rail's workspace list that go to Recent: workspaces and
+ *  the project agent's row. */
+const RECENT_KINDS = new Set(["workspace", PROJECT_AGENT]);
 
-/** When each kind of row the rail's workspace list holds belongs in Recent.
- *  A workspace goes once its newest message is over a day old; an older
- *  bridge anchors it today, and unknown activity keeps it in the list. The
- *  project agent's row goes the same way, and a project agent with nothing
- *  said yet has never been active, so it starts there. */
-const RECENT_RULES = {
-  workspace: (entry, nowMs) => entry.lastActivityMs !== null && quietForADay(entry, nowMs),
-  [PROJECT_AGENT]: (entry, nowMs) => entry.lastActivityMs === null || quietForADay(entry, nowMs),
-};
-
-/** Whether a row of the rail's workspace list belongs in Recent. */
+/** Whether a row of the rail's workspace list belongs in Recent: once its
+ *  newest message is over a day old. Unknown activity — an older bridge, a
+ *  project nobody has talked to yet — is not evidence of age, so the row stays
+ *  in the list. */
 export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
-  RECENT_RULES[entry.kind]?.(entry, nowMs) ?? false;
+  RECENT_KINDS.has(entry.kind) && entry.lastActivityMs !== null
+  && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";

@@ -207,6 +207,7 @@ impl AppState {
                     })?;
             }
             self.runs.remove(&id);
+            self.forget_session_owner(&id);
             self.forget_run(&id);
         }
         for id in plan_ids {
@@ -253,6 +254,7 @@ impl AppState {
                     format!("delete project history: {error}; retry project deletion")
                 })?;
         }
+        self.forget_session_owner(project_id);
         self.workspaces.forget_project(project_id);
         self.projects.remove(project_id);
         self.board.diff_mut().remove_project(project_id);

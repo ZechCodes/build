@@ -514,8 +514,7 @@ impl AppState {
                 })?;
             }
             self.runs.remove(run_id);
-            self.session_summaries.remove(run_id);
-            self.session_seen.retain(|(owner, _), _| owner != run_id);
+            self.forget_session_owner(run_id);
             self.forget_run(run_id);
         }
         self.workspaces.forget(workspace_id);

@@ -251,6 +251,37 @@ fn the_project_conversation_row_carries_its_own_session() {
     assert_eq!(project["last_activity_ms"], millis("2026-09-03T00:00:00Z"));
 }
 
+/// Deleting a project forgets its conversation's session and its own, so a
+/// long-running bridge that adds, talks in and deletes projects keeps no
+/// summary for any of them (#103).
+#[test]
+fn project_delete_forgets_the_project_conversation_session() {
+    let (_home, repo) = init_repo();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut state = rooted(tmp.path());
+    let project_id = added_project(&mut state, &repo);
+    let (owner, agent_id) = project_agent(&mut state, &project_id);
+    let mut run = state.runs.remove(owner.as_str()).unwrap();
+    run.agents.by_id_mut(&agent_id).unwrap().thread.post_user(
+        "hello",
+        None,
+        "2026-09-01T00:00:00Z",
+    );
+    state.finish_run_mutation(owner.clone(), run).unwrap();
+    assert!(state.session_summaries.contains_key(&owner));
+    assert!(state.session_summaries.contains_key(&project_id));
+
+    let deleted = state.handle(req(
+        "project.delete",
+        json!({"project_id": project_id, "confirm": true}),
+    ));
+    assert_eq!(deleted["ok"], true, "{deleted:?}");
+    assert!(state.project(&project_id).is_none());
+    assert!(!state.session_summaries.contains_key(&owner));
+    assert!(!state.session_summaries.contains_key(&project_id));
+    assert!(!state.session_seen.keys().any(|(seen, _)| seen == &owner));
+}
+
 /// The two reads answer what the client verbs answer, for the project the
 /// agent's owner is bound to — no project id is passed, because there is
 /// nowhere for one to come from.

@@ -45,6 +45,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
 import { chromium } from "playwright";
+import { goOfflineWithNoOpenSocket, trackWebSockets } from "./offlineEvidence.mjs";
 
 const APP = process.env.APP_URL || "http://localhost:8090";
 const REPO = process.env.ISSUES_REPO;
@@ -112,23 +113,9 @@ const netem = (verb) => docker(`docker run --rm --net container:${PROJECT}-bridg
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 const context = await browser.newContext({ viewport: { width: 1280, height: 860 } });
-// Every WebSocket each page opens, and whether it is still open (#130).
-// `setOffline` refuses new connections but leaves an open socket alive, so a
-// page still holding its relay socket can signal a restart through it while
-// "offline" — and reach the restarted bridge without the fresh dial the
-// reconnect scenario is there to prove.
-await context.addInitScript(() => {
-  const Native = globalThis.WebSocket;
-  const sockets = new Set();
-  globalThis.__openSockets = () => [...sockets].filter((socket) => socket.readyState <= Native.OPEN).length;
-  globalThis.WebSocket = class TrackedWebSocket extends Native {
-    constructor(...args) {
-      super(...args);
-      sockets.add(this);
-      this.addEventListener("close", () => sockets.delete(this));
-    }
-  };
-});
+// Every WebSocket each page opens, and whether it is still open: the
+// reconnect scenario's offline precondition (web/offlineEvidence.mjs, #130).
+await context.addInitScript(trackWebSockets);
 const login = await context.newPage();
 await login.goto(`${APP}/auth/dummy/login`, { waitUntil: "load" });
 await login.fill('input[name="email"]', "qa@localhost");
@@ -174,9 +161,6 @@ const dashNeedsYou = (title) => dash.evaluate((wanted) => ({
   listed: [...document.querySelectorAll('[role="tabpanel"] .issue-dashboard-title')].some((one) => one.textContent.includes(wanted)),
 }), title);
 
-/** How many WebSockets each page holds open (or opening) right now. */
-const openSockets = () => Promise.all([list, dash].map((page) =>
-  page.evaluate(() => globalThis.__openSockets?.() ?? NaN)));
 /** Each page's clock, and the times its peer links first connected a session
  *  (the `connected` / `initial` diagnostic core/peerLink.js records). */
 const pageNow = (page) => page.evaluate(() => Date.now());
@@ -263,11 +247,10 @@ console.log("CHURN_END " + n);`);
 
 async function reconnect() {
   const target = await inReview("reconnect");
-  // A socket still open would carry signalling through the "offline" page;
-  // see the init script. The SPA closes each once nothing negotiates on it.
-  await until("every page to hold no open WebSocket", async () =>
-    (await openSockets()).every((count) => count === 0), 60000);
-  await context.setOffline(true);
+  // A socket still open would carry signalling through the "offline" page.
+  // The SPA closes each once nothing negotiates on it; checked again once
+  // offline has applied, so it holds when the bridge restarts.
+  await goOfflineWithNoOpenSocket(context, [list, dash]);
   docker(`${compose} restart bridge`);
   await until("the restarted bridge to answer", async () => {
     try {

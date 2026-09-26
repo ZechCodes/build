@@ -914,6 +914,9 @@ const openingKind = (context, pageView) => {
 const panelStartsOut = (context, pinned) =>
   context.panelOpen ?? (pinned || context.autofocusComposer === true || !!context.openAgentId || context.addingAgent === true);
 
+/** The verb that watches a conversation; its opposite unwatches it. */
+const WATCH_VERB = "conversation.watch";
+
 /**
  * Whether this rail offers a watch switch, and what it says to begin with.
  *
@@ -921,9 +924,6 @@ const panelStartsOut = (context, pinned) =>
  * with #64, and a switch wired to one an older bridge does not know can only
  * refuse. `panelHeadHtml` reads null as "this head has no switch".
  */
-/** The verb that watches a conversation; its opposite unwatches it. */
-const WATCH_VERB = "conversation.watch";
-
 function watchStateFor(context, agent) {
   if (!agent || !carriesWatching(context.deviceId)) return null;
   return { watching: agent?.watched === true, watchers: agent?.watchers || 0, pending: false };

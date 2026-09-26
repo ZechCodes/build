@@ -43,13 +43,58 @@ auth:
       type: passkey
       label: Passkey
 oauth2_enabled: true
+# Every budget below is per resolved client IP (Traefik's hop is trusted, so the
+# visitor is the key), per pod, in memory. They are sized so about 50 people
+# behind one NAT (an office, a campus, a carrier's CGNAT) are never answered
+# 429 in normal use, counting what the SPA, the landing page and the bridge
+# actually request (#173):
+#   /app cold load: the document and /app/sw.js, about 13 /app/static files
+#     (theme-boot, manifest, icon, 4 bundle files, 3-5 font faces, libsodium,
+#     ghostty when a terminal opens), then per online device one GET
+#     /api/devices, one POST /api/gateway-token and one POST
+#     /api/rtc/ice-servers. A warm reload refetches the document, sw.js and 3
+#     uncached static files; the hashed assets are immutable.
+#   /app idle: GET /api/devices every 15 s (4 a minute) and version.json every
+#     10 min. The all-machines-offline gate polls every 3 s (20 a minute); a
+#     device being recovered costs up to 6 token + 6 ice-servers calls a minute.
 rate_limit:
   enabled: true
+  # Pages: /, /docs, /privacy, /install.sh, the /app document and /app/sw.js,
+  # and anything no rule below names. 50 people each loading /app twice and the
+  # landing page once in the same minute is 50 x 5 = 250; 300 leaves headroom.
+  default:
+    limit: 300
+    per: minute
   rules:
-    # The landing tree is about 106 poster, screen-texture, font, model, and
-    # generated-bundle files. A 600/minute budget allows five full uncached
-    # reloads plus headroom without letting that browser fanout consume the
-    # 60/minute default.
+    # The SPA's static files. 50 people cold-loading /app in the same minute is
+    # 50 x 13 = 650, and each reloading once more (3 uncached files) is 150:
+    # 800. 1200 covers pages that render more font faces.
+    - name: app_static
+      match:
+        path: /app/static/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 1200
+          per: minute
+    # The SPA's API calls. 50 idle tabs polling devices is 50 x 4 = 200; all 50
+    # loading in that minute adds 50 x 3 = 150; 5 people on the offline gate
+    # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. 600 also
+    # absorbs a pairing bridge polling its status every 2 s (30 a minute). The
+    # waitlist join and the bridge's signed posts keep rules of their own.
+    - name: spa_api
+      match:
+        path: /api/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 600
+          per: minute
+    # A landing view fetches about 20 /landing/ files in film mode (scripts,
+    # CSS, fonts, poster, models, first screen textures) and up to 12 more as
+    # it scrolls; nothing there is cached, so a reload fetches them all again.
+    # 50 people scrolling through it in the same minute is 50 x 32 = 1600.
     - name: landing_assets
       match:
         path: /landing/
@@ -57,7 +102,7 @@ rate_limit:
         method: GET
       key: ip
       limits:
-        - limit: 600
+        - limit: 2000
           per: minute
     - name: waitlist_join
       match:
@@ -72,26 +117,57 @@ rate_limit:
     # A bridge's device-signed posts, each on a budget of its own: they shared
     # the 60/minute default with everyone at the same address, and a household
     # browsing through a bridge's reconnects cost it its heartbeats (14 refused
-    # 429 in one evening, #131). A bridge beats twice a minute and retries a
-    # beat refused in passing every 5 s, so 120 is ten bridges behind one
-    # address redialing through an api deploy at once.
+    # 429 in one evening, #131). Sized for 50 bridges behind one address, one
+    # per person. A bridge beats twice a minute; a beat refused in passing is
+    # tried again after about 5, 10 and 20 s, so a bridge redialing through an
+    # api deploy makes at most 4 in its first minute: 50 x 4 = 200.
     - name: bridge_heartbeat
       match:
         path: /api/devices/heartbeat
         method: POST
       key: ip
       limits:
-        - limit: 120
+        - limit: 300
           per: minute
-    # A few reports per session (minted, carrying, channels lost, ended), and a
-    # carrying again for every ICE restart.
+    # About 5 reports per session (minted, carrying, a carrying again for an
+    # ICE restart or the move off TURN, channels lost, ended). 50 people whose
+    # sessions all drop and redial in the same minute, two devices each, is
+    # 50 x 2 x 5 = 500.
     - name: bridge_transport_report
       match:
         path: /api/transport/report
         method: POST
       key: ip
       limits:
-        - limit: 240
+        - limit: 600
+          per: minute
+    # A bridge pushes at most once per task a minute (NOTIFY_DEBOUNCE_SECONDS);
+    # 50 bridges each with 6 tasks needing their person in the same minute.
+    - name: bridge_push_notify
+      match:
+        path: /api/push/notify
+        method: POST
+      key: ip
+      limits:
+        - limit: 300
+          per: minute
+    # The relay's lookups. Every one comes from the relay pod's address, so
+    # this is the whole service's budget, not one caller's: on the 60/minute
+    # default, the 61st connected bridge's revalidation was refused, and past
+    # that a bridge connecting or a browser dialing was turned away (the
+    # connect lookups fail closed). Per connected bridge the relay revalidates
+    # once a minute (DEVICE_REVALIDATION_INTERVAL) and looks it up once per
+    # connect; per browser relay dial it looks up one gateway token. 1000
+    # bridges revalidating (1000), all reconnecting after a relay deploy (1000)
+    # and 1000 tabs redialing twice (2000) is 4000. The X-Internal-Secret guard,
+    # not this budget, is what keeps everyone else out.
+    - name: relay_internal
+      match:
+        path: /internal/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 6000
           per: minute
     # An invite link is a secret; a caller walking the token space gets 30 tries a
     # minute and nothing else.

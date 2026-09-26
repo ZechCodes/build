@@ -757,6 +757,12 @@ export function createChatRepository({
       return epoch;
     },
 
+    /** False once the scope is retired (`dispose`): nothing is minted or
+     *  asked through it again, and a read that lands after is about nothing. */
+    get active() {
+      return active;
+    },
+
     get scopeKey() {
       return scopeKey;
     },

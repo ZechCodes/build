@@ -709,3 +709,36 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
         "a refused Done retains the clone and its work"
     );
 }
+
+/// The same refusal for a run in a linked worktree, which every volume can
+/// make: the clone test above skips wherever reflinks are unavailable, and
+/// this one keeps the rule measured there.
+#[test]
+fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "work in a linked worktree");
+    let checkout = state.runs[&run_id].worktree.path.clone();
+    assert_eq!(
+        Isolation::of(&checkout),
+        Some(Isolation::Worktree),
+        "{checkout:?}"
+    );
+
+    let finished = state.handle(req(
+        "run.finish",
+        json!({ "run_id": run_id, "action": "merge" }),
+    ));
+    assert_eq!(finished["ok"], false, "{finished:?}");
+    assert_eq!(finished["error_code"], "conflict", "{finished:?}");
+    assert_eq!(
+        finished["error"],
+        "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted.",
+        "{finished:?}"
+    );
+    assert!(
+        checkout.join("result-first-half.txt").exists()
+            && checkout.join("result-second-half.txt").exists(),
+        "a refused Done retains the worktree and its work"
+    );
+}

@@ -628,6 +628,23 @@ In practice:
   stands in only for a machine nothing here has ever held.
 - Entity-specific caches sit beside it: `issueCache.js`, `trackerCache.js`,
   `conversationCache.js`, `surfacesCache.js` in `spa/src/core/`.
+- **Bodies in pages** (#95). A file, diff or commit patch over its cache cap
+  (`FILE_MAX_BYTES`, `FILE_DIFF_MAX_BYTES`, `CHANGESET_DIFF_MAX_BYTES`,
+  `COMMIT_PATCH_MAX_BYTES`, `WORKING_DIFF_MAX_BYTES`, `ATTACHMENT_BODY_MAX_BYTES`)
+  is never painted from the answer. Its usual record becomes a head (the
+  body's metadata, `paged: true`, no text) and the text is kept as page
+  records (`spa/src/core/bodyPages.js`, kind `page`): one per page, chained by
+  byte offsets from 0, each naming the body it was cut from (a content key, a
+  commit, a file's version) so two versions are never joined. From a bridge
+  announcing `bodies.pages` the pages are read with `range` as the reader
+  scrolls to the end of what is painted (`createPagedBody`, the `pages`
+  option of `createCachedBodies`, `spa/src/core/pagedFileView.js` for the
+  Files tab, the diff viewport's `onNeedMore`); media is read whole into
+  pages, since a picture cannot be shown half loaded. An older bridge's whole
+  or cut answer is split into pages here and painted the same way, with the
+  truncation notice where it was cut. Pages live and die with their head:
+  the five recent files per workspace, the workspace's data TTL. An oversized
+  aggregate diff is kept without its patch and painted file by file.
 - **Paged issue lists.** From a bridge announcing `issues.listPaged`, the sync
   pass and the Issues tab pull `issues.list` a page at a time
   (`spa/src/core/trackerPages.js`): each page read is written under its own
@@ -685,7 +702,8 @@ them into new code; each is a candidate to bring under the rule.
   applier reads again:
   - `issues` carries only ids, so the project's issue list is re-read;
   - changed `files` paths re-list the directories the reader opened and
-    re-read open file bodies with `fs.read`;
+    re-read open file bodies with `fs.read` (a paged body from its first
+    page, keeping the rest when the file's version has not moved);
   - a git item that could not carry its diff pulls it for the routed
     workspace, or marks it stale.
 - **Cross-tab fallback.** A tab not granted the sync lock within

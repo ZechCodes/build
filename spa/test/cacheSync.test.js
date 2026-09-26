@@ -588,6 +588,18 @@ describe("the two bodies that never ride a push", () => {
     expect(await read("run-1", "patch", "gone")).toBeUndefined();
   });
 
+  // A patch too big for one record is a head beside its pages (#95): letting
+  // go of the commit lets go of both.
+  it("lets go of the pages of a paged patch whose commit is no longer unpushed", async () => {
+    const head = { deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "gone" };
+    const pages = await import("../src/core/bodyPages.js");
+    await pages.writeBodyPages(head, pages.textPagesOf("diff --git a/x b/x\n+one\n", { of: "gone", bytes: 8 }));
+    await cache.writeCached(head, { hash: "gone", paged: true });
+    await boot([branchItem()]);
+    expect(await read("run-1", "patch", "gone")).toBeUndefined();
+    expect((await pages.readBodyPages(head, "gone")).pages).toEqual([]);
+  });
+
   // The hunks are the largest thing a workspace holds and nobody is looking
   // at them during a pass: the record gets the stat, the files and the key,
   // and the Changes surface reads the body when it opens over it.

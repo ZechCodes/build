@@ -11,8 +11,49 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
+// Whether the machine's bridge announces `bodies.pages` (#95): a case that
+// leaves it off is an older bridge, which refuses `range` on `fs.read`.
+let bridgePages = false;
+vi.mock("../src/core/changeEvents.js", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    bridgeCapabilities: (deviceId) => {
+      const capabilities = actual.bridgeCapabilities(deviceId);
+      return bridgePages ? { ...capabilities, bodies: { pages: true } } : capabilities;
+    },
+  };
+});
+
+// jsdom has no IntersectionObserver. This one records what it watches, and a
+// case scrolls by telling it the sentinel came into view. Like the browser's,
+// it reports where a target stands when it starts watching it: out of view,
+// unless a case has put the sentinel in view (`sentinelInView`).
+const observers = [];
+let sentinelInView = false;
+let observations = 0;
+globalThis.IntersectionObserver = class {
+  constructor(callback, options) {
+    this.callback = callback;
+    this.options = options;
+    this.targets = new Set();
+    observers.push(this);
+  }
+  observe(target) {
+    this.targets.add(target);
+    observations += 1;
+    queueMicrotask(() => {
+      if (this.targets.has(target)) this.callback([{ target, isIntersecting: sentinelInView }], this);
+    });
+  }
+  unobserve(target) { this.targets.delete(target); }
+  disconnect() { this.targets.clear(); }
+};
+
 const { scopeFor } = await import("../src/core/cacheScope.js");
-const { cachedSubKeys, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { cachedSubKeys, deleteCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
+const { BODY_PAGE_BYTES, dropBodyPages, readBodyPages, writeBodyPage } = await import("../src/core/bodyPages.js");
+const { WHOLE_READ } = await import("../src/core/cacheLifetime.js");
 const { renderFilesTab } = await import("../src/views/files.js");
 
 const settle = async () => {
@@ -43,6 +84,10 @@ const mounted = [];
 
 beforeEach(async () => {
   document.body.innerHTML = "";
+  bridgePages = false;
+  sentinelInView = false;
+  observations = 0;
+  observers.splice(0);
   await wipeCache();
 });
 
@@ -300,22 +345,16 @@ describe("a file body", () => {
     expect(record.value.file.content_b64).toBe(b64("from the disk"));
   });
 
-  it("leaves a body over a megabyte on screen and off the disk", async () => {
-    const twoMegabytes = fileAnswer({ size: 2 * 1024 * 1024, truncated: true, content_b64: b64("hello") });
-    const { host } = await openReadme(withReadme(twoMegabytes));
-    expect(host.textContent).toContain("truncated");
-    expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" })).toBeUndefined();
-  });
-
-  // The cap is the file's own size, not the weight of the body on the wire:
-  // base64 is a third bigger than the bytes it carries, and a rule read off it
-  // would refuse files well under a megabyte. So an answer that came back
-  // whole is still refused on the size it names.
-  it("refuses a whole body the file's own size puts over the cap", async () => {
+  // A whole answer is weighed by the file's own size, not by what it carried:
+  // one the file's size puts over the cap is kept as pages all the same, and
+  // painted from them.
+  it("keeps a whole body the file's own size puts over the cap as pages, and paints them", async () => {
     const wholeAndHuge = fileAnswer({ size: 2 * 1024 * 1024, content_b64: b64("hello") });
     const { host } = await openReadme(withReadme(wholeAndHuge));
     expect(host.textContent).toContain("hello");
-    expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" })).toBeUndefined();
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "README.md" });
+    expect(record.value.file).toMatchObject({ paged: true, of: WHOLE_READ });
+    expect(record.value.file.content_b64).toBeUndefined();
   });
 
   it("keeps the five most recently opened and no more", async () => {
@@ -379,13 +418,13 @@ describe("a checkout nothing walks", () => {
     expect(call.mock.calls.filter(([method]) => method === "fs.read")).toHaveLength(1);
   });
 
-  it("lets go of a body that has grown past what the cache may keep", async () => {
+  it("keeps a body that has grown past one record as pages of what the machine sent", async () => {
     await seedSourceTree("", [{ name: "README.md", kind: "file", size: 5 }]);
     await writeCached(
       { deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" },
       { file: fileAnswer({ content_b64: b64("small, once") }), openedAt: Date.now() },
     );
-    const grown = fileAnswer({ size: 2 * 1024 * 1024, truncated: true, content_b64: b64("the first megabyte") });
+    const grown = fileAnswer({ size: 2 * 1024 * 1024, truncated: true, content_b64: b64("the first megabyte\n") });
     const call = vi.fn(async (method, params) =>
       method === "fs.read" ? grown : { path: params.path, entries: [{ name: "README.md", kind: "file", size: 5 }] },
     );
@@ -394,10 +433,13 @@ describe("a checkout nothing walks", () => {
     host.querySelector(".ffile").click();
     await settle();
 
-    expect(host.textContent).toContain("truncated");
-    // Not "keep the old one": the record is of a file that no longer exists in
-    // that shape, and the next open must go to the machine rather than paint it.
-    expect(await readCached({ deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" })).toBeUndefined();
+    expect(host.textContent).toContain("the first megabyte");
+    expect(host.querySelector(".fpmore").hidden).toBe(false);
+    expect(host.textContent).not.toContain("small, once");
+    // Not "keep the old one": the record is of the file as it is now, the piece
+    // of it the machine sent, and says it is a piece.
+    const record = await readCached({ deviceId: "dev-1", entityId: SOURCE_ENTITY, kind: "file", sub: "README.md" });
+    expect(record.value.file).toMatchObject({ paged: true, truncated: true });
   });
 
   it("paints what it holds before the machine answers", async () => {
@@ -412,5 +454,282 @@ describe("a checkout nothing walks", () => {
     answer();
     await settle();
     expect(treeNames(host)).toEqual([]);
+  });
+});
+
+// A file over one record is kept as pages beside a record saying what it is
+// (#95). Every paint comes from those records: the first page is read by
+// range when the file is opened, the next when the reader scrolls to the end
+// of what is painted, and a revisit reads nothing.
+describe("a file over one record", () => {
+  const TEXT_CAP = 1024 * 1024;
+  const MEDIA_CAP = 32 * 1024 * 1024;
+  const line = (number) => `line ${number} ${"x".repeat(180)}`;
+  const bigText = (lines, from = 1) => Array.from({ length: lines }, (_, index) => line(from + index)).join("\n");
+
+  /** A machine holding one file, cut the way the bridge cuts it: a whole read
+   *  capped, a ranged one ending after its last whole line. */
+  const machine = (file) => vi.fn(async (method, params) => {
+    if (method !== "fs.read") return { path: params.path, entries: [] };
+    const bytes = Buffer.from(file.bytes);
+    const media = file.mime.startsWith("image/");
+    const answer = { path: params.path, size: bytes.length, mime: file.mime, editable: false, revision: null };
+    if (!params.range) {
+      const cap = media ? MEDIA_CAP : TEXT_CAP;
+      return { ...answer, truncated: bytes.length > cap, content_b64: bytes.subarray(0, cap).toString("base64") };
+    }
+    const { offset, bytes: size } = params.range;
+    let end = Math.min(bytes.length, offset + size);
+    const newline = bytes.lastIndexOf(10, end - 1);
+    if (end < bytes.length && !media && newline >= offset) end = newline + 1;
+    return {
+      ...answer,
+      truncated: false,
+      content_b64: bytes.subarray(offset, end).toString("base64"),
+      range: { offset, end, total: bytes.length, version: file.version },
+    };
+  });
+
+  const reads = (call) => call.mock.calls.filter(([method]) => method === "fs.read").map(([, params]) => params);
+  const lineNumbers = (host) => [...host.querySelectorAll(".fsrc tr[data-new-line]")].map((row) => Number(row.dataset.newLine));
+  const head = (path) => ({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: path });
+
+  const scrollToSentinel = async (host) => {
+    const sentinel = host.querySelector(".fpmore");
+    for (const observer of observers) {
+      if (observer.targets.has(sentinel)) observer.callback([{ target: sentinel, isIntersecting: true }], observer);
+    }
+    await settle();
+  };
+
+  const open = async (call, path = "big.log") => {
+    const mounted = mountFiles(call);
+    await settle();
+    rowFor(mounted.host, path).click();
+    await settle();
+    return mounted;
+  };
+
+  beforeEach(async () => {
+    await seedTree("", [
+      { name: "big.log", kind: "file", size: 2 * TEXT_CAP },
+      { name: "shot.png", kind: "file", size: 3 * TEXT_CAP },
+    ]);
+  });
+
+  it("is kept as a record and its first page, read by range, and painted from them", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+
+    expect(reads(call)).toEqual([
+      { run_id: "run-1", path: "big.log" },
+      { run_id: "run-1", path: "big.log", range: { offset: 0, bytes: BODY_PAGE_BYTES } },
+    ]);
+    const record = await readCached(head("big.log"));
+    expect(record.value.file).toMatchObject({ paged: true, of: "v1", size: Buffer.byteLength(file.bytes), editable: false });
+    const held = await readBodyPages(head("big.log"), "v1");
+    expect(held.pages).toHaveLength(1);
+
+    const numbers = lineNumbers(host);
+    expect(numbers[0]).toBe(1);
+    expect(numbers.length).toBe(Buffer.from(held.pages[0].body, "base64").toString().split("\n").length - 1);
+    expect(host.querySelector(".fsrc").textContent).toContain(line(numbers.length));
+    expect(host.querySelector(".fpmore").hidden).toBe(false);
+    expect(host.querySelector(".fpmore").textContent).toMatch(/^Showing .+ of .+MB$/);
+    expect(host.querySelector('[data-file-mode="edit"]')).toBeNull();
+  });
+
+  it("paints again from the cache with nothing asked of the machine", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const first = await open(machine(file));
+    const painted = lineNumbers(first.host);
+    first.files.dispose();
+    first.host.remove();
+
+    const call = machine(file);
+    const { host } = await open(call);
+    expect(reads(call)).toEqual([]);
+    expect(lineNumbers(host)).toEqual(painted);
+  });
+
+  it("reads the next page when the reader reaches the sentinel, and numbers its lines on", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    const firstRow = host.querySelector(".fsrc tr");
+    const firstPage = lineNumbers(host).length;
+    const { end } = (await readBodyPages(head("big.log"), "v1")).pages[0];
+
+    await scrollToSentinel(host);
+
+    expect(reads(call).at(-1)).toEqual({ run_id: "run-1", path: "big.log", range: { offset: end, bytes: BODY_PAGE_BYTES } });
+    expect((await readBodyPages(head("big.log"), "v1")).pages).toHaveLength(2);
+    const numbers = lineNumbers(host);
+    expect(numbers.length).toBeGreaterThan(firstPage);
+    expect(numbers).toEqual(numbers.map((_, index) => index + 1));
+    expect(host.querySelector(`.fsrc tr[data-new-line="${firstPage + 1}"]`).textContent).toContain(line(firstPage + 1));
+    // Appended under the rows already painted, not painted over them.
+    expect(host.querySelector(".fsrc tr")).toBe(firstRow);
+  });
+
+  it("reads to the end, and says no more once it is there", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(7000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    for (let turn = 0; turn < 8 && !host.querySelector(".fpmore").hidden; turn += 1) await scrollToSentinel(host);
+
+    expect(host.querySelector(".fpmore").hidden).toBe(true);
+    expect(lineNumbers(host)).toEqual(Array.from({ length: 7000 }, (_, index) => index + 1));
+    expect(host.querySelector(".ftrunc").hidden).toBe(true);
+  });
+
+  // The view says what it holds, whatever the machine can do: how much of the
+  // file is painted. It never asks whether the bridge can page.
+  it("never sends an older bridge a range, and keeps what it sent as pages that say how much they are", async () => {
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    sentinelInView = true;
+    await scrollToSentinel(host);
+    const watched = observations;
+    await scrollToSentinel(host);
+
+    expect(reads(call)).toEqual([{ run_id: "run-1", path: "big.log" }]);
+    const record = await readCached(head("big.log"));
+    expect(record.value.file).toMatchObject({ paged: true, of: WHOLE_READ, truncated: true });
+    const held = await readBodyPages(head("big.log"), WHOLE_READ);
+    expect(held.end).toBe(TEXT_CAP);
+    expect(held.complete).toBe(false);
+    expect(host.querySelector(".fpmore").hidden).toBe(false);
+    expect(host.querySelector(".fpmore").textContent).toBe("Showing 1.0 MB of 1.5 MB");
+    expect(host.querySelector(".ftrunc").hidden).toBe(true);
+    expect(lineNumbers(host)[0]).toBe(1);
+    // A read that cannot be made paints nothing, so the sentinel is not
+    // watched again and asked again: no loop.
+    expect(observations).toBe(watched);
+  });
+
+  // Before its machine's greeting every capability reads off. A body painted
+  // from the cache then must not be painted as cut for good: once greeted, a
+  // write to its pages (the sync layer's refresh) repaints it, and the
+  // sentinel still in view reads on, with no remount.
+  it("mounted before the greeting, says how much it holds and reads on once greeted", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    (await open(machine(file))).host.remove();
+    mounted.splice(0).forEach((files) => files.dispose());
+    bridgePages = false;
+
+    const call = machine(file);
+    const { host } = await open(call);
+    sentinelInView = true;
+    await scrollToSentinel(host);
+    expect(reads(call)).toEqual([]);
+    expect(host.querySelector(".fpmore").hidden).toBe(false);
+    expect(host.querySelector(".fpmore").textContent).toMatch(/^Showing .+ of .+MB$/);
+    expect(host.querySelector(".ftrunc").hidden).toBe(true);
+    const firstRow = host.querySelector(".fsrc tr");
+    const [firstPage] = (await readBodyPages(head("big.log"), "v1")).pages;
+
+    bridgePages = true;
+    await writeBodyPage(head("big.log"), firstPage);
+    await settle();
+
+    expect(reads(call)[0]).toEqual({ run_id: "run-1", path: "big.log", range: { offset: firstPage.end, bytes: BODY_PAGE_BYTES } });
+    expect((await readBodyPages(head("big.log"), "v1")).pages.length).toBeGreaterThan(1);
+    expect(host.querySelector(".fsrc tr")).toBe(firstRow);
+  });
+
+  // The recent-files rule, or a newer store, can let go of the record while a
+  // page is being read: that page is of nothing any more, and not kept.
+  it("does not keep a page that lands after its file's record was let go of", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    await deleteCached([head("big.log")]);
+    await dropBodyPages(head("big.log"));
+
+    await scrollToSentinel(host);
+
+    expect(reads(call).at(-1).range.offset).toBeGreaterThan(0);
+    expect(await cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
+  });
+
+  it("paints a file emptied under it as the one empty line it is, and reads no more", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    file.bytes = "";
+    file.version = "v2";
+
+    await scrollToSentinel(host);
+
+    const record = await readCached(head("big.log"));
+    expect(record.value.file).toMatchObject({ paged: true, of: "v2", size: 0 });
+    expect((await readBodyPages(head("big.log"), "v2")).complete).toBe(true);
+    expect(lineNumbers(host)).toEqual([1]);
+    expect(host.querySelector(".fpmore").hidden).toBe(true);
+  });
+
+  // A file an agent keeps writing to is of a new version at every read. The
+  // view starts over from the first page when the next is of a changed file,
+  // but not again off its own start-over: the next goes with the next change
+  // somebody else wrote down (a push's refresh), so it cannot spin.
+  it("starts over once off its own reading, then waits for a record it did not write", async () => {
+    bridgePages = true;
+    let version = 0;
+    const file = { bytes: bigText(8000), mime: "text/plain", get version() { version += 1; return `v${version}`; } };
+    const call = machine(file);
+    const { host } = await open(call);
+    await scrollToSentinel(host);
+    const afterFirst = reads(call).length;
+    const restarted = (await readCached(head("big.log"))).value.file.of;
+
+    await scrollToSentinel(host);
+    await scrollToSentinel(host);
+
+    expect(reads(call).length - afterFirst).toBe(2);
+    expect(reads(call).slice(afterFirst).every((params) => params.range.offset > 0)).toBe(true);
+    expect((await readCached(head("big.log"))).value.file.of).toBe(restarted);
+  });
+
+  it("starts over from the first page when the next one is of a changed file", async () => {
+    bridgePages = true;
+    const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+
+    file.bytes = bigText(8000, 100_001);
+    file.version = "v2";
+    await scrollToSentinel(host);
+
+    expect(reads(call).at(-1)).toEqual({ run_id: "run-1", path: "big.log", range: { offset: 0, bytes: BODY_PAGE_BYTES } });
+    expect((await readCached(head("big.log"))).value.file.of).toBe("v2");
+    expect((await readBodyPages(head("big.log"), "v1")).pages).toHaveLength(0);
+    expect(lineNumbers(host)[0]).toBe(1);
+    expect(host.querySelector(".fsrc tr").textContent).toContain(line(100_001));
+  });
+
+  it("reads a picture over the cap whole into pages, and paints it from them", async () => {
+    bridgePages = true;
+    const file = { bytes: "p".repeat(3 * TEXT_CAP + 7), mime: "image/png", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call, "shot.png");
+
+    expect(reads(call).slice(1).map((params) => params.range)).toEqual([0, 1, 2, 3].map((index) =>
+      ({ offset: index * TEXT_CAP, bytes: TEXT_CAP })));
+    const held = await readBodyPages(head("shot.png"), "v1");
+    expect(held.complete).toBe(true);
+    expect(held.pages).toHaveLength(4);
+    const image = host.querySelector("img.fimg");
+    expect(image.getAttribute("src")).toBe(`data:image/png;base64,${Buffer.from(file.bytes).toString("base64")}`);
+    expect(host.querySelector(".fpmore").hidden).toBe(true);
   });
 });

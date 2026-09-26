@@ -13,8 +13,8 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { scopeFor } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
-const { resetChangeEvents } = await import("../src/core/changeEvents.js");
-const { worktreeOf } = await import("./gitWireFixture.js");
+const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
+const { pagedAnswer, worktreeOf } = await import("./gitWireFixture.js");
 
 const tree = worktreeOf({ "src/a.js": "new line" });
 
@@ -207,6 +207,98 @@ describe("the saved aggregate diff", () => {
     await settle();
 
     expect(host.textContent).toContain("hunk from cache write");
+    plug.unmount();
+  });
+
+  // An aggregate answer too big for one record (#95) is not painted from the
+  // answer: the record keeps its shape without the patch, the stack is drawn
+  // from that shape a file at a time, and each file's hunks are kept out of the
+  // answer in hand rather than asked for again.
+  it("keeps an oversized aggregate as a patch-less record and fills its files out of the answer", async () => {
+    const filler = "+padding line\n".repeat(80_000);
+    const bigPatch = `${PATCH}${filler}diff --git a/src/b.js b/src/b.js\n@@ -1 +1 @@\n+second file line\n`;
+    const files = [
+      { path: "src/a.js", status: "Modified", additions: 80_001, deletions: 1, content_key: "ka" },
+      { path: "src/b.js", status: "Modified", additions: 1, deletions: 0, content_key: "kb" },
+    ];
+    const fetchFiles = vi.fn(() => new Promise(() => {}));
+    plug = plugOn("dev-1", {
+      fetchDiff: vi.fn(async () => ({ patch: bigPatch, files, diff_key: "d-big", commentable: true })),
+      fetchFiles,
+      entity: "run-1",
+    });
+    plug.mount(host);
+    await vi.waitFor(async () => expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).toBeDefined());
+    await vi.waitFor(() => expect(host.textContent).toContain("second file line"));
+
+    const record = (await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).value;
+    expect(record.patch).toBeUndefined();
+    expect(record).toMatchObject({ files, diff_key: "d-big" });
+    expect(record.stale).toBeUndefined();
+    const small = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "changesetdiff", sub: "src/b.js" });
+    expect(small.value).toMatchObject({ content_key: "kb", patch: expect.stringContaining("second file line") });
+    const large = await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "changesetdiff", sub: "src/a.js" });
+    expect(large.value).toMatchObject({ content_key: "ka", paged: true });
+    expect(host.textContent).toContain("cached line");
+    expect(host.textContent).toContain("second file line");
+    expect(fetchFiles).not.toHaveBeenCalled();
+    plug.unmount();
+  });
+
+  // A file's hunks cut by the bridge (#95) are read on by range once the reader
+  // opens the file and reaches the end of them — from a bridge that pages only.
+  const cutHunks = (tail) => async (paths, { range } = {}) => {
+    const file = tree.status().files[0];
+    const whole = `${tree.diff({ paths: [file.path] }).files[0].patch}+more\n+and more\n${tail}`;
+    const files = [{ path: file.path, content_key: file.content_key }];
+    if (range) return { ...pagedAnswer(whole, range.offset, { version: "v-a", pageBytes: 40 }), files };
+    return { truncated: true, files, patch: whole.slice(0, 100) };
+  };
+  const mountCut = async (fetchFiles) => {
+    const file = tree.status().files[0];
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { files: [file], commentable: true, diff_key: "d1" });
+    plug = plugOn("dev-1", { fetchDiff: vi.fn(() => new Promise(() => {})), fetchFiles, entity: "run-1" });
+    plug.mount(host);
+    await vi.waitFor(() => expect(host.querySelector(".file .dscroll")).not.toBeNull());
+    host.querySelector(".file .dscroll").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+  };
+
+  it("reads the rest of a cut file by range as the reader reaches its end", async () => {
+    await greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages", "diffs.perFile"] }), { deviceId: "dev-1" });
+    const fetchFiles = vi.fn(cutHunks("+the rest of the file\n"));
+    await mountCut(fetchFiles);
+    await vi.waitFor(() => expect(host.textContent).toContain("the rest of the file"));
+    const ranged = fetchFiles.mock.calls.filter(([, options]) => options?.range);
+    expect(ranged[0][0]).toEqual([tree.status().files[0].path]);
+    expect(host.querySelector(".fmore")).toBeNull();
+    plug.unmount();
+  });
+
+  it("never asks a bridge that cannot page for a range, and says the file was cut", async () => {
+    const fetchFiles = vi.fn(cutHunks("+never read\n"));
+    await mountCut(fetchFiles);
+    expect(host.textContent).toContain("diff truncated at 1 MiB");
+    expect(fetchFiles.mock.calls.every(([, options]) => !options?.range)).toBe(true);
+    plug.unmount();
+  });
+
+  it("keeps a patch-less record patch-less when the bridge says the diff is unchanged", async () => {
+    const file = tree.status().files[0];
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "diff" },
+      { files: [file], commentable: true, diff_key: "d1", stale: true },
+    );
+    plug = plugOn("dev-1", {
+      fetchDiff: vi.fn(async () => ({ unchanged: true, diff_key: "d1", commentable: true })),
+      fetchFiles: vi.fn(() => new Promise(() => {})),
+      entity: "run-1",
+    });
+    plug.mount(host);
+    await settle();
+    const record = (await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).value;
+    expect(record.patch).toBeUndefined();
+    expect(host.textContent).toContain(file.path);
     plug.unmount();
   });
 

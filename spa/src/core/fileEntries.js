@@ -13,7 +13,7 @@
 // a hash of its own rows.
 
 import { fileKey, parseDiff } from "./diff.js";
-import { diffStackEntries, fileContentHtml, fileFoldOf, fileFrameHtml } from "./diffRender.js";
+import { diffStackEntries, fileContentHtml, fileFoldOf, fileFrameHtml, pagesNoticeHtml } from "./diffRender.js";
 import { COLLAPSED_PREVIEW_ROWS } from "./diffWindow.js";
 import { bodyMatches } from "./fileDiffs.js";
 import { hashFileRows } from "./reviewMemory.js";
@@ -98,26 +98,42 @@ function rowsOf(view, body) {
 const cachedBody = (view, options) =>
   options.body || (options.bodyOf ? options.bodyOf(view.path) : undefined);
 
+const TRUNCATED_LABEL = "diff truncated at 1 MiB";
+const TRUNCATED_NOTICE = `<div class="ftrunc">${TRUNCATED_LABEL}</div>`;
+
 /** What a file whose diff the daemon cut at 1 MiB says about itself, in either
  *  fold. The cap falls on one file's body — a status ships shape and no patch —
  *  so the file that was cut is where the reader is told, rather than a line over
  *  a changeset that says nothing about which diff is short. */
-const truncatedNoticeHtml = (body) =>
-  body && body.truncated ? '<div class="ftrunc">diff truncated at 1 MiB</div>' : "";
+const truncatedNoticeHtml = (body) => (body && body.truncated ? TRUNCATED_NOTICE : "");
+
+/** What a body kept in pages (#95) says after the rows it holds: nothing once
+ *  every page is in; how much it holds where the whole's weight is known; and
+ *  the truncation notice it always had where nothing has said (an answer a
+ *  bridge cut and could not page). Either is marked for the viewport to read
+ *  on at: what is drawn is the cache's, never a guess at what the bridge can
+ *  do now, so a view painted before its bridge greets reads on after. */
+function pagesNotice(file, pages) {
+  if (pages.complete) return "";
+  const cut = pages.total == null ? { label: TRUNCATED_LABEL, className: "ftrunc" } : {};
+  return pagesNoticeHtml(pages, fileKey(file), cut);
+}
+
+const bodyNoticeHtml = (file, body) => (body && body.pages ? pagesNotice(file, body.pages) : truncatedNoticeHtml(body));
 
 function foldedBodyHtml(file, fold, options) {
   return fileContentHtml(file, fold, options);
 }
 
 /** One file's entry for the keyed list: its key, and the html of it in the fold
- *  it is in. The cached `{ content_key, patch, truncated }` is `options.body`
+ *  it is in. The cached `{ content_key, patch, truncated, pages? }` is `options.body`
  *  for one file, or whatever `options.bodyOf` answers for its path on a stack;
  *  every other option is the stack's (folds, approved, changedSince, fileMenu…). */
 export function fileEntry(view, options = {}) {
   const body = cachedBody(view, options);
   const file = { ...view, rows: rowsOf(view, body) };
   const fold = fileFoldOf(file, options);
-  const html = `${foldedBodyHtml(file, fold, options)}${truncatedNoticeHtml(body)}`;
+  const html = `${foldedBodyHtml(file, fold, options)}${bodyNoticeHtml(file, body)}`;
   return { key: fileKey(file), html: fileFrameHtml(file, options, html) };
 }
 

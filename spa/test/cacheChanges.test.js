@@ -546,8 +546,10 @@ describe("a commit's detail", () => {
     container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await settle();
     expect(callRpc.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(1);
-    // The record still holds the headers — the cap is the cache's rule — but
-    // the patch this mount read is not displaced by them.
+    // The patch read replaces the headers with a head kept beside its pages
+    // (#95), and a record moving elsewhere does not send the pane back for it.
+    expect((await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).value)
+      .toMatchObject({ paged: true });
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" }, status());
     await settle();
     container.querySelector('.rrow[data-sel="uncommitted"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
@@ -558,7 +560,7 @@ describe("a commit's detail", () => {
     pane.dispose();
   });
 
-  it("keeps a patch too big for a record in hand and off the disk", async () => {
+  it("keeps a patch too big for a record in pages beside a head, not in hand", async () => {
     const callRpc = vi.fn(async (method, params) => {
       if (method === "git.status") return status();
       if (method === "git.diff") return tree.diff(params);
@@ -570,7 +572,9 @@ describe("a commit's detail", () => {
     container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await settle();
     expect(container.textContent).toContain("why it happened");
-    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).toBeUndefined();
+    const head = (await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: "a".repeat(40) })).value;
+    expect(head).toMatchObject({ paged: true, truncated: true, body: "why it happened" });
+    expect(head.patch).toBeUndefined();
     pane.dispose();
   });
 });

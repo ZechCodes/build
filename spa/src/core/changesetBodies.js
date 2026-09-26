@@ -17,6 +17,7 @@
 // async boundary, write through to the local cache, and answer bodies by path.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { BODY_PAGE_BYTES, pageFromAnswer, textPagesOf } from "./bodyPages.js";
 import { bodyMatches } from "./fileDiffs.js";
 import { withinBytes } from "./cacheLifetime.js";
 
@@ -92,6 +93,31 @@ export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {
   return batches;
 }
 
+/** The paths of a cut answer whose bodies the cut fell in: the file the
+ *  answer ends on, and every asked path it never reached. A file before the
+ *  last one the answer carries arrived whole. */
+function cutPaths(answer, segments, paths) {
+  if (!answer.truncated) return new Set();
+  const carried = [...segments.keys()];
+  const last = carried[carried.length - 1];
+  return new Set(paths.filter((path) => path === last || !segments.has(path)));
+}
+
+/** One answer's bodies, one per asked path, in request order: a path with
+ *  nothing to say answers an empty patch under the key the list holds for it,
+ *  the way `git.diff` answers one. */
+function answeredBodies(answer, paths, keyFor) {
+  const segments = filePatchesByPath(answer.patch);
+  const keys = new Map((answer.files || []).map((file) => [file.path, file.content_key]));
+  const cut = cutPaths(answer, segments, paths);
+  return paths.map((path) => ({
+    path,
+    content_key: keys.get(path) ?? keyFor(path),
+    patch: segments.get(path) || "",
+    truncated: cut.has(path),
+  }));
+}
+
 /** A previous fill's outcome, already delivered to whoever asked for it. */
 const alreadyDelivered = () => undefined;
 
@@ -111,46 +137,58 @@ function createFillQueue() {
  *
  * - `addressOf(path)` is the local-cache address for a path, or null where the
  *   surface has no entity to cache under.
- * - `fetchFiles(paths)` is the one wire call: it answers `{ files, patch }`,
- *   the verb's own shape.
+ * - `fetchFiles(paths, { range })` is the one wire call: it answers `{ files,
+ *   patch }`, the verb's own shape. `range` is only ever sent with one path,
+ *   and only where `canPage()` says the bridge announced `bodies.pages`; the
+ *   answer then carries the page in `patch` and where it sits in `range`.
  * - `keyFor(path)` is the content key the file list currently holds for a
  *   path, which is what a body with no hunks of its own is filed under — a
  *   binary file and a path the changeset no longer touches both answer an
  *   empty patch, and neither should be asked for again on every paint.
  *
  * `bodyOf(path)` answers `{ content_key, patch }` or undefined and never
- * waits, because a paint asks it.
+ * waits, because a paint asks it. A body over the cap, or one the bridge cut,
+ * is kept in pages (#95, core/bodyPages.js) and also answers `pages: { end,
+ * total, complete }`; `more(path)` reads the page after the last one held.
  */
-export function createChangesetBodies({ addressOf, fetchFiles, keyFor, onChange = () => {} }) {
+export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage = () => false, onChange = () => {} }) {
   let disposed = false;
   const enqueue = createFillQueue();
   // What has been asked for and answered, by the key the file wore when it was
   // asked. A file whose body came back empty — a binary, a path the changeset
   // no longer touches — would otherwise be wanted by every paint for ever.
   const answered = new Map();
+  // An answer already in hand that covers the paths being filled — the whole
+  // changeset's patch, read for the aggregate — which a fill takes its bodies
+  // from instead of the wire.
+  let inHand = null;
+  /** The page of `path`'s body the bridge cuts from `offset`, named by the
+   *  version the bridge gives the whole patch; null where it cannot cut one —
+   *  asked as the page is wanted, so a bridge greeted after this surface
+   *  mounted is read on from — or where its answer is no page. */
+  const readPage = async (path, offset) => {
+    if (!canPage()) return null;
+    const answer = (await fetchFiles([path], { range: { offset, bytes: BODY_PAGE_BYTES } })) || {};
+    return answer.range ? pageFromAnswer(answer, "patch") : null;
+  };
+
   const bodies = createCachedBodies({
     addressOf,
-    fetchMissing: async (paths) => {
-      const answer = (await fetchFiles(paths)) || {};
-      const segments = filePatchesByPath(answer.patch);
-      const answered = new Map((answer.files || []).map((file) => [file.path, file.content_key]));
-      // Every asked path is answered, in request order: a path with nothing to
-      // say answers an empty patch under the key the list holds for it, the
-      // way `git.diff` answers one.
-      return paths.map((path) => ({
-        path,
-        content_key: answered.get(path) ?? keyFor(path),
-        patch: segments.get(path) || "",
-        truncated: Boolean(answer.truncated),
-      }));
-    },
+    fetchMissing: async (paths) => answeredBodies(inHand || (await fetchFiles(paths)) || {}, paths, keyFor),
     valueOf: (file) => ({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, ...(file.truncated ? { truncated: true } : {}) },
     }),
-    // #94: direct response paint is the temporary exception for an oversized
-    // or cut body; #95 will cache it in pages.
     cacheable: (body) => !body.truncated && withinBytes(body.patch, CHANGESET_DIFF_MAX_BYTES),
+    // A body over the cap, or cut, is kept in pages named by the version the
+    // bridge gives the whole patch — a content key does not name a patch, which
+    // moves with HEAD and the base while the file stands still — or, from a
+    // bridge that cannot page, split here out of the answer.
+    pages: {
+      field: "patch",
+      split: (body, of) => textPagesOf(body.patch, { of, cut: body.truncated }),
+      readPage,
+    },
     onChange,
   });
 
@@ -173,11 +211,28 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, onChange 
 
   return {
     bodyOf,
+    canPage,
+    /** Read the next page of `path`'s paged body into the cache. Answers
+     *  whether one landed; the repaint comes through `onChange`. */
+    more: (path) => bodies.more(path),
     /** Hold bodies for the views whose paths are in `openPaths`, and answer
      *  how many landed, so a caller repaints only on news. A turn asks for at
      *  most [`BODIES_PER_TURN`] of them: the paint that follows is what tells
      *  the next turn which files are still on screen. */
     sync: (views, openPaths, { budget = BODIES_PER_TURN } = {}) => enqueue(() => fill(views, openPaths, budget)),
+    /** Keep the bodies of `paths` out of `answer`, a `{ files, patch,
+     *  truncated }` already read for the whole changeset, as if the wire had
+     *  answered them — so an aggregate too big for its own record still costs
+     *  one read. A path already holding a body keeps it. */
+    seed: (answer, paths) =>
+      enqueue(async () => {
+        inHand = answer;
+        try {
+          return (await bodies.ensure(paths)).length;
+        } finally {
+          inHand = null;
+        }
+      }),
     dispose: () => {
       disposed = true;
       bodies.dispose();

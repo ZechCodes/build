@@ -32,6 +32,9 @@ const bridge = { call: null };
  *  a shorter list is an older bridge answering, not another machine. */
 const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
 let carriedKinds = EVERY_KIND;
+/** Whether the greeting announced `bodies.pages` (#95). */
+let pagesBodies = false;
+let perFileDiffs = false;
 
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/app.js", () => ({ App }));
@@ -40,7 +43,11 @@ let registeredWatchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: carriedKinds } }),
+  bridgeCapabilities: () => ({
+    changes: { subscriptions: true, kinds: carriedKinds },
+    bodies: { pages: pagesBodies },
+    diffs: { perFile: perFileDiffs },
+  }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -80,7 +87,8 @@ const registerDevice = (deviceId) => {
   return context;
 };
 
-let cache, sync;
+let cache, sync, pages;
+const WHOLE_READ = "whole";
 let board = [];
 let script = {};
 
@@ -145,11 +153,14 @@ beforeEach(async () => {
   board = [];
   script = {};
   carriedKinds = EVERY_KIND;
+  pagesBodies = false;
+  perFileDiffs = false;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
   cache = await import("../src/core/localCache.js");
   sync = await import("../src/core/cacheSync.js");
+  pages = await import("../src/core/bodyPages.js");
 });
 
 afterEach(() => {
@@ -423,6 +434,38 @@ describe("applying one item", () => {
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-1", git: { diff: null, diff_bytes: 900000 } }]);
     expect(calls("run.diff")).toEqual([]);
+  });
+
+  // A diff too big for its record keeps its shape (#95): the files, the stat
+  // and the key are the diff's own, and the stack draws each file's hunks on
+  // their own — so nothing about the record is stale.
+  it("keeps the shape of a pulled diff too big for its record, and does not mark it stale", async () => {
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    const files = [{ path: "src/a.js", status: "Modified", additions: 1, deletions: 0, content_key: "ka" }];
+    script["run.diff"] = () => ({ patch: "x".repeat(1_048_577), files, stat: { files_changed: 1 }, diff_key: "d-big" });
+    await deliver([{ entity_id: "run-1", git: { diff: null, diff_bytes: 1_048_577 } }]);
+    const record = (await read("run-1", "diff")).value;
+    expect(record.patch).toBeUndefined();
+    expect(record).toMatchObject({ files, diff_key: "d-big", stale: false });
+  });
+
+  // A shape with no patch is a diff whose hunks are read a file at a time: the
+  // patch held from before it moved is not this diff's, and must not be drawn.
+  it("lets go of the patch a record held when the diff that replaces it carries none", async () => {
+    await boot([branchItem()]);
+    await deliver([{ entity_id: "run-1", git: { diff: { patch: "old body", diff_key: "d8" } } }]);
+    await deliver([{ entity_id: "run-1", git: { diff: { files: [{ path: "src/a.js" }], diff_key: "d9" } } }]);
+    const after = (await read("run-1", "diff")).value;
+    expect(after.patch).toBeUndefined();
+    expect(after).toMatchObject({ diff_key: "d9", files: [{ path: "src/a.js" }] });
+  });
+
+  it("asks a bridge that answers per file for the shape of the diff it could not send, never the hunks", async () => {
+    perFileDiffs = true;
+    await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
+    bridge.call.mockClear();
+    await deliver([{ entity_id: "run-1", git: { diff: null, diff_bytes: 900000 } }]);
+    expect(calls("run.diff").map(([, params]) => params.patch)).toEqual([false]);
   });
 
   // A surface snapshot is process-local: it rides the agent digest while the
@@ -726,11 +769,10 @@ describe("applying one item", () => {
     expect(record.value.openedAt).toBe(1);
   });
 
-  // The cache refuses a body over its cap or one that came back truncated. The
-  // refusal is about the answer, not about the record — and the record is of a
-  // file that has since moved, so leaving it would serve the reader a body from
-  // before the growth, with no round trip and nothing saying so.
-  it("drops a held body the re-read came back too big to keep", async () => {
+  // A body over one record is kept as pages beside a record saying what the
+  // file is (#95). From a bridge that cannot page, the pages are what its cut
+  // answer carried — never the body from before the file grew.
+  it("keeps a held body the re-read came back too big for one record as pages of what it carried", async () => {
     await boot([branchItem()]);
     await cache.writeCached(
       { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" },
@@ -739,8 +781,66 @@ describe("applying one item", () => {
     script["fs.read"] = (params) => ({ path: params.path, size: 2_000_000, truncated: true, content_b64: "bmV3" });
     bridge.call.mockClear();
     await deliver([{ entity_id: "run-1", files: { paths: ["src/a.js"], truncated: false } }]);
-    expect(calls("fs.read")).toHaveLength(1);
-    expect(await read("run-1", "file", "src/a.js")).toBeUndefined();
+    expect(calls("fs.read").map(([, params]) => params)).toEqual([{ run_id: "run-1", path: "src/a.js" }]);
+    const record = await read("run-1", "file", "src/a.js");
+    expect(record.value).toMatchObject({ file: { paged: true, of: WHOLE_READ, truncated: true, size: 2_000_000 }, openedAt: 1 });
+    const held = await pages.readBodyPages({ deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" }, WHOLE_READ);
+    expect(pages.joinedBase64(held.pages)).toBe("bmV3");
+  });
+
+  describe("a paged body, from a bridge that pages", () => {
+    const head = { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "big.log" };
+    const pageAnswer = (version, body = "bmV3") => (params) => ({
+      path: params.path, size: 2_000_000, truncated: false, mime: "text/plain", content_b64: body, editable: false,
+      range: { offset: params.range.offset, end: params.range.offset + 3, total: 2_000_000, version },
+    });
+
+    const holdPaged = async () => {
+      await cache.writeCached(head, {
+        file: { path: "big.log", size: 2_000_000, mime: "text/plain", truncated: false, editable: false, paged: true, of: "v1" },
+        openedAt: 1,
+      });
+      await pages.writeBodyPage(head, { of: "v1", offset: 0, end: 3, total: 2_000_000, body: "b2xk" });
+      await pages.writeBodyPage(head, { of: "v1", offset: 3, end: 6, total: 2_000_000, body: "bW9y" });
+    };
+
+    it("is refreshed from its first page alone, read by range, keeping the pages read since", async () => {
+      pagesBodies = true;
+      await boot([branchItem()]);
+      await holdPaged();
+      script["fs.read"] = pageAnswer("v1", "b2xk");
+      bridge.call.mockClear();
+      await deliver([{ entity_id: "run-1", files: { paths: ["big.log"], truncated: false } }]);
+      expect(calls("fs.read").map(([, params]) => params)).toEqual([
+        { run_id: "run-1", path: "big.log", range: { offset: 0, bytes: pages.BODY_PAGE_BYTES } },
+      ]);
+      expect((await pages.readBodyPages(head, "v1")).pages).toHaveLength(2);
+      expect((await read("run-1", "file", "big.log")).value).toMatchObject({ file: { of: "v1" }, openedAt: 1 });
+    });
+
+    it("starts over when its first page is of a changed file", async () => {
+      pagesBodies = true;
+      await boot([branchItem()]);
+      await holdPaged();
+      script["fs.read"] = pageAnswer("v2");
+      bridge.call.mockClear();
+      await deliver([{ entity_id: "run-1", files: { paths: ["big.log"], truncated: false } }]);
+      expect((await pages.readBodyPages(head, "v1")).pages).toHaveLength(0);
+      const fresh = await pages.readBodyPages(head, "v2");
+      expect(fresh.pages.map((page) => page.body)).toEqual(["bmV3"]);
+      expect((await read("run-1", "file", "big.log")).value.file.of).toBe("v2");
+    });
+
+    it("keeps the body it holds when the first page cannot be read", async () => {
+      pagesBodies = true;
+      await boot([branchItem()]);
+      await holdPaged();
+      script["fs.read"] = () => Promise.reject(new Error("unreachable"));
+      bridge.call.mockClear();
+      await deliver([{ entity_id: "run-1", files: { paths: ["big.log"], truncated: false } }]);
+      expect((await read("run-1", "file", "big.log")).value.file.of).toBe("v1");
+      expect((await pages.readBodyPages(head, "v1")).pages).toHaveLength(2);
+    });
   });
 
   // A machine that stopped answering has said nothing about the file, and the

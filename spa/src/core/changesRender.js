@@ -101,14 +101,26 @@ export function uncommittedHeaderHtml(status, { sortOrder = "latest" } = {}) {
     ${status && status.files_truncated ? `<div class="ftrunc">file list truncated — ${fileCount} shown; a commit here commits the listed files</div>` : ""}`;
 }
 
+/** Whether a commit's patch is cut short with nothing said of the whole: cut
+ *  by the bridge, or kept in pages (#95) that fall short of a whole whose
+ *  weight is unknown. Pages whose total is known say how much is drawn at the
+ *  end of the stack instead, and are read on from there. */
+const patchCutShort = (show) =>
+  show.pages ? !show.pages.complete && show.pages.total == null : Boolean(show.truncated);
+
 /** One commit's header: subject, body, identity line, truncation notice. */
 export function commitHeaderHtml(show) {
+  return commitIdentityHtml(show) + (patchCutShort(show) ? TRUNCATED_NOTICE : "");
+}
+
+/** The subject, body and identity line of one commit. */
+function commitIdentityHtml(show) {
   const body = (show.body || "").trim();
   return `<div class="csheader commitheader" data-hash="${esc(show.hash)}">
     <div class="csub">${esc(show.subject)}</div>
     ${body ? `<pre class="cbody">${esc(body)}</pre>` : ""}
     <div class="cinfo">${esc(show.short)} · ${esc(show.author)} &lt;${esc(show.email)}&gt; · ${statSummary(show.stat || {})}</div></div>
-    ${show.truncated ? TRUNCATED_NOTICE : ""}`;
+    `;
 }
 
 /** One pending comment, wherever it was written: where it is, what it quotes,

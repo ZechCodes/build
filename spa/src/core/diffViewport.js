@@ -3,6 +3,23 @@ const FILE_ELEMENT = ".file[data-key]";
 
 const FILE_MARGIN = "1200px 0px";
 
+// Where a body kept in pages (#95) asks to be read on: a marker naming what to
+// read more of, at the end of what is drawn of it. A marker inside a file is
+// reached when that file's own row window scrolls near its end; one outside
+// every file ends the stack, and is reached when the stack's scroller does.
+const MORE_MARKER = "[data-more-key]";
+const MORE_MARGIN_PX = 60 * DIFF_ROW_HEIGHT;
+const WINDOWED_BODY = ".dscroll.dwindow";
+
+const nearItsEnd = (box) => box.scrollHeight - box.scrollTop - box.clientHeight <= MORE_MARGIN_PX;
+
+/** The scroller whose end reaches `marker`: its file's windowed body, the
+ *  stack's own scroller, or none for a file drawn capped or folded shut. */
+function scrollerReaching(marker, stackScroller) {
+  const file = marker.closest(FILE_ELEMENT);
+  return file ? file.querySelector(WINDOWED_BODY) : stackScroller;
+}
+
 function nextScrollWindow({ held, start, selectionStart, selectionEnd, rowCount, rowWindowSize, scrollTop, selecting }) {
   const currentStart = held?.start ?? 0;
   const currentEnd = held?.end ?? Math.min(rowCount, currentStart + rowWindowSize);
@@ -47,7 +64,12 @@ function pointInRow(page, row, offset) {
 /** Keeps the renderer's visibility and row-window decisions outside the DOM
  * markup. The controller only records geometry; the normal keyed repaint owns
  * all mutations. */
-export function createDiffViewport({ repaint, commentLayerBusy = () => false, rowWindowSize = ROW_WINDOW_SIZE } = {}) {
+export function createDiffViewport({
+  repaint,
+  commentLayerBusy = () => false,
+  rowWindowSize = ROW_WINDOW_SIZE,
+  onNeedMore = () => {},
+} = {}) {
   const visible = new Set();
   const requested = new Set();
   const initialLoads = new Set();
@@ -168,12 +190,40 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
     if (update.repaint) requestPaint(update.force);
   };
 
+  /** Ask for more of every paged body whose drawn end the reader has
+   *  reached. Only a scroll or a paint asks: a page landing asks nothing by
+   *  itself, so an owner holding its paint still (a draft, an action in
+   *  flight) is never read to the end behind the reader's back. */
+  const askForMore = () => {
+    if (!scroller) return;
+    for (const marker of scroller.querySelectorAll(MORE_MARKER)) {
+      const box = scrollerReaching(marker, scroller);
+      if (box && nearItsEnd(box)) void onNeedMore(marker.dataset.moreKey);
+    }
+  };
+
+  /** Ask after a paint, a frame on: the paint a landing page causes runs
+   *  while that page's read is still the owner's one in flight, and asking
+   *  inside it would be answered with that same read. */
+  let askFrame = 0;
+  const askAfterPaint = () => {
+    if (askFrame || !scroller?.querySelector(MORE_MARKER)) return;
+    askFrame = schedule(() => {
+      askFrame = 0;
+      askForMore();
+    });
+  };
+  const cancelAsk = () => {
+    if (askFrame) cancel(askFrame);
+    askFrame = 0;
+  };
+
   const onScroll = (event) => {
     const box = event.target.closest?.(".dscroll[data-row-count]");
-    if (!box) return;
-    const count = Number(box.dataset.rowCount) || 0;
-    const key = box.closest(FILE_ELEMENT)?.dataset.key;
+    const count = Number(box?.dataset.rowCount) || 0;
+    const key = box?.closest(FILE_ELEMENT)?.dataset.key;
     if (key && count > rowWindowSize) scrollUpdate(box, count, key);
+    askForMore();
   };
 
   const detachScroller = () => {
@@ -197,6 +247,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
     if (scroller === nextScroller) return;
     if (frame) cancel(frame);
     frame = 0;
+    cancelAsk();
     detachScroller();
     visible.clear();
     windows.clear();
@@ -218,6 +269,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
         }
       }
       observeFiles();
+      askAfterPaint();
       if (pending) requestPaint();
     },
     renderOptions() {
@@ -246,6 +298,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
     dispose() {
       if (frame) cancel(frame);
       frame = 0;
+      cancelAsk();
       detachScroller();
       scroller = null;
       visible.clear();

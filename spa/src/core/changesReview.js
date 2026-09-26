@@ -20,14 +20,14 @@
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WORKING_DIFF_MAX_BYTES } from "./cacheThresholds.js";
 import { createCommentLayer } from "./changesComments.js";
 import { fileKey, createFileFolds, pathOf } from "./diff.js";
 import { fileFoldOf, stackClaims } from "./diffRender.js";
 import { fileStackEntries, fileViewFromDiffRow } from "./fileEntries.js";
-import { CHANGESET_DIFF_RECORD_KIND, createChangesetBodies } from "./changesetBodies.js";
+import { CHANGESET_DIFF_RECORD_KIND, createChangesetBodies, filePatchesByPath } from "./changesetBodies.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -38,6 +38,26 @@ import { createParsedDiffCache } from "./parsedDiffCache.js";
 import { createDiffViewport } from "./diffViewport.js";
 import { diffSortHtml, DIFF_SORT_LATEST } from "./diffSort.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { bridgeCapabilities } from "./changeEvents.js";
+
+/** Whether an aggregate answer is too big for one record, or was cut: its
+ *  shape is kept and its patch is not (#95). */
+const oversizedDiff = (payload) => Boolean(payload.truncated) || !withinBytes(payload.patch, WORKING_DIFF_MAX_BYTES);
+
+/** An answer as the record keeps it when its patch will not fit: the shape —
+ *  the files, the stat, the key — and no patch, so the stack is drawn a file
+ *  at a time and each file's hunks are kept on their own. */
+const withoutPatch = (payload) => {
+  const shape = { ...payload };
+  delete shape.patch;
+  delete shape.truncated;
+  return shape;
+};
+
+/** The paths an aggregate answer names: its file rows, or the files its
+ *  patch holds where a bridge sent no rows. */
+const pathsOfDiff = (payload) =>
+  payload.files ? payload.files.map((file) => file.path) : [...filePatchesByPath(payload.patch).keys()];
 
 const fileEditedAtOf = (payload) => payload.file_edited_at || {};
 
@@ -117,7 +137,7 @@ export function createReviewPlug({
   let responseDiffKey = null;
   const parsedDiffs = createParsedDiffCache();
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
-  let renderedPatch = ""; // the patch those files came from
+  let renderedPatch = ""; // the patch those files came from; none for a stack drawn a file at a time
   let bodiesHeld = false; // hunks landed while repainting was frozen
   let commentableNow = false;
   let trayMounted = false;
@@ -171,6 +191,7 @@ export function createReviewPlug({
         },
         fetchFiles,
         keyFor: (path) => renderedFiles.find((view) => view.path === path)?.contentKey,
+        canPage: () => bridgeCapabilities(cacheScope?.deviceId).bodies?.pages === true,
         onChange: () => {
           if (!host) return;
           if (repaintFrozen()) {
@@ -222,7 +243,9 @@ export function createReviewPlug({
   };
 
   let paintChangeset = null;
-  const viewport = createDiffViewport({ repaint: render });
+  // The reader reached the end of a file whose body is still arriving in
+  // pages: read the next one into the cache, and the paint follows from there.
+  const viewport = createDiffViewport({ repaint: render, onNeedMore: async (key) => Boolean(await bodies?.more(pathOf(key))) });
   const contextScroller = () => host?.closest(".cdetail-host") || host;
   let contextForce = false;
   const composerFocused = () => Boolean(host?.ownerDocument.activeElement?.closest?.(".composer"));
@@ -464,7 +487,9 @@ export function createReviewPlug({
   const applyCachedDiff = (value) => {
     fileEditedAt = fileEditedAtOf(value);
     renderedFiles = viewsOf(value);
-    renderedPatch = value.patch || "";
+    // A record drawn a file at a time holds no patch, and an unchanged answer
+    // over it must not give it an empty one.
+    renderedPatch = value.patch;
     responseDiffKey = value.diff_key || null;
     commentableNow = value.commentable !== false && Boolean(commentLayer);
   };
@@ -583,23 +608,21 @@ export function createReviewPlug({
     render();
   };
 
+  /** Keep what was read: the record takes it whole where it fits, and its
+   *  shape alone where it does not — the files' hunks then kept on their own,
+   *  out of the answer in hand, before the record that draws them moves. Only
+   *  a surface with no record to keep is drawn from the answer. */
   const acceptPulledDiff = async (address, before, payload, patchUnchanged) => {
-    if (payload.truncated || !withinBytes(payload.patch, WORKING_DIFF_MAX_BYTES)) {
-      // #94: show this response only in this mount. #95 will retain large
-      // diffs as pages; neither an oversized body nor a cut one enters cache.
-      if (address) {
-        const current = await readCached(address);
-        if (current?.at !== before?.at) return;
-        await deleteCached([address]);
-      }
+    if (!address) {
       paintCachelessDiff(payload, patchUnchanged);
       return;
     }
-    if (address) {
+    if (!oversizedDiff(payload)) {
       await writePulledDiff(address, before, payload, patchUnchanged);
       return;
     }
-    paintCachelessDiff(payload, patchUnchanged);
+    await bodies?.seed(payload, pathsOfDiff(payload));
+    await writePulledDiff(address, before, withoutPatch(payload), patchUnchanged);
   };
 
   const paintOnce = async () => {

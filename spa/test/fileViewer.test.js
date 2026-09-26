@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createFileViewerState, fileViewerModes } from "../src/core/fileViewer.js";
+import { createFileViewerState, fileBodyReading, fileViewerModes, sameFile } from "../src/core/fileViewer.js";
 import { mountFileEditor } from "../src/core/fileEditor.js";
 
 const file = (overrides = {}) => ({ mime: "text/markdown", truncated: false, editable: true, revision: "r1", ...overrides });
@@ -18,6 +18,33 @@ describe("file viewer modes", () => {
 
   it("preserves rendered and source views from an older bridge while withholding Edit", () => {
     expect(fileViewerModes({ mime: "text/markdown", truncated: false })).toEqual(["preview", "source"]);
+  });
+
+  // A file too large for one record holds pages, not the file (#95): no
+  // revision to save against, and no whole document to render.
+  it("offers a paged file for reading only, and its markdown as source", () => {
+    const paged = (mime) => ({ mime, truncated: false, editable: false, paged: true, of: "v1", size: 5_000_000 });
+    expect(fileViewerModes(paged("text/markdown"))).toEqual(["source"]);
+    expect(fileViewerModes(paged("text/plain"))).toEqual(["source"]);
+    expect(fileViewerModes(paged("text/html"))).toEqual(["preview", "source"]);
+    expect(fileViewerModes({ ...paged("text/plain"), editable: true, revision: "r1" })).not.toContain("edit");
+  });
+
+  it("names how much of a file each kind of view needs", () => {
+    expect(fileBodyReading("application/pdf")).toBe("none");
+    expect(fileBodyReading("application/octet-stream")).toBe("none");
+    expect(fileBodyReading("image/png")).toBe("media");
+    expect(fileBodyReading("video/mp4")).toBe("media");
+    expect(fileBodyReading("image/svg+xml")).toBe("rendered");
+    expect(fileBodyReading("text/html")).toBe("rendered");
+    expect(fileBodyReading("text/markdown")).toBe("lines");
+    expect(fileBodyReading(null)).toBe("lines");
+  });
+
+  it("tells two paged records apart by the version their pages are of", () => {
+    const head = (of) => ({ mime: "text/plain", paged: true, of, truncated: false });
+    expect(sameFile(head("v1"), head("v1"))).toBe(true);
+    expect(sameFile(head("v1"), head("v2"))).toBe(false);
   });
 
   it("keeps an edit buffer and its state while modes change", () => {

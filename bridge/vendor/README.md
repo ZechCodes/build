@@ -24,8 +24,8 @@ next wake then sent it: an inbound packet, or, on an idle connection, ICE's
 200 ms check timer. Two cases were measured:
 
 - **Idle replies over a TURN relay.** Relay/relay round trips were p50 98 ms,
-  max 202 ms. The driver drained the TURN client (1.b) before the core (1.c),
-  so the core's relayed reply sat in the TURN client's queue.
+  max 202 ms. The driver drained the TURN client (1.b) before the core (1.c)
+  and not after, so the core's relayed reply sat in the TURN client's queue.
 - **The SCTP INIT after the DTLS handshake, on both paths.** When the core's
   events are pumped (2.c), the completed handshake reaches its SCTP handler,
   which queues the INIT. That happens after the write phase has run, and
@@ -33,10 +33,13 @@ next wake then sent it: an inbound packet, or, on an idle connection, ICE's
 
 `webrtc-driver-drain.patch` changes `peer_connection/driver.rs` only:
 
-- `poll_writes()` drains the core before the TURN client it feeds: gatherer
-  (1.a), core (1.b), TURN client (1.c). The core's relayed writes leave in the
-  same drain. The write-flush gate is cleared at the start of every write
-  phase.
+- `poll_writes()` drains the TURN client on both sides of the core: gatherer
+  (1.a), TURN client (1.b), core (1.c), TURN client again (1.d). The TURN
+  client both makes traffic of its own and carries the core's. Its own
+  (allocations, permissions, refreshes, retransmits) leaves first, as upstream
+  has it, so a core send waiting on a full socket never holds it. The core's
+  relayed writes, which 1.c hands it, leave in 1.d, in the same drain. The
+  write-flush gate is cleared at the start of every write phase.
 - `poll_pass()` runs writes, events, reads and then writes again, so a wake
   ends only after sending what its own events and reads produced. The first
   write phase still sends what woke the driver before any callback runs. rtc
@@ -50,15 +53,18 @@ next wake then sent it: an inbound packet, or, on an idle connection, ICE's
   only when 2.c pumps it. One round is all a wake can use. A second would need
   the extra round to feed the core again, and relayed input reaches the core
   only from datagrams the TURN client read in `select!`.
-- Four driver tests:
+- Five driver tests:
   - `relayed_output::a_relayed_core_write_leaves_in_the_same_pass`
   - `relayed_output::a_packet_held_for_a_permission_leaves_in_the_pass_that_takes_the_grant`
+  - `relayed_output::a_blocked_host_send_does_not_hold_ready_turn_control`
   - `relayed_output::the_sctp_init_after_a_relayed_handshake_leaves_before_the_driver_waits`
   - `direct_output::the_sctp_init_leaves_in_the_pass_that_completes_the_handshake`
 
-  The first two run against a mock TURN server on a real UDP socket. The two
-  handshake tests run a real DTLS handshake against an `rtc` core, over a
-  socket or through that mock TURN server.
+  The first three run against a mock TURN server on a real UDP socket; the
+  third queues a real permission retransmit beside a core ICE check on a host
+  socket whose sends stay pending. The two handshake tests run a real DTLS
+  handshake against an `rtc` core, over a socket or through that mock TURN
+  server.
 
 Each part of the change has a test that fails without it:
 
@@ -66,7 +72,8 @@ Each part of the change has a test that fails without it:
 | --- | --- |
 | the closing write phase | the permission grant, both SCTP INIT tests |
 | the extra round | the relayed SCTP INIT |
-| the core drained before the TURN client | the relayed SCTP INIT |
+| the TURN drain before the core (1.b) | the blocked host send |
+| the TURN drain after the core (1.d) | the relayed SCTP INIT |
 
 The measurement harness is `bridge/experiments/166/` at commit `1ca86df4`, and
 the numbers are on #166.

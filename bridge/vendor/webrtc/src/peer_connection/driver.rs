@@ -1473,7 +1473,7 @@ where
     }
 
     async fn poll_writes(&mut self) -> Result<()> {
-        // Clear the coalescing write-flush gate BEFORE draining. 1.b drains the core
+        // Clear the coalescing write-flush gate BEFORE draining. 1.c drains the core
         // unconditionally, so clearing here can never strand data: a send that set the
         // flag is either already enqueued (drained below) or enqueues a fresh
         // `WriteNotify` for the next wake.
@@ -1499,13 +1499,26 @@ where
             }
         }
 
-        // 1.b peer_connection poll_write() - Send all outgoing packets, coalescing
+        // 1.b and 1.d turn_relayer poll_write() - on both sides of the core, because the
+        // TURN client both makes traffic of its own and carries the core's. Its own
+        // (allocations, permissions, refreshes, retransmits) leaves first, so no core send
+        // awaiting a full socket holds it; the core's relayed writes, which 1.c hands it,
+        // leave after, in the same drain.
+        self.drain_turn_relayer_writes().await;
+
+        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
         // consecutive same-destination datagrams into single UDP GSO syscalls.
         let writes = Self::drain_core_writes(self.inner.clone()).await;
         self.flush_writes(writes).await;
 
-        // 1.c turn_relayer poll_write() - last, because the core feeds it: 1.b hands the
-        // core's relayed writes to the TURN client, and they leave here in the same drain.
+        // 1.d turn_relayer poll_write() - the core's relayed writes (see 1.b).
+        self.drain_turn_relayer_writes().await;
+
+        Ok(())
+    }
+
+    /// Send everything the TURN client holds (1.b and 1.d).
+    async fn drain_turn_relayer_writes(&mut self) {
         while let Some(msg) = self.turn_relayer.poll_write() {
             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
             if let Err(err) = self.handle_write(msg).await {
@@ -1524,8 +1537,6 @@ where
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Send a drained batch of outgoing packets, coalescing maximal runs of
@@ -1668,8 +1679,8 @@ where
     /// events and reads phases run callbacks. Those phases give the components more output: a
     /// TURN permission grant releases held packets (2.b), pumping the core's events can queue
     /// packets (2.c: a completed DTLS handshake queues the SCTP INIT), and relayed input handed to
-    /// the core leaves replies (3.a). The closing write phase sends all of it, the core before the
-    /// TURN client it feeds (1.b, then 1.c).
+    /// the core leaves replies (3.a). The closing write phase sends all of it, the core's relayed
+    /// writes included (1.c, then 1.d).
     ///
     /// rtc has no query for output the core holds, short of draining it, and pumping its events
     /// (2.c) can queue output even when no event comes out. So there is no readiness flag to
@@ -2200,6 +2211,13 @@ mod tests {
 
         /// A driver whose TURN client (on a real local socket) holds an allocation at `RELAY`.
         async fn allocated_driver(server: &Server) -> (PeerConnectionDriver, SocketAddr) {
+            allocated_driver_with_policy(server, RTCIceTransportPolicy::Relay).await
+        }
+
+        async fn allocated_driver_with_policy(
+            server: &Server,
+            policy: RTCIceTransportPolicy,
+        ) -> (PeerConnectionDriver, SocketAddr) {
             let runtime = default_runtime().unwrap();
             let (inner, _rx) = new_test_peer_connection().await;
             let ice_servers = vec![RTCIceServer {
@@ -2213,7 +2231,7 @@ mod tests {
                 Vec::new(),
                 MulticastDnsMode::Disabled,
                 ice_servers.clone(),
-                RTCIceTransportPolicy::Relay,
+                policy,
                 false,
             );
             let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -2221,12 +2239,7 @@ mod tests {
             driver
                 .udp_sockets
                 .insert(local, runtime.wrap_udp_socket(socket).unwrap());
-            driver.turn_relayer = RTCTurnRelayer::new(
-                vec![local],
-                ice_servers,
-                RTCIceTransportPolicy::Relay,
-                runtime,
-            );
+            driver.turn_relayer = RTCTurnRelayer::new(vec![local], ice_servers, policy, runtime);
             driver.turn_relayer.gather().await.unwrap();
 
             // Allocate → 401 → authenticated Allocate → success.
@@ -2285,7 +2298,7 @@ mod tests {
                 let server = Server::bind();
                 let (mut driver, local) = allocated_driver(&server).await;
 
-                // What 1.b does with a relayed core write.
+                // What 1.c does with a relayed core write.
                 driver
                     .handle_write(relayed(b"held for a permission"))
                     .await
@@ -2309,7 +2322,7 @@ mod tests {
         }
 
         /// The idle reply: the core writes to a peer the relay already has a permission for,
-        /// in 1.b, and the TURN client must send it (1.c) in the same pass.
+        /// in 1.c, and the TURN client must send it (1.d) in the same pass.
         #[test]
         fn a_relayed_core_write_leaves_in_the_same_pass() {
             let rt = default_runtime().unwrap();
@@ -2389,6 +2402,114 @@ mod tests {
                 assert!(
                     !checks.is_empty(),
                     "the core's relayed write reached the socket in the pass that drained it"
+                );
+            }));
+        }
+
+        /// A host socket that takes no datagram: every send stays pending, as a full socket
+        /// buffer's does, and records that it was tried.
+        #[derive(Debug)]
+        struct PendingHostSocket {
+            inner: Arc<dyn AsyncUdpSocket>,
+            attempted: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl AsyncUdpSocket for PendingHostSocket {
+            fn local_addr(&self) -> std::io::Result<SocketAddr> {
+                self.inner.local_addr()
+            }
+
+            fn poll_send(
+                &self,
+                _cx: &mut std::task::Context<'_>,
+                _transmit: &Transmit<'_>,
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                self.attempted.store(true, Ordering::SeqCst);
+                std::task::Poll::Pending
+            }
+
+            fn poll_recv(
+                &self,
+                cx: &mut std::task::Context<'_>,
+                bufs: &mut [std::io::IoSliceMut<'_>],
+                meta: &mut [RecvMeta],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                self.inner.poll_recv(cx, bufs, meta)
+            }
+        }
+
+        /// TURN control the timer queued leaves even when a core send, on another socket,
+        /// cannot: the write phase drains the TURN client before it awaits the core's sends.
+        #[test]
+        fn a_blocked_host_send_does_not_hold_ready_turn_control() {
+            let rt = default_runtime().unwrap();
+            let runtime = rt.clone();
+            rt.block_on(Box::pin(async move {
+                let server = Server::bind();
+                let (mut driver, _) =
+                    allocated_driver_with_policy(&server, RTCIceTransportPolicy::All).await;
+
+                // A CreatePermission the server never answers, so its transaction retransmits
+                // at the TURN client's next deadline.
+                driver
+                    .handle_write(relayed(b"await permission"))
+                    .await
+                    .unwrap();
+                driver.poll_writes().await.unwrap();
+                let sent = server.received();
+                assert!(
+                    sent.iter()
+                        .any(|msg| is(msg, METHOD_CREATE_PERMISSION, CLASS_REQUEST)),
+                    "the first write asked for a permission: {sent:?}"
+                );
+                let turn_deadline = driver.turn_relayer.poll_timeout().unwrap();
+
+                // A host candidate on a socket that takes nothing, and a core with an ICE
+                // check queued for it.
+                let host_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let host = host_socket.local_addr().unwrap();
+                let far_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let far = far_socket.local_addr().unwrap();
+                let attempted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                driver.udp_sockets.insert(
+                    host,
+                    Arc::new(PendingHostSocket {
+                        inner: runtime.wrap_udp_socket(host_socket).unwrap(),
+                        attempted: attempted.clone(),
+                    }),
+                );
+                {
+                    let mut remote = RTCPeerConnectionBuilder::new().build().unwrap();
+                    let mut core = driver.inner.core.lock().await;
+                    core.create_data_channel("app", None).unwrap();
+                    core.add_local_candidate(candidate(host, "host")).unwrap();
+                    let offer = core.create_offer(None).unwrap();
+                    core.set_local_description(offer.clone()).unwrap();
+                    remote.set_remote_description(offer).unwrap();
+                    remote.add_local_candidate(candidate(far, "host")).unwrap();
+                    let answer = remote.create_answer(None).unwrap();
+                    remote.set_local_description(answer.clone()).unwrap();
+                    core.set_remote_description(answer).unwrap();
+                    core.add_remote_candidate(candidate(far, "host")).unwrap();
+                    core.handle_timeout(Instant::now()).unwrap();
+                }
+
+                // The timer arm of the loop: the TURN retransmit is now queued beside the
+                // core's check. One poll of the write phase, which the host send leaves pending.
+                driver
+                    .handle_timeout(turn_deadline + Duration::from_millis(1))
+                    .await
+                    .unwrap();
+                assert!(driver.poll_writes().now_or_never().is_none());
+                assert!(
+                    attempted.load(Ordering::SeqCst),
+                    "the core's host check reached its socket"
+                );
+                let sent = server.received();
+                assert!(
+                    sent.iter()
+                        .any(|msg| is(msg, METHOD_CREATE_PERMISSION, CLASS_REQUEST)),
+                    "the TURN retransmit left before the blocked host send: {sent:?}"
                 );
             }));
         }

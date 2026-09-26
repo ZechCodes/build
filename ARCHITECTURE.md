@@ -634,12 +634,16 @@ In practice:
   is never painted from the answer. Its usual record becomes a head (the
   body's metadata, `paged: true`, no text) and the text is kept as page
   records (`spa/src/core/bodyPages.js`, kind `page`): one per page, chained by
-  byte offsets from 0, each naming the body it was cut from (a content key, a
-  commit, a file's version) so two versions are never joined. From a bridge
+  byte offsets from 0, each naming the body it was cut from (the bridge's
+  `range.version`: a file's version, a digest of the whole patch; or
+  `whole` for an answer split here) so two versions are never joined, and a
+  page of another version reads the body again from the top. From a bridge
   announcing `bodies.pages` the pages are read with `range` as the reader
-  scrolls to the end of what is painted (`createPagedBody`, the `pages`
-  option of `createCachedBodies`, `spa/src/core/pagedFileView.js` for the
-  Files tab, the diff viewport's `onNeedMore`); media is read whole into
+  reaches the end of what is painted (`createPagedBody`, the `pages` option
+  of `createCachedBodies`, `spa/src/core/pagedFileView.js` for the Files tab,
+  the diff viewport's `onNeedMore`): a commit's by the rows of the file its
+  pages end inside, and a line longer than a page as the reader goes along
+  it, painted as far as it has come; media is read whole into
   pages, since a picture cannot be shown half loaded. An older bridge's whole
   or cut answer is split into pages here and painted the same way, with the
   truncation notice where it was cut. Pages live and die with their head:

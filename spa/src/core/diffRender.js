@@ -212,9 +212,12 @@ export function pagesShownLabel({ end, total }) {
  *  `label` where the caller words it itself, in `className`. `marker` is what
  *  the viewport names when the reader reaches it (core/diffViewport.js). It is
  *  worn whatever the bridge can do right now — the paint is the cache's — and
- *  a bridge that cannot page answers the read with nothing. */
-export function pagesNoticeHtml(pages, marker, { label = pagesShownLabel(pages), className = "fmore" } = {}) {
-  return `<div class="${className}" data-more-key="${esc(marker)}">${esc(label)}</div>`;
+ *  a bridge that cannot page answers the read with nothing. `file`, for a
+ *  notice ending a stack, is the key of the file the pages end inside: the
+ *  notice is reached when that file's own rows are. */
+export function pagesNoticeHtml(pages, marker, { label = pagesShownLabel(pages), className = "fmore", file = null } = {}) {
+  const inside = file ? ` data-more-file="${esc(file)}"` : "";
+  return `<div class="${className}" data-more-key="${esc(marker)}"${inside}>${esc(label)}</div>`;
 }
 
 /** A file's header and the caller's choice of body, in the fold the reader put

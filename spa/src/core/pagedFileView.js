@@ -6,8 +6,13 @@
 // under the rows already painted, numbered on from them, and a sentinel under
 // the last row says how much of the file that is. When the sentinel scrolls
 // into view the next page is read into the cache, and the cache's
-// announcement paints it. A body the viewer can only show whole (a picture, a
-// film, a rendered HTML page) is painted once every page is held.
+// announcement paints it. A line the page cuts — longer than a page, or a
+// body split here — is painted as far as it has arrived, and the next page
+// carries it on in the same row. A page that ends no line leaves the
+// sentinel where it was, still in view, so the next is read only as the
+// reader goes along that line: to its right-hand end, or by pressing the
+// sentinel. A body the viewer can only show whole (a picture, a film, a
+// rendered HTML page) is painted once every page is held.
 //
 // What is painted says only what the cache holds: how much of the file that
 // is, never whether the machine can give more. A read it cannot make (an
@@ -34,25 +39,21 @@ export const sourceRowsHtml = (lines, lang, first = 1) =>
     })
     .join("");
 
-/** The lines of a body, a page at a time. A bridge cuts its pages after a
- *  line end, but a line longer than a page is cut inside it, and a body split
- *  here (read whole from an older bridge) is cut anywhere, even inside a
- *  character. So the bytes are decoded as one stream, and a line is given out
- *  once its end has arrived, or once no more of the body will. */
+/** How near the right-hand end of a cut line the reader has to be for the
+ *  rest of it to be read. */
+const LINE_END_MARGIN_PX = 600;
+
+/** The text of a body, a page at a time. A bridge cuts its pages after a line
+ *  end, but a line longer than a page is cut inside it, and a body split here
+ *  (read whole from an older bridge) is cut anywhere, even inside a
+ *  character. So the bytes are decoded as one stream: `take` answers a page's
+ *  text split at its line ends — the first piece carries on the line the page
+ *  before left open — and `finish` what a cut character left over. */
 function createLineReader() {
   const decoder = new TextDecoder();
-  let carry = "";
   return {
-    take(page) {
-      const lines = (carry + decoder.decode(bytesOfBase64(page.body), { stream: true })).split("\n");
-      carry = lines.pop();
-      return lines;
-    },
-    finish() {
-      const last = carry + decoder.decode();
-      carry = "";
-      return [last];
-    },
+    take: (page) => decoder.decode(bytesOfBase64(page.body), { stream: true }).split("\n"),
+    finish: () => decoder.decode(),
   };
 }
 
@@ -72,30 +73,68 @@ function paintedFollows(painted, state) {
 
 /** Paints source a page at a time: the rows of a new page are appended, and
  *  the whole table is painted again only when the pages held are no longer
- *  the ones it shows (evicted, or of another version). */
+ *  the ones it shows (evicted, or of another version). The last line stays
+ *  open until a line end or the body's end closes it: painted as far as it
+ *  has arrived (`open`, its code cell), or not yet at all while it has no
+ *  text, and each page's first piece is added on to it — so a line longer
+ *  than any page is shown a page at a time, never held back whole.
+ *
+ *  `paint` answers false for pages that only carried the open line on — the
+ *  table is no taller for them — and null when no page landed. */
 export function sourceLinesPainter(lang) {
   let painted = null;
   const start = (content) => {
     content.innerHTML = `<div class="fsrc"><table></table></div>`;
-    painted = { table: content.querySelector("table"), pages: 0, end: 0, lines: 0, finished: false, reader: createLineReader() };
+    painted = { table: content.querySelector("table"), pages: 0, end: 0, lines: 0, open: null, finished: false, reader: createLineReader() };
   };
   const append = (lines) => {
-    if (!lines.length) return;
+    if (!lines.length) return null;
     const rows = painted.table.ownerDocument.createElement("tbody");
     rows.innerHTML = sourceRowsHtml(lines, lang, painted.lines + 1);
     painted.table.append(rows);
     painted.lines += lines.length;
+    return rows.lastElementChild.querySelector("code");
+  };
+  /** The open line, carried on by `piece`. */
+  const carryOn = (piece) => {
+    if (!piece) return;
+    if (!painted.open) {
+      painted.open = append([piece]);
+      return;
+    }
+    const more = painted.open.ownerDocument.createElement("span");
+    more.innerHTML = highlightCode(piece, lang);
+    painted.open.append(more);
+  };
+  /** The open line ends: one never painted is an empty line. */
+  const close = () => {
+    if (!painted.open) append([""]);
+    painted.open = null;
+  };
+  const take = (pieces) => {
+    carryOn(pieces[0]);
+    if (pieces.length === 1) return false;
+    close();
+    const lines = pieces.slice(1, -1);
+    append(lines);
+    carryOn(pieces[pieces.length - 1]);
+    return true;
   };
   return {
     paint(content, state, final) {
-      if (!painted || !paintedFollows(painted, state)) start(content);
-      for (const page of state.pages.slice(painted.pages)) append(painted.reader.take(page));
+      const fresh = !painted || !paintedFollows(painted, state);
+      if (fresh) start(content);
+      const landed = state.pages.slice(painted.pages);
+      let closed = fresh || (landed.length ? false : null);
+      for (const page of landed) closed = take(painted.reader.take(page)) || closed;
       painted.pages = state.pages.length;
       painted.end = state.end;
       if (final && !painted.finished) {
-        append(painted.reader.finish());
+        carryOn(painted.reader.finish());
+        close();
         painted.finished = true;
       }
+      return closed;
     },
   };
 }
@@ -162,6 +201,19 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
     else restart();
   };
 
+  // A page that closed no line left the sentinel where it was: it is not
+  // watched again, or it would read the whole of one long line with the
+  // reader standing still. The rest is read as they go along that line, or
+  // press the sentinel.
+  let parked = false;
+  const readAlongTheLine = (event) => {
+    const line = event.target;
+    if (!parked || !line?.classList?.contains("fsrc")) return;
+    if (line.scrollLeft + line.clientWidth >= line.scrollWidth - LINE_END_MARGIN_PX) reachedEnd();
+  };
+  scroller.addEventListener("scroll", readAlongTheLine, true);
+  sentinel.addEventListener("click", reachedEnd);
+
   const watchSentinel = () => {
     if (!globalThis.IntersectionObserver) return;
     observer ??= new IntersectionObserver((entries) => {
@@ -174,14 +226,16 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
   };
 
   const paint = (state) => {
-    painter.paint(content, state, state.complete);
+    const grew = painter.paint(content, state, state.complete);
     sentinel.hidden = state.complete;
     sentinel.textContent = `Showing ${humanBytes(state.end)} of ${humanBytes(state.total ?? file.size)}`;
     // Only pages that never said what the whole weighs are a cut with no end
     // in sight; any other incomplete body is the sentinel's to say.
     notice.hidden = !(state.pages.length && state.total === null);
+    if (grew !== null) parked = grew === false;
+    parked &&= !state.complete;
     if (state.complete) observer?.disconnect();
-    else watchSentinel();
+    else if (!parked) watchSentinel();
     onPaint();
   };
 
@@ -195,6 +249,8 @@ export function mountPagedFile(scroller, { head, file, readPage = null, restart 
     dispose() {
       disposed = true;
       observer?.disconnect();
+      scroller.removeEventListener("scroll", readAlongTheLine, true);
+      sentinel.removeEventListener("click", reachedEnd);
       body.dispose();
     },
   };

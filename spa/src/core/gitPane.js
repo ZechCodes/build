@@ -59,6 +59,7 @@ import { watchChanges } from "./changeEvents.js";
 import { cachedSubKeys, mergeCached, readCached, readCachedMany, subscribeCache, writeCached } from "./localCache.js";
 import { COMMIT_PATCH_MAX_BYTES, PATCH_RECORD_KIND } from "./cacheThresholds.js";
 import { withinBytes } from "./cacheLifetime.js";
+import { WHOLE_ANSWER } from "./cachedBodies.js";
 import {
   BODY_PAGE_BYTES,
   joinedText,
@@ -946,14 +947,17 @@ export function mountGitPane(
 
   /** What ends a commit's stack while its patch is still arriving in pages:
    *  how much is shown, marked for the viewport to read on at when the reader
-   *  reaches it. The files past the last page are not drawn yet, so the end of
-   *  the stack is where the rest comes from. It says so from the pages alone;
-   *  a bridge that cannot page answers the read with nothing. */
+   *  reaches the rows of the file the pages end inside — the last the patch
+   *  names — not merely the stack's end: a file drawn capped keeps the stack
+   *  the same height however many pages land in it. It says so from the pages
+   *  alone; a bridge that cannot page answers the read with nothing. */
   const COMMIT_MORE_KEY = "commit";
-  const commitPagesTrailer = (detail) =>
-    detail.pages && !detail.pages.complete
-      ? [{ key: "more-pages", html: pagesNoticeHtml(detail.pages, COMMIT_MORE_KEY) }]
-      : [];
+  const commitPagesTrailer = (detail) => {
+    if (!detail.pages || detail.pages.complete) return [];
+    const last = renderedViews[renderedViews.length - 1];
+    const file = last ? fileKey(last) : null;
+    return [{ key: "more-pages", html: pagesNoticeHtml(detail.pages, COMMIT_MORE_KEY, { file }) }];
+  };
 
   const paintChangeset = (detailHost, { bar, views, stackOptions = {}, trailer = [] }) => {
     paintChangesetInto({
@@ -1444,25 +1448,40 @@ export function mountGitPane(
       if (!disposed && selected === hash) render();
       return;
     }
-    if (await recordStill(address, before)) await storeShow(address, show.hash || hash, show);
+    const first = keptWhole(show) ? null : await firstCommitPage(hash);
+    if (await recordStill(address, before)) await storeShow(address, show, first);
     await rereadRecords();
+  };
+
+  /** Whether one `git.show` answer is kept as it is, in one record. */
+  const keptWhole = (show) => !show.truncated && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES);
+
+  /** The bridge's own first page of a commit's patch, where it can cut one:
+   *  named by the digest of the patch it was cut from, which a commit hash is
+   *  not — the same commit renders another patch once attributes or diff
+   *  settings change — so only pages of that one patch are ever joined. */
+  const firstCommitPage = async (hash) => {
+    if (!fileDiffs.canPage()) return null;
+    const answer = await callRpc("git.show", { ...scope, hash, range: { offset: 0, bytes: BODY_PAGE_BYTES } }).catch(() => null);
+    const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
+    return page?.of && pageFollows(page, 0, page.of) ? page : null;
   };
 
   /** Keep one commit's `git.show` answer: whole where it fits one record, and
    *  otherwise as a head — the answer without its patch — beside the patch in
-   *  pages (#95). A cut answer keeps the whole lines before its cut and weighs
-   *  what the bridge said the whole patch does, in bytes, so the next page
-   *  read follows on from where the cut left off. */
-  const storeShow = async (address, hash, show) => {
-    if (!show.truncated && withinBytes(show.patch, COMMIT_PATCH_MAX_BYTES)) {
+   *  pages (#95): the bridge's own from its `first`, where it can cut them,
+   *  and otherwise the answer split here, named `WHOLE_ANSWER` so no page a
+   *  bridge cuts later is joined to them. A cut answer keeps the whole lines
+   *  before its cut and weighs what the bridge said the whole patch does. */
+  const storeShow = async (address, show, first) => {
+    if (keptWhole(show)) {
       await writeCached(address, show);
       return;
     }
     const total = show.truncated ? show.patch_bytes : undefined;
-    await writeBodyPages(address, textPagesOf(show.patch, { of: hash, cut: show.truncated, total }));
-    // Named by the commit, which names its patch for good: every page read
-    // later is of the same one.
-    const head = { ...show, paged: true, of: hash };
+    const pages = first ? [first] : textPagesOf(show.patch, { of: WHOLE_ANSWER, cut: show.truncated, total });
+    await writeBodyPages(address, pages);
+    const head = { ...show, paged: true, of: first?.of ?? WHOLE_ANSWER };
     delete head.patch;
     await writeCached(address, head);
   };
@@ -1470,20 +1489,29 @@ export function mountGitPane(
   /** The page after the last one held of a commit's paged patch, read off a
    *  bridge that can cut one and kept beside the others. The write moves this
    *  checkout's records, and the repaint follows from there. `range` is never
-   *  sent beside `max_bytes`, which the bridge refuses. Answers whether the
-   *  held pages moved on. */
+   *  sent beside `max_bytes`, which the bridge refuses. A page of another
+   *  patch than the one held says the commit renders differently now: it is
+   *  read again from the top. Answers whether the held pages moved on. */
   const readNextCommitPage = async (hash) => {
     const held = patches.get(hash);
     const address = cacheAddress(PATCH_RECORD_KIND, hash);
     if (!commitReadsOn(address, held)) return false;
-    const of = held.of ?? hash;
+    const { of } = held;
     const from = held.pages.end;
     const answer = await callRpc("git.show", { ...scope, hash, range: { offset: from, bytes: BODY_PAGE_BYTES } });
-    const page = answer?.range ? pageFromAnswer(answer, "patch", of) : null;
-    if (disposed || !pageFollows(page, from, of) || !(await stillPagedHead(address, of))) return false;
+    const page = answer?.range ? pageFromAnswer(answer, "patch") : null;
+    if (disposed || !page?.of) return false;
+    if (page.of !== of) {
+      await fetchShow(hash);
+      return false;
+    }
+    if (!pageFollows(page, from, of) || !(await stillPagedHead(address, of))) return false;
     await writeBodyPage(address, page);
-    // The write announces under this checkout, and the paint that follows is
-    // what asks for the next page — once this read is no longer in flight.
+    // The read stays in flight until the pane holds the page: an ask between
+    // the write and the pane taking it up would read this same page again,
+    // and a page written twice moves nothing, so no paint would ask on. The
+    // paint taking it up asks for the next, a frame on, once this is done.
+    await rereadRecords();
     return page.end > from;
   };
 
@@ -1496,17 +1524,32 @@ export function mountGitPane(
    *  after the pass let the commit go is not kept without its head. */
   const stillPagedHead = async (address, of) => {
     const head = (await readCached(address))?.value;
-    return Boolean(head?.paged) && (head.of ?? head.hash) === of;
+    return Boolean(head?.paged) && head.of === of;
   };
-  const commitPageReads = new Map();
+  /** One page read of a commit at a time. An ask that lands while one is out
+   *  — the paint of the page it brought, or of the patch read again from the
+   *  top, still with the reader at the end — is answered by reading on once
+   *  it is done: that paint is the only one it causes, so nothing else would
+   *  ask. */
+  const commitPageReads = new Map(); // hash → { reading, again }
   const readCommitPage = (hash) => {
-    if (!commitPageReads.has(hash)) {
-      const reading = readNextCommitPage(hash)
-        .catch(() => false)
-        .finally(() => commitPageReads.delete(hash));
-      commitPageReads.set(hash, reading);
+    const out = commitPageReads.get(hash);
+    if (out) {
+      out.again = true;
+      return out.reading;
     }
-    return commitPageReads.get(hash);
+    const read = { again: false };
+    const of = patches.get(hash)?.of;
+    read.reading = readNextCommitPage(hash)
+      .catch(() => false)
+      .then((moved) => {
+        commitPageReads.delete(hash);
+        const onward = moved || patches.get(hash)?.of !== of;
+        if (onward && read.again && !disposed) void readCommitPage(hash);
+        return moved;
+      });
+    commitPageReads.set(hash, read);
+    return read.reading;
   };
 
   /** The viewport says the reader reached the end of a paged body: a file of
@@ -1922,7 +1965,7 @@ export function mountGitPane(
     const before = commitPageJoins.get(hash);
     const known = before?.at === record.at ? before : null;
     const address = cacheAddress(PATCH_RECORD_KIND, hash);
-    const found = await readBodyPages(address, record.value.of ?? hash, known?.found);
+    const found = await readBodyPages(address, record.value.of, known?.found);
     const onward = known && found.pages.length >= known.found.pages.length;
     const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : joinedText(found.pages);
     commitPageJoins.set(hash, { at: record.at, found, text });

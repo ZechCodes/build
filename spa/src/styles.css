@@ -1464,7 +1464,7 @@ select.mini { padding:4px 8px; font-size:12px; border:1px solid var(--line); bor
 /* The line under a file too large for one record, saying how much of it is
    painted; the next page is read as it scrolls into view (#95). No display
    of its own, so its hidden attribute still hides it. */
-.fpmore { color:var(--dim); font-family:var(--mono); font-size:11.5px; padding:10px 0 4px; }
+.fpmore { color:var(--dim); font-family:var(--mono); font-size:11.5px; padding:10px 0 4px; cursor:pointer; }
 .ftrunc { margin-top:10px; color:var(--amber); font-size:12px; }
 /* ---- Secret-value spoilers (dotenv screen-privacy) ----
    A masked dotenv value shows a fixed dot block; a click reveals/re-hides it.

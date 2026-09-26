@@ -588,6 +588,39 @@ describe("a file over one record", () => {
     expect(host.querySelector(".ftrunc").hidden).toBe(true);
   });
 
+  // A file of one line longer than any page — minified, generated — is shown
+  // a page at a time as one row, never held back until its end. A page that
+  // only carries that line on leaves the sentinel in view, so it is not what
+  // reads the next: the reader going along the line is, or pressing it
+  // (#95 round 2).
+  it("paints a line longer than a page as far as it has come, and reads on only as the reader goes along it", async () => {
+    bridgePages = true;
+    sentinelInView = true;
+    const file = { bytes: "x".repeat(2 * TEXT_CAP), mime: "text/plain", version: "v1" };
+    const call = machine(file);
+    const { host } = await open(call);
+    const ranged = () => reads(call).filter((params) => params.range);
+    const lineText = () => host.querySelector('.fsrc tr[data-new-line="1"] code').textContent;
+
+    expect(ranged()).toHaveLength(2);
+    expect(lineNumbers(host)).toEqual([1]);
+    expect(lineText()).toBe("x".repeat(2 * BODY_PAGE_BYTES));
+    await settle();
+    expect(ranged()).toHaveLength(2);
+
+    host.querySelector(".fsrc").dispatchEvent(new window.Event("scroll"));
+    await settle();
+    expect(ranged()).toHaveLength(3);
+    expect(lineNumbers(host)).toEqual([1]);
+    expect(lineText()).toHaveLength(3 * BODY_PAGE_BYTES);
+
+    host.querySelector(".fpmore").click();
+    await settle();
+    expect(ranged()).toHaveLength(4);
+    expect(lineText()).toHaveLength(4 * BODY_PAGE_BYTES);
+    expect(host.querySelector(".fpmore").textContent).toBe("Showing 1.0 MB of 2.1 MB");
+  });
+
   // The view says what it holds, whatever the machine can do: how much of the
   // file is painted. It never asks whether the bridge can page.
   it("never sends an older bridge a range, and keeps what it sent as pages that say how much they are", async () => {

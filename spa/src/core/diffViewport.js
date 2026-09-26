@@ -5,8 +5,11 @@ const FILE_MARGIN = "1200px 0px";
 
 // Where a body kept in pages (#95) asks to be read on: a marker naming what to
 // read more of, at the end of what is drawn of it. A marker inside a file is
-// reached when that file's own row window scrolls near its end; one outside
-// every file ends the stack, and is reached when the stack's scroller does.
+// reached when that file's own row window scrolls near its end. One outside
+// every file ends the stack; where it names the file its pages end inside
+// (`data-more-file`), it is reached with that file's own rows — its window's
+// end, or the stack's once every row of it is drawn — and otherwise when the
+// stack's scroller reaches its end.
 const MORE_MARKER = "[data-more-key]";
 const MORE_MARGIN_PX = 60 * DIFF_ROW_HEIGHT;
 const WINDOWED_BODY = ".dscroll.dwindow";
@@ -14,10 +17,24 @@ const WINDOWED_BODY = ".dscroll.dwindow";
 const nearItsEnd = (box) => box.scrollHeight - box.scrollTop - box.clientHeight <= MORE_MARGIN_PX;
 
 /** The scroller whose end reaches `marker`: its file's windowed body, the
- *  stack's own scroller, or none for a file drawn capped or folded shut. */
+ *  stack's own scroller, or none for a file drawn capped or folded shut with
+ *  rows the reader has not been shown. */
 function scrollerReaching(marker, stackScroller) {
-  const file = marker.closest(FILE_ELEMENT);
-  return file ? file.querySelector(WINDOWED_BODY) : stackScroller;
+  const inside = marker.closest(FILE_ELEMENT);
+  if (inside) return inside.querySelector(WINDOWED_BODY);
+  const named = marker.dataset.moreFile;
+  if (!named) return stackScroller;
+  const file = [...stackScroller.querySelectorAll(FILE_ELEMENT)].find((candidate) => candidate.dataset.key === named);
+  if (!file) return stackScroller;
+  return file.querySelector(WINDOWED_BODY) || (everyRowDrawn(file) ? stackScroller : null);
+}
+
+/** Whether a file drawn without a window shows every row it has: a capped
+ *  file's first rows, or a placeholder for one off screen, do not. */
+function everyRowDrawn(file) {
+  const box = file.querySelector("[data-row-count]");
+  if (!box || box.classList.contains("dvirtual")) return false;
+  return box.querySelectorAll("tr[aria-rowindex]").length >= Number(box.dataset.rowCount);
 }
 
 function nextScrollWindow({ held, start, selectionStart, selectionEnd, rowCount, rowWindowSize, scrollTop, selecting }) {

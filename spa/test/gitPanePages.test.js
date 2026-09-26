@@ -84,8 +84,11 @@ const mountPane = async (callRpc) => {
 /** The bytes of `text`, as the bridge counts a range. */
 const bytes = (text) => new TextEncoder().encode(text).length;
 
+/** The digest a bridge names `BIG_PATCH`'s pages by. */
+const PATCH_VERSION = "p1";
+
 /** A bridge answering the commit `whole` cut at `cutAt` characters, and a
- *  ranged `git.show` with the next stretch of it. */
+ *  ranged `git.show` with the next stretch of it, named `PATCH_VERSION`. */
 const commitRpc = (whole, { cutAt = null } = {}) =>
   vi.fn(async (method, params) => {
     if (method === "git.status") return tree.status();
@@ -103,12 +106,19 @@ const commitRpc = (whole, { cutAt = null } = {}) =>
     if (end < encoded.length) end = encoded.lastIndexOf(10, end - 1) + 1;
     return {
       ...show({ patch: new TextDecoder().decode(encoded.subarray(start, end)) }),
-      range: { offset: start, end, total: encoded.length },
+      range: { offset: start, end, total: encoded.length, version: PATCH_VERSION },
     };
   });
 
 const openCommit = async (container) => {
   container.querySelector(".crow").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+  await settle();
+};
+
+/** The reader opens the first file of the commit — the big one its pages end
+ *  inside — out of its capped preview. */
+const openBigFile = async (container) => {
+  container.querySelector(".file .dscroll").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
   await settle();
 };
 
@@ -124,7 +134,7 @@ describe("a commit patch too big for one record", () => {
     const head = (await cache.readCached(patchAddress)).value;
     expect(head).toMatchObject({ hash: HASH, paged: true, subject: "earlier work" });
     expect(head.patch).toBeUndefined();
-    const held = await pages.readBodyPages(patchAddress, HASH);
+    const held = await pages.readBodyPages(patchAddress, "whole");
     expect(held.pages.length).toBeGreaterThan(1);
     expect(held.complete).toBe(true);
     expect(first.container.textContent).toContain("why it happened");
@@ -140,21 +150,25 @@ describe("a commit patch too big for one record", () => {
     second.pane.dispose();
   });
 
-  it("reads the rest of a cut patch a page at a time as the reader reaches the end of the stack", async () => {
+  it("reads the rest of a cut patch a page at a time as the reader reads down the file it ends in", async () => {
     await greetPaging();
     await seedShape();
     const cutAt = BIG_PATCH.indexOf("line 2000 ");
     const callRpc = commitRpc(BIG_PATCH, { cutAt });
     const { container, pane } = await mountPane(callRpc);
     await openCommit(container);
+    await openBigFile(container);
 
-    // jsdom lays nothing out, so the stack's end is always in reach: every
-    // paint reads on until the pages meet the whole.
-    await vi.waitFor(async () => expect((await pages.readBodyPages(patchAddress, HASH)).complete).toBe(true), READ_THROUGH);
+    // jsdom lays nothing out, so the open file's end is always in reach:
+    // every paint reads on until the pages meet the whole.
+    await vi.waitFor(async () => expect((await pages.readBodyPages(patchAddress, PATCH_VERSION)).complete).toBe(true), READ_THROUGH);
     await settle();
     const ranged = showCalls(callRpc).filter((params) => params.range);
-    expect(ranged.length).toBeGreaterThan(0);
-    expect(ranged[0]).toEqual({ run_id: "run-1", hash: HASH, range: { offset: bytes(BIG_PATCH.slice(0, BIG_PATCH.lastIndexOf("\n", cutAt) + 1)), bytes: pages.BODY_PAGE_BYTES } });
+    expect(ranged.length).toBeGreaterThan(1);
+    // The pages are the bridge's own from the first, named by its digest of
+    // the patch — not the cut answer's, which names no version.
+    expect(ranged[0]).toEqual({ run_id: "run-1", hash: HASH, range: { offset: 0, bytes: pages.BODY_PAGE_BYTES } });
+    expect((await cache.readCached(patchAddress)).value.of).toBe(PATCH_VERSION);
     expect(ranged.every((params) => params.max_bytes === undefined)).toBe(true);
     expect(container.textContent).toContain("src/tail.js");
     expect(container.querySelector("[data-more-key]")).toBeNull();
@@ -174,18 +188,82 @@ describe("a commit patch too big for one record", () => {
     await openCommit(container);
 
     expect(showCalls(callRpc)).toEqual([{ run_id: "run-1", hash: HASH }]);
-    expect((await cache.readCached(patchAddress)).value).toMatchObject({ paged: true, truncated: true, of: HASH });
-    const held = await pages.readBodyPages(patchAddress, HASH);
+    expect((await cache.readCached(patchAddress)).value).toMatchObject({ paged: true, truncated: true, of: "whole" });
+    const held = await pages.readBodyPages(patchAddress, "whole");
     expect(pages.joinedText(held.pages)).toBe(BIG_PATCH.slice(0, BIG_PATCH.lastIndexOf("\n", cutAt) + 1));
     expect(held).toMatchObject({ total: bytes(BIG_PATCH), complete: false });
     expect(container.textContent).not.toContain("diff truncated");
     expect(container.querySelector('[data-more-key="commit"]')?.textContent).toMatch(/^Showing .* of /);
 
+    // The bridge's pages are of its own digest, not of the answer split here:
+    // the commit is read again from the top in them.
     await greetPaging();
+    await openBigFile(container);
     container.querySelector(".cdetail-host").dispatchEvent(new window.Event("scroll"));
-    await vi.waitFor(async () => expect((await pages.readBodyPages(patchAddress, HASH)).complete).toBe(true), READ_THROUGH);
+    await vi.waitFor(async () => expect((await pages.readBodyPages(patchAddress, PATCH_VERSION)).complete).toBe(true), READ_THROUGH);
     await vi.waitFor(() => expect(container.textContent).toContain("src/tail.js"), READ_THROUGH);
     expect(container.querySelector("[data-more-key]")).toBeNull();
+    pane.dispose();
+  });
+
+  // The same commit renders another patch once `.git/info/attributes` or a
+  // diff setting changes: its hash names neither. A page cut from the new
+  // patch is never joined to the old one's — the commit is read again from
+  // the top, and every page held is of the patch on screen (#95 round 2).
+  it("reads a commit again from the top when its patch changes between pages, joining no two patches", async () => {
+    await greetPaging();
+    await seedShape();
+    const OTHER = `${patchFor("src/big.js", bigLines.map((line) => `${line}, rendered again`))}${patchFor("src/tail.js", "the other last file")}`;
+    let current = { whole: BIG_PATCH, version: "p1" };
+    const cutAt = BIG_PATCH.indexOf("line 2000 ");
+    const callRpc = vi.fn(async (method, params) => {
+      if (method === "git.status") return tree.status();
+      if (method === "git.diff") return tree.diff(params);
+      if (method === "git.log") return log();
+      if (method !== "git.show") return {};
+      const { whole, version } = current;
+      if (!params.range) return show({ patch: whole.slice(0, cutAt), truncated: true, patch_bytes: bytes(whole) });
+      const answer = { ...show(), ...pagedAnswer(whole, params.range.offset, { version }) };
+      // The attributes change right after the first page is cut.
+      if (params.range.offset === 0 && version === "p1") current = { whole: OTHER, version: "p2" };
+      return answer;
+    });
+    const { container, pane } = await mountPane(callRpc);
+    await openCommit(container);
+    await openBigFile(container);
+
+    await vi.waitFor(async () => expect((await pages.readBodyPages(patchAddress, "p2")).complete).toBe(true), READ_THROUGH);
+    await settle();
+    expect((await cache.readCached(patchAddress)).value.of).toBe("p2");
+    expect(pages.joinedText((await pages.readBodyPages(patchAddress, "p2")).pages)).toBe(OTHER);
+    expect((await pages.readBodyPages(patchAddress, "p1")).pages).toEqual([]);
+    await vi.waitFor(() => expect(container.textContent).toContain("the other last file"), READ_THROUGH);
+    expect(container.textContent).not.toContain("the last file");
+    expect(showCalls(callRpc).filter((params) => !params.range)).toHaveLength(2);
+    pane.dispose();
+  });
+
+  // The pages end inside a file drawn capped: the stack is no taller however
+  // many pages land in it, so its end stays in reach. Nothing is read on
+  // until the reader is shown that file's rows (#95 round 2).
+  it("reads no page past a capped file's preview until the reader opens it", async () => {
+    await greetPaging();
+    await seedShape();
+    const cutAt = BIG_PATCH.indexOf("line 2000 ");
+    const callRpc = commitRpc(BIG_PATCH, { cutAt });
+    const { container, pane } = await mountPane(callRpc);
+    await openCommit(container);
+    const host = container.querySelector(".cdetail-host");
+    for (let scrolls = 0; scrolls < 5; scrolls++) {
+      host.dispatchEvent(new window.Event("scroll"));
+      await settle();
+    }
+    const ranged = () => showCalls(callRpc).filter((params) => params.range).map((params) => params.range.offset);
+    expect(ranged()).toEqual([0]);
+    expect(container.querySelector('[data-more-key="commit"]')?.dataset.moreFile).toBe(container.querySelector(".file").dataset.key);
+
+    await openBigFile(container);
+    await vi.waitFor(() => expect(ranged().length).toBeGreaterThan(1), READ_THROUGH);
     pane.dispose();
   });
 
@@ -204,12 +282,15 @@ describe("a commit patch too big for one record", () => {
       if (method === "git.diff") return tree.diff(params);
       if (method === "git.log") return log();
       if (method !== "git.show") return {};
-      if (params.range) return new Promise((resolve) => { answerPage = () => resolve({ ...show(), ...pagedAnswer(BIG_PATCH, params.range.offset, { version: HASH }) }); });
+      const page = () => ({ ...show(), ...pagedAnswer(BIG_PATCH, params.range.offset, { version: PATCH_VERSION }) });
+      if (params.range?.offset === 0) return page();
+      if (params.range) return new Promise((resolve) => { answerPage = () => resolve(page()); });
       unranged += 1;
       return unranged === 1 ? cutShow : show();
     });
     const { container, pane } = await mountPane(callRpc);
     await openCommit(container);
+    await openBigFile(container);
     await vi.waitFor(() => expect(answerPage).toBeTypeOf("function"));
 
     await pages.dropBodyPages(patchAddress);
@@ -219,7 +300,7 @@ describe("a commit patch too big for one record", () => {
     await settle();
 
     expect(await cache.cachedSubKeys("dev-1", "run-1", "page")).toEqual([]);
-    expect(showCalls(callRpc).filter((params) => params.range)).toHaveLength(1);
+    expect(showCalls(callRpc).filter((params) => params.range)).toHaveLength(2);
     // The commit on screen lost its record: it is read again, whole this time.
     await vi.waitFor(() => expect(container.textContent).toContain("committed line"));
     expect((await cache.readCached(patchAddress)).value.paged).toBeUndefined();

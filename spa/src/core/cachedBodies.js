@@ -169,31 +169,36 @@ export function createCachedBodies({
       onChange(stringKey);
       return stringKey;
     }
-    await storeFetched(stringKey, at, value);
-    await reread(stringKey, false);
+    const stored = await storeFetched(stringKey, at, value, current?.at);
+    await reread(stringKey, !stored);
     return stringKey;
   };
 
   /** Keep one answer: whole when it fits, in pages when it does not, and not
    *  at all when this configuration has no pages to keep it in — the older
-   *  record goes, so a revisit cannot show what the file said before. */
-  const storeFetched = async (key, at, value) => {
+   *  record goes, so a revisit cannot show what the file said before.
+   *  Answers whether it kept it: the first page is one more wire call, and a
+   *  record written or dropped while it was out (stamped other than
+   *  `startedAt`) is left as it is now, heads and pages alike. */
+  const storeFetched = async (key, at, value, startedAt) => {
     if (cacheable(value)) {
       if (pages) await dropBodyPages(at);
       await writeCached(at, value);
-      return;
+      return true;
     }
     if (!pages) {
       await deleteCached([at]);
-      return;
+      return true;
     }
     const first = await firstPage(key, value);
+    if (disposed || (await readCached(at))?.at !== startedAt) return false;
     await dropBodyPages(at);
     const stored = first ? [first] : pages.split(value, WHOLE_ANSWER);
     await writeBodyPages(at, stored);
     const head = { ...value, paged: true, of: stored[0].of };
     delete head[pages.field];
     await writeCached(at, head);
+    return true;
   };
 
   /** The bridge's own first page of a body, where it can page. */
@@ -240,16 +245,30 @@ export function createCachedBodies({
     onChange(key);
     return (held.get(key)?.pages?.end ?? from) > from;
   };
-  const readingNext = new Map();
+  /** One page read of a body at a time. An ask that lands while one is out —
+   *  the paint of the page it brought, or of the body read again from the top,
+   *  with the reader still at the end — is answered by reading on once it is
+   *  done: nothing else would ask. */
+  const readingNext = new Map(); // key → { reading, again }
   const more = (key) => {
     const stringKey = String(key);
-    if (!readingNext.has(stringKey)) {
-      const reading = readNextPage(stringKey)
-        .catch(() => false)
-        .finally(() => readingNext.delete(stringKey));
-      readingNext.set(stringKey, reading);
+    const out = readingNext.get(stringKey);
+    if (out) {
+      out.again = true;
+      return out.reading;
     }
-    return readingNext.get(stringKey);
+    const read = { again: false };
+    const of = held.get(stringKey)?.of;
+    read.reading = readNextPage(stringKey)
+      .catch(() => false)
+      .then((moved) => {
+        readingNext.delete(stringKey);
+        const onward = moved || held.get(stringKey)?.of !== of;
+        if (onward && read.again && !disposed) void more(stringKey);
+        return moved;
+      });
+    readingNext.set(stringKey, read);
+    return read.reading;
   };
 
   /** The wire, then the write-through. Batching belongs to the caller. */

@@ -199,7 +199,6 @@ describe("a page as a bridge answered it", () => {
   it("takes the page's text from the answer's field and its place from range", () => {
     const answer = { patch: "+a\n", range: { offset: 10, end: 13, total: 40, version: "v1" } };
     expect(pages.pageFromAnswer(answer, "patch")).toEqual({ of: "v1", offset: 10, end: 13, total: 40, body: "+a\n" });
-    expect(pages.pageFromAnswer(answer, "patch", "key-1").of).toBe("key-1");
   });
 });
 

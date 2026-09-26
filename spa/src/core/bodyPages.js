@@ -9,8 +9,9 @@
 // the end of them.
 //
 // A page record is `{ of, offset, end, total, body }`: `of` names the body
-// the page was cut from (a content key, a commit, a file's version), so pages
-// of two versions of one file are never joined; `offset`/`end` are byte
+// the page was cut from (the bridge's `range.version` — a file's version, a
+// digest of the whole patch — or "whole" for an answer split here), so pages
+// of two versions of one body are never joined; `offset`/`end` are byte
 // offsets into the whole, and `body` is the page's text — patch text, or
 // base64 for a file's bytes. The pages of one body chain: each starts at the
 // `end` of the one before, from 0.
@@ -239,11 +240,13 @@ export function joinedBase64(pages) {
 }
 
 /** A page as a bridge answered it: the text of the page and where it sits.
- *  `field` is where the answer carries the page's text. */
-export function pageFromAnswer(answer, field, of) {
+ *  `field` is where the answer carries the page's text. A page is always of
+ *  the version the bridge names — nothing else says which body it was cut
+ *  from. */
+export function pageFromAnswer(answer, field) {
   const range = answer?.range || {};
   return {
-    of: of ?? range.version,
+    of: range.version,
     offset: byteCount(range.offset),
     end: byteCount(range.end),
     total: byteCount(range.total),

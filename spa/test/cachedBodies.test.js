@@ -222,6 +222,42 @@ describe("createCachedBodies with pages (#95)", () => {
     bodies.dispose();
   });
 
+  it("reads a moved body from the top when its old end falls inside a character of the new one (#95 round 2)", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    let version = "v1";
+    const reads = [];
+    const fetches = [];
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: async (keys) => {
+        fetches.push([...keys]);
+        return keys.map((key) => ({ path: key, patch: WHOLE.slice(0, 1000), truncated: true }));
+      },
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch, truncated: item.truncated } }),
+      cacheable: (value) => !value.truncated,
+      pages: {
+        field: "patch",
+        split: () => [],
+        readPage: async (_key, offset) => {
+          reads.push(offset);
+          const all = pages.textPagesOf(WHOLE, { of: version, bytes: 512 });
+          // The bridge answers from the start of the character the old end
+          // falls inside, under the new version.
+          if (offset && version === "v2") return { ...all[1], offset: offset - 1 };
+          return all.find((page) => page.offset === offset);
+        },
+      },
+    });
+    await bodies.ensure(["big.txt"]);
+    const end = bodies.read("big.txt").pages.end;
+    version = "v2";
+    expect(await bodies.more("big.txt")).toBe(false);
+    expect(reads).toEqual([0, end, 0]);
+    expect(fetches).toEqual([["big.txt"], ["big.txt"]]);
+    expect((await cache.readCached(address("big.txt"))).value.of).toBe("v2");
+    bodies.dispose();
+  });
+
   it("keeps no page for a head that was replaced while the page was read", async () => {
     const pages = await import("../src/core/bodyPages.js");
     const all = pages.textPagesOf(WHOLE, { of: "v1", bytes: 512 });
@@ -242,6 +278,46 @@ describe("createCachedBodies with pages (#95)", () => {
     await bodies.ensure(["big.txt"]);
     expect(await bodies.more("big.txt")).toBe(false);
     expect(await cache.cachedSubKeys("dev-1", "run-1", pages.PAGE_RECORD_KIND)).toEqual(["filediff:big.txt@0"]);
+    bodies.dispose();
+  });
+
+  it("keeps nothing a first page brings back after its record was dropped or replaced (#95 round 2)", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const all = pages.textPagesOf(WHOLE, { of: "v1", bytes: 512 });
+    let meanwhile;
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: async (keys) => keys.map((key) => ({ path: key, patch: WHOLE.slice(0, 1000), truncated: true })),
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch, truncated: item.truncated } }),
+      cacheable: (value) => !value.truncated,
+      pages: {
+        field: "patch",
+        split: () => [],
+        readPage: async (_key, offset) => {
+          await meanwhile();
+          return all.find((page) => page.offset === offset);
+        },
+      },
+    });
+
+    meanwhile = async () => {};
+    await bodies.ensure(["gone.txt", "new.txt"]);
+    await pages.dropBodyPages(address("gone.txt"));
+    await pages.dropBodyPages(address("new.txt"));
+
+    // Evicted while the first page was on the wire: nothing comes back.
+    meanwhile = () => cache.deleteCached([address("gone.txt")]);
+    await bodies.ensure(["gone.txt"]);
+    expect(await cache.readCached(address("gone.txt"))).toBeUndefined();
+    expect(bodies.has("gone.txt")).toBe(false);
+
+    // Replaced while it was out: the newer record stands.
+    meanwhile = () => cache.writeCached(address("new.txt"), { patch: "newer" });
+    await bodies.ensure(["new.txt"]);
+    expect((await cache.readCached(address("new.txt"))).value).toEqual({ patch: "newer" });
+    expect(bodies.read("new.txt")).toEqual({ patch: "newer" });
+
+    expect(await cache.cachedSubKeys("dev-1", "run-1", pages.PAGE_RECORD_KIND)).toEqual([]);
     bodies.dispose();
   });
 

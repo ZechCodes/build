@@ -463,7 +463,7 @@ impl PatchCut {
                 result["truncated"] = json!(truncated);
             }
             Self::Page(range) => {
-                let (page, span) = text_page(&patch, range)?;
+                let (page, span) = text_page(&patch, range);
                 result["patch"] = json!(page);
                 result["truncated"] = json!(false);
                 result["range"] = json!(span);

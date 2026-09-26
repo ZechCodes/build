@@ -261,7 +261,7 @@ impl DeferredRead {
 /// page sits.
 fn page_the_patch(rendered: &mut Value, range: crate::body_page::BodyRange) -> Result<(), String> {
     let patch = rendered.get("patch").and_then(Value::as_str).unwrap_or("");
-    let (page, span) = crate::body_page::text_page(patch, range)?;
+    let (page, span) = crate::body_page::text_page(patch, range);
     rendered["patch"] = json!(page);
     rendered["range"] = json!(span);
     Ok(())

@@ -216,7 +216,7 @@ impl AppState {
         }
         let (file, opened_metadata) = open_regular_read(&target, &path)?;
         if let Some(range) = BodyRange::from_params(params)? {
-            return read_page(file, &opened_metadata, &target, &path, range);
+            return read_page(file, &target, &path, range);
         }
         let size = opened_metadata.len();
         let read_limit = if media_mime_hint(&target).is_some() {
@@ -304,29 +304,19 @@ impl AppState {
 /// of one file names the same type.
 fn read_page(
     mut file: std::fs::File,
-    metadata: &std::fs::Metadata,
     target: &std::path::Path,
     path: &str,
     range: BodyRange,
 ) -> Result<Value, String> {
-    use std::io::{Seek as _, SeekFrom};
+    let ((head, window, offset), metadata) = read_unchanged(&mut file, path, |file, size| {
+        cut_page(file, size, path, range)
+    })?;
     let size = metadata.len();
-    let offset = range.offset.min(size);
-    let head = read_at(&mut file, 0, 8192, path)?;
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|e| format!("cannot read {path}: {e}"))?;
-    let mut window = Vec::with_capacity(range.capacity().min((size - offset) as usize));
-    (&mut file)
-        .take(range.capacity() as u64)
-        .read_to_end(&mut window)
-        .map_err(|e| format!("cannot read {path}: {e}"))?;
-    let reaches_end = offset + window.len() as u64 >= size;
-    window.truncate(page_len(&window, reaches_end));
     let span = BodySpan {
         offset,
         end: offset + window.len() as u64,
         total: size,
-        version: Some(file_version(metadata)),
+        version: Some(file_version(&metadata)),
     };
     Ok(json!({
         "path": path,
@@ -337,6 +327,51 @@ fn read_page(
         "editable": false,
         "range": span,
     }))
+}
+
+/// How many times a page is read again when the file moves under the read.
+const PAGE_READ_ATTEMPTS: usize = 3;
+
+/// `read` run against `file` until the file's version is the same after it
+/// as before, so the bytes it answers are the version they are named by: a
+/// file rewritten in place between the two would otherwise hand a new page
+/// under the old version, and a client would join it to the old pages. A
+/// file that keeps moving is refused after a few tries — the client reads it
+/// again from the top.
+fn read_unchanged<T>(
+    file: &mut std::fs::File,
+    path: &str,
+    mut read: impl FnMut(&mut std::fs::File, u64) -> Result<T, String>,
+) -> Result<(T, std::fs::Metadata), String> {
+    let stat = |file: &std::fs::File| {
+        file.metadata()
+            .map_err(|e| format!("cannot read {path}: {e}"))
+    };
+    for _ in 0..PAGE_READ_ATTEMPTS {
+        let before = stat(file)?;
+        let read = read(file, before.len())?;
+        let after = stat(file)?;
+        if file_version(&before) == file_version(&after) {
+            return Ok((read, after));
+        }
+    }
+    Err(format!("{path} kept changing while it was read"))
+}
+
+/// The head of a `size`-byte file, the page from `range.offset` and that
+/// offset, clamped to the end.
+fn cut_page(
+    file: &mut std::fs::File,
+    size: u64,
+    path: &str,
+    range: BodyRange,
+) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
+    let offset = range.offset.min(size);
+    let head = read_at(file, 0, 8192, path)?;
+    let mut window = read_at(file, offset, range.capacity() as u64, path)?;
+    let reaches_end = offset + window.len() as u64 >= size;
+    window.truncate(page_len(&window, reaches_end));
+    Ok((head, window, offset))
 }
 
 /// Up to `bytes` of `file` from `offset`.
@@ -357,13 +392,29 @@ fn read_at(
 }
 
 /// Which version of a file a page was cut from: its modification time and
-/// size, which move whenever its bytes do.
+/// size, which move whenever its bytes do, and where the platform says them,
+/// its change time and inode — a file renamed over this one, or one whose
+/// modification time was set back, is another version too. As fine as the
+/// filesystem's clock and no finer: a rewrite to the same size within one
+/// tick of it keeps the version.
 fn file_version(metadata: &std::fs::Metadata) -> String {
     let modified = metadata
         .modified()
         .ok()
         .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |since| since.as_nanos());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        format!(
+            "{modified}-{}.{}-{}-{}",
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+            metadata.ino(),
+            metadata.len()
+        )
+    }
+    #[cfg(not(unix))]
     format!("{modified}-{}", metadata.len())
 }
 
@@ -406,6 +457,81 @@ fn open_regular_read(
         return Err("not a file".to_string());
     }
     Ok((file, metadata))
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// Rewrite `path` in place — same inode, same size — stamped `at`
+    /// seconds, so the rewrite moves the version whatever the clock's tick.
+    fn rewrite(path: &std::path::Path, byte: u8, at: u64) {
+        std::fs::write(path, vec![byte; 8192]).unwrap();
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(at))
+            .unwrap();
+    }
+
+    /// A file rewritten while a page is read is read again (#95 round 2): the
+    /// page answered is the version it is named by, never new bytes under
+    /// the version read before them.
+    #[test]
+    fn a_page_read_while_the_file_is_rewritten_is_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.log");
+        rewrite(&path, b'A', 1_000);
+        let mut file = std::fs::File::open(&path).unwrap();
+        let range = BodyRange {
+            offset: 4096,
+            bytes: 4096,
+        };
+        let mut reads = 0;
+        let ((_, window, offset), metadata) = read_unchanged(&mut file, "big.log", |file, size| {
+            let page = cut_page(file, size, "big.log", range);
+            reads += 1;
+            if reads == 1 {
+                rewrite(&path, b'B', 2_000);
+            }
+            page
+        })
+        .unwrap();
+        assert_eq!(reads, 2);
+        assert_eq!((offset, window), (4096, vec![b'B'; 4096]));
+        let now = std::fs::metadata(&path).unwrap();
+        assert_eq!(file_version(&metadata), file_version(&now));
+    }
+
+    #[test]
+    fn a_file_that_keeps_changing_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.log");
+        rewrite(&path, b'A', 1_000);
+        let mut file = std::fs::File::open(&path).unwrap();
+        let mut stamp = 1_000;
+        let error = read_unchanged(&mut file, "big.log", |_, _| {
+            stamp += 1;
+            rewrite(&path, b'A', stamp);
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.contains("kept changing"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_renamed_over_the_old_one_is_another_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.log");
+        let beside = dir.path().join("big.log.new");
+        rewrite(&path, b'A', 1_000);
+        rewrite(&beside, b'B', 1_000);
+        let before = std::fs::metadata(&path).unwrap();
+        std::fs::rename(&beside, &path).unwrap();
+        let after = std::fs::metadata(&path).unwrap();
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+        assert_ne!(file_version(&before), file_version(&after));
+    }
 }
 
 #[cfg(test)]

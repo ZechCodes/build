@@ -113,20 +113,23 @@ fn complete_characters(window: &[u8]) -> usize {
 ///
 /// An offset past the end answers an empty page at the end, so a client that
 /// asks on from a body that has since shrunk sees `total` move rather than an
-/// error. An offset inside a character is refused: no page ends there.
-pub fn text_page(text: &str, range: BodyRange) -> Result<(String, BodySpan), String> {
+/// error. An offset inside a character — no page of this text ends there, so
+/// it is the end of a page of another — answers the page from the start of
+/// that character: the version it carries is how the client learns the body
+/// moved, and it reads the new one from the top.
+pub fn text_page(text: &str, range: BodyRange) -> (String, BodySpan) {
     let total = text.len();
-    let offset = usize::try_from(range.offset)
+    let mut offset = usize::try_from(range.offset)
         .unwrap_or(usize::MAX)
         .min(total);
-    if !text.is_char_boundary(offset) {
-        return Err(format!("range offset {offset} falls inside a character"));
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
     }
     let window_end = offset.saturating_add(range.capacity()).min(total);
     let len = page_len(&text.as_bytes()[offset..window_end], window_end == total);
     let end = offset + len;
     let page = text[offset..end].to_string();
-    Ok((
+    (
         page,
         BodySpan {
             offset: offset as u64,
@@ -134,7 +137,7 @@ pub fn text_page(text: &str, range: BodyRange) -> Result<(String, BodySpan), Str
             total: total as u64,
             version: Some(text_version(text)),
         },
-    ))
+    )
 }
 
 /// A short digest naming one whole body of text.
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn a_page_ends_after_its_last_whole_line() {
         let text = lines(1000, 10); // 10 000 bytes of 10-byte lines
-        let (page, span) = text_page(&text, range(0, 4_095 + 10)).unwrap();
+        let (page, span) = text_page(&text, range(0, 4_095 + 10));
         assert_eq!(page.len(), 4_100);
         assert!(page.ends_with('\n'));
         assert_eq!((span.offset, span.end, span.total), (0, 4_100, 10_000));
@@ -203,7 +206,7 @@ mod tests {
         let mut joined = String::new();
         let mut pages = 0;
         loop {
-            let (page, span) = text_page(&text, range(offset, 4_096)).unwrap();
+            let (page, span) = text_page(&text, range(offset, 4_096));
             assert_eq!(span.offset, offset);
             joined.push_str(&page);
             pages += 1;
@@ -219,7 +222,7 @@ mod tests {
     #[test]
     fn the_last_page_keeps_a_final_line_with_no_line_end() {
         let text = format!("{}tail without newline", lines(10, 8));
-        let (page, span) = text_page(&text, range(80, 4_096)).unwrap();
+        let (page, span) = text_page(&text, range(80, 4_096));
         assert_eq!(page, "tail without newline");
         assert_eq!(span.end, span.total);
     }
@@ -228,9 +231,9 @@ mod tests {
     fn a_line_longer_than_a_page_is_cut_at_a_character_boundary() {
         // 4095 ASCII bytes then a three-byte character straddling the cap.
         let text = format!("{}€€€ and on", "x".repeat(4_095));
-        let (page, span) = text_page(&text, range(0, 4_096)).unwrap();
+        let (page, span) = text_page(&text, range(0, 4_096));
         assert_eq!(page.len(), 4_095);
-        let (next, next_span) = text_page(&text, range(span.end, 4_096)).unwrap();
+        let (next, next_span) = text_page(&text, range(span.end, 4_096));
         assert!(next.starts_with('€'));
         assert_eq!(next_span.end, next_span.total);
     }
@@ -238,25 +241,36 @@ mod tests {
     #[test]
     fn every_page_of_one_text_names_it_and_another_text_differently() {
         let text = lines(3_000, 8);
-        let first = text_page(&text, range(0, 4_096)).unwrap().1.version;
-        let later = text_page(&text, range(8_192, 4_096)).unwrap().1.version;
+        let first = text_page(&text, range(0, 4_096)).1.version;
+        let later = text_page(&text, range(8_192, 4_096)).1.version;
         assert!(first.is_some());
         assert_eq!(first, later);
         let moved = format!("{text}one more\n");
-        assert_ne!(text_page(&moved, range(0, 4_096)).unwrap().1.version, first);
+        assert_ne!(text_page(&moved, range(0, 4_096)).1.version, first);
     }
 
     #[test]
     fn an_offset_past_the_end_answers_an_empty_last_page() {
-        let (page, span) = text_page("short\n", range(9_000, 4_096)).unwrap();
+        let (page, span) = text_page("short\n", range(9_000, 4_096));
         assert_eq!(page, "");
         assert_eq!((span.offset, span.end, span.total), (6, 6, 6));
     }
 
+    /// The end of a page of an older text can fall inside a character of the
+    /// new one (#95 round 2): the answer is still a page, from that
+    /// character, under the new text's version, so the client sees the body
+    /// moved rather than asking the same offset forever.
     #[test]
-    fn an_offset_inside_a_character_is_refused() {
-        let error = text_page("é\n", range(1, 4_096)).unwrap_err();
-        assert!(error.contains("inside a character"), "{error}");
+    fn an_offset_inside_a_character_answers_from_that_character_under_its_version() {
+        let old = "x".repeat(8_192);
+        let (_, old_span) = text_page(&old, range(0, 4_096));
+        assert_eq!(old_span.end, 4_096);
+        let new = format!("{}€ rest\n", "x".repeat(4_095));
+        let (page, span) = text_page(&new, range(old_span.end, 4_096));
+        assert_eq!(span.offset, 4_095);
+        assert!(page.starts_with('€'), "{page}");
+        assert_eq!(span.end, span.total);
+        assert_ne!(span.version, old_span.version);
     }
 
     #[test]

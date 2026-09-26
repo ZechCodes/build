@@ -712,13 +712,17 @@ carries the page where the whole body would ride (`content_b64`, `patch`) and
 `end` being the next page's offset and equal to `total` on the last. A page
 ends after its last line end, so each is whole lines a client paints alone;
 only a line longer than a page is cut, at a character boundary. An offset past
-the end answers an empty page at the end; one inside a character is refused.
+the end answers an empty page at the end; one inside a character (the end of
+a page of an earlier version of the body) answers from that character, under
+the version it was cut from, so the client sees the body moved.
 `git.diff` and `git.changeset_diff` take exactly one path beside `range`
 (`files[0]`, or the top-level `patch`, is that path's page, under the same
 `content_key` and `diff_key` a whole read answers); `git.show` refuses `range`
 beside `max_bytes`, and still answers the exact `stat` and `patch_bytes`. An
 `fs.read` page is never `editable` and names no `revision` (it is not the
-file), and its `range.version` names the file's modification time and size;
+file), and its `range.version` names the file's modification time and size
+(and on Unix its change time and inode), the same after the page's bytes were
+read as before, so a file rewritten under a read is read again;
 a patch page's `range.version` is a digest of the whole patch, which moves
 with HEAD and the merge base even where the file's `content_key` does not.
 Pages whose versions differ were cut from different contents. A ranged answer

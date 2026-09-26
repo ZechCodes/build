@@ -51,7 +51,7 @@ pub fn file_patch_page(
         .find(|file| &file.path == path)
         .map(|file| file.patch)
         .unwrap_or_default();
-    let (page, span) = text_page(&patch, range)?;
+    let (page, span) = text_page(&patch, range);
     Ok(json!({ "files": [{
         "path": path,
         "content_key": keys.get(path).cloned().unwrap_or_default(),

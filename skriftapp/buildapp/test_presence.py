@@ -89,17 +89,17 @@ def test_a_device_never_seen_is_offline():
     assert presence.derived_status(_device(last_seen_at=None), now) == "offline"
 
 
-def test_an_unapproved_device_is_pending():
+def test_an_unclaimed_device_is_pending():
     now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    pending = _device(approved=False, owner_user_id=None, status="pending")
+    pending = _device(approved=False, owner_user_id=None)
     assert presence.derived_status(pending, now) == "pending"
 
 
 def test_a_revoked_device_is_offline_not_pending():
-    """Revoke clears ``approved`` and writes ``offline``; it must not read as a
+    """Revoke clears ``approved`` and keeps the owner; it must not read as a
     device waiting to be paired."""
     now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    revoked = _device(approved=False, status="offline", last_seen_at=now)
+    revoked = _device(approved=False, last_seen_at=now)
     assert presence.derived_status(revoked, now) == "offline"
 
 

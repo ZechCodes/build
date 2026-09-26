@@ -54,8 +54,9 @@ The four email values are credentials the script cannot invent, so it reads them
 from the environment and aborts if any is unset. `SMTP_USERNAME`,
 `SMTP_PASSWORD` and `SMTP_FROM_ADDRESS` are required `secretKeyRef`s on the
 Deployment: run this step **before** the first deploy that carries the waitlist
-email code, or the pod fails with `CreateContainerConfigError` and, under the
-`Recreate` strategy, the site goes down with it.
+email code, or the deploy fails: the migration Job cannot load the config, and a
+new pod would fail with `CreateContainerConfigError` (the rolling update keeps
+the old pod serving, but nothing new ships).
 
 `CF_TURN_KEY_ID` and `CF_TURN_KEY_API_TOKEN` — the Cloudflare TURN key the
 ICE-servers route mints per-user credentials from — cannot be invented either,
@@ -75,12 +76,19 @@ kubectl --context do-nyc1-production-hosting -n 8ly get secret build-app \
 
 ```bash
 kubectl --context do-nyc1-production-hosting apply -k deploy/k8s
+kubectl --context do-nyc1-production-hosting -n 8ly rollout status statefulset/build-postgres --timeout=300s
+kubectl --context do-nyc1-production-hosting -n 8ly apply -f deploy/k8s/migrate.yaml
+kubectl --context do-nyc1-production-hosting -n 8ly wait --for=condition=complete job/build-app-migrate --timeout=600s
 kubectl --context do-nyc1-production-hosting -n 8ly get pods -w
 ```
 
-Expected: `build-postgres-0` ready first, then `build-app` (runs Skrift + buildapp
-migrations in its entrypoint, then serves), then `build-relay` ready once its
-`/health` probe answers.
+Expected: `build-postgres-0` ready first, then the `build-app-migrate` Job
+completes (Skrift + buildapp migrations; the app pods never migrate on start,
+see `migrate.yaml`), then `build-app` ready once `/readyz` reaches the database,
+then `build-relay` ready once its `/health` probe answers. `build-app` may start
+before the Job finishes; its pages fail until the schema exists, which is fine
+before routing flips. Every later deploy runs the sequence in
+[`../OPS.md`](../OPS.md) ("Deploying the app").
 
 ## 3. Verify before flipping routing (port-forward, bypasses ingress)
 

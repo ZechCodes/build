@@ -4,6 +4,77 @@ Recurring checks on the live stack (namespace `8ly`). One-time deploy and
 cutover steps live in [`k8s/CUTOVER.md`](k8s/CUTOVER.md); how to run the stack
 locally is in [`README.md`](README.md).
 
+## Deploying the app
+
+CI's `deploy-app` job runs this on every merge that moves the app tier. Run it
+by hand only when CI cannot (Actions blocked, a registry blip after the image
+was pushed), and only for a commit whose image is already in the registry:
+`docker manifest inspect ghcr.io/zechcodes/build-app:$SHA` must answer before
+anything is applied. The steps are the same as CI's, in the same order; change
+the two together.
+
+```bash
+git fetch origin
+SHA="$(git rev-parse origin/main)"   # or the full sha of the commit to roll
+docker manifest inspect "ghcr.io/zechcodes/build-app:$SHA" >/dev/null   # must succeed
+k() { kubectl --context do-nyc1-production-hosting -n 8ly "$@"; }
+
+# 1. Migrate, from the new image. Delete the last deploy's Job first: a Job's
+#    template is immutable, so applying over it fails.
+k delete job build-app-migrate --ignore-not-found --wait=true
+sed "s|:latest|:$SHA|" deploy/k8s/migrate.yaml | k apply -f -
+
+# 2. Wait for it (10 min at most, the Job's own deadline). Anything but
+#    Complete stops the deploy here, with the old pod still serving.
+state=""
+for _ in $(seq 1 120); do
+  state="$(k get job build-app-migrate \
+    -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}')"
+  case "$state" in *Complete*|*Failed*) break ;; esac
+  sleep 5
+done
+k logs job/build-app-migrate --all-containers
+echo "migration Job: ${state:-timed out}"   # must say Complete; stop otherwise
+
+# 3. Roll the app, only after "Complete".
+sed "s|:latest|:$SHA|" deploy/k8s/app.yaml | k apply -f -
+k rollout status deployment/build-app --timeout=300s
+```
+
+Then run the `Verify the app is serving` curls from the `deploy-app` job in
+`.github/workflows/ci.yml`.
+
+The Deployment is `RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`): the new
+pod starts beside the old one, takes traffic once `/readyz` answers (the
+database is reachable), and only then is the old pod taken out of the route.
+Its `preStop` sleep keeps it answering for 15 s while Traefik drops it, so no
+request meets a pod that has gone. A new pod that never gets ready leaves the
+old one serving; `rollout status` times out and the deploy fails with the site
+up.
+
+Don't save Skrift's site settings (admin → settings) while a deploy rolls. Each
+pod caches them at start, and a save on the old pod never reaches the new
+pod's copy; if one did, `k rollout restart deployment/build-app` reloads it.
+
+**The migration rule.** Since the rollout, the old image serves on the new
+schema: from the moment the Job completes until the old pod is gone (about a
+minute, longer if the new pod is slow to get ready or the rollout is paused).
+Recreate used to hide this behind downtime; nothing hides it now. So every
+migration must keep the **previous** app version working:
+
+- Add, don't change. New tables and new columns are fine; a new column is
+  nullable or has a server default, because the old code inserts rows without
+  it.
+- Remove in two deploys. First ship code that stops using the column or table,
+  then drop it in a later deploy. The same for a rename: add the new name, write
+  both, move the reads, then drop the old one.
+- No constraint the old code's writes would break (a new `NOT NULL` without a
+  default, a new unique index over data the old code still duplicates).
+
+The same rule makes `kubectl rollout undo deployment/build-app` safe: the
+previous image runs on the migrated schema. Migrations are never rolled back by
+a deploy.
+
 ## Diagnosing a dropped device connection
 
 First check that the bridge process itself is stable. On macOS,

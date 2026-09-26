@@ -509,6 +509,29 @@ jobs:
       - name: Configure kubectl
         run: doctl kubernetes cluster kubeconfig save production-hosting
 
+      # Migrate first, from the new image, and roll only if that succeeded: the
+      # Deployment is RollingUpdate, so the old pod keeps serving on the new
+      # schema until the new one is ready. deploy/OPS.md ("Deploying the app")
+      # carries this same sequence for a deploy by hand; change both together.
+      - name: Migrate (build-app-migrate Job)
+        run: |
+          set -euo pipefail
+          k() { kubectl -n 8ly "$@"; }
+          k delete job build-app-migrate --ignore-not-found --wait=true
+          sed "s|:latest|:${{ github.sha }}|" deploy/k8s/migrate.yaml | k apply -f -
+          state=""
+          for _ in $(seq 1 120); do # 120 × 5 s: the Job's own 600 s deadline
+            state="$(k get job build-app-migrate \
+              -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}')"
+            case "$state" in *Complete*|*Failed*) break ;; esac
+            sleep 5
+          done
+          k logs job/build-app-migrate --all-containers || true
+          case "$state" in
+            *Complete*) echo "migrations applied" ;;
+            *) echo "migration Job did not complete (${state:-timed out}); not rolling" >&2; exit 1 ;;
+          esac
+
       - name: Roll the app (spa + skriftapp)
         run: |
           sed "s|:latest|:${{ github.sha }}|" deploy/k8s/app.yaml | kubectl -n 8ly apply -f -

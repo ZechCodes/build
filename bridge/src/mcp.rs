@@ -964,7 +964,7 @@ impl DoneServer {
                         },
                         "notify_user": {
                             "type": "boolean",
-                            "description": "Watch this issue for the user and put it in their inbox. This does not ask them for a decision; use mention_user to ask in the issue body, comment_issue with mention_user after filing, or assign_issue to the user."
+                            "description": "Watch this issue for the user. Watching alone does not put it in Needs you or ask them for an answer. To ask, pass mention_user: true when filing, comment later with mention_user: true, or assign the issue to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
@@ -976,7 +976,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_issue",
-                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the issue in Needs you until the user reads it. A question left only in the issue body or a notify_user watch does not ask them.",
+                "description": "Say something on an issue. This is how progress on an issue you were handed becomes visible: the conversation you are in is yours, and the issue is where the user and the other agents look. It is also where you ANSWER: a comment on an issue you hold is a question, and it is answered here rather than in your own thread — the user reads the issue, not your conversation. The same goes for asking: a question about an issue that came from outside your conversation goes here, because the assigner and the user both read the issue and the answer comes back to you. For any decision the user must make, pass mention_user: true; that puts the issue in Needs you until the user reads it. A question left only in the issue body does not ask them; notify_user on create or assign only watches.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -986,7 +986,7 @@ impl DoneServer {
                         "attachments": attachments,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                            "description": "Watch this issue for the user and mark this comment as needing their attention; the unread comment puts it in Needs you until they read it. Use mention_user: true for a question or decision addressed to the user."
                         },
                         "mention_user": {
                             "type": "boolean",
@@ -1041,7 +1041,7 @@ impl DoneServer {
                         "track": track,
                         "notify_user": {
                             "type": "boolean",
-                            "description": "And put this issue in the USER's inbox. Pass true when the user asked for it, or will want to see it — workshopping an idea, anything they will be asked about. Leave it off for bookkeeping between agents."
+                            "description": "Watch this issue for the user. Watching alone does not put it in Needs you or ask them for an answer. Assign it to kind=user to ask them directly, or use mention_user on create_issue or comment_issue."
                         }
                     },
                     "required": ["issue_id", "assignee"]
@@ -2859,7 +2859,23 @@ mod tests {
             assert!(properties["notify_user"]["description"]
                 .as_str()
                 .unwrap()
-                .contains("does not ask"));
+                .contains("Watching alone does not put it in Needs you"));
+            let assign = tools
+                .iter()
+                .find(|tool| tool["name"] == "assign_issue")
+                .unwrap();
+            assert!(
+                assign["inputSchema"]["properties"]["notify_user"]["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Watching alone does not put it in Needs you")
+            );
+            assert!(
+                comment["inputSchema"]["properties"]["notify_user"]["description"]
+                    .as_str()
+                    .unwrap()
+                    .contains("unread comment puts it in Needs you")
+            );
             assert!(
                 comment["inputSchema"]["properties"]["mention_user"]["description"]
                     .as_str()

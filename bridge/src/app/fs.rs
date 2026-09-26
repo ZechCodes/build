@@ -1,4 +1,5 @@
 use crate::app::{expand_tilde, mime_hint};
+use crate::body_page::{page_len, BodyRange, BodySpan};
 use crate::encoding::b64decode;
 use crate::scoped_file::{is_editable, replace_text, revision_hex, EDITABLE_MAX_BYTES};
 
@@ -214,6 +215,9 @@ impl AppState {
             return Err("refusing to read a symlink".to_string());
         }
         let (file, opened_metadata) = open_regular_read(&target, &path)?;
+        if let Some(range) = BodyRange::from_params(params)? {
+            return read_page(file, &opened_metadata, &target, &path, range);
+        }
         let size = opened_metadata.len();
         let read_limit = if media_mime_hint(&target).is_some() {
             FS_MEDIA_READ_MAX_BYTES
@@ -291,6 +295,76 @@ impl AppState {
         }
         self.note_board_changed();
     }
+}
+
+/// One page of an open file (`fs.read` with a `range`, #95): the bytes from
+/// the offset, cut after the last line end that fits. Never editable — a page
+/// is not the file — and never truncated: it is what was asked for. The mime
+/// is sniffed from the file's head, wherever the page starts, so every page
+/// of one file names the same type.
+fn read_page(
+    mut file: std::fs::File,
+    metadata: &std::fs::Metadata,
+    target: &std::path::Path,
+    path: &str,
+    range: BodyRange,
+) -> Result<Value, String> {
+    use std::io::{Seek as _, SeekFrom};
+    let size = metadata.len();
+    let offset = range.offset.min(size);
+    let head = read_at(&mut file, 0, 8192, path)?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut window = Vec::with_capacity(range.capacity().min((size - offset) as usize));
+    (&mut file)
+        .take(range.capacity() as u64)
+        .read_to_end(&mut window)
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let reaches_end = offset + window.len() as u64 >= size;
+    window.truncate(page_len(&window, reaches_end));
+    let span = BodySpan {
+        offset,
+        end: offset + window.len() as u64,
+        total: size,
+        version: Some(file_version(metadata)),
+    };
+    Ok(json!({
+        "path": path,
+        "size": size,
+        "truncated": false,
+        "mime": mime_hint(target, &head),
+        "content_b64": b64encode(&window),
+        "editable": false,
+        "range": span,
+    }))
+}
+
+/// Up to `bytes` of `file` from `offset`.
+fn read_at(
+    file: &mut std::fs::File,
+    offset: u64,
+    bytes: u64,
+    path: &str,
+) -> Result<Vec<u8>, String> {
+    use std::io::{Seek as _, SeekFrom};
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let mut read = Vec::new();
+    file.take(bytes)
+        .read_to_end(&mut read)
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    Ok(read)
+}
+
+/// Which version of a file a page was cut from: its modification time and
+/// size, which move whenever its bytes do.
+fn file_version(metadata: &std::fs::Metadata) -> String {
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |since| since.as_nanos());
+    format!("{modified}-{}", metadata.len())
 }
 
 fn text_mime(mime: &str) -> bool {

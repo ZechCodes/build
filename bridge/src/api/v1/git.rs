@@ -16,6 +16,7 @@
 use super::{answer, Answer, Handler, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
+use crate::body_page::{BodyRange, BodySpan};
 use crate::{v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -205,9 +206,14 @@ pub struct GitShowParams {
     /// `1024..=`[`COMMIT_PATCH_MAX_BYTES`]. A larger patch comes back as the
     /// commit's file headers with `truncated` set, and the client fetches the
     /// whole of it when a reviewer opens the commit. Absent leaves the
-    /// 1 MiB wire cap alone.
+    /// 1 MiB wire cap alone. Refused beside `range`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// One page of the body (#95): the bytes from `offset`, whole lines of at
+    /// most `bytes`, and a `range` in the answer saying where they sit.
+    /// Absent reads the body whole, capped as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodyRange>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -224,8 +230,14 @@ pub struct GitStatusParams {
 pub struct GitDiffParams {
     #[serde(flatten)]
     pub scope: ScopeParams,
-    /// 1 to 50 repo-relative paths, answered in request order.
+    /// 1 to 50 repo-relative paths, answered in request order — exactly one
+    /// beside `range`.
     pub paths: Vec<String>,
+    /// One page of the body (#95): the bytes from `offset`, whole lines of at
+    /// most `bytes`, and a `range` in the answer saying where they sit.
+    /// Absent reads the body whole, capped as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodyRange>,
 }
 
 /// `git.stage`, `git.unstage`, `git.discard` — the same required path list.
@@ -312,6 +324,11 @@ pub struct FsReadParams {
     #[serde(flatten)]
     pub scope: ScopeParams,
     pub path: String,
+    /// One page of the file (#95): the answer carries the bytes from
+    /// `offset`, whole lines of at most `bytes`, and `range` says where they
+    /// sit. Absent reads the file whole, capped as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodyRange>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -371,6 +388,11 @@ pub struct ChangesetDiffParams {
     /// as long as the key stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_diff_key: Option<String>,
+    /// One page of ONE path's hunks (#95): `paths` names exactly one, and the
+    /// answer's `patch` is the bytes from `offset`, whole lines of at most
+    /// `bytes`, with a `range` saying where they sit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodyRange>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -588,6 +610,10 @@ pub struct CommitDetail {
     /// the 1 MiB wire cap otherwise. A patch cut at `max_bytes` carries the
     /// commit's file headers alone — which files moved, not how.
     pub truncated: bool,
+    /// Where a ranged read's page sits in the whole patch. Only on an answer
+    /// to a `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodySpan>,
 }
 
 /// One path's uncommitted patch, keyed so a client caches the body until the
@@ -598,6 +624,10 @@ pub struct PatchFile {
     pub content_key: String,
     pub patch: String,
     pub truncated: bool,
+    /// Where a ranged read's page sits in the whole patch. Only on an answer
+    /// to a `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodySpan>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -692,9 +722,13 @@ pub struct FsFileResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
     /// The exact bytes read, named — `fs.write` refuses a stale one. Absent
-    /// when the read was truncated.
+    /// when the read was truncated or asked for a range.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+    /// Where a ranged read's page sits in the file, and which version of the
+    /// file it was cut from. Only on an answer to a `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodySpan>,
 }
 
 /// A modification time per changed path that still exists in the checkout,
@@ -872,6 +906,10 @@ pub struct ChangesetDiff {
     /// project's own checkout, whose surface reads it fresh every time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_key: Option<String>,
+    /// Where a ranged read's page sits in the whole patch. Only on an answer
+    /// to a `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<BodySpan>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -115,8 +115,9 @@ export function createRailWorkItem({
   /// `rowWrite` named — only while that record still holds the write it saw.
   /// Whatever was written since — a push, another tab's answer — may be newer
   /// word than this answer, and nothing on a row says which, so the answer
-  /// stands down and the record keeps what came. The record's watch hands the
-  /// rail the row again.
+  /// stands down and the record keeps what came. So does one stored before
+  /// writes were named, which nothing can tell unchanged: the push brings it.
+  /// The record's watch hands the rail the row again.
   const patchAgentIfUnwritten = async (seen, agentId, rewrite) => {
     if (!seen) return;
     if (!seen.runs) {

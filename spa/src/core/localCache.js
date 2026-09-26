@@ -916,12 +916,12 @@ export function mergeCachedAtomically(address, merge) {
 }
 
 /** Which write a record is, as `readCached` answered it: to find the record
- * still that write later, inside a transaction (`isCachedWrite`). The order
- * rides along for a record stored before writes were named, which a page
- * still running that code can also write. An absent record is its own. */
-export const cachedWriteOf = (record) => ({ write: record?.write, order: record?.order });
-export const isCachedWrite = (record, written) =>
-  record?.write === written?.write && record?.order === written?.order;
+ * still that write later, inside a transaction (`isCachedWrite`). A record
+ * stored before writes were named has none — and a page still running that
+ * code can write another like it on the same tick — so it is never found
+ * unchanged, and neither is an absent one. */
+export const cachedWriteOf = (record) => record?.write;
+export const isCachedWrite = (record, written) => typeof written === "string" && record?.write === written;
 
 /** The same merge, only while the record is still the write `written` names
  * (`cachedWriteOf`). Any writer since, in any tab, leaves the record alone:

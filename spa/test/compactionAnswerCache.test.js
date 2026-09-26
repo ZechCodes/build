@@ -26,6 +26,24 @@ const otherTab = await import("../src/core/localCache.js");
  *  written so far, so their next writes carry the same order. */
 const oneTick = () => vi.spyOn(globalThis.performance, "now").mockReturnValue(performance.now() + 1e9);
 
+/** A record as a page still running the code from before writes were named
+ *  puts it: stamped with a time and an order, and no `write`. */
+const writeUnnamed = (address, value, order) => new Promise((done, fail) => {
+  const opening = indexedDB.open("build-cache");
+  opening.onerror = () => fail(opening.error);
+  opening.onsuccess = () => {
+    const db = opening.result;
+    const transaction = db.transaction("records", "readwrite");
+    const key = [address.deviceId, address.entityId, address.kind, address.sub].map(encodeURIComponent).join("|");
+    transaction.objectStore("records").put({ at: Date.now(), order, value }, key);
+    transaction.oncomplete = () => {
+      db.close();
+      done();
+    };
+    transaction.onerror = () => fail(transaction.error);
+  };
+});
+
 const DEVICE = "dev-1";
 const ENTITY = "run-7";
 const ROW_ADDRESS = { deviceId: DEVICE, entityId: ENTITY, kind: "row", sub: "" };
@@ -219,6 +237,28 @@ describe("the answer in the cached row", () => {
     expect(await cachedLimit()).toBe(150000);
   });
 
+  // Another tab still on the code from before writes were named: its records
+  // carry an order and nothing else, and two of its writes can share a tick.
+  // A row captured with no name can never be told unchanged, so the answer
+  // is left to the push.
+  it("stands down over a row an older page wrote, where another writes the same tick", async () => {
+    const ORDER = 42;
+    const agents = (max_context_tokens) => [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }];
+    await writeUnnamed(ROW_ADDRESS, { kind: "branch", run_id: ENTITY, agents: agents(null) }, ORDER);
+    const rail = observer({
+      answer: async (params) => {
+        await writeUnnamed(ROW_ADDRESS, { kind: "branch", run_id: ENTITY, agents: agents(150000) }, ORDER);
+        return answering(params);
+      },
+    });
+
+    await rail.choose(0);
+    await flush();
+
+    expect((await readCached(ROW_ADDRESS)).order).toBe(ORDER);
+    expect(await cachedLimit()).toBe(150000);
+  });
+
   it("writes each of two successive choices once, the later last", async () => {
     const rail = observer({ answer: answering });
 
@@ -341,6 +381,27 @@ describe("the answer on the board's runs", () => {
       tick.mockRestore();
     }
 
+    expect(await runsLimit()).toBe(150000);
+  });
+
+  it("stands down over a board an older page wrote, where another writes the same tick", async () => {
+    const ORDER = 42;
+    const board = (max_context_tokens) => ({
+      items: [],
+      runs: [OTHER, { run_id: ENTITY, agents: [{ id: "agent-2", max_context_tokens, compact_at_tokens: 200000 }] }],
+    });
+    await writeUnnamed(FEED_ADDRESS, board(null), ORDER);
+    const rail = observer({
+      kind: "workspace",
+      answer: async (params) => {
+        await writeUnnamed(FEED_ADDRESS, board(150000), ORDER);
+        return answering(params);
+      },
+    });
+
+    await rail.choose(0);
+
+    expect((await readCached(FEED_ADDRESS)).order).toBe(ORDER);
     expect(await runsLimit()).toBe(150000);
   });
 });

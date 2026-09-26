@@ -460,6 +460,30 @@ describe("per-device connections", () => {
     expect(boardReads("dev-a")).toBe(boardAfter); // the pushed body writes the cache without another list read
   });
 
+  // #130: the greeting refetches only mounted surfaces, and the ordered pass
+  // is keyed on the session, which a restart in place does not replace. The
+  // restore hook is what reads the gap behind the restart for everything
+  // nothing is showing.
+  it("runs the ordered cache pass again when a failed path is restored, with nothing mounted", async () => {
+    await connectEveryDevice();
+    startCacheSync();
+    for (let index = 0; index < 12; index += 1) await flush();
+    const session = lastSession("dev-a");
+    const workspaceReads = () => session.call.mock.calls.filter(([method]) => method === "workspace.list").length;
+    const before = workspaceReads();
+    expect(before).toBeGreaterThan(0);
+    for (let index = 0; index < 6; index += 1) await flush();
+    expect(workspaceReads()).toBe(before); // settled: nothing reads again unasked
+
+    linksFor.get("dev-a").restore();
+
+    await vi.waitFor(async () => {
+      await flush();
+      expect(workspaceReads()).toBeGreaterThan(before);
+    });
+    expect(lastSession("dev-a")).toBe(session);
+  });
+
   it("ignores a restored-path callback from a replaced session", async () => {
     await connectEveryDevice();
     await paintFeed();

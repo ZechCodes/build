@@ -43,9 +43,54 @@ auth:
       type: passkey
       label: Passkey
 oauth2_enabled: true
+# Every budget below is per resolved client IP (Traefik's hop is trusted, so the
+# visitor is the key), per pod, in memory. They are sized so about 50 people
+# behind one NAT (an office, a campus, a carrier's CGNAT) are never answered
+# 429 in normal use, counting what the SPA, the landing page and the bridge
+# actually request (#173):
+#   /app cold load: the document and /app/sw.js, about 13 /app/static files
+#     (theme-boot, manifest, icon, 4 bundle files, 3-5 font faces, libsodium,
+#     ghostty when a terminal opens), then per online device one GET
+#     /api/devices, one POST /api/gateway-token and one POST
+#     /api/rtc/ice-servers. A warm reload refetches the document, sw.js and 3
+#     uncached static files; the hashed assets are immutable.
+#   /app idle: GET /api/devices every 15 s (4 a minute) and version.json every
+#     10 min. The all-machines-offline gate polls every 3 s (20 a minute); a
+#     device being recovered costs up to 6 token + 6 ice-servers calls a minute.
 rate_limit:
   enabled: true
+  # Pages: /, /docs, /privacy, /install.sh, the /app document and /app/sw.js,
+  # and anything no rule below names. 50 people each loading /app twice and the
+  # landing page once in the same minute is 50 x 5 = 250; 300 leaves headroom.
+  default:
+    limit: 300
+    per: minute
   rules:
+    # The SPA's static files. 50 people cold-loading /app in the same minute is
+    # 50 x 13 = 650, and each reloading once more (3 uncached files) is 150:
+    # 800. 1200 covers pages that render more font faces.
+    - name: app_static
+      match:
+        path: /app/static/
+        prefix: true
+        method: GET
+      key: ip
+      limits:
+        - limit: 1200
+          per: minute
+    # The SPA's API calls. 50 idle tabs polling devices is 50 x 4 = 200; all 50
+    # loading in that minute adds 50 x 3 = 150; 5 people on the offline gate
+    # add 5 x 20 = 100 and 5 devices in recovery 5 x 12 = 60: 510. 600 also
+    # absorbs a pairing bridge polling its status every 2 s (30 a minute). The
+    # waitlist join and the bridge's signed posts keep rules of their own.
+    - name: spa_api
+      match:
+        path: /api/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 600
+          per: minute
     # The landing tree is about 106 poster, screen-texture, font, model, and
     # generated-bundle files. A 600/minute budget allows five full uncached
     # reloads plus headroom without letting that browser fanout consume the

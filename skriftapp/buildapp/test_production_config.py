@@ -16,6 +16,7 @@ from skrift.ratelimit import RateLimiter
 
 from buildapp.devices_controller import HEARTBEAT_ROUTE_PATH
 from buildapp.invites import INVITE_PATH_PREFIX
+from buildapp.rtc_controller import ICE_SERVERS_ROUTE_PATH
 from buildapp.transport_controller import REPORT_ROUTE_PATH
 from buildapp.waitlist_admin import SEND_PATH, WAITLIST_ADMIN_PATH
 from buildapp.waitlist_controller import JOIN_ROUTE_PATH
@@ -25,6 +26,10 @@ PRODUCTION_BASE_URL = "https://getbuild.ing"
 JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
 INVITE_OPEN_RATE_LIMIT_WINDOWS = [(30, 60.0)]
 LANDING_RATE_LIMIT_WINDOWS = [(600, 60.0)]
+# Sized for about 50 people behind one NAT (#173); the arithmetic is in app.yaml.
+PAGE_RATE_LIMIT_WINDOWS = [(300, 60.0)]
+APP_STATIC_RATE_LIMIT_WINDOWS = [(1200, 60.0)]
+SPA_API_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
 # A bridge beats twice a minute, and a beat refused in passing is tried again
 # every five seconds (bridge/src/presence.rs): ten bridges behind one address
@@ -95,7 +100,8 @@ async def test_landing_assets_have_an_independent_bounded_browser_budget():
         assert (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
     assert not (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
 
-    for _ in range(60):
+    assert root_policy.limits == PAGE_RATE_LIMIT_WINDOWS
+    for _ in range(300):
         assert (await limiter.check(root_policy.name, caller, root_policy.limits)).allowed
     assert not (await limiter.check(root_policy.name, caller, root_policy.limits)).allowed
 
@@ -112,7 +118,7 @@ async def test_landing_assets_have_an_independent_bounded_browser_budget():
         ("/landing", "GET", "default"),
         ("/docs", "GET", "default"),
         ("/install.sh", "GET", "default"),
-        ("/api/nonmatch", "GET", "default"),
+        ("/nonmatch", "GET", "default"),
     ),
 )
 def test_landing_asset_budget_matches_only_static_gets(
@@ -129,6 +135,41 @@ def test_landing_asset_budget_matches_only_static_gets(
     assert policy.limits == expected_limits
 
 
+@pytest.mark.parametrize(
+    ("path", "method", "expected_policy", "expected_limits"),
+    (
+        ("/", "GET", "default", PAGE_RATE_LIMIT_WINDOWS),
+        ("/docs", "GET", "default", PAGE_RATE_LIMIT_WINDOWS),
+        ("/app/", "GET", "default", PAGE_RATE_LIMIT_WINDOWS),
+        ("/app/sw.js", "GET", "default", PAGE_RATE_LIMIT_WINDOWS),
+        ("/app/static/theme-boot.js", "GET", "app_static", APP_STATIC_RATE_LIMIT_WINDOWS),
+        ("/app/static/version.json", "GET", "app_static", APP_STATIC_RATE_LIMIT_WINDOWS),
+        (
+            "/app/static/assets/index-3f9a.js",
+            "GET",
+            "app_static",
+            APP_STATIC_RATE_LIMIT_WINDOWS,
+        ),
+        ("/app/static/theme-boot.js", "POST", "default", PAGE_RATE_LIMIT_WINDOWS),
+        ("/api/devices", "GET", "spa_api", SPA_API_RATE_LIMIT_WINDOWS),
+        ("/api/gateway-token", "POST", "spa_api", SPA_API_RATE_LIMIT_WINDOWS),
+        (ICE_SERVERS_ROUTE_PATH, "POST", "spa_api", SPA_API_RATE_LIMIT_WINDOWS),
+        ("/api/devices/lookup", "POST", "spa_api", SPA_API_RATE_LIMIT_WINDOWS),
+        ("/api/push/subscribe", "POST", "spa_api", SPA_API_RATE_LIMIT_WINDOWS),
+    ),
+)
+def test_pages_and_the_spa_have_budgets_for_a_shared_address(
+    path: str, method: str, expected_policy: str, expected_limits: list
+):
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    policy = rate_limit.resolve(path, method)
+    assert (policy.name, policy.key, policy.limits) == (
+        expected_policy,
+        "ip",
+        expected_limits,
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_bridges_beats_and_reports_have_budgets_of_their_own():
     """One home's address carries its bridges' heartbeats and transport reports
@@ -139,21 +180,26 @@ async def test_a_bridges_beats_and_reports_have_budgets_of_their_own():
     rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
     beat_policy = rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "POST")
     report_policy = rate_limit.resolve(REPORT_ROUTE_PATH, "POST")
-    default_policy = rate_limit.resolve("/api/devices", "GET")
+    browsing_policy = rate_limit.resolve("/api/devices", "GET")
     limiter = RateLimiter(redis_client=None)
     household = "203.0.113.9"
 
     assert beat_policy.limits == BRIDGE_BEAT_RATE_LIMIT_WINDOWS
     assert report_policy.limits == BRIDGE_REPORT_RATE_LIMIT_WINDOWS
-    assert len({beat_policy.name, report_policy.name, default_policy.name}) == 3
+    assert len({beat_policy.name, report_policy.name, browsing_policy.name}) == 3
 
-    for _ in range(60):
-        assert (await limiter.check(default_policy.name, household, default_policy.limits)).allowed
-    assert not (await limiter.check(default_policy.name, household, default_policy.limits)).allowed
+    (browsing_limit, _), = browsing_policy.limits
+    for _ in range(browsing_limit):
+        assert (
+            await limiter.check(browsing_policy.name, household, browsing_policy.limits)
+        ).allowed
+    assert not (
+        await limiter.check(browsing_policy.name, household, browsing_policy.limits)
+    ).allowed
     for _ in range(120):
         assert (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
     assert not (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
-    assert rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "GET").name == default_policy.name
+    assert rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "GET").name == browsing_policy.name
 
 
 def test_the_waitlist_join_route_is_rate_limited_far_below_the_default():
@@ -161,9 +207,7 @@ def test_the_waitlist_join_route_is_rate_limited_far_below_the_default():
     join_policy = rate_limit.resolve(JOIN_ROUTE_PATH, "POST")
     assert join_policy.key == "ip"
     assert join_policy.limits == JOIN_RATE_LIMIT_WINDOWS
-    assert rate_limit.resolve(JOIN_ROUTE_PATH, "GET").limits == [
-        rate_limit.effective_default().pair
-    ]
+    assert rate_limit.resolve(JOIN_ROUTE_PATH, "GET").name == "spa_api"
 
 
 def test_production_database_url_is_env_driven():

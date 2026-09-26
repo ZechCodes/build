@@ -1,7 +1,11 @@
 // The reconnect check's two boundaries, in a real Chromium against a local
 // WebSocket server — no stack needed (#130).
 //
-//   CHROMIUM_PATH=/usr/bin/chromium node --test offlineEvidence.test.mjs
+// Needs Playwright and Chromium, which the web image (Containerfile, installed
+// --omit=dev) has neither of, so it is named out of `node --test`'s default
+// discovery and run on its own, locally:
+//
+//   CHROMIUM_PATH=/usr/bin/chromium npm run test:browser
 
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";

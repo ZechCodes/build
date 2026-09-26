@@ -187,25 +187,80 @@ describe("Stop watching an issue an agent asked the user about (#144)", () => {
   }));
   afterEach(() => pane?.dispose());
 
-  it("leaves the Dashboard when it leaves the inbox, whatever the board's row still says", async () => {
-    await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
+  /** The Dashboard for this project, mounted beside the inbox, and the
+   *  issues in its Needs you. */
+  const mountDashboard = () => {
     const host = document.body.appendChild(document.createElement("div"));
     pane = modules.issuesPane.mountIssuesPane(host, {
       projectId: PROJECT, projectName: "Build", deviceId: DEVICE, projectKey: project.projectKey,
       callRpc: call, catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }),
       feed: () => ({ workspaces: [], items: [staleRow], projects: [] }), defaultView: "dashboard", navigate: () => {},
     });
-    const needsYou = () => [...host.querySelectorAll('[data-dashboard-section="needsYou"] .issue-dashboard-row')]
+    return () => [...host.querySelectorAll('[data-dashboard-section="needsYou"] .issue-dashboard-row')]
       .map((row) => row.dataset.issue);
+  };
+  const pressStopWatching = async () => {
+    rowFor(asked.id).querySelector("[data-menu]").click();
+    await vi.waitFor(() => expect(rowFor(asked.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
+    rowFor(asked.id).querySelector("[data-unwatch]").click();
+  };
+  const heldList = async () => (await modules.cache.readCached(modules.tracker.issuesAddress(DEVICE, PROJECT))).value;
+
+  it("leaves the Dashboard when it leaves the inbox, whatever the board's row still says", async () => {
+    await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
+    const needsYou = mountDashboard();
     await vi.waitFor(() => expect(rowFor(asked.id)).not.toBe(null), WAIT);
     await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
 
     answers["issues.unwatch"] = async () => ({ issue: { ...asked, watched: false } });
-    rowFor(asked.id).querySelector("[data-menu]").click();
-    await vi.waitFor(() => expect(rowFor(asked.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
-    rowFor(asked.id).querySelector("[data-unwatch]").click();
+    await pressStopWatching();
     await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
     expect((await modules.tracker.readIssuesRecord(DEVICE, PROJECT)).issues[0].watched).toBe(false);
     await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
+  });
+
+  // #129: Stop watching is a list written here, so it is newer than every read
+  // asked before it — including the Dashboard's own answer, asked after the
+  // whole list was, which the tab would otherwise keep over it.
+  describe("with the Dashboard's own answer newer than the whole list", () => {
+    beforeEach(async () => {
+      const { nextIssueRead } = await import("../src/core/issueReadOrder.js");
+      const { DEFAULT_FILTERS, issueListParams } = await import("../src/core/trackerFilters.js");
+      const dashboardParams = issueListParams(PROJECT, { ...DEFAULT_FILTERS, state: "" });
+      await modules.tracker.writeIssuesRecord(DEVICE, PROJECT, modules.tracker.issuesRecord([asked], [], await nextIssueRead()));
+      await modules.tracker.writeIssuesQueryRecord(DEVICE, PROJECT, dashboardParams,
+        modules.tracker.issuesRecord([asked], [], await nextIssueRead()));
+      await vi.waitFor(async () => expect(await modules.needsYouRule.readNeedsYouRule(DEVICE)).toBe(true), WAIT);
+    });
+
+    it("leaves the Dashboard's Needs you on Stop watching", async () => {
+      const needsYou = mountDashboard();
+      await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
+
+      answers["issues.unwatch"] = async () => ({ issue: { ...asked, watched: false } });
+      await pressStopWatching();
+      await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+      expect((await heldList()).issues[0].watched).toBe(false);
+      await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
+    });
+
+    it("comes back to the Dashboard's Needs you when the bridge refuses, numbered after the unwatch", async () => {
+      const needsYou = mountDashboard();
+      await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
+
+      let refuse;
+      answers["issues.unwatch"] = () => new Promise((_, reject) => { refuse = reject; });
+      await pressStopWatching();
+      await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
+      const unwatchedAs = (await heldList()).read_order;
+
+      await vi.waitFor(() => expect(refuse).toBeTypeOf("function"), WAIT);
+      refuse(new Error("Build cannot stop watching that issue."));
+      await vi.waitFor(() => expect(rowFor(asked.id)).not.toBe(null), WAIT);
+      const restored = await heldList();
+      expect(restored.issues[0].watched).toBe(true);
+      expect(restored.read_order).toBeGreaterThan(unwatchedAs);
+      await vi.waitFor(() => expect(needsYou()).toEqual([asked.id]), WAIT);
+    });
   });
 });

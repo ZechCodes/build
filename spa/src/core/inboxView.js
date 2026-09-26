@@ -68,6 +68,7 @@ import { publishInboxAttentionCount } from "./inboxAttention.js";
 import { messageOf } from "./text.js";
 import { followWatchedIssues } from "./watchedIssueFollower.js";
 import { issuesAddress } from "./trackerCache.js";
+import { noteWritten } from "./issueReadOrder.js";
 import { mergeCachedAtomically } from "./localCache.js";
 
 let items = [];
@@ -745,13 +746,21 @@ async function unwatchIssue(entry) {
   });
 }
 
-/** Set one issue's watch in its project's cached list; answers the undo. */
+/** Set one issue's watch in its project's cached list; answers the undo.
+ *  Each is a list written here, so each takes its number from the read count
+ *  (core/issueReadOrder.js) and the list carries it: newer than every read
+ *  asked before it, the Issues tab's own answers included, and a page of an
+ *  older pull does not put the old watch back (#129). */
 async function markCachedWatch(entry, watched) {
   const address = issuesAddress(entry.deviceId, entry.projectId);
-  const setWatched = (value) => mergeCachedAtomically(address, (held) => held && {
-    ...held,
-    issues: (held.issues || []).map((issue) => (issue.id === entry.issueId ? { ...issue, watched: value } : issue)),
-  });
+  const setWatched = async (value) => {
+    const writtenAs = await noteWritten([address], [entry.issueId]);
+    return mergeCachedAtomically(address, (held) => held && {
+      ...held,
+      issues: (held.issues || []).map((issue) => (issue.id === entry.issueId ? { ...issue, watched: value } : issue)),
+      read_order: writtenAs,
+    });
+  };
   await setWatched(watched);
   return () => setWatched(!watched);
 }

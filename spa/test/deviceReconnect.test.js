@@ -71,6 +71,18 @@ describe("whether a machine can answer", () => {
     }
   });
 
+  // #130: a link restarting a failed path in place leaves the supervisor with
+  // no record — the session is still held — and the ring reads the link.
+  it("is reconnecting while its link restarts the path in place", () => {
+    let restoring = true;
+    context = { ...live(), peerLink: { restoring: () => restoring } };
+    expect(deviceIsReconnecting("dev-1")).toBe(true);
+    expect(deviceIsAway("dev-1")).toBe(true);
+    restoring = false;
+    expect(deviceIsReconnecting("dev-1")).toBe(false);
+    expect(deviceIsAway("dev-1")).toBe(false);
+  });
+
   it("is here with a live context and nothing being done about it", () => {
     context = live();
     recovery = { status: "idle" };

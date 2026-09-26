@@ -24,11 +24,11 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedTogether, readCached } from "./localCache.js";
+import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
 import { lastSayIn, nextIssueRead, readsAddress, withStretch } from "./issueReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortIssues } from "./trackerFilters.js";
-import { TRACKER_ISSUES_PAGE_KIND, issuesPageAddress, issuesRecord } from "./trackerCache.js";
+import { TRACKER_ISSUES_PAGE_KIND, issuesPageAddress, issuesRecord, listAskedAt } from "./trackerCache.js";
 import { userSessionOf } from "./userSessionCache.js";
 
 /** Issues per page. A tenth of a large tracker, and one page of a small one. */
@@ -86,12 +86,22 @@ export function withIssuePage(held, stretch, lastSay = () => 0) {
 /** Lay one page over the list record at `address`, and note beside it that
  *  the page had the say on its stretch there — the two in one transaction, so
  *  a write landing between the read and the write is not lost, and another
- *  tab never reads the list without the note or the note without the list. */
+ *  tab never reads the list without the note or the note without the list.
+ *  The list is stamped with the newest word folded into it (#129): the pull's
+ *  first page's read, which every page after it is newer than, or what the
+ *  list held already — its number, or the cache's stamp on one that has none —
+ *  where that is newer. A page never makes a list look older than it was. */
 export const foldIssuesPage = (address, stretch, columnsOf) =>
-  mergeCachedTogether([address, readsAddress(address)], ([held, reads]) => [
-    issuesRecord(withIssuePage(held?.issues, stretch, lastSayIn(reads)), columnsOf(held)),
-    withStretch(reads, stretch),
-  ]);
+  mergeCachedRecordsTogether([address, readsAddress(address)], ([heldRecord, readsRecord]) => {
+    const held = heldRecord?.value;
+    const reads = readsRecord?.value;
+    return [
+      issuesRecord(withIssuePage(held?.issues, stretch, lastSayIn(reads)), columnsOf(held), foldedOrder(heldRecord, stretch)),
+      withStretch(reads, stretch),
+    ];
+  });
+
+const foldedOrder = (heldRecord, { read = 0, pullRead = read }) => Math.max(listAskedAt(heldRecord), pullRead);
 
 const pageParams = (params, cursor, limit) => (cursor ? { ...params, limit, cursor } : { ...params, limit });
 

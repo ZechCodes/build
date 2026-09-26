@@ -30,29 +30,52 @@ export function closeTab(layout, path) {
 }
 
 /** Pure: a remembered layout, read defensively — it is UI state from the cache
- *  and may be from another build. Non-paths and repeats are dropped, and an
- *  active tab that is not open falls back to the first one. */
-export function readTabLayout(value) {
+ *  and may be from another build. Non-paths, repeats and whatever `accepts`
+ *  refuses (a file under a directory the workspace no longer has) are dropped,
+ *  and an active tab that is not open falls back to the first one. */
+export function readTabLayout(value, accepts = () => true) {
   const listed = Array.isArray(value?.tabs) ? value.tabs : [];
-  const tabs = [...new Set(listed.filter((tab) => typeof tab === "string" && tab))];
+  const tabs = [...new Set(listed.filter((tab) => typeof tab === "string" && tab && accepts(tab)))];
   const active = tabs.includes(value?.active) ? value.active : tabs[0] ?? null;
   return { tabs, active };
 }
 
-const tabHtml = (active, dirty) => (path) => {
-  const name = esc(fileNameOf(path));
+/** Pure: what each open tab is called and titled. A tab is named by its file,
+ *  and titled by its path; under a workspace's roots (#174), the title says the
+ *  root first, and when two open files share a name each says its root before
+ *  it — `root / name`. `locate(tab)` answers { root: { label }, path }; a
+ *  single checkout's root has no label and its tabs read as they always have. */
+export function tabLabels(tabs, locate) {
+  const located = new Map(tabs.map((tab) => [tab, locate(tab)]));
+  const names = [...located.values()].map(({ path }) => fileNameOf(path));
+  const shared = new Set(names.filter((name, index) => names.indexOf(name) !== index));
+  const rooted = (root, text) => (root.label ? `${root.label} / ${text}` : text);
+  return new Map(
+    [...located].map(([tab, { root, path }]) => {
+      const name = fileNameOf(path);
+      return [tab, { name: shared.has(name) ? rooted(root, name) : name, title: rooted(root, path) }];
+    }),
+  );
+}
+
+const pathLabels = (tabs) => tabLabels(tabs, (path) => ({ root: {}, path }));
+
+const tabHtml = (active, dirty, labels) => (path) => {
+  const label = labels.get(path);
+  const name = esc(label.name);
   const selected = path === active;
   const unsaved = dirty.has(path);
   return `<div class="ftab${selected ? " active" : ""}${unsaved ? " dirty" : ""}" role="presentation">` +
-    `<button type="button" class="ftab-name mono" role="tab" data-tab-path="${esc(path)}" title="${esc(path)}" aria-selected="${selected}">${name}</button>` +
+    `<button type="button" class="ftab-name mono" role="tab" data-tab-path="${esc(path)}" title="${esc(label.title)}" aria-selected="${selected}">${name}</button>` +
     `<button type="button" class="ftab-close" data-tab-close="${esc(path)}" aria-label="Close ${name}${unsaved ? " (unsaved)" : ""}"><span class="ftab-mark" aria-hidden="true"></span></button>` +
     `</div>`;
 };
 
-/** Pure: the tab strip's HTML — one tab per open file, named by the file and
- *  titled by its path, each with a close control; a tab in `dirty` is marked
- *  unsaved. Paths are repo-derived and escaped everywhere they land. */
-export function fileTabsHtml(layout, dirty) {
+/** Pure: the tab strip's HTML — one tab per open file, named and titled by
+ *  `labels` (tabLabels; by the file and its path when none are given), each
+ *  with a close control; a tab in `dirty` is marked unsaved. Paths are
+ *  repo-derived and escaped everywhere they land. */
+export function fileTabsHtml(layout, dirty, labels = pathLabels(layout.tabs)) {
   if (!layout.tabs.length) return "";
-  return layout.tabs.map(tabHtml(layout.active, dirty)).join("");
+  return layout.tabs.map(tabHtml(layout.active, dirty, labels)).join("");
 }

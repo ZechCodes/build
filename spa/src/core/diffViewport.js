@@ -57,6 +57,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
   let frame = 0;
   let pending = false;
   let preservedSelection = null;
+  let active = true;
 
   const page = () => scroller?.ownerDocument || globalThis.document;
   const view = () => page()?.defaultView || globalThis;
@@ -66,6 +67,10 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
     view().cancelAnimationFrame ? view().cancelAnimationFrame(handle) : view().clearTimeout(handle);
 
   const requestPaint = (force = false) => {
+    if (!active) {
+      pending = true;
+      return;
+    }
     if (frame) return;
     if (!force && frozen()) {
       pending = true;
@@ -118,11 +123,9 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
   };
 
   const frozen = () => {
-    // The composer is fixed under document.body, outside the diff scroller.
-    // Pin the rendered rows while its real input is mounted so focusing it
-    // cannot make the selection collapse and release the rows beneath it.
-    const commentComposer = page()?.querySelector("body > .comment-pop .cp-input");
-    return Boolean(selectionInside() || commentComposer || commentLayerBusy());
+    // The comment layer answers only for this viewport's composer. Another
+    // directory may have its own draft open while this one is mounted hidden.
+    return Boolean(selectionInside() || commentLayerBusy());
   };
 
   const observeFiles = () => {
@@ -136,6 +139,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
   };
 
   const onIntersect = (entries) => {
+    if (!active) return;
     let changed = false;
     for (const entry of entries) {
       const key = entry.target.dataset.key;
@@ -185,6 +189,7 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
   };
 
   const attachScroller = () => {
+    if (!active) return;
     scroller?.addEventListener("scroll", onScroll, true);
     page()?.addEventListener("selectionchange", onInteractionChange);
     page()?.addEventListener("pointerup", onInteractionChange);
@@ -242,6 +247,20 @@ export function createDiffViewport({ repaint, commentLayerBusy = () => false, ro
     request(key) {
       requested.add(String(key));
       requestPaint();
+    },
+    setVisible(next) {
+      if (active === next) return;
+      active = next;
+      if (!active) {
+        if (frame) cancel(frame);
+        frame = 0;
+        preservedSelection = null;
+        detachScroller();
+      } else {
+        attachScroller();
+        observeFiles();
+        if (pending) requestPaint();
+      }
     },
     dispose() {
       if (frame) cancel(frame);

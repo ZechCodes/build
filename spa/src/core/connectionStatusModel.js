@@ -35,6 +35,12 @@ const RECOVERING = new Set([ATTEMPTING, WAITING]);
  *  (core/transientRead.js), so the ring and they agree on the word. */
 export const isRecovering = (record) => RECOVERING.has(record?.status);
 
+/** Whether this machine's link is putting a failed path right in place (#123):
+ *  the session is still held, so the supervisor has no record, but nothing it
+ *  is asked is answered until the restart lands. Read off the device's context
+ *  by the ring and by the surfaces alike, so the two say the same (#130). */
+export const isRestoringInPlace = (context) => context?.peerLink?.restoring?.() === true;
+
 /** What a machine is called, as the account knows it. A record can name a
  *  machine the device list has not caught up with — a connection lost before
  *  its first list answered — and such a machine is spoken of as what it is. */

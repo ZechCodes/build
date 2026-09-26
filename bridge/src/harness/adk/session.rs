@@ -363,9 +363,19 @@ fn start_startup_watchdog(
             if !startup_deadline_elapsed(&state, deadline, Instant::now()) {
                 continue;
             }
-            state.reported_error = Some(format!(
-                "claude did not announce itself within {deadline:?} of its first turn"
-            ));
+            // The same path as a child refused over its `init` line (issue
+            // #73): the sentence is its last words and the agent's
+            // `start_error`, or the row just looks idle.
+            let reason = format!(
+                "Build stopped this agent's Claude Code session because it did not start within {}.",
+                seconds(deadline)
+            );
+            eprintln!(
+                "harness startup_deadline: agent={:?} {reason}",
+                state.agent_id
+            );
+            state.reported_error = Some(reason.clone());
+            state.start_refused = Some(reason);
             state.closed = true;
             true
         };
@@ -386,6 +396,16 @@ pub(super) fn startup_deadline_elapsed(
         && state
             .first_turn_at
             .is_some_and(|started| now.saturating_duration_since(started) >= deadline)
+}
+
+/// A deadline as a person reads it: "20 seconds", "1 second", "0.2 seconds".
+fn seconds(deadline: Duration) -> String {
+    let secs = deadline.as_secs_f64();
+    if secs == 1.0 {
+        "1 second".to_string()
+    } else {
+        format!("{secs} seconds")
+    }
 }
 
 /// The code a child exited with. A child killed by a signal has no code of its

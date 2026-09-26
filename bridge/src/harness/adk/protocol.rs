@@ -126,8 +126,9 @@ pub(super) struct ProtocolState {
     pub(super) reported_error: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
     pub(super) last_stderr_line: Option<String>,
-    /// Why Build ended this child over its `init` line, once it has: the
-    /// sentence the agent's `start_error` shows (issue #72).
+    /// Why Build ended this child before it started — over its `init` line
+    /// (issue #72) or at the startup deadline (issue #73): the sentence the
+    /// agent's `start_error` shows.
     pub(super) start_refused: Option<String>,
     /// The background work the child says is live right now — its task id
     /// against the description it goes by.

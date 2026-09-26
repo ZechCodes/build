@@ -935,10 +935,17 @@ export function mergeCachedAtomically(address, merge) {
  * tab nor a failed write can land one without the other. */
 export function mergeCachedTogether(addresses, merge) {
   const keys = addresses.map(recordKey);
-  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge));
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record?.value));
 }
 
-function mergeTogetherInStore(addresses, keys, merge) {
+/** The same, handed each whole record — `{ at, value }`, or undefined — for a
+ *  merge that must keep what the cache's stamp on a record says. */
+export function mergeCachedRecordsTogether(addresses, merge) {
+  const keys = addresses.map(recordKey);
+  return inRecoveryWriteOrder(keys, () => mergeTogetherInStore(addresses, keys, merge, (record) => record));
+}
+
+function mergeTogetherInStore(addresses, keys, merge, handed) {
   let changed = [];
   return wroteStore((store) => {
     changed = [];
@@ -946,7 +953,7 @@ function mergeTogetherInStore(addresses, keys, merge) {
     let waiting = keys.length;
     const mergeAll = () => {
       try {
-        const next = merge(held.map((record) => record?.value));
+        const next = merge(held.map(handed));
         for (const [index, key] of keys.entries()) {
           if (next?.[index] == null) continue;
           const record = withBridgeGeneration(addresses[index], { at: Date.now(), order: nextWriteOrder(), value: next[index] });

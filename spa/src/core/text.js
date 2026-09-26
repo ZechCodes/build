@@ -149,6 +149,9 @@ export const filesTabLabel = "Files";
  *  the project's whole tracker — the word is the same because it is the same
  *  tracker, narrowed to the agents standing here. */
 export const issuesTabLabel = "Issues";
+/** The cog at the foot of a workspace's rail: what the workspace is called,
+ *  what its agents start on, and the one way to delete it. */
+export const workspaceSettingsLabel = "Workspace settings";
 
 /** The control at the foot of the same rail, which folds the checkout's list
  *  column (the file tree, the commit rail) away and brings it back. Icon-only

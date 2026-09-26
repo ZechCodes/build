@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // The view-area toolbar on main's workspace chrome: the sentence it prints, the
-// project menu behind its left half, the workspace switcher, and the directory
-// tabs of the workspace the route is standing in — every one of them read from
-// the machine the route names.
+// project menu behind its left half, and the workspace picker that is the bar's
+// one control on a workspace — every one of them read from the machine the
+// route names.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -86,7 +86,7 @@ const openCreateWork = vi.fn();
 vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 
 const { App } = await import("../src/app.js");
-const { clearProjectTabHandler, initToolbar, setProjectTabHandler, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { clearProjectTabHandler, clearToolbarVerb, initToolbar, setProjectTabHandler, setToolbarVerb, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 const { splitDeviceKey } = await import("../src/core/deviceKey.js");
 const { routeFromHash } = await import("../src/core/router.js");
 const { adoptDeviceSession } = await import("../src/core/deviceContexts.js");
@@ -107,7 +107,7 @@ const menu = () => document.querySelector(".tbmenu");
 const names = () => [...bar().querySelectorAll(".tb-name")].map((name) => name.textContent);
 const openJump = async (which = "project") => {
   bar().querySelector(`[data-select="${which}"]`).click();
-  const list = { project: "projects", workspace: "workspaces", directory: "directories" }[which];
+  const list = { project: "projects", workspace: "workspaces" }[which];
   await vi.waitFor(() => expect(menu()?.dataset.list).toBe(list));
   return menu();
 };
@@ -138,7 +138,7 @@ const workshopHolds = (byProject) => {
   subscribers.forEach((fn) => fn(feed));
 };
 
-/** Stand on the workshop's payment-work, with its directory tabs hydrated. */
+/** Stand on the workshop's payment-work, with its record hydrated. */
 const standOnWorkspace = async () => {
   App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", sourceId: "frontend", tab: "changes" };
   toolbarRouteChanged();
@@ -246,79 +246,68 @@ describe("the project's pages in the bar", () => {
     expect(projectTabs()).toEqual([["Issues", "false"], ["Workspaces", "true"]]);
   });
 
-  it("draws none over a workspace, whose tabs are its directories", async () => {
+  it("draws none over a workspace", async () => {
     await standOnWorkspace();
     expect(projectTabs()).toEqual([]);
   });
 });
 
-// #47. The maintainer, on the workspace page: "The bar with the workspace name,
-// tabs, and icons is workspace scoped. The rail on the left is directory scoped
-// (tabs). Issues are workspace scoped so shouldn't be in the left rail. Also
-// the issues icon in the workspace bar is too large. Might be better to just
-// show the text 'Issues' with a counter bubble."
-describe("the workspace's Issues, in the bar", () => {
-  const issues = () => bar().querySelector("[data-workspace-issues]");
+// #174. The maintainer: "Move everything out of the nav except the
+// workspace/project picker. I also want the picker to show the project
+// 'project / workspace'." The directories, the Issues and the settings are the
+// workspace's navigation now, in its rail (core/directoryRail.js).
+describe("the workspace picker", () => {
+  const picker = () => bar().querySelector('[data-select="workspace"]');
 
-  // A CSS fact a jsdom case cannot see: the entry sets `display`, which beats
-  // the UA's [hidden] rule, so it needs its own — otherwise a bridge carrying
-  // no issues would still draw one.
-  it("is hidden by its own rule, because it sets display", async () => {
-    const css = readFileSync(resolve("src/styles/shell.css"), "utf8");
-    expect(css).toMatch(/\.tb-issues \{[^}]*display:flex/);
-    expect(css).toMatch(/\.tb-issues\[hidden\] \{[^}]*display:none/);
-  });
-
-  it("is the word and a bubble, with no icon", async () => {
+  it("reads `project / workspace` as one control", async () => {
     await standOnWorkspace();
-    const entry = issues();
-    expect(entry).not.toBeNull();
-    expect(entry.textContent.trim()).toBe("Issues");
-    expect(entry.querySelector("svg")).toBeNull();
-    // The same count bubble the inbox rows wear.
-    expect(entry.querySelector(".badge.tb-issues-count")).not.toBeNull();
+    expect(picker().textContent.replace(/\s+/g, " ").trim()).toBe("relaydb/payment-work▾");
+    expect(picker().querySelector(".tb-crumb").textContent).toBe("relaydb");
+    expect(picker().querySelector(".tb-name").textContent).toBe("payment-work");
+    // Project first, then the separator, then the workspace.
+    expect([...picker().children].map((child) => child.className)).toEqual([
+      "tb-crumb", "tb-sep", "tb-name", "tb-caret disclosure-caret",
+    ]);
   });
 
-  it("sits with the tabs rather than with the cog", async () => {
+  it("is the bar's only control on a workspace", async () => {
     await standOnWorkspace();
-    // Not in the right-hand cluster, which is the gear and the verb slot.
-    expect(bar().querySelector(".tb-right [data-workspace-issues]")).toBeNull();
-    // …and after the directory tabs, which it follows in the bar.
-    const row = [...bar().querySelectorAll(".tb-directories, [data-workspace-issues]")];
-    expect(row.map((node) => (node.dataset.workspaceIssues === "" ? "issues" : "directories")))
-      .toEqual(["directories", "issues"]);
-  });
-
-  // It is deliberately NOT inside .tb-directories, which collapses into a menu
-  // on a phone — the issues stay reachable at every width.
-  it("stands outside the directory tabs, so the phone's collapse leaves it", async () => {
-    await standOnWorkspace();
-    expect(bar().querySelector(".tb-directories [data-workspace-issues]")).toBeNull();
-  });
-
-  it("is marked while the reader is on the tab, and on an issue opened from it", async () => {
-    await standOnWorkspace();
-    expect(issues().classList.contains("current")).toBe(false);
-
-    App.route = { ...App.route, tab: "issues" };
-    toolbarRouteChanged();
-    await flush();
-    expect(issues().classList.contains("current")).toBe(true);
-    expect(issues().getAttribute("aria-current")).toBe("page");
-
-    App.route = { ...App.route, tab: "issues", issueId: "issue-1" };
-    toolbarRouteChanged();
-    await flush();
-    expect(issues().classList.contains("current")).toBe(true);
-  });
-
-  it("is the workspace's alone — no other identity carries one", async () => {
-    for (const route of [{ name: "project", deviceId: "dev-1", projectId: "p1" }, { name: "inbox" }]) {
-      App.route = route;
-      toolbarRouteChanged();
-      await flush();
-      expect([route.name, bar().querySelector("[data-workspace-issues]")]).toEqual([route.name, null]);
+    expect([...bar().querySelectorAll("button")]).toEqual([picker()]);
+    for (const gone of [".tb-directories", "[data-directory]", "[data-workspace-issues]", "[data-workspace-settings]", ".tb-back", "[data-project-back]"]) {
+      expect([gone, bar().querySelector(gone)]).toEqual([gone, null]);
     }
+    // No verb slot either: a failed workspace's Retry is on its surface.
+    expect(bar().querySelector("#tb-verb")).toBeNull();
+    expect(bar().querySelector(".tb-right")).toBeNull();
+  });
+
+  // The back chevron is gone; the way to the project's own page is the
+  // picker's menu, on the machine the workspace is on.
+  it("reaches the project's own page from its menu", async () => {
+    await standOnWorkspace();
+    const workspaces = await openJump("workspace");
+    const page = workspaces.querySelector("[data-project-page]");
+    expect(page.querySelector(".mt").textContent).toBe("Project page");
+    page.click();
+    await waitMenuClosed();
+    // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
+    // so the navigation settles a tick later.
+    await flush();
+    expect(location.hash).toBe("#/device/dev-1/project/p1");
+    // …which is the Issues tab, the project's default (#46). The inbox's
+    // project name writes this same link (core/projectModel.js mints both).
+    expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "issues" });
+  });
+
+  it("keeps the other routes' bars as they were", async () => {
+    // A legacy branch: the project selector and the branch after it.
+    expect(bar().querySelector('[data-select="project"]')).not.toBeNull();
+    expect(bar().querySelector(".tb-crumb")).toBeNull();
+    App.route = { name: "project", deviceId: "dev-1", projectId: "p1" };
+    toolbarRouteChanged();
+    await flush();
+    expect(bar().querySelector('[data-select="project"]')).not.toBeNull();
+    expect(bar().querySelector("[data-project-tab]")).not.toBeNull();
   });
 });
 
@@ -334,14 +323,6 @@ describe("the workspace toolbar", () => {
     const projects = await openJump("project");
     expect(projects.dataset.list).toBe("projects");
     expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
-  });
-
-  it("shows only the workspace switcher before its directory tabs", async () => {
-    await standOnWorkspace();
-    expect(bar().querySelector('[data-select="project"]')).toBeNull();
-    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
-    expect([...bar().children].indexOf(bar().querySelector('[data-select="workspace"]')))
-      .toBeLessThan([...bar().children].indexOf(bar().querySelector(".tb-directories")));
   });
 
   it("lists the workspaces of the machine the route names, and asks no machine for them", async () => {
@@ -411,7 +392,6 @@ describe("the workspace toolbar", () => {
     menu().querySelector('[data-project="dev-1/p2"]').click();
     await waitMenuList("workspaces");
     expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
-    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
     await flush();
     expect(labels("[data-workspace]")).toEqual(["prototype"]);
 
@@ -422,10 +402,10 @@ describe("the workspace toolbar", () => {
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
   });
 
-  // The directories the tabs are drawn from ride the workspace list itself, so
-  // reopening the menu on the project you are in draws them off the record
-  // rather than reading the one row again.
-  it("keeps the active workspace's directory tabs when its project is selected from the popup", async () => {
+  // The workspace rides the workspace list itself, so reopening the menu on the
+  // project you are in draws it off the record rather than reading the one row
+  // again.
+  it("keeps naming the active workspace when its project is selected from the popup", async () => {
     await standOnWorkspace();
 
     (await openJump("workspace")).querySelector("[data-projects]").click();
@@ -435,46 +415,25 @@ describe("the workspace toolbar", () => {
     await flush();
 
     expect(workshopCall).not.toHaveBeenCalledWith("workspace.get", expect.anything());
-    expect([...bar().querySelectorAll("[data-directory]")].map((node) => node.textContent)).toEqual(["Frontend", "Design assets"]);
-  });
-
-  it("shows directory tabs and opens ordinary directories in Files", async () => {
-    await standOnWorkspace();
-    expect([...bar().querySelectorAll("[data-directory]")].map((node) => [node.textContent, node.getAttribute("aria-selected")])).toEqual([
-      ["Frontend", "true"],
-      ["Design assets", "false"],
-    ]);
-    bar().querySelector('[data-directory="assets"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
-  });
-
-  it("collapses directories into a phone menu without changing directory routing", async () => {
-    await standOnWorkspace();
-    const picker = bar().querySelector('[data-select="directory"]');
-    expect(picker.textContent.trim()).toBe("Frontend▾");
-    picker.click();
-    await waitMenuList("directories");
-    expect(picker.getAttribute("aria-expanded")).toBe("true");
-    expect([...menu().querySelectorAll("[data-menu-directory]")].map((node) => [node.textContent.trim(), node.classList.contains("current")]))
-      .toEqual([
-        ["Frontend", true],
-        ["Design assets", false],
-      ]);
-    expect(document.activeElement).toBe(menu().querySelector('[data-menu-directory="frontend"]'));
-    expect(menu().querySelector('[data-menu-directory="frontend"]').getAttribute("aria-checked")).toBe("true");
-    expect(menu().querySelector('[data-menu-directory="assets"]').getAttribute("aria-checked")).toBe("false");
-    menu().querySelector('[data-menu-directory="assets"]').click();
-    expect(location.hash).toBe("#/device/dev-1/project/p1/workspace/ws-1/directory/assets/files");
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
   });
 
   it("leaves finish and contextual actions out of the navigation toolbar", async () => {
     expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
     expect(bar().querySelector('[data-select="more"]')).toBeNull();
   });
+
+  // Only a workspace's bar lost its verb slot (#174): a branch still stands its
+  // Done there (views/branchView.js).
+  it("keeps the verb slot on a branch, where its view writes Done", async () => {
+    const done = (host) => { host.innerHTML = '<button class="btn mini" type="button">Done</button>'; };
+    setToolbarVerb(done);
+    expect(bar().querySelector("#tb-verb .btn").textContent).toBe("Done");
+    clearToolbarVerb(done);
+    expect(bar().querySelector("#tb-verb").children).toHaveLength(0);
+  });
 });
 
-// The cog at the far right, opposite the switcher at the far left. It settles
-// the workspace you are STANDING in, so a route that stands in none has none.
 // The project's own checkout is the template every workspace is cut from, not
 // a place to work. A machine running a bridge that still lists it (older ones
 // did, as `legacy-<project>`) gets it kept out of the switcher here.
@@ -485,76 +444,6 @@ describe("the project's own checkout", () => {
     await standOnWorkspace();
     await openJump("workspace");
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
-  });
-});
-
-// The chevron at the bar's left edge: the way back out of a workspace to the
-// project it was cut from — the project's own page, the same place the
-// project's name in the inbox opens.
-describe("the back chevron", () => {
-  const back = () => bar().querySelector("[data-project-back]");
-
-  it("is absent on a legacy branch route, an issue and the inbox", async () => {
-    expect(back()).toBeNull();
-    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
-    toolbarRouteChanged();
-    expect(back()).toBeNull();
-    App.route = { name: "inbox" };
-    toolbarRouteChanged();
-    expect(back()).toBeNull();
-  });
-
-  it("stands left of the workspace switcher, named for the project it goes back to", async () => {
-    await standOnWorkspace();
-    const button = back();
-    expect(button).not.toBeNull();
-    expect(button.getAttribute("aria-label")).toBe("Back to relaydb");
-    expect(button.nextElementSibling).toBe(bar().querySelector('[data-select="workspace"]'));
-  });
-
-  it("takes you to the project, on the machine the workspace is on", async () => {
-    await standOnWorkspace();
-    back().click();
-    // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
-    // so the navigation settles a tick later.
-    await flush();
-    expect(location.hash).toBe("#/device/dev-1/project/p1");
-    // …which is the Issues tab, the project's default (#46). The inbox's
-    // project name writes this same link (core/projectModel.js mints both), so
-    // both ways back into a project land on the tracker.
-    expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "issues" });
-  });
-});
-
-describe("the workspace settings cog", () => {
-  const cog = () => bar().querySelector("[data-workspace-settings]");
-
-  it("is absent on a legacy branch route, an issue and the inbox", async () => {
-    expect(cog()).toBeNull();
-    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
-    toolbarRouteChanged();
-    expect(cog()).toBeNull();
-    App.route = { name: "inbox" };
-    toolbarRouteChanged();
-    expect(cog()).toBeNull();
-  });
-
-  it("stands in the right-hand slot, before the verb, once the route is in a workspace", async () => {
-    await standOnWorkspace();
-    const button = cog();
-    expect(button).not.toBeNull();
-    expect(button.getAttribute("aria-label")).toBe("Workspace settings");
-    expect(button.parentElement.classList.contains("tb-right")).toBe(true);
-    expect(button.nextElementSibling.id).toBe("tb-verb");
-  });
-
-  it("opens the sheet on the workspace the bar is naming", async () => {
-    await standOnWorkspace();
-    cog().click();
-    await flush();
-    expect(document.getElementById("scrim").classList.contains("show")).toBe(true);
-    expect(document.getElementById("wslabel").value).toBe("payment-work");
-    document.getElementById("wscancel").click();
   });
 });
 

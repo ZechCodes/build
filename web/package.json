@@ -7,6 +7,7 @@
   "description": "Build v2 web client (E2EE browser client) and end-to-end harness.",
   "scripts": {
     "test": "node --test",
+    "test:browser": "node --test offlineEvidence.browser.mjs",
     "e2e": "node e2e.mjs",
     "qa": "node qa.mjs"
   },

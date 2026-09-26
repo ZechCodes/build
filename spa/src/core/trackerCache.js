@@ -68,11 +68,24 @@ export const issueAddress = (deviceId, projectId, issueId) => ({
 /** The list record. `columns` rides beside the issues because the two are read
  *  together on every paint — a board cannot be drawn from one without the
  *  other — and because the columns change far more rarely than the issues, so
- *  holding them costs a field and saves a round trip on every cold open. */
-export const issuesRecord = (issues, columns) => ({
+ *  holding them costs a field and saves a round trip on every cold open.
+ *
+ *  `readOrder` is the number the read that answered it took before it asked
+ *  (core/issueReadOrder.js): when the bridge was asked, not when the answer
+ *  reached the browser (#129). A list written here rather than read — a card
+ *  moved, an issue filed — takes its number from the same count as it is
+ *  written, so every list is ordered against every other on one scale. */
+export const issuesRecord = (issues, columns, readOrder) => ({
   issues: issues || [],
   columns: columns || [],
+  ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
 });
+
+/** When a cached list (`{ at, value }`) was asked for or written: its number.
+ *  Only a list written before #129 has none, and stands in with the cache's
+ *  own stamp on it — the clock the count is floored at, the nearest the two
+ *  scales come to meeting. */
+export const listAskedAt = (cached) => Number(cached?.value?.read_order) || cached?.at || 0;
 
 export const issueRecord = (issue, timeline) => ({ issue: issue || null, timeline: timeline || [] });
 
@@ -92,6 +105,20 @@ export async function readIssuesQueryRecord(deviceId, projectId, params) {
   const record = await readCached(issuesQueryAddress(deviceId, projectId, params));
   return record?.value || null;
 }
+
+/** A list record and when the cache took it, `{ at, value }`, or null when it
+ *  holds none: one read, so a paint never takes the list from one record and
+ *  its stamp from another, or reads a stamp of 0 for a record that went
+ *  between the two (#129). */
+async function readListCached(address) {
+  const record = await readCached(address);
+  return record?.value ? { at: record.at || 0, value: record.value } : null;
+}
+
+export const readIssuesCached = (deviceId, projectId) => readListCached(issuesAddress(deviceId, projectId));
+
+export const readIssuesQueryCached = (deviceId, projectId, params) =>
+  readListCached(issuesQueryAddress(deviceId, projectId, params));
 
 export const writeIssuesRecord = (deviceId, projectId, record) =>
   writeCached(issuesAddress(deviceId, projectId), record);
@@ -128,9 +155,6 @@ export const writeIssuesQueryRecord = (deviceId, projectId, params, record) =>
  *  not the moment the surface got round to painting it. */
 export const issuesRecordAt = async (deviceId, projectId) =>
   (await readCached(issuesAddress(deviceId, projectId)))?.at || 0;
-
-export const issuesQueryRecordAt = async (deviceId, projectId, params) =>
-  (await readCached(issuesQueryAddress(deviceId, projectId, params)))?.at || 0;
 
 export const issueRecordAt = async (deviceId, projectId, issueId) =>
   (await readCached(issueAddress(deviceId, projectId, issueId)))?.at || 0;

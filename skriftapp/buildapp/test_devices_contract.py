@@ -25,7 +25,6 @@ def _device(**overrides) -> Device:
         "identity_public_key_b64": "aWRlbnRpdHk",
         "transport_public_key_b64": "dHJhbnNwb3J0",
         "approved": True,
-        "status": "online",
         "last_seen_at": NOW - timedelta(seconds=30),
     }
     defaults.update(overrides)
@@ -51,13 +50,13 @@ def test_summary_keeps_existing_spa_fields():
 
 
 def test_summary_handles_never_seen_device():
-    summary = device_summary(_device(last_seen_at=None, status="offline"), NOW)
+    summary = device_summary(_device(last_seen_at=None), NOW)
     assert summary["last_seen_at"] is None
     assert summary["status"] == "offline"
 
 
-def test_summary_status_is_derived_not_the_column():
-    """The column may still carry the relay's last write; the heartbeat window
-    is what the browser is told."""
-    stale = _device(status="online", last_seen_at=NOW - timedelta(minutes=2))
+def test_summary_status_follows_the_heartbeat_window():
+    """A device last seen two minutes ago is past the window: the browser is told
+    it is offline."""
+    stale = _device(last_seen_at=NOW - timedelta(minutes=2))
     assert device_summary(stale, NOW)["status"] == "offline"

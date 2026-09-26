@@ -9,7 +9,7 @@
 // same checkout open in another window).
 
 import { watchUiState } from "./localUiState.js";
-import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout } from "./fileTabsModel.js";
+import { activateTab, closeTab, fileTabsHtml, openTab, readTabLayout, tabLabels } from "./fileTabsModel.js";
 
 const keepingDirty = (layout, dirty) => {
   const kept = [...dirty].filter((path) => !layout.tabs.includes(path));
@@ -26,11 +26,18 @@ const keepingDirty = (layout, dirty) => {
  *   may throw them away;
  * - `onClose(path)`: a tab is being closed for good — drop what it held;
  * - `onShow(path)`: the active tab moved (null: nothing is open);
- * - `initial`: a path to open on top of the remembered layout (the route's).
+ * - `initial`: a path to open on top of the remembered layout (the route's);
+ * - `locate(tab)`: where a tab's file is, { root: { label }, path } — across a
+ *   workspace's roots a tab is a root and a path, and one naming a root that
+ *   locates nowhere is dropped from the remembered layout. A single checkout's
+ *   tabs are paths and need none.
  *
  * Returns { ready, open, refresh, dispose }.
  */
-export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confirmClose, onClose, onShow, initial = null }) {
+const byPath = (path) => ({ root: {}, path });
+
+export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confirmClose, onClose, onShow, initial = null, locate = byPath }) {
+  const accepts = (tab) => Boolean(locate(tab));
   let disposed = false;
   let started = false;
   let layout = { tabs: [], active: null };
@@ -51,9 +58,9 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
 
   const paint = (value) => {
     if (disposed || !started) return;
-    layout = keepingDirty(readTabLayout(value), dirtyPaths());
+    layout = keepingDirty(readTabLayout(value, accepts), dirtyPaths());
     marked = markedKey();
-    stripEl.innerHTML = fileTabsHtml(layout, dirtyPaths());
+    stripEl.innerHTML = fileTabsHtml(layout, dirtyPaths(), tabLabels(layout.tabs, locate));
     stripEl.hidden = !layout.tabs.length;
     showActiveTab();
     if (layout.active === shown) return;
@@ -67,7 +74,7 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
   const ready = (async () => {
     const saved = await Promise.resolve(record?.ready).catch(() => undefined);
     started = true;
-    const remembered = readTabLayout(saved);
+    const remembered = readTabLayout(saved, accepts);
     if (initial) await commit(openTab(remembered, initial));
     else paint(remembered);
   })();

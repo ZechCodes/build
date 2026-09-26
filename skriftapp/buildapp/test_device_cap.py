@@ -52,7 +52,6 @@ def _pending(code: str) -> Device:
         transport_public_key_b64="transport",
         pairing_code_hash=pairing_crypto.hash_code(code),
         approved=False,
-        status="pending",
     )
 
 
@@ -64,7 +63,6 @@ def _approved(owner: UUID) -> Device:
         identity_public_key_b64="identity",
         transport_public_key_b64="transport",
         approved=True,
-        status="online",
     )
 
 

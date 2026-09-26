@@ -245,6 +245,41 @@
 .workspace-referror { display:block; padding-top:5px; overflow-wrap:anywhere; font-size:11px; }
 .workspace-referror:empty { padding:0; }
 .workspace-gitpane { min-height:0; height:100%; overflow:hidden; }
+/* A workspace's Changes (views/workspaceChanges.js): a tab per directory, git
+   or not, over the git surface of the selected one. The row is the pane's, so
+   it stands above the surface at every width — where the commit rail is a
+   drawer too. The tabs are the bar's tab idiom (styles/shell.css
+   .tb-directory): the name, and the accent under the current one. */
+.workspace-changes { display:flex; flex-direction:column; height:100%; min-height:0; }
+.workspace-changes-body { flex:1 1 auto; min-height:0; }
+/* One surface per directory the row has shown, kept hidden while another
+   stands (views/workspaceChanges.js). */
+.workspace-changes-surface { height:100%; min-height:0; }
+.workspace-changes-surface[hidden] { display:none; }
+.workspace-dirtabs { flex:none; display:flex; align-items:stretch; min-width:0; height:32px;
+  padding:0 calc(var(--pane-gutter) - 10px); overflow-x:auto; scrollbar-width:none; }
+.workspace-dirtabs::-webkit-scrollbar { display:none; }
+.workspace-dirtab { flex:none; position:relative; max-width:170px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; padding:0 10px; border:0;
+  background:none; color:var(--dim); font:inherit; font-size:12px; cursor:pointer; }
+.workspace-dirtab:hover { color:var(--ink); background:var(--panel2); }
+.workspace-dirtab:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.workspace-dirtab.current { color:var(--ink); }
+.workspace-dirtab.current::after { content:""; position:absolute; left:9px; right:9px;
+  bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
+/* A directory with no git: the offer to initialize it is the surface. */
+.workspace-gitinit { padding:var(--pane-top) var(--pane-gutter); }
+.workspace-gitinit-say { margin:0 0 6px; color:var(--dim); font-size:13px; }
+.workspace-gitinit .workspace-init-host { margin-top:0; padding:0; }
+/* A failed workspace's Retry and its outcome (views/workspaceView.js), just
+   before the Git offer: at the foot of a commit rail, under the sentence on a
+   directory without Git. */
+.workspace-action-host { display:flex; align-items:center; gap:8px; min-width:0;
+  padding:10px 13px 0 var(--pane-gutter); font-size:12px; }
+.workspace-gitinit .workspace-action-host { padding:0 0 8px; }
+.workspace-action-status { min-width:0; color:var(--ink2); }
+.workspace-action-status:empty { display:none; }
+.workspace-action-status.error { color:var(--red); }
 
 /* ---- work surfaces: a project -----------------------------------------------
    The project's own page: the workspaces it holds, listed in the rail's row

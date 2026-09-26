@@ -129,3 +129,24 @@ export function treeKeyMove(rows, cursorPath, key) {
   if (index < 0) return { cursor: navigable[0].path };
   return move(navigable, index);
 }
+
+/** The keys that leave the rows rather than move within them, by where the
+ *  keyboard selection stands. */
+const EDGES = {
+  ArrowUp: (rows, index) => (index === 0 ? "up" : null),
+  ArrowDown: (rows, index) => (index === rows.length - 1 ? "down" : null),
+  ArrowLeft: (rows, index) => (!rows[index].expanded && !parentPath(rows[index].path) ? "out" : null),
+};
+
+/** Pure: whether a key walks the keyboard selection out of these rows — "up"
+ *  from the first, "down" from the last, "out" (Left) from a top row that has
+ *  nothing to collapse — or null when it moves within them. A tree standing
+ *  under a root (a workspace's Files, one root per directory) hands those
+ *  keys to the roots around it. */
+export function treeEdge(rows, cursorPath, key) {
+  const edge = EDGES[key];
+  const navigable = rows.filter((row) => row.kind !== "error");
+  const index = navigable.findIndex((row) => row.path === cursorPath);
+  if (!edge || index < 0) return null;
+  return edge(navigable, index);
+}

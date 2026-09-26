@@ -631,7 +631,10 @@ fn a_create_under_cloning_stands_as_a_clone_and_settles_as_one() {
 /// The whole feature, end to end, on a volume that clones: the account
 /// chooses cloning, the run that follows lives in a clone of the project
 /// rather than a linked worktree, every surface that reads its work still
-/// reads it, and Finish retains the checkout when no remote is configured.
+/// reads it, and Done refuses to remove the clone.
+///
+/// This only runs where the volume clones: under a tmpfs `TMPDIR` the probe
+/// skips it, which is how a stale refusal here went unnoticed.
 #[test]
 fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
     let (dir, repo) = init_repo();
@@ -685,23 +688,57 @@ fn a_run_dispatched_under_cloning_lives_in_a_clone_and_finish_refuses_it() {
         "the feed counts the clone's work: {row:?}"
     );
 
-    // Done removes what it finishes, so it is not offered until the work is
-    // somewhere else. No remote is configured here, so it never is.
+    // A run's checkout is a legacy record: Done adopts it rather than owning
+    // it, and ownership is read before anything else, so Done refuses it as
+    // not Build's to remove whatever its isolation, before asking where the
+    // work went.
     let finished = state.handle(req(
         "run.finish",
         json!({ "run_id": run_id, "action": "merge" }),
     ));
     assert_eq!(finished["ok"], false, "{finished:?}");
-    assert!(
-        finished["error"]
-            .as_str()
-            .unwrap()
-            .contains("no remote has"),
+    assert_eq!(finished["error_code"], "conflict", "{finished:?}");
+    assert_eq!(
+        finished["error"],
+        "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted.",
         "{finished:?}"
     );
     assert!(
         checkout.join("result-first-half.txt").exists()
             && checkout.join("result-second-half.txt").exists(),
         "a refused Done retains the clone and its work"
+    );
+}
+
+/// The same refusal for a run in a linked worktree, which every volume can
+/// make: the clone test above skips wherever reflinks are unavailable, and
+/// this one keeps the rule measured there.
+#[test]
+fn a_run_in_a_worktree_is_refused_by_done_as_an_adopted_checkout() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "work in a linked worktree");
+    let checkout = state.runs[&run_id].worktree.path.clone();
+    assert_eq!(
+        Isolation::of(&checkout),
+        Some(Isolation::Worktree),
+        "{checkout:?}"
+    );
+
+    let finished = state.handle(req(
+        "run.finish",
+        json!({ "run_id": run_id, "action": "merge" }),
+    ));
+    assert_eq!(finished["ok"], false, "{finished:?}");
+    assert_eq!(finished["error_code"], "conflict", "{finished:?}");
+    assert_eq!(
+        finished["error"],
+        "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted.",
+        "{finished:?}"
+    );
+    assert!(
+        checkout.join("result-first-half.txt").exists()
+            && checkout.join("result-second-half.txt").exists(),
+        "a refused Done retains the worktree and its work"
     );
 }

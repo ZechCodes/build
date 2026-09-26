@@ -974,12 +974,15 @@ function mountRailOnContext(host, context, swap) {
    *  written it since the ask: the strip keeps a watched agent from the answer
    *  on, not from whenever the push behind it lands (#105). The answer is the
    *  device's, not this mount's, so a reader who left before it came still
-   *  finds it on return; only a retired device's cache is left alone. */
+   *  finds it on return. A retired device's cache is left alone, asked inside
+   *  the write itself: a device retired while the write was on its way to
+   *  disk still finds nothing written. */
   const callWatch = async (method, params) => {
     const captured = await records.rowWrite(params.entity_id);
     const answer = await chatRepository.currentCall()(method, params);
     const watched = method === WATCH_VERB;
-    if (cacheScope?.active()) await records.patchAgentIfUnwritten(captured, params.agent_id, (agent) => ({ ...agent, watched }));
+    await records.patchAgentIfUnwritten(captured, params.agent_id,
+      (agent) => (cacheScope?.active() ? { ...agent, watched } : null));
     return answer;
   };
   const watchSwitch = createWatchToggle({
@@ -1756,6 +1759,7 @@ function mountRailOnContext(host, context, swap) {
       entityId: projectOwner,
       agents: onProjectAgentRail ? stripAgents() : alongsideEntity.agents,
       active: onProjectAgentRail && selectedKind === "agent",
+      openAgentId: onProjectAgentRail ? selectedId : null,
     };
 
   // ---- painting -------------------------------------------------------------

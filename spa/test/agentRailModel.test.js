@@ -293,6 +293,16 @@ describe("the strip's watched agents (#105)", () => {
     expect(types({ name: "build", entityId: null, agents: [], active: false })[0]).toEqual(["project", false]);
   });
 
+  it("marks the project's bubble for the open project agent's watch, not the project's", () => {
+    const project = (openAgentId, active = true) => ({ name: "build", entityId: "run-project", active, openAgentId,
+      agents: [agent({ id: "ag-lead", watched: true }), agent({ id: "ag-helper", ordinal: 2, watched: false })] });
+    const [openHelper] = railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project("ag-helper") });
+    expect(openHelper.unwatched).toBe(true);
+    expect(openHelper.title).toMatch(/Not watching$/);
+    expect(railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project("ag-lead") })[0].unwatched).toBe(false);
+    expect(railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project(null, false) })[0].unwatched).toBe(false);
+  });
+
   it("opens a watched agent before an unwatched one when nothing is chosen", () => {
     expect(selectAgentId([agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })], null)).toBe("ag-2");
     expect(selectAgentId([agent({ watched: false })], null)).toBe("ag-1");

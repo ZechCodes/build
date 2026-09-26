@@ -214,14 +214,15 @@ function projectAgentNews(agents) {
  * it the tip says how to start it, the way a ghost's does, rather than reading
  * as a bubble with nothing behind it.
  *
- * A project whose agents the reader watches none of is marked the way an
- * unwatched agent's bubble is (#105); `projectAgentOnTheStrip` says when the
- * strip carries it at all.
+ * It is marked the way an unwatched agent's bubble is (#105) while the
+ * project's agent open under it is one the reader does not watch, or, with
+ * none open, while they watch none of them; `projectAgentOnTheStrip` says when
+ * the strip carries it at all.
  */
-export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false } = {}) {
+export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null } = {}) {
   const news = projectAgentNews(agents);
   const who = `Project agent for ${name}`;
-  const unwatched = !projectAgentWatched(agents);
+  const unwatched = projectAgentMarked(agents, active, openAgentId);
   const title = agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`;
   return {
     type: "project",
@@ -294,6 +295,13 @@ const projectAgentWatched = (agents = []) => !agents.length || agents.some(agent
 /** Whether a workspace's strip carries the project's bubble, and the line
  *  under it (#105): while the reader watches the project's agent, and an
  *  unwatched one only while its conversation is the one open. */
+/** Whether the project's bubble wears the unwatched mark: the open agent's
+ *  watch where one of the project's agents is open, else the project's. */
+function projectAgentMarked(agents, active, openAgentId) {
+  const open = active ? agents.find((agent) => agent.id === openAgentId) : null;
+  return open ? !agentIsWatched(open) : !projectAgentWatched(agents);
+}
+
 export const projectAgentOnTheStrip = ({ agents = [], active = false } = {}) => active || projectAgentWatched(agents);
 
 /** Whether the reader watches this agent. A bridge that says nothing about

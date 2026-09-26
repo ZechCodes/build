@@ -496,21 +496,22 @@ export function mountIssuesPane(host, options) {
     state.focusIssue = issueId;
     const moved = [issuesQueryAddress(state.deviceId, state.projectId, queryParams()), issuesAddress(state.deviceId, state.projectId)];
     // Newer than any page still out, in this tab or another: one landing
-    // after this does not put the card back (core/issueReadOrder.js).
-    await noteWritten(moved, [issueId]);
+    // after this does not put the card back (core/issueReadOrder.js), and
+    // both lists carry that number, so neither reads as older than the other.
+    const movedAs = await noteWritten(moved, [issueId]);
     await Promise.all([
-      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns)),
-      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns)),
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(movedQuery, state.columns, movedAs)),
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(movedCatalogue, state.columns, movedAs)),
     ]);
     try {
       await state.callRpc("issues.update", moveParams(issueId, status));
     } catch (error) {
       if (state.disposed) return;
       state.focusIssue = issueId;
-      await noteWritten(moved, [issueId]);
+      const restoredAs = await noteWritten(moved, [issueId]);
       await Promise.all([
-        writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns)),
-        writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns)),
+        writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(heldQuery, state.columns, restoredAs)),
+        writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(heldCatalogue, state.columns, restoredAs)),
       ]);
       notifyError("Could not move this issue", messageOf(error));
     }
@@ -589,9 +590,10 @@ export function mountIssuesPane(host, options) {
     const catalogue = sortIssues([...state.unscoped.filter((one) => one.id !== issue.id), issue]);
     const query = sortIssues([...state.unscopedShown.filter((one) => one.id !== issue.id), issue]);
     state.focusIssue = issue.id;
+    const filedAs = await nextIssueRead();
     await Promise.all([
-      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(catalogue, state.columns)),
-      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(query, state.columns)),
+      writeIssuesRecord(state.deviceId, state.projectId, issuesRecord(catalogue, state.columns, filedAs)),
+      writeIssuesQueryRecord(state.deviceId, state.projectId, queryParams(), issuesRecord(query, state.columns, filedAs)),
     ]);
   }
 

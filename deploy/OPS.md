@@ -20,20 +20,22 @@ docker manifest inspect "ghcr.io/zechcodes/build-app:$SHA" >/dev/null   # must s
 k() { kubectl --context do-nyc1-production-hosting -n 8ly "$@"; }
 
 # 1. Migrate, from the new image. Delete the last deploy's Job first: a Job's
-#    template is immutable, so applying over it fails.
-k delete job build-app-migrate --ignore-not-found --wait=true
+#    template is immutable, so applying over it fails. Foreground, so a migrator
+#    pod still terminating from a cancelled run is gone before the new one starts.
+k delete job build-app-migrate --ignore-not-found --cascade=foreground --wait=true
 sed "s|:latest|:$SHA|" deploy/k8s/migrate.yaml | k apply -f -
 
 # 2. Wait for it (10 min at most, the Job's own deadline). Anything but
-#    Complete stops the deploy here, with the old pod still serving.
+#    Complete stops the deploy here, with the old pod still serving. A failed
+#    `get` (an API blip) just polls again; the logs cover a retried pod too.
 state=""
 for _ in $(seq 1 120); do
   state="$(k get job build-app-migrate \
-    -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}')"
+    -o jsonpath='{range .status.conditions[?(@.status=="True")]}{.type} {end}' || true)"
   case "$state" in *Complete*|*Failed*) break ;; esac
   sleep 5
 done
-k logs job/build-app-migrate --all-containers
+k logs -l job-name=build-app-migrate --all-containers --prefix
 echo "migration Job: ${state:-timed out}"   # must say Complete; stop otherwise
 
 # 3. Roll the app, only after "Complete".

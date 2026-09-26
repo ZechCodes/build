@@ -64,7 +64,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "issues.createdUserMentions", // Since 1.27.0: mentions_user on an agent's created event.
     "issues.doneSinceLeft",
     "issues.listPaged", // Since 1.25.0: limit/cursor and next_cursor on issues.list.
-    "issues.unreadCounts", // Since 1.29.0: unread_count on each watched issues.list row.
+    "issues.unreadCounts", // Since 1.29.0: unread_count on a watched issue (issues.list, issues.get).
     "issues.watching",
     "messages.context",
     "messages.fromAgent",

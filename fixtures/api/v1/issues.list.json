@@ -82,7 +82,7 @@
   },
   "unread_counts": {
     "since": "1.29.0",
-    "note": "A watched issue's row says how many timeline entries after its read_through are not the user's own, the count its inbox row carries (#104). An unwatched issue carries no count.",
+    "note": "A watched issue's row says how many timeline entries after its read_through are not the user's own, the count its inbox row carries (#104); issues.get says it too. An unwatched issue carries no count.",
     "fields": ["unread_count"]
   },
   "paging": {

@@ -576,8 +576,8 @@ fn an_agent_made_agent_is_not_in_the_inbox_unless_it_asks() {
     );
 }
 
-/// `issues.list` says how much of each watched issue is unread (#104), by the
-/// same count the issue's inbox row carries: what the list holds is what the
+/// `issues.list` and `issues.get` say how much of a watched issue is unread
+/// (#104), by the same count the issue's inbox row carries: what the list holds is what the
 /// Issues tab and the rail badges read, and an `issues` push re-reads it.
 /// An unwatched issue says nothing at all, not zero.
 #[test]
@@ -640,6 +640,12 @@ fn the_list_carries_each_watched_issues_unread_count() {
         )
         .expect("an agent answers");
     assert_eq!(listed(&mut state, &id)["unread_count"], json!(1));
+    assert_eq!(
+        issue(&mut state, &id)["unread_count"],
+        json!(1),
+        "reading the issue alone says the same"
+    );
+    assert!(issue(&mut state, &quiet).get("unread_count").is_none());
     let paged = state.handle(req(
         "issues.list",
         json!({ "project_id": project_id, "limit": 10 }),

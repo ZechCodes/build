@@ -20,6 +20,23 @@ pub(in crate::app) fn issue_json(project_id: &str, issue: &Issue) -> Value {
     value
 }
 
+/// One issue as a read that holds its timeline answers it — `issues.get`, and
+/// each row of `issues.list`: `issue_json`, and on a watched issue the
+/// `unread_count` its inbox row says (#104), so the Issues tab and the rail's
+/// badges read it off the list without a timeline each. An issue nobody
+/// watches never shows a count, so it carries none.
+pub(in crate::app) fn read_issue_json(
+    project_id: &str,
+    issue: &Issue,
+    timeline: &[TimelineEntry],
+) -> Value {
+    let mut value = issue_json(project_id, issue);
+    if issue.watched {
+        value["unread_count"] = Value::from(super::inbox::unread_since_mark(issue, timeline));
+    }
+    value
+}
+
 /// An issue and its whole timeline — what `issues.get` answers.
 ///
 /// A timeline entry is the record itself with one more key naming which it is
@@ -31,7 +48,7 @@ pub(in crate::app) fn issue_with_timeline_json(
     timeline: &[TimelineEntry],
 ) -> Value {
     json!({
-        "issue": issue_json(project_id, issue),
+        "issue": read_issue_json(project_id, issue, timeline),
         "timeline": timeline
             .iter()
             .map(|entry| serde_json::to_value(entry).expect("a timeline entry serializes"))

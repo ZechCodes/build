@@ -223,8 +223,9 @@ runtime that starts them.
   1.28.0 adds `board.conversationSessions`: a conversation's feed row carries
   its own `session_started_ms` and `last_activity_ms` (the project agent's
   inbox row is ordered by them, #103). 1.29.0 adds `issues.unreadCounts`:
-  each watched `issues.list` row carries `unread_count`, the count its inbox
-  row says, which the Issues tab badges and the rail read (#104).
+  a watched issue on `issues.list` and `issues.get` carries `unread_count`,
+  the count its inbox row says, which the Issues tab badges and the rail read
+  (#104).
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.

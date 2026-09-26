@@ -25,7 +25,7 @@ SKRIFTAPP_DIR = Path(__file__).resolve().parent.parent
 PRODUCTION_BASE_URL = "https://getbuild.ing"
 JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
 INVITE_OPEN_RATE_LIMIT_WINDOWS = [(30, 60.0)]
-LANDING_RATE_LIMIT_WINDOWS = [(600, 60.0)]
+LANDING_RATE_LIMIT_WINDOWS = [(2000, 60.0)]
 # Sized for about 50 people behind one NAT (#173); the arithmetic is in app.yaml.
 PAGE_RATE_LIMIT_WINDOWS = [(300, 60.0)]
 APP_STATIC_RATE_LIMIT_WINDOWS = [(1200, 60.0)]
@@ -96,7 +96,7 @@ async def test_landing_assets_have_an_independent_bounded_browser_budget():
     assert landing_policy.limits == LANDING_RATE_LIMIT_WINDOWS
     assert landing_policy.name not in {root_policy.name, auth_policy.name}
 
-    for _ in range(600):
+    for _ in range(2000):
         assert (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
     assert not (await limiter.check(landing_policy.name, caller, landing_policy.limits)).allowed
 

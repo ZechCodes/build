@@ -91,10 +91,10 @@ rate_limit:
       limits:
         - limit: 600
           per: minute
-    # The landing tree is about 106 poster, screen-texture, font, model, and
-    # generated-bundle files. A 600/minute budget allows five full uncached
-    # reloads plus headroom without letting that browser fanout consume the
-    # 60/minute default.
+    # A landing view fetches about 20 /landing/ files in film mode (scripts,
+    # CSS, fonts, poster, models, first screen textures) and up to 12 more as
+    # it scrolls; nothing there is cached, so a reload fetches them all again.
+    # 50 people scrolling through it in the same minute is 50 x 32 = 1600.
     - name: landing_assets
       match:
         path: /landing/
@@ -102,7 +102,7 @@ rate_limit:
         method: GET
       key: ip
       limits:
-        - limit: 600
+        - limit: 2000
           per: minute
     - name: waitlist_join
       match:

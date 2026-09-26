@@ -166,8 +166,10 @@ spec:
           # (post-setup, pre-content) — failing readiness drops every traefik
           # route and liveness crash-loops the pod. /healthz always exists and
           # never touches the database, so liveness never restarts a pod over
-          # a database outage; /readyz passes only when the database answers,
-          # so a rollout waits for a pod that can actually serve.
+          # a database outage; /readyz passes once this process has reached
+          # the database and stays passing (buildapp/health_controller.py), so
+          # a rollout waits for a pod that can serve, and a later outage never
+          # drops the only pod (and the static site with it) from the route.
           startupProbe:
             httpGet:
               path: /healthz

@@ -84,7 +84,7 @@ kubectl --context do-nyc1-production-hosting -n 8ly get pods -w
 
 Expected: `build-postgres-0` ready first, then the `build-app-migrate` Job
 completes (Skrift + buildapp migrations; the app pods never migrate on start,
-see `migrate.yaml`), then `build-app` ready once `/readyz` reaches the database,
+see `migrate.yaml`), then `build-app` ready once `/readyz` has reached the database,
 then `build-relay` ready once its `/health` probe answers. `build-app` may start
 before the Job finishes; its pages fail until the schema exists, which is fine
 before routing flips. Every later deploy runs the sequence in

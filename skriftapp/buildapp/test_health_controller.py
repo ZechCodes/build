@@ -41,12 +41,21 @@ def test_healthz_reports_ok():
     assert payload == {"status": "ok"}
 
 
-# ``/readyz`` gates traffic during a rolling deploy: it passes only when the pod
-# can reach the database, and needs no signed-in user and no guard.
+# ``/readyz`` gates traffic during a rolling deploy: it answers 503 until this
+# process has reached the database once, then 200 for the life of the process,
+# so a later database outage never takes the only pod (and with it the static
+# site) out of the route. It needs no signed-in user and no guard.
 
 
 def _ready_client(session_maker):
     return TestClient(asgi_app([ReadinessController], session_maker=session_maker))
+
+
+def _app_over(provide) -> Litestar:
+    return Litestar(
+        route_handlers=[ReadinessController],
+        dependencies={"db_session": Provide(provide)},
+    )
 
 
 def test_readyz_answers_200_when_the_database_answers():
@@ -56,14 +65,28 @@ def test_readyz_answers_200_when_the_database_answers():
     assert response.json() == {"status": "ok"}
 
 
-def test_readyz_answers_503_when_the_database_does_not():
-    app = Litestar(
-        route_handlers=[ReadinessController],
-        dependencies={"db_session": Provide(_unreachable_session)},
-    )
-    with TestClient(app) as client:
-        response = client.get("/readyz")
-    assert response.status_code == 503
+def test_readyz_answers_503_until_the_database_has_answered_once():
+    with TestClient(_app_over(_unreachable_session)) as client:
+        assert client.get("/readyz").status_code == 503
+        assert client.get("/readyz").status_code == 503
+
+
+def test_readyz_stays_200_once_the_database_has_answered():
+    session_maker = in_memory_session_maker()
+    database_up = [True]
+
+    async def sometimes_reachable() -> AsyncIterator[AsyncSession]:
+        if database_up[0]:
+            async with session_maker() as session:
+                yield session
+        else:
+            async with AsyncSession() as session:
+                yield session
+
+    with TestClient(_app_over(sometimes_reachable)) as client:
+        assert client.get("/readyz").status_code == 200
+        database_up[0] = False
+        assert client.get("/readyz").status_code == 200
 
 
 def test_readyz_has_no_guards():

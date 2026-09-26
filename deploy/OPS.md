@@ -45,12 +45,16 @@ Then run the `Verify the app is serving` curls from the `deploy-app` job in
 `.github/workflows/ci.yml`.
 
 The Deployment is `RollingUpdate` (`maxSurge: 1`, `maxUnavailable: 0`): the new
-pod starts beside the old one, takes traffic once `/readyz` answers (the
-database is reachable), and only then is the old pod taken out of the route.
-Its `preStop` sleep keeps it answering for 15 s while Traefik drops it, so no
-request meets a pod that has gone. A new pod that never gets ready leaves the
-old one serving; `rollout status` times out and the deploy fails with the site
-up.
+pod starts beside the old one, takes traffic once `/readyz` answers (this
+process has reached the database), and only then is the old pod taken out of
+the route. The old pod's `preStop` sleep keeps it answering for 15 s while
+Traefik drops it, so no request meets a pod that has gone. A new pod that never
+gets ready leaves the old one serving; `rollout status` times out and the
+deploy fails with the site up.
+
+`/readyz` is sticky: after its first success it answers 200 for the life of the
+process. A later database outage fails the app's pages but never takes the only
+pod out of the route, so the landing page, docs and installers stay up.
 
 Don't save Skrift's site settings (admin → settings) while a deploy rolls. Each
 pod caches them at start, and a save on the old pod never reaches the new

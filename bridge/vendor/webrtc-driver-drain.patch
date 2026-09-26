@@ -1,5 +1,5 @@
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index cea8455..826ee5b 100644
+index cea8455..f06cf41 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -83,6 +83,17 @@ const DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(86400); // 1 day
@@ -171,7 +171,7 @@ index cea8455..826ee5b 100644
      }
  
      async fn poll_timeout(&mut self) -> Instant {
-@@ -1857,4 +1915,729 @@ mod tests {
+@@ -1857,4 +1915,857 @@ mod tests {
          assert!(!is_link_local(&"fec0::1".parse::<IpAddr>().unwrap()));
          assert!(!is_link_local(&"2001:db8::1".parse::<IpAddr>().unwrap()));
      }
@@ -187,6 +187,22 @@ index cea8455..826ee5b 100644
 +            state: rtc::peer_connection::state::RTCPeerConnectionState,
 +        ) {
 +            if state == rtc::peer_connection::state::RTCPeerConnectionState::Connected {
++                self.0.store(true, Ordering::Release);
++            }
++        }
++    }
++
++    /// Records when ICE reaches `Connected`: the core reports it in the same events phase as the
++    /// selected pair, which is when a DTLS client starts its handshake.
++    struct IceConnected(Arc<std::sync::atomic::AtomicBool>);
++
++    #[async_trait::async_trait]
++    impl crate::peer_connection::PeerConnectionEventHandler for IceConnected {
++        async fn on_ice_connection_state_change(
++            &self,
++            state: rtc::peer_connection::state::RTCIceConnectionState,
++        ) {
++            if state == rtc::peer_connection::state::RTCIceConnectionState::Connected {
 +                self.0.store(true, Ordering::Release);
 +            }
 +        }
@@ -352,6 +368,118 @@ index cea8455..826ee5b 100644
 +                    std::thread::sleep(Duration::from_millis(1));
 +                }
 +                panic!("the DTLS handshake did not complete");
++            }));
++        }
++
++        /// The ClientHello is output the core gains in the events phase too: the bridge answers,
++        /// so its core is the DTLS client, and it starts the handshake when pumping its events
++        /// hands the selected pair to its DTLS handler. The far end here offers, as the browser
++        /// does, so it is the ICE agent that nominates. The pass that selects the pair must send
++        /// the ClientHello; the core's timers must not be what sends it.
++        #[test]
++        fn the_client_hello_leaves_in_the_pass_that_selects_the_pair() {
++            let rt = default_runtime().unwrap();
++            let runtime = rt.clone();
++            rt.block_on(Box::pin(async move {
++                let (mut inner, _rx) = new_test_peer_connection().await;
++                let ice_connected = Arc::new(AtomicBool::new(false));
++                Arc::get_mut(&mut inner).unwrap().handler =
++                    Arc::new(IceConnected(ice_connected.clone()));
++                let mut driver = PeerConnectionDriver::new(
++                    inner,
++                    Vec::<SocketAddr>::new(),
++                    Vec::new(),
++                    MulticastDnsMode::Disabled,
++                    Vec::new(),
++                    RTCIceTransportPolicy::All,
++                    false,
++                );
++
++                let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++                let local = socket.local_addr().unwrap();
++                driver
++                    .udp_sockets
++                    .insert(local, runtime.wrap_udp_socket(socket).unwrap());
++                let far_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++                let far = far_socket.local_addr().unwrap();
++                far_socket.set_nonblocking(true).unwrap();
++
++                let mut peer = rtc::peer_connection::RTCPeerConnectionBuilder::new()
++                    .build()
++                    .unwrap();
++                {
++                    let mut core = driver.inner.core.lock().await;
++                    peer.create_data_channel("app", None).unwrap();
++                    peer.add_local_candidate(candidate(far, "host")).unwrap();
++                    let offer = peer.create_offer(None).unwrap();
++                    peer.set_local_description(offer.clone()).unwrap();
++                    core.set_remote_description(offer).unwrap();
++                    core.add_local_candidate(candidate(local, "host")).unwrap();
++                    let answer = core.create_answer(None).unwrap();
++                    core.set_local_description(answer.clone()).unwrap();
++                    peer.set_remote_description(answer).unwrap();
++                    peer.add_remote_candidate(candidate(local, "host")).unwrap();
++                    core.add_remote_candidate(candidate(far, "host")).unwrap();
++                    core.handle_timeout(Instant::now()).unwrap();
++                }
++                peer.handle_timeout(Instant::now()).unwrap();
++
++                let mut buf = [0u8; 2048];
++                let start = Instant::now();
++                while start.elapsed() < Duration::from_secs(5) {
++                    driver.poll_pass().await.unwrap();
++                    if ice_connected.load(Ordering::Acquire) {
++                        let mut sent = Vec::new();
++                        while let Ok((n, _)) = far_socket.recv_from(&mut buf) {
++                            sent.push(buf[..n].to_vec());
++                        }
++                        let next_timer_in = driver
++                            .poll_timeout()
++                            .await
++                            .saturating_duration_since(Instant::now());
++                        // A DTLS handshake record (22) carrying a ClientHello (1).
++                        assert!(
++                            sent.iter().any(|datagram| datagram.len() > 13
++                                && datagram[0] == 22
++                                && datagram[13] == 1),
++                            "the pass that selected the pair returned without sending the \
++                             ClientHello; it would have waited {next_timer_in:?} for the next \
++                             timer"
++                        );
++                        return;
++                    }
++
++                    // The far end reads what the driver sent and answers through its socket arm.
++                    while let Ok((n, _)) = far_socket.recv_from(&mut buf) {
++                        peer.handle_read(TaggedBytesMut {
++                            now: Instant::now(),
++                            transport: TransportContext {
++                                local_addr: far,
++                                peer_addr: local,
++                                ecn: None,
++                                transport_protocol: TransportProtocol::UDP,
++                            },
++                            message: BytesMut::from(&buf[..n]),
++                        })
++                        .unwrap();
++                    }
++                    while peer.poll_event().is_some() {}
++                    while let Some(packet) = peer.poll_write() {
++                        let len = packet.message.len();
++                        driver
++                            .deliver_udp_batch(&packet.message, len, len, local, far)
++                            .await;
++                    }
++                    let now = Instant::now();
++                    if driver.poll_timeout().await <= now {
++                        driver.handle_timeout(now).await.unwrap();
++                    }
++                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
++                        peer.handle_timeout(now).unwrap();
++                    }
++                    std::thread::sleep(Duration::from_millis(1));
++                }
++                panic!("ICE did not connect");
 +            }));
 +        }
 +    }

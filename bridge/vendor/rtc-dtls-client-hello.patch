@@ -1,0 +1,80 @@
+diff --git a/rtc/src/peer_connection/handler/dtls.rs b/rtc/src/peer_connection/handler/dtls.rs
+index 4215b8b..ffcbc57 100644
+--- a/rtc/src/peer_connection/handler/dtls.rs
++++ b/rtc/src/peer_connection/handler/dtls.rs
+@@ -39,6 +39,20 @@ impl DtlsHandlerContext {
+             event_outs: VecDeque::new(),
+         }
+     }
++
++    /// Queue what the DTLS endpoint has to send, for the handlers below to carry out.
++    fn queue_transmits(&mut self) {
++        let Some(dtls_endpoint) = self.dtls_transport.dtls_endpoint.as_mut() else {
++            return;
++        };
++        while let Some(transmit) = dtls_endpoint.poll_transmit() {
++            self.write_outs.push_back(TaggedRTCMessageInternal {
++                now: transmit.now,
++                transport: transmit.transport,
++                message: RTCMessageInternal::Dtls(DTLSMessage::Raw(transmit.message)),
++            });
++        }
++    }
+ }
+ 
+ /// DtlsHandler implements DTLS Protocol handling
+@@ -211,13 +225,7 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
+                 }
+             }
+ 
+-            while let Some(transmit) = dtls_endpoint.poll_transmit() {
+-                self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
+-                    now: transmit.now,
+-                    transport: transmit.transport,
+-                    message: RTCMessageInternal::Dtls(DTLSMessage::Raw(transmit.message)),
+-                });
+-            }
++            self.ctx.queue_transmits();
+ 
+             if let Some((local_srtp_context, remote_srtp_context)) = srtp_contexts {
+                 self.ctx
+@@ -273,13 +281,7 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
+                 .ok_or(Error::ErrDtlsTransportNotStarted)?;
+ 
+             dtls_endpoint.write(msg.transport.peer_addr, &dtls_message)?;
+-            while let Some(transmit) = dtls_endpoint.poll_transmit() {
+-                self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
+-                    now: transmit.now,
+-                    transport: transmit.transport,
+-                    message: RTCMessageInternal::Dtls(DTLSMessage::Raw(transmit.message)),
+-                });
+-            }
++            self.ctx.queue_transmits();
+         } else {
+             // Bypass
+             debug!("Bypass dtls write {:?}", msg.transport.peer_addr);
+@@ -310,6 +312,9 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
+                         dtls_handshake_config,
+                         None,
+                     )?;
++                    // connect() queues the ClientHello. Queue it for sending now: left in the
++                    // endpoint, it waits for the next handle_timeout, ICE's next check tick.
++                    self.ctx.queue_transmits();
+                 };
+             }
+         } else {
+@@ -331,13 +336,7 @@ impl<'a> sansio::Protocol<TaggedRTCMessageInternal, TaggedRTCMessageInternal, RT
+         for remote in remotes {
+             dtls_endpoint.handle_timeout(remote, now)?;
+         }
+-        while let Some(transmit) = dtls_endpoint.poll_transmit() {
+-            self.ctx.write_outs.push_back(TaggedRTCMessageInternal {
+-                now: transmit.now,
+-                transport: transmit.transport,
+-                message: RTCMessageInternal::Dtls(DTLSMessage::Raw(transmit.message)),
+-            });
+-        }
++        self.ctx.queue_transmits();
+ 
+         Ok(())
+     }

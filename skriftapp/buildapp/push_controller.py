@@ -45,6 +45,7 @@ from buildapp.models import Device
 from buildapp.request_body import read_json_object
 from buildapp.session_auth import require_user
 
+NOTIFY_ROUTE_PATH = "/api/push/notify"
 
 # The freshness window alone leaves a captured signed notify replayable for its
 # whole span (notification-spam). Remember recently seen (device, timestamp,
@@ -127,7 +128,7 @@ class PushController(Controller):
 
     # ----- public (bridge-facing, Ed25519-signed) ------------------------------
 
-    @post("/api/push/notify")
+    @post(NOTIFY_ROUTE_PATH)
     async def notify(self, request: Request, db_session: AsyncSession) -> Response:
         """A bridge reports that a task needs its human. Pushes a content-free
         ``{task_id, kind, url}`` payload (opaque id + generic kind, deep-linking

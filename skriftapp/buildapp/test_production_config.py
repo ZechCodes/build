@@ -16,6 +16,7 @@ from skrift.ratelimit import RateLimiter
 
 from buildapp.devices_controller import HEARTBEAT_ROUTE_PATH
 from buildapp.invites import INVITE_PATH_PREFIX
+from buildapp.push_controller import NOTIFY_ROUTE_PATH
 from buildapp.rtc_controller import ICE_SERVERS_ROUTE_PATH
 from buildapp.transport_controller import REPORT_ROUTE_PATH
 from buildapp.waitlist_admin import SEND_PATH, WAITLIST_ADMIN_PATH
@@ -32,10 +33,11 @@ APP_STATIC_RATE_LIMIT_WINDOWS = [(1200, 60.0)]
 SPA_API_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
 # A bridge beats twice a minute, and a beat refused in passing is tried again
-# every five seconds (bridge/src/presence.rs): ten bridges behind one address
-# all redialing through an api deploy, or sixty of them beating steadily.
-BRIDGE_BEAT_RATE_LIMIT_WINDOWS = [(120, 60.0)]
-BRIDGE_REPORT_RATE_LIMIT_WINDOWS = [(240, 60.0)]
+# after about 5, 10 and 20 s (bridge/src/presence.rs): fifty bridges behind one
+# address all redialing through an api deploy (#173).
+BRIDGE_BEAT_RATE_LIMIT_WINDOWS = [(300, 60.0)]
+BRIDGE_REPORT_RATE_LIMIT_WINDOWS = [(600, 60.0)]
+BRIDGE_NOTIFY_RATE_LIMIT_WINDOWS = [(300, 60.0)]
 INVITE_CONTROLLERS = (
     "buildapp.invites_controller:InvitesController",
     "buildapp.invites_admin:InvitesAdminController",
@@ -171,22 +173,27 @@ def test_pages_and_the_spa_have_budgets_for_a_shared_address(
 
 
 @pytest.mark.asyncio
-async def test_a_bridges_beats_and_reports_have_budgets_of_their_own():
-    """One home's address carries its bridges' heartbeats and transport reports
-    and the people there browsing, and all of it shared the 60/minute default:
+async def test_a_bridges_signed_posts_have_budgets_of_their_own():
+    """One home's address carries its bridges' heartbeats, transport reports
+    and push notifies and the people there browsing, and all of it shared the 60/minute default:
     14 beats refused 429 in one evening (#131). The device-signed posts count
     against budgets of their own, so a household spending its default budget
     leaves its bridges' beats untouched."""
     rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
     beat_policy = rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "POST")
     report_policy = rate_limit.resolve(REPORT_ROUTE_PATH, "POST")
+    notify_policy = rate_limit.resolve(NOTIFY_ROUTE_PATH, "POST")
     browsing_policy = rate_limit.resolve("/api/devices", "GET")
     limiter = RateLimiter(redis_client=None)
     household = "203.0.113.9"
 
     assert beat_policy.limits == BRIDGE_BEAT_RATE_LIMIT_WINDOWS
     assert report_policy.limits == BRIDGE_REPORT_RATE_LIMIT_WINDOWS
-    assert len({beat_policy.name, report_policy.name, browsing_policy.name}) == 3
+    assert notify_policy.limits == BRIDGE_NOTIFY_RATE_LIMIT_WINDOWS
+    assert (
+        len({beat_policy.name, report_policy.name, notify_policy.name, browsing_policy.name})
+        == 4
+    )
 
     (browsing_limit, _), = browsing_policy.limits
     for _ in range(browsing_limit):
@@ -196,7 +203,7 @@ async def test_a_bridges_beats_and_reports_have_budgets_of_their_own():
     assert not (
         await limiter.check(browsing_policy.name, household, browsing_policy.limits)
     ).allowed
-    for _ in range(120):
+    for _ in range(300):
         assert (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
     assert not (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
     assert rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "GET").name == browsing_policy.name

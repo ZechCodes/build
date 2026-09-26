@@ -117,26 +117,39 @@ rate_limit:
     # A bridge's device-signed posts, each on a budget of its own: they shared
     # the 60/minute default with everyone at the same address, and a household
     # browsing through a bridge's reconnects cost it its heartbeats (14 refused
-    # 429 in one evening, #131). A bridge beats twice a minute and retries a
-    # beat refused in passing every 5 s, so 120 is ten bridges behind one
-    # address redialing through an api deploy at once.
+    # 429 in one evening, #131). Sized for 50 bridges behind one address, one
+    # per person. A bridge beats twice a minute; a beat refused in passing is
+    # tried again after about 5, 10 and 20 s, so a bridge redialing through an
+    # api deploy makes at most 4 in its first minute: 50 x 4 = 200.
     - name: bridge_heartbeat
       match:
         path: /api/devices/heartbeat
         method: POST
       key: ip
       limits:
-        - limit: 120
+        - limit: 300
           per: minute
-    # A few reports per session (minted, carrying, channels lost, ended), and a
-    # carrying again for every ICE restart.
+    # About 5 reports per session (minted, carrying, a carrying again for an
+    # ICE restart or the move off TURN, channels lost, ended). 50 people whose
+    # sessions all drop and redial in the same minute, two devices each, is
+    # 50 x 2 x 5 = 500.
     - name: bridge_transport_report
       match:
         path: /api/transport/report
         method: POST
       key: ip
       limits:
-        - limit: 240
+        - limit: 600
+          per: minute
+    # A bridge pushes at most once per task a minute (NOTIFY_DEBOUNCE_SECONDS);
+    # 50 bridges each with 6 tasks needing their person in the same minute.
+    - name: bridge_push_notify
+      match:
+        path: /api/push/notify
+        method: POST
+      key: ip
+      limits:
+        - limit: 300
           per: minute
     # An invite link is a secret; a caller walking the token space gets 30 tries a
     # minute and nothing else.

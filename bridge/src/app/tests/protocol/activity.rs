@@ -513,7 +513,9 @@ async fn a_call_an_interrupted_turn_left_open_closes_as_unanswered() {
     let rows = wait_for(Duration::from_secs(10), || {
         let s = state.lock().unwrap();
         let rows = tool_calls_of(primary_thread(&s.runs["run-unanswered"].agents));
-        (rows.len() == 2).then_some(rows)
+        // The call row appears before its result. Wait for the answer that
+        // this assertion is about, not just for the second row to exist.
+        (rows.len() == 2 && rows[1].1.is_some()).then_some(rows)
     })
     .await
     .expect("the next turn's call pairs into a row of its own");

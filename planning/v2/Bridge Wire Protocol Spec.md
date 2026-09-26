@@ -712,9 +712,13 @@ carries the page where the whole body would ride (`content_b64`, `patch`) and
 `end` being the next page's offset and equal to `total` on the last. A page
 ends after its last line end, so each is whole lines a client paints alone;
 only a line longer than a page is cut, at a character boundary. An offset past
-the end answers an empty page at the end; one inside a character (the end of
-a page of an earlier version of the body) answers from that character, under
-the version it was cut from, so the client sees the body moved.
+the end answers an empty page at the end. On the patch reads (`git.diff`,
+`git.show`, `git.changeset_diff`), whose bodies are text, an offset inside a
+character (the end of a page of an earlier version of the patch) answers from
+that character, under the version it was cut from, so the client sees the
+body moved. `fs.read` pages any bytes, text or not, and reads from the offset
+asked for exactly; a page of a changed file names another version all the
+same.
 `git.diff` and `git.changeset_diff` take exactly one path beside `range`
 (`files[0]`, or the top-level `patch`, is that path's page, under the same
 `content_key` and `diff_key` a whole read answers); `git.show` refuses `range`

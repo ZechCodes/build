@@ -267,6 +267,39 @@ describe("a commit patch too big for one record", () => {
     pane.dispose();
   });
 
+  // A lockfile's pages end inside a file folded into the collapsed
+  // generated-files group: with none of its rows drawn, nothing reads on
+  // until the reader opens the group and reads down to the file's end.
+  it("reads no page past a file in the collapsed generated-files group until the reader opens it (#95 round 3)", async () => {
+    await greetPaging();
+    await seedShape();
+    const lockPatch = `${patchFor("package-lock.json", bigLines)}${patchFor("src/tail.js", "the last file")}`;
+    const callRpc = commitRpc(lockPatch, { cutAt: lockPatch.indexOf("line 2000 ") });
+    const { container, pane } = await mountPane(callRpc);
+    await openCommit(container);
+    const host = container.querySelector(".cdetail-host");
+    for (let scrolls = 0; scrolls < 5; scrolls++) {
+      host.dispatchEvent(new window.Event("scroll"));
+      await settle();
+    }
+    const ranged = () => showCalls(callRpc).filter((params) => params.range).map((params) => params.range.offset);
+    expect(container.querySelector(".noisehead")).not.toBeNull();
+    expect(container.querySelector('.file[data-key*="package-lock.json"]')).toBeNull();
+    expect(ranged()).toEqual([0]);
+
+    container.querySelector(".noisehead").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    host.dispatchEvent(new window.Event("scroll"));
+    await settle();
+    // Opened, the lockfile is drawn capped: still nothing past its preview.
+    expect(ranged()).toEqual([0]);
+
+    container.querySelector('.file[data-key*="package-lock.json"] .dscroll').dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await settle();
+    await vi.waitFor(() => expect(ranged().length).toBeGreaterThan(1), READ_THROUGH);
+    pane.dispose();
+  });
+
   // A page that lands after the commit's head was let go of — a pass dropped
   // the commit once it was published — is not kept without a head, and the
   // pane stops holding the commit it no longer has a record of.

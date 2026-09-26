@@ -1,0 +1,9 @@
+# #166 measurement only: the liveness stack on its own ports so it stands
+# beside liveness-gate (8128/18128) and the default stack (8090/18090).
+services:
+  app:
+    ports: !override
+      - "8166:8080"
+  relay:
+    ports: !override
+      - "18166:8799"

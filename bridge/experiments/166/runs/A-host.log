@@ -1,0 +1,40 @@
+02:53:48 drain166: run A-host  0ab6fbddcb9f6e25
+02:53:48 drain166: loadavg before: 9.33 15.50 16.08 7/3786 3502939
+02:53:48 drain166: counters before: bridge_rx_tx=1398 1323 turn_rx_tx=2187 2023
+ Container drain166-qa-run-661a867f6407 Creating 
+ Container drain166-qa-run-661a867f6407 Created 
+    0.0s coturn 172.20.0.5 = turn:172.20.0.5:3478?transport=udp; soak 500000 ms, ping every 2000 ms, deadline 3000 ms
+    0.2s peer → connecting
+    0.2s ice → checking
+    0.2s gathering → complete
+    0.2s gathering → complete
+    0.2s ice → connected
+    0.2s ice → connected
+    0.4s peer → connected
+    0.4s channels open; local candidates [host,srflx,relay] bridge's in answer [] trickled kept [host,relay] dropped []
+    0.4s device 42fc0a3d59cf (0f78c5a6-4f6b-4b3e-966a-3092b5f54608); rendezvous closed; pair host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)
+    0.4s push {"can_install":false,"development_build":true,"last_checked_at":"2026-09-26T02:44:53.178905431Z","last_error":"HTTP status client error (404 Not Found) for url (https://api.github.com/repos/ZechCodes/
+   60.4s progress: pings=31 last-minute p50=1 ms max=2 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  120.4s progress: pings=61 last-minute p50=1 ms max=2 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  180.4s progress: pings=91 last-minute p50=2 ms max=3 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  240.4s progress: pings=121 last-minute p50=2 ms max=4 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  300.4s progress: pings=151 last-minute p50=1 ms max=2 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  360.4s progress: pings=181 last-minute p50=1 ms max=4 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  420.5s progress: pings=211 last-minute p50=1 ms max=2 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+  480.5s progress: pings=241 last-minute p50=1 ms max=2 ms  timeouts=0 drops=0 ice=connected pair=host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)  loop-delay max=22 ms
+
+──────── liveness summary ────────
+load         LOAD_TERM_THREADS=0 LOAD_TERM_FLOOD=0 LOAD_AGENT_THREADS=0 LOAD_AGENTS=0 PROBE_STATS=0 HAMMER_ISSUES=0 SOAK_MS=500000 RELAY_BOTH_ENDS=0 ICE_TRANSPORT_POLICY=all
+path         host/host (local host 172.20.0.6:46258 → remote host 172.20.0.4:54739)   !! NOT relay/relay
+pings        samples=250 answered=250 p50=1 ms p95=2 ms max=4 ms
+             over 500 ms=0  timeouts(>3000 ms)=0  never answered=0  refused=0
+ice          disconnected=0  states: 0.2s peer=connecting | 0.2s ice=checking | 0.2s gathering=complete | 0.2s gathering=complete | 0.2s ice=connected | 0.2s ice=connected | 0.4s peer=connected
+drops        0
+pushes       soak session 1 [bridge.update_status]  other sessions {}
+harness      event-loop delay p99=20 ms max=22 ms (a stall here is the harness's, not the bridge's)
+rtts         [1.47,1.52,1.58,1.37,1.81,1.95,1.34,1.27,1.24,1.25,1.16,1.42,1.25,1.3,1.33,1.35,1.3,1.21,1.21,1.42,1.33,1.63,1.37,1.45,1.24,1.14,1.34,1.38,1.59,1.13,1.27,1.35,1.19,1.27,1.35,1.62,1.19,1.34,1.25,1.33,1.26,1.38,1.37,1.53,1.1,1.28,1.37,1.33,1.34,1.2,1.17,1.19,1.22,1.1,1.1,1.13,1.23,1.06,1.16,1.18,1.23,1.27,1.68,1.62,2.03,1.94,1.8,1.69,1.18,1.22,1.67,1.16,1.21,1.46,1.66,1.57,1.26,1.25,1.12,1.47,2.63,1.51,1.51,1.47,1.7,2.06,2.07,1.8,1.94,1.32,2.04,1.73,1.64,1.54,1.87,1.62,1.82,1.55,1.89,2.59,1.35,2.71,2.06,1.95,1.86,1.5,1.91,2.1,1.64,1.72,1.93,2.04,4.04,2.63,2.39,1.83,3.23,1.21,1.74,1.54,1.57,1.81,1.64,1.67,1.75,1.18,1.39,1.22,1.91,1.15,1.5,1.35,1.53,1.25,1.63,1.28,1.39,1.47,1.47,1.32,1.43,1.77,1.6,1.25,1.8,1.32,1.24,1.13,1.23,1.24,1.17,1.07,1.16,1.56,1.2,1.31,1.6,1.31,1.95,1.26,1.55,1.35,2.29,3.88,1.58,1.2,1.01,1.15,1.22,1.22,1.09,1.15,1.05,1.11,1.13,1.69,1.66,1.24,1.46,1.84,1.26,1.37,1.41,1.8,1.73,1.98,1.2,1.15,1.23,1.13,1.37,1.14,1.08,1.21,1.28,1.06,1.1,0.98,1.25,1.18,1.17,1.29,1.06,1.35,1.02,1.41,1.2,1.41,1.22,1.06,1.58,1.31,1.27,1.41,1.3,1.42,1.21,1.32,1.41,1.49,1.42,1.35,1.06,1.08,1.32,1.37,1.36,1.26,1.39,1.13,1.06,1.2,1.13,1.82,1.88,1.33,1.46,1.6,1.19,1.49,1.47,1.17,1.37,1.06,1.38,1.51,1.15,1.41,1.31,1.34]
+RESULT       INCONCLUSIVE (clean, but not relay/relay)
+
+soak exit 3
+03:02:10 drain166: counters after: bridge_rx_tx=2701 2590 turn_rx_tx=2319 2053
+03:02:10 drain166: loadavg after: 5.93 11.06 13.97 4/4133 4054120

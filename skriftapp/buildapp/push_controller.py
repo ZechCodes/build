@@ -49,7 +49,9 @@ from buildapp.session_auth import require_user
 # The freshness window alone leaves a captured signed notify replayable for its
 # whole span (notification-spam). Remember recently seen (device, timestamp,
 # signature) tuples and refuse duplicates — same scheme as the relay's device
-# auth. In-process: the api runs single-replica (Recreate strategy).
+# auth. In-process: the api runs one replica. A deploy starts the new pod with
+# an empty guard, and for the few seconds both pods serve, a notify one pod has
+# seen can still reach the other once (deploy/k8s/app.yaml, #168).
 _notify_replay_guard = web_push.NotifyReplayGuard()
 
 

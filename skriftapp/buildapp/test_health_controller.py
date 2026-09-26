@@ -6,10 +6,16 @@ therefore be unauthenticated, database-free, and always 200."""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 
+from litestar import Litestar
+from litestar.di import Provide
 from litestar.handlers import HTTPRouteHandler
+from litestar.testing import TestClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from buildapp.health_controller import HealthController
+from buildapp.db_test_support import asgi_app, in_memory_session_maker
+from buildapp.health_controller import HealthController, ReadinessController
 
 
 def _healthz_handler() -> HTTPRouteHandler:
@@ -33,3 +39,39 @@ def test_healthz_has_no_guards_and_no_db_dependency():
 def test_healthz_reports_ok():
     payload = asyncio.run(HealthController.healthz.fn(None))
     assert payload == {"status": "ok"}
+
+
+# ``/readyz`` gates traffic during a rolling deploy: it passes only when the pod
+# can reach the database, and needs no signed-in user and no guard.
+
+
+def _ready_client(session_maker):
+    return TestClient(asgi_app([ReadinessController], session_maker=session_maker))
+
+
+def test_readyz_answers_200_when_the_database_answers():
+    with _ready_client(in_memory_session_maker()) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_readyz_answers_503_when_the_database_does_not():
+    app = Litestar(
+        route_handlers=[ReadinessController],
+        dependencies={"db_session": Provide(_unreachable_session)},
+    )
+    with TestClient(app) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+
+
+def test_readyz_has_no_guards():
+    assert not ReadinessController.readyz.guards
+
+
+async def _unreachable_session() -> AsyncIterator[AsyncSession]:
+    """A real session bound to no database: every statement fails, as it does
+    for a pod whose database is gone."""
+    async with AsyncSession() as session:
+        yield session

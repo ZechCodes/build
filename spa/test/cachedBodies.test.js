@@ -125,3 +125,141 @@ describe("createCachedBodies", () => {
     expect(bodies.has("a.js")).toBe(false);
   });
 });
+
+describe("createCachedBodies with pages (#95)", () => {
+  const lines = (count) => Array.from({ length: count }, (_, index) => `+line ${index}\n`).join("");
+  const WHOLE = lines(400);
+
+  /** A wire whose whole answer is cut at `cutAt` characters, and whose pages
+   *  are cut from the whole patch by offset, named by `version()`. */
+  const pagedOver = (fetches, pageReads, { canPage = true, cutAt = 1000, version = () => "v1" } = {}) =>
+    import("../src/core/bodyPages.js").then((pages) =>
+      createCachedBodies({
+        addressOf: address,
+        fetchMissing: async (keys) => {
+          fetches.push([...keys]);
+          return keys.map((key) => ({ path: key, content_key: "k1", patch: WHOLE.slice(0, cutAt), truncated: true }));
+        },
+        valueOf: (item) => ({ key: item.path, value: { content_key: item.content_key, patch: item.patch, truncated: item.truncated } }),
+        cacheable: (value) => !value.truncated,
+        pages: {
+          field: "patch",
+          split: (value, of) => pages.textPagesOf(value.patch, { of, cut: value.truncated, bytes: 512 }),
+          readPage: async (_key, offset) => {
+            pageReads.push(offset);
+            if (!canPage) return null;
+            return pages.textPagesOf(WHOLE, { of: version(), bytes: 512 }).find((page) => page.offset === offset) || null;
+          },
+        },
+      }));
+
+  it("keeps a body it may not store whole as a head and the bridge's own pages, and paints it from them", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const reads = [];
+    const bodies = await pagedOver([], reads);
+    await bodies.ensure(["big.txt"]);
+
+    expect(reads).toEqual([0]);
+    const head = await cache.readCached(address("big.txt"));
+    expect(head.value).toEqual({ content_key: "k1", truncated: true, paged: true, of: "v1" });
+    const held = bodies.read("big.txt");
+    const first = pages.textPagesOf(WHOLE, { of: "v1", bytes: 512 })[0];
+    expect(held.patch).toBe(first.body);
+    expect(held.pages).toEqual({ end: first.end, total: WHOLE.length, complete: false });
+    bodies.dispose();
+  });
+
+  it("splits the answer it has into pages when the bridge cannot page", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const bodies = await pagedOver([], [], { canPage: false });
+    await bodies.ensure(["big.txt"]);
+    const head = await cache.readCached(address("big.txt"));
+    expect(head.value.of).toBe("whole");
+    const held = bodies.read("big.txt");
+    expect(held.patch).toBe(WHOLE.slice(0, WHOLE.lastIndexOf("\n", 999) + 1));
+    expect(held.pages).toEqual({ end: held.patch.length, total: null, complete: false });
+    expect(await bodies.more("big.txt")).toBe(false);
+    bodies.dispose();
+  });
+
+  it("reads the next page from where the held pages end, into the cache, to the end", async () => {
+    const reads = [];
+    const bodies = await pagedOver([], reads);
+    await bodies.ensure(["big.txt"]);
+    const before = bodies.read("big.txt").pages.end;
+    expect(await bodies.more("big.txt")).toBe(true);
+    expect(reads).toEqual([0, before]);
+    while (!bodies.read("big.txt").pages.complete) expect(await bodies.more("big.txt")).toBe(true);
+    expect(bodies.read("big.txt").patch).toBe(WHOLE);
+    expect(await bodies.more("big.txt")).toBe(false);
+    bodies.dispose();
+  });
+
+  it("paints the pages another mount left, without the wire", async () => {
+    const first = await pagedOver([], []);
+    await first.ensure(["big.txt"]);
+    await first.more("big.txt");
+    const heldBefore = first.read("big.txt");
+    first.dispose();
+
+    const fetches = [];
+    const second = await pagedOver(fetches, []);
+    await second.ensure(["big.txt"]);
+    expect(fetches).toEqual([]);
+    expect(second.read("big.txt")).toEqual(heldBefore);
+    second.dispose();
+  });
+
+  it("fetches the body again when a page says the patch moved, though its content key did not", async () => {
+    let version = "v1";
+    const fetches = [];
+    const bodies = await pagedOver(fetches, [], { version: () => version });
+    await bodies.ensure(["big.txt"]);
+    version = "v2";
+    expect(await bodies.more("big.txt")).toBe(false);
+    expect(fetches).toEqual([["big.txt"], ["big.txt"]]);
+    expect((await cache.readCached(address("big.txt"))).value.of).toBe("v2");
+    bodies.dispose();
+  });
+
+  it("keeps no page for a head that was replaced while the page was read", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const all = pages.textPagesOf(WHOLE, { of: "v1", bytes: 512 });
+    const bodies = createCachedBodies({
+      addressOf: address,
+      fetchMissing: async (keys) => keys.map((key) => ({ path: key, patch: WHOLE.slice(0, 1000), truncated: true })),
+      valueOf: (item) => ({ key: item.path, value: { patch: item.patch, truncated: item.truncated } }),
+      cacheable: (value) => !value.truncated,
+      pages: {
+        field: "patch",
+        split: () => [],
+        readPage: async (_key, offset) => {
+          if (offset) await cache.writeCached(address("big.txt"), { patch: "someone else's", paged: false });
+          return all.find((page) => page.offset === offset);
+        },
+      },
+    });
+    await bodies.ensure(["big.txt"]);
+    expect(await bodies.more("big.txt")).toBe(false);
+    expect(await cache.cachedSubKeys("dev-1", "run-1", pages.PAGE_RECORD_KIND)).toEqual(["filediff:big.txt@0"]);
+    bodies.dispose();
+  });
+
+  it("lets the pages go when the body fits one record again", async () => {
+    const pages = await import("../src/core/bodyPages.js");
+    const bodies = await pagedOver([], []);
+    await bodies.ensure(["big.txt"]);
+    bodies.dispose();
+    const direct = createCachedBodies({
+      addressOf: address,
+      fetchMissing: async (keys) => keys.map((key) => ({ path: key, patch: "small" })),
+      valueOf: (item) => ({ key: item.path, value: { content_key: "k3", patch: item.patch } }),
+      pages: { field: "patch", split: () => [] },
+    });
+    await direct.ensure(["big.txt"]);
+    await direct.ensure(["big.txt"]);
+    expect(direct.read("big.txt")).toEqual({ content_key: "k3", patch: "small" });
+    expect(await cache.cachedSubKeys("dev-1", "run-1", pages.PAGE_RECORD_KIND)).toEqual([]);
+    direct.dispose();
+  });
+});

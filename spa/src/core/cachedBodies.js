@@ -16,35 +16,92 @@
 //
 // `ensure` is the only place that waits. `read` and `has` answer from what is
 // held right now, because a paint asks them.
+//
+// A body `cacheable` refuses — over its cap, or cut short by the bridge — is
+// kept in pages instead (#95, core/bodyPages.js), when the configuration says
+// how (`pages`):
+//   `field`               the value's field the body's text rides in
+//   `split(value, of)`    the answer cut into pages of `of`, each `{ of,
+//                         offset, end, total, body }`
+//   `join(pages)`         the pages' text, joined (patch text by default)
+//   `readPage(key, offset, value)`  the page a bridge cuts from `offset`, or
+//                         null where it cannot page (asked when reading, so
+//                         a bridge that greets later is read on from)
+// The record then holds the value without its text, `paged: true`, and `of`,
+// which body its pages are (the head). Where the bridge can page, the pages
+// are its own from the first, named by the version it gives them — a content
+// key does not name a patch, which moves with HEAD while the file stands
+// still; where it cannot, the answer is split here and named `WHOLE_ANSWER`.
+// Each page is a record of its own, and `read` answers the value with the
+// held pages joined into `field` and `pages: { end, total, complete }`.
+// `more(key)` reads the next page. Nothing is ever painted from an answer.
 
 import { deleteCached, readCached, subscribeCache, writeCached } from "./localCache.js";
+import {
+  dropBodyPages,
+  joinedText,
+  pageFollows,
+  readBodyPages,
+  subscribeBodyPages,
+  writeBodyPage,
+  writeBodyPages,
+} from "./bodyPages.js";
+
+/** What the pages of an answer split here are of: an answer read whole names
+ *  no version, and any page a bridge answers later is of one, so it is never
+ *  joined to these. */
+export const WHOLE_ANSWER = "whole";
 
 export function createCachedBodies({
   addressOf,
   fetchMissing,
   valueOf,
   cacheable = () => true,
+  pages = null,
   onChange = () => {},
 }) {
   const held = new Map(); // key → body
-  const direct = new Map(); // oversized response bodies, never stored (#94; paging is #95)
   const consulted = new Set(); // keys whose stored record has been looked at
   const observedAt = new Map(); // key → write stamp seen before a fetch
   const unwatches = new Map();
   const rereads = new Map();
   let disposed = false;
 
+  const join = pages?.join || joinedText;
+  const joined = new Map(); // key → { headAt, found, text }: the pages read so far, joined
+
+  /** The held pages of a head joined, read on from what was joined under the
+   *  same head before: its pages never change while it stands (a head is
+   *  written after its pages, every time they are replaced), so a reader
+   *  scrolling a long body costs each page once. Text joins by appending;
+   *  anything else is joined whole again. */
+  const joinPages = async (key, at, record) => {
+    const before = joined.get(key);
+    const known = before?.headAt === record.at ? before : null;
+    const found = await readBodyPages(at, record.value.of, known?.found);
+    const onward = known && found.pages.length >= known.found.pages.length && join === joinedText;
+    const text = onward ? known.text + joinedText(found.pages.slice(known.found.pages.length)) : join(found.pages);
+    joined.set(key, { headAt: record.at, found, text });
+    return { found, text };
+  };
+
+  /** A head's value with the pages the cache holds joined back into it. */
+  const withPages = async (key, at, record) => {
+    const head = record.value;
+    const { found, text } = await joinPages(key, at, record);
+    const { end, total, complete } = found;
+    return { ...record, value: { ...head, [pages.field]: text, pages: { end, total, complete } } };
+  };
+
   const storedRecord = async (key) => {
     const at = addressOf(key);
-    return at ? readCached(at) : undefined;
+    const record = at ? await readCached(at) : undefined;
+    return record?.value?.paged && pages ? withPages(key, at, record) : record;
   };
 
   const takeRecord = (key, record) => {
     observedAt.set(key, record?.at);
-    if (record) {
-      direct.delete(key);
-      held.set(key, record.value);
-    }
+    if (record) held.set(key, record.value);
     else held.delete(key);
     return Boolean(record);
   };
@@ -72,7 +129,13 @@ export function createCachedBodies({
   const watch = (key) => {
     if (disposed || unwatches.has(key)) return;
     const at = addressOf(key);
-    if (at) unwatches.set(key, subscribeCache(at, () => void reread(key)));
+    if (!at) return;
+    const unwatchRecord = subscribeCache(at, () => void reread(key));
+    const unwatchPages = pages ? subscribeBodyPages(at, () => void reread(key)) : () => {};
+    unwatches.set(key, () => {
+      unwatchRecord();
+      unwatchPages();
+    });
   };
 
   /** Fill from the local cache every key that has never been looked up there,
@@ -101,26 +164,92 @@ export function createCachedBodies({
       await reread(stringKey);
       return stringKey;
     }
-    if (!cacheable(value)) {
-      // #94: paint an oversized or cut response only in this mount; #95 adds
-      // pages. Remove an older record so a revisit cannot show stale content.
-      if (at) {
-        await deleteCached([at]);
-        await rereads.get(stringKey);
-      }
-      if (disposed) return null;
-      direct.set(stringKey, value);
-      onChange(stringKey);
-      return stringKey;
-    }
     if (!at) {
       held.set(stringKey, value);
       onChange(stringKey);
       return stringKey;
     }
-    await writeCached(at, value);
+    await storeFetched(stringKey, at, value);
     await reread(stringKey, false);
     return stringKey;
+  };
+
+  /** Keep one answer: whole when it fits, in pages when it does not, and not
+   *  at all when this configuration has no pages to keep it in — the older
+   *  record goes, so a revisit cannot show what the file said before. */
+  const storeFetched = async (key, at, value) => {
+    if (cacheable(value)) {
+      if (pages) await dropBodyPages(at);
+      await writeCached(at, value);
+      return;
+    }
+    if (!pages) {
+      await deleteCached([at]);
+      return;
+    }
+    const first = await firstPage(key, value);
+    await dropBodyPages(at);
+    const stored = first ? [first] : pages.split(value, WHOLE_ANSWER);
+    await writeBodyPages(at, stored);
+    const head = { ...value, paged: true, of: stored[0].of };
+    delete head[pages.field];
+    await writeCached(at, head);
+  };
+
+  /** The bridge's own first page of a body, where it can page. */
+  const firstPage = async (key, value) => {
+    if (!pages.readPage) return null;
+    const page = await pages.readPage(key, 0, value).catch(() => null);
+    return page && page.offset === 0 && page.of ? page : null;
+  };
+
+  /** Whether `key`'s record is still the paged head of `of`: a page that lands
+   *  after the head was dropped or replaced is not kept without one. */
+  const stillHeadOf = async (at, of) => {
+    const record = await readCached(at);
+    return Boolean(record?.value?.paged) && record.value.of === of;
+  };
+
+  /** Read the page after the last one held of `key`'s body, and keep it.
+   *  Answers whether the held pages moved on. A page of another version of
+   *  the body is news the body moved: the key is fetched whole again. */
+  async function readNextPage(key) {
+    const value = held.get(key);
+    const at = addressOf(key);
+    if (!readsOn(at, value)) return false;
+    const from = value.pages.end;
+    const page = await pages.readPage(key, from, value);
+    if (!page || disposed) return false;
+    if (page.of !== value.of) {
+      await fetchBodies([key]);
+      return false;
+    }
+    return keepPage(key, at, page, from);
+  }
+
+  /** Whether a held body has a page after its last that can be read. */
+  const readsOn = (at, value) => Boolean(pages?.readPage && at && value?.pages && !value.pages.complete);
+
+  /** Keep a page read at `from`, when it carries the body on and the body is
+   *  still the cache's; answers whether the held pages moved on. */
+  const keepPage = async (key, at, page, from) => {
+    const of = held.get(key).of;
+    if (!pageFollows(page, from, of) || !(await stillHeadOf(at, of))) return false;
+    await writeBodyPage(at, page);
+    await reread(key, false);
+    onChange(key);
+    return (held.get(key)?.pages?.end ?? from) > from;
+  };
+  const readingNext = new Map();
+  const more = (key) => {
+    const stringKey = String(key);
+    if (!readingNext.has(stringKey)) {
+      const reading = readNextPage(stringKey)
+        .catch(() => false)
+        .finally(() => readingNext.delete(stringKey));
+      readingNext.set(stringKey, reading);
+    }
+    return readingNext.get(stringKey);
   };
 
   /** The wire, then the write-through. Batching belongs to the caller. */
@@ -149,9 +278,10 @@ export function createCachedBodies({
   }
 
   return {
-    read: (key) => direct.get(String(key)) ?? held.get(String(key)),
-    has: (key) => direct.has(String(key)) || held.has(String(key)),
+    read: (key) => held.get(String(key)),
+    has: (key) => held.has(String(key)),
     ensure,
+    more,
     dispose: () => {
       disposed = true;
       for (const unwatch of unwatches.values()) unwatch();

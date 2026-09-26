@@ -10,25 +10,14 @@
 // this puts them back together. A bridge older than ranges ignores `offset`
 // and answers the whole file, which the same loop reads as one piece.
 //
-// A body over `ATTACHMENT_BODY_MAX_BYTES` is painted from the answer and never
-// stored — #94's oversized-body rule, which createCachedBodies applies — so a
-// long recording costs this mount its bytes and not the disk.
+// A body over `ATTACHMENT_BODY_MAX_BYTES` is kept in pages (#95,
+// core/bodyPages.js): one record per quarter megabyte, so a long recording
+// never sits under a single record, and the page still paints it from the
+// cache. The bytes arrive whole (the pieces above), so they are split here.
 
 import { createCachedBodies } from "./cachedBodies.js";
+import { base64Of, bytePagesOf, bytesOfBase64 as bytesOf, joinedBase64 } from "./bodyPages.js";
 import { ATTACHMENT_BODY_MAX_BYTES, ATTACHMENT_RECORD_KIND } from "./cacheThresholds.js";
-
-const bytesOf = (b64) => Uint8Array.from(atob(b64 || ""), (char) => char.charCodeAt(0));
-
-/** Base64 of a byte array, a slice at a time: one `fromCharCode` over tens of
- *  megabytes overflows the argument limit. */
-function base64Of(bytes) {
-  const SLICE = 0x8000;
-  let binary = "";
-  for (let at = 0; at < bytes.length; at += SLICE) {
-    binary += String.fromCharCode(...bytes.subarray(at, at + SLICE));
-  }
-  return btoa(binary);
-}
 
 /** Every piece, joined. A file that fits one answer comes back as that answer
  *  untouched — the common case costs no decode. */
@@ -91,6 +80,11 @@ export function createIssueAttachmentBodies({ deviceId, issueId, call }) {
       return { key: path, value };
     },
     cacheable: (body) => body.size <= ATTACHMENT_BODY_MAX_BYTES,
+    pages: {
+      field: "content_b64",
+      split: (body, of) => bytePagesOf(body.content_b64, { of, total: body.size }),
+      join: joinedBase64,
+    },
   });
 
   return {

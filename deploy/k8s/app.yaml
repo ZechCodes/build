@@ -94,6 +94,10 @@ spec:
                   name: build-app
                   key: CF_TURN_KEY_API_TOKEN
                   optional: true
+            # Migrations run in the build-app-migrate Job before each rollout
+            # (migrate.yaml), not on start: see skriftapp/entrypoint.sh.
+            - name: BUILD_MIGRATE_ON_START
+              value: "0"
             # Public release repository; keep aligned with the Actions variable.
             - name: RELEASES_REPO
               value: ZechCodes/build-releases
@@ -135,7 +139,7 @@ spec:
               path: /healthz
               port: http
             periodSeconds: 5
-            failureThreshold: 30 # up to 150s for migrations on first boot
+            failureThreshold: 12 # 60s to boot; migrations run in the Job, not here
           readinessProbe:
             httpGet:
               path: /healthz

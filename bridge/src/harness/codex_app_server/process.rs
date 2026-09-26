@@ -98,11 +98,22 @@ impl ChildControl for Child {
 }
 
 impl AppServerProcess {
+    #[cfg(test)]
     pub fn spawn(
         spec: &HarnessSpec,
         root: PathBuf,
         limits: ProcessLimits,
         events: TerminalEventSink,
+    ) -> Result<(AppServerProcess, ConnectionPipes), HarnessError> {
+        Self::spawn_with_grace_wait(spec, root, limits, events, std::thread::sleep)
+    }
+
+    pub(super) fn spawn_with_grace_wait(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        limits: ProcessLimits,
+        events: TerminalEventSink,
+        wait_for_grace: impl FnOnce(Duration) + Send + 'static,
     ) -> Result<(AppServerProcess, ConnectionPipes), HarnessError> {
         let binary = crate::pty::resolve_binary(spec)?;
         // Placed the way every child of the daemon is (`crate::priority`):
@@ -141,7 +152,7 @@ impl AppServerProcess {
             Arc::clone(&events),
         );
         let process = AppServerProcess::new(Box::new(child));
-        process.start_monitor(events, limits.source_settle_grace);
+        process.start_monitor_with_grace_wait(events, limits.source_settle_grace, wait_for_grace);
         Ok((process, ConnectionPipes { stdin, stdout }))
     }
 
@@ -162,7 +173,17 @@ impl AppServerProcess {
         }
     }
 
+    #[cfg(test)]
     fn start_monitor(&self, events: TerminalEventSink, source_settle_grace: Duration) {
+        self.start_monitor_with_grace_wait(events, source_settle_grace, std::thread::sleep);
+    }
+
+    fn start_monitor_with_grace_wait(
+        &self,
+        events: TerminalEventSink,
+        source_settle_grace: Duration,
+        wait_for_grace: impl FnOnce(Duration) + Send + 'static,
+    ) {
         let slot = Arc::clone(&self.slot);
         std::thread::spawn(move || {
             let settled = loop {
@@ -172,7 +193,7 @@ impl AppServerProcess {
                 std::thread::sleep(EXIT_POLL_INTERVAL);
             };
             events(settled);
-            std::thread::sleep(source_settle_grace);
+            wait_for_grace(source_settle_grace);
             for expiry in grace_expiries(source_settle_grace) {
                 events(expiry);
             }

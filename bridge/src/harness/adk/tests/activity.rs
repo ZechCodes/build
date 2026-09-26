@@ -73,8 +73,13 @@ fn a_tail_that_has_not_changed_moves_the_revision_not_at_all() {
     assert!(becomes_true_within(Duration::from_secs(3), || {
         !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
     }));
+    stop_shell_polling(&reader);
     let once_the_tail_landed = revision_counter_of(&reader);
-    std::thread::sleep(Duration::from_millis(2_500));
+    super::super::activity::poll_shell_tails(
+        &reader.state,
+        &reader.revision,
+        running_shell_outputs(&reader.state),
+    );
 
     assert_eq!(
         revision_counter_of(&reader),
@@ -124,12 +129,22 @@ fn a_deleted_output_file_is_skipped_and_the_next_read_replaces_the_tail() {
     let last_tail_before_the_delete = tail_of_the_shell(&reader, SHELL_TASK_ID);
 
     std::fs::remove_file(&output_path).expect("the output file is removed");
-    std::thread::sleep(Duration::from_millis(2_200));
-
     assert!(
-        !no_poller_is_running(&reader),
-        "a file that went missing is not the end of the session"
+        super::super::activity::shells_left_to_tail(
+            &reader.state,
+            &reader.activity,
+            &reader.shell_poller
+        )
+        .is_some(),
+        "a missing file does not close the shell poller"
     );
+    stop_shell_polling(&reader);
+    super::super::activity::poll_shell_tails(
+        &reader.state,
+        &reader.revision,
+        running_shell_outputs(&reader.state),
+    );
+
     assert_eq!(
         tail_of_the_shell(&reader, SHELL_TASK_ID),
         last_tail_before_the_delete,
@@ -137,11 +152,14 @@ fn a_deleted_output_file_is_skipped_and_the_next_read_replaces_the_tail() {
     );
 
     std::fs::write(&output_path, "back again\n").expect("the output file returns");
-
-    assert!(
-        becomes_true_within(Duration::from_secs(3), || {
-            tail_of_the_shell(&reader, SHELL_TASK_ID) == vec!["back again".to_string()]
-        }),
+    super::super::activity::poll_shell_tails(
+        &reader.state,
+        &reader.revision,
+        running_shell_outputs(&reader.state),
+    );
+    assert_eq!(
+        tail_of_the_shell(&reader, SHELL_TASK_ID),
+        vec!["back again".to_string()],
         "the next successful read replaces the tail"
     );
 }

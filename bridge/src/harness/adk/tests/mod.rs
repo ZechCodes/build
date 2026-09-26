@@ -3,7 +3,7 @@ use super::activity::{
     reports_already_sent, running_shell_outputs,
 };
 use super::fake::*;
-use super::protocol::{RecordedCall, ACTIVITY_BACKLOG};
+use super::protocol::{ProtocolState, RecordedCall, ACTIVITY_BACKLOG};
 use super::reader::{runs_the_model_asked, ProtocolReader};
 use super::translation::tool_call_summary;
 use super::*;
@@ -222,6 +222,16 @@ fn reader_tailing(task_id: &str, output_path: &Path) -> ReaderEndingItsSessionWh
         &a_background_shell_line_set(task_id, SHELL_LAUNCH_CALL_ID, output_path),
     );
     ReaderEndingItsSessionWhenDropped { reader }
+}
+
+fn stop_shell_polling(reader: &ProtocolReader) {
+    reader.activity.lock().unwrap().take();
+    let polling = reader.shell_poller.lock().unwrap().take();
+    if let Some(polling) = polling {
+        polling
+            .join()
+            .expect("the poller stops before a direct test read");
+    }
 }
 
 fn polling_thread_of(reader: &ProtocolReader) -> std::thread::ThreadId {

@@ -360,10 +360,7 @@ fn start_startup_watchdog(
             if state.announced || state.closed {
                 return;
             }
-            let Some(first_turn_at) = state.first_turn_at else {
-                continue;
-            };
-            if first_turn_at.elapsed() < deadline {
+            if !startup_deadline_elapsed(&state, deadline, Instant::now()) {
                 continue;
             }
             // The same path as a child refused over its `init` line (issue
@@ -387,6 +384,18 @@ fn start_startup_watchdog(
             return;
         }
     });
+}
+
+pub(super) fn startup_deadline_elapsed(
+    state: &ProtocolState,
+    deadline: Duration,
+    now: Instant,
+) -> bool {
+    !state.announced
+        && !state.closed
+        && state
+            .first_turn_at
+            .is_some_and(|started| now.saturating_duration_since(started) >= deadline)
 }
 
 /// A deadline as a person reads it: "20 seconds", "1 second", "0.2 seconds".

@@ -27,6 +27,11 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+#[cfg(test)]
+thread_local! {
+    static AGENT_READ_COUNTS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
 /// The durable core of one plan — the project-scoped half of the split. Its
 /// canonical docs live beside the record under `plans/<plan_id>/docs/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,6 +316,14 @@ type ReadAgents =
     fn(&Connection, &str, &ModelChoice, Option<&str>) -> Result<Vec<Agent>, StoreError>;
 
 impl Store {
+    /// Calls to the record-only and conversation-loading agent readers on this
+    /// test thread. A snapshot around an app call measures its store work
+    /// without depending on host scheduling.
+    #[cfg(test)]
+    pub(crate) fn agent_read_counts() -> (usize, usize) {
+        AGENT_READ_COUNTS.with(std::cell::Cell::get)
+    }
+
     /// Classify every stored item for the freshly added columns.
     ///
     /// The one place Build reads whole conversations on purpose: it runs once,
@@ -552,6 +565,11 @@ impl Store {
         entity_choice: &ModelChoice,
         shared_primary_conversation: Option<&str>,
     ) -> Result<Vec<Agent>, StoreError> {
+        #[cfg(test)]
+        AGENT_READ_COUNTS.with(|counts| {
+            let (records, full) = counts.get();
+            counts.set((records + 1, full));
+        });
         let mut statement =
             conn.prepare("SELECT id, record FROM agents WHERE owner_id = ?1 ORDER BY ordinal")?;
         let rows: Vec<(String, String)> = statement
@@ -585,6 +603,11 @@ impl Store {
         entity_choice: &ModelChoice,
         shared_primary_conversation: Option<&str>,
     ) -> Result<Vec<Agent>, StoreError> {
+        #[cfg(test)]
+        AGENT_READ_COUNTS.with(|counts| {
+            let (records, full) = counts.get();
+            counts.set((records, full + 1));
+        });
         let mut agents =
             Store::read_agent_records(conn, owner_id, entity_choice, shared_primary_conversation)?;
         // The tail of each conversation, not the whole of it: a boot that read

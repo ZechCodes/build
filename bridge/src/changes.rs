@@ -1309,6 +1309,11 @@ pub struct ChangeBus {
     /// [`ENTITY_SETTLE_WINDOW`] on every flush: an older entry can hold
     /// nothing back, so this never grows with the entities a bridge has seen.
     emitted_at: Mutex<HashMap<ChangeKey, tokio::time::Instant>>,
+    #[cfg(test)]
+    completed_test_cycles: tokio::sync::watch::Sender<(u64, bool)>,
+    /// Records the worker that completed each subscription frame's encryption.
+    #[cfg(test)]
+    delivered_test_threads: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Option<String>>>>,
 }
 
 impl ChangeBus {
@@ -1335,6 +1340,8 @@ impl ChangeBus {
         board_entities: BoardEntities,
         facts: Option<FactsSource>,
     ) -> Arc<Self> {
+        #[cfg(test)]
+        let (completed_test_cycles, _) = tokio::sync::watch::channel((0, true));
         Arc::new(ChangeBus {
             subscribers: Mutex::new(Vec::new()),
             subscriptions: Mutex::new(Vec::new()),
@@ -1346,7 +1353,43 @@ impl ChangeBus {
             board_entities,
             facts,
             emitted_at: Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            completed_test_cycles,
+            #[cfg(test)]
+            delivered_test_threads: Mutex::new(None),
         })
+    }
+
+    /// Wait for a flusher cycle that starts after this call. Two completions
+    /// cover a cycle already in flight when the test registers its barrier.
+    #[cfg(test)]
+    pub async fn settle_for_test(&self) {
+        let mut completed = self.completed_test_cycles.subscribe();
+        let target = completed.borrow().0 + 2;
+        self.wake.notify_one();
+        while {
+            let (cycle, drained) = *completed.borrow_and_update();
+            cycle < target || !drained
+        } {
+            completed
+                .changed()
+                .await
+                .expect("the flusher remains alive");
+        }
+    }
+
+    /// Whether every sendable change has completed its flush. A subscription
+    /// in Off mode deliberately holds changes until it is enabled again.
+    #[cfg(test)]
+    fn has_test_pending(&self) -> bool {
+        let legacy_pending = !self.pending.lock().unwrap().keys.is_empty();
+        legacy_pending
+            || self
+                .subscriptions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|sub| sub.spec.mode != Mode::Off && !sub.pending.is_empty())
     }
 
     /// How long changes collapse together before the next flush.
@@ -1745,6 +1788,10 @@ impl ChangeBus {
         for frame in &due.frames {
             if frame.session.push(frame.payload(&by_entity, revision)) {
                 frames += 1;
+                #[cfg(test)]
+                if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
+                    let _ = observe.send(std::thread::current().name().map(str::to_owned));
+                }
                 self.stamp_thread_tips(frame, &by_entity);
                 self.rearm_unanswered_lists(frame, &by_entity);
             } else {
@@ -1881,6 +1928,15 @@ impl ChangeBus {
         loop {
             bus.wait_for_work().await;
             ChangeBus::flush_off_thread(&bus).await;
+            #[cfg(test)]
+            {
+                let completed = bus.completed_test_cycles.borrow().0 + 1;
+                bus.completed_test_cycles
+                    .send_replace((completed, !bus.has_test_pending()));
+                if bus.completed_test_cycles.receiver_count() > 0 {
+                    bus.wake.notify_one();
+                }
+            }
             tokio::time::sleep(bus.window).await;
         }
     }
@@ -3978,9 +4034,10 @@ mod subscriptions {
     /// subscriber, and a frame can be large: a checkout's status and log, its
     /// root listing, the conversation tails (the diff body no longer rides,
     /// only its size). That is CPU on whichever thread runs it, so the daemon
-    /// runs the flusher on its push runtime: the main runtime's only worker
-    /// still wakes a 10 ms nap on time through a flush that encrypts 8 MiB.
-    /// On the main runtime the same flush held that worker 2.3 s (#131).
+    /// runs the flusher on its push runtime. Observe the worker immediately
+    /// after each frame is serialized and encrypted; the main runtime's only
+    /// worker must not do that work. On the main runtime the same flush held
+    /// that worker 2.3 s (#131).
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn a_heavy_flush_encrypts_off_the_main_runtime() {
         const SUBSCRIBERS: usize = 32;
@@ -4001,7 +4058,7 @@ mod subscriptions {
             Arc::new(|| vec!["run-7".to_string()]),
             facts,
         );
-        let mut receivers: Vec<_> = (0..SUBSCRIBERS)
+        let receivers: Vec<_> = (0..SUBSCRIBERS)
             .map(|n| {
                 let (sender, rx, _) = SessionSender::observable(format!("s-{n}"));
                 bus.subscribe(
@@ -4016,27 +4073,35 @@ mod subscriptions {
                 (sender, rx)
             })
             .collect();
+        let (observe, mut delivered) = tokio::sync::mpsc::unbounded_channel();
+        *bus.delivered_test_threads.lock().unwrap() = Some(observe);
         let push = crate::liveness::DedicatedRuntime::push().unwrap();
         ChangeBus::spawn_flusher_on(Arc::clone(&bus), Some(push.handle()));
 
         bus.note_kind("run-7", Kind::Git);
-        let started = std::time::Instant::now();
-        let mut longest = Duration::ZERO;
-        let mut heard = 0;
-        while heard < SUBSCRIBERS && started.elapsed() < Duration::from_secs(20) {
-            let nap = std::time::Instant::now();
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            longest = longest.max(nap.elapsed());
-            heard = receivers
-                .iter_mut()
-                .filter(|(_, rx)| !rx.is_empty())
-                .count();
-        }
-
-        assert_eq!(heard, SUBSCRIBERS, "every subscriber was sent its frame");
+        let workers = tokio::time::timeout(Duration::from_secs(20), async {
+            let mut workers = Vec::with_capacity(SUBSCRIBERS);
+            for _ in 0..SUBSCRIBERS {
+                workers.push(
+                    delivered
+                        .recv()
+                        .await
+                        .expect("delivery observer remains alive"),
+                );
+            }
+            workers
+        })
+        .await
+        .expect("every subscriber was sent its frame within 20 seconds");
         assert!(
-            longest < Duration::from_millis(100),
-            "a 10 ms nap took {longest:?} while the flush encrypted: it ran on the main runtime"
+            receivers.iter().all(|(_, rx)| !rx.is_empty()),
+            "every subscriber received its encrypted frame"
+        );
+        assert!(
+            workers
+                .iter()
+                .all(|worker| worker.as_deref() == Some("bridge-push")),
+            "subscription frames were encrypted on {workers:?} instead of the push runtime"
         );
         push.stop();
     }

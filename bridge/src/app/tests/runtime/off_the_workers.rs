@@ -4,55 +4,57 @@
 //! every worker parked, the I/O driver stops: data channels stall, terminals
 //! stop painting, `bridge.stats` cannot answer. So each of them waits for it on
 //! the blocking pool, and these prove it on the smallest runtime there is: ONE
-//! worker, a holder keeping the lock for 300 ms from a thread of its own, the
-//! task's tick falling due inside that hold, and a 10 ms nap on the worker
-//! that still wakes in time.
+//! worker, a holder keeping the lock from a thread of its own, and the
+//! runtime worker making progress before that holder releases it.
 use super::*;
 use crate::app::runtime::deferred::{spawn_off_lock, OffLockJob};
 
-/// How long the holder keeps the app mutex: a slow frame's hold.
-const HOLD: Duration = Duration::from_millis(300);
-/// What the worker is asked to do meanwhile.
-const NAP: Duration = Duration::from_millis(10);
-/// A nap that took this long was a worker parked on the lock.
-const LATE: Duration = Duration::from_millis(100);
 /// The period of the timer-driven tasks under test: several ticks fall due
 /// inside one hold.
 const TICK: Duration = Duration::from_millis(20);
+/// A separate thread eventually breaks a genuine worker/lock deadlock, so a
+/// regression fails instead of hanging the test process.
+const DEADLOCK_GUARD: Duration = Duration::from_secs(5);
 
-/// Hold the app mutex from a thread of its own for [`HOLD`], call `due` once
-/// it is held — whatever makes the task under test want the lock — and nap on
-/// the runtime's worker until the holder lets go. Asserts no nap was late.
-async fn the_worker_naps_on_time_while_the_lock_is_held(
+/// Hold the app mutex until the section triggered by `due` has entered. The
+/// test observes its actual thread, while the holder's separate watchdog
+/// breaks a worker/lock deadlock so the test can report it.
+async fn the_worker_progresses_while_the_lock_is_held(
     state: &Arc<Mutex<AppState>>,
     due: impl FnOnce(),
 ) {
+    let worker = tokio::spawn(async { std::thread::current().id() })
+        .await
+        .expect("the sole runtime worker reported its thread");
     let (held, is_held) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
     let holder = {
         let state = Arc::clone(state);
         std::thread::spawn(move || {
             let _guard = state.lock().unwrap();
             let _ = held.send(());
-            std::thread::sleep(HOLD);
+            released.recv_timeout(DEADLOCK_GUARD).is_ok()
         })
     };
     is_held.await.expect("the holder took the app mutex");
+    let (_observation, mut sections) =
+        crate::app::runtime::off_the_workers::observe_sections_for_test();
     due();
-    // Timed from the test's own thread, which is no worker: the task under
-    // test may be scheduled ahead of anything spawned now, and a nap started
-    // after it had parked would time nothing. The nap's timer is fired by the
-    // runtime's worker, so a worker parked on the lock still makes it late.
-    let mut longest = Duration::ZERO;
-    while !holder.is_finished() {
-        let started = std::time::Instant::now();
-        tokio::time::sleep(NAP).await;
-        longest = longest.max(started.elapsed());
-    }
-    holder.join().expect("the holder let go");
+    let section_thread =
+        tokio::time::timeout(DEADLOCK_GUARD + Duration::from_secs(1), sections.recv())
+            .await
+            .expect("the task entered an off-worker section")
+            .expect("the section observer remains registered");
+    let _ = release.send(());
     assert!(
-        longest < LATE,
-        "a {NAP:?} nap took {longest:?} while another thread held the app mutex: \
-         the task under test parked the runtime's only worker on it"
+        holder
+            .join()
+            .expect("the holder let go before the watchdog"),
+        "the task under test parked the runtime's only worker on the app mutex"
+    );
+    assert_ne!(
+        section_thread, worker,
+        "the section ran on the runtime worker"
     );
 }
 
@@ -80,7 +82,7 @@ async fn the_status_pump_waits_for_the_app_mutex_off_the_workers() {
     let session: Arc<dyn AgentSession> =
         Arc::new(DictatedSession::reporting(AgentStatus::Waiting).watching_status(watched));
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         crate::app::spawn_status_pump(
             &state,
             derived_agent_key(dir.path(), "run-status"),
@@ -103,7 +105,7 @@ async fn the_receipt_pump_waits_for_the_app_mutex_off_the_workers() {
     let session: Arc<dyn AgentSession> =
         Arc::new(DictatedSession::reporting(AgentStatus::Working).watching_receipts(watched));
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         crate::app::runtime::delivery::receipts::spawn_receipt_pump(
             &state,
             &session,
@@ -128,7 +130,7 @@ async fn the_activity_pump_waits_for_the_app_mutex_off_the_workers() {
         None,
     );
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         let _ = activity.send(crate::harness::ActivityReport::own_work(
             crate::harness::AgentActivity::Reasoning {
                 summary: "while the lock is held".into(),
@@ -156,7 +158,7 @@ async fn a_byte_pumps_death_rites_wait_for_the_app_mutex_off_the_workers() {
         },
     );
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, move || drop(bytes)).await;
+    the_worker_progresses_while_the_lock_is_held(&state, move || drop(bytes)).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -165,7 +167,7 @@ async fn the_idle_monitor_waits_for_the_app_mutex_off_the_workers() {
     let state = unrooted_state(dir.path());
     AppState::spawn_idle_monitor(Arc::clone(&state), Duration::from_secs(600), TICK);
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -174,7 +176,7 @@ async fn the_terminal_reaper_waits_for_the_app_mutex_off_the_workers() {
     let state = unrooted_state(dir.path());
     AppState::spawn_terminal_reaper(Arc::clone(&state), TICK);
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -183,7 +185,7 @@ async fn the_update_check_waits_for_the_app_mutex_off_the_workers() {
     let state = unrooted_state(dir.path());
     AppState::spawn_update_checks(Arc::clone(&state), TICK);
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {}).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || {}).await;
 }
 
 /// The workspace reclaim service's policy: sweeps back to back, so one always
@@ -203,7 +205,7 @@ async fn the_workspace_reclaim_start_waits_for_the_app_mutex_off_the_workers() {
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         let starting = Arc::clone(&state);
         tokio::spawn(async move {
             AppState::spawn_workspace_reclaim(starting, reclaiming_constantly()).await
@@ -213,45 +215,41 @@ async fn the_workspace_reclaim_start_waits_for_the_app_mutex_off_the_workers() {
     AppState::stop_workspace_reclaim(&state);
 }
 
-/// Between sweeps the reclaim loop asks whether it has been stopped. A holder
-/// that takes the app mutex the moment a sweep has finished with it — the
-/// sweep's frame published — finds that question on the worker, if it waits
-/// on the mutex to ask.
+/// Between sweeps the reclaim loop checks the stop handle it already owns.
+/// Gate that exact check after a sweep, then hold the app mutex until the
+/// check completes: waiting for the mutex on the sole worker would deadlock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn the_workspace_reclaim_loop_asks_whether_it_stopped_off_the_workers() {
-    /// Holds taken, each right after a sweep.
-    const HOLDS: usize = 3;
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
-    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-    let served = move || clock.stats()["frames_served"].as_u64().unwrap();
+    let (before_check, proceed, checked) = crate::app::workspaces::probe_reclaim_stop_for_test();
     AppState::spawn_workspace_reclaim(Arc::clone(&state), reclaiming_constantly()).await;
-
+    tokio::time::timeout(DEADLOCK_GUARD, before_check)
+        .await
+        .expect("the sweep reached its stop check")
+        .expect("the stop-check observer remains alive");
+    let (held, is_held) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
     let holder = {
         let state = Arc::clone(&state);
         std::thread::spawn(move || {
-            for _ in 0..HOLDS {
-                let before = served();
-                while served() == before {
-                    std::hint::spin_loop();
-                }
-                let _guard = state.lock().unwrap();
-                std::thread::sleep(HOLD);
-            }
+            let _guard = state.lock().unwrap();
+            let _ = held.send(());
+            released.recv_timeout(DEADLOCK_GUARD).is_ok()
         })
     };
-    let mut longest = Duration::ZERO;
-    while !holder.is_finished() {
-        let started = std::time::Instant::now();
-        tokio::time::sleep(NAP).await;
-        longest = longest.max(started.elapsed());
-    }
-    holder.join().expect("the holder let go");
+    is_held.await.expect("the holder took the app mutex");
+    proceed.send(()).expect("the reclaim loop awaits its gate");
+    tokio::time::timeout(DEADLOCK_GUARD + Duration::from_secs(1), checked)
+        .await
+        .expect("the reclaim loop completed its stop check")
+        .expect("the stop-check observer remains alive");
+    let _ = release.send(());
+    let checked_while_held = holder.join().expect("the holder let go");
     AppState::stop_workspace_reclaim(&state);
     assert!(
-        longest < LATE,
-        "a {NAP:?} nap took {longest:?} while another thread held the app mutex: \
-         the reclaim loop parked the runtime's only worker on it"
+        checked_while_held,
+        "the reclaim loop parked the runtime's only worker on the app mutex"
     );
 }
 
@@ -295,7 +293,7 @@ async fn an_agents_tool_call_waits_for_the_app_mutex_off_the_workers() {
     let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
     let mut agent = an_agent_on(&state, &plane);
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || a_tool_call(&mut agent)).await;
+    the_worker_progresses_while_the_lock_is_held(&state, || a_tool_call(&mut agent)).await;
 }
 
 /// Off the workers, every agent's tool call could wait at the app mutex at
@@ -315,7 +313,7 @@ async fn a_dozen_agents_tool_calls_take_turns_at_the_app_mutex() {
     let plane = crate::app::mcp::ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
     let mut agents: Vec<_> = (0..12).map(|_| an_agent_on(&state, &plane)).collect();
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         agents.iter_mut().for_each(a_tool_call);
     })
     .await;
@@ -444,7 +442,7 @@ async fn an_off_lock_jobs_apply_phase_waits_for_the_app_mutex_off_the_workers() 
     let dir = tempfile::tempdir().unwrap();
     let state = unrooted_state(dir.path());
 
-    the_worker_naps_on_time_while_the_lock_is_held(&state, || {
+    the_worker_progresses_while_the_lock_is_held(&state, || {
         assert!(
             spawn_off_lock(Arc::clone(&state), Immediate).is_ok(),
             "a runtime is under the test"

@@ -53,22 +53,30 @@ pub(super) fn spawn_shell_tail_poller(
         let Some(running) = shells_left_to_tail(&state, &activity, &shell_poller) else {
             return;
         };
-        for (shell_id, output_path) in running {
-            match ShellTail::read(&output_path) {
-                Ok(tailed) => {
-                    let moved = state
-                        .lock()
-                        .unwrap()
-                        .surfaces
-                        .read_shell_tail(&shell_id, tailed);
-                    if moved {
-                        revision.bump();
-                    }
-                }
-                Err(why) => eprintln!("shell tail {shell_id}: {why}"),
-            }
-        }
+        poll_shell_tails(&state, &revision, running);
     })
+}
+
+pub(super) fn poll_shell_tails(
+    state: &Mutex<ProtocolState>,
+    revision: &SurfaceRevision,
+    running: Vec<(String, PathBuf)>,
+) {
+    for (shell_id, output_path) in running {
+        match ShellTail::read(&output_path) {
+            Ok(tailed) => {
+                let moved = state
+                    .lock()
+                    .unwrap()
+                    .surfaces
+                    .read_shell_tail(&shell_id, tailed);
+                if moved {
+                    revision.bump();
+                }
+            }
+            Err(why) => eprintln!("shell tail {shell_id}: {why}"),
+        }
+    }
 }
 
 #[cfg(test)]

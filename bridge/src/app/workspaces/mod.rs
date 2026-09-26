@@ -13,6 +13,8 @@ mod git_initialization;
 mod reclaim;
 
 #[cfg(test)]
+pub(in crate::app) use reclaim::probe_reclaim_stop_for_test;
+#[cfg(test)]
 pub(in crate::app) use reclaim::PrunePhase;
 pub(in crate::app) use reclaim::{reserved_holds, ReclaimReservation};
 

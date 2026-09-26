@@ -381,6 +381,27 @@ describe("across tabs sharing the cache", () => {
     expect((await held()).map((one) => one.status)).toEqual(["done"]);
   });
 
+  // #129: the list says how new it is by when its newest pull was asked, so
+  // an older pull's page landing last does not make it look older.
+  it("stays stamped with the newer pull when an older one's page lands after it", async () => {
+    const old = heldPull();
+    await old.asked;
+    await pull(await anotherTab(), async () => answer([issue(20)]));
+    const newer = (await cache.readCached(ADDRESS)).value.read_order;
+    await old.answer(answer([issue(19)]));
+    expect(Number.isFinite(newer)).toBe(true);
+    expect((await cache.readCached(ADDRESS)).value.read_order).toBe(newer);
+  });
+
+  it("stamps the list with when the pull that laid it was asked", async () => {
+    const old = heldPull();
+    await old.asked;
+    const landed = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await old.answer(answer([issue(20)]));
+    expect((await cache.readCached(ADDRESS)).value.read_order).toBeLessThanOrEqual(landed);
+  });
+
   it("still lays a page asked after another tab's read", async () => {
     await pull(await anotherTab(), async () => answer([issue(20, { title: "read first" })]));
     await pull(pages, async () => answer([issue(20, { title: "read later" }), issue(19)]));

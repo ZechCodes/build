@@ -63,6 +63,7 @@ import {
 import { ISSUE_RECORD_KIND } from "./issueCache.js";
 import { issuesAddress, issuesRecord, readIssuesRecord, writeIssuesRecord } from "./trackerCache.js";
 import { foldIssuesPage, pagesIssues, pullIssuePages } from "./trackerPages.js";
+import { nextIssueRead } from "./issueReadOrder.js";
 import { writeUserSession } from "./userSessionCache.js";
 import { inboxPushKinds } from "./trackerPush.js";
 import {
@@ -566,12 +567,13 @@ async function readProjectIssues(context, view) {
  *  and never an error the reader sees. */
 async function readIssuesNow(context, projectId) {
   if (pagesIssues(context.deviceId)) return readIssuePagesNow(context, projectId);
+  const read = await nextIssueRead();
   const answer = await ask(context, "issues.list", { project_id: projectId }, "background");
   if (!answer || !context.active()) return;
   const columns = await projectColumns(context, projectId);
   if (!context.active()) return;
   await Promise.all([
-    writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns)),
+    writeIssuesRecord(context.deviceId, projectId, issuesRecord(answer.issues, columns, read)),
     writeUserSession(context.deviceId, answer),
   ]);
 }

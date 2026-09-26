@@ -86,12 +86,17 @@ export function withIssuePage(held, stretch, lastSay = () => 0) {
 /** Lay one page over the list record at `address`, and note beside it that
  *  the page had the say on its stretch there — the two in one transaction, so
  *  a write landing between the read and the write is not lost, and another
- *  tab never reads the list without the note or the note without the list. */
+ *  tab never reads the list without the note or the note without the list.
+ *  The list is stamped with the newest pull folded into it, by when that pull
+ *  was asked (#129): its first page's read, which every page after it is
+ *  newer than. */
 export const foldIssuesPage = (address, stretch, columnsOf) =>
   mergeCachedTogether([address, readsAddress(address)], ([held, reads]) => [
-    issuesRecord(withIssuePage(held?.issues, stretch, lastSayIn(reads)), columnsOf(held)),
+    issuesRecord(withIssuePage(held?.issues, stretch, lastSayIn(reads)), columnsOf(held), foldedOrder(held, stretch)),
     withStretch(reads, stretch),
   ]);
+
+const foldedOrder = (held, { read = 0, pullRead = read }) => Math.max(Number(held?.read_order) || 0, pullRead);
 
 const pageParams = (params, cursor, limit) => (cursor ? { ...params, limit, cursor } : { ...params, limit });
 

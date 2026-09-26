@@ -68,11 +68,22 @@ export const issueAddress = (deviceId, projectId, issueId) => ({
 /** The list record. `columns` rides beside the issues because the two are read
  *  together on every paint — a board cannot be drawn from one without the
  *  other — and because the columns change far more rarely than the issues, so
- *  holding them costs a field and saves a round trip on every cold open. */
-export const issuesRecord = (issues, columns) => ({
+ *  holding them costs a field and saves a round trip on every cold open.
+ *
+ *  `readOrder` is the number the read that answered it took before it asked
+ *  (core/issueReadOrder.js): when the bridge was asked, not when the answer
+ *  reached the browser (#129). A list written here rather than read — a card
+ *  moved, an issue filed — has no read, and goes without. */
+export const issuesRecord = (issues, columns, readOrder) => ({
   issues: issues || [],
   columns: columns || [],
+  ...(Number.isFinite(readOrder) ? { read_order: readOrder } : {}),
 });
+
+/** When a cached list (`{ at, value }`) was asked for: its read's number, which
+ *  is never under the clock it was taken at, so it orders against the cache's
+ *  own stamp on a list written without one. */
+export const listAskedAt = (cached) => Number(cached?.value?.read_order) || cached?.at || 0;
 
 export const issueRecord = (issue, timeline) => ({ issue: issue || null, timeline: timeline || [] });
 

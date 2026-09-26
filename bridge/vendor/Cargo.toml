@@ -1,13 +1,9 @@
-# The vendored crates' own workspace, for their own tests (see README.md). The
-# bridge does not build through this file: bridge/Cargo.toml reaches the two
-# crates with [patch.crates-io] path entries, and its gates stop at the
-# bridge's own package. Here the patched webrtc is tested against the patched
-# rtc-turn it needs, on a lockfile of its own.
+# The vendored crate's own workspace, for its own tests (see README.md). The
+# bridge does not build through this file: bridge/Cargo.toml reaches the crate
+# with a [patch.crates-io] path entry, and its gates stop at the bridge's own
+# package. Here the patched webrtc is tested on a lockfile of its own.
 [workspace]
-members = ["webrtc", "rtc-turn"]
+members = ["webrtc"]
 # The bridge's resolver (edition 2021), so features unify the way they do in
 # the daemon.
 resolver = "2"
-
-[patch.crates-io]
-rtc-turn = { path = "rtc-turn" }

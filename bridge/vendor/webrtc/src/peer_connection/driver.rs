@@ -83,14 +83,16 @@ const DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(86400); // 1 day 
 /// by elapsed time catches every shape.
 const MIN_IMMEDIATE_TIMEOUT_INTERVAL: Duration = Duration::from_millis(1);
 
-/// How many passes over writes, events and reads a single wake may add because a component still
-/// holds output it can send now (see [`PeerConnectionDriver::poll_pass`]).
+/// How many extra rounds of events, reads and writes a wake takes because relayed input reached the
+/// core (see [`PeerConnectionDriver::poll_pass`]).
 ///
-/// One is enough for everything this driver composes today: a pass moves output at most one hop
-/// (core → TURN client, or TURN grant → TURN client), and the TURN client's output goes straight to
-/// a socket. The second is headroom. The bound is what keeps sockets, timers and `Close`, which are
-/// only read in `select!`, from waiting behind a component that keeps producing.
-const MAX_READY_PASSES: usize = 2;
+/// One is all a wake can use. The extra round pumps the events that input raised and sends what
+/// they queue; a further round would need its reads to feed the core again, and relayed input
+/// reaches the core (3.a) only from datagrams the TURN client read in `select!`, all of which the
+/// first round's 2.b already turned into reads. The bound states that, and keeps sockets, timers
+/// and `Close`, which are read only in `select!`, from waiting behind the loop if it ever stopped
+/// being true.
+const MAX_EXTRA_ROUNDS: usize = 1;
 
 /// Insert `sender` for `channel_id`, returning `true` if the channel should be announced.
 pub(crate) fn insert_data_channel_event_sender(
@@ -1325,8 +1327,8 @@ where
             PeerConnectionDriverEvent::WriteNotify => {
                 // Coalesced write-flush poke: wake up so the next loop iteration's
                 // poll_writes drains the core. The `write_pending` gate (cleared at
-                // the top of the loop) ensures a burst of sends enqueues at most
-                // one of these.
+                // the start of each write phase) ensures a burst of sends enqueues at
+                // most one of these.
             }
             PeerConnectionDriverEvent::UpdateIceConfiguration {
                 ice_servers,
@@ -1471,6 +1473,12 @@ where
     }
 
     async fn poll_writes(&mut self) -> Result<()> {
+        // Clear the coalescing write-flush gate BEFORE draining. 1.b drains the core
+        // unconditionally, so clearing here can never strand data: a send that set the
+        // flag is either already enqueued (drained below) or enqueues a fresh
+        // `WriteNotify` for the next wake.
+        self.inner.write_pending.store(false, Ordering::Release);
+
         // 1.a stun_gatherer poll_write()
         while let Some(msg) = self.stun_gatherer.poll_write() {
             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
@@ -1491,7 +1499,13 @@ where
             }
         }
 
-        // 1.b turn_relayer poll_write()
+        // 1.b peer_connection poll_write() - Send all outgoing packets, coalescing
+        // consecutive same-destination datagrams into single UDP GSO syscalls.
+        let writes = Self::drain_core_writes(self.inner.clone()).await;
+        self.flush_writes(writes).await;
+
+        // 1.c turn_relayer poll_write() - last, because the core feeds it: 1.b hands the
+        // core's relayed writes to the TURN client, and they leave here in the same drain.
         while let Some(msg) = self.turn_relayer.poll_write() {
             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
             if let Err(err) = self.handle_write(msg).await {
@@ -1510,11 +1524,6 @@ where
                 }
             }
         }
-
-        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
-        // consecutive same-destination datagrams into single UDP GSO syscalls.
-        let writes = Self::drain_core_writes(self.inner.clone()).await;
-        self.flush_writes(writes).await;
 
         Ok(())
     }
@@ -1649,39 +1658,37 @@ where
         self.gso_scratch = scratch;
     }
 
-    /// 1–3: writes, events and reads, and again while a component holds output it can send now.
+    /// 1–3, then 1 again: writes, events, reads and writes, so a wake ends only after sending the
+    /// output its own events and reads produced.
     ///
-    /// The loop waits in `select!` only for sockets, timers and driver events, so output that is
-    /// still queued when it gets there waits for whichever of those comes next — on an idle
-    /// connection, the ICE agent's next tick. Each phase visits the components in a fixed order,
-    /// and no order drains everything: on a relayed path the core's writes (1.c) and a TURN
-    /// permission grant (2.b) both queue packets in the TURN client after its drain (1.b), and
-    /// relayed input handed to the core (3.a) leaves the core with replies after its drain (1.c).
-    /// So before the loop waits, it asks whether any of them holds ready output, and if so takes
-    /// another pass, at most [`MAX_READY_PASSES`] times.
+    /// The loop waits in `select!` only for sockets, timers and driver events, so output still
+    /// queued when it gets there waits for whichever of those comes next: on an idle connection,
+    /// the ICE agent's next tick, up to 200 ms later. The first write phase sends what woke the
+    /// driver (a datagram's replies, a timer's retransmits, the application's writes) before the
+    /// events and reads phases run callbacks. Those phases give the components more output: a
+    /// TURN permission grant releases held packets (2.b), pumping the core's events can queue
+    /// packets (2.c: a completed DTLS handshake queues the SCTP INIT), and relayed input handed to
+    /// the core leaves replies (3.a). The closing write phase sends all of it, the core before the
+    /// TURN client it feeds (1.b, then 1.c).
     ///
-    /// Packets the TURN relayer buffers for a permission that has not been granted are not ready,
-    /// so a pass never repeats while the server answers. The core has no such query; it can only
-    /// gain output mid-pass from relayed input (3.a), because the application's writes wake the
-    /// loop themselves (`WriteNotify`) and its timers run before the pass.
+    /// rtc has no query for output the core holds, short of draining it, and pumping its events
+    /// (2.c) can queue output even when no event comes out. So there is no readiness flag to
+    /// check: draining is the check. What no write phase can reach is work the core has not
+    /// processed yet, and relayed input (3.a) is the one thing handed to it after its events are
+    /// pumped. The events that input raises (the handshake completing on the last relayed flight)
+    /// become output only when 2.c pumps them, so when 3.a fed the core the wake takes one more
+    /// round, at most [`MAX_EXTRA_ROUNDS`].
     async fn poll_pass(&mut self) -> Result<()> {
-        let mut passes = 0;
+        self.poll_writes().await?;
+        let mut rounds = 0;
         loop {
-            // Clear the coalescing write-flush gate BEFORE draining. `poll_writes`
-            // drains the core unconditionally, so clearing here can never strand
-            // data: a send that set the flag is either already enqueued (drained
-            // this iteration) or enqueues a fresh `WriteNotify` for the next one.
-            self.inner.write_pending.store(false, Ordering::Release);
-            self.poll_writes().await?;
             self.poll_events().await;
             let core_was_fed = self.poll_reads().await?;
-
-            if passes == MAX_READY_PASSES
-                || !(core_was_fed || self.turn_relayer.has_pending_write())
-            {
+            self.poll_writes().await?;
+            if !core_was_fed || rounds == MAX_EXTRA_ROUNDS {
                 return Ok(());
             }
-            passes += 1;
+            rounds += 1;
         }
     }
 
@@ -1898,6 +1905,186 @@ mod tests {
         assert!(!is_link_local(&"2001:db8::1".parse::<IpAddr>().unwrap()));
     }
 
+    /// Records when the connection reaches `Connected`: the driver reports it from the events
+    /// phase, in the pass that took the DTLS handshake's completion.
+    struct Connected(Arc<std::sync::atomic::AtomicBool>);
+
+    #[async_trait::async_trait]
+    impl crate::peer_connection::PeerConnectionEventHandler for Connected {
+        async fn on_connection_state_change(
+            &self,
+            state: rtc::peer_connection::state::RTCPeerConnectionState,
+        ) {
+            if state == rtc::peer_connection::state::RTCPeerConnectionState::Connected {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    /// A far end played by a sans-I/O `rtc` core that answers as the DTLS server, so the
+    /// driver's core is the DTLS client and opens SCTP (its INIT) when the handshake completes.
+    fn dtls_server_peer() -> rtc::peer_connection::RTCPeerConnection {
+        let mut settings =
+            rtc::peer_connection::configuration::setting_engine::SettingEngine::default();
+        settings
+            .set_answering_dtls_role(rtc::peer_connection::transport::RTCDtlsRole::Server)
+            .unwrap();
+        rtc::peer_connection::RTCPeerConnectionBuilder::new()
+            .with_setting_engine(settings)
+            .build()
+            .unwrap()
+    }
+
+    /// Drains the far end's events, reporting whether it reached `Connected`. The DTLS server
+    /// gets there on the client's Finished, and the flight it writes in answer is the last of
+    /// the handshake.
+    fn reached_connected(peer: &mut rtc::peer_connection::RTCPeerConnection) -> bool {
+        let mut connected = false;
+        while let Some(event) = peer.poll_event() {
+            connected |= matches!(
+                event,
+                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(
+                    rtc::peer_connection::state::RTCPeerConnectionState::Connected
+                )
+            );
+        }
+        connected
+    }
+
+    fn candidate(addr: SocketAddr, typ: &str) -> RTCIceCandidateInit {
+        RTCIceCandidateInit {
+            candidate: format!(
+                "candidate:1 1 udp 2130706431 {} {} typ {typ}",
+                addr.ip(),
+                addr.port()
+            ),
+            sdp_mid: Some("0".to_owned()),
+            sdp_mline_index: Some(0),
+            ..Default::default()
+        }
+    }
+
+    /// The SCTP INIT is output the core gains in the events phase, not from a socket, a timer or
+    /// the application: when the DTLS handshake completes, pumping the core's events hands the
+    /// completion to its SCTP handler, which queues the INIT. A direct connection must send it
+    /// in the pass that took the completion; nothing else would wake the driver to send it
+    /// before the next timer.
+    mod direct_output {
+        use super::*;
+        use crate::peer_connection::new_test_peer_connection;
+        use crate::runtime::default_runtime;
+        use std::net::UdpSocket;
+        use std::sync::atomic::AtomicBool;
+
+        #[test]
+        fn the_sctp_init_leaves_in_the_pass_that_completes_the_handshake() {
+            let rt = default_runtime().unwrap();
+            let runtime = rt.clone();
+            rt.block_on(Box::pin(async move {
+                let (mut inner, _rx) = new_test_peer_connection().await;
+                let connected = Arc::new(AtomicBool::new(false));
+                Arc::get_mut(&mut inner).unwrap().handler = Arc::new(Connected(connected.clone()));
+                let mut driver = PeerConnectionDriver::new(
+                    inner,
+                    Vec::<SocketAddr>::new(),
+                    Vec::new(),
+                    MulticastDnsMode::Disabled,
+                    Vec::new(),
+                    RTCIceTransportPolicy::All,
+                    false,
+                );
+
+                let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let local = socket.local_addr().unwrap();
+                driver
+                    .udp_sockets
+                    .insert(local, runtime.wrap_udp_socket(socket).unwrap());
+                let far_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let far = far_socket.local_addr().unwrap();
+                far_socket.set_nonblocking(true).unwrap();
+
+                let mut peer = dtls_server_peer();
+                {
+                    let mut core = driver.inner.core.lock().await;
+                    core.create_data_channel("app", None).unwrap();
+                    core.add_local_candidate(candidate(local, "host")).unwrap();
+                    let offer = core.create_offer(None).unwrap();
+                    core.set_local_description(offer.clone()).unwrap();
+                    peer.set_remote_description(offer).unwrap();
+                    peer.add_local_candidate(candidate(far, "host")).unwrap();
+                    let answer = peer.create_answer(None).unwrap();
+                    peer.set_local_description(answer.clone()).unwrap();
+                    core.set_remote_description(answer).unwrap();
+                    core.add_remote_candidate(candidate(far, "host")).unwrap();
+                    peer.add_remote_candidate(candidate(local, "host")).unwrap();
+                    core.handle_timeout(Instant::now()).unwrap();
+                }
+                peer.handle_timeout(Instant::now()).unwrap();
+
+                let mut buf = [0u8; 2048];
+                let mut last_flight_delivered = false;
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(5) {
+                    driver.poll_pass().await.unwrap();
+                    assert!(
+                        connected.load(Ordering::Acquire) || !last_flight_delivered,
+                        "the pass that took the handshake's last flight returned without \
+                         completing it; the completion and the INIT waited for another wake"
+                    );
+                    if connected.load(Ordering::Acquire) {
+                        // Everything that pass sent is out of the way; with no input, no timer
+                        // and no application write, another pass has nothing to send.
+                        while far_socket.recv_from(&mut buf).is_ok() {}
+                        let next_timer_in = driver
+                            .poll_timeout()
+                            .await
+                            .saturating_duration_since(Instant::now());
+                        driver.poll_pass().await.unwrap();
+                        if let Ok((n, _)) = far_socket.recv_from(&mut buf) {
+                            panic!(
+                                "the pass that completed the handshake returned holding {n} \
+                                 bytes, which would have waited {next_timer_in:?} for the \
+                                 next timer"
+                            );
+                        }
+                        return;
+                    }
+
+                    // The far end reads what the driver sent and answers through its socket arm.
+                    while let Ok((n, _)) = far_socket.recv_from(&mut buf) {
+                        peer.handle_read(TaggedBytesMut {
+                            now: Instant::now(),
+                            transport: TransportContext {
+                                local_addr: far,
+                                peer_addr: local,
+                                ecn: None,
+                                transport_protocol: TransportProtocol::UDP,
+                            },
+                            message: BytesMut::from(&buf[..n]),
+                        })
+                        .unwrap();
+                    }
+                    last_flight_delivered |= reached_connected(&mut peer);
+                    while let Some(packet) = peer.poll_write() {
+                        let len = packet.message.len();
+                        driver
+                            .deliver_udp_batch(&packet.message, len, len, local, far)
+                            .await;
+                    }
+                    let now = Instant::now();
+                    if driver.poll_timeout().await <= now {
+                        driver.handle_timeout(now).await.unwrap();
+                    }
+                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
+                        peer.handle_timeout(now).unwrap();
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                panic!("the DTLS handshake did not complete");
+            }));
+        }
+    }
+
     /// A relayed connection must not go to sleep holding output it can already send: the loop
     /// waits in `select!` for sockets, timers and driver events only, so a packet still queued in
     /// the TURN client when it gets there leaves on the next of those (on an idle connection,
@@ -2089,8 +2276,8 @@ mod tests {
         }
 
         /// A packet to a peer the relay has no permission for waits for the grant, and not a
-        /// moment longer: the grant is consumed in the events phase (2.b), after this pass's
-        /// TURN drain (1.b), and the packet must still leave in that pass.
+        /// moment longer: the grant is consumed in the events phase (2.b), after the pass's
+        /// first write phase, and the packet must still leave in that pass.
         #[test]
         fn a_packet_held_for_a_permission_leaves_in_the_pass_that_takes_the_grant() {
             let rt = default_runtime().unwrap();
@@ -2098,7 +2285,7 @@ mod tests {
                 let server = Server::bind();
                 let (mut driver, local) = allocated_driver(&server).await;
 
-                // What 1.c does with a relayed core write.
+                // What 1.b does with a relayed core write.
                 driver
                     .handle_write(relayed(b"held for a permission"))
                     .await
@@ -2109,10 +2296,6 @@ mod tests {
                     panic!("expected one CreatePermission, got {sent:?}")
                 };
                 assert!(is(request, METHOD_CREATE_PERMISSION, CLASS_REQUEST));
-                assert!(
-                    !driver.turn_relayer.has_pending_write(),
-                    "a packet waiting on a permission is not ready output"
-                );
 
                 deliver(&mut driver, &server, local, &answer(request)).await;
                 driver.poll_pass().await.unwrap();
@@ -2126,7 +2309,7 @@ mod tests {
         }
 
         /// The idle reply: the core writes to a peer the relay already has a permission for,
-        /// in 1.c, after the TURN drain (1.b). It must reach the socket in the same pass.
+        /// in 1.b, and the TURN client must send it (1.c) in the same pass.
         #[test]
         fn a_relayed_core_write_leaves_in_the_same_pass() {
             let rt = default_runtime().unwrap();
@@ -2207,6 +2390,132 @@ mod tests {
                     !checks.is_empty(),
                     "the core's relayed write reached the socket in the pass that drained it"
                 );
+            }));
+        }
+
+        /// The INIT over a relay: the handshake's last flight arrives as relayed input (3.a),
+        /// so the completion is pumped in a later events phase than the one that fed it, and
+        /// the INIT then goes core → TURN client → socket. All of it before the driver waits.
+        #[test]
+        fn the_sctp_init_after_a_relayed_handshake_leaves_before_the_driver_waits() {
+            use rtc::stun::message::{METHOD_DATA, TransactionId};
+            use std::sync::atomic::AtomicBool;
+
+            let rt = default_runtime().unwrap();
+            rt.block_on(Box::pin(async move {
+                let server = Server::bind();
+                let (mut driver, local) = allocated_driver(&server).await;
+                let connected = Arc::new(AtomicBool::new(false));
+                Arc::get_mut(&mut driver.inner).unwrap().handler =
+                    Arc::new(Connected(connected.clone()));
+
+                let mut peer = dtls_server_peer();
+                {
+                    let mut core = driver.inner.core.lock().await;
+                    core.create_data_channel("app", None).unwrap();
+                    let offer = core.create_offer(None).unwrap();
+                    core.set_local_description(offer.clone()).unwrap();
+                    peer.set_remote_description(offer).unwrap();
+                    peer.add_local_candidate(candidate(PEER, "host")).unwrap();
+                    let answer = peer.create_answer(None).unwrap();
+                    peer.set_local_description(answer.clone()).unwrap();
+                    core.set_remote_description(answer).unwrap();
+                    core.add_remote_candidate(candidate(PEER, "host")).unwrap();
+                    peer.add_remote_candidate(RTCIceCandidateInit {
+                        candidate: format!(
+                            "candidate:2 1 udp 16777215 {} {} typ relay raddr {} rport {}",
+                            RELAY.ip(),
+                            RELAY.port(),
+                            local.ip(),
+                            local.port()
+                        ),
+                        sdp_mid: Some("0".to_owned()),
+                        sdp_mline_index: Some(0),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                    core.handle_timeout(Instant::now()).unwrap();
+                }
+                peer.handle_timeout(Instant::now()).unwrap();
+
+                let mut last_flight_delivered = false;
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(5) {
+                    driver.poll_pass().await.unwrap();
+                    assert!(
+                        connected.load(Ordering::Acquire) || !last_flight_delivered,
+                        "the pass that took the handshake's last flight returned without \
+                         completing it; the completion and the INIT waited for another wake"
+                    );
+                    if connected.load(Ordering::Acquire) {
+                        server.received();
+                        let next_timer_in = driver
+                            .poll_timeout()
+                            .await
+                            .saturating_duration_since(Instant::now());
+                        driver.poll_pass().await.unwrap();
+                        let first = sent_to_peer(&server.received());
+                        driver.poll_pass().await.unwrap();
+                        let second = sent_to_peer(&server.received());
+                        assert!(
+                            first.is_empty() && second.is_empty(),
+                            "the pass that completed the handshake returned holding output: \
+                             later passes with no input sent {:?} then {:?} bytes, which would \
+                             have waited {next_timer_in:?} for the next timer",
+                            first.iter().map(Vec::len).collect::<Vec<_>>(),
+                            second.iter().map(Vec::len).collect::<Vec<_>>()
+                        );
+                        return;
+                    }
+
+                    // The TURN server grants permissions and hands the peer what the driver
+                    // sent it; ChannelBind stays unanswered, so data keeps flowing as Send and
+                    // Data indications.
+                    for packet in server.received() {
+                        if is(&packet, METHOD_CREATE_PERMISSION, CLASS_REQUEST) {
+                            deliver(&mut driver, &server, local, &answer(&packet)).await;
+                        } else if is(&packet, METHOD_SEND, CLASS_INDICATION) {
+                            for data in sent_to_peer(&[packet]) {
+                                peer.handle_read(TaggedBytesMut {
+                                    now: Instant::now(),
+                                    transport: TransportContext {
+                                        local_addr: PEER,
+                                        peer_addr: RELAY,
+                                        ecn: None,
+                                        transport_protocol: TransportProtocol::UDP,
+                                    },
+                                    message: BytesMut::from(&data[..]),
+                                })
+                                .unwrap();
+                            }
+                        }
+                    }
+                    last_flight_delivered |= reached_connected(&mut peer);
+                    while let Some(packet) = peer.poll_write() {
+                        let mut indication = StunMessage::new();
+                        indication
+                            .build(&[
+                                Box::new(TransactionId::new()),
+                                Box::new(MessageType::new(METHOD_DATA, CLASS_INDICATION)),
+                                Box::new(PeerAddress {
+                                    ip: PEER.ip(),
+                                    port: PEER.port(),
+                                }),
+                                Box::new(Data(packet.message.to_vec())),
+                            ])
+                            .unwrap();
+                        deliver(&mut driver, &server, local, &indication).await;
+                    }
+                    let now = Instant::now();
+                    if driver.poll_timeout().await <= now {
+                        driver.handle_timeout(now).await.unwrap();
+                    }
+                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
+                        peer.handle_timeout(now).unwrap();
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                panic!("the relayed DTLS handshake did not complete");
             }));
         }
     }

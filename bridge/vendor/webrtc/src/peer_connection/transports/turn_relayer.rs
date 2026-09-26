@@ -480,16 +480,6 @@ impl RTCTurnRelayer {
         queue.push_back(packet);
     }
 
-    /// Whether `poll_write` would return a packet now. Packets buffered for a permission
-    /// that has not been granted yet are not ready: they leave when the grant arrives.
-    pub(crate) fn has_pending_write(&self) -> bool {
-        !self.wouts.is_empty()
-            || self
-                .clients
-                .values()
-                .any(|managed_client| managed_client.client.has_pending_write())
-    }
-
     fn flush_pending_packets(&mut self, relay_addr: SocketAddr, peer_addr: SocketAddr) {
         let Some(four_tuple) = self.relay_addrs.get(&relay_addr).copied() else {
             return;

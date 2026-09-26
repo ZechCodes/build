@@ -1,0 +1,778 @@
+diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
+index cea8455..4d84151 100644
+--- a/webrtc/src/peer_connection/driver.rs
++++ b/webrtc/src/peer_connection/driver.rs
+@@ -83,6 +83,17 @@ const DEFAULT_TIMEOUT_DURATION: Duration = Duration::from_secs(86400); // 1 day
+ /// by elapsed time catches every shape.
+ const MIN_IMMEDIATE_TIMEOUT_INTERVAL: Duration = Duration::from_millis(1);
+ 
++/// How many extra rounds of events, reads and writes a wake takes because relayed input reached the
++/// core (see [`PeerConnectionDriver::poll_pass`]).
++///
++/// One is all a wake can use. The extra round pumps the events that input raised and sends what
++/// they queue; a further round would need its reads to feed the core again, and relayed input
++/// reaches the core (3.a) only from datagrams the TURN client read in `select!`, all of which the
++/// first round's 2.b already turned into reads. The bound states that, and keeps sockets, timers
++/// and `Close`, which are read only in `select!`, from waiting behind the loop if it ever stopped
++/// being true.
++const MAX_EXTRA_ROUNDS: usize = 1;
++
+ /// Insert `sender` for `channel_id`, returning `true` if the channel should be announced.
+ pub(crate) fn insert_data_channel_event_sender(
+     data_channels: &mut HashMap<RTCDataChannelId, Sender<DataChannelEvent>>,
+@@ -583,14 +594,7 @@ where
+                 return Ok(());
+             }
+ 
+-            // Clear the coalescing write-flush gate BEFORE draining. `poll_writes`
+-            // drains the core unconditionally, so clearing here can never strand
+-            // data: a send that set the flag is either already enqueued (drained
+-            // this iteration) or enqueues a fresh `WriteNotify` for the next one.
+-            self.inner.write_pending.store(false, Ordering::Release);
+-            self.poll_writes().await?;
+-            self.poll_events().await;
+-            self.poll_reads().await?;
++            self.poll_pass().await?;
+ 
+             // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
+             // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
+@@ -1323,8 +1327,8 @@ where
+             PeerConnectionDriverEvent::WriteNotify => {
+                 // Coalesced write-flush poke: wake up so the next loop iteration's
+                 // poll_writes drains the core. The `write_pending` gate (cleared at
+-                // the top of the loop) ensures a burst of sends enqueues at most
+-                // one of these.
++                // the start of each write phase) ensures a burst of sends enqueues at
++                // most one of these.
+             }
+             PeerConnectionDriverEvent::UpdateIceConfiguration {
+                 ice_servers,
+@@ -1469,6 +1473,12 @@ where
+     }
+ 
+     async fn poll_writes(&mut self) -> Result<()> {
++        // Clear the coalescing write-flush gate BEFORE draining. 1.b drains the core
++        // unconditionally, so clearing here can never strand data: a send that set the
++        // flag is either already enqueued (drained below) or enqueues a fresh
++        // `WriteNotify` for the next wake.
++        self.inner.write_pending.store(false, Ordering::Release);
++
+         // 1.a stun_gatherer poll_write()
+         while let Some(msg) = self.stun_gatherer.poll_write() {
+             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
+@@ -1489,7 +1499,13 @@ where
+             }
+         }
+ 
+-        // 1.b turn_relayer poll_write()
++        // 1.b peer_connection poll_write() - Send all outgoing packets, coalescing
++        // consecutive same-destination datagrams into single UDP GSO syscalls.
++        let writes = Self::drain_core_writes(self.inner.clone()).await;
++        self.flush_writes(writes).await;
++
++        // 1.c turn_relayer poll_write() - last, because the core feeds it: 1.b hands the
++        // core's relayed writes to the TURN client, and they leave here in the same drain.
+         while let Some(msg) = self.turn_relayer.poll_write() {
+             let four_tuple: FourTuple = FourTuple::from(&msg.transport);
+             if let Err(err) = self.handle_write(msg).await {
+@@ -1509,11 +1525,6 @@ where
+             }
+         }
+ 
+-        // 1.c peer_connection poll_write() - Send all outgoing packets, coalescing
+-        // consecutive same-destination datagrams into single UDP GSO syscalls.
+-        let writes = Self::drain_core_writes(self.inner.clone()).await;
+-        self.flush_writes(writes).await;
+-
+         Ok(())
+     }
+ 
+@@ -1647,6 +1658,40 @@ where
+         self.gso_scratch = scratch;
+     }
+ 
++    /// 1–3, then 1 again: writes, events, reads and writes, so a wake ends only after sending the
++    /// output its own events and reads produced.
++    ///
++    /// The loop waits in `select!` only for sockets, timers and driver events, so output still
++    /// queued when it gets there waits for whichever of those comes next: on an idle connection,
++    /// the ICE agent's next tick, up to 200 ms later. The first write phase sends what woke the
++    /// driver (a datagram's replies, a timer's retransmits, the application's writes) before the
++    /// events and reads phases run callbacks. Those phases give the components more output: a
++    /// TURN permission grant releases held packets (2.b), pumping the core's events can queue
++    /// packets (2.c: a completed DTLS handshake queues the SCTP INIT), and relayed input handed to
++    /// the core leaves replies (3.a). The closing write phase sends all of it, the core before the
++    /// TURN client it feeds (1.b, then 1.c).
++    ///
++    /// rtc has no query for output the core holds, short of draining it, and pumping its events
++    /// (2.c) can queue output even when no event comes out. So there is no readiness flag to
++    /// check: draining is the check. What no write phase can reach is work the core has not
++    /// processed yet, and relayed input (3.a) is the one thing handed to it after its events are
++    /// pumped. The events that input raises (the handshake completing on the last relayed flight)
++    /// become output only when 2.c pumps them, so when 3.a fed the core the wake takes one more
++    /// round, at most [`MAX_EXTRA_ROUNDS`].
++    async fn poll_pass(&mut self) -> Result<()> {
++        self.poll_writes().await?;
++        let mut rounds = 0;
++        loop {
++            self.poll_events().await;
++            let core_was_fed = self.poll_reads().await?;
++            self.poll_writes().await?;
++            if !core_was_fed || rounds == MAX_EXTRA_ROUNDS {
++                return Ok(());
++            }
++            rounds += 1;
++        }
++    }
++
+     async fn poll_events(&mut self) {
+         // 2.a stun_gatherer poll_event()
+         while let Some(event) = self.stun_gatherer.poll_event() {
+@@ -1664,14 +1709,16 @@ where
+         }
+     }
+ 
+-    async fn poll_reads(&mut self) -> Result<()> {
++    /// Returns whether the core was handed relayed input, which can leave it holding replies.
++    async fn poll_reads(&mut self) -> Result<bool> {
+         // 3.a turn_relayer poll_read() - deliver decapsulated relay data,
+         // but no need for stun_gatherer poll_read()
+         let mut turn_messages = Vec::new();
+         while let Some(message) = self.turn_relayer.poll_read() {
+             turn_messages.push(message);
+         }
+-        if !turn_messages.is_empty() {
++        let core_was_fed = !turn_messages.is_empty();
++        if core_was_fed {
+             let mut core = self.inner.core.lock().await;
+             for message in turn_messages {
+                 core.handle_read(message)?;
+@@ -1683,7 +1730,7 @@ where
+             self.handle_rtc_message(message).await;
+         }
+ 
+-        Ok(())
++        Ok(core_was_fed)
+     }
+ 
+     async fn poll_timeout(&mut self) -> Instant {
+@@ -1857,4 +1904,619 @@ mod tests {
+         assert!(!is_link_local(&"fec0::1".parse::<IpAddr>().unwrap()));
+         assert!(!is_link_local(&"2001:db8::1".parse::<IpAddr>().unwrap()));
+     }
++
++    /// Records when the connection reaches `Connected`: the driver reports it from the events
++    /// phase, in the pass that took the DTLS handshake's completion.
++    struct Connected(Arc<std::sync::atomic::AtomicBool>);
++
++    #[async_trait::async_trait]
++    impl crate::peer_connection::PeerConnectionEventHandler for Connected {
++        async fn on_connection_state_change(
++            &self,
++            state: rtc::peer_connection::state::RTCPeerConnectionState,
++        ) {
++            if state == rtc::peer_connection::state::RTCPeerConnectionState::Connected {
++                self.0.store(true, Ordering::Release);
++            }
++        }
++    }
++
++    /// A far end played by a sans-I/O `rtc` core that answers as the DTLS server, so the
++    /// driver's core is the DTLS client and opens SCTP (its INIT) when the handshake completes.
++    fn dtls_server_peer() -> rtc::peer_connection::RTCPeerConnection {
++        let mut settings =
++            rtc::peer_connection::configuration::setting_engine::SettingEngine::default();
++        settings
++            .set_answering_dtls_role(rtc::peer_connection::transport::RTCDtlsRole::Server)
++            .unwrap();
++        rtc::peer_connection::RTCPeerConnectionBuilder::new()
++            .with_setting_engine(settings)
++            .build()
++            .unwrap()
++    }
++
++    /// Drains the far end's events, reporting whether it reached `Connected`. The DTLS server
++    /// gets there on the client's Finished, and the flight it writes in answer is the last of
++    /// the handshake.
++    fn reached_connected(peer: &mut rtc::peer_connection::RTCPeerConnection) -> bool {
++        let mut connected = false;
++        while let Some(event) = peer.poll_event() {
++            connected |= matches!(
++                event,
++                RTCPeerConnectionEvent::OnConnectionStateChangeEvent(
++                    rtc::peer_connection::state::RTCPeerConnectionState::Connected
++                )
++            );
++        }
++        connected
++    }
++
++    fn candidate(addr: SocketAddr, typ: &str) -> RTCIceCandidateInit {
++        RTCIceCandidateInit {
++            candidate: format!(
++                "candidate:1 1 udp 2130706431 {} {} typ {typ}",
++                addr.ip(),
++                addr.port()
++            ),
++            sdp_mid: Some("0".to_owned()),
++            sdp_mline_index: Some(0),
++            ..Default::default()
++        }
++    }
++
++    /// The SCTP INIT is output the core gains in the events phase, not from a socket, a timer or
++    /// the application: when the DTLS handshake completes, pumping the core's events hands the
++    /// completion to its SCTP handler, which queues the INIT. A direct connection must send it
++    /// in the pass that took the completion; nothing else would wake the driver to send it
++    /// before the next timer.
++    mod direct_output {
++        use super::*;
++        use crate::peer_connection::new_test_peer_connection;
++        use crate::runtime::default_runtime;
++        use std::net::UdpSocket;
++        use std::sync::atomic::AtomicBool;
++
++        #[test]
++        fn the_sctp_init_leaves_in_the_pass_that_completes_the_handshake() {
++            let rt = default_runtime().unwrap();
++            let runtime = rt.clone();
++            rt.block_on(Box::pin(async move {
++                let (mut inner, _rx) = new_test_peer_connection().await;
++                let connected = Arc::new(AtomicBool::new(false));
++                Arc::get_mut(&mut inner).unwrap().handler = Arc::new(Connected(connected.clone()));
++                let mut driver = PeerConnectionDriver::new(
++                    inner,
++                    Vec::<SocketAddr>::new(),
++                    Vec::new(),
++                    MulticastDnsMode::Disabled,
++                    Vec::new(),
++                    RTCIceTransportPolicy::All,
++                    false,
++                );
++
++                let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++                let local = socket.local_addr().unwrap();
++                driver
++                    .udp_sockets
++                    .insert(local, runtime.wrap_udp_socket(socket).unwrap());
++                let far_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++                let far = far_socket.local_addr().unwrap();
++                far_socket.set_nonblocking(true).unwrap();
++
++                let mut peer = dtls_server_peer();
++                {
++                    let mut core = driver.inner.core.lock().await;
++                    core.create_data_channel("app", None).unwrap();
++                    core.add_local_candidate(candidate(local, "host")).unwrap();
++                    let offer = core.create_offer(None).unwrap();
++                    core.set_local_description(offer.clone()).unwrap();
++                    peer.set_remote_description(offer).unwrap();
++                    peer.add_local_candidate(candidate(far, "host")).unwrap();
++                    let answer = peer.create_answer(None).unwrap();
++                    peer.set_local_description(answer.clone()).unwrap();
++                    core.set_remote_description(answer).unwrap();
++                    core.add_remote_candidate(candidate(far, "host")).unwrap();
++                    peer.add_remote_candidate(candidate(local, "host")).unwrap();
++                    core.handle_timeout(Instant::now()).unwrap();
++                }
++                peer.handle_timeout(Instant::now()).unwrap();
++
++                let mut buf = [0u8; 2048];
++                let mut last_flight_delivered = false;
++                let start = Instant::now();
++                while start.elapsed() < Duration::from_secs(5) {
++                    driver.poll_pass().await.unwrap();
++                    assert!(
++                        connected.load(Ordering::Acquire) || !last_flight_delivered,
++                        "the pass that took the handshake's last flight returned without \
++                         completing it; the completion and the INIT waited for another wake"
++                    );
++                    if connected.load(Ordering::Acquire) {
++                        // Everything that pass sent is out of the way; with no input, no timer
++                        // and no application write, another pass has nothing to send.
++                        while far_socket.recv_from(&mut buf).is_ok() {}
++                        let next_timer_in = driver
++                            .poll_timeout()
++                            .await
++                            .saturating_duration_since(Instant::now());
++                        driver.poll_pass().await.unwrap();
++                        if let Ok((n, _)) = far_socket.recv_from(&mut buf) {
++                            panic!(
++                                "the pass that completed the handshake returned holding {n} \
++                                 bytes, which would have waited {next_timer_in:?} for the \
++                                 next timer"
++                            );
++                        }
++                        return;
++                    }
++
++                    // The far end reads what the driver sent and answers through its socket arm.
++                    while let Ok((n, _)) = far_socket.recv_from(&mut buf) {
++                        peer.handle_read(TaggedBytesMut {
++                            now: Instant::now(),
++                            transport: TransportContext {
++                                local_addr: far,
++                                peer_addr: local,
++                                ecn: None,
++                                transport_protocol: TransportProtocol::UDP,
++                            },
++                            message: BytesMut::from(&buf[..n]),
++                        })
++                        .unwrap();
++                    }
++                    last_flight_delivered |= reached_connected(&mut peer);
++                    while let Some(packet) = peer.poll_write() {
++                        let len = packet.message.len();
++                        driver
++                            .deliver_udp_batch(&packet.message, len, len, local, far)
++                            .await;
++                    }
++                    let now = Instant::now();
++                    if driver.poll_timeout().await <= now {
++                        driver.handle_timeout(now).await.unwrap();
++                    }
++                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
++                        peer.handle_timeout(now).unwrap();
++                    }
++                    std::thread::sleep(Duration::from_millis(1));
++                }
++                panic!("the DTLS handshake did not complete");
++            }));
++        }
++    }
++
++    /// A relayed connection must not go to sleep holding output it can already send: the loop
++    /// waits in `select!` for sockets, timers and driver events only, so a packet still queued in
++    /// the TURN client when it gets there leaves on the next of those (on an idle connection,
++    /// the ICE agent's tick, up to 200 ms later). These drive the real driver against a TURN
++    /// server played by the test: its socket records what the driver sent, and its answers are
++    /// delivered the way `select!` delivers a datagram. Nothing else runs between steps, so
++    /// "the server has it after one `poll_pass`" means it left in that pass, with no timer and no
++    /// inbound packet to carry it.
++    mod relayed_output {
++        use super::*;
++        use crate::peer_connection::new_test_peer_connection;
++        use crate::runtime::default_runtime;
++        use rtc::peer_connection::RTCPeerConnectionBuilder;
++        use rtc::stun::attributes::{ATTR_NONCE, ATTR_REALM};
++        use rtc::stun::error_code::CODE_UNAUTHORIZED;
++        use rtc::stun::message::{
++            CLASS_ERROR_RESPONSE, CLASS_INDICATION, CLASS_REQUEST, CLASS_SUCCESS_RESPONSE, Getter,
++            METHOD_ALLOCATE, METHOD_CREATE_PERMISSION, METHOD_SEND, Message as StunMessage,
++            MessageType,
++        };
++        use rtc::stun::textattrs::{Nonce, Realm};
++        use rtc::turn::proto::data::Data;
++        use rtc::turn::proto::lifetime::Lifetime;
++        use rtc::turn::proto::peeraddr::PeerAddress;
++        use rtc::turn::proto::relayaddr::RelayedAddress;
++        use std::net::{Ipv4Addr, UdpSocket};
++
++        const RELAY: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 50000);
++        const PEER: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 40000);
++
++        /// The TURN server's side: a real socket the driver sends to, read without blocking.
++        struct Server {
++            socket: UdpSocket,
++            addr: SocketAddr,
++        }
++
++        impl Server {
++            fn bind() -> Self {
++                let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++                socket.set_nonblocking(true).unwrap();
++                let addr = socket.local_addr().unwrap();
++                Self { socket, addr }
++            }
++
++            /// Everything the driver has sent so far. Loopback delivery is synchronous, so a
++            /// datagram the driver sent before this call is already here.
++            fn received(&self) -> Vec<StunMessage> {
++                let mut buf = [0u8; 2048];
++                let mut out = Vec::new();
++                while let Ok(n) = self.socket.recv(&mut buf) {
++                    let mut msg = StunMessage::new();
++                    msg.raw = buf[..n].to_vec();
++                    msg.decode()
++                        .expect("the driver sent the TURN server a STUN message");
++                    out.push(msg);
++                }
++                out
++            }
++        }
++
++        fn is(
++            msg: &StunMessage,
++            method: rtc::stun::message::Method,
++            class: rtc::stun::message::MessageClass,
++        ) -> bool {
++            msg.typ == MessageType::new(method, class)
++        }
++
++        fn answer(request: &StunMessage) -> StunMessage {
++            let mut msg = StunMessage::new();
++            let tid = Box::new(request.transaction_id);
++            match request.typ.method {
++                METHOD_ALLOCATE if request.get(ATTR_NONCE).is_err() => msg.build(&[
++                    tid,
++                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_ERROR_RESPONSE)),
++                    Box::new(CODE_UNAUTHORIZED),
++                    Box::new(Realm::new(ATTR_REALM, "webrtc.rs".to_owned())),
++                    Box::new(Nonce::new(ATTR_NONCE, "nonce".to_owned())),
++                ]),
++                METHOD_ALLOCATE => msg.build(&[
++                    tid,
++                    Box::new(MessageType::new(METHOD_ALLOCATE, CLASS_SUCCESS_RESPONSE)),
++                    Box::new(RelayedAddress {
++                        ip: RELAY.ip(),
++                        port: RELAY.port(),
++                    }),
++                    Box::new(Lifetime(Duration::from_secs(600))),
++                ]),
++                METHOD_CREATE_PERMISSION => msg.build(&[
++                    tid,
++                    Box::new(MessageType::new(
++                        METHOD_CREATE_PERMISSION,
++                        CLASS_SUCCESS_RESPONSE,
++                    )),
++                ]),
++                other => panic!("the test server does not answer {other}"),
++            }
++            .unwrap();
++            msg
++        }
++
++        /// Hand the driver a datagram from the TURN server, as `select!`'s socket arm does.
++        async fn deliver(
++            driver: &mut PeerConnectionDriver,
++            server: &Server,
++            local: SocketAddr,
++            msg: &StunMessage,
++        ) {
++            driver
++                .deliver_udp_batch(&msg.raw, msg.raw.len(), msg.raw.len(), local, server.addr)
++                .await;
++        }
++
++        /// A driver whose TURN client (on a real local socket) holds an allocation at `RELAY`.
++        async fn allocated_driver(server: &Server) -> (PeerConnectionDriver, SocketAddr) {
++            let runtime = default_runtime().unwrap();
++            let (inner, _rx) = new_test_peer_connection().await;
++            let ice_servers = vec![RTCIceServer {
++                urls: vec![format!("turn:{}?transport=udp", server.addr)],
++                username: "user".to_owned(),
++                credential: "pass".to_owned(),
++            }];
++            let mut driver = PeerConnectionDriver::new(
++                inner,
++                Vec::<SocketAddr>::new(),
++                Vec::new(),
++                MulticastDnsMode::Disabled,
++                ice_servers.clone(),
++                RTCIceTransportPolicy::Relay,
++                false,
++            );
++            let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
++            let local = socket.local_addr().unwrap();
++            driver
++                .udp_sockets
++                .insert(local, runtime.wrap_udp_socket(socket).unwrap());
++            driver.turn_relayer = RTCTurnRelayer::new(
++                vec![local],
++                ice_servers,
++                RTCIceTransportPolicy::Relay,
++                runtime,
++            );
++            driver.turn_relayer.gather().await.unwrap();
++
++            // Allocate → 401 → authenticated Allocate → success.
++            for _ in 0..2 {
++                driver.poll_pass().await.unwrap();
++                let sent = server.received();
++                let [allocate] = sent.as_slice() else {
++                    panic!("expected one Allocate, got {sent:?}")
++                };
++                assert!(is(allocate, METHOD_ALLOCATE, CLASS_REQUEST));
++                deliver(&mut driver, server, local, &answer(allocate)).await;
++            }
++            driver.poll_pass().await.unwrap();
++            assert!(
++                driver.turn_relayer.contains_local_addr(RELAY),
++                "the allocation took"
++            );
++            assert!(server.received().is_empty());
++            (driver, local)
++        }
++
++        fn sent_to_peer(msgs: &[StunMessage]) -> Vec<Vec<u8>> {
++            msgs.iter()
++                .filter(|msg| is(msg, METHOD_SEND, CLASS_INDICATION))
++                .map(|msg| {
++                    let mut peer = PeerAddress::default();
++                    peer.get_from(msg).unwrap();
++                    assert_eq!(SocketAddr::new(peer.ip, peer.port), PEER);
++                    let mut data = Data::default();
++                    data.get_from(msg).unwrap();
++                    data.0
++                })
++                .collect()
++        }
++
++        fn relayed(message: &[u8]) -> TaggedBytesMut {
++            TaggedBytesMut {
++                now: Instant::now(),
++                transport: TransportContext {
++                    local_addr: RELAY,
++                    peer_addr: PEER,
++                    ecn: None,
++                    transport_protocol: TransportProtocol::UDP,
++                },
++                message: BytesMut::from(message),
++            }
++        }
++
++        /// A packet to a peer the relay has no permission for waits for the grant, and not a
++        /// moment longer: the grant is consumed in the events phase (2.b), after the pass's
++        /// first write phase, and the packet must still leave in that pass.
++        #[test]
++        fn a_packet_held_for_a_permission_leaves_in_the_pass_that_takes_the_grant() {
++            let rt = default_runtime().unwrap();
++            rt.block_on(Box::pin(async move {
++                let server = Server::bind();
++                let (mut driver, local) = allocated_driver(&server).await;
++
++                // What 1.b does with a relayed core write.
++                driver
++                    .handle_write(relayed(b"held for a permission"))
++                    .await
++                    .unwrap();
++                driver.poll_pass().await.unwrap();
++                let sent = server.received();
++                let [request] = sent.as_slice() else {
++                    panic!("expected one CreatePermission, got {sent:?}")
++                };
++                assert!(is(request, METHOD_CREATE_PERMISSION, CLASS_REQUEST));
++
++                deliver(&mut driver, &server, local, &answer(request)).await;
++                driver.poll_pass().await.unwrap();
++
++                assert_eq!(
++                    sent_to_peer(&server.received()),
++                    vec![b"held for a permission".to_vec()],
++                    "the packet left in the pass that consumed the grant"
++                );
++            }));
++        }
++
++        /// The idle reply: the core writes to a peer the relay already has a permission for,
++        /// in 1.b, and the TURN client must send it (1.c) in the same pass.
++        #[test]
++        fn a_relayed_core_write_leaves_in_the_same_pass() {
++            let rt = default_runtime().unwrap();
++            rt.block_on(Box::pin(async move {
++                let server = Server::bind();
++                let (mut driver, local) = allocated_driver(&server).await;
++
++                // A remote description, so the core's ICE agent has a peer to check.
++                {
++                    let mut remote = RTCPeerConnectionBuilder::new().build().unwrap();
++                    let mut core = driver.inner.core.lock().await;
++                    let _ = core.create_data_channel("app", None).unwrap();
++                    let offer = core.create_offer(None).unwrap();
++                    core.set_local_description(offer.clone()).unwrap();
++                    remote.set_remote_description(offer).unwrap();
++                    let answer = remote.create_answer(None).unwrap();
++                    remote.set_local_description(answer.clone()).unwrap();
++                    core.set_remote_description(answer).unwrap();
++                    core.add_remote_candidate(RTCIceCandidateInit {
++                        candidate: format!(
++                            "candidate:1 1 udp 2130706431 {} {} typ host",
++                            PEER.ip(),
++                            PEER.port()
++                        ),
++                        sdp_mid: Some("0".to_owned()),
++                        sdp_mline_index: Some(0),
++                        ..Default::default()
++                    })
++                    .unwrap();
++                    core.add_local_candidate(RTCIceCandidateInit {
++                        candidate: format!(
++                            "candidate:2 1 udp 16777215 {} {} typ relay raddr {} rport {}",
++                            RELAY.ip(),
++                            RELAY.port(),
++                            local.ip(),
++                            local.port()
++                        ),
++                        sdp_mid: Some("0".to_owned()),
++                        sdp_mline_index: Some(0),
++                        ..Default::default()
++                    })
++                    .unwrap();
++                }
++
++                // First check: the relay has no permission for the peer yet; get one. Two passes
++                // each time, standing in for a later wake, so this setup does not depend on the
++                // behaviour under test and only the last step below does.
++                driver.handle_timeout(Instant::now()).await.unwrap();
++                driver.poll_pass().await.unwrap();
++                driver.poll_pass().await.unwrap();
++                let sent = server.received();
++                let request = sent
++                    .iter()
++                    .find(|msg| is(msg, METHOD_CREATE_PERMISSION, CLASS_REQUEST))
++                    .unwrap_or_else(|| {
++                        panic!("the core's first check asks for a permission: {sent:?}")
++                    });
++                deliver(&mut driver, &server, local, &answer(request)).await;
++                driver.poll_pass().await.unwrap();
++                driver.poll_pass().await.unwrap();
++                assert!(
++                    !sent_to_peer(&server.received()).is_empty(),
++                    "the first check left once the permission was granted"
++                );
++
++                // Now permitted: the next check the core writes must leave in its own pass.
++                driver
++                    .handle_timeout(Instant::now() + Duration::from_secs(1))
++                    .await
++                    .unwrap();
++                assert!(
++                    server.received().is_empty(),
++                    "timers write nothing themselves"
++                );
++                driver.poll_pass().await.unwrap();
++                let checks = sent_to_peer(&server.received());
++                assert!(
++                    !checks.is_empty(),
++                    "the core's relayed write reached the socket in the pass that drained it"
++                );
++            }));
++        }
++
++        /// The INIT over a relay: the handshake's last flight arrives as relayed input (3.a),
++        /// so the completion is pumped in a later events phase than the one that fed it, and
++        /// the INIT then goes core → TURN client → socket. All of it before the driver waits.
++        #[test]
++        fn the_sctp_init_after_a_relayed_handshake_leaves_before_the_driver_waits() {
++            use rtc::stun::message::{METHOD_DATA, TransactionId};
++            use std::sync::atomic::AtomicBool;
++
++            let rt = default_runtime().unwrap();
++            rt.block_on(Box::pin(async move {
++                let server = Server::bind();
++                let (mut driver, local) = allocated_driver(&server).await;
++                let connected = Arc::new(AtomicBool::new(false));
++                Arc::get_mut(&mut driver.inner).unwrap().handler =
++                    Arc::new(Connected(connected.clone()));
++
++                let mut peer = dtls_server_peer();
++                {
++                    let mut core = driver.inner.core.lock().await;
++                    core.create_data_channel("app", None).unwrap();
++                    let offer = core.create_offer(None).unwrap();
++                    core.set_local_description(offer.clone()).unwrap();
++                    peer.set_remote_description(offer).unwrap();
++                    peer.add_local_candidate(candidate(PEER, "host")).unwrap();
++                    let answer = peer.create_answer(None).unwrap();
++                    peer.set_local_description(answer.clone()).unwrap();
++                    core.set_remote_description(answer).unwrap();
++                    core.add_remote_candidate(candidate(PEER, "host")).unwrap();
++                    peer.add_remote_candidate(RTCIceCandidateInit {
++                        candidate: format!(
++                            "candidate:2 1 udp 16777215 {} {} typ relay raddr {} rport {}",
++                            RELAY.ip(),
++                            RELAY.port(),
++                            local.ip(),
++                            local.port()
++                        ),
++                        sdp_mid: Some("0".to_owned()),
++                        sdp_mline_index: Some(0),
++                        ..Default::default()
++                    })
++                    .unwrap();
++                    core.handle_timeout(Instant::now()).unwrap();
++                }
++                peer.handle_timeout(Instant::now()).unwrap();
++
++                let mut last_flight_delivered = false;
++                let start = Instant::now();
++                while start.elapsed() < Duration::from_secs(5) {
++                    driver.poll_pass().await.unwrap();
++                    assert!(
++                        connected.load(Ordering::Acquire) || !last_flight_delivered,
++                        "the pass that took the handshake's last flight returned without \
++                         completing it; the completion and the INIT waited for another wake"
++                    );
++                    if connected.load(Ordering::Acquire) {
++                        server.received();
++                        let next_timer_in = driver
++                            .poll_timeout()
++                            .await
++                            .saturating_duration_since(Instant::now());
++                        driver.poll_pass().await.unwrap();
++                        let first = sent_to_peer(&server.received());
++                        driver.poll_pass().await.unwrap();
++                        let second = sent_to_peer(&server.received());
++                        assert!(
++                            first.is_empty() && second.is_empty(),
++                            "the pass that completed the handshake returned holding output: \
++                             later passes with no input sent {:?} then {:?} bytes, which would \
++                             have waited {next_timer_in:?} for the next timer",
++                            first.iter().map(Vec::len).collect::<Vec<_>>(),
++                            second.iter().map(Vec::len).collect::<Vec<_>>()
++                        );
++                        return;
++                    }
++
++                    // The TURN server grants permissions and hands the peer what the driver
++                    // sent it; ChannelBind stays unanswered, so data keeps flowing as Send and
++                    // Data indications.
++                    for packet in server.received() {
++                        if is(&packet, METHOD_CREATE_PERMISSION, CLASS_REQUEST) {
++                            deliver(&mut driver, &server, local, &answer(&packet)).await;
++                        } else if is(&packet, METHOD_SEND, CLASS_INDICATION) {
++                            for data in sent_to_peer(&[packet]) {
++                                peer.handle_read(TaggedBytesMut {
++                                    now: Instant::now(),
++                                    transport: TransportContext {
++                                        local_addr: PEER,
++                                        peer_addr: RELAY,
++                                        ecn: None,
++                                        transport_protocol: TransportProtocol::UDP,
++                                    },
++                                    message: BytesMut::from(&data[..]),
++                                })
++                                .unwrap();
++                            }
++                        }
++                    }
++                    last_flight_delivered |= reached_connected(&mut peer);
++                    while let Some(packet) = peer.poll_write() {
++                        let mut indication = StunMessage::new();
++                        indication
++                            .build(&[
++                                Box::new(TransactionId::new()),
++                                Box::new(MessageType::new(METHOD_DATA, CLASS_INDICATION)),
++                                Box::new(PeerAddress {
++                                    ip: PEER.ip(),
++                                    port: PEER.port(),
++                                }),
++                                Box::new(Data(packet.message.to_vec())),
++                            ])
++                            .unwrap();
++                        deliver(&mut driver, &server, local, &indication).await;
++                    }
++                    let now = Instant::now();
++                    if driver.poll_timeout().await <= now {
++                        driver.handle_timeout(now).await.unwrap();
++                    }
++                    if peer.poll_timeout().is_some_and(|deadline| deadline <= now) {
++                        peer.handle_timeout(now).unwrap();
++                    }
++                    std::thread::sleep(Duration::from_millis(1));
++                }
++                panic!("the relayed DTLS handshake did not complete");
++            }));
++        }
++    }
+ }

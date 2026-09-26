@@ -99,13 +99,12 @@ rcgen = "0.13"
 syn = { version = "2", features = ["full", "visit"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
 
-# webrtc 0.20.4 and rtc-turn 0.20.4 with the driver's readiness check (#166):
-# a relayed reply leaves in the pass that queued it instead of waiting up to
-# ICE's 200 ms timer for the driver's next wake. The patched sources, the diff
-# against the registry and how to re-derive them are in vendor/README.md.
-# Neither crate is a member of this package's workspace, so fmt, clippy and
-# the tests here never reach into vendor/; its own tests run from
-# vendor/Cargo.toml.
+# webrtc 0.20.4 with its driver's drain fixed (#166): output a wake produces
+# leaves before the driver waits, instead of waiting up to ICE's 200 ms timer
+# for the next wake (a relayed reply, the SCTP INIT after the DTLS handshake).
+# The patched source, the diff against the registry and how to re-derive it
+# are in vendor/README.md. The crate is not a member of this package's
+# workspace, so fmt, clippy and the tests here never reach into vendor/; its
+# own tests run from vendor/Cargo.toml.
 [patch.crates-io]
 webrtc = { path = "vendor/webrtc" }
-rtc-turn = { path = "vendor/rtc-turn" }

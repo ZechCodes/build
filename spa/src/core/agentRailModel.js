@@ -213,16 +213,24 @@ function projectAgentNews(agents) {
  * one every workspace in the project talks to. Until an agent has been born on
  * it the tip says how to start it, the way a ghost's does, rather than reading
  * as a bubble with nothing behind it.
+ *
+ * It is marked the way an unwatched agent's bubble is (#105) while the
+ * project's agent open under it is one the reader does not watch, or, with
+ * none open, while they watch none of them; `projectAgentOnTheStrip` says when
+ * the strip carries it at all.
  */
-export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false } = {}) {
+export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null } = {}) {
   const news = projectAgentNews(agents);
   const who = `Project agent for ${name}`;
+  const unwatched = projectAgentMarked(agents, active, openAgentId);
+  const title = agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`;
   return {
     type: "project",
     id: entityId || "",
     label: projectInitial(name),
     pattern: null,
-    title: agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`,
+    title: unwatched ? `${title} · ${UNWATCHED_TIP}` : title,
+    unwatched,
     active,
     unread: agents.reduce((total, agent) => total + (agent.unread_count || 0), 0),
     working: agents.some((agent) => !!agent.working),
@@ -275,9 +283,38 @@ const projectFace = (projectName) => ({ label: projectInitial(projectName), patt
  *  one conversation, so while it is the project's nothing below the line is the
  *  open one. */
 function underTheProject(own, projectAgent) {
+  if (!projectAgentOnTheStrip(projectAgent)) return own;
   const beside = projectAgent.active ? own.map((bubble) => ({ ...bubble, active: false })) : own;
   return [projectAgentBubble(projectAgent), RAIL_SEPARATOR_ENTRY, ...beside];
 }
+
+/** Whether the reader watches the project's agent: one of its agents is
+ *  watched, or none has been born yet to be unwatched. */
+const projectAgentWatched = (agents = []) => !agents.length || agents.some(agentIsWatched);
+
+/** Whether a workspace's strip carries the project's bubble, and the line
+ *  under it (#105): while the reader watches the project's agent, and an
+ *  unwatched one only while its conversation is the one open. */
+/** Whether the project's bubble wears the unwatched mark: the open agent's
+ *  watch where one of the project's agents is open, else the project's. */
+function projectAgentMarked(agents, active, openAgentId) {
+  const open = active ? agents.find((agent) => agent.id === openAgentId) : null;
+  return open ? !agentIsWatched(open) : !projectAgentWatched(agents);
+}
+
+export const projectAgentOnTheStrip = ({ agents = [], active = false } = {}) => active || projectAgentWatched(agents);
+
+/** Whether the reader watches this agent. A bridge that says nothing about
+ *  watching leaves `watched` unset, and every agent of it counts as watched. */
+export const agentIsWatched = (agent) => agent?.watched !== false;
+
+/** Whether an agent has a bubble on the strip (#105): the ones the reader
+ *  watches, and an unwatched one only while its conversation is the one open.
+ *  Leaving it — for another agent, the overview or the `+` — takes it off. */
+const onTheStrip = (agent, selectedId, selectedKind) =>
+  agentIsWatched(agent) || (selectedKind === "agent" && agent.id === selectedId);
+
+const UNWATCHED_TIP = "Not watching";
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
 function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName }) {
@@ -296,14 +333,15 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
       },
     ];
   }
-  const bubbles = agents.map((agent) => ({
+  const bubbles = agents.filter((agent) => onTheStrip(agent, selectedId, selectedKind)).map((agent) => ({
     type: "agent",
     id: agent.id,
     ...face(agentPattern(agent.ordinal)),
     // A named agent wears its initials; an unnamed one keeps the painted
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
-    title: bubbleTip(agent),
+    title: agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
+    unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: agent.unread_count || 0,
     working: !!agent.working,
@@ -372,11 +410,19 @@ export function removeAgentConfirm(agent, kind = "branch") {
 }
 
 /** The conversation that is open: the one the human chose while it still
- *  exists, else the first — the rail is never open on nothing. */
+ *  exists, else the first they watch, else the first — the rail is never open
+ *  on nothing. */
 export function selectAgentId(agents = [], wanted = null) {
   if (wanted && agents.some((agent) => agent.id === wanted)) return wanted;
-  return agents.length ? agents[0].id : null;
+  return (agents.find(agentIsWatched) || agents[0])?.id ?? null;
 }
+
+/** The conversation a page was last left on, unless the reader does not watch
+ *  it: its bubble went when they left (#105), so coming back does not bring it
+ *  back. Kept while the agents are not known yet, to be asked again once they
+ *  are. */
+export const rememberedAgentId = (agents = [], remembered = null) =>
+  agents.find((agent) => agent.id === remembered && !agentIsWatched(agent)) ? null : remembered;
 
 // ---- the pinned status line -------------------------------------------------
 

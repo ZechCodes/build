@@ -158,8 +158,12 @@ final for this build unless the reviewer overrides them in the thread.
   selected branch/issue's checkout (primary checkout for issues and main).
   Collapsed by default; half and full overlay sizes.
 - **Agent rail**: right-edge bubble strip, always present — one bubble per
-  agent (unread badge, working spinner, active highlight), `+` add-agent on
-  branches only. Tapping expands that agent's conversation panel. Panel
+  watched agent (unread badge, working spinner, active highlight), `+`
+  add-agent on branches only. An unwatched agent is listed under "Not
+  watching" in the chat overview; opening one gives it a temporary bubble,
+  marked unwatched, that goes when the reader leaves it unless they watched
+  it meanwhile (#105). The project's agent above a workspace's strip follows
+  the same rule. Tapping expands that agent's conversation panel. Panel
   header: agent identity, Chat/TUI toggle, collapse. TUI mode attaches the
   same panel to the agent's PTY (`term.resize` to panel geometry).
 - **Routing**: `#/inbox` is the landing route. Branch/issue routes lose the

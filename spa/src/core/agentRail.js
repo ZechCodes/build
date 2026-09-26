@@ -54,6 +54,7 @@ import {
   railEntity,
   railStatusShape,
   railWorkStatus,
+  rememberedAgentId,
   removeAgentConfirm,
   selectAgentId,
   startFailuresLearned,
@@ -494,6 +495,8 @@ const bubbleClasses = (bubble) => {
   if (bubble.active) classes.push("active");
   if (bubble.working) classes.push("working");
   if (bubble.starting) classes.push("starting");
+  // An agent the reader does not watch, on the strip only while it is open (#105).
+  if (bubble.unwatched) classes.push("rail-bubble-unwatched");
   return classes.join(" ");
 };
 
@@ -875,13 +878,20 @@ const alongsideKind = (context) => context.alongside?.kind || "project";
 const seedPayload = (side) => side?.payload || null;
 
 /** Whose conversation this mount opens on: the bubble that asked to come back
- *  here, or the one this rail was last left on. With a payload already in hand
- *  the choice settles the way a read settles it — the remembered conversation
- *  while it still exists, else this side's first. */
+ *  here, or the one this rail was last left on — unless the reader does not
+ *  watch that one, whose bubble went when they left it (#105). With a payload
+ *  already in hand the choice settles the way a read settles it — the
+ *  remembered conversation while it still exists, else this side's first. */
 const openingAgentId = (context, railView, agents) => {
-  const remembered = context.openAgentId || railView.selectedAgentId();
+  const remembered = context.openAgentId || rememberedAgentId(agents, railView.selectedAgentId());
   return agents.length ? selectAgentId(agents, remembered) : remembered;
 };
+
+/** Whether this mount reopened a conversation from memory before this side's
+ *  agents were known: the first read that names them says whether the reader
+ *  still watches it (#105). */
+const reopenedBeforeAgentsKnown = (context, agents, selectedId) =>
+  !context.openAgentId && !agents.length && !!selectedId;
 
 /** Which of the rail's one selection this mount opens on (#148): what a swap
  *  pressed, the `+` or the agent a URL named, else the one this page was left
@@ -903,6 +913,9 @@ const openingKind = (context, pageView) => {
  *  reason to put it away. */
 const panelStartsOut = (context, pinned) =>
   context.panelOpen ?? (pinned || context.autofocusComposer === true || !!context.openAgentId || context.addingAgent === true);
+
+/** The verb that watches a conversation; its opposite unwatches it. */
+const WATCH_VERB = "conversation.watch";
 
 /**
  * Whether this rail offers a watch switch, and what it says to begin with.
@@ -946,6 +959,7 @@ function mountRailOnContext(host, context, swap) {
   // their working — on the first frame, and the read under way reconciles.
   let entity = railEntity(seedPayload(context), context.kind);
   let selectedId = openingAgentId(context, railView, entity.agents);
+  let selectionFromMemory = reopenedBeforeAgentsKnown(context, entity.agents, selectedId);
   selection.set(selectedId);
   // ---- the project's agent, where the view asked for one --------------------
   // The rail stands on one conversation and keeps the other beside it: the
@@ -956,15 +970,33 @@ function mountRailOnContext(host, context, swap) {
   // mounted rail, because the rail stands on one conversation at a time — a
   // swap to the project's side mounts a rail of its own with its own.
   let watchState = watchStateFor(context, entity.agents.find((agent) => agent.id === selectedId));
+  /** A watch the bridge took, written into the cached row where nothing has
+   *  written it since the ask: the strip keeps a watched agent from the answer
+   *  on, not from whenever the push behind it lands (#105). The answer is the
+   *  device's, not this mount's, so a reader who left before it came still
+   *  finds it on return. A retired device's cache is left alone, asked inside
+   *  the write itself: a device retired while the write was on its way to
+   *  disk still finds nothing written. */
+  const callWatch = async (method, params) => {
+    const captured = await records.rowWrite(params.entity_id);
+    const answer = await chatRepository.currentCall()(method, params);
+    const watched = method === WATCH_VERB;
+    await records.patchAgentIfUnwritten(captured, params.agent_id,
+      (agent) => (cacheScope?.active() ? { ...agent, watched } : null));
+    return answer;
+  };
   const watchSwitch = createWatchToggle({
     ...watchState,
     entityId: () => context.entityId || entity.entityId || records.entityId(),
     agentId: () => selectedId,
-    call: (method, params) => chatRepository.currentCall()(method, params),
+    call: callWatch,
     onChange: (next, addressed) => {
       if (!standing() || addressed.agent_id !== selectedId) return;
       watchState = next;
       syncWatchButton(host.querySelector(WATCH_BUTTON_SELECTOR), next);
+      // The press moves the open bubble's unwatched mark at once (#105); the
+      // row the bridge pushes after the verb is what keeps it there.
+      repaintStrip();
     },
     onFailure: (error, addressed) => {
       if (standing() && addressed.agent_id === selectedId) notifyError("Could not change watching", error.message || String(error));
@@ -1198,6 +1230,19 @@ function mountRailOnContext(host, context, swap) {
   const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
 
   const agentOf = (id) => visibleAgents().find((agent) => agent.id === id) || null;
+  /** The agents as the strip carries them (#105): the open one watched as its
+   *  switch says, which moves under the press before the row does. */
+  const stripAgents = () => visibleAgents().map((agent) => (agent.id === selectedId && watchState
+    ? { ...agent, watched: watchState.watching } : agent));
+  /** The conversation a read settles on: the one open while it still exists,
+   *  else the first watched. One reopened from memory before the agents were
+   *  known is dropped here if the reader does not watch it. */
+  const settleSelection = () => {
+    const agents = visibleAgents();
+    const wanted = selectionFromMemory ? rememberedAgentId(agents, selectedId) : selectedId;
+    if (agents.length) selectionFromMemory = false;
+    chooseAgent(selectAgentId(agents, wanted));
+  };
   const syncWatchFromAgent = () => {
     const current = watchStateFor(context, agentOf(selectedId));
     if (current) watchSwitch.settle(current);
@@ -1528,7 +1573,7 @@ function mountRailOnContext(host, context, swap) {
     keepForSwap(context.kind, row);
     for (const agent of answered.agents) controllerForAgent(agent);
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
-    chooseAgent(selectAgentId(visibleAgents(), selectedId));
+    settleSelection();
     controllerForAgent(agentOf(selectedId))?.reconcileUncertain().then(syncChatRecovery);
     paint();
     overview.refresh();
@@ -1712,8 +1757,9 @@ function mountRailOnContext(host, context, swap) {
     projectAgent && {
       name: projectName || projectAgent.projectId,
       entityId: projectOwner,
-      agents: onProjectAgentRail ? visibleAgents() : alongsideEntity.agents,
+      agents: onProjectAgentRail ? stripAgents() : alongsideEntity.agents,
       active: onProjectAgentRail && selectedKind === "agent",
+      openAgentId: onProjectAgentRail ? selectedId : null,
     };
 
   // ---- painting -------------------------------------------------------------
@@ -1912,18 +1958,12 @@ function mountRailOnContext(host, context, swap) {
     else overview.close();
   };
 
-  const paint = () => {
-    if (!standing()) return;
-    if (!host.querySelector(".rail-strip")) {
-      releaseFaces();
-      host.innerHTML = `<div class="rail-strip"></div>`;
-    }
-    const strip = host.querySelector(".rail-strip");
+  const stripBubbles = () => {
     const below = belowTheLine();
     const bubbles = railBubbles({
       // Below the line are the work item's agents, whichever side of the swap
       // this rail is standing on.
-      agents: onProjectAgentRail ? alongsideEntity.agents : visibleAgents(),
+      agents: onProjectAgentRail ? alongsideEntity.agents : stripAgents(),
       selectedId, selectedKind, kind: below.kind, chatCapable: below.chatCapable !== false,
       canAdd: onProjectAgentRail ? below.canAdd : null,
       projectAgent: projectAgentEntry(),
@@ -1932,7 +1972,22 @@ function mountRailOnContext(host, context, swap) {
     const overviewBubble = { type: "overview", id: "", title: "Chat overview",
       active: selectedKind === "overview", label: "", unread: 0, working: false };
     const opened = (bubble) => ({ ...bubble, expanded: panelVisible && Boolean(bubble.active) });
-    paintStrip(strip, [...bubbles, overviewBubble].map(opened));
+    return [...bubbles, overviewBubble].map(opened);
+  };
+
+  /** The strip alone, for a change that moves nothing else on the rail. */
+  const repaintStrip = () => {
+    const strip = standing() && host.querySelector(".rail-strip");
+    if (strip) paintStrip(strip, stripBubbles());
+  };
+
+  const paint = () => {
+    if (!standing()) return;
+    if (!host.querySelector(".rail-strip")) {
+      releaseFaces();
+      host.innerHTML = `<div class="rail-strip"></div>`;
+    }
+    repaintStrip();
     // The strip is useful immediately; the panel waits for its cached pin
     // choice so a remount never flashes the wrong layout or creates a panel
     // that then has to be discarded.
@@ -1942,7 +1997,7 @@ function mountRailOnContext(host, context, swap) {
       panel = document.createElement("div");
       panel.className = "rail-panel";
       panel.id = "rail-panel";
-      host.insertBefore(panel, strip);
+      host.insertBefore(panel, host.querySelector(".rail-strip"));
     }
     if (panelOut()) paintPanel();
     syncPopover();
@@ -3632,6 +3687,7 @@ function mountRailOnContext(host, context, swap) {
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
     selectKind("agent"); // opening a real conversation ends the chooser
+    selectionFromMemory = false;
     openConversation(agentId);
     showPanel();
   };
@@ -3807,7 +3863,7 @@ function mountRailOnContext(host, context, swap) {
     // whose conversation the panel is showing. Only a row that names its agents
     // seeds: an agentless row has no selection to make, and making one anyway
     // would wipe the remembered choice the record is about to honor.
-    chooseAgent(selectAgentId(visibleAgents(), selectedId));
+    settleSelection();
   }
   paint();
   refresh();

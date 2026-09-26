@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 
@@ -88,7 +88,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { scopeFor } = await import("../src/core/cacheScope.js");
+const { releaseScope, scopeFor } = await import("../src/core/cacheScope.js");
 const { adoptBridgeSelection, adoptDeviceSession, contextFor, knownDeviceContext, resetDeviceContexts } = await import("../src/core/deviceContexts.js");
 const { createChatRepository } = await import("../src/core/chatRepository.js");
 const { evictEntity, mergeCached, readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
@@ -107,6 +107,7 @@ const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
+const { greetBridge: greetWatchingBridge, resetChangeEvents: forgetGreetings } = await import("../src/core/changeEvents.js");
 const { pushRailThreadItems, writeRailBoard, writeRailRow, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
 /** The topic each fixture agent named its work with. The head and the bubbles
@@ -1010,7 +1011,7 @@ describe("the rail over a machine that is asked nothing", () => {
     try {
       payload = branchRow({ agents: [agent({ watched: false }), agent({ id: "ag-2", ordinal: 2, watched: true })] });
       await writeRailWorkItem(payload);
-      rail = mountAgentRail(railHost(), railAddress());
+      rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-1" }));
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
 
       const pressedA = panel().querySelector(".rail-watch").onclick();
@@ -1027,7 +1028,12 @@ describe("the rail over a machine that is asked nothing", () => {
       expect(panel().querySelector(".rail-watch").title).toBe("Watching");
       expect(panel().querySelector(".rail-watch").disabled).toBe(false);
       expect(notifyError).not.toHaveBeenCalled();
-      railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+      // A was left unwatched, so its bubble went with it (#105); the overview
+      // is the way back to it.
+      expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]')).toBeNull();
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(railHost().querySelector('.rail-overview-row[data-overview-agent="ag-1"]')).toBeTruthy());
+      railHost().querySelector('.rail-overview-row[data-overview-agent="ag-1"]').click();
       await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.title).toBe("Not watching"));
     } finally {
       resetChangeEvents();
@@ -1856,6 +1862,279 @@ describe("the bubble strip", () => {
 // The bubble's face is painted, not styled: core/agentCanvas.js draws a tiling
 // into the canvas and the rail owns one painter per bubble. What the rail owes
 // it is a lifecycle and three switches — working, ink, dimmed.
+// The strip carries the agents the reader watches (#105). One they do not
+// watch gets a bubble only while its conversation is open — marked unwatched,
+// and gone when they leave it unless they watched it in the meantime.
+describe("the strip's watched agents (#105)", () => {
+  const stripIds = () => bubbles().filter((node) => node.dataset.bubble === "agent").map((node) => node.dataset.agent);
+  const bubbleOf = (agentId) => railHost().querySelector(`[data-bubble="agent"][data-agent="${agentId}"]`);
+  const overviewRow = (agentId) => railHost().querySelector(`.rail-overview-row[data-overview-agent="${agentId}"]`);
+  const threeAgents = (over = {}) => branchRow({ agents: [
+    agent({ id: "ag-1", watched: true, ...over["ag-1"] }),
+    agent({ id: "ag-2", ordinal: 2, watched: false, ...over["ag-2"] }),
+    agent({ id: "ag-3", ordinal: 3, watched: false, name: "Third agent", ...over["ag-3"] }),
+  ] });
+  const openFromOverview = async (agentId) => {
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(overviewRow(agentId)).toBeTruthy());
+    overviewRow(agentId).click();
+    await vi.waitFor(() => expect(bubbleOf(agentId)?.classList.contains("active")).toBe(true));
+  };
+
+  beforeEach(async () => {
+    await greetWatchingBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+  });
+  afterEach(() => forgetGreetings());
+
+  it("carries only the watched agents", async () => {
+    payload = threeAgents();
+    await mountOverviewReady();
+    await vi.waitFor(() => expect(stripIds()).toEqual(["ag-1"]));
+    expect(railHost().querySelector('[data-bubble="add"]')).toBeTruthy();
+  });
+
+  it("adds a marked bubble for an unwatched agent opened from the overview, and takes it away on leaving", async () => {
+    payload = threeAgents();
+    await mountOverviewReady();
+    await openFromOverview("ag-2");
+    expect(stripIds()).toEqual(["ag-1", "ag-2"]);
+    expect(bubbleOf("ag-2").classList.contains("rail-bubble-unwatched")).toBe(true);
+    expect(bubbleOf("ag-2").title).toMatch(/Not watching$/);
+    expect(bubbleOf("ag-1").classList.contains("rail-bubble-unwatched")).toBe(false);
+
+    bubbleOf("ag-1").click();
+    await vi.waitFor(() => expect(stripIds()).toEqual(["ag-1"]));
+  });
+
+  it("takes the temporary bubble away when the overview is what the reader goes to", async () => {
+    payload = threeAgents();
+    await mountOverviewReady();
+    await openFromOverview("ag-2");
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(stripIds()).toEqual(["ag-1"]));
+  });
+
+  it("keeps an agent watched from its header on the strip after the reader leaves it", async () => {
+    payload = threeAgents();
+    await mountOverviewReady();
+    await openFromOverview("ag-2");
+    panel().querySelector(".rail-watch").click();
+    await vi.waitFor(() => {
+      expect(callsTo("conversation.watch")[0]?.params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+      expect(bubbleOf("ag-2").classList.contains("rail-bubble-unwatched")).toBe(false);
+    });
+    await pushRow(threeAgents({ "ag-2": { watched: true } }));
+
+    bubbleOf("ag-1").click();
+    await vi.waitFor(() => expect(bubbleOf("ag-1").classList.contains("active")).toBe(true));
+    expect(stripIds()).toEqual(["ag-1", "ag-2"]);
+  });
+
+  it("keeps an agent unwatched from its header until the reader leaves it", async () => {
+    payload = threeAgents({ "ag-2": { watched: true } });
+    await mountOverviewReady();
+    bubbleOf("ag-2").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("true"));
+    panel().querySelector(".rail-watch").click();
+    await vi.waitFor(() => expect(callsTo("conversation.unwatch")).toHaveLength(1));
+    await pushRow(threeAgents());
+    await vi.waitFor(() => expect(bubbleOf("ag-2")?.classList.contains("rail-bubble-unwatched")).toBe(true));
+    expect(stripIds()).toEqual(["ag-1", "ag-2"]);
+
+    bubbleOf("ag-1").click();
+    await vi.waitFor(() => expect(stripIds()).toEqual(["ag-1"]));
+  });
+
+  it("opens an unwatched agent a link names, with its temporary bubble", async () => {
+    payload = threeAgents();
+    await writeRailWorkItem(payload);
+    rail = mountAgentRail(railHost(), railAddress({ openAgentId: "ag-3" }));
+    await vi.waitFor(() => {
+      expect(stripIds()).toEqual(["ag-1", "ag-3"]);
+      expect(bubbleOf("ag-3").classList.contains("active")).toBe(true);
+      expect(headWho(panel())).toBe("Third agent");
+    });
+  });
+
+  it("does not bring a left unwatched agent back on a mount handed its row, as a swap is", async () => {
+    payload = threeAgents();
+    chatRepository.railView("branch:p1:build/login").chooseAgent("ag-2");
+    await writeRailWorkItem(payload);
+    rail = mountAgentRail(railHost(), railAddress({ payload }));
+    expect(stripIds()).toEqual(["ag-1"]);
+    await vi.waitFor(() => expect(bubbleOf("ag-1").classList.contains("active")).toBe(true));
+  });
+
+  it("keeps a watch the bridge took after the reader left, before its push lands", async () => {
+    let answerWatch;
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => (method === "conversation.watch"
+      ? new Promise((answer) => { answerWatch = () => answer({ agent_id: params.agent_id, watched: true }); })
+      : originalCall(method, params)));
+    payload = threeAgents();
+    await mountOverviewReady();
+    await openFromOverview("ag-2");
+    panel().querySelector(".rail-watch").click();
+    await vi.waitFor(() => expect(answerWatch).toBeTypeOf("function"));
+
+    rail.dispose();
+    rail = null;
+    answerWatch();
+    await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "row" }))?.value?.agents?.find((one) => one.id === "ag-2")?.watched).toBe(true));
+
+    rail = mountAgentRail(railHost(), railAddress());
+    await vi.waitFor(() => {
+      expect(stripIds()).toEqual(["ag-1", "ag-2"]);
+      expect(bubbleOf("ag-2").classList.contains("rail-bubble-unwatched")).toBe(false);
+    });
+    bubbleOf("ag-1").click();
+    await vi.waitFor(() => expect(bubbleOf("ag-1").classList.contains("active")).toBe(true));
+    expect(stripIds()).toEqual(["ag-1", "ag-2"]);
+  });
+
+  it("writes nothing into a device's cache that retires while the accepted watch is on its way to disk", async () => {
+    let answerWatch;
+    const originalCall = bridge.call;
+    bridge.call = vi.fn((method, params) => (method === "conversation.watch"
+      ? new Promise((answer) => { answerWatch = () => answer({ agent_id: params.agent_id, watched: true }); })
+      : originalCall(method, params)));
+    payload = threeAgents();
+    await mountOverviewReady();
+    await openFromOverview("ag-2");
+    panel().querySelector(".rail-watch").click();
+    await vi.waitFor(() => expect(answerWatch).toBeTypeOf("function"));
+    rail.dispose();
+    rail = null;
+
+    // The device retires as the next write opens its transaction: after
+    // anything the rail asked before it wrote, before the write itself.
+    const openTransaction = IDBDatabase.prototype.transaction;
+    let retiredDuring = null;
+    IDBDatabase.prototype.transaction = function transaction(names, mode, ...rest) {
+      const opened = openTransaction.call(this, names, mode, ...rest);
+      if (mode === "readwrite" && !retiredDuring) {
+        releaseScope("dev-1");
+        retiredDuring = new Promise((settled) => { opened.addEventListener("complete", settled); opened.addEventListener("abort", settled); });
+      }
+      return opened;
+    };
+    try {
+      answerWatch();
+      await vi.waitFor(() => expect(retiredDuring).toBeTruthy());
+      await retiredDuring;
+    } finally {
+      IDBDatabase.prototype.transaction = openTransaction;
+    }
+    const cached = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "row" });
+    expect(cached.value.agents.find((one) => one.id === "ag-2").watched).toBe(false);
+  });
+
+  describe("the project's agent above the line", () => {
+    const projectBubble = () => railHost().querySelector('[data-bubble="project"]');
+    const mountWorkspace = async (projectWatched, moreProjectAgents = []) => {
+      payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+        agents: [agent({ id: "ag-one", name: "Workspace agent", watched: true })] };
+      await writeRailBoard({
+        projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+        workspaces: [{ id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" }],
+        items: [payload, { kind: "project", project_id: "p1", entity_id: "run-project",
+          agents: [agent({ id: "ag-project", name: "Project agent", watched: projectWatched }), ...moreProjectAgents] }],
+      });
+      rail = mountAgentRail(railHost(), railAddress({ kind: "workspace", workspaceId: "ws-one",
+        projectAgent: { projectId: "p1", entityId: "run-project" } }));
+      await vi.waitFor(() => expect(bubbleOf("ag-one")?.classList.contains("active")).toBe(true));
+    };
+
+    it("carries a watched project agent's bubble and the line under it", async () => {
+      await mountWorkspace(true);
+      await vi.waitFor(() => expect(projectBubble()).toBeTruthy());
+      expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(false);
+      expect(railHost().querySelector('.rail-sep')).toBeTruthy();
+    });
+
+    it("leaves an unwatched project agent off the strip until it is opened, and takes it away on leaving", async () => {
+      await mountWorkspace(false);
+      await vi.waitFor(() => expect(railHost().querySelector(".rail-overview-toggle")).toBeTruthy());
+      expect(projectBubble()).toBeNull();
+      expect(railHost().querySelector('.rail-sep')).toBeNull();
+
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(overviewRow("ag-project")).toBeTruthy());
+      overviewRow("ag-project").click();
+      await vi.waitFor(() => {
+        expect(headWho(panel())).toBe("Project agent");
+        expect(projectBubble()?.classList.contains("active")).toBe(true);
+        expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
+      });
+      expect(projectBubble().title).toMatch(/Not watching$/);
+
+      bubbleOf("ag-one").click();
+      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      await vi.waitFor(() => expect(projectBubble()).toBeNull());
+    });
+
+    it("marks the project's bubble while an unwatched one of its agents is open beside a watched one", async () => {
+      await mountWorkspace(true, [agent({ id: "ag-helper", ordinal: 2, name: "Project helper", watched: false })]);
+      await vi.waitFor(() => expect(projectBubble()).toBeTruthy());
+      expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(false);
+
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(overviewRow("ag-helper")).toBeTruthy());
+      overviewRow("ag-helper").click();
+      await vi.waitFor(() => {
+        expect(headWho(panel())).toBe("Project helper");
+        expect(projectBubble()?.classList.contains("active")).toBe(true);
+        expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
+      });
+      expect(projectBubble().title).toMatch(/Not watching$/);
+
+      bubbleOf("ag-one").click();
+      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      await vi.waitFor(() => expect(projectBubble()?.classList.contains("rail-bubble-unwatched")).toBe(false));
+    });
+
+    it("keeps an unwatched project agent's bubble once it is watched from its header", async () => {
+      let answerWatch;
+      const originalCall = bridge.call;
+      bridge.call = vi.fn((method, params) => (method === "conversation.watch"
+        ? new Promise((answer) => { answerWatch = () => answer({ agent_id: params.agent_id, watched: true }); })
+        : originalCall(method, params)));
+      await mountWorkspace(false);
+      railHost().querySelector(".rail-overview-toggle").click();
+      await vi.waitFor(() => expect(overviewRow("ag-project")).toBeTruthy());
+      overviewRow("ag-project").click();
+      await vi.waitFor(() => {
+        expect(projectBubble()?.classList.contains("rail-bubble-unwatched")).toBe(true);
+        expect(panel()?.querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
+      });
+
+      // The press moves the mark before the bridge answers; the answer is what
+      // keeps the bubble once the reader leaves.
+      panel().querySelector(".rail-watch").click();
+      await vi.waitFor(() => expect(bridge.call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-project", agent_id: "ag-project" }));
+      await vi.waitFor(() => expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(false));
+      answerWatch();
+      await vi.waitFor(async () => expect((await readCached({ deviceId: "dev-1", entityId: "run-project", kind: "row" }))
+        ?.value?.agents?.[0]?.watched).toBe(true));
+
+      bubbleOf("ag-one").click();
+      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      expect(projectBubble()).toBeTruthy();
+    });
+  });
+
+  it("does not bring a left unwatched agent back when the page is opened again", async () => {
+    payload = threeAgents();
+    chatRepository.railView("branch:p1:build/login").chooseAgent("ag-2");
+    await writeRailWorkItem(payload);
+    rail = mountAgentRail(railHost(), railAddress());
+    await vi.waitFor(() => {
+      expect(stripIds()).toEqual(["ag-1"]);
+      expect(bubbleOf("ag-1").classList.contains("active")).toBe(true);
+    });
+  });
+});
+
 describe("the painter behind a bubble", () => {
   it("makes one painter per patterned bubble, on the pattern that bubble wears", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });

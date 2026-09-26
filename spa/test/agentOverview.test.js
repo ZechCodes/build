@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
@@ -294,5 +295,58 @@ describe("overview scopes (#117)", () => {
     const html = overview.overviewHtml(rows(), { showProjectAgents: true });
     expect(namesIn(html, "Workspace busy")).toHaveLength(4);
     expect(html).not.toContain("rail-overview-see-all");
+  });
+});
+
+// Agents the reader does not watch are off the strip (#105), and the overview
+// is where they are still found: after everything watched, in a group of their
+// own that is sectioned and sorted the way the rest is.
+describe("the agents nobody here watches (#105)", () => {
+  const row = (id, workspaceId, at, watching, section = "workspace") => ({ id, source: "workspace", workspaceId,
+    section, sectionName: workspaceId ? `Workspace ${workspaceId}` : "Project agents", name: id,
+    snippet: "", lastAgentMessageAt: at, working: false, unread: false, watching });
+  const rows = () => [
+    row("project-agent", "", 1, true, "project"),
+    row("busy-watched", "busy", 2, true),
+    row("busy-quiet", "busy", 8, false),
+    row("idle-older", "idle", 3, false),
+    row("idle-newer", "idle", 9, false),
+    row("legacy", "busy", 1, undefined),
+  ];
+  const workspaces = [{ workspaceId: "busy", name: "Workspace busy" }, { workspaceId: "idle", name: "Workspace idle" }];
+  const draw = (scope = { kind: "project" }) => {
+    document.body.innerHTML = `<div>${overview.overviewHtml(rows(), { showProjectAgents: true, scope, workspaces })}</div>`;
+    return document.body.firstElementChild;
+  };
+  const ids = (root) => [...root.querySelectorAll("[data-overview-agent]")].map((node) => node.dataset.overviewAgent);
+  const group = (root) => root.querySelector('.rail-overview-group[aria-label="Not watching"]');
+  const sectionsOf = (root) => [...root.querySelectorAll(":scope > .rail-overview-section")].map((node) => node.getAttribute("aria-label"));
+
+  it("lists the unwatched agents only in a Not watching group after every watched section", () => {
+    const root = draw();
+    expect(sectionsOf(root)).toEqual(["Project agents", "Workspace busy", "Workspace idle"]);
+    expect(root.lastElementChild).toBe(group(root));
+    expect(group(root).querySelector(".rail-overview-group-title").textContent).toBe("Not watching");
+    const watched = [...root.querySelectorAll(":scope > .rail-overview-section")].flatMap((node) => ids(node));
+    expect(watched.sort()).toEqual(["busy-watched", "legacy", "project-agent"]);
+  });
+
+  it("sections and sorts the group by workspace, newest agent message first", () => {
+    const quiet = group(draw());
+    expect([...quiet.querySelectorAll(".rail-overview-section")].map((node) => node.getAttribute("aria-label")))
+      .toEqual(["Workspace idle", "Workspace busy"]);
+    expect(ids(quiet)).toEqual(["idle-newer", "idle-older", "busy-quiet"]);
+    expect(quiet.querySelector(".rail-overview-add")).toBeNull();
+  });
+
+  it("draws no group while every agent is watched", () => {
+    document.body.innerHTML = overview.overviewHtml(rows().filter((one) => one.watching !== false),
+      { showProjectAgents: true, scope: { kind: "project" }, workspaces });
+    expect(document.querySelector(".rail-overview-group")).toBeNull();
+  });
+
+  it("keeps the group to the one workspace a workspace scope shows", () => {
+    const quiet = group(draw({ kind: "workspace", workspaceId: "busy" }));
+    expect(ids(quiet)).toEqual(["busy-quiet"]);
   });
 });

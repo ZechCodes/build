@@ -296,7 +296,7 @@ describe("the Dashboard", () => {
     expect(dashboardRows("needsYou")).toEqual([]);
     expect(host.querySelector('[role="tab"][aria-selected="true"]').dataset.dashboardTab).toBe("inProgress");
     expect(host.querySelector('[data-dashboard-section="inProgress"] .issue-dashboard-detail').textContent)
-      .toContain("Writing summary");
+      .toMatch(/ · working now · Writing summary$/);
     await chooseTab("done");
     expect(dashboardRows("done")).toEqual(["done"]);
     expect(host.querySelector('[data-dashboard-section="done"] .issue-dashboard-detail').textContent)
@@ -486,7 +486,7 @@ describe("the Dashboard", () => {
     await vi.waitFor(() => {
       expect(tabs().map((tab) => tab.querySelector(".issue-dashboard-count").textContent)).toEqual(["0", "0", "0", "0"]);
       expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress");
-      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent is working on an issue.");
+      expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent holds an issue.");
     });
     expect(host.querySelector('[data-dashboard-tab="inProgress"]').getAttribute("tabindex")).toBe("0");
   });
@@ -501,7 +501,7 @@ describe("the Dashboard", () => {
     });
     expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("Nothing needs your look right now.");
     await chooseTab("inProgress");
-    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent is working on an issue.");
+    expect(host.querySelector(".issue-dashboard-empty").textContent).toBe("No agent holds an issue.");
     await chooseTab("backlog");
     const backlog = host.querySelector('[data-dashboard-section="backlog"]');
     expect(backlog.classList.contains("is-grouped")).toBe(false);

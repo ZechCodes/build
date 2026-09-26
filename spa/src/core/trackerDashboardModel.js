@@ -232,11 +232,12 @@ export function dashboardSections(issues, {
     projectName: projectName(feed, projectKey),
   };
   const inProgress = grouped.working.map((issue) => {
-    const { agent } = grouped.attentionById.get(issue.id).workingAgent;
+    const { agent, working } = grouped.attentionById.get(issue.id).holdingAgent;
     return {
       issue,
       agentName: actorName({ kind: "agent", agent_id: agent.id }, reading),
       activity: cachedActivity(activityByAgent, agent.id),
+      working,
     };
   });
   const needsYou = (issues || []).flatMap((issue) => {

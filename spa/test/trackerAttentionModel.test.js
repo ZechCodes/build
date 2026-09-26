@@ -117,7 +117,20 @@ describe("issue list attention groups", () => {
     expect(groups.working.map((one) => one.id)).toEqual(["working-1", "working-2"]);
     expect(groups.needsYou.map((one) => one.id)).toEqual(["needs-1", "needs-2"]);
     expect(groups.rest.map((one) => one.id)).toEqual(["rest-1", "rest-2"]);
-    expect(groups.attentionById.get("working-1").workingAgent.agent.id).toBe("agent-1");
+    expect(groups.attentionById.get("working-1").holdingAgent.agent.id).toBe("agent-1");
+  });
+
+  it("groups an issue held by a known idle agent with the held ones, and leaves out unknown, user and Done holders", () => {
+    const idle = issue("idle", { assignee: { kind: "agent", agent_id: "agent-1" } });
+    const unknown = issue("unknown", { assignee: { kind: "agent", agent_id: "agent-9" } });
+    const mine = issue("mine", { assignee: { kind: "user" } });
+    const done = issue("done", { status: "done", assignee: { kind: "agent", agent_id: "agent-1" } });
+    const feed = { items: [{ projectKey: PROJECT, agents: [{ id: "agent-1", working: false }] }] };
+    const groups = attentionGroups([idle, unknown, mine, done], { feed, projectKey: PROJECT });
+    expect(groups.working).toEqual([idle]);
+    expect(groups.attentionById.get("idle").holdingAgent).toMatchObject({ agent: { id: "agent-1" }, working: false });
+    expect(groups.attentionById.get("unknown").holdingAgent).toBeNull();
+    expect(groups.attentionById.get("done").holdingAgent).toBeNull();
   });
 
   it("does not borrow a working agent from another device's identically named project", () => {
@@ -137,7 +150,7 @@ describe("issue list attention groups", () => {
     };
     const grouped = attentionGroups([one], { feed, projectKey: PROJECT });
     expect(grouped.working).toEqual([one]);
-    expect(grouped.attentionById.get(one.id).workingAgent.agent.id).toBe("project-agent");
+    expect(grouped.attentionById.get(one.id).holdingAgent.agent.id).toBe("project-agent");
   });
 
   it("retains every reason when a working issue also needs the user's look", () => {

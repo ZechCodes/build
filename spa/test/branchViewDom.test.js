@@ -741,6 +741,28 @@ describe("closing the branch out", () => {
     expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
   });
 
+  it.each([
+    {
+      state: "review",
+      promised: "Return the issue it implements to the inbox, noting that build/login was deleted",
+      absent: "Archive the issue",
+    },
+    {
+      state: "merged",
+      promised: "Archive the issue it implements, with its stage plans",
+      absent: "Return the issue it implements to the inbox",
+    },
+  ])("says what Done will do with a linked issue when the branch is $state", async ({ state, promised, absent }) => {
+    await mountWith(finishableRow({ issue_id: "iss-9", state }));
+    doneButton().click();
+
+    const scrim = await confirmScrim();
+    const steps = [...scrim.querySelectorAll(".confirm-steps li")].map((step) => step.textContent);
+    expect(steps).toContain(promised);
+    expect(steps.join(" ")).not.toContain(absent);
+    scrim.querySelector("[data-confirm-cancel]").click();
+  });
+
   // #87: a bridge that keeps the branch whatever it is sent is offered no
   // deletion. The control and the confirmation say what will really happen,
   // and the call carries no word the bridge would drop.

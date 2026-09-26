@@ -355,6 +355,13 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
       // while this is asked, so the path probe leaves the verdict to it.
       if (!(await carried())) throw blockedBy("not-carried", "the restarted path does not carry this session");
       if (torn) return;
+      // The failure watcher is latched for the whole of this restart, carry
+      // check included, so a path that failed again while it was asked was
+      // heard by nobody. Reported as landed, it would sit failed until the
+      // app's own probe severed it (#130).
+      if (["failed", "disconnected"].includes(peer.connectionState)) {
+        throw blockedBy("failed", "the restarted path failed again before it was confirmed");
+      }
       readIceState();
       diagnostic("connected", { phase: "restart" });
       await sampleTransportPath();

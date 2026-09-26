@@ -85,6 +85,8 @@ const { mountInboxList } = await import("../src/core/inboxView.js");
 const { initCompose, openCompose } = await import("../src/core/composeView.js");
 const { holdAppWhileNoDeviceAnswers } = await import("../src/views/gate.js");
 const { mountConnectionStatus, unmountConnectionStatus } = await import("../src/connectionStatus.js");
+const { deviceWatch } = await import("../src/core/deviceReconnect.js");
+const { createReadRetry } = await import("../src/core/transientRead.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const reachNextRecoveryAttempt = async () => {
@@ -158,10 +160,18 @@ function makeRendezvous({ deviceId }) {
 /** The recovery status every real peer link carries (core/peerLink.js): whether
  *  it is renegotiating right now. The app session's path probe stands down while
  *  it is, so a fake link has to be able to say. */
-const fakeRecovery = (recovering = false) => ({
-  snapshot: () => ({ epoch: 0, recovering }),
-  subscribe: () => () => {},
-});
+const fakeRecovery = (recovering = false) => {
+  const listeners = new Set();
+  return {
+    snapshot: () => ({ epoch: 0, recovering }),
+    subscribe: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    // A restart beginning or ending, told to whoever subscribed.
+    transition: () => listeners.forEach((fn) => fn()),
+  };
+};
 
 /** A direct connection as the connection layer uses it: two channels that can
  *  say they closed, its recovery status, and a way to close the pair. */
@@ -191,6 +201,13 @@ function fakePeerLink(deviceId) {
       return () => link.restored.delete(fn);
     }),
     restore: () => link.restored.forEach((fn) => fn()),
+    // Whether that restart is running now, carry check included (#123).
+    restartingInPlace: false,
+    restoring: () => link.restartingInPlace,
+    restartInPlace(running) {
+      link.restartingInPlace = running;
+      link.recovery.transition();
+    },
     transportPath: () => null,
     close: vi.fn(),
   };
@@ -482,6 +499,37 @@ describe("per-device connections", () => {
       expect(workspaceReads()).toBeGreaterThan(before);
     });
     expect(lastSession("dev-a")).toBe(session);
+  });
+
+  // #130: a restart in place leaves the supervisor with no record — the
+  // session is still held — so the ring reads the link itself. A surface
+  // holding a copy over a read that died must say the same thing, and read
+  // again once the restart lands.
+  it("has the ring and a surface's held read agree while a path restarts in place", async () => {
+    mountConnectionStatus();
+    await connectEveryDevice();
+    const ring = document.querySelector("#connection-status .connection-status");
+    const host = document.createElement("section");
+    host.append(document.createElement("article"));
+    document.body.append(host);
+    const retry = vi.fn();
+    const read = createReadRetry({ host, watch: deviceWatch("dev-a"), retry, hasContent: () => true });
+    read.seen(Date.now() - 60_000);
+
+    linksFor.get("dev-a").restartInPlace(true);
+    await flush();
+    expect(ring.dataset.state).toBe("attempting");
+    expect(ring.getAttribute("aria-label")).toContain("Reconnecting to Laptop");
+    expect(read.failed(new Error("the channel closed"))).toBe(true);
+    expect(host.querySelector(".read-wait")?.textContent).toBeTruthy();
+    expect(retry).not.toHaveBeenCalled();
+
+    linksFor.get("dev-a").restartInPlace(false);
+    await flush();
+    expect(ring.dataset.state).toBe("connected");
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(host.querySelector(".read-wait")).toBeNull();
+    read.dispose();
   });
 
   it("ignores a restored-path callback from a replaced session", async () => {

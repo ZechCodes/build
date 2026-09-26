@@ -38,6 +38,8 @@ WAITLIST_INVITE_SEND_RATE_LIMIT_WINDOWS = [(20, 60.0), (300, 86400.0)]
 BRIDGE_BEAT_RATE_LIMIT_WINDOWS = [(300, 60.0)]
 BRIDGE_REPORT_RATE_LIMIT_WINDOWS = [(600, 60.0)]
 BRIDGE_NOTIFY_RATE_LIMIT_WINDOWS = [(300, 60.0)]
+# The relay's lookups all come from its one pod address (#173).
+RELAY_INTERNAL_RATE_LIMIT_WINDOWS = [(6000, 60.0)]
 INVITE_CONTROLLERS = (
     "buildapp.invites_controller:InvitesController",
     "buildapp.invites_admin:InvitesAdminController",
@@ -207,6 +209,25 @@ async def test_a_bridges_signed_posts_have_budgets_of_their_own():
         assert (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
     assert not (await limiter.check(beat_policy.name, household, beat_policy.limits)).allowed
     assert rate_limit.resolve(HEARTBEAT_ROUTE_PATH, "GET").name == browsing_policy.name
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        f"/internal/devices/{UUID(int=7)}",
+        "/internal/gateway-token/gw_a-token",
+    ),
+)
+def test_the_relays_lookups_share_one_service_wide_budget(path: str):
+    """Every relay lookup arrives from the relay pod's address, so the 60/minute
+    default refused the 61st connected bridge's revalidation (#173)."""
+    rate_limit = RateLimitConfig(**load_config("app.yaml")["rate_limit"])
+    policy = rate_limit.resolve(path, "GET")
+    assert (policy.name, policy.key, policy.limits) == (
+        "relay_internal",
+        "ip",
+        RELAY_INTERNAL_RATE_LIMIT_WINDOWS,
+    )
 
 
 def test_the_waitlist_join_route_is_rate_limited_far_below_the_default():

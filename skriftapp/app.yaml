@@ -151,6 +151,24 @@ rate_limit:
       limits:
         - limit: 300
           per: minute
+    # The relay's lookups. Every one comes from the relay pod's address, so
+    # this is the whole service's budget, not one caller's: on the 60/minute
+    # default, the 61st connected bridge's revalidation was refused, and past
+    # that a bridge connecting or a browser dialing was turned away (the
+    # connect lookups fail closed). Per connected bridge the relay revalidates
+    # once a minute (DEVICE_REVALIDATION_INTERVAL) and looks it up once per
+    # connect; per browser relay dial it looks up one gateway token. 1000
+    # bridges revalidating (1000), all reconnecting after a relay deploy (1000)
+    # and 1000 tabs redialing twice (2000) is 4000. The X-Internal-Secret guard,
+    # not this budget, is what keeps everyone else out.
+    - name: relay_internal
+      match:
+        path: /internal/
+        prefix: true
+      key: ip
+      limits:
+        - limit: 6000
+          per: minute
     # An invite link is a secret; a caller walking the token space gets 30 tries a
     # minute and nothing else.
     - name: invite_open

@@ -19,11 +19,9 @@ import { notifyError } from "./notify.js";
 import {
   issuesAddress,
   issuesQueryAddress,
-  issuesQueryRecordAt,
   issuesRecord,
-  issuesRecordAt,
-  readIssuesQueryRecord,
-  readIssuesRecord,
+  readIssuesCached,
+  readIssuesQueryCached,
   writeIssuesQueryRecord,
   writeIssuesRecord,
 } from "./trackerCache.js";
@@ -314,11 +312,9 @@ export function mountIssuesPane(host, options) {
   const wholeListIsNewer = () => state.wholeAt >= state.queryAt;
 
   async function paintFromQuery(params, serial = querySerial) {
-    const [record, at] = await Promise.all([
-      readIssuesQueryRecord(state.deviceId, state.projectId, params),
-      issuesQueryRecordAt(state.deviceId, state.projectId, params),
-    ]);
-    if (state.disposed || serial !== querySerial || !record) return;
+    const cached = await readIssuesQueryCached(state.deviceId, state.projectId, params);
+    if (state.disposed || serial !== querySerial || !cached) return;
+    const { at, value: record } = cached;
     queryLoaded = true;
     state.queryAt = at;
     state.unscopedShown = wholeListIsNewer()
@@ -354,11 +350,9 @@ export function mountIssuesPane(host, options) {
   /** What the cache holds, painted before anything is asked. A project never
    *  opened on this device holds nothing, and the tab simply waits. */
   async function paintFromCache() {
-    const [record, at] = await Promise.all([
-      readIssuesRecord(state.deviceId, state.projectId),
-      issuesRecordAt(state.deviceId, state.projectId),
-    ]);
-    if (state.disposed || !record) return;
+    const cached = await readIssuesCached(state.deviceId, state.projectId);
+    if (state.disposed || !cached) return;
+    const { at, value: record } = cached;
     state.unscoped = sortIssues(record.issues);
     state.all = kept(state.unscoped);
     state.columns = columnsOf(record.columns);

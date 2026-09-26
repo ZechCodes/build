@@ -93,6 +93,20 @@ export async function readIssuesQueryRecord(deviceId, projectId, params) {
   return record?.value || null;
 }
 
+/** A list record and when the cache took it, `{ at, value }`, or null when it
+ *  holds none: one read, so a paint never takes the list from one record and
+ *  its stamp from another, or reads a stamp of 0 for a record that went
+ *  between the two (#129). */
+async function readListCached(address) {
+  const record = await readCached(address);
+  return record?.value ? { at: record.at || 0, value: record.value } : null;
+}
+
+export const readIssuesCached = (deviceId, projectId) => readListCached(issuesAddress(deviceId, projectId));
+
+export const readIssuesQueryCached = (deviceId, projectId, params) =>
+  readListCached(issuesQueryAddress(deviceId, projectId, params));
+
 export const writeIssuesRecord = (deviceId, projectId, record) =>
   writeCached(issuesAddress(deviceId, projectId), record);
 
@@ -128,9 +142,6 @@ export const writeIssuesQueryRecord = (deviceId, projectId, params, record) =>
  *  not the moment the surface got round to painting it. */
 export const issuesRecordAt = async (deviceId, projectId) =>
   (await readCached(issuesAddress(deviceId, projectId)))?.at || 0;
-
-export const issuesQueryRecordAt = async (deviceId, projectId, params) =>
-  (await readCached(issuesQueryAddress(deviceId, projectId, params)))?.at || 0;
 
 export const issueRecordAt = async (deviceId, projectId, issueId) =>
   (await readCached(issueAddress(deviceId, projectId, issueId)))?.at || 0;

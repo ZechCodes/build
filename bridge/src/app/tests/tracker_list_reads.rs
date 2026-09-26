@@ -207,9 +207,8 @@ fn a_long_list_answers_what_each_issue_answers_alone() {
 /// list read them once per call (#128), but then cloned every stored run's
 /// roster — each agent's conversation tail — for every such agent it named:
 /// 450 ms held per `issues.list` on a real store (#131). An agent is found in
-/// the stored records without copying a conversation, so a list naming twelve
-/// hundred of them over eight departed runs holds the lock for about as long
-/// as reading those records once takes.
+/// the stored records without copying a conversation. Count those reads so
+/// host load cannot change whether this regression is caught.
 #[test]
 fn naming_many_departed_agents_copies_no_conversation() {
     const DEPARTED: usize = 8;
@@ -235,19 +234,38 @@ fn naming_many_departed_agents_copies_no_conversation() {
         store.save_tracker_issue_activity(&issue, &[], &[]).unwrap();
     }
 
-    let started = std::time::Instant::now();
+    let store = state.tracker_store().unwrap();
+    let roster_reads =
+        store.load_all_run_rosters().unwrap().len() + store.load_all_plan_rosters().unwrap().len();
+    assert_eq!(roster_reads, DEPARTED, "the fixture has eight stored runs");
+    let before = crate::store::Store::agent_read_counts();
     let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
-    let held = started.elapsed();
+    let after = crate::store::Store::agent_read_counts();
 
     assert_eq!(listed["ok"], true, "{listed:?}");
     let rows = listed["result"]["issues"].as_array().unwrap();
+    assert_eq!(rows.len(), GHOSTS / 8);
     assert!(rows.iter().enumerate().all(|(index, row)| {
         let batch = GHOSTS / 8 - 1 - index;
         row["identities"][&departed[batch % DEPARTED]]["name"] == "Historian"
     }));
-    assert!(
-        held < Duration::from_millis(500),
-        "issues.list held the lock {held:?} to name {GHOSTS} agents nobody holds"
+    assert_eq!(
+        after.0 - before.0,
+        roster_reads,
+        "issues.list reads each stored roster once"
+    );
+    assert_eq!(
+        after.1 - before.1,
+        0,
+        "issues.list does not load departed agents' conversations"
+    );
+
+    state.tracker_store().unwrap().load_all_runs().unwrap();
+    let control = crate::store::Store::agent_read_counts();
+    assert_eq!(
+        control.1 - after.1,
+        DEPARTED,
+        "the counter detects a full conversation read for each stored run"
     );
 }
 

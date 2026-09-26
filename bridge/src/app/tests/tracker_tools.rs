@@ -118,6 +118,7 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
             track: None,
             attachments: Vec::new(),
             notify_user: None,
+            mention_user: None,
         },
     )
     .expect("an agent files an issue in its own project");
@@ -138,6 +139,35 @@ fn a_coding_agent_files_an_issue_signed_by_itself() {
         listed["result"]["issues"][0]["id"], issue["id"],
         "{listed:?}"
     );
+}
+
+#[test]
+fn mcp_create_issue_can_ask_the_user_on_its_created_event() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "ask here");
+    let frame = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "create_issue", "arguments": {
+            "title": "Choose the plan", "body": "Which route should we take?",
+            "mention_user": true, "notify_user": false
+        }}
+    });
+    let action = DoneServer::for_owner(&who.1)
+        .handle_message(&frame.to_string())
+        .action
+        .expect("MCP frame emits a tracker create action");
+    let filed = call(&mut state, &who, action).unwrap();
+    let issue_id = filed["issue"]["id"].as_str().unwrap();
+    assert_eq!(filed["issue"]["watched"], true);
+    let fetched = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+    let created = &fetched["result"]["timeline"][0];
+    assert_eq!(created["type"], "event");
+    assert_eq!(created["kind"], "created");
+    assert_eq!(created["actor"]["kind"], "agent");
+    assert_eq!(created["mentions_user"], true);
+    assert!(filed["issue"].get("mentions_user").is_none());
 }
 
 /// A comment and an event are signed by the calling agent.
@@ -357,6 +387,7 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
             attachments: Vec::new(),
             track: None,
             notify_user: None,
+            mention_user: None,
         },
     )
     .unwrap();
@@ -460,6 +491,7 @@ fn mcp_comment_notify_user_is_kept_on_the_comment() {
             attachments: Vec::new(),
             track: None,
             notify_user: None,
+            mention_user: None,
         },
     )
     .unwrap();
@@ -637,6 +669,7 @@ fn a_project_agent_runs_the_same_board_the_client_reads() {
             track: None,
             attachments: Vec::new(),
             notify_user: None,
+            mention_user: None,
         },
     )
     .expect("the project agent files an issue");

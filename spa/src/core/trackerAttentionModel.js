@@ -5,8 +5,8 @@
 //
 // Two rules for what needs the user, chosen by `askedOnly` (#144). A bridge
 // that keeps `notify_user` on comments (`issues.commentUserNotifies`) gets the
-// narrow one: assigned to the user, or an unread agent comment that mentioned
-// or asked them. The In review column alone no longer counts, because agents
+// narrow one: assigned to the user, an unread agent comment that mentioned
+// or asked them, or a mentioned creation. The In review column alone no longer counts, because agents
 // review each other's work there. Against an older bridge, which cannot say
 // which comments asked, the earlier rule stands: In review, or any unread
 // agent comment on a watched issue.
@@ -44,6 +44,7 @@ const orderedId = (id) => String(id || "").split("-", 2).at(-1);
 const afterMark = (id, mark) => !mark || orderedId(id) > orderedId(mark);
 
 const isAgentComment = (entry) => entry?.type === "comment" && entry.author?.kind === "agent";
+const isAgentCreatedEvent = (entry) => entry?.type === "event" && entry.kind === "created" && entry.actor?.kind === "agent";
 const asksTheUser = (entry) => entry.mentions_user === true || entry.notifies_user === true;
 
 /** The agent comments the user has not read, from the cached timeline. The
@@ -56,11 +57,14 @@ export function unreadAgentComments(issue, detail) {
   return detail.timeline.filter((entry) => isAgentComment(entry) && afterMark(entry.id, mark));
 }
 
-/** The unread agent comments that count toward Needs you: under the narrow
- *  rule only those that mentioned or asked the user, otherwise all of them. */
+/** Unread requests for the user: the narrow rule includes a mentioned created
+ *  event, and the older rule still counts all unread agent comments. */
 export const unreadAsks = (issue, detail, askedOnly = false) => {
-  const unread = unreadAgentComments(issue, detail);
-  return askedOnly ? unread.filter(asksTheUser) : unread;
+  if (!askedOnly) return unreadAgentComments(issue, detail);
+  if (!Array.isArray(detail?.timeline)) return [];
+  const mark = latestIssueMark(detail.issue?.read_through, issue?.read_through) || "";
+  return detail.timeline.filter((entry) =>
+    (isAgentComment(entry) || isAgentCreatedEvent(entry)) && asksTheUser(entry) && afterMark(entry.id, mark));
 };
 
 /** The earlier rule's unread comment. A cached inbox row is proof the user is

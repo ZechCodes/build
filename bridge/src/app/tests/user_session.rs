@@ -79,6 +79,7 @@ fn agent_work_never_starts_a_session_and_a_user_comment_does() {
             track: None,
             attachments: Vec::new(),
             notify_user: None,
+            mention_user: None,
         },
     )
     .expect("the agent files an issue")["issue"]["id"]

@@ -136,6 +136,24 @@
       }
     ]
   },
+  "created_user_mentions": {
+    "since": "1.27.0",
+    "entry": {
+      "type": "event",
+      "id": "ie-01K5ZQ8M4T0J7WQ2R6X3YB9C4H",
+      "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+      "at": "2026-09-19T09:00:00Z",
+      "actor": {
+        "kind": "agent",
+        "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E"
+      },
+      "kind": "created",
+      "mentions_user": true,
+      "payload": {
+        "title": "Kanban drag does not persist"
+      }
+    }
+  },
   "errors": [
     "not_found",
     "invalid_params",

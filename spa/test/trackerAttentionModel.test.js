@@ -166,6 +166,23 @@ describe("issue list attention groups", () => {
 describe("Needs you by the narrow rule (#144)", () => {
   const asks = (id, fields) => ({ ...comment(id, "agent", "A question"), ...fields });
 
+  it("counts a mentioned creation until its event is read, using cached records", () => {
+    const one = issue("created-question", { watched: true });
+    const created = { type: "event", id: "ie-02", kind: "created", actor: { kind: "agent" }, mentions_user: true };
+    const cached = detail(one, [created]);
+    const groups = () => attentionGroups([one], {
+      projectKey: PROJECT, detailById: new Map([[one.id, cached]]), askedOnly: true,
+    });
+    expect(unreadAsks(one, cached, true)).toEqual([created]);
+    expect(watchedIssueReasons(one, cached, true)).toEqual([ATTENTION_REASONS.inbox]);
+    expect(groups().needsYou).toEqual([one]);
+    expect(groups().attentionById.get(one.id).reason).toBe(ATTENTION_REASONS.inbox);
+
+    one.read_through = "ie-02";
+    expect(watchedIssueReasons(one, cached, true)).toEqual([]);
+    expect(groups().needsYou).toEqual([]);
+  });
+
   it("leaves the In review column out, and keeps an issue assigned to the user", () => {
     const review = issue("review", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-astra" } });
     expect(issueAttention(review, { askedOnly: true }).reasons).toEqual([]);

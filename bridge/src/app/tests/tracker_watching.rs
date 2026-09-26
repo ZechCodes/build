@@ -90,6 +90,7 @@ fn agent_files(
                 track: None,
                 attachments: Vec::new(),
                 notify_user,
+                mention_user: None,
             },
         )
         .expect("an agent may file an issue");

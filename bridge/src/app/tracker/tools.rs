@@ -58,6 +58,7 @@ impl AppState {
                 priority,
                 attachments,
                 notify_user,
+                mention_user,
                 ..
             } => self.create_issue_as_agent(
                 &scope,
@@ -68,6 +69,7 @@ impl AppState {
                 priority,
                 attachments,
                 notify_user,
+                mention_user,
             ),
             BridgeAction::TrackerCommentIssue {
                 issue_id,
@@ -329,6 +331,7 @@ impl AppState {
         priority: &Option<String>,
         attachments: &[Value],
         notify_user: &Option<bool>,
+        mention_user: &Option<bool>,
     ) -> Result<Value, String> {
         let project_path = self.tracker_project_path(&scope.project_id)?;
         let now = crate::store::now_rfc3339();
@@ -349,14 +352,17 @@ impl AppState {
         // worth seeing, which is the default. An agent filing for another
         // agent, on a device that has turned that off, is not the user's
         // business until somebody says it is.
-        draft.watched = notify_user_asked(&params) || self.watch_agent_filed_issues;
-        let created = crate::tracker::IssueEvent::new(
+        draft.watched = mention_user.unwrap_or(false)
+            || notify_user_asked(&params)
+            || self.watch_agent_filed_issues;
+        let mut created = crate::tracker::IssueEvent::new(
             &draft.id,
             scope.actor.clone(),
             crate::tracker::IssueEventKind::Created,
             json!({ "title": draft.title }),
             &now,
         );
+        created.mentions_user = mention_user.unwrap_or(false);
         self.capture_issue_identities(
             &mut draft,
             &[crate::tracker::TimelineEntry::Event(created.clone())],

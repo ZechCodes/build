@@ -217,6 +217,35 @@ fn watched_issue_inbox_wire_probe() {
     );
     let read = reader.step("read", &asked);
 
+    // A single MCP create with mention_user is already a watched question.
+    mcp_call(
+        &state,
+        &entity,
+        &agent,
+        "create_issue",
+        json!({ "title": "Choose the route", "body": "Which route should we take?", "mention_user": true, "notify_user": false }),
+    );
+    let created_issue = reader.call("issues.list", json!({ "project_id": project }))["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["title"] == "Choose the route")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let created_ask = reader.step("created_ask", &created_issue);
+    let created_event = &created_ask["get"]["timeline"][0];
+    assert_eq!(created_ask["get"]["issue"]["watched"], true);
+    assert_eq!(created_event["kind"], "created");
+    assert_eq!(created_event["mentions_user"], true);
+    let created_event_id = created_event["id"].as_str().unwrap().to_string();
+    reader.call(
+        "issues.read_through",
+        json!({ "issue_id": created_issue, "event_id": created_event_id }),
+    );
+    let created_read = reader.step("created_read", &created_issue);
+
     // What the replay depends on: each step's push names its issue on the
     // inbox subscription, and the answers after it say what changed.
     for (step, id) in [
@@ -226,6 +255,8 @@ fn watched_issue_inbox_wire_probe() {
         (&chatter, &asked),
         (&commented, &asked),
         (&read, &asked),
+        (&created_ask, &created_issue),
+        (&created_read, &created_issue),
     ] {
         assert!(
             pushed_issue_ids(step).contains(id),
@@ -255,6 +286,7 @@ fn watched_issue_inbox_wire_probe() {
             "project_id": project,
             "review": { "issue_id": review, "steps": [start, in_review, assigned, done] },
             "comment": { "issue_id": asked, "steps": [asked_start, chatter, commented, read] },
+            "created_ask": { "issue_id": created_issue, "steps": [created_ask, created_read] },
         })
     );
 }

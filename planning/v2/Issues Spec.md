@@ -76,7 +76,8 @@ in this document, "plan" means the legacy flow and "issue" means the tracker's.
 | `at` | RFC 3339 UTC | |
 | `actor` | actor | |
 | `kind` | `created` \| `assigned` \| `unassigned` \| `moved` \| `labelled` \| `linked` \| `closed` \| `reopened` \| `dispatched` \| `tracked` \| `untracked` | |
-| `payload` | object | What the kind needs. `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`; `tracked` and `untracked` carry `{agent_id}` and, when the tracking was a consequence rather than a request, `{by: "assignment"}`. |
+| `payload` | object | What the kind needs. `created` carries `{title}`; `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`; `tracked` and `untracked` carry `{agent_id}` and, when the tracking was a consequence rather than a request, `{by: "assignment"}`. |
+| `mentions_user` | `true`, absent otherwise | Since 1.27.0, an agent's `created` event has this when `create_issue` was called with `mention_user: true`. Like the same flag on an agent comment, it asks the user to read or answer and counts only until the user's read mark passes the event. Other events omit it. |
 
 ### Actors
 
@@ -800,6 +801,9 @@ the issue beside it. Conversations gain the same `watched` on the agent record.
   `create_issue`, `comment_issue`, `assign_issue` or `agent.add`. This is the
   case the feature is for: the user asks an agent to open an issue to workshop
   something, and it appears in their inbox without them going to find it.
+- **An issue an agent filed with `mention_user: true`.** It also appears in
+  the user's Needs you until they read its `created` event, even if the device
+  setting to watch agent-filed issues is off.
 
 Nothing else. An agent filing among agents on a device that has turned the
 setting off, and an agent an agent spawned, are not the user's business until
@@ -810,6 +814,9 @@ somebody says they are.
 A watched issue is one the user can see; it needs them only when:
 
 - it is **assigned to the user**, or
+- an agent's `created` event they have not read **mentions them**
+  (`mention_user` on `create_issue`, kept as `mentions_user` on the event since
+  1.27.0), or
 - an agent comment they have not read **mentions them** (`mention_user`, kept
   as `mentions_user` on the comment), or
 - an agent comment they have not read **asked them** (`notify_user`, kept as
@@ -820,10 +827,13 @@ work there, and a review round between agents has nothing for the user to
 decide. An issue in review is assigned to whoever is reviewing it, and its card
 says so ("In review · Astra reviewer", "In review · you").
 
-A bridge announces this as `issues.commentUserNotifies`. Against a bridge
-without the name, a client keeps the earlier rule — In review, or any unread
-agent comment on a watched issue — because such a bridge does not record which
-comments asked.
+A bridge announces the narrow rule as `issues.commentUserNotifies`, and the
+created-event flag as `issues.createdUserMentions`. Against a bridge without
+the narrow-rule name, a client keeps the earlier rule — In review, or any
+unread agent comment on a watched issue — because such a bridge does not
+record which comments asked. A client that reads the created-event flag uses
+the event's own id and the same read mark as comments; it needs no separate
+state or clock. Older clients ignore the optional event field.
 
 The inbox and the Issues tab's Needs you read this from the same cached
 records: the issue (its `watched`, `assignee` and `read_through`) and its

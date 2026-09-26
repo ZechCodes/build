@@ -161,10 +161,20 @@ describe("a watched issue in the inbox, over the real wire", () => {
     await reachQuietly(chatter, issueId);
 
     await reach(commented);
-    await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("New comment");
+    await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
     // The question counts; the agents' own comment before it does not.
     expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
 
+    await reach(read);
+    await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);
+  });
+
+  it("shows a mentioned issue on creation, then removes it after its created event is read", async () => {
+    const { issue_id: issueId, steps: [created, read] } = wire.created_ask;
+    expect(rowFor(issueId)).toBe(null);
+    await reach(created);
+    await expect.poll(() => rowFor(issueId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Mentioned you");
+    expect(rowFor(issueId).querySelector(".inbox-unread")?.textContent).toBe("1");
     await reach(read);
     await expect.poll(() => rowsNamed(issueId).length, WAIT).toBe(0);
   });

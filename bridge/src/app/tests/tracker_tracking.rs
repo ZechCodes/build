@@ -1150,6 +1150,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent files an issue");
@@ -1336,6 +1337,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 track: None,
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent may file an issue");
@@ -1361,6 +1363,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 track: Some(false),
                 attachments: Vec::new(),
                 notify_user: None,
+                mention_user: None,
             },
         )
         .expect("an agent may file one it does not want to hear about");

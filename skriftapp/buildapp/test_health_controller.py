@@ -15,6 +15,7 @@ from litestar.testing import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp.db_test_support import asgi_app, in_memory_session_maker
+from buildapp import health_controller
 from buildapp.health_controller import HealthController, ReadinessController
 
 
@@ -89,6 +90,13 @@ def test_readyz_stays_200_once_the_database_has_answered():
         assert client.get("/readyz").status_code == 200
 
 
+def test_readyz_gives_up_on_a_hung_database_within_its_deadline(monkeypatch):
+    monkeypatch.setattr(health_controller, "READINESS_QUERY_TIMEOUT_S", 0.05)
+    with TestClient(_app_over(_hung_session)) as client:
+        response = client.get("/readyz")
+    assert response.status_code == 503
+
+
 def test_readyz_has_no_guards():
     assert not ReadinessController.readyz.guards
 
@@ -97,4 +105,17 @@ async def _unreachable_session() -> AsyncIterator[AsyncSession]:
     """A real session bound to no database: every statement fails, as it does
     for a pod whose database is gone."""
     async with AsyncSession() as session:
+        yield session
+
+
+class _HungSession(AsyncSession):
+    """A session whose statements never return, like a connect to a database
+    that accepts the socket and never answers."""
+
+    async def execute(self, *_args, **_kwargs):
+        await asyncio.sleep(3600)
+
+
+async def _hung_session() -> AsyncIterator[AsyncSession]:
+    async with _HungSession() as session:
         yield session

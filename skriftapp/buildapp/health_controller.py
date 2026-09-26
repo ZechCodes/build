@@ -15,11 +15,18 @@ and those stay up while the app's own pages fail, exactly as they did under
 
 from __future__ import annotations
 
+import asyncio
+
 from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+#: The readiness query's own deadline, under the probe's 2 s timeout. A hung
+#: connect (asyncpg waits 60 s by default) must not hold a pool slot per probe;
+#: running out of time is a 503 like any other failure.
+READINESS_QUERY_TIMEOUT_S = 1.5
 
 
 class HealthController(Controller):
@@ -37,7 +44,9 @@ class ReadinessController(Controller):
     async def readyz(self, request: Request, db_session: AsyncSession) -> dict:
         if not getattr(request.app.state, "reached_database", False):
             try:
-                await db_session.execute(text("SELECT 1"))
+                await asyncio.wait_for(
+                    db_session.execute(text("SELECT 1")), READINESS_QUERY_TIMEOUT_S
+                )
             except Exception as error:  # any failure means this pod cannot serve yet
                 raise HTTPException(
                     status_code=HTTP_503_SERVICE_UNAVAILABLE, detail="database unreachable"

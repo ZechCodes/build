@@ -214,17 +214,22 @@ describe("a Changes directory that is mounted but hidden", () => {
     expect(file("repo").querySelector(".fedited").textContent).toBe("1 minute ago");
   });
 
-  it("lets a hidden status cache push settle without replacing its DOM until it shows", async () => {
+  it("keeps a suspended draft and its DOM through a hidden status cache push", async () => {
     await open();
     const repo = surface("repo");
     const before = file("repo");
+    before.querySelector(".fcmt").click();
+    document.querySelector(".cp-input").value = "Review in progress";
     switchTo("assets");
+    expect(document.querySelector("body > .comment-pop")).toBeNull();
     trees.repo.write("new-file.js", "arrived while hidden");
     await writeCached({ deviceId: "dev-1", entityId: directoryCacheId({ workspace_id: "ws-1", source_id: "repo" }), kind: "status" }, trees.repo.status());
     await flush();
     expect(repo.querySelector(".file[data-key$='new-file.js']")).toBeNull();
     expect(file("repo")).toBe(before);
     switchTo("repo");
+    expect(document.querySelector(".cp-input").value).toBe("Review in progress");
+    document.querySelector(".cp-save").click();
     await vi.waitFor(() => expect(repo.querySelector(".file[data-key$='new-file.js']")).not.toBeNull());
   });
 

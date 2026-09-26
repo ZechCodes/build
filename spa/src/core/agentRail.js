@@ -887,6 +887,12 @@ const openingAgentId = (context, railView, agents) => {
   return agents.length ? selectAgentId(agents, remembered) : remembered;
 };
 
+/** Whether this mount reopened a conversation from memory before this side's
+ *  agents were known: the first read that names them says whether the reader
+ *  still watches it (#105). */
+const reopenedBeforeAgentsKnown = (context, agents, selectedId) =>
+  !context.openAgentId && !agents.length && !!selectedId;
+
 /** Which of the rail's one selection this mount opens on (#148): what a swap
  *  pressed, the `+` or the agent a URL named, else the one this page was left
  *  on — an open overview included, so a remount never trades it for a chat. */
@@ -953,9 +959,7 @@ function mountRailOnContext(host, context, swap) {
   // their working — on the first frame, and the read under way reconciles.
   let entity = railEntity(seedPayload(context), context.kind);
   let selectedId = openingAgentId(context, railView, entity.agents);
-  // A conversation reopened from memory before this side's agents were known:
-  // the first read that names them says whether the reader still watches it.
-  let selectionFromMemory = !context.openAgentId && !entity.agents.length && !!selectedId;
+  let selectionFromMemory = reopenedBeforeAgentsKnown(context, entity.agents, selectedId);
   selection.set(selectedId);
   // ---- the project's agent, where the view asked for one --------------------
   // The rail stands on one conversation and keeps the other beside it: the

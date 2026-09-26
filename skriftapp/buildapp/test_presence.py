@@ -36,7 +36,6 @@ def _device(**overrides) -> Device:
         "identity_public_key_b64": "aWRlbnRpdHk",
         "transport_public_key_b64": "dHJhbnNwb3J0",
         "approved": True,
-        "status": "online",
         "last_seen_at": None,
     }
     defaults.update(overrides)
@@ -75,13 +74,6 @@ def test_the_window_edge_is_online_and_one_second_past_it_is_offline():
     just_past = _device(last_seen_at=now - presence.ONLINE_WINDOW - timedelta(seconds=1))
     assert presence.derived_status(at_edge, now) == "online"
     assert presence.derived_status(just_past, now) == "offline"
-
-
-def test_a_stale_last_seen_beats_a_stale_column():
-    """The column may still say ``online`` from the relay's writer; the window wins."""
-    now = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
-    device = _device(status="online", last_seen_at=now - timedelta(minutes=2))
-    assert presence.derived_status(device, now) == "offline"
 
 
 def test_a_device_never_seen_is_offline():

@@ -53,8 +53,7 @@ class Device(Base):
     )
 
     approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    # "pending" | "online" | "offline"
-    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    # Presence is derived from this stamp at read time (buildapp/presence.py).
     last_seen_at: Mapped[datetime | None] = mapped_column(
         DateTimeUTC(timezone=True), nullable=True
     )

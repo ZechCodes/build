@@ -57,11 +57,11 @@ def test_the_four_buckets_are_the_ones_the_operator_asked_for():
 def test_the_dashboard_counts_within_the_window_and_per_device():
     laptop = Device(
         id=uuid4(), name="laptop", owner_user_id=uuid4(), identity_public_key_b64="k",
-        transport_public_key_b64="t", approved=True, status="online",
+        transport_public_key_b64="t", approved=True,
     )
     phone_bridge = Device(
         id=uuid4(), name="mini", owner_user_id=laptop.owner_user_id, identity_public_key_b64="k",
-        transport_public_key_b64="t", approved=True, status="offline",
+        transport_public_key_b64="t", approved=True,
     )
     rows = [
         session(device_id=laptop.id, first_path="direct", carrying_count=1),

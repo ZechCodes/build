@@ -69,7 +69,8 @@ async function standOnWorkspace({ hash, theme, status }) {
   const call = async (method, params = {}) => (answers[method] ? answers[method](params) : {});
   await events.greetBridge(async () => ({
     api_version: "2.0.0", push_events: true,
-    capabilities: ["changes.subscriptions", "requests.priority", "errors.codes"],
+    capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context",
+      "tasks.attachments", "tasks.watching", "conversations.settings"],
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   }), { deviceId: "dev-1" });
 

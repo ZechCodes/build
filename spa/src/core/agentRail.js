@@ -1036,7 +1036,7 @@ function mountRailOnContext(host, context, swap) {
   // project's agent is one — keeps it.
   const overviewPage = overviewPageOf(context, alongside, projectId);
   let overviewScope = overviewPage.scope;
-  let overviewRead = { rows: [], workspaces: [] };
+  let overviewRead = { rows: [], workspaces: [], issues: [] };
   const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
     if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
     overviewScope = saved;
@@ -1531,7 +1531,7 @@ function mountRailOnContext(host, context, swap) {
     includeProjectWorkspaces: overviewReadsWorkspaces,
     sources: () => [overviewSource("current", context, records.entityId() || entity.entityId),
       ...(alongside ? [overviewSource("alongside", alongside, watchedAlongsideId)] : [])],
-    onRows: (rows, { workspaces }) => paintOverviewRows({ rows, workspaces }),
+    onRows: (rows, { workspaces, issues }) => paintOverviewRows({ rows, workspaces, issues }),
   });
 
   const answerLostTheAgents = (answered) => {
@@ -1887,7 +1887,8 @@ function mountRailOnContext(host, context, swap) {
     overviewRead = read;
     const list = host.querySelector(".rail-overview-list");
     if (!list) return;
-    const markup = overviewHtml(read.rows, { showProjectAgents: !!projectId, scope: overviewScope, workspaces: read.workspaces });
+    const markup = overviewHtml(read.rows, { showProjectAgents: !!projectId, scope: overviewScope,
+      workspaces: read.workspaces, issues: read.issues || [] });
     if (list.innerHTML !== markup) list.innerHTML = markup;
     list.onclick = (event) => {
       const add = event.target.closest?.("[data-overview-add]");

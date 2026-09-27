@@ -4,7 +4,7 @@
 // from the cache, and opening the sheet asks the machine once in the
 // background. Nothing here is mocked: the sheet, the cache, the capability
 // read off a real greeting, and the picker are the modules the app runs.
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
@@ -297,4 +297,107 @@ it("a closed sheet stops waiting: the machine greeting later is not asked", asyn
   await greet(["github.repos"]);
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(reposCalls(call)).toHaveLength(0);
+});
+
+// Review of 374ffa3f, finding 2: a machine left before any ask reached it was
+// still counted as asked, so choosing it again never asked it.
+it("switching back to a machine no ask reached asks it then", async () => {
+  const call = deskCall();
+  openNewRepo(vi.fn(), { devices: [{ id: "desk", name: "Desktop" }, { id: "lap", name: "Laptop" }], defaultDeviceId: "desk", callRpcFor: () => call });
+  const choose = (id) => {
+    const select = document.querySelector("#nrdevice");
+    select.value = id;
+    select.dispatchEvent(new Event("change"));
+  };
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  choose("lap");
+  await greet(["github.repos"]); // the desk greets while the laptop is chosen
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(reposCalls(call)).toHaveLength(0);
+  choose("desk");
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  const input = addRemote();
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
+// Review of 374ffa3f, finding 3: an ask on a session that was replaced can
+// come back after the newer session's ask; the older answer must not win.
+it("an older ask answering late does not replace what a newer ask wrote", async () => {
+  await greet(["github.repos"]);
+  const late = [];
+  const answers = [];
+  const call = vi.fn((method) => {
+    if (method !== "github.repos") return Promise.resolve({});
+    return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+  });
+  open(call);
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  await greet(["github.repos"]); // a reconnect while the first ask is out
+  await vi.waitFor(() => expect(answers).toHaveLength(2));
+  answers[1].resolve({ repos: REPOS });
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS));
+  late.push({ name_with_owner: "old/list", ssh_url: "git@github.com:old/list.git", url: "https://github.com/old/list", private: false });
+  answers[0].resolve({ repos: late });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
+});
+
+// Zech's phone, Sep 27: the account-wide sheet (All devices) left Device on
+// "Choose a device", and a remote field with no machine never searches.
+describe("the account-wide sheet", () => {
+  const DESK = { id: "desk", name: "Desktop" };
+  const LAP = { id: "lap", name: "Laptop" };
+  const openAccountWide = (call, devices) => openNewRepo(vi.fn(), { devices, defaultDeviceId: "", callRpcFor: () => call });
+
+  it("preselects an account's only machine, and its remote fields search from the start", async () => {
+    await greet(["github.repos"]);
+    const call = deskCall();
+    openAccountWide(call, [DESK]);
+    expect(document.querySelector("#nrdevice").value).toBe("desk");
+    await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+    const input = addRemote();
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+
+  it("a restored draft that chose no machine does not undo the only machine", async () => {
+    await greet(["github.repos"]);
+    await writeCached(uiAddress({ view: "new-project", kind: "draft" }), {
+      name: "Skrift",
+      sources: [{ id: 1, kind: "remote", path: "", remote: "bot", name: "bot", base_branch: "", automaticName: true }],
+      selectedDeviceId: "",
+    });
+    const call = deskCall();
+    openAccountWide(call, [DESK]);
+    await vi.waitFor(() => expect(document.querySelector("#nrproject").value).toBe("Skrift"));
+    expect(document.querySelector("#nrdevice").value).toBe("desk");
+    const input = document.querySelector("[data-source-value]");
+    expect(input.value).toBe("bot");
+    await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+
+  it("with several machines and none chosen the field stays plain, and choosing one makes the painted field search", async () => {
+    await greet(["github.repos"]);
+    const call = deskCall();
+    openAccountWide(call, [DESK, LAP]);
+    expect(document.querySelector("#nrdevice").value).toBe("");
+    const before = addRemote();
+    type(before, "bot");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(before.hasAttribute("role")).toBe(false);
+    expect(options()).toEqual([]);
+    expect(reposCalls(call)).toHaveLength(0);
+    const select = document.querySelector("#nrdevice");
+    select.value = "desk";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+    const input = document.querySelector("[data-source-value]");
+    expect(input.value).toBe("bot"); // the field already painted, repainted with what was typed
+    await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
 });

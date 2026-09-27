@@ -105,7 +105,6 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   const sheet = $("#sheet");
   sheet.innerHTML = settingsSheetHtml({ title: "Project settings", bodyHtml: '<div class="sub">Loading…</div>' });
   $("#scrim").classList.add("show");
-  void refreshGithubRepos(deviceId, callRpc, { wanted: () => $("#scrim").classList.contains("show") });
   let frame = sheet.firstElementChild;
   let view = "settings";
   let paintedRemote = "";
@@ -118,7 +117,10 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     else void draftRecord?.write(snapshot);
   };
   const current = () => sheet.isConnected && sheet.firstElementChild === frame && $("#scrim").classList.contains("show");
+  // Asked again when the machine greets while THIS opening is on screen.
+  const repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: current });
   const close = () => {
+    repoAsk.stop();
     record.dispose();
     draftRecord?.dispose();
     $("#scrim").classList.remove("show");

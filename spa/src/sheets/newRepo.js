@@ -18,7 +18,10 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const draft = { name: "", sources: [] };
   const selectable = Array.isArray(devices);
   const choices = selectable ? devices : [{ id: deviceId || "pinned", name: deviceName }];
-  let selectedDeviceId = defaultDeviceId && choices.some((device) => device.id === defaultDeviceId) ? defaultDeviceId : (selectable ? "" : choices[0].id);
+  // An account with one machine has nothing to choose: that machine is the
+  // one, so its fields (and its GitHub repositories) are live from the start.
+  const onlyChoice = choices.length === 1 ? choices[0].id : "";
+  let selectedDeviceId = defaultDeviceId && choices.some((device) => device.id === defaultDeviceId) ? defaultDeviceId : (selectable ? onlyChoice : choices[0].id);
   let active = true, busy = false, serial = 0, version = 0, projectsDir;
   let projectsDirRecord = null;
   let draftRecord;
@@ -33,16 +36,22 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const pickerDeviceId = () => selectable ? selectedDeviceId : deviceId;
   // Each machine is asked for its GitHub repositories once per opening — and
   // again each time it greets while this sheet is open on it, until one ask
-  // reaches it. The pickers paint whatever it last answered meanwhile.
-  const askedForRepos = new Set();
+  // reaches it. A machine left before any ask reached it is asked afresh when
+  // it is chosen again. The pickers paint whatever it last answered meanwhile.
+  const repoAsks = new Map(); // deviceId → its refreshGithubRepos handle
   const askForRepos = () => {
     const target = pickerDeviceId();
-    if (!target || askedForRepos.has(target)) return;
-    askedForRepos.add(target);
-    void refreshGithubRepos(target, selectedCall(), { wanted: () => active && pickerDeviceId() === target });
+    for (const [deviceId, ask] of repoAsks) {
+      if (deviceId !== target && !ask.reached()) {
+        ask.stop();
+        repoAsks.delete(deviceId);
+      }
+    }
+    if (!target || repoAsks.has(target)) return;
+    repoAsks.set(target, refreshGithubRepos(target, selectedCall(), { wanted: () => active && pickerDeviceId() === target }));
   };
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
-  const close = () => { active = false; version += 1; projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
+  const close = () => { active = false; version += 1; repoAsks.forEach((ask) => ask.stop()); projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
   const finish = async (project, target) => {
     await draftRecord?.write({ name: "", sources: [], selectedDeviceId });

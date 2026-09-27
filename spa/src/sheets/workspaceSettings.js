@@ -145,7 +145,6 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
-  void refreshGithubRepos(deviceId, callRpc, { wanted: () => $("#scrim").classList.contains("show") });
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
   const draft = { name: null, directory: emptyDirectoryDraft() };
@@ -155,7 +154,9 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     if (debounced) { draftRecord.schedule(snapshot); return Promise.resolve(); }
     return draftRecord.write(snapshot);
   };
+  let repoAsk = null;
   const close = () => {
+    repoAsk?.stop();
     disposeDirectories();
     disposeCatalog();
     draftRecord.dispose();
@@ -165,6 +166,8 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   /** Still the sheet this call opened: an answer that lands after the reader
    *  moved on must not write into whatever is on screen now. */
   const current = () => sheet.isConnected && sheet.firstElementChild === opened;
+  // Asked again when the machine greets while THIS opening is on screen.
+  repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: () => current() && $("#scrim").classList.contains("show") });
 
   draftRecord = watchUiState(uiAddress({ deviceId, entityId: workspace.id, view: "workspace-settings", kind: "draft" }), (saved) => {
     if (!current() || !saved) return;

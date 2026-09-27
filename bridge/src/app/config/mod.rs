@@ -397,6 +397,7 @@ impl AppState {
         self.apply_role_models_config(config);
         if let Some(watching) = config
             .get("watch_agent_filed_tasks")
+            .or_else(|| config.get(crate::renamed_ids::WATCH_SETTING_BEFORE_RENAME))
             .and_then(Value::as_bool)
         {
             self.watch_agent_filed_tasks = watching;

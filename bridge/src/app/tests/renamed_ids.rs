@@ -102,3 +102,22 @@ fn an_old_comment_id_still_reads_and_an_old_parent_still_links() {
         "{linked}"
     );
 }
+
+#[test]
+fn a_config_written_before_the_rename_keeps_its_watch_setting() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.json");
+    std::fs::write(&config_path, r#"{ "watch_agent_filed_issues": true }"#).unwrap();
+    let mut state = AppState::new_unrooted(
+        directory.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    )
+    .with_config(&config_path)
+    .unwrap();
+    assert_eq!(
+        state.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_tasks"],
+        true
+    );
+}

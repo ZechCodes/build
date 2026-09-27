@@ -9,6 +9,10 @@
 
 use serde::{Deserialize, Deserializer};
 
+/// The device setting `watch_agent_filed_tasks`, as a config written before
+/// the rename spells it. Read when the new key is absent; never written.
+pub const WATCH_SETTING_BEFORE_RENAME: &str = "watch_agent_filed_issues";
+
 const RENAMED_PREFIXES: [(&str, &str); 3] = [("issue-", "task-"), ("ic-", "tc-"), ("ie-", "te-")];
 
 /// `issue-…` as `task-…`, a comment's `ic-…` as `tc-…` and an event's `ie-…`

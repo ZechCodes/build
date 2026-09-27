@@ -108,6 +108,8 @@ pub(in crate::app) struct OpenedSession {
     /// carries, so the record has to forget it.
     pub(in crate::app) recorded_name_is_gone: bool,
     pub(in crate::app) claim: SpawnClaim,
+    /// Where the child stands, which its session lineage records.
+    pub(in crate::app) cwd: std::path::PathBuf,
 }
 
 /// The daemon itself, held the way a background job has to hold it.
@@ -377,6 +379,7 @@ pub(in crate::app) fn reserve_agent_spawn(
         plan: AgentSpawnPlan {
             project,
             root: key.root.clone(),
+            cwd: s.agent_process_cwd(owner, &key.root),
             agent_id: agent_id.to_string(),
             model_choice: model_choice.clone(),
             recorded_resume_id,
@@ -463,6 +466,8 @@ pub(in crate::app) fn open_agent_session(
         return Ok(None);
     }
     let choice = plan.model_choice.clone();
+    let cwd = plan.cwd.clone();
+    let stands_in = cwd.clone();
     let opened = plan.probe_and_scaffold().and_then(|ready| {
         let ReadyToSpawn {
             spec,
@@ -477,15 +482,16 @@ pub(in crate::app) fn open_agent_session(
         else {
             unreachable!("an agent reservation always names an agent")
         };
-        Tab::spawn_agent(
+        Tab::spawn_agent_keyed(
             owner,
             agent_id,
+            key.root.clone(),
             agent_open_request(
                 PreparedAgentLaunch {
                     spec,
                     pty_size: size,
                 },
-                key.root.clone(),
+                cwd,
                 &choice,
                 resume_session_id,
                 locator,
@@ -503,6 +509,7 @@ pub(in crate::app) fn open_agent_session(
                 output,
                 recorded_name_is_gone,
                 claim: holding.claim,
+                cwd: stands_in,
             }))
         }
         Err(error) => Err(holding.abandon(state, error, timer)),
@@ -530,6 +537,7 @@ pub(in crate::app) fn publish_agent_tab(
         output,
         recorded_name_is_gone,
         claim,
+        cwd,
     } = opened;
     let (owner, agent_id) = tab
         .role
@@ -564,8 +572,14 @@ pub(in crate::app) fn publish_agent_tab(
         if stranded {
             s.retire_tab(key, "closed");
         } else {
-            let instance =
-                s.record_agent_session_start(&owner, &agent_id, &key.root, model_choice, phase);
+            let instance = s.record_agent_session_start_in(
+                &owner,
+                &agent_id,
+                &key.root,
+                &cwd,
+                model_choice,
+                phase,
+            );
             pumps = Some(
                 s.session_registry
                     .set_instance_and_take_pumps(key, instance, output),
@@ -695,6 +709,7 @@ pub(in crate::app) fn open_session_lineage(
     entity_id: &str,
     agent_id: &str,
     checkout: &str,
+    cwd: &str,
     model_choice: &ModelChoice,
     phase: &str,
 ) -> SessionInstance {
@@ -703,6 +718,7 @@ pub(in crate::app) fn open_session_lineage(
         entity_id,
         agent_id,
         checkout,
+        cwd,
         provider: model_choice.provider.label(),
         model: model_choice.model.as_deref(),
         effort: model_choice.effort.as_deref(),

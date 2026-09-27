@@ -1,6 +1,7 @@
 use super::{count_serialized_items, ArtifactKind, MessageAttachment, Thread, ThreadItem};
 use serde_json::json;
 use serde_json::Value;
+use std::path::Path;
 
 impl Thread {
     /// Public thread payload for the SPA. Historical snapshots are deliberately
@@ -112,7 +113,7 @@ impl Thread {
     /// report, so it is a message, and it is carried with the outcome named on
     /// its line. That is what tells a replacement why its predecessor blocked.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
-        catch_up_lines(self.items.iter(), limit)
+        catch_up_lines(self.items.iter(), limit, None)
     }
     /// Context safe to freeze beside a new managed operation. Another managed
     /// operation owns its own delivery, so it must never leak into this one's
@@ -123,6 +124,7 @@ impl Thread {
                 !matches!(item, ThreadItem::Message(message) if message.operation_id.is_some())
             }),
             limit,
+            None,
         )
     }
     /// The same packet, completed with messages read back out of the store —
@@ -139,12 +141,30 @@ impl Thread {
         history: &[ThreadItem],
         limit: usize,
     ) -> String {
+        self.catch_up_markdown_for_reader_elsewhere(history, limit, None)
+    }
+    /// The same packet for a reader that does not stand in the directory the
+    /// conversation's attachments were written against: every relative
+    /// attachment path is named from `attachments_root` instead, so it opens
+    /// from wherever the reader is. A project agent is that reader — its
+    /// conversation's files live under its scratch root and it stands in the
+    /// project's base — and the paths it was sent before it moved are still
+    /// the relative ones.
+    ///
+    /// An empty `history` is the tail-only packet.
+    pub fn catch_up_markdown_for_reader_elsewhere(
+        &self,
+        history: &[ThreadItem],
+        limit: usize,
+        attachments_root: Option<&Path>,
+    ) -> String {
         catch_up_lines(
             history
                 .iter()
                 .filter(|item| item.sequence() < self.resident_from_sequence)
                 .chain(self.items.iter()),
             limit,
+            attachments_root,
         )
     }
 }
@@ -180,6 +200,7 @@ pub(super) fn page_span<'a>(
 pub(super) fn catch_up_lines<'a>(
     items: impl DoubleEndedIterator<Item = &'a ThreadItem>,
     limit: usize,
+    attachments_root: Option<&Path>,
 ) -> String {
     let mut lines: Vec<String> = items
         .rev()
@@ -196,7 +217,7 @@ pub(super) fn catch_up_lines<'a>(
                     None => String::new(),
                 },
                 message.body.replace('\n', " "),
-                attachment_note(&message.attachments),
+                attachment_note(&message.attachments, attachments_root),
                 viewing_context_note(message.viewing_context.as_deref())
             )),
             ThreadItem::Event(_) => None,
@@ -260,13 +281,25 @@ pub(super) fn viewing_context_note(context: Option<&super::ViewingContext>) -> S
 /// The trailer that names a message's files in prose form. The catch-up packet
 /// is markdown, not JSON, so a path only reaches a resumed agent if it is
 /// written into the line.
-pub(super) fn attachment_note(attachments: &[MessageAttachment]) -> String {
+///
+/// A relative path is written against the directory the conversation's
+/// attachments were stored under; `attachments_root` names that directory for
+/// a reader standing somewhere else, and an absolute path is left as it is.
+pub(super) fn attachment_note(
+    attachments: &[MessageAttachment],
+    attachments_root: Option<&Path>,
+) -> String {
     if attachments.is_empty() {
         return String::new();
     }
-    let paths: Vec<&str> = attachments
+    let paths: Vec<String> = attachments
         .iter()
-        .map(|attachment| attachment.path.as_str())
+        .map(|attachment| match attachments_root {
+            Some(root) if Path::new(&attachment.path).is_relative() => {
+                root.join(&attachment.path).display().to_string()
+            }
+            _ => attachment.path.clone(),
+        })
         .collect();
     format!(" [attached files, open them: {}]", paths.join(", "))
 }

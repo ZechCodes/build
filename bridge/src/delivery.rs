@@ -49,14 +49,21 @@ impl SessionProbes {
     ///    conversation to pick up, and the checkout's old one belongs to
     ///    whoever had it — adoption included: Build cannot show a history it
     ///    never heard.
+    ///
+    /// The provider is asked where the child will stand, and nowhere else.
+    /// Which directory a recorded name belongs to is not asked of the disk at
+    /// all: the name only reaches here when the session that had it stood
+    /// where this child will (`resumable_session_id`), so a project agent's
+    /// conversation from before it moved into its project's base is never
+    /// offered, whatever copies of it either directory holds.
     fn pickup(
         &self,
-        root: &Path,
+        cwd: &Path,
         provider: AgentProvider,
         recorded: Option<String>,
     ) -> SessionPickup {
         match recorded {
-            Some(named) if (self.resume_id)(root, provider, &named) => SessionPickup {
+            Some(named) if (self.resume_id)(cwd, provider, &named) => SessionPickup {
                 resume_session_id: Some(named),
                 continue_session: false,
                 recorded_name_is_gone: false,
@@ -105,7 +112,12 @@ pub struct SessionPickup {
 /// here for a constructor to enforce: this module cannot name `AppState`.
 pub struct AgentSpawnPlan {
     pub project: Orchestrator,
+    /// Where Build keeps the agent: its `.build/` scaffold, its tab and its
+    /// session lineage.
     pub root: PathBuf,
+    /// Where the child process stands. The root, for every agent but a
+    /// project agent, which stands in its project's base.
+    pub cwd: PathBuf,
     pub agent_id: String,
     pub model_choice: ModelChoice,
     pub recorded_resume_id: Option<String>,
@@ -125,15 +137,19 @@ impl AgentSpawnPlan {
         let provider = self.model_choice.provider;
         let pickup = self
             .probes
-            .pickup(&self.root, provider, self.recorded_resume_id);
-        let locator = self.probes.locator(&self.root, provider);
+            .pickup(&self.cwd, provider, self.recorded_resume_id);
+        // A fresh transcript is filed under the cwd the child starts in.
+        let locator = self.probes.locator(&self.cwd, provider);
         let resume_session_id = pickup.resume_session_id.clone();
         let prepared = self
             .project
             .agent_launch()
             .prepare(
                 &self.agent_id,
-                &self.root,
+                crate::orchestrator::LaunchDirs {
+                    scaffold: &self.root,
+                    cwd: &self.cwd,
+                },
                 &self.model_choice,
                 pickup.continue_session,
                 pickup.resume_session_id,
@@ -222,5 +238,36 @@ mod tests {
             !pickup.continue_session,
             "the checkout's old conversation belongs to whoever had it"
         );
+    }
+
+    /// A project agent moved into its project's base does not resume the
+    /// conversation it had in Build's scratch directory: claude filed that
+    /// under the scratch directory's name, and only what the provider holds
+    /// where the child stands is picked up. The name is forgotten, and the
+    /// child starts fresh for the canonical catch-up.
+    #[test]
+    fn a_name_filed_only_where_the_child_no_longer_stands_starts_it_fresh() {
+        let filed_under_scratch = SessionProbes {
+            resume_id: Arc::new(move |dir: &Path, _, id: &str| {
+                dir == Path::new("/state/project-scratch/build-0123") && id == "sess-old"
+            }),
+            locator: Arc::new(|_, _| None),
+        };
+
+        let moved = filed_under_scratch.pickup(
+            Path::new("/code/build"),
+            AgentProvider::default(),
+            Some("sess-old".into()),
+        );
+        assert_eq!(moved.resume_session_id, None);
+        assert!(!moved.continue_session);
+        assert!(moved.recorded_name_is_gone);
+
+        let stayed = filed_under_scratch.pickup(
+            Path::new("/state/project-scratch/build-0123"),
+            AgentProvider::default(),
+            Some("sess-old".into()),
+        );
+        assert_eq!(stayed.resume_session_id.as_deref(), Some("sess-old"));
     }
 }

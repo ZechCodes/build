@@ -212,6 +212,7 @@ mod harness_models;
 mod lifecycle_compat;
 mod merge_regressions;
 mod project_agent;
+mod project_agent_base;
 mod project_conversation;
 mod protocol;
 mod push;

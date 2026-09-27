@@ -948,7 +948,14 @@ fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
 
     let spec = orch
         .agent_launch()
-        .prepare("agent-42", &cwd, &claude, false, None, "token-42")
+        .prepare(
+            "agent-42",
+            crate::orchestrator::LaunchDirs::at(&cwd),
+            &claude,
+            false,
+            None,
+            "token-42",
+        )
         .unwrap();
     assert_eq!(spec.spec.binary, "claude");
     let args = spec.spec.args.join(" ");
@@ -968,13 +975,27 @@ fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
     // A replaced tab picks its own conversation back up.
     let resumed = orch
         .agent_launch()
-        .prepare("run-42", &cwd, &claude, true, None, "token-43")
+        .prepare(
+            "run-42",
+            crate::orchestrator::LaunchDirs::at(&cwd),
+            &claude,
+            true,
+            None,
+            "token-43",
+        )
         .unwrap();
     assert!(resumed.spec.args.join(" ").contains("--continue"));
 
     let spec = orch
         .agent_launch()
-        .prepare("run-42", &cwd, &codex, false, None, "token-42")
+        .prepare(
+            "run-42",
+            crate::orchestrator::LaunchDirs::at(&cwd),
+            &codex,
+            false,
+            None,
+            "token-42",
+        )
         .unwrap();
     assert_eq!(spec.spec.binary, "codex");
     let args = spec.spec.args.join(" ");
@@ -996,7 +1017,14 @@ fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
     assert!(!args.ends_with("resume --last"), "{args}");
     let resumed = orch
         .agent_launch()
-        .prepare("run-42", &cwd, &codex, true, None, "token-43")
+        .prepare(
+            "run-42",
+            crate::orchestrator::LaunchDirs::at(&cwd),
+            &codex,
+            true,
+            None,
+            "token-43",
+        )
         .unwrap();
     assert!(resumed.spec.args.join(" ").ends_with("resume --last"));
 
@@ -1026,7 +1054,7 @@ fn pi_launch_identity_reaches_the_session_through_tab_spawn() {
         .agent_launch()
         .prepare(
             agent_id,
-            &worktree,
+            crate::orchestrator::LaunchDirs::at(&worktree),
             &ModelChoice {
                 provider: AgentProvider::Pi,
                 model: None,

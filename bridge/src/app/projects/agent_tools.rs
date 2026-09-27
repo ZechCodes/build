@@ -42,20 +42,47 @@ impl AppState {
     }
 
     /// What a project agent is told it is, on a cold start: the project it is
-    /// the agent of, the scratch directory it stands in, and the reads it has.
-    /// Never the coding protocol — that one is about phases, a plan and a diff,
-    /// and a project agent has none of them.
+    /// the agent of, the base it stands in and may only read, and the tools it
+    /// has. Never the coding protocol — that one is about phases, a plan and a
+    /// diff, and a project agent has none of them.
+    ///
+    /// A resumed session is a cold start too, so an agent that was talking
+    /// before its project gained a base hears this on its first turn after.
     pub(in crate::app) fn project_agent_prompt(&self, owner_id: &str) -> String {
-        let name = self
+        let project = self
             .projects
             .project_id_of(owner_id)
-            .and_then(|project_id| self.projects.get(project_id))
+            .and_then(|project_id| self.projects.get(project_id));
+        let name = project
             .map(|project| project.name.clone())
             .unwrap_or_default();
+        let base = project
+            .map(|project| project.repo_path.display().to_string())
+            .unwrap_or_default();
+        let others = project
+            .map(|project| {
+                project
+                    .sources
+                    .iter()
+                    .filter(|source| source.path != project.repo_path)
+                    .map(|source| format!("`{}` at {}", source.name, source.path.display()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let sources = if others.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Its other sources are part of the base too: {}.",
+                others.join(", ")
+            )
+        };
         crate::templates::render(
             &crate::templates::Templates::default().project_agent,
             &crate::templates::Vars {
                 project_name: &name,
+                project_base: &base,
+                project_sources: &sources,
                 ..crate::templates::Vars::default()
             },
         )

@@ -49,7 +49,6 @@
 
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -76,7 +75,7 @@ pub use entities::{
 };
 use legacy::{
     copy_tree, dir_contains_a_file, is_json_record, load_legacy_owner_context,
-    remove_dir_if_present, remove_file_if_present, write_record_atomically, STAGE_PLAN_DIR,
+    remove_dir_if_present, remove_file_if_present, STAGE_PLAN_DIR,
 };
 use operations::ensure_operation_receipt_columns;
 use schema::{
@@ -332,16 +331,6 @@ impl Store {
         tx.commit()?;
         Ok(out)
     }
-}
-
-/// [`write_record_atomically`] for a file that is not a store record but lives
-/// in the user's own checkout — `.build/review-rules.json`, the repository's
-/// `.git/info/exclude` — and wants exactly the same guarantee, for exactly the
-/// same reason: a half-written file is one a human has to repair. Safe for
-/// writers running at once: each stages its own sibling, so a reader sees the
-/// old file whole or the new one whole, never a prefix of either.
-pub(crate) fn write_file_atomically(path: &Path, contents: &str) -> Result<(), StoreError> {
-    write_record_atomically(path, contents)
 }
 
 /// The current time as an RFC 3339 UTC string (the store's timestamp format).

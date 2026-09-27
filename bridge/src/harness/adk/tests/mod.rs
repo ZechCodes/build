@@ -321,6 +321,7 @@ fn spawn_options() -> SpawnOptions {
         owner_id: "agent-01J".to_string(),
         mcp_session_token: "token-42".to_string(),
         cwd: PathBuf::from("/tmp/worktree"),
+        scaffold: None,
     }
 }
 

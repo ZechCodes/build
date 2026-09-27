@@ -5,6 +5,7 @@ fn start(thread: &mut Thread, agent_id: &str, checkout: &str, now: &str) -> Sess
         entity_id: "entity-shared",
         agent_id,
         checkout,
+        cwd: "",
         provider: "claude",
         model: None,
         effort: None,

@@ -195,6 +195,79 @@ impl AppState {
         Err("unknown conversation owner".to_string())
     }
 
+    /// The root an owner's attachment paths are written against, for an owner
+    /// whose agents do not stand in it: a project's own conversation, rooted in
+    /// Build's scratch directory while its agent stands in the project's base.
+    /// `None` for every other owner, whose agents read those paths from where
+    /// they stand.
+    pub(in crate::app) fn attachments_root_for_reader_elsewhere(
+        &self,
+        owner: &str,
+    ) -> Option<std::path::PathBuf> {
+        let root = &self.runs.get(owner)?.worktree.path;
+        (self.agent_process_cwd(owner, root) != *root).then(|| root.clone())
+    }
+
+    /// A delivery payload as the agent it is for reads it. A project agent
+    /// stands in its project's base, so every attachment path its messages
+    /// carry relative to the scratch root is named from that root instead. A
+    /// payload is frozen when its operation is accepted and replayed after a
+    /// restart, so one accepted before the agent moved still names the
+    /// relative paths; this is where every delivery, native or legacy, gets
+    /// them fixed.
+    ///
+    /// The conversation context frozen beside them is text, and a path in it
+    /// cannot be told from an author's words that look like one. It is left
+    /// exactly as it was written, and one line in front of it says where its
+    /// relative attachment paths are.
+    ///
+    /// Every other owner's payload goes unchanged.
+    pub(in crate::app) fn payload_for_reader(
+        &self,
+        owner: &str,
+        mut payload: crate::operation::OperationPayload,
+    ) -> crate::operation::OperationPayload {
+        let Some(root) = self.attachments_root_for_reader_elsewhere(owner) else {
+            return payload;
+        };
+        for attachment in payload
+            .messages
+            .iter_mut()
+            .flat_map(|message| message.attachments.iter_mut())
+        {
+            if std::path::Path::new(&attachment.path).is_relative() {
+                attachment.path = root.join(&attachment.path).display().to_string();
+            }
+        }
+        let note = format!(
+            "Relative `{ATTACHMENTS_DIR}/…` paths in this context are under {}.",
+            root.display()
+        );
+        if payload
+            .prior_context
+            .contains(&format!("{ATTACHMENTS_DIR}/"))
+            && !payload.prior_context.starts_with(&note)
+        {
+            payload.prior_context = format!("{note}\n{}", payload.prior_context);
+        }
+        payload
+    }
+
+    /// An accepted operation read back out of the store with its payload as
+    /// its agent reads it: the turn a restart rebuilds for a message queued
+    /// before the agent moved.
+    pub(in crate::app) fn receipt_for_reader(
+        &self,
+        mut receipt: crate::operation::OperationReceipt,
+    ) -> crate::operation::OperationReceipt {
+        if let Some(delivery) = receipt.delivery.as_mut() {
+            if let Some(payload) = delivery.payload.take() {
+                delivery.payload = Some(self.payload_for_reader(&delivery.owner_id, payload));
+            }
+        }
+        receipt
+    }
+
     /// Where attachments go for an entity that has no checkout to put them in.
     pub(in crate::app) fn local_attachments_dir(&self) -> std::path::PathBuf {
         self.store
@@ -246,7 +319,16 @@ impl AppState {
                         .expect("a worktree home is always .build/attachments"),
                 )
                 .map_err(|e| format!("cannot keep attachments out of git: {e}"))?;
-                format!("{ATTACHMENTS_DIR}/{stored}")
+                if self
+                    .attachments_root_for_reader_elsewhere(&entity_id)
+                    .is_some()
+                {
+                    // Its agents stand somewhere else, so a worktree-relative
+                    // path would be read from the wrong directory.
+                    worktree_home.join(&stored).display().to_string()
+                } else {
+                    format!("{ATTACHMENTS_DIR}/{stored}")
+                }
             }
             None => homes.local.join(&stored).display().to_string(),
         };

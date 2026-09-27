@@ -136,7 +136,7 @@ impl Harness for ClaudeHarness {
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
             .unset_all(INHERITED_AGENT_MARKERS)
             .arg("--mcp-config")
-            .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
+            .arg(options.mcp_config())
             .arg("--strict-mcp-config")
             .arg("--settings")
             .arg(compaction_settings)
@@ -188,6 +188,16 @@ impl Harness for ClaudeHarness {
             && project_dir(&home.join(".claude/projects"), cwd)
                 .join(format!("{id}.jsonl"))
                 .is_file()
+    }
+
+    /// Its scheduler lock and durable task list, and the permissions it
+    /// remembers for that directory.
+    fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
+        &[
+            "scheduled_tasks.lock",
+            "scheduled_tasks.json",
+            "settings.local.json",
+        ]
     }
 }
 

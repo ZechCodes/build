@@ -27,6 +27,13 @@ pub struct SessionLineage {
     /// carry it and remain readable without inventing one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<String>,
+    /// Where this exact process stood, when that was not its checkout — a
+    /// project agent stands in its project's base. A provider files the
+    /// conversation by it, so a conversation had in one directory is never
+    /// resumed from another. Every process stood in its checkout before a cwd
+    /// could differ, which is what an absent one means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
     /// Provider-owned conversation id used to resume this exact lineage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,
@@ -41,6 +48,13 @@ pub struct SessionLineage {
     pub started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
+}
+
+impl SessionLineage {
+    /// The directory this process stood in.
+    pub fn stood_in(&self) -> Option<&str> {
+        self.cwd.as_deref().or(self.checkout.as_deref())
+    }
 }
 
 /// The exact session process a lifecycle callback belongs to.
@@ -62,6 +76,9 @@ pub struct SessionStart<'a> {
     pub entity_id: &'a str,
     pub agent_id: &'a str,
     pub checkout: &'a str,
+    /// Where the process stands; empty, or the checkout, for one standing in
+    /// its checkout.
+    pub cwd: &'a str,
     pub provider: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -1224,6 +1241,7 @@ impl Thread {
             entity_id: "",
             agent_id: &agent_id,
             checkout: "",
+            cwd: "",
             provider,
             model,
             effort,
@@ -1241,6 +1259,7 @@ impl Thread {
             entity_id,
             agent_id,
             checkout,
+            cwd,
             provider,
             model,
             effort,
@@ -1261,6 +1280,7 @@ impl Thread {
             agent_id: agent_id.to_string(),
             conversation_id: conversation_id.clone(),
             checkout: (!checkout.is_empty()).then(|| checkout.to_string()),
+            cwd: (!cwd.is_empty() && cwd != checkout).then(|| cwd.to_string()),
             resume_session_id: None,
             parent_session_id,
             provider: provider.to_string(),

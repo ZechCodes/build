@@ -11,7 +11,7 @@
 //! zero special cases). Variables: `{goal}`, `{plan_path}`, `{docs_dir}`,
 //! `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`, `{stage_path}`,
 //! `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`, `{capture_text}`,
-//! `{project_name}`, `{user_answer}`.
+//! `{project_name}`, `{project_base}`, `{project_sources}`, `{user_answer}`.
 
 /// Where a single-document plan lives. A plan whose docs dir holds
 /// `STAGES_MANIFEST_PATH` when its agent reports Complete is multi-stage
@@ -216,6 +216,12 @@ pub struct Vars<'a> {
     /// The project a project agent is the agent of, for the `project_agent`
     /// template.
     pub project_name: &'a str,
+    /// The directory a project agent stands in, for the `project_agent`
+    /// template.
+    pub project_base: &'a str,
+    /// The sentence naming a project's other sources, or "" for a project
+    /// with one, for the `project_agent` template.
+    pub project_sources: &'a str,
     /// The user's answer to the router's clarifying question, or "".
     pub user_answer: &'a str,
 }
@@ -236,6 +242,8 @@ pub fn render(template: &str, vars: &Vars) -> String {
         .replace("{stage_start_sha}", vars.stage_start_sha)
         .replace("{capture_text}", vars.capture_text)
         .replace("{project_name}", vars.project_name)
+        .replace("{project_base}", vars.project_base)
+        .replace("{project_sources}", vars.project_sources)
         .replace("{user_answer}", vars.user_answer)
 }
 
@@ -602,7 +610,10 @@ mod tests {
             !project.contains("phase"),
             "a project agent runs no phases: {project}"
         );
-        assert!(project.contains("You have no checkout"), "{project}");
+        assert!(
+            project.contains("You stand in the project's base"),
+            "{project}"
+        );
     }
 
     /// The project agent orchestrates: work that touches files is placed on a
@@ -655,8 +666,8 @@ mod tests {
 
         // Every rule the surface had before orchestration arrived is still here.
         for kept in [
-            "this directory is scratch",
-            "cannot change a file",
+            "Never change it: do not edit, check out, build or commit there",
+            "Every change goes through a workspace",
             "Deleting a workspace destroys whatever in it is not committed and pushed",
             "Call `set_topic` first",
             "`Working`",

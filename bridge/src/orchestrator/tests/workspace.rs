@@ -67,7 +67,7 @@ fn agent_launch_prepares_scaffolding_spec_and_pty_size_as_one_value() {
         .agent_launch()
         .prepare(
             "agent-prepared",
-            &worktree,
+            crate::orchestrator::LaunchDirs::at(&worktree),
             &ModelChoice::default(),
             false,
             None,

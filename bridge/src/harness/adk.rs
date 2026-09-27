@@ -107,7 +107,7 @@ impl Harness for AdkHarness {
             .arg(COMPACTION_HOOK_SETTINGS)
             .for_agent(&options.owner_id)
             .arg("--mcp-config")
-            .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
+            .arg(options.mcp_config())
             .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions");
         // The two are alternatives and never both: `--resume` names the exact
@@ -171,6 +171,11 @@ impl Harness for AdkHarness {
     /// exact conversation.
     fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
         ClaudeHarness.holds_conversation(home, cwd, id)
+    }
+
+    /// The same CLI, standing in the same directory.
+    fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
+        ClaudeHarness.claude_files_where_it_stands()
     }
 
     /// This protocol session reads its own id off the child's `init` line, so a

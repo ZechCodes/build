@@ -77,14 +77,17 @@ impl AppState {
             .last()
             .expect("a first legacy message implies a last message")
             .sequence;
-        Ok(Some(OperationPayload {
-            start_sequence,
-            end_sequence,
-            messages,
-            prior_context: String::new(),
-            ask_to_name: false,
-            tells_sender_context: false,
-        }))
+        Ok(Some(self.payload_for_reader(
+            owner_id,
+            OperationPayload {
+                start_sequence,
+                end_sequence,
+                messages,
+                prior_context: String::new(),
+                ask_to_name: false,
+                tells_sender_context: false,
+            },
+        )))
     }
 
     /// Every message a legacy delivery still owes, from the whole

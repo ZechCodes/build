@@ -275,6 +275,14 @@ pub trait Harness: Send + Sync {
         let _ = (home, cwd, id);
         true
     }
+
+    /// What this harness writes into the directory it is started in, whatever
+    /// it was asked to do there, named from that directory's `.claude/`. Build
+    /// keeps these out of `git status` where it starts an agent in a directory
+    /// it does not own. None by default.
+    fn claude_files_where_it_stands(&self) -> &'static [&'static str] {
+        &[]
+    }
 }
 
 /// Locates a terminal session identity from durable provider state when launch

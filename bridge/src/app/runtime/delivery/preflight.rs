@@ -452,27 +452,46 @@ impl AppState {
     /// what the tail alone said and touches no SQL. A store that cannot answer
     /// falls back to the tail-built packet: a starved packet is today's
     /// behaviour, and it is a far smaller loss than dropping the turn.
+    ///
+    /// `attachments_root` is for a reader that does not stand where the
+    /// conversation's attachments were written — a project agent — and names
+    /// the directory their relative paths are read from.
     pub(in crate::app) fn catch_up_packet(
         &self,
         thread: &crate::thread::Thread,
         limit: usize,
+        attachments_root: Option<&std::path::Path>,
     ) -> String {
+        thread.catch_up_markdown_for_reader_elsewhere(
+            &self.catch_up_history(thread, limit),
+            limit,
+            attachments_root,
+        )
+    }
+
+    /// The stored messages under `thread`'s resident tail that a catch-up of
+    /// `limit` messages reaches — none when the tail alone holds them, and
+    /// none when the store cannot be read, which is logged.
+    pub(in crate::app) fn catch_up_history(
+        &self,
+        thread: &crate::thread::Thread,
+        limit: usize,
+    ) -> Vec<crate::thread::ThreadItem> {
         if !thread.catch_up_reaches_stored_history(limit) {
-            return thread.catch_up_markdown(limit);
+            return Vec::new();
         }
         let Some(store) = self.store.as_ref() else {
-            return thread.catch_up_markdown(limit);
+            return Vec::new();
         };
-        match store.thread_message_page(&thread.agent.id, limit) {
-            Ok(history) => thread.catch_up_markdown_including_history(&history, limit),
-            Err(error) => {
+        store
+            .thread_message_page(&thread.agent.id, limit)
+            .unwrap_or_else(|error| {
                 eprintln!(
                     "catch-up packet for {}: {error}; the resident tail is what it carries",
                     thread.agent.id
                 );
-                thread.catch_up_markdown(limit)
-            }
-        }
+                Vec::new()
+            })
     }
 
     /// The cold prompt a turn is actually handed over with: the prompt and its
@@ -490,13 +509,61 @@ impl AppState {
         agent_id: &str,
         cold: &str,
     ) -> String {
-        let cold = self.surface_prompt(owner, agent_id, cold);
+        self.closed_with_the_conversation(
+            owner,
+            agent_id,
+            self.surface_prompt(owner, agent_id, cold),
+        )
+    }
+
+    /// `prompt`, closed with the agent's durable conversation.
+    fn closed_with_the_conversation(&self, owner: &str, agent_id: &str, prompt: String) -> String {
         let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
-            return cold;
+            return prompt;
         };
+        let attachments_root = self.attachments_root_for_reader_elsewhere(owner);
         crate::orchestrator::append_durable_conversation(
-            cold,
-            &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
+            prompt,
+            &self.catch_up_packet(
+                thread,
+                crate::orchestrator::CATCH_UP_MESSAGES,
+                attachments_root.as_deref(),
+            ),
+        )
+    }
+
+    /// The cold prompt of a turn that carries its own conversation — a native
+    /// operation, with the exact messages and the context they were accepted
+    /// into — as it is handed over.
+    ///
+    /// Left as it was queued, but for a project agent's: a native post is how
+    /// most of its turns arrive, and one that starts its process — the first
+    /// after a restart, to an agent idle when the bridge went down — is the
+    /// only time it can be told what it is and what was said. The context an
+    /// operation carries leaves out every other operation's messages, and a
+    /// process can start with nothing to resume — the move into the base
+    /// starts a claude one fresh — so its prompt and the whole durable
+    /// conversation follow the operation, the catch-up every other turn that
+    /// opens a project agent carries. After the reviewer's words rather than
+    /// before them: a provider reads a command only as the first thing it is
+    /// sent. A turn that IS a command the provider owns goes byte-for-byte, as
+    /// it always does.
+    pub(in crate::app) fn cold_prompt_of_its_own(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        provider: crate::models::AgentProvider,
+        cold: &str,
+    ) -> String {
+        if !crate::agent::is_project_agent(agent_id)
+            || crate::harness::harness_for(provider).requires_unadorned_command(cold)
+        {
+            return cold.to_string();
+        }
+        self.closed_with_the_conversation(
+            owner,
+            agent_id,
+            format!("{cold}\n\n{}", self.project_agent_prompt(owner)),
         )
     }
 

@@ -449,7 +449,7 @@ fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
         "the tail alone is the empty packet this fixes"
     );
 
-    let packet = state.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES);
+    let packet = state.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES, None);
     assert_eq!(
         packet, "- user: the redirect drops the query string",
         "the packet reads the store when the tail holds no conversation"

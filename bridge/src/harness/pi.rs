@@ -516,6 +516,7 @@ mod tests {
             cwd: cwd.to_path_buf(),
             continue_session: true,
             resume_session_id: Some("ignored-session".to_string()),
+            scaffold: None,
         }
     }
 

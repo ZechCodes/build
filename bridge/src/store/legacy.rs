@@ -141,39 +141,6 @@ pub(super) fn is_json_record(path: &Path) -> bool {
 /// The worktree-relative dir multi-stage plan docs live in.
 pub(super) const STAGE_PLAN_DIR: &str = ".build/plan";
 
-/// Persist one JSON record atomically **and durably**: write to a `.tmp`
-/// sibling of its own, fsync it, rename over the final path, then fsync the
-/// directory. The fsyncs matter: rename-without-fsync is atomic against a
-/// process crash but not against power loss — the rename can become durable
-/// before the data blocks, leaving a zero-length record that blocks the next
-/// boot. The sibling is named per call, so two writers of one path never
-/// truncate each other's staging file.
-pub(super) fn write_record_atomically(final_path: &Path, json: &str) -> Result<(), StoreError> {
-    use std::io::Write;
-
-    let dir = final_path
-        .parent()
-        .expect("record paths always sit inside a store dir");
-    std::fs::create_dir_all(dir)?;
-    let mut tmp_name = final_path
-        .file_name()
-        .expect("record paths always name a file")
-        .to_os_string();
-    tmp_name.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let tmp_path = dir.join(tmp_name);
-    let mut tmp_file = std::fs::File::create(&tmp_path)?;
-    tmp_file.write_all(json.as_bytes())?;
-    tmp_file.sync_all()?;
-    drop(tmp_file);
-    std::fs::rename(&tmp_path, final_path)?;
-    // Make the rename itself durable (best-effort where the platform allows
-    // opening a directory read-only).
-    if let Ok(dir_handle) = std::fs::File::open(dir) {
-        let _ = dir_handle.sync_all();
-    }
-    Ok(())
-}
-
 /// Read and parse one JSON record, failing fast — with the file named — on
 /// the two torn-record shapes: empty (power loss after the rename) and
 /// unparseable.

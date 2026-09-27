@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 /// before the queue is even taken, so nothing about the reply depends on the
 /// agent being up. What the delivery does reaches the browser the way every
 /// other background outcome does: the entity's own record
-/// ([`AppState::record_agent_session_start`],
+/// ([`AppState::record_agent_session_start_in`],
 /// [`AppState::record_agent_delivery_failure`]) and a push invalidation.
 ///
 /// [`HARNESS_READY_GRACE`]: crate::orchestrator::HARNESS_READY_GRACE

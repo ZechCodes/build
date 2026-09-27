@@ -1,10 +1,15 @@
 /* The GitHub repository list under a Git remote URL input (sheets/repoPicker.js).
-   In the flow of the form rather than floating over it: a sheet scrolls, and a
-   list pushed below the field is never clipped by it. */
+   An overlay: fixed to the viewport, so opening it moves nothing and the
+   sheet's own scroll box (.sheet is overflow-y:auto) cannot clip it. The
+   script places it under the input, as wide as it, and bounds its height to
+   the room it has; the list scrolls inside itself. z-index lifts it over the
+   rest of the sheet within the scrim's stacking context. */
 .repo-picker-list {
-  list-style:none; margin:4px 0 0; padding:4px;
+  position:fixed; z-index:1; box-sizing:border-box;
+  list-style:none; margin:0; padding:4px;
   border:1px solid var(--line); border-radius:10px; background:var(--panel);
-  max-height:min(44vh, 360px); overflow:auto;
+  box-shadow:0 10px 28px var(--shadow-soft);
+  max-height:min(44vh, 360px); overflow:auto; overscroll-behavior:contain;
 }
 .repo-picker-list[hidden], .repo-picker-note[hidden] { display:none; }
 .repo-picker-option {

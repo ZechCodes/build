@@ -39,7 +39,7 @@ it("a project's Clone url searches the machine's repositories", async () => {
   await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", name: "build", path: "/p/build", base_branch: "main", sources: [] });
   const callRpc = call();
   openProjectSettings("proj-1", { callRpc, deviceId: "dev-1" });
-  expect(callRpc).toHaveBeenCalledWith("github.repos");
+  expect(callRpc).toHaveBeenCalledWith("github.repos", {}, { timeoutMs: 30_000 });
   await vi.waitFor(() => expect(document.querySelector("#psaddremote")).toBeTruthy());
   document.querySelector("#psaddremote").click();
   const input = document.querySelector("#psremoteurl");
@@ -57,7 +57,7 @@ it("a workspace's Clone url searches the machine's repositories", async () => {
   await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", sources: [] });
   const callRpc = call();
   openWorkspaceSettings({ id: "ws-1", name: "work", workspaceKey: "dev-1/ws-1" }, { callRpc, catalog: new Promise(() => {}), storage: localStorage });
-  expect(callRpc).toHaveBeenCalledWith("github.repos");
+  expect(callRpc).toHaveBeenCalledWith("github.repos", {}, { timeoutMs: 30_000 });
   await vi.waitFor(() => expect(document.querySelector("#wsdiradd")).toBeTruthy());
   const choice = document.querySelector("#wsdiradd");
   choice.value = "remote";
@@ -72,4 +72,26 @@ it("a workspace's Clone url searches the machine's repositories", async () => {
   const input = document.querySelector("#wsdirremote");
   pickFirst(input, "zb");
   expect(input.value).toBe("git@github.com:zech/build.git");
+});
+
+// Review of 374ffa3f, finding 1: a settings sheet that waited for its machine
+// to greet kept waiting after it closed, so the next sheet open on screen made
+// it "wanted" again and both asked — the closed one's answer landing last.
+it("a closed settings sheet stops waiting: only the sheet on screen asks when the machine greets", async () => {
+  vi.resetModules();
+  ({ openProjectSettings } = await import("../src/sheets/projectSettings.js"));
+  ({ writeCached } = await import("../src/core/localCache.js"));
+  ({ greetBridge } = await import("../src/core/changeEvents.js"));
+  ({ projectSettingsAddress } = await import("../src/core/settingsRecords.js"));
+  await writeCached(projectSettingsAddress("dev-1", "proj-1"), { project_id: "proj-1", name: "build", path: "/p/build", base_branch: "main", sources: [] });
+  const first = call();
+  openProjectSettings("proj-1", { callRpc: first, deviceId: "dev-1" }); // not greeted yet: nothing asked
+  await vi.waitFor(() => expect(document.querySelector("#pscancel")).toBeTruthy());
+  document.querySelector("#pscancel").click();
+  const second = call();
+  openProjectSettings("proj-1", { callRpc: second, deviceId: "dev-1" });
+  await greetBridge(async () => ({ api_version: "1.22.0", capabilities: ["github.repos"] }), { deviceId: "dev-1" });
+  await vi.waitFor(() => expect(second.mock.calls.filter(([method]) => method === "github.repos")).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(first.mock.calls.filter(([method]) => method === "github.repos")).toHaveLength(0);
 });

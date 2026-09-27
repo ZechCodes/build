@@ -882,11 +882,33 @@ export async function greetBridge(
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
 }
 
+/** Hear every greeting that settles what a machine's bridge can do — a
+ *  reconnect's included — once capability readers see it. Answers the way to
+ *  stop. For a surface that wanted something of a machine before it could be
+ *  asked, and asks again when it greets. */
+export function onBridgeGreeted(listener) {
+  greetedListeners.add(listener);
+  return () => greetedListeners.delete(listener);
+}
+
+const greetedListeners = new Set();
+
+function announceGreeted(deviceId) {
+  for (const listener of [...greetedListeners]) {
+    try {
+      listener(deviceId);
+    } catch (error) {
+      console.warn("a greeting listener threw:", error);
+    }
+  }
+}
+
 /** Publish the current selection to capability readers and subscriptions. */
 function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   const state = bridgeState(deviceId);
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
+  announceGreeted(state.deviceId);
   if (!state.adapter) return abandonBridge(state);
   // Into the cache, where the views that draw Needs you read it (#144).
   void rememberNeedsYouRule(deviceId, state.adapter.capabilities);

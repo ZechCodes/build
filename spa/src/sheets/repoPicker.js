@@ -7,6 +7,9 @@
 // sheet reacts to a pick exactly as it does to typing. Enter with no row
 // chosen is left to the form, so a typed URL goes through untouched.
 //
+// The list is an overlay: fixed over whatever lies under the input, so opening
+// and closing it moves nothing, and no scrolling sheet clips it.
+//
 // It paints only from the cache. With no list cached it adds nothing to the
 // field; with no list and a refusal cached it says the bridge's sentence under
 // the first remote input of the sheet, once.
@@ -32,9 +35,13 @@ const saidElsewhere = (note) => {
 };
 
 /** Make `input` search `deviceId`'s repositories. Does nothing without a
- *  device, and nothing to an input it already searches from. */
+ *  device, and nothing to an input it already searches from. Answers the way
+ *  to let go of it; a sheet that closes or repaints its fields can instead
+ *  call `disposeRepoPickers` on what it is replacing. */
 export function attachRepoPicker(input, deviceId) {
-  if (!input || !deviceId || input.dataset.repoPicker) return;
+  if (!input || !deviceId) return () => {};
+  if (input.dataset.repoPicker) return pickers.get(input) || (() => {});
+  disposeRepoPickers(null); // pickers whose fields a repaint already replaced
   input.dataset.repoPicker = "on";
   const listId = `repo-picker-${++serial}`;
   const list = Object.assign(input.ownerDocument.createElement("ul"), { id: listId, className: "repo-picker-list", hidden: true });
@@ -44,11 +51,67 @@ export function attachRepoPicker(input, deviceId) {
   input.after(list, note);
   const state = { open: false, active: -1, matches: [], picking: false };
 
+  // The list floats over the fields under the input rather than pushing them
+  // down. It is fixed to the viewport, not absolute in the sheet, so the
+  // sheet's own scroll box cannot clip it; it sits under the input, as wide as
+  // it, and turns to open above it when the visible room below (a phone
+  // keyboard, the bottom of the screen) is less than the room above.
+  const GAP = 4;
+  const EDGE = 8;
+  const MOST = 360;
+  const place = () => {
+    if (list.hidden || !input.isConnected) return;
+    const view = input.ownerDocument.defaultView;
+    const box = input.getBoundingClientRect();
+    const visual = view.visualViewport;
+    const top = visual ? visual.offsetTop : 0;
+    const bottom = top + (visual ? visual.height : view.innerHeight);
+    const below = bottom - box.bottom - GAP - EDGE;
+    const above = box.top - top - GAP - EDGE;
+    const downward = below >= Math.min(MOST, list.scrollHeight) || below >= above;
+    list.style.left = `${box.left}px`;
+    list.style.width = `${box.width}px`;
+    list.style.maxHeight = `${Math.max(0, Math.min(MOST, downward ? below : above))}px`;
+    list.style.top = downward ? `${box.bottom + GAP}px` : `${box.top - GAP - list.offsetHeight}px`;
+  };
+  // The page's scroll and resize are heard only while the list is open: a
+  // closed list holds nothing on the window, however many fields were painted.
+  const view = input.ownerDocument.defaultView;
+  let following = false;
+  const follow = () => {
+    if (!input.isConnected) return dispose();
+    place();
+  };
+  const startFollowing = () => {
+    if (following) return;
+    following = true;
+    view.addEventListener("scroll", follow, { capture: true, passive: true });
+    view.addEventListener("resize", follow, { passive: true });
+    view.visualViewport?.addEventListener("resize", follow, { passive: true });
+    view.visualViewport?.addEventListener("scroll", follow, { passive: true });
+  };
+  const stopFollowing = () => {
+    if (!following) return;
+    following = false;
+    view.removeEventListener("scroll", follow, true);
+    view.removeEventListener("resize", follow);
+    view.visualViewport?.removeEventListener("resize", follow);
+    view.visualViewport?.removeEventListener("scroll", follow);
+  };
+  const shown = () => {
+    if (list.hidden) stopFollowing();
+    else {
+      startFollowing();
+      place();
+    }
+  };
+
   const plain = () => {
     for (const name of ["role", "aria-autocomplete", "aria-expanded", "aria-controls", "aria-activedescendant"]) input.removeAttribute(name);
     state.matches = [];
     list.replaceChildren();
     list.hidden = true;
+    stopFollowing();
   };
   const combobox = () => {
     input.setAttribute("role", "combobox");
@@ -65,6 +128,7 @@ export function attachRepoPicker(input, deviceId) {
     if (state.active >= state.matches.length) state.active = -1;
     list.innerHTML = state.matches.map(optionHtml(listId)).join("");
     list.hidden = !state.matches.length;
+    shown();
     input.setAttribute("aria-expanded", String(!list.hidden));
     const active = list.children[state.active];
     active?.setAttribute("aria-selected", "true");
@@ -128,9 +192,38 @@ export function attachRepoPicker(input, deviceId) {
     if (repo) pick(repo);
   });
 
-  const stop = watchGithubRepos(deviceId, () => {
+  let disposed = false;
+  let stop = () => {};
+  /** Everything this picker holds outside its own elements: the window's
+   *  scroll and resize (while open) and the cache watch. */
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    stopFollowing();
+    stop();
+    live.delete(dispose);
+    pickers.delete(input);
+  }
+  stop = watchGithubRepos(deviceId, () => {
     if (input.isConnected) paint();
-    else stop();
+    else dispose();
   });
+  dispose.within = (root) => {
+    if (!input.isConnected || root?.contains(input)) dispose();
+  };
+  live.add(dispose);
+  pickers.set(input, dispose);
   paint();
+  return dispose;
+}
+
+/** Every attached picker's disposer, and which input it serves. */
+const live = new Set();
+const pickers = new WeakMap();
+
+/** Let go of the pickers on inputs inside `root` — a sheet closing, or a
+ *  part of it about to be painted again — and of any whose input has already
+ *  left the page. */
+export function disposeRepoPickers(root) {
+  for (const dispose of [...live]) dispose.within?.(root);
 }

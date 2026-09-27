@@ -4,10 +4,10 @@
 // from the cache, and opening the sheet asks the machine once in the
 // background. Nothing here is mocked: the sheet, the cache, the capability
 // read off a real greeting, and the picker are the modules the app runs.
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
+let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
 
 const REPOS = [
   { name_with_owner: "zech/build", description: "Agentic IDE", ssh_url: "git@github.com:zech/build.git", url: "https://github.com/zech/build", private: true, pushed_at: "2026-09-24T22:00:00Z" },
@@ -18,10 +18,14 @@ const REFUSAL = "Build cannot list GitHub repositories on desk because gh is not
 
 const greet = (capabilities) => greetBridge(async () => ({ api_version: "1.22.0", capabilities }), { deviceId: "desk" });
 
+/** How the desk's bridge refuses github.repos on the wire, through the v1
+ *  adapter: the sentence, with the code the bridge sent. */
+const bridgeRefusal = (message) => new ApiError("unavailable", message);
+
 /** The desk's caller: answers github.repos with `repos`, or refuses it. */
 const deskCall = ({ repos = REPOS, refuse = null } = {}) => vi.fn(async (method) => {
   if (method === "github.repos") {
-    if (refuse) throw new Error(refuse);
+    if (refuse) throw bridgeRefusal(refuse);
     return { repos };
   }
   if (method === "settings.get") return { projects_dir: "/desk-projects" };
@@ -53,6 +57,7 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   ({ openNewRepo } = await import("../src/sheets/newRepo.js"));
+  ({ ApiError } = await import("../src/core/bridgeApi/v1/index.js"));
   ({ writeCached, readCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   ({ uiAddress } = await import("../src/core/localUiState.js"));
   ({ greetBridge } = await import("../src/core/changeEvents.js"));
@@ -178,7 +183,7 @@ it("a bridge without the capability is never asked, and the field stays as it wa
   const input = addRemote();
   type(input, "zech");
   await new Promise((resolve) => setTimeout(resolve, 20));
-  expect(call).not.toHaveBeenCalledWith("github.repos");
+  expect(reposCalls(call)).toHaveLength(0);
   expect(input.hasAttribute("role")).toBe(false);
   expect(options()).toEqual([]);
   expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
@@ -233,4 +238,258 @@ it("a machine that has not greeted yet still searches the list it cached", async
   await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
   expect(reposCalls(call)).toHaveLength(0);
   expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
+});
+
+// Zech, 03:07Z Sep 27: "I can't get it to work". A sheet is opened whenever the
+// reader likes; the machine answering then is not a given. Each case below
+// asked nothing, or cached a transport failure as the machine's refusal, and
+// left the field plain for the rest of that opening.
+
+it("a sheet opened before the machine greets asks it when it does, in the same opening", async () => {
+  const call = deskCall();
+  open(call);
+  const input = addRemote();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(0);
+  expect(input.hasAttribute("role")).toBe(false);
+  await greet(["github.repos"]);
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  type(input, "zb");
+  await vi.waitFor(() => expect(options()).toEqual(["zech/build"]));
+});
+
+it("an ask that never reached the machine caches nothing, and its next greeting asks again", async () => {
+  await greet(["github.repos"]);
+  let reachable = false;
+  const call = vi.fn(async (method) => {
+    if (method !== "github.repos") return {};
+    if (reachable) return { repos: REPOS };
+    throw Object.assign(new ApiError("unknown", "github.repos timed out"), { timedOut: true });
+  });
+  open(call);
+  const input = addRemote();
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect((await readCached(githubReposAddress("desk")))?.value).toBeUndefined();
+  expect(document.querySelector(".repo-picker-note:not([hidden])")).toBeNull();
+  reachable = true;
+  await greet(["github.repos"]); // the reconnect
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(2));
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
+it("the machine's own refusal is settled: a later greeting does not ask again", async () => {
+  await greet(["github.repos"]);
+  const call = deskCall({ refuse: REFUSAL });
+  open(call);
+  addRemote();
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.refusal).toBe(REFUSAL));
+  await greet(["github.repos"]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(1);
+});
+
+it("a closed sheet stops waiting: the machine greeting later is not asked", async () => {
+  const call = deskCall();
+  open(call);
+  document.querySelector("#nrcancel").click();
+  await greet(["github.repos"]);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(reposCalls(call)).toHaveLength(0);
+});
+
+// Review of 374ffa3f, finding 2: a machine left before any ask reached it was
+// still counted as asked, so choosing it again never asked it.
+it("switching back to a machine no ask reached asks it then", async () => {
+  const call = deskCall();
+  openNewRepo(vi.fn(), { devices: [{ id: "desk", name: "Desktop" }, { id: "lap", name: "Laptop" }], defaultDeviceId: "desk", callRpcFor: () => call });
+  const choose = (id) => {
+    const select = document.querySelector("#nrdevice");
+    select.value = id;
+    select.dispatchEvent(new Event("change"));
+  };
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  choose("lap");
+  await greet(["github.repos"]); // the desk greets while the laptop is chosen
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(reposCalls(call)).toHaveLength(0);
+  choose("desk");
+  await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+  const input = addRemote();
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
+// Review of 374ffa3f, finding 3: an ask on a session that was replaced can
+// come back after the newer session's ask; the older answer must not win.
+it("an older ask answering late does not replace what a newer ask wrote", async () => {
+  await greet(["github.repos"]);
+  const late = [];
+  const answers = [];
+  const call = vi.fn((method) => {
+    if (method !== "github.repos") return Promise.resolve({});
+    return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+  });
+  open(call);
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  await greet(["github.repos"]); // a reconnect while the first ask is out
+  await vi.waitFor(() => expect(answers).toHaveLength(2));
+  answers[1].resolve({ repos: REPOS });
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS));
+  late.push({ name_with_owner: "old/list", ssh_url: "git@github.com:old/list.git", url: "https://github.com/old/list", private: false });
+  answers[0].resolve({ repos: late });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS);
+});
+
+// Review of 1aa46288: a newer ask that never reached the machine must not
+// discard an older ask's answer — the field would stay plain for good.
+it("an older ask's answer is kept when the newer ask never reached the machine", async () => {
+  await greet(["github.repos"]);
+  const answers = [];
+  const call = vi.fn((method) => {
+    if (method !== "github.repos") return Promise.resolve({});
+    return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+  });
+  open(call);
+  await vi.waitFor(() => expect(answers).toHaveLength(1));
+  await greet(["github.repos"]); // a reconnect while the first ask is out
+  await vi.waitFor(() => expect(answers).toHaveLength(2));
+  answers[1].reject(new Error("session closed"));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  answers[0].resolve({ repos: REPOS });
+  await vi.waitFor(async () => expect((await readCached(githubReposAddress("desk")))?.value?.repos).toEqual(REPOS));
+  const input = addRemote();
+  type(input, "bot");
+  await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+});
+
+// Zech's phone, Sep 27: the account-wide sheet (All devices) left Device on
+// "Choose a device", and a remote field with no machine never searches.
+describe("the account-wide sheet", () => {
+  const DESK = { id: "desk", name: "Desktop" };
+  const LAP = { id: "lap", name: "Laptop" };
+  const openAccountWide = (call, devices) => openNewRepo(vi.fn(), { devices, defaultDeviceId: "", callRpcFor: () => call });
+
+  it("preselects an account's only machine, and its remote fields search from the start", async () => {
+    await greet(["github.repos"]);
+    const call = deskCall();
+    openAccountWide(call, [DESK]);
+    expect(document.querySelector("#nrdevice").value).toBe("desk");
+    await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+    const input = addRemote();
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+
+  it("a restored draft that chose no machine does not undo the only machine", async () => {
+    await greet(["github.repos"]);
+    await writeCached(uiAddress({ view: "new-project", kind: "draft" }), {
+      name: "Skrift",
+      sources: [{ id: 1, kind: "remote", path: "", remote: "bot", name: "bot", base_branch: "", automaticName: true }],
+      selectedDeviceId: "",
+    });
+    const call = deskCall();
+    openAccountWide(call, [DESK]);
+    await vi.waitFor(() => expect(document.querySelector("#nrproject").value).toBe("Skrift"));
+    expect(document.querySelector("#nrdevice").value).toBe("desk");
+    const input = document.querySelector("[data-source-value]");
+    expect(input.value).toBe("bot");
+    await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+
+  it("with several machines and none chosen there is no remote field; choosing one paints it searching", async () => {
+    await greet(["github.repos"]);
+    await writeCached(uiAddress({ view: "new-project", kind: "draft" }), {
+      name: "Skrift",
+      sources: [{ id: 1, kind: "remote", path: "", remote: "bot", name: "bot", base_branch: "", automaticName: true }],
+      selectedDeviceId: "",
+    });
+    const call = deskCall();
+    openAccountWide(call, [DESK, LAP]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(document.querySelector("#nrdevice").value).toBe("");
+    expect(document.querySelector("[data-source-value]")).toBeNull();
+    expect(reposCalls(call)).toHaveLength(0);
+    const select = document.querySelector("#nrdevice");
+    select.value = "desk";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
+    const input = document.querySelector("[data-source-value]");
+    expect(input.value).toBe("bot"); // the draft's remote, painted with the form
+    await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  });
+});
+
+// Review of c12f0007: the overlay heard the window's scroll and resize from
+// the moment a field was painted, and nothing let go when the sheet closed or
+// repainted, so every opening left listeners (and the closures behind them).
+describe("the overlay's window listeners", () => {
+  afterEach(() => vi.restoreAllMocks());
+  /** The window's scroll and resize listeners, as `type` → listener, from now. */
+  const trackWindow = () => {
+    const held = new Map();
+    const add = window.addEventListener.bind(window);
+    const remove = window.removeEventListener.bind(window);
+    vi.spyOn(window, "addEventListener").mockImplementation((type, listener, options) => {
+      if (type === "scroll" || type === "resize") held.set(`${type}`, [...(held.get(type) || []), listener]);
+      return add(type, listener, options);
+    });
+    vi.spyOn(window, "removeEventListener").mockImplementation((type, listener, options) => {
+      if (type === "scroll" || type === "resize") held.set(type, (held.get(type) || []).filter((each) => each !== listener));
+      return remove(type, listener, options);
+    });
+    return {
+      count: () => [...held.values()].reduce((sum, listeners) => sum + listeners.length, 0),
+      listeners: () => [...held.values()].flat(),
+    };
+  };
+  const openList = async (input) => {
+    type(input, "bot");
+    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+  };
+
+  it("a closed list holds no window listeners", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    const input = addRemote();
+    input.blur();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(tracked.count()).toBe(0);
+    await openList(input);
+    expect(tracked.count()).toBeGreaterThan(0);
+    key(input, "Escape");
+    expect(tracked.count()).toBe(0);
+  });
+
+  it("closing the sheet with the list open removes every window listener it added", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    await openList(addRemote());
+    expect(tracked.count()).toBeGreaterThan(0);
+    document.querySelector("#nrcancel").click();
+    expect(tracked.count()).toBe(0);
+  });
+
+  it("a repaint removes the old input's window listeners", async () => {
+    const tracked = trackWindow();
+    await greet(["github.repos"]);
+    await cacheList({ repos: REPOS, refusal: "" });
+    open(deskCall());
+    await openList(addRemote());
+    const before = tracked.listeners();
+    expect(before.length).toBeGreaterThan(0);
+    addRemote(); // repaints the sheet: the first field is replaced
+    const after = tracked.listeners();
+    expect(after.filter((listener) => before.includes(listener))).toEqual([]);
+  });
 });

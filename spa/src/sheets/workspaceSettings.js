@@ -27,7 +27,7 @@ import { deleteCached } from "../core/localCache.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
-import { attachRepoPicker } from "./repoPicker.js";
+import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
  *  `def`, because both panels can be in one document. */
@@ -117,6 +117,7 @@ function restoreDirectoryDraft(host, draft, deviceId) {
   const choice = host.querySelector("#wsdiradd");
   if (!choice || !draft) return;
   choice.value = draft.kind || "";
+  disposeRepoPickers(host.querySelector("#wsdirfields"));
   host.querySelector("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
   host.querySelector("#wsdiraddgo").disabled = !choice.value;
   for (const [field, selector] of Object.entries(DIRECTORY_INPUTS)) {
@@ -137,6 +138,7 @@ function restoreDirectoryDraft(host, draft, deviceId) {
  */
 export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = workspace.workspaceKey?.split("/")[0] || "", storage = localStorage, onRenamed, onDeleted }) {
   const sheet = $("#sheet");
+  disposeRepoPickers(sheet);
   sheet.innerHTML = settingsSheetHtml({
     title: "Workspace settings",
     bodyHtml: `${nameFieldHtml(workspace.name)}
@@ -145,7 +147,6 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
-  void refreshGithubRepos(deviceId, callRpc);
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
   const draft = { name: null, directory: emptyDirectoryDraft() };
@@ -155,7 +156,10 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     if (debounced) { draftRecord.schedule(snapshot); return Promise.resolve(); }
     return draftRecord.write(snapshot);
   };
+  let repoAsk = null;
   const close = () => {
+    repoAsk?.stop();
+    disposeRepoPickers(sheet);
     disposeDirectories();
     disposeCatalog();
     draftRecord.dispose();
@@ -165,6 +169,8 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
   /** Still the sheet this call opened: an answer that lands after the reader
    *  moved on must not write into whatever is on screen now. */
   const current = () => sheet.isConnected && sheet.firstElementChild === opened;
+  // Asked again when the machine greets while THIS opening is on screen.
+  repoAsk = refreshGithubRepos(deviceId, callRpc, { wanted: () => current() && $("#scrim").classList.contains("show") });
 
   draftRecord = watchUiState(uiAddress({ deviceId, entityId: workspace.id, view: "workspace-settings", kind: "draft" }), (saved) => {
     if (!current() || !saved) return;
@@ -221,6 +227,7 @@ function mountDirectories(workspace, { callRpc, current, deviceId, draft, saveDr
     const offered = (project?.sources || []).filter((source) => !held.has(source.id));
     const errorText = host.querySelector("#wsdirerr")?.textContent || "";
     if (host.querySelector("#wsdiradd")) draft.directory = directoryDraftOf(host);
+    disposeRepoPickers(host);
     host.innerHTML = directoriesBodyHtml(detail, offered);
     host.querySelector("#wsdirerr").textContent = errorText;
     wireDirectories(workspace, { callRpc, record, current, deviceId, draft, saveDraft });
@@ -289,6 +296,7 @@ function wireDirectories(workspace, { callRpc, record, current, deviceId, draft,
     saveDraft(true);
   };
   choice.onchange = () => {
+    disposeRepoPickers($("#wsdirfields"));
     $("#wsdirfields").innerHTML = directoryFieldsHtml(choice.value);
     attachRepoPicker($("#wsdirremote"), deviceId);
     go.disabled = !choice.value;

@@ -355,6 +355,36 @@ describe("a cache written before tasks were renamed (#190)", () => {
   });
 });
 
+// A browser that ran a later build and was then served this one (a rollback)
+// finds a database newer than it can open. That is VersionError, which no
+// reopen fixes — so the cache drops the newer database and starts cold rather
+// than standing down for every page load from then on.
+describe("a cache written by a newer build", () => {
+  const newerBuild = () => new Promise((resolve) => {
+    const request = indexedDB.open("build-cache", 99);
+    request.onupgradeneeded = () => request.result.createObjectStore("records").createIndex("at", "at");
+    request.onsuccess = () => {
+      const db = request.result;
+      const put = db.transaction("records", "readwrite").objectStore("records")
+        .put({ value: { head: "written-by-a-newer-build" }, at: Date.now() }, "dev-1|run-1|status|");
+      put.onsuccess = () => { db.close(); resolve(); };
+    };
+  });
+
+  it("drops it and starts cold, and keeps what this build writes", async () => {
+    await newerBuild();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(await cache.readCached(address)).toBeUndefined();
+    await cache.writeCached(address, { head: "after-the-rollback" });
+
+    expect((await cache.readCached(address))?.value).toEqual({ head: "after-the-rollback" });
+    expect(cache.cacheHealth().state).toBe("ready");
+    expect(eventNames()).toContain("cache-dropped-newer");
+    expect(eventNames()).not.toContain("cache-stood-down");
+  });
+});
+
 describe("what a reopen cannot fix", () => {
   it("stands down for a private window refusing IndexedDB", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

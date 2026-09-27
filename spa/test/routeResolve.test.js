@@ -65,7 +65,7 @@ describe("resolveLegacyRoute", () => {
     expect(resolveLegacyRoute({ kind: "task", id: "task-01T" }, { items: tracked })).toEqual({
       name: "trackerTask", projectId: "p1", taskId: "task-01T", deviceId: "dev-1",
     });
-    expect(routeFromHash("#/task/task-01T")).toMatchObject({ name: "resolve", kind: "task", id: "task-01T" });
+    expect(routeFromHash("#/tasks/task-01T")).toMatchObject({ name: "resolve", kind: "task", id: "task-01T" });
   });
 
   // An agent push deep-links by its conversation owner's run id (#191). A

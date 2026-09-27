@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 # id, which the SPA resolves), a task by its task id.
 AGENT_KIND = "agent"
 TASK_KIND = "task"
-_DEEP_LINK_ROUTES = {AGENT_KIND: "task", TASK_KIND: "task"}
+_DEEP_LINK_ROUTES = {AGENT_KIND: "task", TASK_KIND: "tasks"}
 ALLOWED_KINDS = frozenset(_DEEP_LINK_ROUTES)
 
 # How far a notify timestamp may drift from server time before it's rejected
@@ -90,7 +90,7 @@ def push_payload(task_id: str, kind: str) -> str:
     """The push payload delivered to the service worker (contract #6):
     ``{"task_id", "kind", "url"}``. Still content-free — ``task_id`` is opaque and
     ``kind`` is a generic label; the ``url`` deep-links under ``/app/`` by the
-    kind's hash route (``#/task/<run>`` or ``#/task/<task>``), and the real
+    kind's hash route (``#/task/<run>`` or ``#/tasks/<task>``), and the real
     state loads only over the E2EE channel once the app opens."""
     route = _DEEP_LINK_ROUTES[kind]
     return json.dumps(

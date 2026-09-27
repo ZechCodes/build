@@ -73,7 +73,7 @@ describe("service worker push notification copy + tag", () => {
     // User-facing copy calls a task a task (#190).
     const cases = [
       ["agent", "An agent needs you", "/app/#/task/run-1"],
-      ["task", "New activity on a task", "/app/#/task/task-1"],
+      ["task", "New activity on a task", "/app/#/tasks/task-1"],
     ];
     for (const [kind, body, url] of cases) {
       const { handlers, showNotification } = loadWorker();

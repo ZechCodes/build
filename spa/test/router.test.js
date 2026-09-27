@@ -719,6 +719,10 @@ describe("links written before tasks were renamed (#190)", () => {
     });
   });
 
+  it("opens a task from a push delivered before the rename", () => {
+    expect(routeFromHash("#/issue/issue-01T")).toEqual({ name: "resolve", kind: "task", id: "task-01T" });
+  });
+
   it("opens the workspace Tasks tab, and a task inside it, from the old segment", () => {
     expect(routeFromHash("#/device/d1/project/p/workspace/ws/issues/task-7")).toEqual({
       name: "workspace", deviceId: "d1", projectId: "p", workspaceId: "ws", tab: "tasks", taskId: "task-7",

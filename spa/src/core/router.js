@@ -220,12 +220,13 @@ function resolveRoute(kind, { projectId, id, tabSegment }) {
   return { ...route, ...termOf(tabSegment) };
 }
 
-/** A legacy task URL with no project in it: same parking spot, but tasks have
- *  stages instead of tabs. */
+/** A task URL with no project in it: a task push's deep link, or a legacy
+ *  plan link. Same parking spot as a run, but tasks have stages instead of
+ *  tabs, and an id minted before the rename (#190) reads under its new prefix. */
 function resolveTaskRoute(id, tailSegments) {
   const cluster = clusterRoute(tailSegments[0]);
   if (cluster) return cluster;
-  const route = { name: "resolve", kind: "task", id };
+  const route = { name: "resolve", kind: "task", id: currentId(id) };
   const stage = legacyStage(tailSegments[0], tailSegments[1]);
   if (stage) route.stage = stage;
   return route;
@@ -380,6 +381,9 @@ function surfaceFromSegments(parts) {
     case "task":
       if (!parts[1]) return inbox();
       return resolveRoute("run", { id: parts[1], tabSegment: parts[2] });
+    // A task push names the task and nothing else (#191), so its link is the
+    // tracker's segment with no project in front of it.
+    case TASKS_TAB:
     case LEGACY_PLAN_COLLECTION:
     case "plan":
       if (!parts[1]) return inbox();

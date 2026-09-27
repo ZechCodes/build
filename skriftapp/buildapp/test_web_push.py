@@ -114,7 +114,7 @@ def test_each_kind_deep_links_to_what_it_names():
     agent = json.loads(web_push.push_payload("run-1", "agent"))
     task = json.loads(web_push.push_payload("task-1", "task"))
     assert agent["url"] == "/app/#/task/run-1"
-    assert task["url"] == "/app/#/task/task-1"
+    assert task["url"] == "/app/#/tasks/task-1"
 
 
 # --- delivery + pruning -----------------------------------------------------------

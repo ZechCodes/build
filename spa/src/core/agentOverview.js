@@ -237,6 +237,10 @@ function overviewSections(rows, showProjectAgents, workspaces, issues) {
 
 const addButtonHtml = (section) => `<button type="button" class="iconbtn rail-overview-add" data-overview-add="${esc(section.workspaceId)}" aria-label="Add an agent to ${esc(section.name)}" title="Add an agent to ${esc(section.name)}">+</button>`;
 
+/** The +'s slot, held empty on the project's heading (#192): the project has
+ *  no + of its own, and its dot stands in the dots' column all the same. */
+const addSlotHtml = (section) => (section.section === "workspace" ? addButtonHtml(section) : '<span class="rail-overview-add-slot"></span>');
+
 const seeAllHtml = (section, count) => `<button type="button" class="rail-overview-see-all" data-overview-scope="${esc(section.workspaceId)}" aria-label="See all ${count} agents in ${esc(section.name)}">See all ${count}</button>`;
 
 /** The issue a workspace is for, as its heading wears it: the number and the
@@ -248,8 +252,17 @@ const issueHtml = (issues) => {
   return `<span class="rail-overview-issue" title="${esc(title)}"><span class="rail-overview-issue-number">#${esc(String(first.number))}</span><span class="rail-overview-issue-title">${esc(first.title || "")}</span>${rest.length ? `<span class="rail-overview-issue-more">+${rest.length}</span>` : ""}</span>`;
 };
 
-/** What a workspace's heading says at a glance: a pulse while any agent works,
- *  the unread waiting for the reader, and a mark for an agent that failed. */
+/** The working dot, always drawn (#192): the pulse in the accent while any
+ *  agent works, and the same dot muted and still when nothing does, so the
+ *  slot holds its column and a reader can tell "nothing" from "not shown". */
+const workingDotHtml = (working) => {
+  const [className, word] = working ? ["rail-overview-live", `${working} working`] : ["rail-overview-idle", "Nothing working"];
+  return `<span class="${className}" title="${word}" role="img" aria-label="${word}"></span>`;
+};
+
+/** What a workspace's heading says at a glance, in three fixed slots: the
+ *  unread waiting for the reader (a mark before it for an agent that failed),
+ *  the working dot, and — outside this span — the +. */
 const summaryHtml = (section) => {
   // The pulse follows the agent's working flag, not its state word: an agent
   // working with an unread message reads "Unread", and is still at work.
@@ -259,8 +272,8 @@ const summaryHtml = (section) => {
   const parts = [];
   if (failed) parts.push(`<span class="rail-overview-need is-error" title="${failed} failed">!</span>`);
   if (unread) parts.push(`<span class="rail-overview-need" title="${unread} unread">${unread}</span>`);
-  if (working) parts.push(`<span class="rail-overview-live" title="${working} working"></span>`);
   if (section.section === "workspace" && !section.rows.length) parts.push('<span class="rail-overview-none">No agents</span>');
+  parts.push(workingDotHtml(working));
   return parts.join("");
 };
 
@@ -274,7 +287,7 @@ function sectionHtml(section, projectScope) {
   const more = listed.length < sorted.length ? seeAllHtml(section, sorted.length) : "";
   const classes = ["rail-overview-section", section.rows.length ? "" : "rail-overview-section-empty"].filter(Boolean).join(" ");
   return `<section class="${classes}" aria-label="${esc(section.name)}" data-rank="${sectionRank(section)}">
-    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${issueHtml(section.issues || [])}<span class="rail-overview-sum">${summaryHtml(section)}</span>${workspace ? addButtonHtml(section) : ""}</div>
+    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${issueHtml(section.issues || [])}<span class="rail-overview-sum">${summaryHtml(section)}</span>${addSlotHtml(section)}</div>
     ${listed.map(rowHtml).join("")}${more}</section>`;
 }
 

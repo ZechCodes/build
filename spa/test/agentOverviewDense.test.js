@@ -98,7 +98,16 @@ describe("the agents overview (#186)", () => {
     expect(summary("skrift-fixes").querySelector(".rail-overview-need.is-error").textContent).toBe("!");
     expect(summary("skrift-review").querySelector(".rail-overview-need").textContent).toBe("3");
     expect(summary("skrift-review").querySelector(".rail-overview-live")).toBeNull();
-    expect(summary("issue-implementation-audit").children).toHaveLength(0);
+    // #192: the working dot is always there, idle and saying so when nothing works.
+    const dot = (name) => summary(name).querySelector(".rail-overview-live, .rail-overview-idle");
+    expect(dot("skrift-fixes").getAttribute("aria-label")).toBe("1 working");
+    for (const name of ["skrift-review", "issue-implementation-audit", "relay-soak"]) {
+      expect(dot(name).className).toBe("rail-overview-idle");
+      expect(dot(name).getAttribute("aria-label")).toBe("Nothing working");
+      expect(dot(name).title).toBe("Nothing working");
+    }
+    expect([...summary("issue-implementation-audit").children].map((node) => node.className)).toEqual(["rail-overview-idle"]);
+    expect([...summary("relay-soak").children].map((node) => node.className)).toEqual(["rail-overview-none", "rail-overview-idle"]);
   });
 
   it("names the issue a workspace is for, linked or held, and never a finished one", () => {

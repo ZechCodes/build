@@ -57,6 +57,21 @@
 body.inbox-collapsed #shell { column-gap:0; }
 body.inbox-collapsed { --inbox-space:0px; }
 
+/* The band of page above the regions, restated as a fixed box, so that iOS
+   continues it into the status bar (#193). Since Safari 26 WebKit reads the
+   top edge's colour from the first fixed or sticky box it hits a few px in
+   (LocalFrameView::fixedContainerEdges), and only one that spans the viewport,
+   stands taller than 10px and has a plain background-color. The shell is in
+   flow, so it offered nothing, and iOS filled the inset with its own blur,
+   a dark ramp that ran down over the toolbar's top. This box is that colour.
+   12px to clear the 10px floor, lifted so its foot is the band's: the regions
+   start below it and never meet it. The version banner is the top edge while
+   it stands, so the box goes with it. */
+#status-edge { position:fixed; left:0; right:0;
+  top:calc(var(--region-gap, 10px) - 12px); height:12px;
+  background-color:var(--bg); }
+#verbar:not([hidden]) ~ #shell #status-edge { display:none; }
+
 /* Inside the shell's band of page, on the toolbar's own row: the toolbar
    starts one --region-gap in from the frame, and so does the toggle over it. */
 #global-controls { position:absolute; z-index:48;

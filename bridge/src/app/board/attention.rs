@@ -202,7 +202,9 @@ impl AppState {
 
     /// Spawn the actual notify POST off the app lock. A delivery failure only
     /// logs — it never blocks the mutation.
-    pub(in crate::app) fn spawn_notify(&self, entity_id: String, kind: &'static str) {
+    pub(in crate::app) fn spawn_notify(&mut self, entity_id: String, kind: &'static str) {
+        #[cfg(test)]
+        self.sent_notifies.push((entity_id.clone(), kind));
         let Some(notifier) = &self.notifier else {
             return;
         };

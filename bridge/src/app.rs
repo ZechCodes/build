@@ -497,6 +497,10 @@ pub struct AppState {
     github: crate::github::GithubCli,
     /// At most one push per task-state change.
     notify_throttle: NotifyThrottle,
+    /// Every notify [`spawn_notify`](Self::spawn_notify) was asked to send, as
+    /// `(entity_id, kind)`: what the tests read instead of an api.
+    #[cfg(test)]
+    pub(in crate::app) sent_notifies: Vec<(String, &'static str)>,
     /// Which peer connection each E2EE session has (spec §Signaling), and the
     /// factory that builds them. The bridge is always the answerer, so there is
     /// nothing here until a browser offers; a bridge with no peer transport
@@ -664,6 +668,8 @@ impl AppState {
             #[cfg(test)]
             github: crate::github::GithubCli::absent(),
             notify_throttle: NotifyThrottle::default(),
+            #[cfg(test)]
+            sent_notifies: Vec::new(),
             peers: PeersSlot::new(SessionPeers::with_factory(Arc::new(NoPeerFactory))),
             changes,
             watchers,

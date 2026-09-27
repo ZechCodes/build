@@ -41,9 +41,9 @@ it("wires a mounted issues pane to cached dashboard tabs and live counts", async
   await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-title")?.textContent).toBe("Review changes"));
   expect(host.querySelector('[data-dashboard-tab="needsYou"] .issue-dashboard-count').textContent).toBe("1");
 
-  host.querySelector('[data-dashboard-tab="inProgress"]').click();
-  await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("inProgress"));
-  expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No agent holds an issue.");
+  host.querySelector('[data-dashboard-tab="active"]').click();
+  await vi.waitFor(() => expect(host.querySelector('[role="tabpanel"]')?.dataset.dashboardSection).toBe("active"));
+  expect(host.querySelector(".issue-dashboard-empty")?.textContent).toBe("No one holds a task right now.");
 
   const assigned = issue({ id: "assigned", number: 8, title: "Take a look", assignee: { kind: "user" } });
   await writeIssuesRecord("dashboard-device", "dashboard-project", issuesRecord([assigned, review], columns()));
@@ -51,4 +51,34 @@ it("wires a mounted issues pane to cached dashboard tabs and live counts", async
   host.querySelector('[data-dashboard-tab="needsYou"]').click();
   await vi.waitFor(() => expect([...host.querySelectorAll(".issue-dashboard-title")].map((one) => one.textContent))
     .toEqual(["Take a look", "Review changes"]));
+});
+
+it("moves a mounted task between Active groups when the cached feed changes", async () => {
+  const task = issue({ id: "task", number: 8, title: "Review the draft", assignee: { kind: "agent", agent_id: "agent-1" } });
+  let feed = { items: [{ projectKey: "dashboard-project", agents: [{ id: "agent-1", working: false }] }] };
+  await writeIssuesRecord("dashboard-device", "dashboard-project", issuesRecord([task], columns()));
+  pane = mountIssuesPane(host, {
+    deviceId: "dashboard-device",
+    projectId: "dashboard-project",
+    projectName: "Build",
+    projectKey: "dashboard-project",
+    defaultView: "dashboard",
+    callRpc: () => new Promise(() => {}),
+    catalog: () => ({ providers: [] }),
+    feed: () => feed,
+  });
+
+  await vi.waitFor(() => expect(host.querySelector('[data-dashboard-tab="active"]')).not.toBeNull());
+  host.querySelector('[data-dashboard-tab="active"]').click();
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-group-title")?.textContent).toBe("Assigned"));
+  expect(host.querySelector(".issue-dashboard-detail")?.textContent).toContain("Backlog");
+
+  feed = { items: [{ projectKey: "dashboard-project", agents: [{ id: "agent-1", working: true }] }] };
+  pane.feedMoved();
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-group-title")?.textContent).toBe("Working"));
+  expect(host.querySelector(".issue-dashboard-detail")?.textContent).toContain("working now");
+
+  feed = { items: [{ projectKey: "dashboard-project", agents: [{ id: "agent-1", working: false }] }] };
+  pane.feedMoved();
+  await vi.waitFor(() => expect(host.querySelector(".issue-dashboard-group-title")?.textContent).toBe("Assigned"));
 });

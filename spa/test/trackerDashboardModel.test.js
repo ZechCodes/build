@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  DONE_SINCE_CAP_MS, backlogGroups, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
+  DONE_SINCE_CAP_MS, dashboardSections, doneGroups, doneMoveToday, doneSessionStart, doneSince, doneSinceCutoff,
   latestCachedAgentActivity, standingOf,
 } from "../src/core/trackerDashboardModel.js";
 
@@ -36,14 +36,11 @@ describe("Dashboard cache projection", () => {
     const sections = dashboardSections([work], {
       feed, projectKey: PROJECT, nowMs: NOW, activityByAgent: new Map([["agent-1", " Checking links "]]),
     });
-    expect(sections.inProgress).toEqual([{ issue: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
-    expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).inProgress[0].activity).toBe("");
+    expect(sections.active).toEqual([{ issue: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
+    expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).active[0].activity).toBe("");
   });
 
-  // Zech, Sep 26: In progress is every issue a known agent holds, whatever its
-  // job and whether or not it is mid-turn; Done, the user's and unknown
-  // agents' issues stay out.
-  it("lists every issue a known agent holds, marking only the mid-turn one as working", () => {
+  it("keeps only a mid-turn agent in Working and the other holders in Assigned", () => {
     const parked = issue("parked", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-idle" } });
     const busy = issue("busy", { status: "in_progress", assignee: { kind: "agent", agent_id: "agent-busy" } });
     const stranger = issue("stranger", { assignee: { kind: "agent", agent_id: "agent-gone" } });
@@ -52,8 +49,9 @@ describe("Dashboard cache projection", () => {
     const feed = { items: [{ projectKey: PROJECT, agents: [
       { id: "agent-idle", working: false }, { id: "agent-busy", working: true },
     ] }] };
-    const { inProgress } = dashboardSections([parked, busy, stranger, mine, finished], { feed, projectKey: PROJECT, nowMs: NOW });
-    expect(inProgress.map((row) => [row.issue.id, row.working])).toEqual([["parked", false], ["busy", true]]);
+    const { activeGroups } = dashboardSections([parked, busy, stranger, mine, finished], { feed, projectKey: PROJECT, nowMs: NOW });
+    expect(activeGroups.map((group) => [group.title, group.entries.map((entry) => entry.issue.id)]))
+      .toEqual([["Working", ["busy"]], ["Assigned", ["parked", "stranger", "mine"]]]);
   });
 
   it("uses the list's shared Needs you reasons, including issues also assigned to working agents", () => {
@@ -61,7 +59,7 @@ describe("Dashboard cache projection", () => {
     const assigned = issue("mine", { assignee: { kind: "user" } });
     const feed = { items: [{ projectKey: PROJECT, agents: [{ id: "agent-1", working: true }] }] };
     const sections = dashboardSections([workingReview, assigned], { feed, projectKey: PROJECT, nowMs: NOW });
-    expect(sections.inProgress.map((row) => row.issue.id)).toEqual(["review"]);
+    expect(sections.active.map((row) => row.issue.id)).toEqual(["review", "mine"]);
     expect(sections.needsYou).toEqual([
       { issue: workingReview, reasons: ["in_review"], reasonLabels: ["In review"] },
       { issue: assigned, reasons: ["assigned_to_user"], reasonLabels: ["Assigned to you"] },
@@ -74,7 +72,7 @@ describe("Dashboard cache projection", () => {
       projects: [{ projectKey: PROJECT, name: "Build", entity_id: "project-run" }],
       items: [{ projectKey: PROJECT, entity_id: "project-run", agents: [{ id: "project-agent", working: true }] }],
     };
-    expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).inProgress[0].agentName)
+    expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).active[0].agentName)
       .toBe("Build");
   });
 
@@ -304,9 +302,9 @@ describe("Done grouped by time", () => {
 describe("Backlog", () => {
   const agent = { agent_id: "agent-7", name: "Still review", ordinal: 1, workspace_name: "Composer", available: true };
   const backlogOf = (issues, options = {}) => dashboardSections(issues, { nowMs: NOW, ...options });
-  const grouped = (groups) => groups.map((group) => [group.title, group.entries.map((entry) => [entry.issue.id, entry.holder, entry.columnName])]);
+  const rows = (entries) => entries.map((entry) => [entry.issue.id, entry.columnName]);
 
-  it("takes every open issue in Backlog or Ready, and nothing started, finished or closed", () => {
+  it("takes every unheld open issue, whatever its column", () => {
     const issues = [
       issue("backlog"),
       issue("ready", { status: "ready" }),
@@ -315,10 +313,10 @@ describe("Backlog", () => {
       issue("done", { status: "done" }),
       issue("closed", { state: "closed" }),
     ];
-    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id)).toEqual(["backlog", "ready"]);
+    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id)).toEqual(["backlog", "ready", "working", "review"]);
   });
 
-  it("puts an issue held by an agent or by the user under Assigned, first, and the rest under Unassigned", () => {
+  it("leaves held issues in Active and gives Backlog a flat list", () => {
     const issues = [
       issue("loose", { status: "ready" }),
       issue("agent", { assignee: { kind: "agent", agent_id: "agent-7" }, identities: { "agent-7": agent } }),
@@ -328,24 +326,21 @@ describe("Backlog", () => {
     ];
     const feed = { projects: [{ projectKey: PROJECT, name: "Build" }] };
     const sections = backlogOf(issues, { feed, projectKey: PROJECT });
-    expect(grouped(sections.backlogGroups)).toEqual([
+    expect(sections.activeGroups.map((group) => [group.title, group.entries.map((entry) => [entry.issue.id, entry.holder, entry.columnName])])).toEqual([
       ["Assigned", [["agent", "Composer · Still review", "Backlog"], ["mine", "you", "Ready"], ["project", "Build", "Backlog"]]],
-      ["Unassigned", [["loose", null, "Ready"], ["filed", null, "Backlog"]]],
     ]);
-    expect(sections.backlog).toHaveLength(5);
+    expect(rows(sections.backlog)).toEqual([["loose", "Ready"], ["filed", "Backlog"]]);
   });
 
-  it("orders each group most pressing first, and within a priority keeps the list's own order", () => {
+  it("orders unassigned rows most pressing first, preserving list order within a priority", () => {
     const mine = { assignee: { kind: "user" } };
     const issues = [
       issue("n9"), issue("l8", { priority: "low" }), issue("u7", { priority: "urgent" }), issue("h6", { priority: "high", ...mine }),
       issue("m5", { priority: "medium" }), issue("h4", { priority: "high" }), issue("x3", { priority: "later" }),
       issue("n2", mine), issue("u1", { priority: "urgent", ...mine }),
     ];
-    expect(grouped(backlogOf(issues).backlogGroups).map(([title, rows]) => [title, rows.map(([id]) => id)])).toEqual([
-      ["Assigned", ["u1", "h6", "n2"]],
-      ["Unassigned", ["u7", "h4", "m5", "l8", "n9", "x3"]],
-    ]);
+    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id))
+      .toEqual(["u7", "h4", "m5", "l8", "n9", "x3"]);
   });
 
   it("names a column the way the cached columns do", () => {
@@ -354,9 +349,88 @@ describe("Backlog", () => {
       .toEqual(["Icebox", "Up next"]);
   });
 
-  it("draws no group without entries, and none at all for an empty backlog", () => {
-    expect(backlogGroups([{ issue: issue("x"), holder: "you" }]).map((group) => group.id)).toEqual(["assigned"]);
-    expect(backlogGroups([])).toEqual([]);
-    expect(backlogOf([issue("w", { status: "in_progress" })]).backlogGroups).toEqual([]);
+  it("has no groups, including when empty", () => {
+    expect(backlogOf([issue("w", { assignee: { kind: "user" } })]).backlog).toEqual([]);
+    expect(backlogOf([]).backlogGroups).toBeUndefined();
+  });
+});
+
+describe("Active and unassigned Backlog", () => {
+  const agent = (id) => ({ kind: "agent", agent_id: id });
+  const feed = { items: [{ projectKey: PROJECT, agents: [
+    { id: "busy", working: true }, { id: "idle", working: false },
+  ] }] };
+  const project = (issues, currentFeed = feed) => dashboardSections(issues, { feed: currentFeed, projectKey: PROJECT, nowMs: NOW });
+  const ids = (entries) => entries.map((entry) => entry.issue.id);
+
+  it("puts a working agent's task in Working, including one in Ready", () => {
+    const task = issue("busy", { status: "ready", assignee: agent("busy") });
+    const sections = project([task]);
+    expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([["Working", ["busy"]]]);
+    expect(sections.active[0]).toMatchObject({ issue: task, working: true });
+    expect(sections.backlog).toEqual([]);
+  });
+
+  it("puts idle agent and user tasks in Assigned, including an issue in review", () => {
+    const idle = issue("idle", { status: "in_review", assignee: agent("idle") });
+    const mine = issue("mine", { status: "ready", assignee: { kind: "user" } });
+    const sections = project([idle, mine]);
+    expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([["Assigned", ["idle", "mine"]]]);
+    expect(sections.active.map(({ holder, columnName }) => [holder, columnName])).toEqual([
+      [expect.any(String), "In review"], ["you", "Ready"],
+    ]);
+    expect(sections.backlog).toEqual([]);
+  });
+
+  it("keeps an unheld Ready task in a flat Backlog with its column", () => {
+    const ready = issue("ready", { status: "ready" });
+    const sections = project([ready]);
+    expect(sections.backlog).toEqual([{ issue: ready, columnName: "Ready" }]);
+    expect(sections.active).toEqual([]);
+    expect(sections.backlogGroups).toBeUndefined();
+  });
+
+  it("shows every open task exactly once across Active and Backlog", () => {
+    const tasks = [
+      issue("busy", { assignee: agent("busy") }),
+      issue("idle", { status: "in_progress", assignee: agent("idle") }),
+      issue("unknown-agent", { assignee: agent("gone") }),
+      issue("mine", { status: "ready", assignee: { kind: "user" } }),
+      issue("open-review", { status: "in_review" }),
+      issue("open-ready", { status: "ready" }),
+      issue("closed", { state: "closed" }),
+      issue("done", { status: "done" }),
+    ];
+    const sections = project(tasks);
+    expect([...ids(sections.active), ...ids(sections.backlog)].sort()).toEqual([
+      "busy", "idle", "mine", "open-ready", "open-review", "unknown-agent",
+    ]);
+    expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([
+      ["Working", ["busy"]], ["Assigned", ["idle", "unknown-agent", "mine"]],
+    ]);
+  });
+
+  it("moves an agent task between groups as the cached feed working bit changes", () => {
+    const task = issue("moving", { assignee: agent("busy") });
+    expect(project([task]).activeGroups[0].title).toBe("Working");
+    const stopped = { items: [{ projectKey: PROJECT, agents: [{ id: "busy", working: false }] }] };
+    expect(project([task], stopped).activeGroups[0].title).toBe("Assigned");
+    expect(project([task]).activeGroups[0].title).toBe("Working");
+  });
+
+  it("sorts each group by priority, then preserves list order", () => {
+    const tasks = [
+      issue("idle-low", { priority: "low", assignee: agent("idle") }),
+      issue("busy-medium", { priority: "medium", assignee: agent("busy") }),
+      issue("idle-high-a", { priority: "high", assignee: agent("idle") }),
+      issue("busy-high", { priority: "high", assignee: agent("busy") }),
+      issue("idle-high-b", { priority: "high", assignee: { kind: "user" } }),
+      issue("ready-high", { priority: "high", status: "ready" }),
+    ];
+    const sections = project(tasks);
+    expect(sections.activeGroups.map((group) => ids(group.entries))).toEqual([
+      ["busy-high", "busy-medium"], ["idle-high-a", "idle-high-b", "idle-low"],
+    ]);
+    expect(ids(sections.backlog)).toEqual(["ready-high"]);
   });
 });

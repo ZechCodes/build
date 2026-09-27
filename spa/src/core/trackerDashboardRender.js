@@ -8,8 +8,8 @@ import { issueBubbleHtml } from "./issueUnread.js";
 
 const SECTIONS = [
   { id: "needsYou", title: "Needs you", empty: "Nothing needs your look right now." },
-  { id: "inProgress", title: "In progress", empty: "No agent holds an issue." },
-  { id: "backlog", title: "Backlog", empty: "Nothing in the backlog." },
+  { id: "active", title: "Active", empty: "No one holds a task right now." },
+  { id: "backlog", title: "Backlog", empty: "No unassigned tasks." },
   { id: "done", title: "Done", empty: "Nothing moved to Done in the last 24 hours." },
 ];
 /** Done on a bridge that knows when the user was last here. */
@@ -24,15 +24,17 @@ export const DEFAULT_DASHBOARD_TAB = SECTIONS[0].id;
 export const dashboardTabIds = SECTIONS.map((section) => section.id);
 
 const secondaryText = {
-  inProgress: (entry) => [entry.agentName, entry.working ? "working now" : "", entry.activity].filter(Boolean).join(" · "),
+  active: (entry) => entry.working
+    ? [entry.agentName, "working now", entry.activity].filter(Boolean).join(" · ")
+    : [`With ${entry.holder}`, entry.columnName].filter(Boolean).join(" · "),
   needsYou: (entry) => (entry.reasonLabels || []).join(" · "),
-  backlog: (entry) => entry.holder ? `With ${entry.holder} · ${entry.columnName}` : entry.columnName,
+  backlog: (entry) => entry.columnName,
   done: (entry) => entry.sha ? `Commit ${entry.sha.slice(0, 12)}` : "Moved to Done",
 };
 
 /** The sections drawn as titled groups, each with the attribute its group
  *  blocks are keyed by. */
-const GROUP_ATTRIBUTES = { backlog: "data-backlog-group", done: "data-done-group" };
+const GROUP_ATTRIBUTES = { active: "data-active-group", done: "data-done-group" };
 
 /** A row: the number and title, what the section says of it under them, and
  *  a watched issue's unread bubble at the right (#104). */
@@ -47,7 +49,7 @@ const dashboardRowHtml = (entry, context, section) => {
   </li>`;
 };
 
-/** One group of a grouped section (Done's ages, Backlog's holders): its title
+/** One group of a grouped section (Done's ages, Active's work states): its title
  *  above and outside its own panel, and a keyed list of its rows inside. The
  *  list is patched by `paintGroups`, so the block's markup leaves it empty. */
 const groupHtml = (group, attribute) => `<div class="issue-dashboard-group" ${attribute}="${esc(group.id)}">
@@ -83,7 +85,7 @@ export function paintIssueDashboard(body, sections, context) {
     aria-controls="issue-dashboard-panel" aria-selected="${section.id === selected.id}"
     tabindex="${section.id === selected.id ? 0 : -1}"><span>${section.title}</span><span class="issue-dashboard-count">${(sections[section.id] || []).length}</span></button>`).join("");
   const frame = `<div class="issue-dashboard">
-    <div class="issue-dashboard-tabs" role="tablist" aria-label="Issue dashboard sections">${tabs}</div>
+    <div class="issue-dashboard-tabs" role="tablist" aria-label="Task dashboard sections">${tabs}</div>
     <section class="issue-dashboard-section${grouped ? " is-grouped" : ""}" id="issue-dashboard-panel" role="tabpanel"
       data-dashboard-section="${selected.id}" aria-labelledby="issue-dashboard-tab-${selected.id}">
       ${grouped ? `<div class="issue-dashboard-groups" ${KEYED_LIST_ATTRIBUTE}></div>` : `<ul class="issue-dashboard-list" ${KEYED_LIST_ATTRIBUTE}></ul>`}

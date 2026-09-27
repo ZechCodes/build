@@ -1,5 +1,5 @@
-// Capture the review images for #161: the mounted Dashboard's Backlog tab
-// grouped into Assigned and Unassigned.
+// Capture the mounted Dashboard's flat Backlog tab. Assigned tasks now appear
+// in Active (#195), so only unassigned rows remain here.
 // Run from spa/: node test/browser/captureBacklogGroups.mjs [output.png] [width] [height]
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -51,8 +51,6 @@ await withLayoutPage(async ({ page, basePath }) => {
     });
   }, hello);
   await page.locator('[data-dashboard-tab="backlog"]').click();
-  await page.waitForFunction(() => document.querySelectorAll(".issue-dashboard-group-title").length >= 2);
-  const titles = await page.locator(".issue-dashboard-group-title").allTextContents();
-  console.log(titles.join(" | "));
+  await page.waitForFunction(() => document.querySelectorAll('[data-dashboard-section="backlog"] [data-issue]').length === 4);
   await page.screenshot({ path: output });
 }, { width, height, plugins: [deviceShim] });

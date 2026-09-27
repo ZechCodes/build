@@ -103,6 +103,31 @@ fn an_old_comment_id_still_reads_and_an_old_parent_still_links() {
     );
 }
 
+/// An agent resumed across the rename remembers `link_issue`'s parameter by
+/// its old name. `parent_issue_id` links the parent, rather than being dropped
+/// while the link of a branch beside it succeeds.
+#[test]
+fn a_parent_named_the_old_way_still_links() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let who = coding_agent(&mut state, &project_id, "here");
+    let parent = filed(&mut state, &who, "Parent");
+    let child = filed(&mut state, &who, "Child");
+
+    let action = tool(
+        &who,
+        "link_task",
+        json!({ "task_id": child, "branch": "build/child", "parent_issue_id": old(&parent) }),
+    );
+    let linked = call(&mut state, &who, action).unwrap();
+    assert_eq!(
+        linked["task"]["links"]["parent_task_id"], parent,
+        "{linked}"
+    );
+    assert_eq!(linked["task"]["links"]["branches"], json!(["build/child"]));
+}
+
 #[test]
 fn a_config_written_before_the_rename_keeps_its_watch_setting() {
     let directory = tempfile::tempdir().unwrap();

@@ -61,7 +61,7 @@ compat	bridge/src/orchestrator/runs.rs	\.issue-docs
 compat	bridge/src/orchestrator/tests/plans.rs	\.issue-docs
 compat	bridge/src/resume.rs	`\*_issue`|comment_issue|old issue-…
 compat	bridge/src/app/tests/resume.rs	`\*_issue`|comment_issue|old issue-…
-compat	bridge/src/mcp.rs	"_issues?"|\b(?:comment|list|open)_issues?\b
+compat	bridge/src/mcp.rs	"_issues?"|\b(?:comment|list|open)_issues?\b|"parent_issue_id"
 compat	bridge/src/renamed_ids.rs
 compat	bridge/src/app/tests/renamed_ids.rs
 compat	bridge/src/store/task_rename.rs

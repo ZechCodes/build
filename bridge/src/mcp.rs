@@ -1258,7 +1258,10 @@ impl DoneServer {
                         branch: optional_argument(params, "branch"),
                         commit: optional_argument(params, "commit"),
                         conversation_id: optional_argument(params, "conversation_id"),
+                        // And by the name it had before the rename (#190):
+                        // dropped, it would leave the link half made.
                         parent_task_id: optional_argument(params, "parent_task_id")
+                            .or_else(|| optional_argument(params, "parent_issue_id"))
                             .map(|id| current_id(&id)),
                         track: optional_flag(params, "track"),
                     },

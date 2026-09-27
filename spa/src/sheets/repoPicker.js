@@ -7,6 +7,9 @@
 // sheet reacts to a pick exactly as it does to typing. Enter with no row
 // chosen is left to the form, so a typed URL goes through untouched.
 //
+// The list is an overlay: fixed over whatever lies under the input, so opening
+// and closing it moves nothing, and no scrolling sheet clips it.
+//
 // It paints only from the cache. With no list cached it adds nothing to the
 // field; with no list and a refusal cached it says the bridge's sentence under
 // the first remote input of the sheet, once.
@@ -44,6 +47,45 @@ export function attachRepoPicker(input, deviceId) {
   input.after(list, note);
   const state = { open: false, active: -1, matches: [], picking: false };
 
+  // The list floats over the fields under the input rather than pushing them
+  // down. It is fixed to the viewport, not absolute in the sheet, so the
+  // sheet's own scroll box cannot clip it; it sits under the input, as wide as
+  // it, and turns to open above it when the visible room below (a phone
+  // keyboard, the bottom of the screen) is less than the room above.
+  const GAP = 4;
+  const EDGE = 8;
+  const MOST = 360;
+  const place = () => {
+    if (list.hidden || !input.isConnected) return;
+    const view = input.ownerDocument.defaultView;
+    const box = input.getBoundingClientRect();
+    const visual = view.visualViewport;
+    const top = visual ? visual.offsetTop : 0;
+    const bottom = top + (visual ? visual.height : view.innerHeight);
+    const below = bottom - box.bottom - GAP - EDGE;
+    const above = box.top - top - GAP - EDGE;
+    const downward = below >= Math.min(MOST, list.scrollHeight) || below >= above;
+    list.style.left = `${box.left}px`;
+    list.style.width = `${box.width}px`;
+    list.style.maxHeight = `${Math.max(0, Math.min(MOST, downward ? below : above))}px`;
+    list.style.top = downward ? `${box.bottom + GAP}px` : `${box.top - GAP - list.offsetHeight}px`;
+  };
+  const view = input.ownerDocument.defaultView;
+  const follow = () => {
+    if (!input.isConnected) return unfollow();
+    place();
+  };
+  const unfollow = () => {
+    view.removeEventListener("scroll", follow, true);
+    view.removeEventListener("resize", follow);
+    view.visualViewport?.removeEventListener("resize", follow);
+    view.visualViewport?.removeEventListener("scroll", follow);
+  };
+  view.addEventListener("scroll", follow, { capture: true, passive: true });
+  view.addEventListener("resize", follow, { passive: true });
+  view.visualViewport?.addEventListener("resize", follow, { passive: true });
+  view.visualViewport?.addEventListener("scroll", follow, { passive: true });
+
   const plain = () => {
     for (const name of ["role", "aria-autocomplete", "aria-expanded", "aria-controls", "aria-activedescendant"]) input.removeAttribute(name);
     state.matches = [];
@@ -65,6 +107,7 @@ export function attachRepoPicker(input, deviceId) {
     if (state.active >= state.matches.length) state.active = -1;
     list.innerHTML = state.matches.map(optionHtml(listId)).join("");
     list.hidden = !state.matches.length;
+    place();
     input.setAttribute("aria-expanded", String(!list.hidden));
     const active = list.children[state.active];
     active?.setAttribute("aria-selected", "true");
@@ -130,7 +173,10 @@ export function attachRepoPicker(input, deviceId) {
 
   const stop = watchGithubRepos(deviceId, () => {
     if (input.isConnected) paint();
-    else stop();
+    else {
+      stop();
+      unfollow();
+    }
   });
   paint();
 }

@@ -3,11 +3,11 @@
 //   #/inbox                                     — the landing surface
 //   #/project/<projectId>[?view=list|board]     — the project: its task tracker
 //   #/project/<projectId>/workspaces            — the project: its workspaces
-//   #/project/<projectId>/tasks[?view=board]   — an alias for the tracker
+//   #/project/<projectId>/tasks[?view=board]    — an alias for the tracker
 //   #/project/<projectId>/tasks/<taskId>[/c/<commentId>]
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>[?commit=<sha>]
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
-//   #/project/<projectId>/task/<taskId>[/stage/<stageId>]
+//   #/project/<projectId>/plan/<planId>[/stage/<stageId>]
 //   #/capture/<captureId>                       — what to do with a capture
 //   #/account[/<page>]                          — page is settings | devices | archive
 //
@@ -31,11 +31,15 @@ const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
 
 /// The project page's second tab, and the collection the tracker lives under.
 /// One word for both, because `#/project/<p>/tasks` IS that tab.
-///
-/// The singular `task` beside it belongs to the retired plan flow and is left
-/// exactly as it was: the tracker is a different thing that happens to share
-/// the English word, and the two never meet (planning/v2/Tasks Spec.md).
 const TASKS_TAB = "tasks";
+
+/// What links written before tasks were renamed (#190) still say. They parse
+/// to where they always went and nothing writes them: the tracker and the
+/// workspace tab were `issues`, and a retired plan was `issue` — never `task`,
+/// which a run's legacy URL already held.
+const LEGACY_TASKS_TAB = "issues";
+const LEGACY_PLAN_COLLECTION = "issue";
+const isTasksSegment = (segment) => segment === TASKS_TAB || segment === LEGACY_TASKS_TAB;
 
 /// The project page's other tab. Tasks is first and is what a project link
 /// opens on (#46), so Tasks writes nothing and this one names itself: a URL
@@ -53,13 +57,13 @@ const isTermTab = (segment) => /^term-\d+$/.test(segment || "");
 // Tab segments a pre-redesign URL could carry. They are not destinations any
 // more, but they still have to be RECOGNIZED as tabs — otherwise a trailing
 // `conversation` would read as part of a slashed branch name.
-const RETIRED_TABS = new Set(["conversation", "agent", "stages", "diff", "plan", "review", "inbox", "tasks", "archive"]);
+const RETIRED_TABS = new Set(["conversation", "agent", "stages", "diff", "plan", "review", "inbox", LEGACY_TASKS_TAB, "archive"]);
 const isTabSegment = (segment) => BRANCH_TABS.has(segment) || RETIRED_TABS.has(segment) || isTermTab(segment);
 
 // The retired tabs that named a project-wide pane rather than the entity's own
 // work surface: whichever entity carried them, they belong to a global route.
 const clusterRoute = (segment) =>
-  segment === "inbox" || segment === "tasks"
+  segment === "inbox" || segment === LEGACY_TASKS_TAB
     ? { name: "inbox" }
     : segment === "archive"
       ? { name: "account", page: "archive" }
@@ -71,9 +75,9 @@ const branchTab = (segment) => (BRANCH_TABS.has(segment) ? segment : "changes");
 
 /** A WORKSPACE's tabs: the checkout's two faces, plus the tasks its agents
  *  hold (#29). A branch has neither agents nor tasks, so it keeps `branchTab`
- *  and `tasks` there stays the retired right-cluster tab that named the
- *  inbox. */
-const workspaceTab = (segment) => (segment === TASKS_TAB ? TASKS_TAB : branchTab(segment));
+ *  and the old `issues` there stays the retired right-cluster tab that named
+ *  the inbox. */
+const workspaceTab = (segment) => (isTasksSegment(segment) ? TASKS_TAB : branchTab(segment));
 
 // A terminal tab named a terminal, and that outlived the tab: the surface it
 // opens is the branch, with the console open on it.
@@ -343,10 +347,10 @@ function insideProject(projectId, parts) {
   const [collection, id, ...tail] = parts;
   if (collection === "workspace") return workspaceRoute(projectId, [id, ...tail]);
   if (collection === "branch") return branchRoute(projectId, id ? [id, ...tail] : []);
-  if (collection === TASKS_TAB) return trackerRoute(projectId, id, tail);
+  if (isTasksSegment(collection)) return trackerRoute(projectId, id, tail);
   if (collection === WORKSPACES_TAB) return projectPage(projectId, WORKSPACES_TAB);
   if (!id) return projectSurface(projectId, collection);
-  if (collection === "task" || collection === "plan") return taskRoute(projectId, id, tail);
+  if (collection === LEGACY_PLAN_COLLECTION || collection === "plan") return taskRoute(projectId, id, tail);
   const kind = LEGACY_ID_COLLECTIONS[collection];
   return kind ? resolveRoute(kind, { projectId, id, tabSegment: tail[0] }) : projectSurface(projectId, collection);
 }
@@ -369,7 +373,7 @@ function surfaceFromSegments(parts) {
     case "task":
       if (!parts[1]) return inbox();
       return resolveRoute("run", { id: parts[1], tabSegment: parts[2] });
-    case "task":
+    case LEGACY_PLAN_COLLECTION:
     case "plan":
       if (!parts[1]) return inbox();
       return resolveTaskRoute(parts[1], parts.slice(2));
@@ -483,7 +487,7 @@ const HASH_WRITERS = Object.freeze({
   },
   task: (route) => {
     if (!route.projectId || !route.id) return null;
-    const base = `${projectPrefix(route)}/task/${encode(route.id)}`;
+    const base = `${projectPrefix(route)}/plan/${encode(route.id)}`;
     return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
   },
   device: (route) => (route.id ? `#/device/${encode(route.id)}/settings` : null),

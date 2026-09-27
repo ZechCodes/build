@@ -1,6 +1,6 @@
 {
   "method": "task.create",
-  "since": "1.0.0",
+  "since": "2.0.0",
   "params": {
     "goal": "Add push subscriptions to the bridge",
     "project_id": "proj-1",

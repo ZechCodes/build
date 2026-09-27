@@ -15,7 +15,9 @@ use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 /// The version of the wire API this bridge speaks.
-pub const API_VERSION: &str = "1.30.0";
+/// 2.0.0 is the task rename (#190): every tracker and plan verb and feature
+/// name moved to `tasks.*` or `task.*`.
+pub const API_VERSION: &str = "2.0.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

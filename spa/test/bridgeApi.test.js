@@ -3,8 +3,15 @@ import { compare, parse, satisfies } from "../src/core/bridgeApi/semver.js";
 import { ApiError, normalizeError, selectAdapter } from "../src/core/bridgeApi/index.js";
 import * as v1 from "../src/core/bridgeApi/v1/index.js";
 
+/** A 2.x bridge's greeting: every feature it has, by name (#190). */
+const ALL_FEATURES = [
+  "changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile",
+  "tasks.attachments", "tasks.watching", "tasks.context", "conversations.settings",
+];
+
 const greetingV1 = (over = {}) => ({
-  api_version: "1.2.0",
+  api_version: "2.0.0",
+  capabilities: ALL_FEATURES,
   push_events: true,
   events: ["board.changed", "entity.changed", "changes"],
   changes: {
@@ -73,11 +80,11 @@ describe("semver", () => {
 });
 
 describe("adapter selection", () => {
-  const v2 = { major: 2, range: ">=2.0.0 <3.0.0", create: () => ({}) };
+  const v3 = { major: 3, range: ">=3.0.0 <4.0.0", create: () => ({}) };
 
-  it("a 1.1 bridge greeting a 1.1-aware SPA: every capability on", () => {
+  it("a 2.0 bridge greeting this SPA: each capability it names is on", () => {
     const selected = selectAdapter(greetingV1());
-    expect(selected.major).toBe(1);
+    expect(selected.major).toBe(2);
     expect(selected.create(vi.fn()).capabilities).toEqual({
       // The kinds come through as the greeting states them: a caller asks
       // whether this bridge carries the one it is about to name, because every
@@ -85,75 +92,15 @@ describe("adapter selection", () => {
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
       requests: { priority: true },
       errors: { codes: true },
-      // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
-      // whole patches, and files on a task arrived in 1.8.
-      diffs: { perFile: false },
+      diffs: { perFile: true },
       bodies: { pages: false, mediaRawPages: false },
-      // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
-      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
-      // A conversation's own compaction threshold arrived in 1.10.
-      conversations: { settings: false },
+      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
+      conversations: { settings: true },
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false },
       branches: { finishDelete: false },
     });
-  });
-
-  /** Hunks per file is 1.4, and the greeting says nothing about it — so the
-   *  minor is the whole of the answer. A surface that asked a 1.3 bridge for
-   *  them would draw a stack of files that never load. */
-  it("reads hunks per file off the minor alone, from 1.4", () => {
-    const greetingAt = (version) => ({
-      api_version: version,
-      push_events: true,
-      changes: { subscriptions: true, kinds: ["git"], items: "bodies" },
-    });
-    const perFile = (version) =>
-      selectAdapter(greetingAt(version)).create(vi.fn()).capabilities.diffs.perFile;
-
-    expect(perFile("1.3.0")).toBe(false);
-    expect(perFile("1.4.0")).toBe(true);
-    expect(perFile("1.5.2")).toBe(true);
-  });
-
-  /** Watching (#64, 1.9) is stated outright the way attachments are, because a
-   *  switch wired to a verb the bridge has never heard of can only refuse. The
-   *  minor answers for a bridge that has the verbs but predates the flag, and a
-   *  bridge that states `false` is taken at its word however new it is. */
-  it("reads watching off the greeting's flag, and off the minor from 1.9", () => {
-    const greetingAt = (version, over = {}) => ({
-      api_version: version,
-      push_events: true,
-      changes: { subscriptions: true, kinds: ["tasks"], items: "bodies" },
-      ...over,
-    });
-    const watching = (version, over) =>
-      selectAdapter(greetingAt(version, over)).create(vi.fn()).capabilities.tasks.watching;
-
-    // The minor alone, for a bridge that says nothing about it.
-    expect(watching("1.8.0")).toBe(false);
-    expect(watching("1.9.0")).toBe(true);
-    expect(watching("1.10.0")).toBe(true);
-
-    // Stated outright, which outranks the minor in both directions.
-    expect(watching("1.8.0", { tasks: { watching: true } })).toBe(true);
-    expect(watching("1.9.0", { tasks: { watching: false } })).toBe(false);
-
-    // Anything that is not a boolean is not a claim, so the minor decides.
-    expect(watching("1.8.0", { tasks: { watching: "yes" } })).toBe(false);
-    expect(watching("1.9.0", { tasks: { watching: null } })).toBe(true);
-  });
-
-  /** `conversation.settings` (1.10) is stated nowhere in the greeting, so the
-   *  minor is the whole of the answer, as it is for hunks per file. */
-  it("reads conversation settings off the minor alone, from 1.10", () => {
-    const settings = (version) =>
-      selectAdapter({ api_version: version, push_events: true }).create(vi.fn()).capabilities.conversations.settings;
-
-    expect(settings("1.9.0")).toBe(false);
-    expect(settings("1.10.0")).toBe(true);
-    expect(settings("1.11.2")).toBe(true);
   });
 
   // A greeting's kind list rides through whole, whatever is on it. The list
@@ -172,33 +119,34 @@ describe("adapter selection", () => {
     expect(selected.create(vi.fn()).capabilities.changes.kinds).toContain("tasks");
   });
 
-  it("a 1.1 bridge and a 1.0-only SPA: the 1.0 adapter still serves it", () => {
-    const onlyV1 = [{ major: 1, range: ">=1.0.0 <2.0.0", create: () => ({ stale: true }) }];
-    const selected = selectAdapter(greetingV1(), onlyV1);
+  it("a 2.1 bridge and a 2.0-only SPA: the 2.0 adapter still serves it", () => {
+    const onlyV2 = [{ major: 2, range: ">=2.0.0 <3.0.0", create: () => ({ stale: true }) }];
+    const selected = selectAdapter(greetingV1({ api_version: "2.1.0" }), onlyV2);
     expect(selected.unsupported).toBe(undefined);
     expect(selected.create(vi.fn())).toEqual({ stale: true });
   });
 
-  it("a 2.x bridge with only a v1 adapter: the app is the one to update", () => {
-    expect(selectAdapter({ api_version: "2.3.1" })).toEqual({ unsupported: "app", version: "2.3.1" });
+  it("a 3.x bridge with only a 2.x adapter: the app is the one to update", () => {
+    expect(selectAdapter({ api_version: "3.0.1" })).toEqual({ unsupported: "app", version: "3.0.1" });
   });
 
-  it("a 1.x bridge with only a v2 adapter: the bridge is the one to update", () => {
-    expect(selectAdapter(greetingV1(), [v2])).toEqual({ unsupported: "bridge", version: "1.2.0" });
+  it("a 2.x bridge with only a v3 adapter: the bridge is the one to update", () => {
+    expect(selectAdapter(greetingV1(), [v3])).toEqual({ unsupported: "bridge", version: "2.0.0" });
   });
 
-  // The cache-first client reads bodies off the push and polls nothing, which
-  // a 1.1 bridge does not carry. It is not a degraded 1.1 client; it is a gate.
-  it("a 1.1 bridge against this SPA: the bridge is the one to update", () => {
-    expect(selectAdapter(greetingV1({ api_version: "1.1.0" }))).toEqual({ unsupported: "bridge", version: "1.1.0" });
-    expect(selectAdapter(greetingV1({ api_version: "1.0.0" }))).toEqual({ unsupported: "bridge", version: "1.0.0" });
+  // A 1.x bridge still names tasks the old way, on every verb and feature name
+  // (#190). It is not a degraded client; it is a gate.
+  it("a 1.x bridge against this SPA: the bridge is the one to update", () => {
+    for (const version of ["1.30.0", "1.2.0", "1.0.0"]) {
+      expect(selectAdapter(greetingV1({ api_version: version }))).toEqual({ unsupported: "bridge", version });
+    }
   });
 
-  it("a greeting with no api_version is 0.0.0 on the v1 adapter, every flag false", () => {
+  it("a greeting with no api_version is 0.0.0 on the lowest adapter, every flag false", () => {
     for (const greeting of [null, undefined, {}, { push_events: true }]) {
       const selected = selectAdapter(greeting);
       expect(selected.version).toBe("0.0.0");
-      expect(selected.major).toBe(1);
+      expect(selected.major).toBe(2);
       expect(selected.create(vi.fn()).capabilities).toEqual({
         changes: { subscriptions: false, kinds: [] },
         requests: { priority: false },
@@ -223,11 +171,11 @@ describe("adapter selection", () => {
 
 describe("named capabilities", () => {
   it("gates attachment chunks and raw media pages by their announced names", () => {
-    const offered = selectAdapter({ api_version: "1.30.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
+    const offered = selectAdapter({ api_version: "2.0.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
       .create(async () => ({})).capabilities;
     expect(offered.threads.attachmentChunks).toBe(true);
     expect(offered.bodies.mediaRawPages).toBe(true);
-    const older = selectAdapter({ api_version: "1.29.0", capabilities: ["bodies.pages"] })
+    const older = selectAdapter({ api_version: "2.0.0", capabilities: ["bodies.pages"] })
       .create(async () => ({})).capabilities;
     expect(older.threads.attachmentChunks).toBe(false);
     expect(older.bodies.mediaRawPages).toBe(false);
@@ -245,7 +193,7 @@ describe("named capabilities", () => {
     });
   };
   const namedGreeting = (capabilities) => ({
-    api_version: "1.22.0", capabilities,
+    api_version: "2.0.0", capabilities,
     // Old fields cannot override the list, in either direction.
     changes: { subscriptions: true, kinds: ["tasks"] },
     requests: { priority: true }, errors: { codes: true },
@@ -253,7 +201,7 @@ describe("named capabilities", () => {
   });
 
   it("rejects non-string API versions before accepting legacy flags or names", () => {
-    const malformedVersions = [1.19, ["1.21.0"], ["1.22.0"], true, {}, { toString: () => "1.19.0" }];
+    const malformedVersions = [2, ["2.0.0"], true, {}, { toString: () => "2.0.0" }];
     for (const api_version of malformedVersions) {
       for (const capabilities of [undefined, features]) {
         const greeting = { ...namedGreeting(capabilities), api_version };
@@ -265,14 +213,6 @@ describe("named capabilities", () => {
         expect(v1.capabilitiesOf(greeting)).toEqual(v1.capabilitiesOf(null));
       }
     }
-  });
-
-  it("maps a 1.19 bridge without a list through the historical table", () => {
-    expect(flags({ api_version: "1.19.0" })).toEqual(features.filter((name) => !["messages.context", "threads.postOperations"].includes(name)));
-    expect(flags({
-      api_version: "1.19.0", message_context: { version: 1 },
-      thread_post_operations: { version: 1, status_method: "thread.operation" },
-    })).toEqual(features);
   });
 
   it.each(features)("switches %s on and off independently", (feature) => {
@@ -294,19 +234,14 @@ describe("named capabilities", () => {
       .toEqual(["tasks.attachments"]);
   });
 
-  it("never falls back for absent, empty or malformed lists on new bridges", () => {
-    for (const version of ["1.22.0", "1.23.0", "1.99.0"]) {
+  it("claims nothing off an absent, empty or malformed list, whatever the old fields say", () => {
+    for (const version of ["2.0.0", "2.1.0", "2.99.0"]) {
       for (const capabilities of [undefined, [], null, {}, "tasks.attachments"]) {
         const greeting = { ...namedGreeting(capabilities), api_version: version };
         if (capabilities === undefined) delete greeting.capabilities;
         expect(flags(greeting)).toEqual([]);
       }
     }
-  });
-
-  it("prefers a list on an older bridge too", () => {
-    expect(flags({ ...namedGreeting(["tasks.watching"]), api_version: "1.19.0" }))
-      .toEqual(["tasks.watching"]);
   });
 
   it("keeps kind metadata and push events separate from feature flags", () => {
@@ -318,12 +253,13 @@ describe("named capabilities", () => {
   });
 });
 
-describe("the v1 adapter", () => {
-  it("declares a range that starts where pushes carry bodies", () => {
-    expect(v1.range).toBe(">=1.2.0 <2.0.0");
-    expect(satisfies("1.1.0", v1.range)).toBe(false);
-    expect(satisfies("1.2.0", v1.range)).toBe(true);
-    expect(satisfies("1.9.4", v1.range)).toBe(true);
+describe("the adapter", () => {
+  it("declares major 2, where tasks are named tasks (#190)", () => {
+    expect(v1.major).toBe(2);
+    expect(v1.range).toBe(">=2.0.0 <3.0.0");
+    expect(satisfies("1.30.0", v1.range)).toBe(false);
+    expect(satisfies("2.0.0", v1.range)).toBe(true);
+    expect(satisfies("2.9.4", v1.range)).toBe(true);
   });
 
   it("passes a call through and returns its result", async () => {
@@ -431,24 +367,24 @@ describe("the v1 adapter", () => {
 
 describe("github.repos", () => {
   it("is on only when the greeting names the verb, never inferred from a minor", () => {
-    expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "1.22.0", capabilities: [] }).github.repos).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).github.repos).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["github.repos"] }).github.repos).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: [] }).github.repos).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).github.repos).toBe(false);
   });
 });
 
 describe("tasks.listPaged", () => {
   it("is on only when the greeting names it, never inferred from a minor (#85)", () => {
-    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "1.24.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).tasks.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["tasks.listPaged"] }).tasks.listPaged).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["tasks.list"] }).tasks.listPaged).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).tasks.listPaged).toBe(false);
   });
 });
 
 describe("bodies.pages", () => {
   it("is on only when the greeting names it, never inferred from a minor (#95)", () => {
-    expect(v1.capabilitiesOf({ api_version: "1.26.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
-    expect(v1.capabilitiesOf({ api_version: "1.26.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
-    expect(v1.capabilitiesOf({ api_version: "1.21.0" }).bodies.pages).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["bodies.pages"] }).bodies.pages).toBe(true);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0", capabilities: ["fs.read", "git.diff"] }).bodies.pages).toBe(false);
+    expect(v1.capabilitiesOf({ api_version: "2.0.0" }).bodies.pages).toBe(false);
   });
 });

@@ -6,20 +6,31 @@
 // Run from anywhere in the repo whenever versions.json's `current` moves to a
 // new minor (before or after committing the bump), and delete the manifest it
 // replaces. spa/test/apiContract.test.js and bridge/tests/api_contract.rs
-// refuse a manifest that is not the one for the minor before `current`.
+// refuse a manifest that is not the one for the release before `current`.
+//
+// A new major names the commit the previous release shipped from, because the
+// break it carries lands in the fixtures before the number moves (2.0.0, the
+// task rename, is the default branch's last 1.30.0):
+//
+//     node scripts/api-verbs-manifest.mjs origin/main
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-if (process.argv.length > 2) {
-  console.error("Usage: node scripts/api-verbs-manifest.mjs");
+if (process.argv.length > 3) {
+  console.error("Usage: node scripts/api-verbs-manifest.mjs [<commit of the previous release>]");
   process.exit(1);
 }
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 const git = (...args) => execFileSync("git", args, { cwd: repository, encoding: "utf8", maxBuffer: 64 << 20 });
 const minorOf = (version) => version.split(".").slice(0, 2).join(".");
-const minorNumber = (version) => Number(version.split(".")[1]);
+const releaseNumber = (version) => version.split(".").slice(0, 2).map(Number);
+const earlier = (a, b) => {
+  const [aMajor, aMinor] = releaseNumber(a);
+  const [bMajor, bMinor] = releaseNumber(b);
+  return aMajor < bMajor || (aMajor === bMajor && aMinor < bMinor);
+};
 const versionAt = (commit) => JSON.parse(git("show", `${commit}:fixtures/api/versions.json`)).current;
 
 const current = JSON.parse(readFileSync(repository + "fixtures/api/versions.json", "utf8")).current;
@@ -28,13 +39,15 @@ const current = JSON.parse(readFileSync(repository + "fixtures/api/versions.json
 // commits that touched versions.json: the bump is the oldest of the run at the
 // current minor, and the state before it is its first parent. A bump not yet
 // committed leaves HEAD itself as the previous minor's last state.
-let previous = "HEAD";
-for (const commit of git("rev-list", "--first-parent", "HEAD", "--", "fixtures/api/versions.json").split("\n").filter(Boolean)) {
-  if (minorNumber(versionAt(commit)) < minorNumber(current)) break;
-  previous = `${commit}^1`;
+let previous = process.argv[2] || "HEAD";
+if (!process.argv[2]) {
+  for (const commit of git("rev-list", "--first-parent", "HEAD", "--", "fixtures/api/versions.json").split("\n").filter(Boolean)) {
+    if (earlier(versionAt(commit), current)) break;
+    previous = `${commit}^1`;
+  }
 }
 const previousVersion = versionAt(previous);
-if (minorNumber(previousVersion) >= minorNumber(current)) {
+if (!earlier(previousVersion, current)) {
   console.error(`No commit before ${current} on this branch's first-parent history.`);
   process.exit(1);
 }

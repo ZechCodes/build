@@ -128,7 +128,7 @@ const activityRows = () => panel().querySelectorAll(".thread-activity-group, .th
 let rail;
 
 const mountWorkspaceRail = async () => {
-  await greetBridge(async () => ({ push_events: true, api_version: "1.10.0" }), { deviceId: DEVICE_ID });
+  await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities: ["conversations.settings"] }), { deviceId: DEVICE_ID });
   await writeRailBoard({
     projects: [{ project_id: PROJECT_ID, name: "build" }],
     workspaces: [{ id: WORKSPACE_ID, project_id: PROJECT_ID, name: "login", status: "ready", entity_id: WORKSPACE_OWNER }],

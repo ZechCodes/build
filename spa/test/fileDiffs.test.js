@@ -187,7 +187,7 @@ describe("createFileDiffs", () => {
     const events = await import("../src/core/changeEvents.js");
     const diffs = mountDiffs(vi.fn());
     expect(diffs.canPage()).toBe(false);
-    await events.greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
+    await events.greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
     expect(diffs.canPage()).toBe(true);
     events.resetChangeEvents();
     diffs.dispose();

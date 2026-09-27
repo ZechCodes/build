@@ -1,29 +1,30 @@
-// The v1 adapter: everything this SPA knows about API major 1.
+// The adapter for API major 2: everything this SPA knows about the wire. The
+// module keeps its v1 name — 2.0.0 broke one thing, the task rename (#190):
+// every tracker and plan verb and feature name moved to `tasks.*` or
+// `task.*`, so a 1.x bridge is gated as behind rather than served names it
+// does not know.
 //
 // A surface never asks what version the bridge reports — it asks the adapter's
-// `capabilities`, derived from the names in the greeting. Only bridges before
-// 1.22 use the legacy minor table; feature branches no longer bump a version.
-// The floor is 1.2: the client reads what
-// a push carries and polls nothing, and a bridge below 1.2 pushes keys, not
-// bodies, so it is gated rather than served a client that would never move.
+// `capabilities`, the names in the greeting. Every 2.x bridge sends the list;
+// the minor table that stood in for it on bridges before 1.22 went with 1.x.
 //
-// The adapter also owns error normalisation. From 1.1 a refusal carries
-// `error_code`, `retryable` and `details` beside the string; from 1.0 it is
-// the string alone, which becomes `ApiError("unknown")` with the text intact.
-// A view therefore reads `error.code` whatever it is talking to.
+// The adapter also owns error normalisation. A refusal carries `error_code`,
+// `retryable` and `details` beside the string; one that is the string alone
+// becomes `ApiError("unknown")` with the text intact. A view therefore reads
+// `error.code` whatever it is talking to.
 
 import { satisfies } from "../semver.js";
 
 /** The range of bridge versions this adapter claims. */
-export const range = ">=1.2.0 <2.0.0";
+export const range = ">=2.0.0 <3.0.0";
 
 /** The API major it is the adapter for. */
-export const major = 1;
+export const major = 2;
 
-/** `ApiError.code` for a refusal that named none — a 1.0 bridge's string. */
+/** `ApiError.code` for a refusal that named none. */
 export const UNKNOWN_CODE = "unknown";
 
-/** The closed set of codes a 1.x bridge refuses with (`api/mod.rs`), plus the
+/** The closed set of codes a bridge refuses with (`api/mod.rs`), plus the
  *  client-side stand-in for a refusal that named none. Additive within a major:
  *  an unrecognised code still arrives on the ApiError as it was sent. */
 export const ERROR_CODES = Object.freeze([
@@ -38,7 +39,7 @@ export const ERROR_CODES = Object.freeze([
   UNKNOWN_CODE,
 ]);
 
-/** Every push a 1.x bridge sends on a session: the change events, the terminal
+/** Every push a bridge sends on a session: the change events, the terminal
  *  frames and the signalling one. An event of any other type is a no-op, never
  *  a throw — a later bridge may add one. `fixtures/api/v1/events.json` carries
  *  one example of each, and both ends are held to it. */
@@ -118,43 +119,11 @@ export function parseEvent(event) {
   return EVENT_TYPES.includes(event.type) ? event : null;
 }
 
-/** Names this client understands, with the historical minor and (where one
- *  existed) explicit greeting flag. This table is frozen history: new features
- *  get names, never a new minor fallback. */
-const LEGACY_CAPABILITIES = Object.freeze([
-  { name: "changes.subscriptions", minor: 1, flag: ["changes", "subscriptions"] },
-  { name: "requests.priority", minor: 1, flag: ["requests", "priority"] },
-  { name: "errors.codes", minor: 1, flag: ["errors", "codes"] },
-  { name: "diffs.perFile", minor: 4 },
-  { name: "tasks.context", minor: 5 },
-  { name: "tasks.attachments", minor: 8, flag: ["tasks", "attachments"] },
-  { name: "tasks.watching", minor: 9, flag: ["tasks", "watching"] },
-  { name: "conversations.settings", minor: 10 },
-  { name: "messages.context", offered: (greeting) => greeting.message_context?.version === 1 },
-  {
-    name: "threads.postOperations",
-    offered: (greeting) => greeting.thread_post_operations?.version === 1
-      && typeof greeting.thread_post_operations.status_method === "string",
-  },
-]);
-
-function legacyNames(greeting, version) {
-  const minor = Number(version.split(".")[1]);
-  return LEGACY_CAPABILITIES.filter(({ minor: floor, flag, offered }) => {
-    if (offered) return offered(greeting);
-    const stated = flag && greeting[flag[0]]?.[flag[1]];
-    return typeof stated === "boolean" ? stated : minor >= floor;
-  }).map(({ name }) => name);
-}
-
-/** An absent or malformed list on 1.22+ claims nothing. On older bridges only,
- *  the historical booleans and minor supply names when there is no list. */
+/** The names a greeting announces. An absent or malformed list, or a
+ *  greeting outside this major, claims nothing. */
 function namesOf(greeting, version) {
-  if (typeof greeting?.api_version !== "string" || !satisfies(version, ">=1.0.0 <2.0.0")) return new Set();
-  if (Object.hasOwn(greeting, "capabilities")) {
-    return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
-  }
-  return new Set(satisfies(version, ">=1.0.0 <1.22.0") ? legacyNames(greeting, version) : []);
+  if (typeof greeting?.api_version !== "string" || !satisfies(version, range)) return new Set();
+  return new Set(Array.isArray(greeting.capabilities) ? greeting.capabilities : []);
 }
 
 /** The existing surface-facing flags, selected independently by name. Unknown

@@ -40,7 +40,7 @@ const device = (deviceId) => {
   const call = vi.fn(async () => ({}));
   // Greeted, too: a project with no owner is minted one only once its
   // bridge has said which API it speaks (core/shell.js).
-  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession(deviceId), call }), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession(deviceId), call }), { version: "2.0.0" }, null);
   return call;
 };
 

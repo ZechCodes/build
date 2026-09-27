@@ -41,7 +41,7 @@ export function carrier() {
 export const asked = (peer) => peer.sent.map((request) => request.method);
 
 /** An API version this tab has an adapter for (core/bridgeApi). */
-export const SUPPORTED_API = "1.22.0";
+export const SUPPORTED_API = "2.0.0";
 
 /** An API version nothing here speaks. */
 export const UNSUPPORTED_API = "99.0.0";

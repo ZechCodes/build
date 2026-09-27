@@ -166,8 +166,9 @@ async fn the_greeting_announces_push_events() {
     // The minor that announced them. A client picks its adapter off this
     // number, so the number moving with the announcement is the contract —
     // which is why it is a literal here and an edit every time it moves. 1.3.0
-    // is the task tracker: ten `tasks.*` verbs and an `tasks` change kind.
-    assert_eq!(hello["result"]["api_version"], "1.30.0", "{hello:?}");
+    // is the task tracker: ten `tasks.*` verbs and an `tasks` change kind;
+    // 2.0.0 is its rename to tasks (#190).
+    assert_eq!(hello["result"]["api_version"], "2.0.0", "{hello:?}");
     assert!(
         hello["result"]["coalesce_window_ms"]
             .as_u64()

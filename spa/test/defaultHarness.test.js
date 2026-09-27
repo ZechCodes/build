@@ -378,7 +378,7 @@ describe("the account page's creation defaults", () => {
     await writeCached(deviceModelsAddress("dev-1"), CATALOG);
     App.selectedDeviceId = "dev-1";
     bridge.call = vi.fn(() => new Promise(() => {}));
-    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null); // landed and greeted
 
     await renderSettings();
     await vi.waitFor(() => expect([...document.querySelector("#defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));
@@ -401,7 +401,7 @@ describe("the account page's creation defaults", () => {
     App.devices = [{ id: "dev-1", name: "Laptop", status: "online", fingerprint: "dev-1-fingerprint" }];
     await writeCached(DEVICES_ADDRESS, App.devices);
     App.selectedDeviceId = "dev-1";
-    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
+    adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null); // landed and greeted
 
     await renderSettings();
     await vi.waitFor(() => expect([...document.getElementById("defprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]));

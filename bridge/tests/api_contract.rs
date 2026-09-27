@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "1.30.0");
+    assert_eq!(API_VERSION, "2.0.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -242,22 +242,61 @@ fn string_set(manifest: &Value, key: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The registry against the previous minor's manifest
-/// (`fixtures/api/verbs-<minor>.json`, written by
-/// `scripts/api-verbs-manifest.mjs`): a minor only adds, so everything the
-/// previous minor served and announced is still here; and every verb or
-/// capability it did not have declares, in its fixture, the release that
-/// introduced it. The SPA's `apiContract.test.js` holds the fixtures to the
-/// same manifest.
+/// The one `fixtures/api/verbs-<minor>.json` there is, written by
+/// `scripts/api-verbs-manifest.mjs`: the release before this one.
+fn previous_release_manifest() -> Value {
+    let names: Vec<String> = std::fs::read_dir(fixtures_root())
+        .expect("fixtures/api")
+        .map(|entry| entry.expect("readable entry").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("verbs-") && name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "one manifest, the previous release's: {names:?}"
+    );
+    read_json(&fixtures_root().join(&names[0]))
+}
+
+/// Whether `previous` is the release right before `current`: the minor before
+/// it, or for a new major's first minor, any release of the major before.
+fn directly_precedes(previous: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
+    match current {
+        (major, 0, _) => previous.0 + 1 == major,
+        (major, minor, _) => (previous.0, previous.1 + 1) == (major, minor),
+    }
+}
+
+#[test]
+fn a_new_major_follows_any_release_of_the_one_before() {
+    assert!(directly_precedes((1, 30, 0), (2, 0, 0)));
+    assert!(directly_precedes((1, 29, 2), (1, 30, 0)));
+    assert!(!directly_precedes((1, 28, 0), (1, 30, 0)));
+    assert!(!directly_precedes((1, 30, 0), (3, 0, 0)));
+    assert!(!directly_precedes((1, 30, 0), (2, 1, 0)));
+}
+
+/// The registry against the previous release's manifest: a minor only adds,
+/// so everything the previous minor served and announced is still here (a new
+/// major may remove, which is what makes it one); and every verb or capability
+/// it did not have declares, in its fixture, the release that introduced it.
+/// The SPA's `apiContract.test.js` holds the fixtures to the same manifest.
 #[test]
 fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
-    let (major, minor, _) = version_parts(API_VERSION);
+    let (major, minor, patch) = version_parts(API_VERSION);
     let release = format!("{major}.{minor}.0");
-    let previous = format!("{major}.{}", minor - 1);
-    let manifest = read_json(&fixtures_root().join(format!("verbs-{previous}.json")));
-    let (manifest_major, manifest_minor, _) =
-        version_parts(manifest["api_version"].as_str().expect("api_version"));
-    assert_eq!((manifest_major, manifest_minor + 1), (major, minor));
+    let manifest = previous_release_manifest();
+    let previous = manifest["api_version"]
+        .as_str()
+        .expect("api_version")
+        .to_string();
+    let previous_parts = version_parts(&previous);
+    assert!(
+        directly_precedes(previous_parts, (major, minor, patch)),
+        "{previous} is not the release before {API_VERSION}"
+    );
+    let same_major = previous_parts.0 == major;
 
     let served: BTreeSet<&str> = v1::methods()
         .iter()
@@ -268,17 +307,19 @@ fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
     let announced: BTreeSet<&str> = capabilities(false).into_iter().collect();
     let verbs_before = string_set(&manifest, "verbs");
     let capabilities_before = string_set(&manifest, "capabilities");
-    for verb in &verbs_before {
-        assert!(
-            served.contains(verb.as_str()),
-            "{verb}: served at {previous}, gone at {API_VERSION}"
-        );
-    }
-    for capability in &capabilities_before {
-        assert!(
-            announced.contains(capability.as_str()),
-            "{capability}: announced at {previous}, gone at {API_VERSION}"
-        );
+    if same_major {
+        for verb in &verbs_before {
+            assert!(
+                served.contains(verb.as_str()),
+                "{verb}: served at {previous}, gone at {API_VERSION}"
+            );
+        }
+        for capability in &capabilities_before {
+            assert!(
+                announced.contains(capability.as_str()),
+                "{capability}: announced at {previous}, gone at {API_VERSION}"
+            );
+        }
     }
 
     let fixtures: std::collections::BTreeMap<String, Value> =

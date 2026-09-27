@@ -1,6 +1,6 @@
 {
   "method": "task.diff",
-  "since": "1.0.0",
+  "since": "2.0.0",
   "params": {
     "task_id": "task-4",
     "if_diff_key": "c1d2e3f405162738"

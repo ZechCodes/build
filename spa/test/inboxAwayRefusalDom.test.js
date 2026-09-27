@@ -21,7 +21,12 @@ const DEVICE = "dev-1";
 const PROJECT = "proj-1";
 const PROJECT_KEY = `${DEVICE}/${PROJECT}`;
 const WAIT = { timeout: 5000, interval: 20 };
-const GREETING = { api_version: "1.21.0", push_events: true, tasks: { watching: true, attachments: true } };
+const GREETING = {
+  api_version: "2.0.0",
+  push_events: true,
+  capabilities: ["tasks.watching", "tasks.attachments"],
+  tasks: { watching: true, attachments: true },
+};
 const project = { project_id: PROJECT, name: "Build", path: "/work/build", sources: [{ id: "src-1", name: "api", path: "/work/api" }] };
 const workspace = {
   id: "ws-1",

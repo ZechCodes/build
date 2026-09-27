@@ -260,18 +260,18 @@ describe("the greeting", () => {
     const call = vi.fn(async () => ({ push_events: true }));
     await greetBridge(call);
     expect(call).toHaveBeenCalledWith("session.hello", {
-      client: { name: "spa", version: expect.any(String), api_range: ">=1.2.0 <2.0.0" },
+      client: { name: "spa", version: expect.any(String), api_range: ">=2.0.0 <3.0.0" },
     });
     expect(call.mock.calls[0][1].client.version).not.toBe("");
   });
 
   it("remembers the bridge's api_version, and reads 0.0.0 from a bridge that reports none", async () => {
     expect(bridgeApiVersion()).toBe("0.0.0");
-    await greetBridge(async () => ({ push_events: true, api_version: "1.2.0" }));
-    expect(bridgeApiVersion()).toBe("1.2.0");
+    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0" }));
+    expect(bridgeApiVersion()).toBe("2.0.0");
     await greetBridge(async () => ({ push_events: true }));
     expect(bridgeApiVersion()).toBe("0.0.0");
-    await greetBridge(async () => ({ push_events: true, api_version: "1.2.0" }));
+    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0" }));
     await greetBridge(async () => {
       throw new Error("unknown method: session.hello");
     });
@@ -280,7 +280,7 @@ describe("the greeting", () => {
 
   it("still hands the whole greeting, api_version included, to onGreeting", async () => {
     const accepted = vi.fn();
-    const greeting = { push_events: true, api_version: "1.2.0" };
+    const greeting = { push_events: true, api_version: "2.0.0" };
     await greetBridge(async () => greeting, { onGreeting: accepted });
     expect(accepted).toHaveBeenCalledWith(greeting);
   });

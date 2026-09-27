@@ -108,8 +108,11 @@ const errorNotices = () => [...document.querySelectorAll("#notices .notice")].ma
 
 let rail;
 
-const mountWorkspaceRail = async (apiVersion = "1.10.0") => {
-  await greetBridge(async () => ({ push_events: true, api_version: apiVersion }), { deviceId: DEVICE_ID });
+/** What a bridge that takes conversation.settings names in its greeting. */
+const SETTINGS_CAPABILITIES = ["conversations.settings"];
+
+const mountWorkspaceRail = async (capabilities = SETTINGS_CAPABILITIES) => {
+  await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities }), { deviceId: DEVICE_ID });
   await writeRailBoard({
     projects: [{ project_id: PROJECT_ID, name: "build" }],
     workspaces: [{ id: WORKSPACE_ID, project_id: PROJECT_ID, name: "login", status: "ready", entity_id: WORKSPACE_OWNER }],
@@ -262,8 +265,8 @@ describe("compaction on the conversation's menu", () => {
     expect(compactionRows().map((row) => row.dataset.action)).not.toContain("compact:250000");
   });
 
-  it("is not offered by a bridge that predates conversation.settings", async () => {
-    await mountWorkspaceRail("1.9.0");
+  it("is not offered by a bridge whose greeting does not name conversations.settings", async () => {
+    await mountWorkspaceRail([]);
 
     expect(menuCaret()).not.toBe(null);
     expect(compactionRows()).toEqual([]);

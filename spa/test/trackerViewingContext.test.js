@@ -70,22 +70,25 @@ describe("the item on the wire", () => {
   });
 });
 
+/** What a bridge that takes a task in a viewing context names in its greeting. */
+const TASK_CONTEXT = { capabilities: ["tasks.context"] };
+
 describe("the gate", () => {
-  it("opens at the legacy minor the item landed in and later 1.x releases", async () => {
-    await greet("1.5.0");
+  it("opens on a 2.x bridge whose greeting names tasks.context, this minor and later ones", async () => {
+    await greet("2.0.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
-    await greet("1.19.0");
+    await greet("2.7.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
   });
 
-  it("stays shut below the legacy minor", async () => {
-    await greet("1.4.0");
+  it("stays shut on a greeting that names no capabilities", async () => {
+    await greet("2.0.0");
     expect(carriesTaskContext("dev-1")).toBe(false);
     expect(taskContextItem(task(), "dev-1")).toBeNull();
   });
 
-  it("takes the named capability over the minor on a current bridge", async () => {
-    await greet(versions.current, { capabilities: ["tasks.context"] });
+  it("follows the named capability on a current bridge, either way", async () => {
+    await greet(versions.current, TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(true);
     expect(taskContextItem(task(), "dev-1")?.kind).toBe("task");
 
@@ -97,14 +100,16 @@ describe("the gate", () => {
   it("refuses an ungreeted device, no device, and an unsupported major", async () => {
     expect(carriesTaskContext(null)).toBe(false);
     expect(carriesTaskContext("dev-1")).toBe(false);
-    await greet("2.0.0", { capabilities: ["tasks.context"] });
+    await greet("1.22.0", TASK_CONTEXT);
+    expect(carriesTaskContext("dev-1")).toBe(false);
+    await greet("3.0.0", TASK_CONTEXT);
     expect(carriesTaskContext("dev-1")).toBe(false);
   });
 });
 
 describe("the item the page would send", () => {
   it("names the task once the bridge can take it", async () => {
-    await greet("1.5.0");
+    await greet("2.0.0", TASK_CONTEXT);
     expect(taskContextItem(task(), "dev-1")).toEqual({
       kind: "task",
       task_id: "task-01M2ZS29",
@@ -116,7 +121,7 @@ describe("the item the page would send", () => {
   // A page that stamps a half-read task tells the agent a number with no
   // title behind it.
   it("says nothing about a task that has not been read", async () => {
-    await greet("1.5.0");
+    await greet("2.0.0", TASK_CONTEXT);
     expect(taskContextItem(null, "dev-1")).toBeNull();
     expect(taskContextItem({ id: "task-1" }, "dev-1")).toBeNull();
   });

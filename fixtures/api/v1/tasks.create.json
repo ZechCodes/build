@@ -1,6 +1,6 @@
 {
   "method": "tasks.create",
-  "since": "1.3.0",
+  "since": "2.0.0",
   "params": {
     "project_id": "proj-1",
     "title": "Kanban drag does not persist",

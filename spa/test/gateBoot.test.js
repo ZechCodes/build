@@ -218,7 +218,7 @@ describe("booting from the cache", () => {
     App.devices = [device("dev-1")];
     const { adoptBridgeSelection, adoptDeviceSession, contextFor } = await import("../src/core/deviceContexts.js");
     adoptDeviceSession(fakeSession("dev-1"));
-    adoptBridgeSelection(contextFor("dev-1"), { unsupported: "app", version: "2.0.0" });
+    adoptBridgeSelection(contextFor("dev-1"), { unsupported: "app", version: "3.0.0" });
     holdAppWhileNoDeviceAnswers();
     await vi.waitFor(() => expect(document.querySelector("#root h1")).not.toBeNull());
     const heading = document.querySelector("#root h1").textContent;

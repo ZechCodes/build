@@ -29,7 +29,7 @@ const flush = async () => {
  *  mint nothing before its bridge has said which API it speaks. */
 const land = () => {
   const context = adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
-  adoptBridgeSelection(context, { version: "1.22.0" }, null);
+  adoptBridgeSelection(context, { version: "2.0.0" }, null);
 };
 
 const listProjects = (rows) =>

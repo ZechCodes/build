@@ -146,7 +146,7 @@ const openDevice = () =>
     close: () => {},
     peer: () => {},
     onCarrier: () => {},
-  }), { version: "1.22.0" }, null);
+  }), { version: "2.0.0" }, null);
 
 /** Go to a route the way the app does, and let the reads that paint it land. */
 const visit = async (route) => {

@@ -13,6 +13,8 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
+/** What a bridge that carries watching says in its greeting. */
+const WATCHING_GREETING = Object.freeze({ api_version: "2.0.0", capabilities: ["tasks.watching"] });
 
 // The device's conversations, as the registry holds them for this one machine:
 // the rail is handed one and writes every draft and message through it.
@@ -272,7 +274,7 @@ beforeEach(async () => {
   chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
   // comes from, once it has greeted.
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
 });
 
 afterEach(async () => {
@@ -980,7 +982,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("paints the selected agent's cached watch value and follows a push", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.9.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     try {
       payload = branchRow({ agents: [agent({ watched: false })] });
       await writeRailWorkItem(payload);
@@ -1002,7 +1004,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("keeps B's cached watch state when A's earlier watch is refused", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     const originalCall = bridge.call;
     let refuseA;
     bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-1"
@@ -1042,7 +1044,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("ignores a workspace watch refusal after the rail swaps to a watched project agent", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     const originalCall = bridge.call;
     let refuseWorkspace;
     bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-one"
@@ -1882,7 +1884,7 @@ describe("the strip's watched agents (#105)", () => {
   };
 
   beforeEach(async () => {
-    await greetWatchingBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetWatchingBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
   });
   afterEach(() => forgetGreetings());
 
@@ -5908,7 +5910,7 @@ describe("the models a machine that has not answered yet offers", () => {
   /** The machine's session lands, and its bridge greets. */
   const land = async (standIn) => {
     adoptDeviceSession(sessionAnswering(bridge));
-    adoptBridgeSelection(standIn, { version: "1.22.0" }, null);
+    adoptBridgeSelection(standIn, { version: "2.0.0" }, null);
     await flush();
   };
 

@@ -25,7 +25,7 @@ function messaging(viewingContext, call = vi.fn(async () => ({ posted_sequence: 
     viewingContext,
     createOperationId: () => `operation-${++operation}`,
   });
-  repository.configureCapabilities({ api_version: "1.19.0", message_context: { version: 1 } });
+  repository.configureCapabilities({ api_version: "2.0.0", capabilities: ["messages.context"], message_context: { version: 1 } });
   const controller = repository.controller(address);
   return {
     call,

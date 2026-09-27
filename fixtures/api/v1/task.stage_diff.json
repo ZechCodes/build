@@ -1,6 +1,6 @@
 {
   "method": "task.stage_diff",
-  "since": "1.0.0",
+  "since": "2.0.0",
   "params": {
     "task_id": "task-4",
     "stage_id": "stage-2"

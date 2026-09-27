@@ -13,18 +13,19 @@
 //   failed.
 //
 //   test/taskWatchDom.test.js drives the gate by mocking THIS module, so
-//   "the page draws no switch below 1.9.0" is asserted through a stand-in and
+//   "the page draws no switch without watching" is asserted through a stand-in and
 //   would go on passing with the gate deleted.
 //
 // So nothing is mocked here but the reconnect watcher: a real greeting goes
 // into the real store, the real gate reads it, and the real page is mounted on
 // top.
 //
-// Since ea3de439 the gate is a capability rather than a version compare, so
-// the greetings here come in both shapes the adapter answers for: a bridge
-// that STATES `tasks.watching`, and one that says nothing and is answered for
-// by its minor. The stated-below-the-floor case is the only one that can tell
-// a flag read where the bridge writes it from a flag read nowhere.
+// Since ea3de439 the gate is a capability rather than a version compare, and
+// since API 2.0.0 a capability is a name in the greeting's `capabilities`
+// list and nothing else: no minor stands in for it, and the old
+// `tasks: { watching }` boolean is not read. The case that states the old
+// boolean against the list is the only one that can tell a flag read where the
+// bridge writes it from a flag read somewhere else.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
@@ -43,18 +44,21 @@ const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
 const { writeTasksRecord } = await import("../src/core/trackerCache.js");
 
+/** The capabilities a bridge that carries watching names, and one that does not. */
+const WATCHING = ["tasks.watching"];
+const NO_WATCHING = [];
+
 /** One machine saying what it is, through the real greeting path.
  *
- *  `states` is what the bridge claims outright about watching; leaving it out
- *  is a bridge that says nothing, which the adapter answers for by its minor
- *  (`capabilitiesOf`, floor 9). Both shapes are greeted below because they are
- *  two different ways to answer the same question, and only one of them was
- *  ever exercised before the gate became a capability. */
-const greet = (apiVersion, { deviceId = "dev-1", states } = {}) =>
+ *  `capabilities` is the list the greeting names; `states` is the old
+ *  `tasks: { watching }` boolean, which a 2.x greeting may still carry but the
+ *  adapter must not read. */
+const greet = (capabilities, { deviceId = "dev-1", states } = {}) =>
   greetBridge(
     async () => ({
       push_events: true,
-      api_version: apiVersion,
+      api_version: "2.0.0",
+      capabilities,
       ...(states === undefined ? {} : { tasks: { watching: states } }),
     }),
     { deviceId },
@@ -101,14 +105,14 @@ afterEach(() => {
 });
 
 describe("the gate, asked of a bridge that actually greeted", () => {
-  it("offers watching to a machine on the minor it ships in", async () => {
-    await greet("1.9.0");
-    expect(bridgeApiVersion("dev-1")).toBe("1.9.0");
+  it("offers watching to a machine whose greeting names tasks.watching", async () => {
+    await greet(WATCHING);
+    expect(bridgeApiVersion("dev-1")).toBe("2.0.0");
     expect(carriesWatching("dev-1")).toBe(true);
   });
 
-  it("refuses the roll before it, which is the bridge live today", async () => {
-    await greet("1.8.0");
+  it("refuses a machine whose greeting does not name it", async () => {
+    await greet(NO_WATCHING);
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
@@ -120,59 +124,59 @@ describe("the gate, asked of a bridge that actually greeted", () => {
   });
 
   // The case that tells a flag read where the bridge writes it from one read
-  // nowhere: below the floor, the minor says no and only the stated flag can
-  // say yes. Under the wrong key this case is the one that fails, and every
-  // other case on this page passes either way.
-  it("takes a stated flag over the minor, in both directions", async () => {
-    await greet("1.8.0", { states: true });
+  // elsewhere: the old boolean says the opposite of the list, and only the
+  // list may answer. Under the wrong key this case is the one that fails, and
+  // every other case on this page passes either way.
+  it("reads the capabilities list over the old tasks.watching flag, in both directions", async () => {
+    await greet(WATCHING, { states: false });
     expect(carriesWatching("dev-1")).toBe(true);
 
-    await greet("1.9.0", { deviceId: "dev-withdrawn", states: false });
-    expect(carriesWatching("dev-withdrawn")).toBe(false);
+    await greet(NO_WATCHING, { deviceId: "dev-stated", states: true });
+    expect(carriesWatching("dev-stated")).toBe(false);
   });
 
   // A phone is paired to more than one machine. The answer is per machine, or
   // the switch appears on a bridge that cannot serve it.
   it("answers per machine when two are paired at once", async () => {
-    await greet("1.9.0", { deviceId: "dev-new" });
-    await greet("1.8.0", { deviceId: "dev-old" });
+    await greet(WATCHING, { deviceId: "dev-new" });
+    await greet(NO_WATCHING, { deviceId: "dev-old" });
     expect([carriesWatching("dev-new"), carriesWatching("dev-old")]).toEqual([true, false]);
   });
 });
 
 describe("the page, on top of that gate", () => {
-  it("draws no switch and marks nothing read on the bridge live today", async () => {
-    await greet("1.8.0");
+  it("draws no switch and marks nothing read on a bridge that does not name watching", async () => {
+    await greet(NO_WATCHING);
     await mount();
     expect(host.querySelector(".rail-watch")).toBeNull();
     expect(listed("tasks.read_through")).toHaveLength(0);
   });
 
   it("draws the switch and marks its read once the machine carries it", async () => {
-    await greet("1.9.0");
+    await greet(WATCHING);
     await mount();
     expect(host.querySelector(".rail-watch")).not.toBeNull();
     expect(listed("tasks.read_through")[0][1]).toEqual({ task_id: "task-1", event_id: "tc-1" });
   });
 
   it("and presses through to the verb itself", async () => {
-    await greet("1.9.0");
+    await greet(WATCHING);
     await mount();
     host.querySelector(".rail-watch").click();
     await flush();
     expect(listed("tasks.watch")[0][1]).toEqual({ task_id: "task-1" });
   });
 
-  it("draws the switch for a bridge below the floor that states the flag", async () => {
-    await greet("1.8.0", { states: true });
+  it("draws no switch for a bridge that states only the old tasks.watching flag", async () => {
+    await greet(NO_WATCHING, { states: true });
     await mount();
-    expect(host.querySelector(".rail-watch")).not.toBeNull();
+    expect(host.querySelector(".rail-watch")).toBeNull();
   });
 
-  // The same page mounted against the older of two paired machines.
-  it("is dark on the older machine while the newer one has it", async () => {
-    await greet("1.9.0");
-    await greet("1.8.0", { deviceId: "dev-old" });
+  // The same page mounted against the one of two paired machines without it.
+  it("is dark on the machine that does not name watching while the other one does", async () => {
+    await greet(WATCHING);
+    await greet(NO_WATCHING, { deviceId: "dev-old" });
     await mount("dev-old");
     expect(host.querySelector(".rail-watch")).toBeNull();
   });

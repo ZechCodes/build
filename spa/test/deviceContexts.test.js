@@ -268,7 +268,7 @@ describe("the device context registry", () => {
     await expect(context.rpc("board.list")).rejects.toThrow(bridgeBehindMark);
     expect(session.call.mock.calls.length).toBe(asked);
 
-    adoptBridgeSelection(context, { version: "1.1.0", unsupported: null }, {});
+    adoptBridgeSelection(context, { version: "2.0.0", unsupported: null }, {});
     setContextOffline("dev-a", { offline: true });
 
     await expect(context.rpc("board.list")).rejects.toThrow(deviceOfflineMark);
@@ -298,7 +298,7 @@ describe("the device context registry", () => {
 
     const resumed = fakeSession("dev-a");
     adoptDeviceSession(resumed);
-    adoptBridgeSelection(context, { version: "1.1.0", unsupported: null }, {});
+    adoptBridgeSelection(context, { version: "2.0.0", unsupported: null }, {});
 
     expect(await callerReaches(context.rpc, resumed.call)).toBe(true);
   });
@@ -476,7 +476,7 @@ describe("one device's model catalog", () => {
    *  only once it has said which API it speaks. */
   const landGreeted = (session) => {
     const context = adoptDeviceSession(session);
-    adoptBridgeSelection(context, { version: "1.22.0" }, null);
+    adoptBridgeSelection(context, { version: "2.0.0" }, null);
     return context;
   };
   const listsCalled = (context) => context.session.call.mock.calls.filter(([method]) => method === "models.list").length;

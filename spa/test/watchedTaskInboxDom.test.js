@@ -15,7 +15,12 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 const DEVICE = "watch-device";
 const PROJECT = "proj-1";
 const WAIT = { timeout: 5000, interval: 20 };
-const GREETING = { api_version: "1.21.0", push_events: true, tasks: { watching: true, attachments: true } };
+const GREETING = {
+  api_version: "2.0.0",
+  push_events: true,
+  capabilities: ["tasks.watching", "tasks.attachments"],
+  tasks: { watching: true, attachments: true },
+};
 const project = { id: PROJECT, project_id: PROJECT, name: "Build", deviceId: DEVICE, projectKey: `${DEVICE}|${PROJECT}` };
 const review = task({ id: "task-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: "2026-09-24T01:00:00Z" });
 
@@ -217,7 +222,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
   beforeEach(() => boot({
     tasks: [asked],
     timelines: { [asked.id]: [question] },
-    hello: { api_version: "1.23.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
+    hello: { api_version: "2.0.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
   }));
   afterEach(() => pane?.dispose());
 

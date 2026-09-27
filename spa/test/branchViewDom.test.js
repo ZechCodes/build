@@ -166,7 +166,7 @@ beforeEach(async () => {
   });
   // Its bridge has greeted, the way connection.js leaves every machine it
   // lands: the feed reads no device before that greeting has settled.
-  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, DELETING_ADAPTER);
+  adoptBridgeSelection(context, { major: 2, version: "2.0.0" }, DELETING_ADAPTER);
   App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login", tab: "changes" };
   // core/toolbar.js isn't mounted in this file — Done paints into its verb
   // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
@@ -467,7 +467,7 @@ describe("a branch on another device", () => {
     const { adoptBridgeSelection } = await import("../src/core/deviceContexts.js");
     adoptBridgeSelection(
       adoptDeviceSession({ deviceId: "dev-2", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
-      { major: 1, version: "1.0.0" },
+      { major: 2, version: "2.0.0" },
       DELETING_ADAPTER,
     );
     App.route = { name: "branch", deviceId: "dev-2", projectId: "p1", branch: "main", tab: "changes" };
@@ -667,7 +667,7 @@ describe("a branch on a device this client has not opened", () => {
     const { adoptBridgeSelection } = await import("../src/core/deviceContexts.js");
     adoptBridgeSelection(
       adoptDeviceSession({ deviceId: "dev-3", call: theirCall, close: () => {}, peer: () => {}, onCarrier: () => {} }),
-      { major: 1, version: "1.0.0" },
+      { major: 2, version: "2.0.0" },
       DELETING_ADAPTER,
     );
     await flush();

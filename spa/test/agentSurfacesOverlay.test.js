@@ -186,7 +186,7 @@ beforeEach(async () => {
   });
   // The machine the rail is mounted on, which is the one its harness catalog
   // comes from.
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null); // landed and greeted
 });
 
 afterEach(() => {

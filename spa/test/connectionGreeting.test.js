@@ -85,23 +85,23 @@ afterEach(() => {
 
 describe("what a greeting settles on the device it greeted", () => {
   it("writes the adapter and the API version onto that machine's context", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "1.2.0", push_events: true });
+    const { context, session } = await greet("dev-a", { api_version: "2.0.0", push_events: true });
     expect(session.installAdapter).toHaveBeenCalledTimes(1);
     expect(context.adapter).toBe(session.adapter());
-    expect(context.apiVersion).toBe("1.2.0");
+    expect(context.apiVersion).toBe("2.0.0");
     expect(context.unsupported).toBe(null);
     expect(canAnswer(context)).toBe(true);
   });
 
   it("names the side that is behind, and stops that machine answering", async () => {
-    const { context } = await greet("dev-b", { api_version: "2.0.0", push_events: true });
+    const { context } = await greet("dev-b", { api_version: "3.0.0", push_events: true });
     expect(context.adapter).toBe(null);
     expect(context.unsupported).toBe("app");
     expect(canAnswer(context)).toBe(false);
   });
 
   it("does not release a replacement barrier when an old re-greeting captured none", async () => {
-    const { context, session } = await greet("dev-a", { api_version: "1.2.0" });
+    const { context, session } = await greet("dev-a", { api_version: "2.0.0" });
     let finishOld;
     session.call.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
     const oldGreeting = greetLiveBridge(context);
@@ -114,13 +114,13 @@ describe("what a greeting settles on the device it greeted", () => {
     context.greeted.then(() => { barrierReleased = true; });
     const newGreeting = greetLiveBridge(context);
 
-    finishOld({ api_version: "1.2.0" });
+    finishOld({ api_version: "2.0.0" });
     await oldGreeting;
 
     expect(barrierReleased).toBe(false);
     expect(replacement.installAdapter).not.toHaveBeenCalled();
 
-    finishReplacement({ api_version: "1.2.0" });
+    finishReplacement({ api_version: "2.0.0" });
     await newGreeting;
     expect(barrierReleased).toBe(true);
     expect(replacement.installAdapter).toHaveBeenCalledTimes(1);
@@ -130,13 +130,17 @@ describe("what a greeting settles on the device it greeted", () => {
 // ---- #30: the reconnect settles what the dead path left uncertain -----------
 
 describe("a reconnect's greeting resolving the posts the last session stranded", () => {
+  /** What a bridge that keeps a post-operation ledger says in its greeting. */
+  const POST_OPERATIONS_GREETING = {
+    api_version: "2.0.0",
+    capabilities: ["threads.postOperations"],
+    thread_post_operations: { version: 1, status_method: "thread.operation" },
+  };
+
   /** A device whose repository is holding one post uncertain, as a path that
    *  died mid-send leaves it. */
   const strandedDevice = async (deviceId = "dev-c") => {
-    const first = bridgeAnswering(deviceId, {
-      api_version: "1.2.0",
-      thread_post_operations: { version: 1, status_method: "thread.operation" },
-    });
+    const first = bridgeAnswering(deviceId, POST_OPERATIONS_GREETING);
     const context = adoptDeviceSession(first);
     await greetLiveBridge(context);
     const controller = context.chatRepository.controller({
@@ -157,14 +161,11 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
   it("asks the operation ledger about it without anybody pressing Check delivery", async () => {
     const { context, controller } = await strandedDevice();
     const asked = [];
-    const reconnected = bridgeAnswering("dev-c", {
-      api_version: "1.2.0",
-      thread_post_operations: { version: 1, status_method: "thread.operation" },
-    });
+    const reconnected = bridgeAnswering("dev-c", POST_OPERATIONS_GREETING);
     reconnected.call.mockImplementation(async (method, params = {}) => {
       asked.push(method);
       if (method === "session.hello") {
-        return { api_version: "1.2.0", thread_post_operations: { version: 1, status_method: "thread.operation" } };
+        return POST_OPERATIONS_GREETING;
       }
       return {
         operation_id: params.operation_id,
@@ -190,7 +191,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     const { context } = await strandedDevice("dev-e");
     const { threadState } = context.chatRepository.history("conversation-1");
     threadState.deferAttachment("shots/big.png");
-    const reconnected = bridgeAnswering("dev-e", { api_version: "1.2.0" });
+    const reconnected = bridgeAnswering("dev-e", { api_version: "2.0.0" });
     expect(adoptDeviceSession(reconnected)).toBe(context);
     clearConnectionDiagnosticHistory();
 
@@ -206,7 +207,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
 
   it("says nothing about a reconnect that had no pictures waiting", async () => {
     const { context } = await strandedDevice("dev-f");
-    const reconnected = bridgeAnswering("dev-f", { api_version: "1.2.0" });
+    const reconnected = bridgeAnswering("dev-f", { api_version: "2.0.0" });
     expect(adoptDeviceSession(reconnected)).toBe(context);
     clearConnectionDiagnosticHistory();
 
@@ -221,7 +222,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     const reconnected = bridgeAnswering("dev-d", {});
     reconnected.call.mockImplementation(async (method) => {
       if (method === "session.hello") {
-        return { api_version: "1.2.0", thread_post_operations: { version: 1, status_method: "thread.operation" } };
+        return POST_OPERATIONS_GREETING;
       }
       return new Promise((resolve) => { releaseLedger = resolve; });
     });
@@ -230,7 +231,7 @@ describe("a reconnect's greeting resolving the posts the last session stranded",
     // A ledger that never answers must not keep the machine from being usable.
     await greetLiveBridge(context);
 
-    expect(context.apiVersion).toBe("1.2.0");
+    expect(context.apiVersion).toBe("2.0.0");
     expect(canAnswer(context)).toBe(true);
     releaseLedger?.({});
   });

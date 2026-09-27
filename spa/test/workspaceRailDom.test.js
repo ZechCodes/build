@@ -27,8 +27,9 @@ const PROJECT_KEY = "dev-1/p-1";
 const HERE = "agent-01M2HERE";
 const AWAY = "agent-01M2AWAY";
 const HELLO = {
-  api_version: "1.21.0",
+  api_version: "2.0.0",
   push_events: true,
+  capabilities: ["changes.subscriptions", "requests.priority", "errors.codes"],
   changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
 };
 

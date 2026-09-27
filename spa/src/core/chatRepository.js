@@ -25,8 +25,8 @@ const REQUIRED_OPERATION_RECEIPT_FIELDS = [
 ];
 
 /** Interpret one greeting through the adapter, then retain the status verb
- * used by a supported post operation. Older bridges announce that verb in
- * metadata; a named 1.22 capability uses the v1 method when metadata is absent. */
+ * used by a supported post operation: the one the greeting's metadata names,
+ * or `thread.operation` when the named capability comes without it. */
 function chatCapabilitiesOf(greeting) {
   const selection = selectAdapter(greeting);
   const capabilities = selection.unsupported ? null : selection.create(() => {}).capabilities;

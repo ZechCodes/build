@@ -21,8 +21,13 @@ const NONE = {
   branches: { finishDelete: false },
 };
 
-const greeting11 = () => ({
-  api_version: "1.2.0",
+/** What a bridge that takes subscriptions, priorities and coded refusals
+ *  names in its greeting, and nothing past them. */
+const SUBSCRIBING_CAPABILITIES = ["changes.subscriptions", "requests.priority", "errors.codes"];
+
+const subscribingGreeting = () => ({
+  api_version: "2.0.0",
+  capabilities: SUBSCRIBING_CAPABILITIES,
   push_events: true,
   events: ["board.changed", "entity.changed", "changes"],
   changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], batch_ms: { min: 1000, max: 600000 } },
@@ -48,9 +53,9 @@ describe("the adapter a greeting selects", () => {
 
   it("is installed through `install`, which is handed the selection", async () => {
     const install = vi.fn((selection) => selection.create(async () => ({})));
-    await greetBridge(async () => greeting11(), { install });
+    await greetBridge(async () => subscribingGreeting(), { install });
     expect(install).toHaveBeenCalledTimes(1);
-    expect(install.mock.calls[0][0]).toMatchObject({ major: 1, version: "1.2.0" });
+    expect(install.mock.calls[0][0]).toMatchObject({ major: 2, version: "2.0.0" });
     expect(bridgeAdapter()).toBe(install.mock.results[0].value);
     expect(bridgeCapabilities()).toEqual({
       // The kinds ride through as the greeting states them, so a caller can ask
@@ -60,8 +65,7 @@ describe("the adapter a greeting selects", () => {
       errors: { codes: true },
       diffs: { perFile: false },
       bodies: { pages: false, mediaRawPages: false },
-      // Files on a task arrived in 1.8; a 1.2 bridge carries none, and
-      // watching (1.9) is the same story one minor later.
+      // A greeting that names no task feature carries none of them.
       tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       conversations: { settings: false },
       github: { repos: false },
@@ -75,16 +79,16 @@ describe("the adapter a greeting selects", () => {
     // A greeting that reports no version is the one bridge shape left that
     // advertises nothing: the lowest adapter takes it with every flag off.
     await greetBridge(async () => ({ push_events: true }));
-    expect(bridgeAdapter()).toMatchObject({ major: 1, version: "0.0.0" });
+    expect(bridgeAdapter()).toMatchObject({ major: 2, version: "0.0.0" });
     expect(bridgeCapabilities()).toEqual(NONE);
     expect(changeEventsArmed()).toBe(true);
   });
 
-  it("serves a bridge that refuses the greeting as pre-alpha on the v1 adapter", async () => {
+  it("serves a bridge that refuses the greeting as pre-alpha on the lowest adapter", async () => {
     await greetBridge(async () => {
       throw new Error("unknown method: session.hello");
     });
-    expect(bridgeAdapter()).toMatchObject({ major: 1, version: "0.0.0" });
+    expect(bridgeAdapter()).toMatchObject({ major: 2, version: "0.0.0" });
     expect(bridgeCapabilities()).toEqual(NONE);
   });
 
@@ -92,8 +96,8 @@ describe("the adapter a greeting selects", () => {
     const refresh = vi.fn();
     watchChanges({ refresh });
     const install = vi.fn(() => null);
-    const armed = await greetBridge(async () => ({ api_version: "2.0.0", push_events: true }), { install });
-    expect(install).toHaveBeenCalledWith({ unsupported: "app", version: "2.0.0" });
+    const armed = await greetBridge(async () => ({ api_version: "3.0.0", push_events: true }), { install });
+    expect(install).toHaveBeenCalledWith({ unsupported: "app", version: "3.0.0" });
     expect(armed).toBe(false);
     expect(changeEventsArmed()).toBe(false);
     expect(bridgeAdapter()).toBe(null);
@@ -102,9 +106,9 @@ describe("the adapter a greeting selects", () => {
   });
 
   it("re-selects on every greeting: a reconnect onto another bridge version replaces the adapter", async () => {
-    await greetBridge(async () => greeting11());
+    await greetBridge(async () => subscribingGreeting());
     expect(bridgeCapabilities().changes.subscriptions).toBe(true);
-    await greetBridge(async () => ({ api_version: "2.0.0" }));
+    await greetBridge(async () => ({ api_version: "3.0.0" }));
     expect(bridgeAdapter()).toBe(null);
     await greetBridge(async () => ({ push_events: true }));
     expect(bridgeAdapter()).toMatchObject({ version: "0.0.0" });
@@ -114,7 +118,7 @@ describe("the adapter a greeting selects", () => {
 
   it("does not install for a greeting whose session stopped owning the application", async () => {
     const install = vi.fn();
-    await greetBridge(async () => greeting11(), { install, isCurrent: () => false });
+    await greetBridge(async () => subscribingGreeting(), { install, isCurrent: () => false });
     expect(install).not.toHaveBeenCalled();
     expect(bridgeAdapter()).toBe(null);
   });
@@ -129,13 +133,13 @@ describe("the adapter a greeting selects", () => {
       queueMicrotask(() => { current = false; });
       return answer;
     };
-    await greetBridge(async () => ({ api_version: "1.22.0" }), { install, isCurrent });
+    await greetBridge(async () => ({ api_version: "2.0.0" }), { install, isCurrent });
     expect(install).not.toHaveBeenCalled();
     expect(bridgeAdapter()).toBe(null);
   });
 
   it("asks for subscriptions off the adapter's capabilities, not the raw greeting", async () => {
-    const call = vi.fn(async () => greeting11());
+    const call = vi.fn(async () => subscribingGreeting());
     await greetBridge(call);
     expect(call.mock.calls.map(([, params]) => params.changes)).toEqual([undefined, "subscriptions"]);
   });

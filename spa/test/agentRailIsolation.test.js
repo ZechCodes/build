@@ -115,7 +115,7 @@ const device = () => contextFor(DEVICE_ID);
 // Landed and greeted: a machine is asked for its catalog only once it has said
 // which API it speaks.
 const bridgeAnswersWith = (answer) =>
-  adoptBridgeSelection(adoptDeviceSession({ deviceId: DEVICE_ID, call: answer }), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession({ deviceId: DEVICE_ID, call: answer }), { version: "2.0.0" }, null);
 
 const mountBranch = async () => {
   // The work item is read off this machine's disk, so that is where a case

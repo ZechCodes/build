@@ -11,9 +11,14 @@ let changeEvents;
 let call;
 let calls;
 
+/** What a bridge that takes subscriptions, priorities and coded refusals
+ *  names in its greeting. */
+const SUBSCRIBING_CAPABILITIES = ["changes.subscriptions", "requests.priority", "errors.codes"];
+
 const SUBSCRIBING_GREETING = {
   push_events: true,
-  api_version: "1.2.0",
+  api_version: "2.0.0",
+  capabilities: SUBSCRIBING_CAPABILITIES,
   events: ["board.changed", "entity.changed", "changes"],
   changes: {
     subscriptions: true,

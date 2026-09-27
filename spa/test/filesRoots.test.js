@@ -238,7 +238,7 @@ describe("a file over one record in a root", () => {
 
   it("reads its pages from that root's directory, by its path there, into that directory's records", async () => {
     machine.mockClear();
-    await greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
+    await greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["bodies.pages"] }), { deviceId: "dev-1" });
     const { host } = mountRoots({ callRpc: machine });
     await tap(host, "assets", "big.log");
     await vi.waitFor(() => expect(host.querySelector(".fpmore")?.hidden).toBe(false));

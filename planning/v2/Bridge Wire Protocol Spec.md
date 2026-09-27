@@ -535,6 +535,10 @@ has been seen in `bridge.stats` for a month.
 - The bridge serves the current major and the previous major until the
   later of 90 days after the new major ships or `bridge.stats` showing no
   session on the old one for 30 days.
+- 2.0.0 is the first major: the task rename (#190), where every tracker and
+  plan verb and feature name moved to `tasks.*` or `task.*`. By
+  Zech's call (2026-09-27) it serves no 1.x client and the SPA serves no 1.x
+  bridge: the two update together, and each gates the other as out of date.
 - `PROTOCOL_VERSION` (envelope), the MCP protocol date, and the Cargo
   version stay separate. They version different things.
 

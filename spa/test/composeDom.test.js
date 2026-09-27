@@ -118,7 +118,7 @@ beforeEach(async () => {
   App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
   App.selectedDeviceId = "dev-1";
   // the device creation goes to, landed and greeted
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
   initCompose();
 });
 

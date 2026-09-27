@@ -434,7 +434,7 @@ describe("per-device connections", () => {
   // surface: core/changeEvents.js greetBridge, tested there.)
   it("greets the machine again when its failed path is restored", async () => {
     greetings.set("dev-a", async () => ({
-      api_version: "1.22.0",
+      api_version: "2.0.0",
       push_events: true,
       capabilities: ["changes.subscriptions", "tasks.attachments"],
       changes: { kinds: ["state", "thread"] },

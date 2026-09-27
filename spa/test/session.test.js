@@ -322,7 +322,7 @@ describe("what a session's calls carry", () => {
     const { session, peer } = await carrying();
     expect(session.adapter()).toBe(null);
 
-    const installed = session.installAdapter(selectAdapter({ api_version: "1.2.0" }));
+    const installed = session.installAdapter(selectAdapter({ api_version: "2.0.0", capabilities: ["errors.codes"] }));
     expect(session.adapter()).toBe(installed);
     expect(installed.capabilities.errors.codes).toBe(true);
 

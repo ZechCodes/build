@@ -1,6 +1,6 @@
 {
   "method": "task.delete",
-  "since": "1.0.0",
+  "since": "2.0.0",
   "params": {
     "task_id": "task-7"
   },

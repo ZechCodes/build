@@ -86,9 +86,11 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
-  it("dates the tasks.list paging fields at 1.25.0 while keeping the original verb's arrival", () => {
+  // The verb arrived under its own name at 2.0.0 (#190); its paging fields
+  // keep the release they first shipped in, under the verb's old name.
+  it("dates the tasks.list paging fields at 1.25.0 while keeping the renamed verb's arrival", () => {
     const listing = methodFixtures.find(({ body }) => body.method === "tasks.list").body;
-    expect(listing.since).toBe("1.3.0");
+    expect(listing.since).toBe("2.0.0");
     expect(listing.paging).toEqual({
       since: "1.25.0",
       params: ["limit", "cursor"],
@@ -106,11 +108,13 @@ describe("the v1 adapter against fixtures/api/v1", () => {
     }
   });
 
-  it("was introduced within this adapter's major, no later than current", () => {
+  it("was introduced within this adapter's major or carried into it, no later than current", () => {
     // The adapter's floor is where it stops serving OLD bridges; a verb that
-    // predates the floor is still one it speaks. What must hold is the major.
+    // predates the floor is still one it speaks — one a 1.x minor added and
+    // 2.0.0 kept is a 2.x verb. What must hold is that no verb is from a
+    // major this adapter does not speak yet.
     for (const { name, body } of methodFixtures) {
-      expect(Number(String(body.since).split(".")[0]), `${name} since ${body.since}`).toBe(v1.major);
+      expect(Number(String(body.since).split(".")[0]), `${name} since ${body.since}`).toBeLessThanOrEqual(v1.major);
       expect(compare(body.since, versions.current), `${name} since ${body.since}`).toBeLessThanOrEqual(0);
     }
   });
@@ -216,15 +220,22 @@ function capabilitiesAtTheWrongMinor({ capabilities, fixtures, manifest, current
 }
 
 const current = parse(versions.current);
-const manifestName = `verbs-${current.major}.${current.minor - 1}.json`;
 const manifestNames = readdirSync(apiDirectory).filter((name) => /^verbs-.*\.json$/.test(name));
-const manifest = manifestNames.includes(manifestName) ? readJson(apiDirectory + manifestName) : null;
+const manifest = manifestNames.length === 1 ? readJson(apiDirectory + manifestNames[0]) : null;
+
+/** Whether `previous` is the release right before `current`: the minor before
+ *  it, or for a new major's first minor, any release of the major before. */
+function directlyPrecedes(previous, current_) {
+  const [was, now] = [parse(previous), parse(current_)];
+  return now.minor === 0 ? was.major + 1 === now.major : was.major === now.major && was.minor + 1 === now.minor;
+}
 const hello = fixtures.find(({ name }) => name === "session.hello.json").body;
 
 describe("when each verb and capability arrived, against the previous minor", () => {
-  it("keeps the previous minor's manifest and no other", () => {
-    expect(manifestNames, "run node scripts/api-verbs-manifest.mjs").toEqual([manifestName]);
-    expect(releaseOf(manifest.api_version)).toBe(`${current.major}.${current.minor - 1}.0`);
+  it("keeps the previous release's manifest and no other", () => {
+    expect(manifestNames, "run node scripts/api-verbs-manifest.mjs").toHaveLength(1);
+    expect(manifestNames[0]).toBe(`verbs-${releaseOf(manifest.api_version).replace(/\.0$/, "")}.json`);
+    expect(directlyPrecedes(manifest.api_version, versions.current), manifest.api_version).toBe(true);
     expect(manifest.verbs.length).toBeGreaterThan(100);
     expect(manifest.capabilities.length).toBeGreaterThan(100);
   });
@@ -250,6 +261,14 @@ describe("when each verb and capability arrived, against the previous minor", ()
 });
 
 describe("the arrival checks, on a synthetic violation each", () => {
+  it("takes any release of the major before as the one a new major follows", () => {
+    expect(directlyPrecedes("1.30.0", "2.0.0")).toBe(true);
+    expect(directlyPrecedes("1.29.2", "1.30.0")).toBe(true);
+    expect(directlyPrecedes("1.28.0", "1.30.0")).toBe(false);
+    expect(directlyPrecedes("1.30.0", "3.0.0")).toBe(false);
+    expect(directlyPrecedes("1.30.0", "2.1.0")).toBe(false);
+  });
+
   const previous = { api_version: "1.23.0", verbs: ["a.old"], capabilities: ["a.old", "a.feature"] };
   const fixture = (method, since, extra = {}) => ({ name: `${method}.json`, body: { method, since, ...extra } });
 

@@ -42,6 +42,16 @@ it("fails a wait at once when the command cannot start", async () => {
   await expect(started.next((line) => line.ready, 600_000)).rejects.toThrow(/could not start[\s\S]*ENOENT/);
 });
 
+it("cancels a session's wait without consuming a later line", async () => {
+  started = startLineProcess(process.execPath, ["-e", "setTimeout(() => console.log(JSON.stringify({ ready: true })), 100)"]);
+  const closed = new AbortController();
+  const pending = started.next((line) => line.ready, 20_000, closed.signal);
+
+  closed.abort();
+  await expect(pending).rejects.toThrow(/aborted/);
+  await expect(started.next((line) => line.ready)).resolves.toMatchObject({ ready: true });
+});
+
 it("stops what the process started, not only the process", async () => {
   // A build script under cargo: a child of the child, still running.
   started = startLineProcess("sh", ["-c", "sleep 300 & echo \"{\\\"started\\\": $!}\"; wait"]);

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { acknowledgeProvisionalItem, createThreadCache, createThreadState, currentRevisionId, formatRelativeDate, mergeThreadItems, provisionalThreadItem, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks, withoutProvisionalItem } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
+import { fetchThreadAttachment } from "../src/core/threadAttachmentPages.js";
 
 describe("conversation thread rendering", () => {
   it("puts only delivery status and time in the message footer", () => {
@@ -508,7 +509,7 @@ describe("attachments on the record", () => {
 
     await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")).toBeTruthy());
     const lightbox = document.querySelector(".thread-lightbox");
-    expect(lightbox.querySelector("img").src).toBe("data:image/png;base64,AAAA");
+    expect(lightbox.querySelector("img").src).toMatch(/^blob:/);
     expect(lightbox.querySelector("img").alt).toBe("shot.png");
     lightbox.querySelector("button").focus();
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -517,6 +518,7 @@ describe("attachments on the record", () => {
   });
 
   it("opens a sent video in the same lightbox, playing inline with its controls (#116)", async () => {
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
     const threadState = createThreadState({ ownerId: "conversation-1" });
     document.body.innerHTML = threadHtml(withAttachments([
       { name: "shot.png", path: ".build/attachments/ab12-shot.png", mime: "image/png", size: 4 },
@@ -531,14 +533,39 @@ describe("attachments on the record", () => {
     clip.click();
     await vi.waitFor(() => expect(document.querySelector(".thread-lightbox video")).toBeTruthy());
     const video = document.querySelector(".thread-lightbox video");
+    const videoUrl = video.getAttribute("src");
     expect(video.hasAttribute("controls")).toBe(true);
-    expect(video.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
+    expect(video.getAttribute("src")).toMatch(/^blob:/);
     expect(document.querySelector(".thread-lightbox-count").textContent).toBe("2 of 2");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
-    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")?.getAttribute("src")).toMatch(/^blob:/));
+    expect(revoke).toHaveBeenCalledWith(videoUrl);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await vi.waitFor(() => expect(document.querySelector(".thread-lightbox")).toBeNull());
     expect(document.activeElement).toBe(document.querySelector('button.thread-attachment-preview[data-attachment-kind="image"]'));
+    revoke.mockRestore();
+  });
+
+  it("opens paged media through background calls and keeps the older bridge's whole-file call", async () => {
+    const path = ".build/attachments/clip.mp4";
+    const state = createThreadState();
+    document.body.innerHTML = threadHtml(withAttachments([{ name: "clip.mp4", path, mime: "video/mp4", size: 4 }]), { threadState: state });
+    const call = vi.fn(async (_method, params) => ({ mime: "video/mp4", size: 4,
+      content_b64: params.offset ? "Y2Q=" : "YWI=" }));
+    wireThreadAttachments(document.body, (name) => fetchThreadAttachment(call, "entity-1", name, true), state);
+    document.querySelector(".thread-attachment-preview").click();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox video")?.getAttribute("src")).toMatch(/^blob:/));
+    expect(call.mock.calls.map(([, params]) => params.offset)).toEqual([0, 2]);
+    expect(call.mock.calls.every(([, , options]) => options?.priority === "background")).toBe(true);
+    document.querySelector(".thread-lightbox-close").click();
+
+    const older = vi.fn(async () => ({ mime: "video/mp4", content_b64: "YWI=" }));
+    const nextState = createThreadState();
+    document.body.innerHTML = threadHtml(withAttachments([{ name: "clip.mp4", path, mime: "video/mp4", size: 4 }]), { threadState: nextState });
+    wireThreadAttachments(document.body, (name) => fetchThreadAttachment(older, "entity-1", name, false), nextState);
+    document.querySelector(".thread-attachment-preview").click();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox video")?.getAttribute("src")).toMatch(/^blob:/));
+    expect(older).toHaveBeenCalledWith("thread.attachment", { entity_id: "entity-1", path }, { priority: "background" });
   });
 
   it("escapes an attachment name rather than rendering it", () => {
@@ -563,7 +590,7 @@ describe("attachments on the record", () => {
 
     wireThreadAttachments(host, load, threadState);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(host.querySelector("img.thread-attachment-image").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(host.querySelector("img.thread-attachment-image").getAttribute("src")).toMatch(/^blob:/);
 
     // A polling surface re-renders the timeline constantly; the bytes are
     // content-addressed and immutable, so asking twice is pure waste.
@@ -573,6 +600,26 @@ describe("attachments on the record", () => {
     wireThreadAttachments(document.querySelector("#host"), load, threadState);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(asked).toEqual([".build/attachments/ab12-shot.png"]);
+  });
+
+  it("shares the tile's Blob with its lightbox and releases thread byte pages", async () => {
+    const create = vi.spyOn(URL, "createObjectURL");
+    const onBlob = vi.fn();
+    const path = ".build/attachments/ab12-shot.png";
+    const threadState = createThreadState({ ownerId: "conversation-1" });
+    document.body.innerHTML = threadHtml(withAttachments([
+      { name: "shot.png", path, mime: "image/png", size: 4 },
+    ]), { threadState });
+    wireThreadAttachments(document.body, async () => ({ mime: "image/png", pages: ["AAAA"], onBlob }), threadState);
+    await vi.waitFor(() => expect(document.querySelector(".thread-attachment-image")?.src).toMatch(/^blob:/));
+    const tileBlob = create.mock.calls.at(-1)[0];
+    expect(threadState.attachment(path).body.pages).toBeNull();
+    expect(onBlob).toHaveBeenCalledTimes(1);
+    document.querySelector(".thread-attachment-preview").click();
+    await vi.waitFor(() => expect(document.querySelector(".thread-lightbox img")?.src).toMatch(/^blob:/));
+    expect(create.mock.calls.at(-1)[0]).toBe(tileBlob);
+    expect(onBlob).toHaveBeenCalledTimes(1);
+    create.mockRestore();
   });
 
   it("shares an in-flight attachment load within its conversation", async () => {
@@ -592,8 +639,8 @@ describe("attachments on the record", () => {
 
     release({ mime: "image/png", content_b64: "AAAA" });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(document.querySelector("#first img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
-    expect(document.querySelector("#second img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(document.querySelector("#first img").getAttribute("src")).toMatch(/^blob:/);
+    expect(document.querySelector("#second img").getAttribute("src")).toMatch(/^blob:/);
   });
 });
 

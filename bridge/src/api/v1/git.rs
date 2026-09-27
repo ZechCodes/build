@@ -16,7 +16,7 @@
 use super::{answer, Answer, Handler, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
-use crate::body_page::{BodyRange, BodySpan};
+use crate::body_page::{BodyRange, BodySpan, FileRange};
 use crate::{v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -326,9 +326,10 @@ pub struct FsReadParams {
     pub path: String,
     /// One page of the file (#95): the answer carries the bytes from
     /// `offset`, whole lines of at most `bytes`, and `range` says where they
-    /// sit. Absent reads the file whole, capped as before.
+    /// sit. `raw: true` (1.30) keeps exact binary bytes for media. Absent
+    /// reads the file whole, capped as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<BodyRange>,
+    pub range: Option<FileRange>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

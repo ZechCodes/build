@@ -296,10 +296,24 @@ export function createCachedBodies({
     return [...hydrated, ...fetched];
   }
 
+  /** Release a large body's joined pages without evicting its IndexedDB
+   *  records. A later request hydrates them again from storage. */
+  async function forget(key) {
+    const named = String(key);
+    await rereads.get(named)?.catch(() => {});
+    unwatches.get(named)?.();
+    unwatches.delete(named);
+    held.delete(named);
+    joined.delete(named);
+    consulted.delete(named);
+    observedWrite.delete(named);
+  }
+
   return {
     read: (key) => held.get(String(key)),
     has: (key) => held.has(String(key)),
     ensure,
+    forget,
     more,
     dispose: () => {
       disposed = true;

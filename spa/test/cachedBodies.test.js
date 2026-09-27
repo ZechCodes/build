@@ -61,6 +61,18 @@ describe("createCachedBodies", () => {
     expect(bodies.read("a.js")).toEqual({ patch: "from disk" });
   });
 
+  it("forgets a held body and reloads it from the cache when asked again", async () => {
+    const fetches = [];
+    const bodies = bodiesOver(fetches);
+    await bodies.ensure(["a.js"]);
+    await bodies.forget("a.js");
+    expect(bodies.has("a.js")).toBe(false);
+    expect(bodies.read("a.js")).toBeUndefined();
+    await bodies.ensure(["a.js"]);
+    expect(fetches).toEqual([["a.js"]]);
+    expect(bodies.read("a.js")).toEqual({ patch: "patch:a.js" });
+  });
+
   it("re-reads an announced cache write and reports that stored body as the change", async () => {
     const changes = [];
     let bodies;

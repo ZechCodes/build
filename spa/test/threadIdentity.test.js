@@ -138,7 +138,7 @@ describe("a repaint that resolves the same conversation", () => {
     await Promise.resolve();
     await Promise.resolve();
     const picture = element.querySelector("img.thread-attachment-image");
-    expect(picture.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(picture.getAttribute("src")).toMatch(/^blob:/);
 
     const records = mutationsDuring(element, () => {
       paintThreadKeepingPlace(element, paintInto(element, thread));
@@ -147,7 +147,7 @@ describe("a repaint that resolves the same conversation", () => {
 
     expect(records.map(describeRecord)).toEqual([]);
     expect(element.querySelector("img.thread-attachment-image")).toBe(picture);
-    expect(picture.getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(picture.getAttribute("src")).toMatch(/^blob:/);
   });
 
   // A picture that will not come is a state of the conversation too, so the

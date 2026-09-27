@@ -122,9 +122,11 @@ describe("attachment thumbnails on an issue", () => {
 
     // The thumbnails fill from the bytes, the frame of a short video included.
     await vi.waitFor(() => {
-      expect(bodyList().querySelector("img.thread-attachment-image").getAttribute("src")).toBe("data:image/png;base64,AAAA");
-      expect(clip.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
+      expect(bodyList().querySelector("img.thread-attachment-image").getAttribute("src")).toMatch(/^blob:/);
+      expect(clip.getAttribute("src")).toMatch(/^blob:/);
     });
+    expect(call.mock.calls.filter(([method]) => method === "issues.attachment")
+      .every(([, , options]) => options?.priority === "background")).toBe(true);
   });
 });
 
@@ -135,7 +137,7 @@ describe("the lightbox on an issue", () => {
     const [shot, clip] = bodyList().querySelectorAll("button.thread-attachment-preview");
 
     await openedOn(shot);
-    expect(lightbox().querySelector(".thread-lightbox-stage img").getAttribute("src")).toBe("data:image/png;base64,AAAA");
+    expect(lightbox().querySelector(".thread-lightbox-stage img").getAttribute("src")).toMatch(/^blob:/);
     expect(lightbox().querySelector(".thread-lightbox-count").textContent).toBe("1 of 2");
     expect(lightbox().getAttribute("aria-label")).toBe("Image preview: before.png");
 
@@ -164,7 +166,7 @@ describe("the lightbox on an issue", () => {
     const video = lightbox().querySelector(".thread-lightbox-stage video");
     expect(video.hasAttribute("controls")).toBe(true);
     expect(video.hasAttribute("playsinline")).toBe(true);
-    expect(video.getAttribute("src")).toBe("data:video/webm;base64,EEEE");
+    expect(video.getAttribute("src")).toMatch(/^blob:/);
     expect(lightbox().getAttribute("aria-label")).toBe("Video: rail.webm");
 
     // The arrows belong to the video while it has focus: they seek, not step.
@@ -238,14 +240,14 @@ describe("attachment bytes and the cache", () => {
   it("paints a revisit's thumbnails from the cache without asking the bridge", async () => {
     mount();
     await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
     page.dispose();
     page = null;
 
     call = vi.fn(async (method) => (method === "issues.get" ? answer() : new Promise(() => {})));
     mount();
     await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
     expect(call.mock.calls.filter(([method]) => method === "issues.attachment")).toHaveLength(0);
   });
 
@@ -260,10 +262,10 @@ describe("attachment bytes and the cache", () => {
     });
     mount();
     await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toBe("data:image/png;base64,AAAA"));
+      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
     expect(bodyList().querySelector(".thread-attachment-figure.unavailable")).toBeNull();
     await openedOn(commentList().querySelectorAll("button.thread-attachment-preview")[1]);
-    expect(lightbox().querySelector(".thread-lightbox-stage video").getAttribute("src")).toBe("data:video/webm;base64,EEEE");
+    expect(lightbox().querySelector(".thread-lightbox-stage video").getAttribute("src")).toMatch(/^blob:/);
     expect(refusing).toHaveBeenCalled();
     refusing.mockRestore();
   });

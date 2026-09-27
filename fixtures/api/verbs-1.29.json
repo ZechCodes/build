@@ -1,6 +1,6 @@
 {
-  "api_version": "1.28.0",
-  "commit": "5ea7e767",
+  "api_version": "1.29.0",
+  "commit": "b93b654e",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -286,6 +286,7 @@
     "issues.read_through",
     "issues.reopen",
     "issues.track",
+    "issues.unreadCounts",
     "issues.untrack",
     "issues.unwatch",
     "issues.update",

@@ -1,5 +1,5 @@
 use crate::app::{expand_tilde, mime_hint};
-use crate::body_page::{page_len, BodyRange, BodySpan};
+use crate::body_page::{page_len, BodyRange, BodySpan, FileRange};
 use crate::encoding::b64decode;
 use crate::scoped_file::{is_editable, replace_text, revision_hex, EDITABLE_MAX_BYTES};
 
@@ -66,11 +66,17 @@ fn scope_field(params: &Value, name: &str) -> Result<Option<String>, String> {
     }
 }
 
-/// Source/document previews stay tightly capped; playable media gets a larger
-/// bounded response because browsers cannot decode a truncated data URL.
+/// Source/document previews stay tightly capped. Media is fetched in exact
+/// 1 MiB pages for Blob playback, bounded to 64 MiB in the file viewer: this
+/// covers the 50 MiB agent attachment ceiling while limiting IndexedDB and
+/// phone memory. Each page's base64 JSON stays under the 8 MiB wire limit.
 pub(in crate::app) const FS_READ_MAX_BYTES: u64 = 1_048_576;
 
-pub(in crate::app) const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
+pub(in crate::app) const FS_MEDIA_READ_MAX_BYTES: u64 = 64 * 1_048_576;
+
+/// Keep the old unranged answer's behavior for clients that do not know raw
+/// pages. A whole 64 MiB base64 answer would exceed DataChannel reassembly.
+const FS_MEDIA_LEGACY_READ_MAX_BYTES: u64 = 32 * 1_048_576;
 
 /// One directory level of a resolved scope: the shared fence, `.git` skipped,
 /// dirs before files and symlinks, each group case-insensitive.
@@ -215,12 +221,18 @@ impl AppState {
             return Err("refusing to read a symlink".to_string());
         }
         let (file, opened_metadata) = open_regular_read(&target, &path)?;
-        if let Some(range) = BodyRange::from_params(params)? {
-            return read_page(file, &target, &path, range);
+        if let Some(range) = FileRange::from_params(params)? {
+            return read_page(
+                file,
+                &target,
+                &path,
+                range.body(),
+                range.raw.unwrap_or(false),
+            );
         }
         let size = opened_metadata.len();
         let read_limit = if media_mime_hint(&target).is_some() {
-            FS_MEDIA_READ_MAX_BYTES
+            FS_MEDIA_LEGACY_READ_MAX_BYTES
         } else {
             FS_READ_MAX_BYTES
         };
@@ -297,21 +309,37 @@ impl AppState {
     }
 }
 
-/// One page of an open file (`fs.read` with a `range`, #95): the bytes from
-/// the offset, cut after the last line end that fits. Never editable — a page
-/// is not the file — and never truncated: it is what was asked for. The mime
-/// is sniffed from the file's head, wherever the page starts, so every page
-/// of one file names the same type.
+/// One page of an open file (`fs.read` with a `range`, #95): whole lines for
+/// text, exact bytes for raw media. A page is never editable, and a playable
+/// file above the media cap returns truncated metadata without page bytes.
+/// The mime is sniffed from the file's head, wherever the page starts.
 fn read_page(
     mut file: std::fs::File,
     target: &std::path::Path,
     path: &str,
     range: BodyRange,
+    raw: bool,
 ) -> Result<Value, String> {
     let ((head, window, offset), metadata) = read_unchanged(&mut file, path, |file, size| {
-        cut_page(file, size, path, range)
+        cut_page(file, size, path, range, raw)
     })?;
     let size = metadata.len();
+    let mime = mime_hint(target, &head);
+    if raw {
+        if !is_blob_media(mime) {
+            return Err("raw range must name an image, audio, or video file".to_string());
+        }
+        if size > FS_MEDIA_READ_MAX_BYTES {
+            return Ok(json!({
+                "path": path,
+                "size": size,
+                "truncated": true,
+                "mime": mime,
+                "content_b64": "",
+                "editable": false,
+            }));
+        }
+    }
     let span = BodySpan {
         offset,
         end: offset + window.len() as u64,
@@ -322,7 +350,7 @@ fn read_page(
         "path": path,
         "size": size,
         "truncated": false,
-        "mime": mime_hint(target, &head),
+        "mime": mime,
         "content_b64": b64encode(&window),
         "editable": false,
         "range": span,
@@ -365,13 +393,25 @@ fn cut_page(
     size: u64,
     path: &str,
     range: BodyRange,
+    raw: bool,
 ) -> Result<(Vec<u8>, Vec<u8>, u64), String> {
     let offset = range.offset.min(size);
     let head = read_at(file, 0, 8192, path)?;
+    if raw && size > FS_MEDIA_READ_MAX_BYTES {
+        return Ok((head, Vec::new(), offset));
+    }
     let mut window = read_at(file, offset, range.capacity() as u64, path)?;
-    let reaches_end = offset + window.len() as u64 >= size;
-    window.truncate(page_len(&window, reaches_end));
+    if !raw {
+        let reaches_end = offset + window.len() as u64 >= size;
+        window.truncate(page_len(&window, reaches_end));
+    }
     Ok((head, window, offset))
+}
+
+fn is_blob_media(mime: &str) -> bool {
+    (mime.starts_with("image/") && mime != "image/svg+xml")
+        || mime.starts_with("audio/")
+        || mime.starts_with("video/")
 }
 
 /// Up to `bytes` of `file` from `offset`.
@@ -488,7 +528,7 @@ mod page_tests {
         };
         let mut reads = 0;
         let ((_, window, offset), metadata) = read_unchanged(&mut file, "big.log", |file, size| {
-            let page = cut_page(file, size, "big.log", range);
+            let page = cut_page(file, size, "big.log", range, false);
             reads += 1;
             if reads == 1 {
                 rewrite(&path, b'B', 2_000);

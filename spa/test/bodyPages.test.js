@@ -54,6 +54,20 @@ describe("byte pages of a body read whole", () => {
 });
 
 describe("page records", () => {
+  it("releases complete in-memory pages after a media Blob is made, leaving disk pages intact", async () => {
+    const cut = pages.bytePagesOf(Buffer.from("abcdef").toString("base64"), { of: "clip", bytes: 2 });
+    await pages.writeBodyPages(head, cut);
+    const body = pages.createPagedBody({ head, of: "clip" });
+    await body.hydrate();
+    expect(body.state().pages).toHaveLength(3);
+    body.releasePages();
+    expect(body.state()).toMatchObject({ pages: [], complete: true, end: 6 });
+    await body.hydrate();
+    expect(body.state().pages).toHaveLength(0);
+    expect((await pages.readBodyPages(head, "clip")).pages).toHaveLength(3);
+    body.dispose();
+  });
+
   it("are read back in order from the first, as far as they chain", async () => {
     const cut = pages.textPagesOf(lines(30), { of: "k1", bytes: 40 });
     await pages.writeBodyPages(head, cut);

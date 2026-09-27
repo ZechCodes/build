@@ -294,3 +294,89 @@ fn an_attachment_outlives_the_worktree_it_was_written_into() {
         ONE_PIXEL_PNG
     );
 }
+
+#[test]
+fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "page a recording");
+    let path = ".build/attachments/recording.webm";
+    let bytes: Vec<u8> = (0..ATTACHMENT_MAX_BYTES as usize + 13)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let target = state.runs[&run_id].worktree.path.join(path);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, &bytes).unwrap();
+
+    let legacy = state.handle(req(
+        "thread.attachment",
+        json!({ "entity_id": run_id, "path": path }),
+    ));
+    assert_eq!(legacy["ok"], true, "{legacy:?}");
+    assert_eq!(
+        b64decode(legacy["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        bytes
+    );
+
+    let read = |state: &mut AppState, offset: u64, length: Option<u64>| {
+        let mut params = json!({ "entity_id": run_id, "path": path, "offset": offset });
+        if let Some(length) = length {
+            params["length"] = json!(length);
+        }
+        state.handle(req("thread.attachment", params))
+    };
+    let first = read(&mut state, 0, None);
+    assert_eq!(first["ok"], true, "{first:?}");
+    assert_eq!(first["result"]["size"], bytes.len());
+    assert_eq!(first["result"]["offset"], 0);
+    let first_bytes = b64decode(first["result"]["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(first_bytes.len() as u64, ATTACHMENT_MAX_BYTES);
+    assert_eq!(first_bytes, bytes[..ATTACHMENT_MAX_BYTES as usize]);
+    let capped = read(&mut state, 0, Some(u64::MAX));
+    assert_eq!(capped["ok"], true, "{capped:?}");
+    assert_eq!(
+        b64decode(capped["result"]["content_b64"].as_str().unwrap())
+            .unwrap()
+            .len() as u64,
+        ATTACHMENT_MAX_BYTES
+    );
+
+    let last = read(&mut state, ATTACHMENT_MAX_BYTES, Some(u64::MAX));
+    assert_eq!(last["ok"], true, "{last:?}");
+    assert_eq!(last["result"]["offset"], ATTACHMENT_MAX_BYTES);
+    assert_eq!(
+        b64decode(last["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        bytes[ATTACHMENT_MAX_BYTES as usize..]
+    );
+    let short = read(&mut state, 7, Some(3));
+    assert_eq!(
+        b64decode(short["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        bytes[7..10]
+    );
+}
+
+#[test]
+fn thread_attachment_refuses_bad_offsets() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let (_, run_id) = planned_run_in_review(&mut state, "bad offset");
+    let path = ".build/attachments/offset.webm";
+    let target = state.runs[&run_id].worktree.path.join(path);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(target, b"bytes").unwrap();
+    let past_end = state.handle(req(
+        "thread.attachment",
+        json!({ "entity_id": run_id, "path": path, "offset": 6, "length": 9 }),
+    ));
+    assert_eq!(past_end["result"]["content_b64"], "");
+    assert_eq!(past_end["result"]["size"], 5);
+    for bad_offset in [json!(-1), json!("7"), json!(1.5)] {
+        let refused = state.handle(req(
+            "thread.attachment",
+            json!({
+                "entity_id": run_id, "path": path, "offset": bad_offset,
+            }),
+        ));
+        assert_eq!(refused["error_code"], "invalid_params", "{refused:?}");
+    }
+}

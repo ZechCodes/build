@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::fs::FS_MEDIA_READ_MAX_BYTES;
 use base64::Engine as _;
 
 /// Add a git worktree Build did not create, at `dir/name` on `branch`, cut
@@ -462,6 +463,84 @@ fn fs_read_truncates_oversized_files() {
         .decode(media["result"]["content_b64"].as_str().unwrap())
         .unwrap();
     assert_eq!(media_decoded.len(), real_size);
+}
+
+#[test]
+fn fs_read_media_raw_pages_keep_every_byte_and_bound_file_size() {
+    let (dir, repo) = init_repo();
+    let mut state = AppState::new(
+        repo.clone(),
+        dir.path().join("wt"),
+        "main",
+        true,
+        "/tmp/test-mcp.sock",
+    );
+    let project_id = state.project_at(0).id.clone();
+    let mut bytes = vec![b'x'; 5000];
+    bytes[2] = b'\n';
+    bytes[3] = 0xff;
+    std::fs::write(repo.join("short.webm"), &bytes).unwrap();
+    let raw = state.handle(req(
+        "fs.read",
+        json!({ "project_id": project_id, "path": "short.webm",
+            "range": { "offset": 0, "bytes": 4096, "raw": true } }),
+    ));
+    assert_eq!(raw["ok"], true, "{raw:?}");
+    assert_eq!(raw["result"]["range"]["end"], 4096);
+    assert_eq!(
+        b64decode(raw["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        bytes[..4096]
+    );
+    std::fs::write(repo.join("large.png"), &bytes).unwrap();
+    let image = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id, "path": "large.png",
+            "range": { "offset": 0, "bytes": 4096, "raw": true },
+        }),
+    ));
+    assert_eq!(image["ok"], true, "{image:?}");
+    assert_eq!(image["result"]["range"]["end"], 4096);
+    std::fs::write(repo.join("note.txt"), &bytes).unwrap();
+    let text = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id, "path": "note.txt",
+            "range": { "offset": 0, "bytes": 4096, "raw": true },
+        }),
+    ));
+    assert_eq!(text["error_code"], "invalid_params", "{text:?}");
+
+    let forty_megabytes = 40 * 1_048_576u64;
+    let large = std::fs::File::create(repo.join("large.mp4")).unwrap();
+    large.set_len(forty_megabytes).unwrap();
+    let page = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id, "path": "large.mp4",
+            "range": { "offset": 34 * 1_048_576, "bytes": 1_048_576, "raw": true },
+        }),
+    ));
+    assert_eq!(page["ok"], true, "{page:?}");
+    assert_eq!(page["result"]["range"]["offset"], 34 * 1_048_576);
+    assert_eq!(page["result"]["range"]["end"], 35 * 1_048_576);
+
+    let too_large = std::fs::File::create(repo.join("too-large.mp4")).unwrap();
+    too_large.set_len(FS_MEDIA_READ_MAX_BYTES + 1).unwrap();
+    let oversized_page = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id, "path": "too-large.mp4",
+            "range": { "offset": 0, "bytes": 1_048_576, "raw": true },
+        }),
+    ));
+    assert_eq!(oversized_page["ok"], true, "{oversized_page:?}");
+    assert_eq!(
+        oversized_page["result"]["size"],
+        FS_MEDIA_READ_MAX_BYTES + 1
+    );
+    assert_eq!(oversized_page["result"]["truncated"], true);
+    assert_eq!(oversized_page["result"]["content_b64"], "");
 }
 
 /// One page of `big.log` from `offset`: its bytes and its `range`, checked

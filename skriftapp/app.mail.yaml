@@ -47,4 +47,4 @@ internal_api:
 # and the gateway WebSocket. Production serves the bundle same-origin instead.
 security_headers:
   csp_nonce: false
-  content_security_policy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://esm.sh; style-src 'self' 'unsafe-inline' https://esm.sh https://fonts.googleapis.com; img-src 'self' data:; font-src 'self' data: https://esm.sh https://fonts.gstatic.com; connect-src 'self' data: ws://localhost:18090 https://esm.sh; worker-src 'self' blob:"
+  content_security_policy: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' https://esm.sh; style-src 'self' 'unsafe-inline' https://esm.sh https://fonts.googleapis.com; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data: https://esm.sh https://fonts.gstatic.com; connect-src 'self' data: ws://localhost:18090 https://esm.sh; worker-src 'self' blob:"

@@ -1,4 +1,8 @@
 const RENDERED_MIMES = new Set(["text/markdown", "text/html", "image/svg+xml"]);
+const MEDIA_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "ico", "bmp", "mp3", "wav", "m4a", "aac", "flac", "mp4", "m4v", "webm", "mov"]);
+
+/** Mirrors the bridge's extension MIME table for choosing a raw first page. */
+export const isMediaPath = (path) => MEDIA_EXTENSIONS.has(path.split(".").at(-1)?.toLowerCase());
 
 const SIZE_ONLY_MIMES = new Set(["application/octet-stream", "application/pdf"]);
 

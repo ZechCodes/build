@@ -24,6 +24,12 @@
       "range"
     ]
   },
+  "raw_media": {
+    "since": "1.30.0",
+    "params": ["range.raw"],
+    "max_file_bytes": 67108864,
+    "max_page_bytes": 1048576
+  },
   "examples": [
     {
       "params": {
@@ -46,6 +52,31 @@
           "end": 262164,
           "total": 4194304,
           "version": "1789012345000000000-1789012345.0-5242881-4194304"
+        }
+      }
+    },
+    {
+      "params": {
+        "run_id": "run-7",
+        "path": "recording.webm",
+        "range": {
+          "offset": 1048576,
+          "bytes": 1048576,
+          "raw": true
+        }
+      },
+      "result": {
+        "path": "recording.webm",
+        "size": 5242880,
+        "truncated": false,
+        "mime": "video/webm",
+        "content_b64": "AAECAw==",
+        "editable": false,
+        "range": {
+          "offset": 1048576,
+          "end": 1048580,
+          "total": 5242880,
+          "version": "1789012345000000000-1789012345.0-5242881-5242880"
         }
       }
     }

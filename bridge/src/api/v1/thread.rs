@@ -263,6 +263,13 @@ pub struct ThreadAttachParams {
 pub struct ThreadAttachmentParams {
     pub entity_id: String,
     pub path: String,
+    /// Where the piece starts (1.30). Absent is the start of the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    /// How many bytes to read, capped at 5 MiB (1.30). When both range fields
+    /// are absent, the legacy whole-file answer is preserved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub length: Option<u64>,
 }
 
 /// What an agent runs on. Absent everywhere means the entity's own choice on
@@ -494,6 +501,9 @@ pub struct AttachmentContent {
     pub path: String,
     pub size: u64,
     pub mime: String,
+    /// The first byte carried by this answer; absent on bridges before 1.30.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
     pub content_b64: String,
 }
 

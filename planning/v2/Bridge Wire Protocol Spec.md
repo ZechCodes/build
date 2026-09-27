@@ -722,6 +722,15 @@ that character, under the version it was cut from, so the client sees the
 body moved. `fs.read` pages any bytes, text or not, and reads from the offset
 asked for exactly; a page of a changed file names another version all the
 same.
+Since 1.30.0, `fs.mediaRawPages` announces `range: {offset, bytes, raw: true}`
+for image, audio and video files. Raw pages end exactly at the requested byte
+window and never at a newline; each is at most 1 MiB, under the DataChannel's
+8 MiB reassembly limit after base64 and JSON. Raw media reads are capped at
+64 MiB; a larger file answers truncated metadata so the Files viewer can
+show its size. The legacy whole-file read remains capped at 32 MiB.
+`thread.attachmentChunks` announces optional `offset` and `length` on
+`thread.attachment`, capped at 5 MiB per answer. A caller without that
+capability asks for the whole attachment as before.
 `git.diff` and `git.changeset_diff` take exactly one path beside `range`
 (`files[0]`, or the top-level `patch`, is that path's page, under the same
 `content_key` and `diff_key` a whole read answers); `git.show` refuses `range`
@@ -860,6 +869,8 @@ other names announce support for clients that choose to consume them:
 | `workspaces.reclaimBranches` | `workspace.reclaim` deletes the workspace's local branches where safe, and `branch_kept` on issue timelines | 1.25.0 |
 | `issues.listPaged` | `issues.list` accepts `limit` and `cursor` and answers `next_cursor` while more rows follow | 1.25.0 |
 | `bodies.pages` | `fs.read`, `git.diff`, `git.show` and `git.changeset_diff` accept `range` and answer one page of whole lines with its `range` | 1.26.0 |
+| `thread.attachmentChunks` | `thread.attachment` accepts `offset` and `length`, with a 5 MiB page cap | 1.30.0 |
+| `fs.mediaRawPages` | `fs.read` accepts `range.raw: true` for exact image, audio and video byte pages through 64 MiB | 1.30.0 |
 | `issues.createdUserMentions` | An agent's `create_issue` with `mention_user: true` marks the `created` event with optional `mentions_user: true` and watches the issue for the user | 1.27.0 |
 | `board.conversationSessions` | A conversation's feed row (`board.list` items, `state` pushes) carries its own `session_started_ms` and `last_activity_ms`; the project conversation's row is how the inbox orders the project agent (#103) | 1.28.0 |
 | `issues.unreadCounts` | A watched issue on `issues.list` and `issues.get` carries `unread_count`: the timeline entries after its `read_through` that are not the user's own and are news — comments, and `assigned`, `unassigned`, `moved`, `closed` and `reopened` events, never bookkeeping such as `created`, `tracked` or `linked` (#183) — the count its inbox row says. An unwatched issue carries none (#104) | 1.29.0 |

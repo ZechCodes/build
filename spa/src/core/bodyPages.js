@@ -288,10 +288,12 @@ export function createPagedBody({
   let state = NO_PAGES;
   let reading = null;
   let disposed = false;
+  let pagesReleased = false;
 
   const hydrate = async () => {
+    if (pagesReleased) return state;
     const held = await readBodyPages(head, of, state);
-    if (disposed) return state;
+    if (disposed || pagesReleased) return state;
     state = held;
     onChange(state);
     return state;
@@ -319,6 +321,13 @@ export function createPagedBody({
   return {
     state: () => state,
     hydrate,
+    /** A complete media body plays from its Blob; disk pages remain available
+     *  for a later mount, while this mount no longer needs their JS copies. */
+    releasePages() {
+      if (!state.complete) return;
+      pagesReleased = true;
+      state = { ...state, pages: [] };
+    },
     /** Read the page after the last one held. Answers whether the held pages
      *  moved on; a call while one is being read waits for that one. */
     more() {

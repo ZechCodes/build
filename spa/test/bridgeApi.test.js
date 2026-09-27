@@ -88,14 +88,14 @@ describe("adapter selection", () => {
       // The hunks-per-file read arrived in 1.4; a 1.1 bridge is asked for
       // whole patches, and files on an issue arrived in 1.8.
       diffs: { perFile: false },
-      bodies: { pages: false },
+      bodies: { pages: false, mediaRawPages: false },
       // Watching arrived in 1.9 (#64); a 1.1 bridge carries none.
       issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
       // A conversation's own compaction threshold arrived in 1.10.
       conversations: { settings: false },
       github: { repos: false },
       messages: { context: false },
-      threads: { postOperations: false },
+      threads: { postOperations: false, attachmentChunks: false },
       branches: { finishDelete: false },
     });
   });
@@ -204,12 +204,12 @@ describe("adapter selection", () => {
         requests: { priority: false },
         errors: { codes: false },
         diffs: { perFile: false },
-        bodies: { pages: false },
+        bodies: { pages: false, mediaRawPages: false },
         issues: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false },
         conversations: { settings: false },
         github: { repos: false },
         messages: { context: false },
-        threads: { postOperations: false },
+        threads: { postOperations: false, attachmentChunks: false },
         branches: { finishDelete: false },
       });
     }
@@ -222,6 +222,16 @@ describe("adapter selection", () => {
 });
 
 describe("named capabilities", () => {
+  it("gates attachment chunks and raw media pages by their announced names", () => {
+    const offered = selectAdapter({ api_version: "1.30.0", capabilities: ["thread.attachmentChunks", "fs.mediaRawPages"] })
+      .create(async () => ({})).capabilities;
+    expect(offered.threads.attachmentChunks).toBe(true);
+    expect(offered.bodies.mediaRawPages).toBe(true);
+    const older = selectAdapter({ api_version: "1.29.0", capabilities: ["bodies.pages"] })
+      .create(async () => ({})).capabilities;
+    expect(older.threads.attachmentChunks).toBe(false);
+    expect(older.bodies.mediaRawPages).toBe(false);
+  });
   const features = [
     "changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile",
     "issues.attachments", "issues.watching", "issues.context", "conversations.settings",

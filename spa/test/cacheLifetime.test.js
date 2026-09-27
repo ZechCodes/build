@@ -179,10 +179,10 @@ describe("what a sweep reads", () => {
 });
 
 describe("the recent files", () => {
-  it("keeps 5, of at most 1 MB a record, and media of at most 32 MB in pages", () => {
+  it("keeps 5, of at most 1 MB a record, and media of at most 64 MB in pages", () => {
     expect(lifetime.RECENT_FILES).toBe(5);
     expect(lifetime.FILE_MAX_BYTES).toBe(1048576);
-    expect(lifetime.FILE_MEDIA_MAX_BYTES).toBe(32 * 1048576);
+    expect(lifetime.FILE_MEDIA_MAX_BYTES).toBe(64 * 1048576);
   });
 
   it("keeps the five most recently opened and drops the rest", async () => {
@@ -196,6 +196,19 @@ describe("the recent files", () => {
     await lifetime.trimRecentFiles("dev-1", "ws-1");
     const kept = await cache.cachedSubKeys("dev-1", "ws-1", "file");
     expect(kept.sort()).toEqual(["src/2.js", "src/3.js", "src/4.js", "src/5.js", "src/6.js"]);
+  });
+
+  it("keeps only the newest large media file even below the five-file limit", async () => {
+    for (const [name, openedAt] of [["older.mp4", NOW], ["newer.mp4", NOW + 1]]) {
+      await writeAt(address("ws-1", "file", name), {
+        file: { mime: "video/mp4", size: 17 * 1048576, paged: true, of: "v1" }, openedAt,
+      }, NOW);
+      await pages.writeBodyPage(address("ws-1", "file", name), { of: "v1", offset: 0, end: 1, total: 2, body: "eA==" });
+    }
+    await lifetime.trimRecentFiles("dev-1", "ws-1");
+    expect(await held(address("ws-1", "file", "older.mp4"))).toBe(false);
+    expect((await pages.readBodyPages(address("ws-1", "file", "older.mp4"), "v1")).pages).toHaveLength(0);
+    expect(await held(address("ws-1", "file", "newer.mp4"))).toBe(true);
   });
 
   it("reads a file with no opened-at as opened when it was written", async () => {

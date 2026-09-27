@@ -43,7 +43,7 @@ The market splits into local orchestration dashboards (Conductor, Vibe Kanban â€
 - Git-powered diff view and batched review comments
 - The Build MCP server with a single `done` tool
 - User-editable prompt templates as files
-- Push notifications on phase transitions and idle detection
+- Push notifications for exactly what adds to the unread counter (#191): a watched agent needing the human (`agent`) and news on a watched, unfinished task (`task`); content-free, one per entity per minute
 - Credential-class detection (subscription / credit / API key) with the integration-mode switch defaulted from it
 - Multi-harness support via the trivial v1 adapter contract (spawn command + PTY write)
 

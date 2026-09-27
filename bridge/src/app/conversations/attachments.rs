@@ -209,18 +209,22 @@ impl AppState {
     }
 
     /// A delivery payload as the agent it is for reads it. A project agent
-    /// stands in its project's base, so every attachment path it is sent
-    /// relative to the scratch root is named from that root instead — the
-    /// message's own and the ones the conversation context mentions. A payload
-    /// is frozen when its operation is accepted and replayed after a restart,
-    /// so one accepted before the agent moved still names the relative paths;
-    /// this is where every delivery, native or legacy, gets them fixed.
+    /// stands in its project's base, so every attachment path its messages
+    /// carry relative to the scratch root is named from that root instead. A
+    /// payload is frozen when its operation is accepted and replayed after a
+    /// restart, so one accepted before the agent moved still names the
+    /// relative paths; this is where every delivery, native or legacy, gets
+    /// them fixed.
+    ///
+    /// The conversation context frozen beside them is text, and a path in it
+    /// cannot be told from an author's words that look like one. It is left
+    /// exactly as it was written, and one line in front of it says where its
+    /// relative attachment paths are.
     ///
     /// Every other owner's payload goes unchanged.
     pub(in crate::app) fn payload_for_reader(
         &self,
         owner: &str,
-        agent_id: &str,
         mut payload: crate::operation::OperationPayload,
     ) -> crate::operation::OperationPayload {
         let Some(root) = self.attachments_root_for_reader_elsewhere(owner) else {
@@ -235,13 +239,16 @@ impl AppState {
                 attachment.path = root.join(&attachment.path).display().to_string();
             }
         }
-        if let (false, Ok(thread)) = (
-            payload.prior_context.is_empty(),
-            self.agent_conversation(owner, Some(agent_id)),
-        ) {
-            let history = self.catch_up_history(thread, crate::orchestrator::CATCH_UP_MESSAGES);
-            payload.prior_context =
-                thread.catch_up_context_read_from(&payload.prior_context, &history, &root);
+        let note = format!(
+            "Relative `{ATTACHMENTS_DIR}/…` paths in this context are under {}.",
+            root.display()
+        );
+        if payload
+            .prior_context
+            .contains(&format!("{ATTACHMENTS_DIR}/"))
+            && !payload.prior_context.starts_with(&note)
+        {
+            payload.prior_context = format!("{note}\n{}", payload.prior_context);
         }
         payload
     }
@@ -255,8 +262,7 @@ impl AppState {
     ) -> crate::operation::OperationReceipt {
         if let Some(delivery) = receipt.delivery.as_mut() {
             if let Some(payload) = delivery.payload.take() {
-                delivery.payload =
-                    Some(self.payload_for_reader(&delivery.owner_id, &delivery.agent_id, payload));
+                delivery.payload = Some(self.payload_for_reader(&delivery.owner_id, payload));
             }
         }
         receipt

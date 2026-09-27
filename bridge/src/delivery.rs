@@ -50,14 +50,12 @@ impl SessionProbes {
     ///    whoever had it — adoption included: Build cannot show a history it
     ///    never heard.
     ///
-    /// The provider is asked where the child will stand, and nowhere else. A
-    /// project agent stands in its project's base while Build keeps its root in
-    /// the scratch directory, and a claude transcript is filed under the cwd it
-    /// was started in: so the conversation an agent had in scratch before it
-    /// moved is not held where it now stands, and the move starts it fresh
-    /// once, caught up from the canonical conversation. Resuming it from the
-    /// base instead would let claude choose between two directories' copies of
-    /// one name, which is not a choice Build can see.
+    /// The provider is asked where the child will stand, and nowhere else.
+    /// Which directory a recorded name belongs to is not asked of the disk at
+    /// all: the name only reaches here when the session that had it stood
+    /// where this child will (`resumable_session_id`), so a project agent's
+    /// conversation from before it moved into its project's base is never
+    /// offered, whatever copies of it either directory holds.
     fn pickup(
         &self,
         cwd: &Path,

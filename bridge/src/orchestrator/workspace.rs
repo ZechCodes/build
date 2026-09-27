@@ -549,30 +549,104 @@ impl AgentLaunch {
 /// hides the same files in a linked worktree Build never started anything in.
 ///
 /// Only missing rules are appended, and the file is never rewritten. A
-/// `.gitignore` there that the repository tracks is the user's and is left as
-/// it is, as is a directory that is not in a git work tree.
+/// directory that is not in a git work tree is left alone. So is a `.claude/`
+/// or a `.gitignore` in it that is a link: what it leads to is outside this
+/// directory, and git does not look inside a linked directory anyway.
+///
+/// A `.gitignore` there that the repository tracks is the user's and is left
+/// as it is. Whatever it does not already ignore goes in the shared
+/// `info/exclude` instead, anchored to this directory: claude writes a block of
+/// its own there that hides the same files in every worktree, so the only
+/// thing reaching a sibling is what claude would put there itself.
 pub(crate) fn ignore_harness_files(cwd: &Path, files: &[&str]) -> Result<(), OrchestratorError> {
     let in_a_work_tree = run_git(cwd, &["rev-parse", "--is-inside-work-tree"])
         .is_ok_and(|answer| answer.trim() == "true");
-    let tracked = || {
-        run_git(
-            cwd,
-            &["ls-files", "--error-unmatch", "--", ".claude/.gitignore"],
-        )
-        .is_ok()
+    let dot_claude = cwd.join(".claude");
+    let ignore = dot_claude.join(".gitignore");
+    let is_link = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
     };
-    if !in_a_work_tree || tracked() {
+    if !in_a_work_tree || is_link(&dot_claude) || is_link(&ignore) {
         return Ok(());
+    }
+    let tracked = run_git(
+        cwd,
+        &["ls-files", "--error-unmatch", "--", ".claude/.gitignore"],
+    )
+    .is_ok();
+    if tracked {
+        return exclude_what_is_not_ignored(cwd, files);
     }
     let rules: Vec<String> = files.iter().map(|file| format!("/{file}")).collect();
     append_missing_lines(
-        &cwd.join(".claude").join(".gitignore"),
-        "# Build: what an agent's harness writes in the directory it stands in",
+        &ignore,
+        HARNESS_FILES_HEADER,
         &rules,
         // A file Build makes is Build's, and hides itself; one the user made
         // is theirs to see.
         &["/.gitignore".to_string()],
     )
+}
+
+const HARNESS_FILES_HEADER: &str =
+    "# Build: what an agent's harness writes in the directory it stands in";
+
+/// The rules a tracked `.claude/.gitignore` in `cwd` leaves out, appended to
+/// the repository's shared `info/exclude` and anchored to `cwd`'s `.claude/`.
+fn exclude_what_is_not_ignored(cwd: &Path, files: &[&str]) -> Result<(), OrchestratorError> {
+    let unignored: Vec<&str> = files
+        .iter()
+        .copied()
+        .filter(|file| {
+            run_git(
+                cwd,
+                &[
+                    "check-ignore",
+                    "-q",
+                    "--no-index",
+                    "--",
+                    &format!(".claude/{file}"),
+                ],
+            )
+            .is_err()
+        })
+        .collect();
+    if unignored.is_empty() {
+        return Ok(());
+    }
+    let prefix = run_git(cwd, &["rev-parse", "--show-prefix"])?;
+    let prefix = prefix.trim_end_matches('\n');
+    if prefix.contains('\n') {
+        return Ok(());
+    }
+    let common = run_git(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )?;
+    let rules: Vec<String> = unignored
+        .iter()
+        .map(|file| format!("/{}.claude/{file}", glob_escaped(prefix)))
+        .collect();
+    append_missing_lines(
+        &Path::new(common.trim_end_matches('\n'))
+            .join("info")
+            .join("exclude"),
+        HARNESS_FILES_HEADER,
+        &rules,
+        &[],
+    )
+}
+
+/// `path` as a gitignore pattern that matches only itself.
+fn glob_escaped(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '\\' | '*' | '?' | '[') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 /// Append to the file at `path` whichever of `rules` it does not already hold,

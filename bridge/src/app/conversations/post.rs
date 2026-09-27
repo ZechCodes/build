@@ -640,11 +640,7 @@ impl AppState {
             delivery.payload.as_ref().map(|payload| {
                 let payload = OperationPayload {
                     tells_sender_context: crate::agent::is_project_agent(&delivery.agent_id),
-                    ..self.payload_for_reader(
-                        &delivery.owner_id,
-                        &delivery.agent_id,
-                        payload.clone(),
-                    )
+                    ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
                 TurnText {
                     cold: payload.delivery_prompt(

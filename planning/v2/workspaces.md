@@ -373,18 +373,23 @@ code it orchestrates. The files Claude Code writes where it stands
 (`.claude/scheduled_tasks.lock`, `scheduled_tasks.json` and
 `settings.local.json`) are kept out of the user's `git status` by a
 `.claude/.gitignore` Build writes in the base, which ignores itself too. It is
-only ever appended to, and a tracked one is left alone. The repository's
-`info/exclude` is not used: git reads it for every linked worktree, so a rule
-there would also hide those files in the user's other worktrees. Claude files a
-conversation under the directory it was started in, so the session an agent had
-in scratch is not resumed from the base: the move starts the agent fresh once,
-caught up from the canonical conversation. Codex keeps one copy of each
-conversation and resumes it in the new cwd. It receives the same delivery
-envelope, catch-up packet and topic handling as any other agent, and every
-attachment path it is sent is named from the scratch root. That covers native
-and legacy deliveries, including ones queued before a restart. In an operation's
-frozen context, only lines Build recognises as its own rendering of a message
-are renamed. What it does not receive is the coding prompt: that one is about
+only ever appended to, and never written through a link: a `.claude` or a
+`.gitignore` there that is a symlink is left alone. The repository's
+`info/exclude` is not used for this, because git reads it for every linked
+worktree. The one exception is a `.claude/.gitignore` the repository tracks:
+Build leaves it as it is and appends whatever it does not already ignore to
+`info/exclude`, anchored to the base's `.claude/`. Claude writes its own block
+there that hides the same files in every worktree anyway. Each session records
+the directory its process stood in, and a provider id is resumed only where it
+was had. A record from before the move names no such directory, so it stood in
+its checkout, which for this agent is scratch: the move starts the agent fresh
+once, on every provider, caught up from the canonical conversation. It receives
+the same delivery envelope, catch-up packet and topic handling as any other
+agent, and every attachment path its messages carry is named from the scratch
+root. That covers native and legacy deliveries, including ones queued before a
+restart. An operation's frozen context is sent exactly as it was written, after
+one line saying which directory its relative `.build/attachments/` paths are
+under. What it does not receive is the coding prompt: that one is about
 phases, a plan and a diff, and this agent has none of them. Every turn that
 starts its process, a native operation included, carries the whole durable
 conversation. It tells the agent which project it is the agent of, that it may

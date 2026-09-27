@@ -153,11 +153,15 @@ impl AppState {
     /// to. A warm delivery never calls this — the session it continues is
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
-    pub(in crate::app) fn record_agent_session_start(
+    ///
+    /// `cwd` is where the process stands, which a provider files its
+    /// conversation by: the checkout, for every agent but a project agent.
+    pub(in crate::app) fn record_agent_session_start_in(
         &mut self,
         owner: &str,
         agent_id: &str,
         checkout: &std::path::Path,
+        cwd: &std::path::Path,
         model_choice: &ModelChoice,
         phase: &str,
     ) -> Option<SessionInstance> {
@@ -171,12 +175,14 @@ impl AppState {
         }
         let mut opened = None;
         let checkout = checkout.display().to_string();
+        let cwd = cwd.display().to_string();
         if let Err(error) = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
             opened = Some(open_session_lineage(
                 thread,
                 owner,
                 agent_id,
                 &checkout,
+                &cwd,
                 model_choice,
                 phase,
             ));
@@ -188,9 +194,22 @@ impl AppState {
         opened
     }
 
+    /// A session started in its own checkout.
+    #[cfg(test)]
+    pub(in crate::app) fn record_agent_session_start(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        checkout: &std::path::Path,
+        model_choice: &ModelChoice,
+        phase: &str,
+    ) -> Option<SessionInstance> {
+        self.record_agent_session_start_in(owner, agent_id, checkout, checkout, model_choice, phase)
+    }
+
     /// The agent process an id owns has ended: close the conversation's session
     /// lineage for it, and close the turn it died holding. The mirror of
-    /// [`record_agent_session_start`](Self::record_agent_session_start), and it
+    /// [`record_agent_session_start_in`](Self::record_agent_session_start_in), and it
     /// is the PUMP that calls it — the only place that learns a harness died on
     /// its own. An owner that no longer exists (its record was deleted with the
     /// tab) has no lineage left to close, which is why this is quiet.
@@ -316,8 +335,13 @@ impl AppState {
     }
 
     /// An exact provider id is resumable only when persisted lineage binds it
-    /// to this agent, provider, and checkout. Legacy/partial records start
-    /// fresh and catch up from canonical history instead of guessing.
+    /// to this agent, provider, and checkout, and to the directory the process
+    /// about to start will stand in: a provider files a conversation by where
+    /// it was had, so one had elsewhere — a project agent's, from before it
+    /// moved into its project's base — is not picked up from here, however
+    /// the provider would choose between two directories' copies of it.
+    /// Legacy/partial records start fresh and catch up from canonical history
+    /// instead of guessing.
     pub(in crate::app) fn resumable_session_id(
         &self,
         owner: &str,
@@ -327,6 +351,7 @@ impl AppState {
     ) -> Option<String> {
         let named = self.recorded_resume_id(owner, agent_id)?;
         let checkout = root.display().to_string();
+        let cwd = self.agent_process_cwd(owner, root).display().to_string();
         self.agent_conversation(owner, Some(agent_id))
             .ok()?
             .sessions
@@ -335,6 +360,7 @@ impl AppState {
             .any(|session| {
                 session.agent_id == agent_id
                     && session.checkout.as_deref() == Some(checkout.as_str())
+                    && session.stood_in() == Some(cwd.as_str())
                     && session.provider == provider.label()
                     && session.resume_session_id.as_deref() == Some(named.as_str())
             })

@@ -262,9 +262,10 @@ fn the_project_agents_prompt_names_its_base_and_forbids_changing_it() {
 
 /// A project conversation minted before the agent moved is the same one after
 /// a restart: found again by its scratch root and never minted twice. Its
-/// agent's claude session was filed under the scratch directory's name, and
-/// is not resumed from the base: the move starts the agent fresh once, and
-/// the name is forgotten so the next start does not ask again.
+/// agent's claude session was had in the scratch directory, and is not resumed
+/// from the base — not even when the base holds a copy of the same name, which
+/// claude would pick over the one it was having: the move starts the agent
+/// fresh once, and the name is forgotten so the next start does not ask again.
 #[tokio::test]
 async fn a_conversation_from_before_the_move_is_found_and_its_agent_starts_fresh_in_the_base() {
     let (_repo_home, repo) = init_repo();
@@ -317,6 +318,12 @@ async fn a_conversation_from_before_the_move_is_found_and_its_agent_starts_fresh
             ));
     std::fs::create_dir_all(&transcripts).unwrap();
     std::fs::write(transcripts.join("sess-before.jsonl"), "{}\n").unwrap();
+    let beside = home
+        .path()
+        .join(".claude/projects")
+        .join(crate::harness::claude::encode_project_dir(&repo));
+    std::fs::create_dir_all(&beside).unwrap();
+    std::fs::write(beside.join("sess-before.jsonl"), "{}\n").unwrap();
 
     let mut state = boot();
     let project_id = state.default_project().unwrap();
@@ -366,6 +373,56 @@ async fn a_conversation_from_before_the_move_is_found_and_its_agent_starts_fresh
         None,
         "the name filed under scratch is forgotten"
     );
+}
+
+/// A session had in the base is picked up there: the move costs one fresh
+/// start, not one every time the agent starts.
+#[test]
+fn a_session_had_in_the_base_is_resumed_there() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let mut state = rooted(&state_root);
+    let project = a_project_agent(&mut state, &repo);
+    let choice = ModelChoice::default();
+    let instance = state
+        .record_agent_session_start_in(
+            &project.owner,
+            &project.agent_id,
+            &AppState::canonical_root(&project.scratch),
+            &project.base,
+            &choice,
+            "start",
+        )
+        .expect("the session the agent has in the base");
+    state.note_self_report(
+        &project.owner,
+        &project.agent_id,
+        &instance,
+        SelfReport {
+            named: Some("sess-base".to_string()),
+            model: None,
+            effort: None,
+        },
+    );
+    let state = state.shared();
+    let spawns = record_spawns(&state);
+    let base = project.base.clone();
+    state.lock().unwrap().resume_id_probe =
+        Arc::new(move |dir: &Path, _, id: &str| id == "sess-base" && dir == base);
+    ensure_agent_tab(
+        &state,
+        &project.scratch,
+        &project.owner,
+        &project.agent_id,
+        &choice,
+        "resume",
+    )
+    .expect("the agent starts again");
+    let options = only_spawn(&spawns);
+    assert_eq!(options.cwd, repo);
+    assert_eq!(options.resume_session_id.as_deref(), Some("sess-base"));
 }
 
 // ---- attachments -----------------------------------------------------------
@@ -885,6 +942,84 @@ fn a_gitignore_the_user_keeps_there_is_appended_to_or_left_alone() {
     assert_eq!(ignore_of(&tracked), "kept\n");
 }
 
+/// A `.gitignore` there that the repository tracks is left as it is. What it
+/// does not ignore is kept out through the repository's exclude instead,
+/// anchored to where the agent stands: the base stays clean, and the same
+/// files elsewhere in the repository still show.
+#[test]
+fn a_tracked_gitignore_there_is_left_alone_and_the_base_stays_clean() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let tracked = repo.join("packages/[tracked]");
+    std::fs::create_dir_all(tracked.join(".claude")).unwrap();
+    std::fs::write(
+        tracked.join(".claude/.gitignore"),
+        "/scheduled_tasks.json\n",
+    )
+    .unwrap();
+    git_in(&repo, &["add", "packages"]);
+    git_in(&repo, &["commit", "-qm", "their ignore"]);
+    assert_eq!(untracked(&repo), "");
+
+    for _ in 0..2 {
+        ignore_harness_files(&tracked).unwrap();
+    }
+    assert_eq!(
+        ignore_of(&tracked),
+        "/scheduled_tasks.json\n",
+        "not touched"
+    );
+    write_harness_files(&tracked);
+    assert_eq!(untracked(&repo), "", "the base stays clean");
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    for (file, times) in [
+        ("scheduled_tasks.lock", 1),
+        ("settings.local.json", 1),
+        ("scheduled_tasks.json", 0),
+    ] {
+        assert_eq!(
+            exclude.lines().filter(|line| line.ends_with(file)).count(),
+            times,
+            "{file}: {exclude}"
+        );
+    }
+
+    write_harness_files(&repo.join("packages/t"));
+    let status = untracked(&repo);
+    assert!(
+        status.contains("?? packages/t/.claude/settings.local.json\n"),
+        "{status}"
+    );
+}
+
+/// A `.claude/` that is a link leads out of the directory the agent stands in
+/// — to the user's own configuration, say — and git does not look inside it.
+/// Nothing is written through it, and nothing through a `.gitignore` there
+/// that is a link either.
+#[test]
+fn nothing_is_written_through_a_link() {
+    let (_repo_home, repo) = init_repo();
+    let repo = std::fs::canonicalize(&repo).unwrap();
+    let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), repo.join(".claude")).unwrap();
+    ignore_harness_files(&repo).unwrap();
+    assert!(!outside.path().join(".gitignore").exists());
+
+    let nested = repo.join("packages/app");
+    std::fs::create_dir_all(nested.join(".claude")).unwrap();
+    let theirs = outside.path().join("their.gitignore");
+    std::fs::write(&theirs, "theirs\n").unwrap();
+    std::os::unix::fs::symlink(&theirs, nested.join(".claude/.gitignore")).unwrap();
+    ignore_harness_files(&nested).unwrap();
+    assert_eq!(std::fs::read_to_string(&theirs).unwrap(), "theirs\n");
+
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap_or_default(),
+        exclude
+    );
+}
+
 /// The rules are claude's files, so an agent on another harness leaves the
 /// base exactly as it found it.
 #[tokio::test]
@@ -932,8 +1067,8 @@ fn an_old_attachment(project: &ProjectAgent) -> (PathBuf, Value) {
 
 /// A native operation hands a project agent every attachment path from the
 /// scratch root: one queued before the restart and replayed from the store,
-/// one sent after it naming an earlier upload, and the ones the operation's
-/// context mentions. The record keeps what was sent.
+/// and one sent after it naming an earlier upload. The operation's context
+/// says where the ones it mentions are. The record keeps what was sent.
 #[test]
 fn a_native_post_names_a_project_agents_old_attachments_from_scratch() {
     let (_repo_home, repo) = init_repo();
@@ -989,11 +1124,13 @@ fn a_native_post_names_a_project_agents_old_attachments_from_scratch() {
             );
         }
         assert!(
-            said.cold.contains(&format!("open them: {absolute}]")),
-            "the context names it from scratch too: {}",
+            said.cold.contains(&format!(
+                "paths in this context are under {}.\n",
+                project.scratch.display()
+            )),
+            "the context says where its paths are: {}",
             said.cold
         );
-        assert!(!said.cold.contains("open them: .build/"), "{}", said.cold);
     }
     let recorded = state
         .agent_conversation(&project.owner, Some(&project.agent_id))
@@ -1052,62 +1189,59 @@ fn a_legacy_post_names_a_project_agents_old_attachments_from_scratch() {
     );
 }
 
-/// What an operation's cold turn says was the conversation before it.
-fn context_of(cold: &str) -> &str {
-    let from = cold
-        .find("Conversation context before this operation:")
-        .unwrap_or_else(|| panic!("no context in {cold}"));
-    let to = cold[from..]
-        .find("This native payload")
-        .map_or(cold.len(), |at| from + at);
-    &cold[from..to]
-}
-
-/// The context an operation is accepted into is prose Build wrote around
-/// what people said. A line is renamed only when Build recognises it as a
-/// message's own: a reviewer quoting an attachment note keeps their words,
-/// and the real note on the same line names the file from scratch.
+/// The context an operation is accepted into is text Build wrote around what
+/// people said, and an attachment path in it cannot be told from an author's
+/// words that look like one: a message with a file attached reads exactly like
+/// one quoting that note. A project agent is sent the context exactly as it
+/// was frozen, after one line saying where its relative attachment paths are.
 #[test]
-fn a_quoted_attachment_note_in_the_context_is_left_as_its_author_wrote_it() {
+fn a_moved_agent_reads_its_context_as_written_under_a_note_on_its_paths() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
-    let quoted = "see [attached files, open them: .build/attachments/example.png] above";
-    let project = {
+    let quoted =
+        "open this [attached files, open them: .build/attachments/0123456789ab-before.png]";
+    let (project, frozen) = {
         let mut state = configured(&state_root);
         let project = a_project_agent(&mut state, &repo);
         let (_, attachments) = an_old_attachment(&project);
-        let posted = state.handle(req(
-            "thread.post",
-            json!({
-                "entity_id": project.owner,
-                "agent_id": project.agent_id,
-                "body": quoted,
-                "attachments": attachments,
-            }),
-        ));
-        assert_eq!(posted["ok"], true, "{posted:?}");
-        drained(&mut state);
+        for (body, attachments) in [("open this", attachments), (quoted, json!([]))] {
+            let posted = state.handle(req(
+                "thread.post",
+                json!({
+                    "entity_id": project.owner,
+                    "agent_id": project.agent_id,
+                    "body": body,
+                    "attachments": attachments,
+                }),
+            ));
+            assert_eq!(posted["ok"], true, "{posted:?}");
+            drained(&mut state);
+        }
+        let frozen = state
+            .agent_conversation(&project.owner, Some(&project.agent_id))
+            .unwrap()
+            .operation_prior_context(crate::orchestrator::CATCH_UP_MESSAGES);
         post_native(&mut state, &project, "op-queued", "and now?");
-        project
+        (project, frozen)
     };
-    let (stored, _) = an_old_attachment(&project);
+    assert_eq!(frozen.matches(quoted).count(), 2, "{frozen}");
 
     let mut state = configured(&state_root);
     let said = the_turn_of(&drained(&mut state), "op-queued");
-    let context = context_of(&said.cold);
+    let note = format!(
+        "Relative `.build/attachments/…` paths in this context are under {}.",
+        project.scratch.display()
+    );
     assert!(
-        context.contains(&format!(
-            "{quoted} [attached files, open them: {}]",
-            stored.display()
+        said.cold.contains(&format!(
+            "Conversation context before this operation:\n{note}\n{frozen}\n"
         )),
-        "{context}"
+        "{}",
+        said.cold
     );
-    assert!(
-        !context.contains("0123456789ab-before.png]\n- "),
-        "{context}"
-    );
+    assert!(!said.warm.contains(&note), "{}", said.warm);
 }
 
 // ---- the move itself -----------------------------------------------------------

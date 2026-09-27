@@ -291,6 +291,19 @@ function sectionHtml(section, projectScope) {
     ${listed.map(rowHtml).join("")}${more}</section>`;
 }
 
+const WORKING_DOT_SELECTOR = ".rail-overview-live, .rail-overview-idle";
+
+/** The + a press in the overview belongs to, or null: the + itself, or the
+ *  working dot, which lies inside the +'s press on a workspace heading but
+ *  is drawn above it so its own tooltip shows (#192). The project's heading
+ *  has no +, so a press on its dot belongs to nothing. */
+export function overviewAddFor(target) {
+  const add = target.closest?.("[data-overview-add]");
+  if (add) return add;
+  if (!target.matches?.(WORKING_DOT_SELECTOR)) return null;
+  return target.closest(".rail-overview-section-head")?.querySelector("[data-overview-add]") || null;
+}
+
 /** `scope` is the rail's overview scope: `{ kind: "project" }` shows every
  *  workspace, each capped and opening its own overview; `{ kind: "workspace",
  *  workspaceId }` shows that one workspace beside the project's agents. Any

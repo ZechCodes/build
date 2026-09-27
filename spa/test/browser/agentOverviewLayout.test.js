@@ -301,10 +301,10 @@ it("keeps the heading's pill, dot and + on one gap and in one column", async () 
   }, { width: 1320, height: 850 });
 }, 30_000);
 
-// #192 review: the +'s 44px press reaches over the working dot, so a press on
-// the dot has to open Add too — the dot is drawn above the button and must not
-// take the click — while the pill beside it stays inert.
-it("opens Add from a press on the working dot as from the + itself", async () => {
+// #192 review: the +'s 44px press reaches under the working dot, so a press
+// on the dot has to open Add too, while the dot keeps its own hover — its
+// status word is the tooltip, not the +'s — and the pill beside it stays inert.
+it("opens Add from a press on the working dot as from the + itself, and the dot keeps its tooltip", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountLayout(page, markup, { basePath });
     await loadChatOverviewModules(page, basePath, { tracker: "src/core/trackerCache.js", fixture: "test/agentsOverviewFixture.js" });
@@ -335,10 +335,15 @@ it("opens Add from a press on the working dot as from the + itself", async () =>
     };
     const opensAdd = (hash, workspaceId) => hash.includes(`/workspace/${workspaceId}/`) && hash.includes("newAgent");
 
-    for (const [name, workspaceId, dotClass] of [["skrift-review", "ws-review", ".rail-overview-idle"], ["skrift-fixes", "ws-fixes", ".rail-overview-live"]]) {
+    // The tooltip a hover shows is the innermost hovered element's title.
+    const hoveredTitle = async (point) => {
+      await page.mouse.move(point.x, point.y);
+      return page.evaluate(() => { const hovered = [...document.querySelectorAll(":hover")]; const top = hovered.at(-1);
+        return { className: top?.className, title: top?.closest("[title]")?.title || null }; });
+    };
+    for (const [name, workspaceId, dotClass, word] of [["skrift-review", "ws-review", ".rail-overview-idle", "Nothing working"], ["skrift-fixes", "ws-fixes", ".rail-overview-live", "1 working"]]) {
       const dot = await centre(name, dotClass);
-      const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest("[data-overview-add]")?.dataset.overviewAdd || null, [dot.x, dot.y]);
-      assert.equal(hit, workspaceId, `${name}: the press over the dot belongs to the +`);
+      assert.deepEqual(await hoveredTitle(dot), { className: dotClass.slice(1), title: word }, `${name}: hovering the dot shows its status`);
       assert.ok(opensAdd(await hashAfterClick(dot), workspaceId), `${name}: a press on the dot opens Add`);
       // Inside the +'s box but outside the heading's 36px band: still the +.
       const press = await centre(name, ".rail-overview-add");
@@ -348,5 +353,9 @@ it("opens Add from a press on the working dot as from the + itself", async () =>
     // The pill is not the +.
     const pill = await centre("skrift-review", ".rail-overview-need");
     assert.equal(await hashAfterClick(pill), "", "a press on the unread pill opens nothing");
+    // The project's dot has no + under it: its own tooltip, and no Add.
+    const projectDot = await centre("Project agents", ".rail-overview-idle");
+    assert.deepEqual(await hoveredTitle(projectDot), { className: "rail-overview-idle", title: "Nothing working" });
+    assert.equal(await hashAfterClick(projectDot), "", "a press on the project's dot opens nothing");
   }, { width: 1320, height: 850 });
 }, 30_000);

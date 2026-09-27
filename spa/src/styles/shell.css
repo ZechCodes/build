@@ -816,11 +816,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:650 11px/1 var(--mono); }
 .rail-overview-need.is-error { background:var(--red); color:var(--danger-ink); }
 /* The working dot is always drawn: the accent and the pulse while anything
-   works, the rows' idle grey and still otherwise. The +'s press reaches under
-   it, so the dot takes no pointer events: a press on the dot is a press on
-   the +, and its word is carried by the aria-label. */
-.rail-overview-live, .rail-overview-idle { flex:none; position:relative; width:8px; height:8px; border-radius:50%;
-  pointer-events:none; }
+   works, the rows' idle grey and still otherwise. It is drawn above the +'s
+   press, which reaches under it, and keeps its own hover for its tooltip; the
+   overview's click handler hands a press on it to the + (overviewAddFor). */
+.rail-overview-live, .rail-overview-idle { flex:none; position:relative; width:8px; height:8px; border-radius:50%; }
 .rail-overview-live { background:var(--accent); }
 .rail-overview-idle { background:var(--line3); }
 .rail-overview-live::after { content:""; position:absolute; inset:-3px; border-radius:50%;

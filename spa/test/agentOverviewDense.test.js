@@ -180,6 +180,19 @@ describe("the agents overview (#186)", () => {
     expect(window.location.hash).toContain("/workspace/ws-soak/changes");
     expect(window.location.hash).toContain("newAgent=1");
 
+    // #192: the working dot lies inside the +'s press, so a press on it is a
+    // press on that heading's +; the project's dot has no + and opens nothing.
+    window.history.replaceState({}, "", "/");
+    arrived = navigated();
+    sectionNamed("skrift-review").querySelector(".rail-overview-idle").click();
+    await arrived;
+    expect(window.location.hash).toContain("/workspace/ws-review/changes");
+    expect(window.location.hash).toContain("newAgent=1");
+    window.history.replaceState({}, "", "/");
+    sectionNamed("Project agents").querySelector(".rail-overview-idle").click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(window.location.hash).toBe("");
+
     arrived = navigated();
     row("pr-reviewer").click();
     await arrived;

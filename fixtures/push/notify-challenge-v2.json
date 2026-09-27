@@ -1,0 +1,17 @@
+{
+  "device_id": "dev-1",
+  "entity_id": "task-1",
+  "kind": "task",
+  "timestamp": 1790000000,
+  "sealed": [
+    {
+      "subscription_id": "fktz0HaQPrTBONQORgaYdrkQLm41LU5PVktHaqho6To",
+      "blob": "AQID"
+    },
+    {
+      "subscription_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "blob": "BAUG"
+    }
+  ],
+  "challenge": "notify.dev-1.task-1.task.1790000000.dd26c1331e965dea0af7f2d495d1c15d35d6382fed3052e6adfe090495ab1c96"
+}

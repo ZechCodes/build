@@ -76,9 +76,10 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     if (selectable) onDone?.(project, target);
     else onDone?.(project);
   };
-  /** What the name field says now. Empty hands the name back to the first
-   *  folder; the name it was showing for that folder is still that folder's;
-   *  anything else is the reader's own. */
+  /** What the name field says when no input event said it (a value set by
+   *  script, autofill): empty hands the name back to the first folder, the
+   *  name it was showing for that folder is still that folder's, anything
+   *  else is the reader's own. Typing is decided by the input event itself. */
   const readName = () => {
     const field = sheet.querySelector("#nrproject");
     if (!field) return;
@@ -276,8 +277,12 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: projectName(), sources }; void submit(params); };
     // A typed name is the reader's; clearing it hands the name back to the
     // first folder, shown as the placeholder until the next change fills it.
+    // Anything the reader types is theirs, even a name equal to the one the
+    // folder would give: only an empty field follows the folder again.
     $("#nrproject").oninput = () => {
-      readName();
+      const typed = $("#nrproject").value;
+      draft.nameAutomatic = !typed.trim();
+      draft.name = draft.nameAutomatic ? derivedName() : typed;
       saveDraft(true);
     };
     // Opening on the form, or the form appearing once a machine is chosen (by

@@ -433,3 +433,51 @@ it("a draft keeps whether its name was typed or followed a folder", async () => 
   again.value = "git@github.com:ZechCodes/renamed.git"; again.dispatchEvent(new Event("input"));
   expect(nameField().value).toBe("Mine"); // typed: it stays
 });
+
+// Review of 2667723b: a name typed to equal the folder's must still be the
+// reader's, and what project.create sends is the proof.
+const createCall = (calls) => calls.desk.mock.calls.find(([method]) => method === "project.create")?.[1];
+
+it("a typed name equal to the derived one is the reader's: a later remote change does not replace it", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  const remote = addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  typeName("Custom");
+  typeName("");
+  typeName("Skrift");
+  remote.value = "git@github.com:ZechCodes/other.git"; remote.dispatchEvent(new Event("input"));
+  expect(nameField().value).toBe("Skrift");
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Skrift", sources: [{ remote: "git@github.com:ZechCodes/other.git", name: "other" }] }));
+});
+
+it("a cleared name creates under the first folder's name", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  typeName("Custom");
+  typeName("");
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Skrift", sources: [{ remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift" }] }));
+});
+
+it("removing the first folder creates under the next one's name", async () => {
+  const calls = openSelectableSheet(undefined, "desk");
+  addRemoteRow("git@github.com:ZechCodes/Skrift.git");
+  addRemoteRow("git@github.com:ZechCodes/build-web.git");
+  document.querySelector("[data-remove-source]").click();
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "build-web", sources: [{ remote: "git@github.com:ZechCodes/build-web.git", name: "build-web" }] }));
+});
+
+it("a draft from before nameAutomatic keeps the name it holds as typed", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  await writeCached(address, {
+    name: "Legacy", selectedDeviceId: "desk",
+    sources: [{ id: 1, kind: "remote", path: "", remote: "git@github.com:ZechCodes/Skrift.git", name: "Skrift", base_branch: "", automaticName: true }],
+  });
+  const calls = openSelectableSheet(undefined, "desk");
+  await vi.waitFor(() => expect(nameField()?.value).toBe("Legacy"));
+  const row = document.querySelector("[data-source-value]");
+  row.value = "git@github.com:ZechCodes/other.git"; row.dispatchEvent(new Event("input"));
+  submitSheet();
+  await vi.waitFor(() => expect(createCall(calls)).toEqual({ name: "Legacy", sources: [{ remote: "git@github.com:ZechCodes/other.git", name: "other" }] }));
+});

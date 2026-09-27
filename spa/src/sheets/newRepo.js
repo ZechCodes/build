@@ -15,7 +15,10 @@ const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.
  * its own reconnect/offline behavior. */
 export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devices, defaultDeviceId, callRpcFor }) {
   const sheet = $("#sheet"), scrim = $("#scrim");
-  const draft = { name: "", sources: [] };
+  // The project's name is optional: until the reader
+  // types one (`nameAutomatic`), it follows the first folder's label, which
+  // itself follows that folder's path or remote.
+  const draft = { name: "", nameAutomatic: true, sources: [] };
   const selectable = Array.isArray(devices);
   const choices = selectable ? devices : [{ id: deviceId || "pinned", name: deviceName }];
   // An account with one machine has nothing to choose: that machine is the
@@ -26,7 +29,21 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   let projectsDirRecord = null;
   let draftRecord;
   let firstPaint = true;
-  const draftSnapshot = () => ({ name: draft.name, sources: draft.sources, selectedDeviceId });
+  const draftSnapshot = () => ({ name: draft.name, nameAutomatic: draft.nameAutomatic, sources: draft.sources, selectedDeviceId });
+  const derivedName = () => draft.sources[0]?.name.trim() || "";
+  /** The name the project is created with: the typed one, or the first folder's. */
+  const projectName = () => (draft.nameAutomatic ? derivedName() : draft.name.trim());
+  /** Follow the first folder again, when the name is not the reader's own. */
+  const followName = () => {
+    if (draft.nameAutomatic) draft.name = derivedName();
+  };
+  /** Show what the name field would create with, without repainting the sheet. */
+  const paintName = () => {
+    const field = sheet.querySelector("#nrproject");
+    if (!field) return;
+    if (draft.nameAutomatic) field.value = draft.name;
+    field.placeholder = derivedName();
+  };
   const saveDraft = (debounced = false) => {
     if (debounced) draftRecord?.schedule(draftSnapshot());
     else void draftRecord?.write(draftSnapshot());
@@ -54,13 +71,27 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   const close = () => { active = false; version += 1; repoAsks.forEach((ask) => ask.stop()); disposeRepoPickers(sheet); projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
   const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
   const finish = async (project, target) => {
-    await draftRecord?.write({ name: "", sources: [], selectedDeviceId });
+    await draftRecord?.write({ name: "", nameAutomatic: true, sources: [], selectedDeviceId });
     close();
     if (selectable) onDone?.(project, target);
     else onDone?.(project);
   };
+  /** What the name field says now. Empty hands the name back to the first
+   *  folder; the name it was showing for that folder is still that folder's;
+   *  anything else is the reader's own. */
+  const readName = () => {
+    const field = sheet.querySelector("#nrproject");
+    if (!field) return;
+    const typed = field.value;
+    if (!typed.trim()) draft.nameAutomatic = true;
+    else if (!(draft.nameAutomatic && typed === draft.name)) {
+      draft.nameAutomatic = false;
+      draft.name = typed;
+    }
+    followName();
+  };
   const remember = () => {
-    if (sheet.querySelector("#nrproject")) draft.name = $("#nrproject").value;
+    readName();
     saveDraft(true);
   };
   const uniqueName = (value, except) => {
@@ -111,7 +142,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const invalidSource = () => {
     if (!selectedDevice()) return ["Choose a device.", "#nrdevice"];
-    if (!draft.name.trim()) return ["Enter a project label.", "#nrproject"];
+    if (!draft.sources.length) return ["Add a folder or Git remote.", "#nraddfolder"];
     const names = new Set();
     for (const source of draft.sources) {
       const error = sourceError(source, names);
@@ -156,6 +187,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     source.path = path;
     source.pathDeviceId = selectedDeviceId;
     if (source.automaticName) source.name = uniqueName(path, source);
+    followName();
     saveDraft();
     paint();
   };
@@ -166,7 +198,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     const targetCall = selectedCall();
     if (!draft.sources.some((source) => source.id === sourceId)) return;
     disposeRepoPickers(sheet);
-    sheet.innerHTML = `<h3>Choose folder</h3><p class="sub">Choose a folder to add to ${esc(draft.name.trim() || "this project")}.</p><div id="nrbrowser"></div><button class="btn" id="nrback" type="button">Back</button><div class="adderr" id="nrerr" role="status"></div>`;
+    sheet.innerHTML = `<h3>Choose folder</h3><p class="sub">Choose a folder to add to ${esc(projectName() || "this project")}.</p><div id="nrbrowser"></div><button class="btn" id="nrback" type="button">Back</button><div class="adderr" id="nrerr" role="status"></div>`;
     $("#nrback").onclick = paint;
     try {
       if (!await loadProjectsDir(targetCall, requestVersion, targetId)) return;
@@ -190,7 +222,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
   };
   // The account-wide sheet asks which machine first: until one is chosen the
-  // rest of the form (label, folders, remotes, Create) is not painted at all,
+  // rest of the form (folders, remotes, name, Create) is not painted at all,
   // and the draft it holds waits in `draft` for the reveal.
   const choosingDevice = () => selectable && !selectedDevice();
   let wasChoosingDevice = false;
@@ -205,6 +237,16 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     $("#nrdevice").focus();
     firstPaint = false;
   };
+  // Folders first, then the name: a project always has a folder or remote
+  // (Zech, #185), so the name is optional and shows the one it will take.
+  const formHtml = (target, selector) => {
+    const shownName = draft.nameAutomatic ? derivedName() : draft.name;
+    return `<h3>Add project</h3><p class="sub">Add the folders and Git remotes on ${esc(target.name)} that this project works in.</p><form id="nrform" novalidate>
+      ${selector}
+      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
+      <div class="field"><label for="nrproject">Project name (optional)</label><input id="nrproject" ${fieldTraits("line", "go")} value="${esc(shownName)}" placeholder="${esc(derivedName())}"></div>
+      <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
+  };
   const paintSources = () => {
     version += 1;
     const focused = sheet.contains(sheet.ownerDocument.activeElement) ? sheet.ownerDocument.activeElement.id : "";
@@ -214,12 +256,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     wasChoosingDevice = choosingDevice();
     if (wasChoosingDevice) return paintDeviceChoice(selector);
     disposeRepoPickers(sheet);
-    const subtitle = `Enter a label to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.`;
-    sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
-      ${selector}
-      <div class="field"><label for="nrproject">Project label</label><input id="nrproject" ${fieldTraits("line", "go")} required value="${esc(draft.name)}"></div>
-      <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders (optional)</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
-      <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
+    sheet.innerHTML = formHtml(target, selector);
     $("#nrcancel").onclick = close;
     if (selectable) $("#nrdevice").onchange = chooseDevice;
     $("#nraddfolder").onclick = () => {
@@ -231,36 +268,46 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     };
     $("#nraddremote").onclick = () => { remember(); const source = addSource("remote"); saveDraft(); paint(); $(`#nrsource-${source.id}`)?.focus(); };
     sheet.querySelectorAll("[data-source-value]").forEach((input) => attachRepoPicker(input, pickerDeviceId()));
-    sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } saveDraft(true); });
-    sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; saveDraft(true); });
+    sheet.querySelectorAll("[data-source-value]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceValue)); source.remote = input.value; if (source.automaticName) { source.name = uniqueName(input.value, source); $(`#nrmount-${source.id}`).value = source.name; } followName(); paintName(); saveDraft(true); });
+    sheet.querySelectorAll("[data-source-name]").forEach((input) => input.oninput = () => { const source = draft.sources.find((item) => item.id === Number(input.dataset.sourceName)); source.name = input.value; source.automaticName = false; followName(); paintName(); saveDraft(true); });
     sheet.querySelectorAll("[data-source-branch]").forEach((input) => input.oninput = () => { draft.sources.find((item) => item.id === Number(input.dataset.sourceBranch)).base_branch = input.value; saveDraft(true); });
     sheet.querySelectorAll("[data-choose-source]").forEach((button) => button.onclick = () => void browseFor(Number(button.dataset.chooseSource)));
-    sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); saveDraft(); paint(); $("#nraddfolder").focus(); });
-    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: draft.name.trim(), ...(sources.length ? { sources } : {}) }; void submit(params); };
-    $("#nrproject").oninput = () => { draft.name = $("#nrproject").value; saveDraft(true); };
+    sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); followName(); saveDraft(); paint(); $("#nraddfolder").focus(); });
+    $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: projectName(), sources }; void submit(params); };
+    // A typed name is the reader's; clearing it hands the name back to the
+    // first folder, shown as the placeholder until the next change fills it.
+    $("#nrproject").oninput = () => {
+      readName();
+      saveDraft(true);
+    };
     // Opening on the form, or the form appearing once a machine is chosen (by
-    // the reader or a restored draft), puts the reader in the label.
-    if (firstPaint || revealed) $("#nrproject").focus();
+    // the reader or a restored draft), starts at the folders.
+    if (firstPaint || revealed) $("#nraddfolder").focus();
     else if (focused) sheet.querySelector(`#${focused}`)?.focus();
     firstPaint = false;
   };
   function paint() { if (active) paintSources(); }
+  function restoreDraft(saved) {
+    const ownerAvailable = choices.some((device) => device.id === saved.selectedDeviceId);
+    const sameContext = !defaultDeviceId || saved.selectedDeviceId === defaultDeviceId;
+    const restoredDeviceId = ownerAvailable && sameContext ? saved.selectedDeviceId : selectedDeviceId;
+    draft.name = saved.name;
+    // A draft from before the flag: a name it holds was typed.
+    draft.nameAutomatic = typeof saved.nameAutomatic === "boolean" ? saved.nameAutomatic : !saved.name.trim();
+    draft.sources = Array.isArray(saved.sources)
+      ? saved.sources.map((source) => source.kind === "path" && source.pathDeviceId !== restoredDeviceId
+        ? { ...source, path: "", pathDeviceId: "" } : source)
+      : [];
+    serial = Math.max(0, ...draft.sources.map((source) => Number(source.id) || 0));
+    selectedDeviceId = restoredDeviceId;
+  }
   scrim.classList.add("show"); paint(); askForRepos();
   draftRecord = watchUiState(
     uiAddress({ deviceId: selectable ? "" : deviceId || "", view: "new-project", kind: "draft" }),
     (saved) => {
       if (!active || !saved || typeof saved.name !== "string") return;
       if (JSON.stringify(saved) === JSON.stringify(draftSnapshot())) return;
-      const ownerAvailable = choices.some((device) => device.id === saved.selectedDeviceId);
-      const sameContext = !defaultDeviceId || saved.selectedDeviceId === defaultDeviceId;
-      const restoredDeviceId = ownerAvailable && sameContext ? saved.selectedDeviceId : selectedDeviceId;
-      draft.name = saved.name;
-      draft.sources = Array.isArray(saved.sources)
-        ? saved.sources.map((source) => source.kind === "path" && source.pathDeviceId !== restoredDeviceId
-          ? { ...source, path: "", pathDeviceId: "" } : source)
-        : [];
-      serial = Math.max(0, ...draft.sources.map((source) => Number(source.id) || 0));
-      selectedDeviceId = restoredDeviceId;
+      restoreDraft(saved);
       paint();
       askForRepos();
       if (JSON.stringify(saved) !== JSON.stringify(draftSnapshot())) void draftRecord.write(draftSnapshot());

@@ -57,12 +57,6 @@ describe("routeFromHash", () => {
     });
   });
 
-  // A branch is a checkout and has no agents to hold tasks, so `tasks` there
-  // is still the retired right-cluster tab that named the inbox.
-  it("gives a branch no tasks tab", () => {
-    expect(routeFromHash("#/device/d1/project/p/branch/main/issues").name).toBe("inbox");
-  });
-
   // A workspace is one machine's checkout, so a workspace URL with no device in
   // it is the same question a device-less branch URL is, and parks in the same
   // place — carrying the whole workspace route, directory and file included.
@@ -188,13 +182,13 @@ describe("routeFromHash", () => {
   });
 
   it("parses a task with no tab segment and an optional stage suffix", () => {
-    expect(workRoute("#/project/p/issue/plan-1")).toEqual({ name: "task", projectId: "p", id: "plan-1" });
-    expect(workRoute("#/project/p/issue/plan-1/stage/second-half")).toEqual({
+    expect(workRoute("#/project/p/plan/plan-1")).toEqual({ name: "task", projectId: "p", id: "plan-1" });
+    expect(workRoute("#/project/p/plan/plan-1/stage/second-half")).toEqual({
       name: "task", projectId: "p", id: "plan-1", stage: "second-half",
     });
     // No stage suffix → no stage key at all, so equality checks stay clean.
-    expect(workRoute("#/project/p/issue/plan-1").stage).toBeUndefined();
-    expect(workRoute("#/project/a%20b/issue/p%20l/stage/s%20x")).toEqual({
+    expect(workRoute("#/project/p/plan/plan-1").stage).toBeUndefined();
+    expect(workRoute("#/project/a%20b/plan/p%20l/stage/s%20x")).toEqual({
       name: "task", projectId: "a b", id: "p l", stage: "s x",
     });
   });
@@ -216,9 +210,8 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   it("sends the retired global surfaces to the inbox", () => {
     expect(routeFromHash("#/notifications")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/board")).toEqual({ name: "inbox" });
-    expect(routeFromHash("#/issue")).toEqual({ name: "inbox" });
+    expect(routeFromHash("#/task")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/plan")).toEqual({ name: "inbox" });
-    expect(routeFromHash("#/issue")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/worktree")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/main")).toEqual({ name: "inbox" });
@@ -278,7 +271,6 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   });
 
   it("parks a project-less task URL on a resolve route, stage and all", () => {
-    expect(routeFromHash("#/issue/pl-1")).toEqual({ name: "resolve", kind: "task", id: "pl-1" });
     expect(routeFromHash("#/plan/pl-1")).toEqual({ name: "resolve", kind: "task", id: "pl-1" });
     expect(routeFromHash("#/plan/pl-1/stages/s2")).toEqual({ name: "resolve", kind: "task", id: "pl-1", stage: "s2" });
     expect(routeFromHash("#/plan/pl-1/review/s2")).toEqual({ name: "resolve", kind: "task", id: "pl-1", stage: "s2" });
@@ -288,9 +280,9 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   it("resolves a project-scoped plan URL straight to its task", () => {
     expect(workRoute("#/project/p/plan/pl-1")).toEqual({ name: "task", projectId: "p", id: "pl-1" });
     expect(workRoute("#/project/p/plan/pl-1/stages/s2")).toEqual({ name: "task", projectId: "p", id: "pl-1", stage: "s2" });
-    expect(workRoute("#/project/p/issue/pl-1/review/s2")).toEqual({ name: "task", projectId: "p", id: "pl-1", stage: "s2" });
-    expect(workRoute("#/project/p/issue/pl-1/conversation")).toEqual({ name: "task", projectId: "p", id: "pl-1" });
-    expect(workRoute("#/project/p/issue/pl-1/agent")).toEqual({ name: "task", projectId: "p", id: "pl-1" });
+    expect(workRoute("#/project/p/plan/pl-1/review/s2")).toEqual({ name: "task", projectId: "p", id: "pl-1", stage: "s2" });
+    expect(workRoute("#/project/p/plan/pl-1/conversation")).toEqual({ name: "task", projectId: "p", id: "pl-1" });
+    expect(workRoute("#/project/p/plan/pl-1/agent")).toEqual({ name: "task", projectId: "p", id: "pl-1" });
   });
 
   // Conversation and Agent are the agent rail now; Stages is the task view;
@@ -337,9 +329,8 @@ describe("legacy routes canonicalize to the nearest new route", () => {
   // The old tab bar's right cluster named project-wide panes, not the entity's
   // work: they belong to the global surfaces that own them now.
   it("sends the cluster tabs to the global surface that owns them", () => {
-    for (const base of ["#/task/r", "#/worktree/p/w", "#/project/p/branch/main", "#/project/p/issue/i"]) {
+    for (const base of ["#/task/r", "#/worktree/p/w", "#/project/p/branch/main", "#/project/p/plan/i"]) {
       expect([base, routeFromHash(`${base}/inbox`)]).toEqual([base, { name: "inbox" }]);
-      expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox" }]);
       expect([base, routeFromHash(`${base}/archive`)]).toEqual([base, { name: "account", page: "archive" }]);
     }
     // On a bare project the inbox cluster keeps the project it was read on: the
@@ -684,14 +675,6 @@ describe("the task tracker under a project", () => {
     });
   });
 
-  // There is no tracker of a branch or of a plan task to open, so the retired
-  // cluster tab still means what it meant on those.
-  it("leaves the retired Issues cluster tab alone on every other surface", () => {
-    for (const base of ["#/task/r", "#/worktree/p/w", "#/project/p/branch/main", "#/project/p/issue/i"]) {
-      expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox" }]);
-    }
-  });
-
   // #46 flipped which tab is the default, so the bare project URL is the
   // Tasks tab now — and a route that names no tab at all still writes it,
   // because "no tab" and "the default" are the same URL.
@@ -710,7 +693,25 @@ describe("the task tracker under a project", () => {
   });
 });
 
+// Everything a link could say before issues were renamed tasks still opens
+// where it went. scripts/rename-issue-to-task.keep keeps this block's old
+// spellings as they are.
 describe("links written before tasks were renamed (#190)", () => {
+  // There is no tracker of a branch or of a plan to open, so the retired
+  // right-cluster tab still means what it meant on those.
+  it("sends the retired Issues cluster tab to the inbox from every other surface", () => {
+    for (const base of ["#/task/r", "#/worktree/p/w", "#/project/p/branch/main", "#/project/p/issue/i"]) {
+      expect([base, routeFromHash(`${base}/issues`)]).toEqual([base, { name: "inbox" }]);
+    }
+    expect(routeFromHash("#/device/d1/project/p/branch/main/issues").name).toBe("inbox");
+  });
+
+  it("opens a retired plan from a project-less old link, stage and all", () => {
+    expect(routeFromHash("#/issue")).toEqual({ name: "inbox" });
+    expect(routeFromHash("#/issue/pl-1")).toEqual({ name: "resolve", kind: "task", id: "pl-1" });
+    expect(routeFromHash("#/issue/pl-1/stages/s2")).toEqual({ name: "resolve", kind: "task", id: "pl-1", stage: "s2" });
+  });
+
   it("opens the tracker and one task from the old issues segment", () => {
     expect(workRoute("#/project/p/issues")).toEqual({ name: "project", projectId: "p", tab: "tasks" });
     expect(routeFromHash("#/device/d1/project/p/issues/task-1/c/tc-7")).toEqual({

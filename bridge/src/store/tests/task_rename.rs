@@ -173,13 +173,17 @@ fn every_row(store: &Store) -> Vec<String> {
     rows
 }
 
-#[test]
-fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
+/// A v9 store, opened once by this build.
+fn migrated() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
     v9_store(dir.path());
-
     let store = Store::new(dir.path()).unwrap();
+    (dir, store)
+}
 
+#[test]
+fn a_v9_store_opens_with_its_tables_and_indexes_named_for_tasks() {
+    let (_dir, store) = migrated();
     let tables = names_in(&store, "table");
     assert!(tables.contains(&"tracker_tasks".to_string()), "{tables:?}");
     assert!(
@@ -195,7 +199,20 @@ fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
         indexes.contains(&"tracker_comments_by_task".to_string()),
         "{indexes:?}"
     );
+    let version: String = store
+        .connection()
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION.to_string());
+}
 
+#[test]
+fn an_issue_reads_back_as_a_task_with_its_own_words_untouched() {
+    let (_dir, store) = migrated();
     let task = store
         .load_tracker_task(&format!("task-{FIRST}"))
         .unwrap()
@@ -206,10 +223,7 @@ fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
         vec!["ui", "issues"],
         "a label is somebody's word, not ours"
     );
-    assert_eq!(
-        task.links.parent_task_id.as_deref(),
-        Some(format!("task-{PARENT}").as_str())
-    );
+    assert_eq!(task.links.parent_task_id, Some(format!("task-{PARENT}")));
     assert_eq!(
         task.links.branches,
         vec!["build/issue-tabs"],
@@ -219,12 +233,13 @@ fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
         task.body.contains("issue-01M2ZKDW228EETGP8XEW32VP9P"),
         "prose keeps what it quoted"
     );
-    assert_eq!(
-        task.read_through.as_deref(),
-        Some(format!("tc-{COMMENT}").as_str())
-    );
+    assert_eq!(task.read_through, Some(format!("tc-{COMMENT}")));
     assert!(task.watched);
+}
 
+#[test]
+fn a_timeline_reads_back_under_the_new_comment_and_event_ids() {
+    let (_dir, store) = migrated();
     let timeline = store
         .load_tracker_timeline(&format!("task-{FIRST}"))
         .unwrap();
@@ -236,33 +251,40 @@ fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
         })
         .collect();
     assert_eq!(ids, vec![format!("tc-{COMMENT}"), format!("te-{EVENT}")]);
+}
 
+#[test]
+fn a_workspace_verdict_holds_and_lists_tasks() {
+    let (_dir, store) = migrated();
     let lifecycle = store.load_workspace_lifecycle().unwrap();
     assert_eq!(lifecycle["ws-1"].holds, vec!["task_open", "tasks_unread"]);
     assert_eq!(lifecycle["ws-1"].tasks[0].task_id, format!("task-{FIRST}"));
+}
 
-    let conn = store.connection();
-    let item: String = conn
+#[test]
+fn a_conversation_item_takes_the_new_keys_and_keeps_its_words() {
+    let (_dir, store) = migrated();
+    let raw: String = store
+        .connection()
         .query_row("SELECT item FROM thread_items", [], |row| row.get(0))
         .unwrap();
-    let item: serde_json::Value = serde_json::from_str(&item).unwrap();
+    let item: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let data = &item["data"];
+    assert_eq!(data["from_task"]["task_id"], format!("task-{FIRST}"));
+    assert!(data["from_task"]["links"].get("parent_task_id").is_some());
+    assert_eq!(data["task_notice"]["comment_id"], format!("tc-{COMMENT}"));
+    assert_eq!(data["viewing_context"]["items"][0]["kind"], "task");
     assert_eq!(
-        item["data"]["from_task"]["task_id"],
-        format!("task-{FIRST}")
-    );
-    assert!(item["data"]["from_task"]["links"]
-        .get("parent_task_id")
-        .is_some());
-    assert_eq!(
-        item["data"]["task_notice"]["comment_id"],
-        format!("tc-{COMMENT}")
-    );
-    assert_eq!(item["data"]["viewing_context"]["items"][0]["kind"], "task");
-    assert_eq!(
-        item["data"]["body"], "New comment on issue #2",
+        data["body"], "New comment on issue #2",
         "a message's words are its own"
     );
-    let attention: Vec<String> = conn
+}
+
+#[test]
+fn attention_moves_to_the_new_id_and_leaves_a_branch_row_alone() {
+    let (_dir, store) = migrated();
+    let attention: Vec<String> = store
+        .connection()
         .prepare("SELECT entity_id FROM attention ORDER BY entity_id")
         .unwrap()
         .query_map([], |row| row.get(0))
@@ -276,26 +298,18 @@ fn a_v9_store_opens_with_every_issue_spelled_as_a_task() {
             format!("task-{FIRST}")
         ]
     );
-    let version: String = conn
-        .query_row(
-            "SELECT value FROM meta WHERE key = 'schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(version, SCHEMA_VERSION.to_string());
-    drop(conn);
+}
 
+#[test]
+fn the_copy_is_of_the_store_before_anything_was_renamed() {
+    let (dir, _store) = migrated();
     let backup =
         rusqlite::Connection::open(dir.path().join(crate::store::task_rename::BACKUP_FILE))
             .unwrap();
     let old_rows: i64 = backup
         .query_row("SELECT COUNT(*) FROM tracker_issues", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(
-        old_rows, 2,
-        "the copy is of the store before anything was renamed"
-    );
+    assert_eq!(old_rows, 2);
 }
 
 #[test]

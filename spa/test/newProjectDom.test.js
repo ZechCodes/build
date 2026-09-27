@@ -187,17 +187,69 @@ it("shows the message its machine's caller refuses with", async () => {
   expect(document.querySelector("#nrerr").textContent).toBe("Device offline");
 });
 
-it("requires an explicit device when the rail shows all devices", () => {
+// Zech, Sep 27: "show only the device selector then once the device is chosen
+// show the rest of the form".
+const formParts = ["#nrproject", "#nrsources", "#nraddfolder", "#nraddremote", "#nrdo"];
+const partsShown = () => formParts.filter((selector) => document.querySelector(selector));
+
+it("with all devices and none chosen, shows only the device choice and Cancel", () => {
   openSelectableSheet();
   expect(document.querySelector("#nrdevice").value).toBe("");
   expect(document.querySelector("#nrdevice option").textContent).toBe("Choose a device");
-  document.querySelector("#nrproject").value = "docs";
-  document.querySelector("#nraddremote").click();
-  const remote = document.querySelector("[data-source-value]");
-  remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
-  document.querySelector("#nrdo").click();
-  expect(document.querySelector("#nrerr").textContent).toBe("Choose a device.");
+  expect(document.querySelector(".sub").textContent).toBe("Choose the device where this project will be created.");
+  expect(partsShown()).toEqual([]);
+  expect(document.querySelector("#nrcancel")).toBeTruthy();
   expect(document.activeElement).toBe(document.querySelector("#nrdevice"));
+  document.querySelector("#nrcancel").click();
+  expect(document.querySelector("#scrim").classList.contains("show")).toBe(false);
+});
+
+it("choosing a device shows the rest of the form and puts the reader in the label", () => {
+  openSelectableSheet();
+  const selector = document.querySelector("#nrdevice");
+  selector.value = "lap"; selector.dispatchEvent(new Event("change"));
+  expect(partsShown()).toEqual(formParts);
+  expect(document.querySelector("#nrdevice").value).toBe("lap");
+  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+});
+
+it("a restored draft with no device waits on the device choice, and its values survive the reveal", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  await writeCached(address, {
+    name: "Skrift", selectedDeviceId: "",
+    sources: [{ id: 1, kind: "remote", path: "", remote: "skrift", name: "skrift", base_branch: "", automaticName: true }],
+  });
+  openSelectableSheet();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(partsShown()).toEqual([]);
+  const selector = document.querySelector("#nrdevice");
+  selector.value = "desk"; selector.dispatchEvent(new Event("change"));
+  expect(document.querySelector("#nrproject").value).toBe("Skrift");
+  expect(document.querySelector("[data-source-value]").value).toBe("skrift");
+  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+});
+
+it("a restored draft that names an available device opens on the full form", async () => {
+  const address = { deviceId: "", entityId: "", kind: "ui-draft", sub: "new-project:" };
+  await writeCached(address, { name: "cached project", sources: [], selectedDeviceId: "lap" });
+  openSelectableSheet();
+  await vi.waitFor(() => expect(document.querySelector("#nrproject")?.value).toBe("cached project"));
+  expect(partsShown()).toEqual(formParts);
+  expect(document.querySelector("#nrdevice").value).toBe("lap");
+  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+});
+
+it("an account with one device opens on the full form", () => {
+  openNewRepo(undefined, { devices: [devices[0]], defaultDeviceId: "", callRpcFor: () => vi.fn(async () => ({})) });
+  expect(partsShown()).toEqual(formParts);
+  expect(document.querySelector("#nrdevice").value).toBe("desk");
+  expect(document.activeElement).toBe(document.querySelector("#nrproject"));
+});
+
+it("a pinned device's sheet is unchanged: the whole form, no device choice", () => {
+  openNewRepo(undefined, { callRpc: vi.fn(async () => ({})), deviceName: "Desktop", deviceId: "desk" });
+  expect(document.querySelector("#nrdevice")).toBeNull();
+  expect(partsShown()).toEqual(formParts);
 });
 
 it("switches every local operation to the chosen device and clears only machine-local paths", async () => {

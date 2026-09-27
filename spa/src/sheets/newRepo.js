@@ -175,31 +175,50 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       await openBrowser({ title: "Choose a workspace folder", gitOnly: false, allowCreateDirectory: true, fallbackFromMissingStart: true, startPath: projectsDir, deviceId: targetId, callRpc: targetCall, container: host, onChoose: (path) => chooseSource(sourceId, requestVersion, targetId, host, path) });
     } catch (error) { if (currentBrowser(requestVersion, $("#nrbrowser"))) $("#nrerr").textContent = error.message; }
   };
+  const chooseDevice = (event) => {
+    remember();
+    projectsDirRecord?.dispose();
+    projectsDirRecord = null;
+    selectedDeviceId = event.target.value;
+    projectsDir = undefined;
+    let cleared = false;
+    draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; source.pathDeviceId = ""; cleared = true; } });
+    saveDraft();
+    paint();
+    askForRepos();
+    if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
+  };
+  // The account-wide sheet asks which machine first: until one is chosen the
+  // rest of the form (label, folders, remotes, Create) is not painted at all,
+  // and the draft it holds waits in `draft` for the reveal.
+  const choosingDevice = () => selectable && !selectedDevice();
+  let wasChoosingDevice = false;
+  const paintDeviceChoice = (selector) => {
+    sheet.innerHTML = `<h3>Add project</h3><p class="sub">Choose the device where this project will be created.</p><form id="nrform">
+      ${selector}
+      <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
+    $("#nrcancel").onclick = close;
+    $("#nrdevice").onchange = chooseDevice;
+    $("#nrform").onsubmit = (event) => event.preventDefault();
+    $("#nrdevice").focus();
+    firstPaint = false;
+  };
   const paintSources = () => {
     version += 1;
     const focused = sheet.contains(sheet.ownerDocument.activeElement) ? sheet.ownerDocument.activeElement.id : "";
     const target = selectedDevice();
     const selector = selectable ? `<div class="field"><label for="nrdevice">Device</label><select id="nrdevice"><option value="">Choose a device</option>${choices.map((device) => `<option value="${esc(device.id)}"${device.id === selectedDeviceId ? " selected" : ""}>${esc(device.name)}</option>`).join("")}</select></div>` : "";
-    const subtitle = target ? `Enter a label to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.` : "Choose the device where this project will be created.";
+    const revealed = wasChoosingDevice && !choosingDevice();
+    wasChoosingDevice = choosingDevice();
+    if (wasChoosingDevice) return paintDeviceChoice(selector);
+    const subtitle = `Enter a label to create a new project in ${esc(target.name)}'s configured projects folder, or add existing folders and Git remotes.`;
     sheet.innerHTML = `<h3>Add project</h3><p class="sub">${subtitle}</p><form id="nrform">
       ${selector}
       <div class="field"><label for="nrproject">Project label</label><input id="nrproject" ${fieldTraits("line", "go")} required value="${esc(draft.name)}"></div>
       <fieldset style="border:0;padding:0;margin:0"><legend>Workspace folders (optional)</legend><div id="nrsources">${draft.sources.map(sourceHtml).join("")}</div><div class="row"><button class="btn" id="nraddfolder" type="button">Add folder</button><button class="btn" id="nraddremote" type="button">Add Git remote</button></div></fieldset>
       <div class="row"><button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button><button class="btn primary" id="nrdo" type="submit">Create project</button></div><div class="adderr" id="nrerr" role="status" aria-live="polite"></div></form>`;
     $("#nrcancel").onclick = close;
-    if (selectable) $("#nrdevice").onchange = (event) => {
-      remember();
-      projectsDirRecord?.dispose();
-      projectsDirRecord = null;
-      selectedDeviceId = event.target.value;
-      projectsDir = undefined;
-      let cleared = false;
-      draft.sources.forEach((source) => { if (source.kind === "path" && source.path) { source.path = ""; source.pathDeviceId = ""; cleared = true; } });
-      saveDraft();
-      paint();
-      askForRepos();
-      if (cleared) $("#nrerr").textContent = "Choose local folders again for the selected device.";
-    };
+    if (selectable) $("#nrdevice").onchange = chooseDevice;
     $("#nraddfolder").onclick = () => {
       remember();
       if (!requireDevice()) return;
@@ -216,7 +235,9 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     sheet.querySelectorAll("[data-remove-source]").forEach((button) => button.onclick = () => { remember(); draft.sources = draft.sources.filter((source) => source.id !== Number(button.dataset.removeSource)); saveDraft(); paint(); $("#nraddfolder").focus(); });
     $("#nrform").onsubmit = (event) => { event.preventDefault(); remember(); const invalid = invalidSource(); if (invalid) { $("#nrerr").textContent = invalid[0]; sheet.querySelector(invalid[1])?.focus(); return; } const sources = draft.sources.map((source) => ({ [source.kind]: source[source.kind].trim(), name: source.name.trim(), ...(source.base_branch.trim() ? { base_branch: source.base_branch.trim() } : {}) })); const params = { name: draft.name.trim(), ...(sources.length ? { sources } : {}) }; void submit(params); };
     $("#nrproject").oninput = () => { draft.name = $("#nrproject").value; saveDraft(true); };
-    if (firstPaint) $("#nrproject").focus();
+    // Opening on the form, or the form appearing once a machine is chosen (by
+    // the reader or a restored draft), puts the reader in the label.
+    if (firstPaint || revealed) $("#nrproject").focus();
     else if (focused) sheet.querySelector(`#${focused}`)?.focus();
     firstPaint = false;
   };

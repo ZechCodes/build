@@ -401,23 +401,25 @@ describe("the account-wide sheet", () => {
     await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
   });
 
-  it("with several machines and none chosen the field stays plain, and choosing one makes the painted field search", async () => {
+  it("with several machines and none chosen there is no remote field; choosing one paints it searching", async () => {
     await greet(["github.repos"]);
+    await writeCached(uiAddress({ view: "new-project", kind: "draft" }), {
+      name: "Skrift",
+      sources: [{ id: 1, kind: "remote", path: "", remote: "bot", name: "bot", base_branch: "", automaticName: true }],
+      selectedDeviceId: "",
+    });
     const call = deskCall();
     openAccountWide(call, [DESK, LAP]);
-    expect(document.querySelector("#nrdevice").value).toBe("");
-    const before = addRemote();
-    type(before, "bot");
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(before.hasAttribute("role")).toBe(false);
-    expect(options()).toEqual([]);
+    expect(document.querySelector("#nrdevice").value).toBe("");
+    expect(document.querySelector("[data-source-value]")).toBeNull();
     expect(reposCalls(call)).toHaveLength(0);
     const select = document.querySelector("#nrdevice");
     select.value = "desk";
     select.dispatchEvent(new Event("change"));
     await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
     const input = document.querySelector("[data-source-value]");
-    expect(input.value).toBe("bot"); // the field already painted, repainted with what was typed
+    expect(input.value).toBe("bot"); // the draft's remote, painted with the form
     await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
     type(input, "bot");
     await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));

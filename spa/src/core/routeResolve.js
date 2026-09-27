@@ -58,9 +58,11 @@ const branchRouteFor = (row, ref) => {
 
 /** An issue whose implementation is in flight has no row of its own — the
  *  branch row carries its id, and the branch is the nearest surface the URL can
- *  open. */
+ *  open. A watched tracker issue's row says its project, which is all its page
+ *  needs: a task push names the issue and nothing else (#191). */
 function issueRouteFor(row, ref) {
   if (row.kind === "branch") return branchRouteFor(row, ref);
+  if (row.kind === "tracker_issue") return { name: "trackerIssue", projectId: row.project_id, issueId: ref.id };
   const route = { name: "issue", projectId: row.project_id, id: ref.id };
   if (ref.stage) route.stage = ref.stage;
   return route;

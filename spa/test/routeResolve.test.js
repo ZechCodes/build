@@ -54,6 +54,20 @@ describe("resolveLegacyRoute", () => {
     });
   });
 
+  // A task push deep-links by the tracker issue's id alone (#191): the board
+  // feed carries every watched issue as a `tracker_issue` row, and the one a
+  // push names is watched, so the row is there to say its project.
+  it("resolves a watched tracker issue to its page on the tracker", () => {
+    const tracked = [
+      ...items,
+      { kind: "tracker_issue", project_id: "p1", issue_id: "issue-01T", number: 7, deviceId: "dev-1" },
+    ];
+    expect(resolveLegacyRoute({ kind: "issue", id: "issue-01T" }, { items: tracked })).toEqual({
+      name: "trackerIssue", projectId: "p1", issueId: "issue-01T", deviceId: "dev-1",
+    });
+    expect(routeFromHash("#/issue/issue-01T")).toMatchObject({ name: "resolve", kind: "issue", id: "issue-01T" });
+  });
+
   it("prefers the row in the project the URL named", () => {
     const ambiguous = [
       { kind: "branch", project_id: "p2", branch: "same-name", worktree_id: "wt-x" },

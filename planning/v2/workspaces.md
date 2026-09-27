@@ -369,11 +369,21 @@ The agent's conversation owner is rooted in the project's durable scratch
 directory, which holds everything Build keeps for it — its `.build/` scaffold,
 its session lineage and the conversation's attachments. The agent itself is
 started in the project's base, the project's own path (#187), so it can read the
-code it orchestrates; nothing of Build's is written there. It receives the same
+code it orchestrates; nothing of Build's is written there. The files its harness
+writes where it stands (Claude Code's `.claude/scheduled_tasks.lock`,
+`scheduled_tasks.json` and `settings.local.json`) are kept out of the user's
+`git status` by rules anchored to the base in the repository's own
+`.git/info/exclude`, appended once and never in a tracked file. A conversation it
+had before it moved is resumed by its recorded name; where claude holds a
+shorter copy of it under the base, that copy is set aside (renamed, kept) so the
+one filed under scratch is read, and where it cannot be the agent starts fresh
+and is caught up. It receives the same
 delivery envelope, catch-up packet and topic handling as any other agent, with
-attachment paths named from the scratch root. What it does not receive is the
-coding prompt: that one is about phases, a plan and a diff, and this agent has
-none of them. It is told which project it is the agent of, that it may read
+every attachment path it is sent — in a native or legacy delivery, including one
+queued before a restart — named from the scratch root. What it does not receive
+is the coding prompt: that one is about phases, a plan and a diff, and this
+agent has none of them. Every turn that starts its process, a native operation
+included, tells it which project it is the agent of, that it may read
 anything in the base and must never edit, check out, build or commit there —
 every change goes through a workspace — and what its tools are — including that a removal takes whatever is in
 what it removed and is not committed and pushed anywhere else, and that a reply

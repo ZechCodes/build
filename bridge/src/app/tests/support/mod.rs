@@ -4,7 +4,7 @@ mod workflow;
 pub(in crate::app::tests) use workflow::*;
 
 pub(in crate::app::tests) use super::board::attention::{
-    attention_of, board_entry, push_to_issue_conversation,
+    attention_of, board_entry, push_to_task_conversation,
 };
 pub(in crate::app::tests) use super::board::mute_dismiss::{commit_in, work_item_row_for};
 pub(in crate::app::tests) use super::conversations::attachments::ONE_PIXEL_PNG;

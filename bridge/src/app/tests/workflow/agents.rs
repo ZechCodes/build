@@ -281,7 +281,7 @@ fn agent_add_gives_a_branch_a_second_conversation() {
 fn done_records_on_the_authenticated_agents_canonical_conversation() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "route each completion");
+    let (task_id, run_id) = planned_run_in_review(&mut state, "route each completion");
     let primary_agent = primary_agent_id(&state, &run_id);
     let added = state.handle(req(
         "agent.add",
@@ -297,7 +297,7 @@ fn done_records_on_the_authenticated_agents_canonical_conversation() {
         report("secondary finished its instruction"),
     );
 
-    let issue_thread = serde_json::to_value(state.plans[&issue_id].agents.sole_thread()).unwrap();
+    let task_thread = serde_json::to_value(state.plans[&task_id].agents.sole_thread()).unwrap();
     let secondary_thread = serde_json::to_value(
         &state.runs[&run_id]
             .agents
@@ -307,10 +307,10 @@ fn done_records_on_the_authenticated_agents_canonical_conversation() {
     )
     .unwrap();
     assert!(
-        !issue_thread
+        !task_thread
             .to_string()
             .contains("secondary finished its instruction"),
-        "a secondary report must not be attributed to the Issue agent: {issue_thread}"
+        "a secondary report must not be attributed to the Task agent: {task_thread}"
     );
     assert!(
         secondary_thread
@@ -342,20 +342,20 @@ fn done_records_on_the_authenticated_agents_canonical_conversation() {
     state.on_run_agent_done(
         &run_id,
         None,
-        report("legacy completion kept its Issue lineage"),
+        report("legacy completion kept its Task lineage"),
     );
-    let issue_thread = serde_json::to_value(state.plans[&issue_id].agents.sole_thread()).unwrap();
+    let task_thread = serde_json::to_value(state.plans[&task_id].agents.sole_thread()).unwrap();
     assert!(
-        issue_thread
+        task_thread
             .to_string()
-            .contains("legacy completion kept its Issue lineage"),
-        "a legacy report with no authenticated agent keeps the planned-run fallback: {issue_thread}"
+            .contains("legacy completion kept its Task lineage"),
+        "a legacy report with no authenticated agent keeps the planned-run fallback: {task_thread}"
     );
 }
 
-/// Legacy issue records stay intact, but their agent roster cannot be changed.
+/// Legacy task records stay intact, but their agent roster cannot be changed.
 #[test]
-fn agent_add_is_refused_on_a_retired_issue() {
+fn agent_add_is_refused_on_a_retired_task() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let plan = state
@@ -365,7 +365,7 @@ fn agent_add_is_refused_on_a_retired_issue() {
 
     let refused = state.handle(req("agent.add", json!({ "entity_id": plan_id })));
     assert_eq!(refused["ok"], false, "{refused:?}");
-    assert_eq!(refused["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+    assert_eq!(refused["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
     assert_eq!(state.plans[&plan_id].agents.len(), 1);
 }
 
@@ -661,11 +661,11 @@ fn a_drained_turn_cannot_spawn_an_agent_removed_before_delivery() {
 }
 
 /// `agent.remove` refuses exactly what `agent.add` refuses: an unknown
-/// agent, an unknown entity, and an issue — whose one agent IS the issue's
+/// agent, an unknown entity, and a task — whose one agent IS the task's
 /// conversation. On a branch every agent may go, the primary included.
 #[test]
-#[allow(clippy::cognitive_complexity)] // ratchet: agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary is at 18, threshold 15 — bring it under, then remove
-fn agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary() {
+#[allow(clippy::cognitive_complexity)] // ratchet: agent_remove_refuses_a_task_and_an_unknown_agent_but_never_the_primary is at 18, threshold 15 — bring it under, then remove
+fn agent_remove_refuses_a_task_and_an_unknown_agent_but_never_the_primary() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-remove-all");
@@ -692,18 +692,18 @@ fn agent_remove_refuses_an_issue_and_an_unknown_agent_but_never_the_primary() {
     ));
     assert_eq!(unknown_entity["ok"], false, "{unknown_entity:?}");
 
-    // A legacy issue is readable, but its roster is frozen.
+    // A legacy task is readable, but its roster is frozen.
     let plan = state
         .plan_create(&json!({ "goal": "one agent only", "dispatch": false }))
         .expect("legacy fixture is created below the retired RPC boundary");
     let plan_id = plan["plan_id"].as_str().unwrap().to_string();
-    let issue_agent = primary_agent_id(&state, &plan_id);
-    let issue = state.handle(req(
+    let task_agent = primary_agent_id(&state, &plan_id);
+    let task = state.handle(req(
         "agent.remove",
-        json!({ "entity_id": plan_id, "agent_id": issue_agent }),
+        json!({ "entity_id": plan_id, "agent_id": task_agent }),
     ));
-    assert_eq!(issue["ok"], false, "{issue:?}");
-    assert_eq!(issue["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+    assert_eq!(task["ok"], false, "{task:?}");
+    assert_eq!(task["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
     assert_eq!(state.plans[&plan_id].agents.len(), 1);
 
     // The branch's PRIMARY goes first, and the agent beside it takes its
@@ -1374,33 +1374,33 @@ fn per_message_read_reports_preserve_explicit_agent_isolation() {
     assert_eq!(state.read_cursor(&run_id, &first_agent), first_cursor);
 }
 
-/// An issue carries exactly one agent session, so naming it is a check
+/// A task carries exactly one agent session, so naming it is a check
 /// rather than a choice — but the check has to hold: an id that is not this
-/// issue's agent is refused instead of answering with the issue's own.
+/// task's agent is refused instead of answering with the task's own.
 #[test]
-fn issue_get_honors_the_agent_it_was_addressed_to() {
+fn task_get_honors_the_agent_it_was_addressed_to() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue = state
+    let task = state
         .plan_create(&json!({ "goal": "one conversation", "dispatch": false }))
         .expect("legacy fixture is created below the retired RPC boundary");
-    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
-    let agent_id = primary_agent_id(&state, &issue_id);
+    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let agent_id = primary_agent_id(&state, &task_id);
 
     let named = state.handle(req(
-        "issue.get",
-        json!({ "issue_id": issue_id, "agent_id": agent_id }),
+        "task.get",
+        json!({ "task_id": task_id, "agent_id": agent_id }),
     ));
     assert_eq!(named["ok"], true, "{named:?}");
-    let default_view = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+    let default_view = state.handle(req("task.get", json!({ "task_id": task_id })));
     assert_eq!(
         named["result"]["thread"]["items"], default_view["result"]["thread"]["items"],
-        "the issue's one agent IS the issue's conversation"
+        "the task's one agent IS the task's conversation"
     );
 
     let unknown = state.handle(req(
-        "issue.get",
-        json!({ "issue_id": issue_id, "agent_id": "agent-NOSUCHTHING" }),
+        "task.get",
+        json!({ "task_id": task_id, "agent_id": "agent-NOSUCHTHING" }),
     ));
     assert_eq!(unknown["ok"], false, "{unknown:?}");
     assert!(

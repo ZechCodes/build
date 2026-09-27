@@ -13,7 +13,7 @@
 const KINDS = {
   /** Several lines of writing: messages, comments, notes. Enter adds a line. */
   prose: { autocorrect: "on", autocapitalize: "sentences", spellcheck: "true", inputmode: "text", enterkeyhint: "enter" },
-  /** One line of writing a person reads: an issue title, an agent's name. */
+  /** One line of writing a person reads: a task title, an agent's name. */
   line: { autocorrect: "on", autocapitalize: "sentences", spellcheck: "true", inputmode: "text", enterkeyhint: "done" },
   /** Typed exactly as the machine needs it: branches, paths, URLs, model ids. */
   identifier: { autocorrect: "off", autocapitalize: "off", spellcheck: "false", inputmode: "text", enterkeyhint: "done" },

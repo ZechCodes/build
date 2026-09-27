@@ -2,8 +2,8 @@
 // about each of them, which conversation is open, and how a completion report
 // reads.
 //
-// The rail belongs to one work item — a branch or an issue — and the bridge
-// answers for that item with one payload (branch.get / issue.get) carrying its
+// The rail belongs to one work item — a branch or a task — and the bridge
+// answers for that item with one payload (branch.get / task.get) carrying its
 // agents and its conversation. Everything here reads that payload; core/
 // agentRail.js renders and wires it.
 //
@@ -172,7 +172,7 @@ const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace
 
 /** Whether the strip offers another agent here. The work item answers it when
  *  it has been read — `canAdd` off its own payload — and the kind answers for a
- *  caller holding no payload: an issue carries exactly one agent session, so it
+ *  caller holding no payload: a task carries exactly one agent session, so it
  *  never offers. */
 const offersAnotherAgent = (kind, canAdd) => (canAdd === null ? supportsMultipleAgents(kind) : !!canAdd);
 
@@ -348,7 +348,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     live: agentSessionIsLive(agent),
     starting: agent.state === AGENT_STARTING,
   }));
-  // Issues carry exactly one agent session: implementing one hands the work to
+  // Tasks carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.
   if (offersAnotherAgent(kind, canAdd)) {
     bubbles.push({
@@ -370,8 +370,8 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
  * `+` bubble, and it answers the same question the daemon does: is this a
  * branch, and does the id name an agent on it?
  *
- * Branches only: an issue's one agent IS the issue's conversation, so there is
- * nothing to remove there, only an issue to abandon. Every agent on a branch
+ * Branches only: a task's one agent IS the task's conversation, so there is
+ * nothing to remove there, only a task to abandon. Every agent on a branch
  * may go, the first and the last included — a branch left with none is a
  * working branch whose chat tab asks which agent to start one on.
  */
@@ -483,7 +483,7 @@ function startupText(startup, nowMs) {
  *  all. The git facts are characters rather than text because the line moves
  *  one character at a time — see core/gitStatusCells.js. */
 export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent", agent = null) {
-  // A branch/issue row may still carry the old entity aggregate. It is not an
+  // A branch/task row may still carry the old entity aggregate. It is not an
   // agent timer: parallel agents have independent turns, so only the selected
   // agent's durable field may drive this clock.
   const working = workingSeconds(agent && agent.working_time, nowMs);
@@ -504,10 +504,10 @@ export function railStatusShape(status) {
   return QUIET_SHAPE;
 }
 
-/** An issue: its own id, its one agent, its own conversation. */
-const issueEntity = (row) => ({
-  entityId: row.issue_id || row.plan_id || null,
-  kind: "issue",
+/** A task: its own id, its one agent, its own conversation. */
+const taskEntity = (row) => ({
+  entityId: row.task_id || row.plan_id || null,
+  kind: "task",
   projectId: row.project_id || null,
   branch: null,
   worktreeId: null,
@@ -590,7 +590,7 @@ const branchEntity = (payload, row, agents) => ({
  */
 export function railEntity(payload, kind = "branch") {
   const row = payload || {};
-  if (kind === "issue") return issueEntity(row);
+  if (kind === "task") return taskEntity(row);
   const agents = row.agents || (row.run && row.run.agents) || [];
   if (kind === "project") return projectEntity(row, agents);
   if (kind === "workspace") return workspaceEntity(row, agents);

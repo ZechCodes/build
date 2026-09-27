@@ -111,14 +111,14 @@ beforeEach(async () => {
     if (method === "models.list") return modelCatalog;
     if (method === "capture.create") return captureRecord();
     if (method === "capture.get") return captureRecord();
-    if (method === "issue.create") return { project_id: "p1", issue_id: "iss-3" };
+    if (method === "task.create") return { project_id: "p1", task_id: "iss-3" };
     if (method === "branch.dispatch") return { project_id: "p1", branch: "build/login", run_id: "run-1", agent_id: "agent-1" };
     return { ok: true };
   });
   App.devices = [{ id: "dev-1", name: "Laptop", status: "online" }];
   App.selectedDeviceId = "dev-1";
   // the device creation goes to, landed and greeted
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
   initCompose();
 });
 
@@ -291,7 +291,7 @@ describe("a route the client is watching", () => {
       await vi.waitFor(() => expect(finishRead).toBeTypeOf("function"));
       const address = { deviceId: "dev-1", entityId: "capture-1", kind: "capture" };
       await writeCached(address, routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/new" } }));
-      finishRead(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-old" } }));
+      finishRead(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-old" } }));
       await vi.waitFor(() => expect(pendingCaptureRows()[0]?.routing?.target_id).toBe("build/new"));
 
       expect(pendingCaptureRows()[0].routing.target_id).toBe("build/new");
@@ -314,18 +314,18 @@ describe("a route the client is watching", () => {
     await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
     feedItems = [];
     await refreshFeed();
-    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.routing?.kind).toBe("issue"));
+    await vi.waitFor(() => expect(pendingCaptureRows()[0]?.routing?.kind).toBe("task"));
   }
 
   it("says where a settled capture went", async () => {
-    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }));
     const [row] = pendingCaptureRows();
-    expect(row.routing.kind).toBe("issue");
+    expect(row.routing.kind).toBe("task");
     expect(row.project).toBe("relaydb");
   });
 
   it("takes the new destination the moment the user reroutes it", async () => {
-    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }));
 
     // What `capture.reroute` answers with. Nothing else will ever correct this
     // row: the feed stopped carrying the capture when its route settled.
@@ -335,11 +335,11 @@ describe("a route the client is watching", () => {
     expect(row.routing.kind).toBe("branch");
     expect(row.project).toBe("dotfiles");
     expect(row.branch).toBe("build/csv-export");
-    expect(row.issue_id).toBeNull();
+    expect(row.task_id).toBeNull();
   });
 
   it("gives a rerouted row its two minutes back, so the new route is undoable too", async () => {
-    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }));
     const { ROUTED_LINGER_MS } = await import("../src/core/compose.js");
     const settledAt = Date.now();
     const nearlyGone = settledAt + ROUTED_LINGER_MS - 10;
@@ -347,7 +347,7 @@ describe("a route the client is watching", () => {
     expect(pendingCaptureRows(wouldHaveGone).length).toBe(0);
 
     // The user reroutes it just before it would have dropped off.
-    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }));
     const clock = vi.spyOn(Date, "now").mockReturnValue(nearlyGone);
     await adoptCaptureRecord(routedTo({ routing: { project_id: "p2", kind: "branch", target_id: "build/csv-export" } }));
     clock.mockRestore();
@@ -357,7 +357,7 @@ describe("a route the client is watching", () => {
   });
 
   it("forgets a capture the client is holding once it is cancelled", async () => {
-    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }));
     const repaints = vi.fn();
     subscribePendingCaptures(repaints);
     expect(pendingCaptureRows().map((row) => row.capture_id)).toEqual(["capture-1"]);
@@ -462,10 +462,10 @@ describe("the advanced panel", () => {
     });
   };
 
-  it("offers the projects and the branches there are, with no issue destination", async () => {
+  it("offers the projects and the branches there are, with no task destination", async () => {
     await openAdvanced();
     expect([...document.querySelectorAll("#compose-project option")].map((option) => option.value)).toEqual(["p1", "p2"]);
-    expect($('[data-compose-kind="issue"]')).toBeNull();
+    expect($('[data-compose-kind="task"]')).toBeNull();
     expect($('[data-compose-kind="branch"]')).toBeTruthy();
     $('[data-compose-kind="branch"]').click();
     expect([...document.querySelectorAll("#compose-branches option")].map((option) => option.value)).toEqual(["build/login"]);
@@ -654,7 +654,7 @@ describe("an account with more than one device", () => {
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
     await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
-    await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "issue" } }));
+    await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "task" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });
 });

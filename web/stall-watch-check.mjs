@@ -1,6 +1,6 @@
 // #41 on a real stack: the bridge notices its own frames are not leaving.
 //
-//   ISSUES_REPO=<this checkout> node web/stall-watch-check.mjs
+//   TASKS_REPO=<this checkout> node web/stall-watch-check.mjs
 //
 // Reads /tmp/live-seed.json, so run web/live-seed.mjs first and write its SEED
 // line there. Exits non-zero on a failed check.
@@ -60,13 +60,13 @@ const BRIDGE = process.env.BRIDGE_CONTAINER || "deploy-bridge-1";
 /** The ONE checkout this runs off — refused rather than defaulted, as the other
  *  checks refuse it: there is more than one build-web checkout on this machine
  *  and a forgotten variable would pass against a bridge never under test. */
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 if (!REPO) {
-  console.error("set ISSUES_REPO to the checkout under test — this run must not mix checkouts");
+  console.error("set TASKS_REPO to the checkout under test — this run must not mix checkouts");
   process.exit(2);
 }
 if (!existsSync(`${REPO}/deploy/compose.real.yml`)) {
-  console.error(`no compose file under ${REPO} — is ISSUES_REPO a build-web checkout?`);
+  console.error(`no compose file under ${REPO} — is TASKS_REPO a build-web checkout?`);
   process.exit(2);
 }
 

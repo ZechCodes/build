@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock};
 /// Signaling is the one traffic that must be answered while the app is busy:
 /// an ICE restart is the phone recovering from the bridge being slow, and it
 /// gives the bridge fifteen seconds. On 2026-09-24 `rtc.offer` and `rtc.ice`
-/// waited up to 32 s for the app mutex — held by an `issues.list` — to do
-/// nothing but clone the `Arc` that was behind it (issue #128). So the `Arc`
+/// waited up to 32 s for the app mutex — held by an `tasks.list` — to do
+/// nothing but clone the `Arc` that was behind it (task #128). So the `Arc`
 /// lives here, behind a lock nobody holds for longer than the clone, and the
 /// frame handler is handed this slot beside the state.
 pub struct PeersSlot(RwLock<Arc<SessionPeers>>);

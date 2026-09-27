@@ -1,4 +1,4 @@
-// The Issues tab's chrome: the header and the filter bar, mounted ONCE.
+// The Tasks tab's chrome: the header and the filter bar, mounted ONCE.
 //
 // #43: "The inputs/selects really shouldn't be redrawing ever." They do
 // not. Every control here is made when the tab mounts and is the same DOM node
@@ -15,7 +15,7 @@
 //     because removing a button is removing whatever focus was on it.
 //
 // The body below the bar is the caller's: this hands it back empty and never
-// writes into it again (core/trackerIssuesBody.js paints it, by key).
+// writes into it again (core/trackerTasksBody.js paints it, by key).
 //
 // #44 put custom dropdowns where the native selects were, and the contract did
 // not move: made once, told what is on offer and what is chosen, never
@@ -62,21 +62,21 @@ const FILTERS = [
 ];
 
 const viewButtonHtml = (view) =>
-  `<button class="btn mini issue-view" type="button" data-issue-view="${view.id}">${view.label}</button>`;
+  `<button class="btn mini task-view" type="button" data-task-view="${view.id}">${view.label}</button>`;
 
-const chromeHtml = (scopeLink) => `<div class="issue-head">
-    <div class="issue-views" role="group" aria-label="How to lay the issues out">${VIEWS.map(viewButtonHtml).join("")}</div>
-    ${scopeLink ? scopeLinkHtml({ ...scopeLink, className: "issue-scope-out" }) : ""}
-    <button class="btn mini primary issue-new" type="button" data-issue-new>${ICON_PLUS}<span>New issue</span></button>
+const chromeHtml = (scopeLink) => `<div class="task-head">
+    <div class="task-views" role="group" aria-label="How to lay the tasks out">${VIEWS.map(viewButtonHtml).join("")}</div>
+    ${scopeLink ? scopeLinkHtml({ ...scopeLink, className: "task-scope-out" }) : ""}
+    <button class="btn mini primary task-new" type="button" data-task-new>${ICON_PLUS}<span>New task</span></button>
   </div>
-  <div class="issue-filters" role="group" aria-label="Filter issues">
-    <button class="btn mini" type="button" data-issue-filter-clear hidden>Clear</button>
+  <div class="task-filters" role="group" aria-label="Filter tasks">
+    <button class="btn mini" type="button" data-task-filter-clear hidden>Clear</button>
   </div>
-  <div class="issue-compose-slot"></div>
-  <div class="issue-body"></div>`;
+  <div class="task-compose-slot"></div>
+  <div class="task-body"></div>`;
 
 const showView = (button, view) => {
-  const active = button.dataset.issueView === view;
+  const active = button.dataset.taskView === view;
   button.classList.toggle("active", active);
   button.setAttribute("aria-pressed", String(active));
 };
@@ -92,16 +92,16 @@ const showView = (button, view) => {
  * tab's way out to the project's whole list (#117); the project's own tab has
  * none.
  */
-export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear, menuAddressOf = () => null, scopeLink = null }) {
+export function mountTasksChrome(host, { onView, onNew, onFilter, onClear, menuAddressOf = () => null, scopeLink = null }) {
   host.innerHTML = chromeHtml(scopeLink);
-  const body = host.querySelector(".issue-body");
+  const body = host.querySelector(".task-body");
   // Between the bar and the rows, and OUTSIDE the body: the body is repainted
-  // whenever a push says an issue moved, and a composer somebody is typing
+  // whenever a push says a task moved, and a composer somebody is typing
   // into is not something a push gets to take away (#57).
-  const composeSlot = host.querySelector(".issue-compose-slot");
-  const viewButtons = [...host.querySelectorAll("[data-issue-view]")];
-  const bar = host.querySelector(".issue-filters");
-  const clear = host.querySelector("[data-issue-filter-clear]");
+  const composeSlot = host.querySelector(".task-compose-slot");
+  const viewButtons = [...host.querySelectorAll("[data-task-view]")];
+  const bar = host.querySelector(".task-filters");
+  const clear = host.querySelector("[data-task-filter-clear]");
 
   // The menus are mounted ahead of the Clear press, which the frame already
   // holds: a bar built once is a bar whose order is the markup's, not the
@@ -117,9 +117,9 @@ export function mountIssuesChrome(host, { onView, onNew, onFilter, onClear, menu
   menus.forEach(({ control }) => bar.insertBefore(control.element, clear));
 
   viewButtons.forEach((button) => {
-    button.onclick = () => onView(button.dataset.issueView);
+    button.onclick = () => onView(button.dataset.taskView);
   });
-  host.querySelector("[data-issue-new]").onclick = onNew;
+  host.querySelector("[data-task-new]").onclick = onNew;
   clear.onclick = () => {
     menus.forEach(({ control }) => control.close());
     onClear();

@@ -284,9 +284,9 @@ describe("the sidebar toggle", () => {
   });
 });
 
-// #174: "Issues moved to the rail as an icon along with the settings. Making the
+// #174: "Tasks moved to the rail as an icon along with the settings. Making the
 // left rail the workspace navigation." A workspace's rail is Changes, Files and
-// Issues, with Settings at its foot above the sidebar toggle.
+// Tasks, with Settings at its foot above the sidebar toggle.
 describe("the workspace's rail", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -299,13 +299,14 @@ describe("the workspace's rail", () => {
     return { ...mounted, onOpen, settings: () => mounted.host.querySelector("[data-rail-settings]") };
   };
 
-  it("lists Changes, Files and Issues, Issues as an icon wearing a count bubble", () => {
-    expect(WORKSPACE_TABS.map((tab) => tab.id)).toEqual(["changes", "files", "issues"]);
+  it("lists Changes, Files and Tasks, Tasks as an icon wearing a count bubble", () => {
+    expect(WORKSPACE_TABS.map((tab) => tab.id)).toEqual(["changes", "files", "tasks"]);
     const { tabs } = mountWorkspace();
-    const issues = tabs()[2];
-    expect(issues.getAttribute("aria-label")).toBe("Issues");
-    expect(issues.innerHTML).toContain("lucide-circle-dot");
-    expect(issues.querySelector(".badge.dirtab-count")).not.toBeNull();
+    const tasks = tabs()[2];
+    expect(tasks.getAttribute("aria-label")).toBe("Tasks");
+    expect(tasks.innerHTML).toContain("lucide-square-check");
+    expect(tasks.innerHTML).not.toContain("circle");
+    expect(tasks.querySelector(".badge.dirtab-count")).not.toBeNull();
     // Changes and Files carry no count.
     expect(tabs()[0].querySelector(".badge")).toBeNull();
   });
@@ -325,16 +326,16 @@ describe("the workspace's rail", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("walks Changes, Files and Issues with the arrows, and never lands on Settings", () => {
+  it("walks Changes, Files and Tasks with the arrows, and never lands on Settings", () => {
     const { onSelect, tabs } = mountWorkspace();
     tabs()[1].focus();
     press(tabs()[1], "ArrowDown");
-    expect(onSelect).toHaveBeenLastCalledWith("issues");
+    expect(onSelect).toHaveBeenLastCalledWith("tasks");
     press(tabs()[2], "ArrowDown");
     expect(onSelect).toHaveBeenLastCalledWith("changes");
   });
 
-  // A bridge that carries no issues hides the Issues face; the arrows walk the
+  // A bridge that carries no tasks hides the Tasks face; the arrows walk the
   // faces that are drawn.
   it("skips a hidden face", () => {
     const { onSelect, tabs } = mountWorkspace();
@@ -346,8 +347,8 @@ describe("the workspace's rail", () => {
     expect(onSelect).toHaveBeenLastCalledWith("files");
   });
 
-  it("marks Issues as the face the workspace is standing on", () => {
-    const { tabs } = mountWorkspace({ active: "issues" });
+  it("marks Tasks as the face the workspace is standing on", () => {
+    const { tabs } = mountWorkspace({ active: "tasks" });
     expect(tabs().map((tab) => tab.getAttribute("aria-selected"))).toEqual(["false", "false", "true"]);
   });
 

@@ -1,7 +1,7 @@
 // Capture the review images for #183 in a real Chromium against the production
 // app, at a phone's width: the inbox popover on the projects face, with the top
 // badge beside the project heads. The fixture is the report's: two projects,
-// a Needs-you issue in each with nothing unread, and a watched issue nobody
+// a Needs-you task in each with nothing unread, and a watched task nobody
 // holds with 2 unread (its created and tracked events) and no row.
 // Run from spa/: node test/browser/captureInboxBadgeSum.mjs [output directory]
 import { mkdir, readFile } from "node:fs/promises";
@@ -26,27 +26,27 @@ async function seed({ device }) {
   const projectRun = (id) => ({ kind: "branch", run_id: `run-${id}`, project_id: id,
     session_started_ms: minutes(60), last_activity_ms: minutes(2), agents: [agent(`${id}-agent`)] });
 
-  const READ_MARK = "ie-01K0000000";
-  const issue = (projectId, number, title, over = {}) => ({
-    id: `issue-${number}`, project_id: projectId, number, title, body: "", state: "open", status: "ready",
+  const READ_MARK = "te-01K0000000";
+  const task = (projectId, number, title, over = {}) => ({
+    id: `task-${number}`, project_id: projectId, number, title, body: "", state: "open", status: "ready",
     labels: [], priority: "none", assignee: null, trackers: [], identities: {}, attachments: [],
-    links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_issue_id: null },
+    links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_task_id: null },
     created_by: { kind: "agent", agent_id: "filer" }, created_at: iso(minutes(300)), updated_at: iso(minutes(20 + number)),
     closed_at: null, watched: true, read_through: READ_MARK, unread_count: 0, ...over,
   });
   // Filed and tracked by an agent after the read mark: 2 unread, no row.
   const bookkeeping = (one) => ["created", "tracked"].map((kind, index) => ({
-    type: "event", id: `ie-01K000000${index + 1}`, issue_id: one.id, at: iso(minutes(30 - index)),
+    type: "event", id: `te-01K000000${index + 1}`, task_id: one.id, at: iso(minutes(30 - index)),
     actor: { kind: "agent", agent_id: "filer" }, kind, payload: {},
   }));
-  const issuesOf = {
+  const tasksOf = {
     build: [
-      issue("build", 159, "Tighten Needs you", { status: "in_review" }),
-      issue("build", 113, "Milestones for issues", { unread_count: 2 }),
+      task("build", 159, "Tighten Needs you", { status: "in_review" }),
+      task("build", 113, "Milestones for tasks", { unread_count: 2 }),
     ],
     smarter: [
-      issue("smarter", 31, "Bot memory budget", { assignee: { kind: "user" } }),
-      issue("smarter", 40, "Deploy batching", { unread_count: 1 }),
+      task("smarter", 31, "Bot memory budget", { assignee: { kind: "user" } }),
+      task("smarter", 40, "Deploy batching", { unread_count: 1 }),
     ],
   };
   const timelineOf = (one) => (one.unread_count ? bookkeeping(one).slice(0, one.unread_count) : []);
@@ -55,17 +55,19 @@ async function seed({ device }) {
     { id: "in_review", name: "In review" }, { id: "done", name: "Done" },
   ];
   const answers = {
-    "issues.list": ({ project_id: id }) => ({ project_id: id, issues: issuesOf[id] || [] }),
-    "issues.columns": () => ({ columns }),
-    "issues.get": ({ issue_id: id }) => {
-      const one = Object.values(issuesOf).flat().find((candidate) => candidate.id === id);
-      return { issue: one, timeline: timelineOf(one) };
+    "tasks.list": ({ project_id: id }) => ({ project_id: id, tasks: tasksOf[id] || [] }),
+    "tasks.columns": () => ({ columns }),
+    "tasks.get": ({ task_id: id }) => {
+      const one = Object.values(tasksOf).flat().find((candidate) => candidate.id === id);
+      return { task: one, timeline: timelineOf(one) };
     },
   };
   const call = async (method, params = {}) => (answers[method] ? answers[method](params) : {});
   await events.greetBridge(async () => ({
-    api_version: "1.21.0", push_events: true,
-    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"], items: "bodies" },
+    api_version: "2.0.0", push_events: true,
+    capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context",
+      "tasks.attachments", "tasks.watching", "conversations.settings"],
+    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   }), { deviceId: device });
 
   app.App.gated = false;
@@ -78,8 +80,8 @@ async function seed({ device }) {
   await cache.writeCached({ deviceId: device, entityId: "", kind: "feed" }, view);
   await cache.writeCached({ deviceId: device, entityId: "", kind: "projects" }, view.projects);
   await cache.writeCached({ deviceId: device, entityId: "", kind: "workspaces" }, view.workspaces);
-  for (const [id, issues] of Object.entries(issuesOf)) {
-    await trackerCache.writeIssuesRecord(device, id, trackerCache.issuesRecord(issues, columns));
+  for (const [id, tasks] of Object.entries(tasksOf)) {
+    await trackerCache.writeTasksRecord(device, id, trackerCache.tasksRecord(tasks, columns));
   }
   contexts.adoptDeviceSession({ deviceId: device, call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
   await feed.startFeed();
@@ -126,7 +128,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await loadBrowserModules(page, { app: MODULES.app }, basePath);
   await loadBrowserModules(page, MODULES, basePath);
   await page.evaluate(seed, { device: DEVICE });
-  await page.locator(`#inbox-list .inbox-entry[data-key="tracker_issue:issue-31"]`).waitFor();
+  await page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-31"]`).waitFor();
   if (!(await page.evaluate(() => document.body.classList.contains("inbox-popover-open")))) {
     await page.locator("#inbox-open").click();
   }

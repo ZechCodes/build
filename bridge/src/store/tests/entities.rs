@@ -5,14 +5,14 @@ use super::*;
 fn boot_requeues_only_safe_intents_and_marks_claimed_handoffs_uncertain() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let record = plan_record("issue-1");
+    let record = plan_record("task-1");
     let queued = queued_operation("queued", 1);
     let claimed = queued_operation("claimed", 2);
     store
-        .accept_thread_post("issue-1", &record.agents, &queued)
+        .accept_thread_post("task-1", &record.agents, &queued)
         .unwrap();
     store
-        .accept_thread_post("issue-1", &record.agents, &claimed)
+        .accept_thread_post("task-1", &record.agents, &claimed)
         .unwrap();
     assert!(store
         .transition_operation(
@@ -165,24 +165,24 @@ fn a_store_that_cannot_be_opened_names_its_path() {
     );
 }
 
-/// A run that belongs to an Issue is filed under it by `save_run` alone —
-/// there is no second write path for implementations, and the `issue_id`
+/// A run that belongs to a Task is filed under it by `save_run` alone —
+/// there is no second write path for implementations, and the `task_id`
 /// column comes off `plan_id` whichever way the run got here.
 #[test]
-fn save_run_files_a_run_under_the_issue_its_plan_id_names() {
+fn save_run_files_a_run_under_the_task_its_plan_id_names() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path().join("tasks")).expect("store opens");
     store
-        .save_issue_plan(&plan_record("plan-1"))
-        .expect("the Issue saves");
+        .save_task_plan(&plan_record("plan-1"))
+        .expect("the Task saves");
     store
         .save_run(&run_record("run-1", Some("plan-1"), NOW))
         .expect("the run saves");
 
-    let issues = store.load_all_issues().expect("issues load");
-    assert_eq!(issues.len(), 1);
-    assert_eq!(issues[0].implementations.len(), 1);
-    assert_eq!(issues[0].implementations[0].id, "run-1");
+    let tasks = store.load_all_tasks().expect("tasks load");
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].implementations.len(), 1);
+    assert_eq!(tasks[0].implementations[0].id, "run-1");
 }
 
 /// Boot reattaches in creation order, so the loaders have to hand records
@@ -430,7 +430,7 @@ fn a_capture_round_trips_with_everything_decided_about_it() {
     capture.state = CaptureState::Routed;
     capture.routing = Some(CaptureRouting {
         project_id: "p1".to_string(),
-        kind: CaptureTarget::Issue,
+        kind: CaptureTarget::Task,
         target_id: "plan-7".to_string(),
         routed_at: "2026-08-13T10:00:05Z".to_string(),
         rationale: Some("no branch names this work".to_string()),
@@ -525,7 +525,7 @@ fn a_store_with_no_captures_yet_loads_none() {
 }
 
 /// Naming a stored agent needs its record, never its conversation (#131):
-/// the roster reads answer every run and every Issue with the agents the
+/// the roster reads answer every run and every Task with the agents the
 /// full reads restore — the same members, in the same order — and leave each
 /// conversation in the database.
 #[test]
@@ -537,12 +537,12 @@ fn the_roster_reads_name_every_agent_the_full_reads_do_without_a_conversation() 
     plan.agents[0]
         .thread
         .post_user("plan this".to_string(), None, NOW);
-    store.save_issue_plan(&plan).expect("the Issue saves");
-    for (id, issue, created) in [
+    store.save_task_plan(&plan).expect("the Task saves");
+    for (id, task, created) in [
         ("run-late", Some("plan-1"), "2026-08-21T12:00:00Z"),
         ("run-early", None, "2026-08-21T08:00:00Z"),
     ] {
-        let mut run = run_record(id, issue, created);
+        let mut run = run_record(id, task, created);
         run.agents[0].name = Some(format!("Builder of {id}"));
         for n in 0..5 {
             run.agents[0]

@@ -7,7 +7,7 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { threadHtml } from "../src/core/thread.js";
-import { mountIssueView } from "../src/core/issueView.js";
+import { mountTaskView } from "../src/core/taskView.js";
 import { mountGitPane } from "../src/core/gitPane.js";
 import { renderFilesTab } from "../src/views/files.js";
 import { wipeCache } from "../src/core/localCache.js";
@@ -36,17 +36,17 @@ describe("the panes the surfaces paint carry .pane-col", () => {
     }
   });
 
-  // The issue view is two columns, not one, so its primitive is the split the
+  // The task view is two columns, not one, so its primitive is the split the
   // Changes and Files surfaces use — same width, same gutters, same drawer.
-  it("gives the issue view the two-column primitive", async () => {
+  it("gives the task view the two-column primitive", async () => {
     const host = document.createElement("div");
     document.body.appendChild(host);
-    const view = mountIssueView(host, {
-      issueId: "issue-1",
+    const view = mountTaskView(host, {
+      taskId: "task-1",
       callRpc: async (method) => {
-        if (method === "issue.get")
-          return { issue_id: "issue-1", plan_id: "issue-1", goal: "Ship", state: "plan_review", docs_available: true };
-        if (method === "issue.stages") return { stages: [{ id: "s1", title: "Wire", state: "planned", comments: [] }] };
+        if (method === "task.get")
+          return { task_id: "task-1", plan_id: "task-1", goal: "Ship", state: "plan_review", docs_available: true };
+        if (method === "task.stages") return { stages: [{ id: "s1", title: "Wire", state: "planned", comments: [] }] };
         return { stage_id: "s1", contents: "# Wire" };
       },
     });

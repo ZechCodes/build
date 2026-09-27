@@ -511,7 +511,7 @@ describe("a notice Build wrote, at every level", () => {
     await mountWithNotice();
 
     expect(notice()).not.toBeNull();
-    expect(notice().querySelector(".thread-issue-notice")).not.toBeNull();
+    expect(notice().querySelector(".thread-task-notice")).not.toBeNull();
     expect(notice().querySelector(".thread-avatar")).toBeNull();
     expect(notice().querySelector(".thread-comment-card")).toBeNull();
     expect(notice().textContent).toContain("The Build bridge restarted");
@@ -532,7 +532,7 @@ describe("a notice Build wrote, at every level", () => {
     await choose("agent");
 
     expect(notice()).not.toBeNull();
-    expect(notice().querySelector(".thread-issue-notice")).not.toBeNull();
+    expect(notice().querySelector(".thread-task-notice")).not.toBeNull();
     // The arrival beside it is gone, which is what makes this a real test.
     expect(rowKinds()).toMatchObject({ arrived: 0, activity: 0 });
   });

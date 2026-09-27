@@ -171,7 +171,7 @@ describe("renderMarkdown pipe tables", () => {
 // #56. The references an agent can write, through the renderer itself.
 describe("references an agent writes", () => {
   const links = {
-    issue: (number) => (number === 42 ? { deviceId: "d1", projectId: "p1", issueId: "i-42", title: "Rebuild" } : null),
+    task: (number) => (number === 42 ? { deviceId: "d1", projectId: "p1", taskId: "i-42", title: "Rebuild" } : null),
     workspace: (name) => (name === "board" ? { deviceId: "d1", projectId: "p1", workspaceId: "ws-1" } : null),
   };
 
@@ -183,7 +183,7 @@ describe("references an agent writes", () => {
 
   // A heading is a LINE rule and needs the space; `#42` alone is a reference,
   // and neither reading is allowed to eat the other.
-  it("keeps a heading a heading and an issue an issue", () => {
+  it("keeps a heading a heading and a task a task", () => {
     expect(renderMarkdown("# A heading", { links })).toMatch(/<h1[^>]*>A heading<\/h1>/);
     expect(renderMarkdown("#42", { links })).toMatch(/^<p><a href=/);
   });
@@ -200,12 +200,12 @@ describe("references an agent writes", () => {
     expect(html.match(/<a /g)).toHaveLength(1);
   });
 
-  it("keeps URL fragments literal while linking issue references beside them", () => {
-    const html = renderMarkdown("https://example.test/#42/c/ic-7 and https://example.test/?a=1&b=2#42. See #42/c/ic-7", { links });
-    expect(html).toContain("https://example.test/#42/c/ic-7");
+  it("keeps URL fragments literal while linking task references beside them", () => {
+    const html = renderMarkdown("https://example.test/#42/c/tc-7 and https://example.test/?a=1&b=2#42. See #42/c/tc-7", { links });
+    expect(html).toContain("https://example.test/#42/c/tc-7");
     expect(html).toContain("https://example.test/?a=1&amp;b=2#42");
     expect(html.match(/<a /g)).toHaveLength(1);
-    expect(html).toContain(">#42/c/ic-7</a>");
+    expect(html).toContain(">#42/c/tc-7</a>");
   });
 
   it("renders as plain words with no resolver, which is every caller today", () => {

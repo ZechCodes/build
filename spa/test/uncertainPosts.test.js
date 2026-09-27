@@ -23,7 +23,11 @@ const address = (over = {}) => ({
   ...over,
 });
 
-const OPERATIONS = { api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } };
+const OPERATIONS = {
+  api_version: "2.0.0",
+  capabilities: ["threads.postOperations"],
+  thread_post_operations: { version: 1, status_method: "thread.operation" },
+};
 
 /** The bridge's post receipt for an operation it admitted. */
 const postReceipt = (params, status = "queued") => ({

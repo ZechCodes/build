@@ -162,7 +162,7 @@ Tests are written first.
 - Resume tests prove `AgentSession::session_id` equals the launch's Build agent id immediately, one Build agent resumes exactly, another agent in the same checkout starts fresh, and Pi session-switch commands are refused.
 - Router tests exercise both configuration loading and `RouterSession` construction: Pi is rejected before `harness_for`, the default remains `ClaudeAdk`, and every current non-Pi override remains accepted.
 - Settings tests prove `mountDefaultHarness` derives and validates the catalog option and that `pi` round-trips and persists as the coding default.
-- Generic serialization tests in `agentChoice`, `createWork`, compose, and issue dispatch may change to prove the provider already displayed by each unchanged picker is always sent, including when the source preference was empty. They also prove an explicitly displayed Claude or Codex choice overrides a Pi account default.
+- Generic serialization tests in `agentChoice`, `createWork`, compose, and task dispatch may change to prove the provider already displayed by each unchanged picker is always sent, including when the source preference was empty. They also prove an explicitly displayed Claude or Codex choice overrides a Pi account default.
 - Omitted-provider path tests prove bridge-side creation still uses `default_harness = pi` when no visible picker serialized a provider.
 - Presentation tests prove no Pi option, label, branch, card, CSS, or HTML appears outside Settings; the creation pickers continue to display only their existing Claude/Codex choices.
 
@@ -172,7 +172,7 @@ All startup failures are fatal and contextual. Only specific errors that gain co
 
 - Pi RPC, JSON, print/headless, SDK, router, or activity-stream integration.
 - Parsing or scraping Pi TUI output for status, completion, identity, messages, or tool calls.
-- Pi in creation cards, new-agent rails, issue assignment, task views, conversation UI, terminal UI, notifications, or any application surface outside the Settings default-harness control.
+- Pi in creation cards, new-agent rails, task assignment, task views, conversation UI, terminal UI, notifications, or any application surface outside the Settings default-harness control.
 - Adding Pi to `STARTABLE_PROVIDERS`, `PROVIDER_LABELS`, or any task-specific presentation vocabulary.
 - A Pi model picker, dynamic `pi --list-models` catalog, credential detection, provider-qualified model ids, or Build-managed Pi authentication.
 - Installing the extension globally in `~/.pi`, adding project-local `.pi` files, loading agent-written extensions, or preserving arbitrary user Pi extensions in Build sessions.

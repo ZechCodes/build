@@ -389,7 +389,7 @@ pub(in crate::app) fn end_of_session(
 /// byte pump paints a stream into a grid, this one posts what the agent
 /// reported doing as the activity kinds — reasoning, tool calls, narration and
 /// background work — which are conversation, classed `Status`: they move no
-/// unread count, reach no Issue conversation and pull nobody in.
+/// unread count, reach no Task conversation and pull nobody in.
 /// Surface revisions independently invalidate the owning entity, including an
 /// initial invalidation after subscription, so a carrier does not need an
 /// activity stream merely to publish its cached surface snapshot.

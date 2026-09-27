@@ -831,23 +831,23 @@ fn deliveries_preserve_each_agents_existing_execution_interval() {
 }
 
 #[test]
-fn starting_one_issue_agent_preserves_another_valid_issue_session_in_the_same_checkout() {
+fn starting_one_task_agent_preserves_another_valid_task_session_in_the_same_checkout() {
     let (dir, repo) = init_repo();
     let (state, _handler) = shared_qa_state_and_handler(&repo, dir.path());
-    insert_plan_without_agent(&state, &repo, dir.path().join("issue-a"), "issue-a");
-    insert_plan_without_agent(&state, &repo, dir.path().join("issue-b"), "issue-b");
+    insert_plan_without_agent(&state, &repo, dir.path().join("task-a"), "task-a");
+    insert_plan_without_agent(&state, &repo, dir.path().join("task-b"), "task-b");
     let (root, first_agent, second_agent) = {
         let app = state.lock().unwrap();
-        let first_root = app.entity_agent_root("issue-a").unwrap();
-        let second_root = app.entity_agent_root("issue-b").unwrap();
+        let first_root = app.entity_agent_root("task-a").unwrap();
+        let second_root = app.entity_agent_root("task-b").unwrap();
         assert_eq!(
             first_root, second_root,
-            "both Issue agents use the primary checkout"
+            "both Task agents use the primary checkout"
         );
         (
             first_root,
-            primary_agent_id(&app, "issue-a"),
-            primary_agent_id(&app, "issue-b"),
+            primary_agent_id(&app, "task-a"),
+            primary_agent_id(&app, "task-b"),
         )
     };
     let first_log = SessionLog::default();
@@ -856,7 +856,7 @@ fn starting_one_issue_agent_preserves_another_valid_issue_session_in_the_same_ch
         insert_agent_tab(
             &mut app,
             &root,
-            "issue-a",
+            "task-a",
             &first_agent,
             DictatedSession::reporting(AgentStatus::Waiting).recording_into(&first_log),
         );
@@ -865,18 +865,18 @@ fn starting_one_issue_agent_preserves_another_valid_issue_session_in_the_same_ch
     ensure_agent_tab(
         &state,
         &root,
-        "issue-b",
+        "task-b",
         &second_agent,
         &ModelChoice::default(),
         "plan",
     )
-    .expect("the second Issue agent starts");
+    .expect("the second Task agent starts");
 
     let app = state.lock().unwrap();
     assert!(
         app.session_registry
             .contains(&TabKey::agent(&root, &first_agent)),
-        "starting Issue B retired Issue A's valid session"
+        "starting Task B retired Task A's valid session"
     );
     assert!(app
         .session_registry

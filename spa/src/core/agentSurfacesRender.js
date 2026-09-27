@@ -282,16 +282,16 @@ export function shellRowHtml(row) {
 }
 
 /**
- * One issue on the agent's Issues surface (#34).
+ * One task on the agent's Tasks surface (#34).
  *
  * The state's own word is the trailing stat — "In progress", "Assigned",
  * "Tracking", "In review" — because the mark beside the subject is a colour
  * and four of the six states share two colours between them. The row carries
- * no link: the surfaces are a viewer, and where an issue is opened FROM is the
- * Issues tab and the issue's page.
+ * no link: the surfaces are a viewer, and where a task is opened FROM is the
+ * Tasks tab and the task's page.
  */
-export function issueSurfaceRowHtml(row) {
-  return surfaceRowHtml("surface-issue", row, {
+export function taskSurfaceRowHtml(row) {
+  return surfaceRowHtml("surface-task", row, {
     trailing: row.stateMark ? statHtml(row.stateMark.label) : "",
   });
 }

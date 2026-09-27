@@ -6,9 +6,9 @@
 // The block's head opens the project's own page — its workspaces, and the agent
 // you talk to about the project. The head is that agent's entry (#103): its
 // badge is everything the project is holding, open or folded (#183) — the
-// project agent's unread, the project's watched issues no workspace wears
-// (#104), and every workspace row's. A Needs-you issue row contributes no
-// extra unread: its issue count is already on the project or workspace badge.
+// project agent's unread, the project's watched tasks no workspace wears
+// (#104), and every workspace row's. A Needs-you task row contributes no
+// extra unread: its task count is already on the project or workspace badge.
 // The inbox's top badge is the sum of these heads. It offers
 // the one create surface behind a +,
 // the project's settings, and a ⋯ menu that puts the block away.
@@ -28,7 +28,7 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS, ICON_SETTINGS } from 
 import {
   PROJECT_AGENT,
   RECENT_AFTER_MS,
-  TRACKER_ISSUE,
+  TRACKER_TASK,
   clashingNames,
   dimDeviceHtml,
   menuItemHtml,
@@ -71,10 +71,10 @@ function projectsNamed(projects, rows) {
   return named;
 }
 
-/** What one row adds to its block's head. A watched issue's unread is already
- *  on the workspace row or the project agent that wears it (#104). The issue
+/** What one row adds to its block's head. A watched task's unread is already
+ *  on the workspace row or the project agent that wears it (#104). The task
  *  row exists for Needs you, but adds no count of its own. */
-const rowUnreadCount = (entry) => entry.kind === TRACKER_ISSUE ? 0 : entry.unreadCount || 0;
+const rowUnreadCount = (entry) => entry.kind === TRACKER_TASK ? 0 : entry.unreadCount || 0;
 
 /** One project's block on the landing rail's workspace face: its workspaces,
  *  and the project's own page as the block's destination. Every project has one
@@ -278,7 +278,7 @@ export function projectHeadHtml(block, ui = {}) {
  *  rows are not rendered here — they are the wiring's keyed list, so a row
  *  keeps its element across paints the way every inbox row does. `ui`:
  *  { folded, activeProjectId } — the active block is the one holding the
- *  branch or issue the route stands on. */
+ *  branch or task the route stands on. */
 export function projectBlockHtml(block, ui = {}) {
   const classes = [
     "inbox-project",

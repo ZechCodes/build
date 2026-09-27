@@ -1259,7 +1259,7 @@ def render_only(group):
         paths.extend(render_scene_posters(collections, mats, defaults))
         scene_specs = {
             1: {"laptop": "ui10-editor-macbook.webp"}, 2: {"laptop": "ui10-editor-macbook.webp"},
-            3: {"laptop": "ui12-issues-macbook.webp"},
+            3: {"laptop": "ui12-tasks-macbook.webp"},
             4: {"laptop": "ui13-team-macbook.webp", "phone": "ui03-answer-iphone.webp"},
             5: {"laptop": "ui16-builder-macbook.webp"}, 6: {"laptop": "ui14-git-macbook.webp"},
             7: {"laptop": "ui05-merged-macbook.webp", "tablet": "ui05-merged-ipad.webp"},
@@ -1421,7 +1421,7 @@ def render_scene_posters(collections, mats, default_screens):
     scenes = [
         ("ui10-editor", None, None),
         ("ui10-editor", None, None),
-        ("ui12-issues", None, None),
+        ("ui12-tasks", None, None),
         ("ui13-team", None, "ui03-answer"),
         ("ui16-builder", None, None),
         ("ui14-git", None, None),

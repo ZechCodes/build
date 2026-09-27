@@ -140,7 +140,7 @@ export function captureRow(capture, { projectName = "", deviceId = null } = {}) 
     project_id: routing ? routing.project_id : "",
     project: projectName,
     branch: routing && routing.kind === "branch" ? routing.target_id : null,
-    issue_id: routing && routing.kind === "issue" ? routing.target_id : null,
+    task_id: routing && routing.kind === "task" ? routing.target_id : null,
     title: captureTitle(capture.text),
     text: capture.text,
     state: capture.state,
@@ -239,7 +239,7 @@ export function branchOptions(items, projectId) {
   return [...new Set(names)];
 }
 
-/** The call a manual route makes. An issue is inert by contract — the record
+/** The call a manual route makes. A task is inert by contract — the record
  *  exists and nothing runs until the first message; a branch is dispatched in
  *  one call, which is worktree, agent and first message together. */
 export function manualRoute({ kind, projectId, text, branch = "", agentParams = {} }) {

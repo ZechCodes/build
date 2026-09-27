@@ -6,9 +6,9 @@
 // minor is the adapter's fallback for a bridge that has the verbs but not the
 // flag, which is a judgement that belongs there and not in this file.
 //
-// Refused by default for the same reason as #21's issue-context gate: a verb a
+// Refused by default for the same reason as #21's task-context gate: a verb a
 // bridge has never heard of is a refusal, not a polite no, and the read mark
-// would produce one per glance at an issue.
+// would produce one per glance at a task.
 //
 // These cases mock the capability read to pin the CONTRACT this file depends
 // on. That the contract is really wired — that a greeting reaches it and the
@@ -25,13 +25,13 @@ const { carriesWatching } = await import("../src/core/trackerWatch.js");
 beforeEach(() => capabilities.mockReset());
 
 describe("when watching is offered", () => {
-  it("is offered to a bridge whose capabilities say issues.watching", () => {
-    capabilities.mockReturnValue({ issues: { watching: true } });
+  it("is offered to a bridge whose capabilities say tasks.watching", () => {
+    capabilities.mockReturnValue({ tasks: { watching: true } });
     expect(carriesWatching("dev-1")).toBe(true);
   });
 
   it("asks about the machine it was given", () => {
-    capabilities.mockReturnValue({ issues: { watching: true } });
+    capabilities.mockReturnValue({ tasks: { watching: true } });
     carriesWatching("dev-7");
     expect(capabilities).toHaveBeenCalledWith("dev-7");
   });
@@ -43,11 +43,11 @@ describe("what it does when it cannot tell", () => {
   it("says no to a flag that is absent, false, or not a boolean at all", () => {
     const shapes = [
       {},
-      { issues: {} },
-      { issues: { watching: false } },
-      { issues: { watching: "yes" } },
-      { issues: { watching: 1 } },
-      { issues: { watching: null } },
+      { tasks: {} },
+      { tasks: { watching: false } },
+      { tasks: { watching: "yes" } },
+      { tasks: { watching: 1 } },
+      { tasks: { watching: null } },
     ];
     for (const said of shapes) {
       capabilities.mockReturnValue(said);
@@ -57,9 +57,9 @@ describe("what it does when it cannot tell", () => {
 
   // `bridgeCapabilities` answers every unknown with a capabilities object of
   // its own, so there is no device this can be asked about that throws — and an
-  // adapter older than the flag has no `issues` group at all.
+  // adapter older than the flag has no `tasks` group at all.
   it("says no for no device at all", () => {
-    capabilities.mockReturnValue({ issues: { watching: false } });
+    capabilities.mockReturnValue({ tasks: { watching: false } });
     expect(carriesWatching(null)).toBe(false);
     expect(carriesWatching(undefined)).toBe(false);
   });

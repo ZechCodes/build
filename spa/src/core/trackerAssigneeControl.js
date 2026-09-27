@@ -3,7 +3,7 @@
 // kinds need.
 //
 // Two surfaces ask the same question and mean exactly the same thing by it —
-// the picker a row, a card or the rail opens, and the new-issue form — so both
+// the picker a row, a card or the rail opens, and the new-task form — so both
 // ask it with this. The control renders and reads; whoever mounts it owns the
 // repaint, because a change here changes which fields exist.
 //
@@ -46,11 +46,11 @@ function optionsHtml(options, chosen) {
   return parts.join("");
 }
 
-/** The new-workspace form's own two fields. A blank name means the issue's
+/** The new-workspace form's own two fields. A blank name means the task's
  *  title and "Inherit project setting" means no isolation is sent at all, so
  *  neither is a required field and neither is prefilled with a guess. */
 const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-workspace">Workspace label</label>
-  <input id="${esc(prefix)}-workspace" type="text" ${fieldTraits("identifier")} placeholder="The issue's title" value="${esc(draft.name)}" />
+  <input id="${esc(prefix)}-workspace" type="text" ${fieldTraits("identifier")} placeholder="The task's title" value="${esc(draft.name)}" />
   <label class="create-label" for="${esc(prefix)}-isolation">Isolation</label>
   <select id="${esc(prefix)}-isolation">${isolationOptionsHtml(draft.isolation, null, { inheritLabel: "Inherit project setting" })}</select>`;
 
@@ -63,10 +63,10 @@ const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for=
  */
 export function assigneeControlHtml(options, draft, { prefix, catalog, label = "Assignee" }) {
   const option = optionOf(options, draft.optionId);
-  return `<div class="issue-assignee-control" data-assignee-control="${esc(prefix)}">
+  return `<div class="task-assignee-control" data-assignee-control="${esc(prefix)}">
     <label class="create-label" for="${esc(prefix)}-assignee">${esc(label)}</label>
     <select id="${esc(prefix)}-assignee" data-assignee-select>${optionsHtml(options, draft.optionId)}</select>
-    <p class="sub issue-assignee-hint">${esc(option?.hint || "")}</p>
+    <p class="sub task-assignee-hint">${esc(option?.hint || "")}</p>
     ${option?.form === WORKSPACE_FORM ? workspaceFieldsHtml(draft, prefix) : ""}
     ${option?.form ? agentChoicePanelHtml(catalog, draft.choice, { prefix: `${prefix}-choice`, open: draft.choiceOpen }) : ""}
   </div>`;
@@ -127,7 +127,7 @@ function wireChoice(root, draft, { prefix, onDraft }) {
 }
 
 /**
- * What the draft is, as `issues.assign` params.
+ * What the draft is, as `tasks.assign` params.
  *
  * The harness/model/effort go through `agentChoiceParams`, which clamps a stale
  * provider to what the select actually painted and omits everything nobody
@@ -135,9 +135,9 @@ function wireChoice(root, draft, { prefix, onDraft }) {
  * it on this" from "run it on whatever the workspace runs on". An option that
  * starts nothing is asked for no choice at all.
  */
-export function draftAssignParams(options, draft, catalog, { issueId, note = "" } = {}) {
+export function draftAssignParams(options, draft, catalog, { taskId, note = "" } = {}) {
   const option = optionOf(options, draft.optionId);
-  return assignParams(issueId, option, {
+  return assignParams(taskId, option, {
     name: draft.name,
     isolation: draft.isolation,
     choice: option?.form ? agentChoiceParams(catalog, draft.choice) : null,
@@ -145,10 +145,10 @@ export function draftAssignParams(options, draft, catalog, { issueId, note = "" 
   });
 }
 
-/** The same choice, as the `assignee` alone — what `issues.create` carries it
- *  as, since a create names its own issue and has no id to assign to yet. */
+/** The same choice, as the `assignee` alone — what `tasks.create` carries it
+ *  as, since a create names its own task and has no id to assign to yet. */
 export const draftAssignee = (options, draft, catalog) =>
-  draftAssignParams(options, draft, catalog, { issueId: "" }).assignee;
+  draftAssignParams(options, draft, catalog, { taskId: "" }).assignee;
 
 /** Whether the chosen option starts an agent, which is what a confirm button
  *  says out loud: "Assign" for the three that start nothing, and the option's

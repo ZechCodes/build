@@ -2,10 +2,10 @@ const TOAST_MS = 4000;
 const EDGE_GAP = 10;
 
 const messageFor = (titles) => {
-  if (titles.length === 1) return `Task completed: ${titles[0]}`;
+  if (titles.length === 1) return `Checklist item completed: ${titles[0]}`;
   const shown = titles.slice(0, 3);
   const remainder = titles.length - shown.length;
-  return `${titles.length} tasks completed: ${shown.join(", ")}${remainder ? `, and ${remainder} more` : ""}`;
+  return `${titles.length} checklist items completed: ${shown.join(", ")}${remainder ? `, and ${remainder} more` : ""}`;
 };
 
 export function mountTaskCompletionToast(host, { duration = TOAST_MS } = {}) {

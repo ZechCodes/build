@@ -214,7 +214,7 @@ async fn a_device_whose_relay_socket_drops_stops_being_reachable() {
 /// The pool is filled the way a browser fills it: over a DataChannel. A
 /// request over the relay is refused before the dispatcher (the relay is not
 /// a data plane), so `term.list` over the socket would leave the pool idle
-/// and the test checking nothing — the round-2 review of issue #128 caught
+/// and the test checking nothing — the round-2 review of task #128 caught
 /// exactly that. The frames the pool cannot take wait on the wire's queue,
 /// and past its depth are refused as busy (`carrier`'s tests).
 #[tokio::test]

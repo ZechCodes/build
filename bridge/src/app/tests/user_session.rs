@@ -1,8 +1,8 @@
-//! The user's session and "Done since you left" (spec: Issues dashboard).
+//! The user's session and "Done since you left" (spec: Tasks dashboard).
 //!
 //! Only the user's own verbs move the session; an agent working all night
-//! leaves it where the user left it. `issues.list` carries the session and
-//! each Done issue's `done_at`, which is everything the dashboard reads.
+//! leaves it where the user left it. `tasks.list` carries the session and
+//! each Done task's `done_at`, which is everything the dashboard reads.
 
 use super::project_agent::rooted;
 use super::tracker::{filed, tracked};
@@ -35,18 +35,18 @@ fn left(state: &mut AppState, started_hours_ago: i64, hours_ago: i64) {
     };
 }
 
-/// The `issues` items one push history carries for `project_id`.
-fn issues_items(pushes: &[Value], project_id: &str) -> Vec<Value> {
+/// The `tasks` items one push history carries for `project_id`.
+fn tasks_items(pushes: &[Value], project_id: &str) -> Vec<Value> {
     pushes
         .iter()
         .filter(|push| push["type"] == "changes")
         .flat_map(|push| push["items"].as_array().cloned().unwrap_or_default())
-        .filter(|item| item["entity_id"] == project_id && item.get("issues").is_some())
+        .filter(|item| item["entity_id"] == project_id && item.get("tasks").is_some())
         .collect()
 }
 
 fn listed(state: &mut AppState, project_id: &str) -> Value {
-    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
     assert_eq!(listed["ok"], true, "{listed:?}");
     listed["result"].clone()
 }
@@ -67,10 +67,10 @@ fn agent_work_never_starts_a_session_and_a_user_comment_does() {
     // follows is only the agent working.
     state.user_session = UserSession::default();
 
-    let issue = call(
+    let task = call(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "Overnight fix".into(),
             body: None,
             status: None,
@@ -82,15 +82,15 @@ fn agent_work_never_starts_a_session_and_a_user_comment_does() {
             mention_user: None,
         },
     )
-    .expect("the agent files an issue")["issue"]["id"]
+    .expect("the agent files a task")["task"]["id"]
         .as_str()
         .unwrap()
         .to_string();
     call(
         &mut state,
         &who,
-        BridgeAction::TrackerMoveIssue {
-            issue_id: issue.clone(),
+        BridgeAction::TrackerMoveTask {
+            task_id: task.clone(),
             status: "done".into(),
             track: None,
         },
@@ -109,14 +109,14 @@ fn agent_work_never_starts_a_session_and_a_user_comment_does() {
         }),
         "listing is a read and the agent is not the user: {answer:?}"
     );
-    let done = &answer["issues"][0];
+    let done = &answer["tasks"][0];
     assert_eq!(done["status"], "done");
     assert!(done["done_at"].is_string(), "{done:?}");
 
     let before = crate::agent::now_ms() as i64;
     let commented = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": issue, "body": "Thanks" }),
+        "tasks.comment",
+        json!({ "task_id": task, "body": "Thanks" }),
     ));
     assert_eq!(commented["ok"], true, "{commented:?}");
     let session = &listed(&mut state, &project_id)["user_session"];
@@ -131,8 +131,8 @@ fn a_read_mark_is_the_user_being_here() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "read me");
-    let got = state.handle(req("issues.get", json!({ "issue_id": issue["id"] })));
+    let task = filed(&mut state, &project_id, "read me");
+    let got = state.handle(req("tasks.get", json!({ "task_id": task["id"] })));
     let event_id = got["result"]["timeline"][0]["id"].clone();
     // Pretend the user left long ago, so a read has something to move.
     state.user_session = UserSession {
@@ -141,8 +141,8 @@ fn a_read_mark_is_the_user_being_here() {
         previous_session_ended_ms: None,
     };
     let read = state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": issue["id"], "event_id": event_id }),
+        "tasks.read_through",
+        json!({ "task_id": task["id"], "event_id": event_id }),
     ));
     assert_eq!(read["ok"], true, "{read:?}");
     let session = state.user_session();
@@ -155,15 +155,15 @@ fn moving_out_of_done_clears_done_at_and_back_in_stamps_it_again() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "twice");
-    assert!(issue.get("done_at").is_none(), "{issue:?}");
+    let task = filed(&mut state, &project_id, "twice");
+    assert!(task.get("done_at").is_none(), "{task:?}");
     let moved = |state: &mut AppState, status: &str| {
         let answer = state.handle(req(
-            "issues.update",
-            json!({ "issue_id": issue["id"], "status": status }),
+            "tasks.update",
+            json!({ "task_id": task["id"], "status": status }),
         ));
         assert_eq!(answer["ok"], true, "{answer:?}");
-        answer["result"]["issue"].clone()
+        answer["result"]["task"].clone()
     };
     let first = moved(&mut state, "done")["done_at"].clone();
     assert!(first.is_string());
@@ -172,37 +172,37 @@ fn moving_out_of_done_clears_done_at_and_back_in_stamps_it_again() {
     assert!(second.as_str() >= first.as_str(), "{first} then {second}");
 
     let filed_done = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({ "project_id": project_id, "title": "already", "status": "done" }),
     ));
-    let filed_done = &filed_done["result"]["issue"];
+    let filed_done = &filed_done["result"]["task"];
     assert_eq!(filed_done["done_at"], filed_done["created_at"]);
 }
 
 #[test]
-fn a_done_issue_from_before_done_at_reads_it_from_its_timeline() {
+fn a_done_task_from_before_done_at_reads_it_from_its_timeline() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "old");
-    let id = issue["id"].as_str().unwrap().to_string();
+    let task = filed(&mut state, &project_id, "old");
+    let id = task["id"].as_str().unwrap().to_string();
     let answer = state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "done" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "done" }),
     ));
-    let done_at = answer["result"]["issue"]["done_at"].clone();
+    let done_at = answer["result"]["task"]["done_at"].clone();
     // Written by a bridge that had no such field.
-    let (_, mut record) = state.tracker_issue(&id).unwrap();
+    let (_, mut record) = state.tracker_task(&id).unwrap();
     record.done_at = None;
     state
         .tracker_store()
         .unwrap()
-        .save_tracker_issue_activity(&record, &[], &[])
+        .save_tracker_task_activity(&record, &[], &[])
         .unwrap();
 
     let answer = listed(&mut state, &project_id);
-    assert_eq!(answer["issues"][0]["done_at"], done_at);
-    let (_, kept) = state.tracker_issue(&id).unwrap();
+    assert_eq!(answer["tasks"][0]["done_at"], done_at);
+    let (_, kept) = state.tracker_task(&id).unwrap();
     assert_eq!(
         kept.done_at.as_deref(),
         done_at.as_str(),
@@ -224,7 +224,7 @@ fn a_restart_keeps_the_session_and_rebuilds_it_from_stored_actions() {
     assert_eq!(state.user_session(), session);
 
     // A store with no saved summary (a bridge from before this shipped)
-    // replays the user's stored actions: filing the issue was one.
+    // replays the user's stored actions: filing the task was one.
     state
         .store
         .as_ref()
@@ -337,7 +337,7 @@ fn resume_stop_and_a_new_terminal_are_the_user_being_here() {
 }
 
 /// Arriving is the user being here: `user.present` records it on the bridge
-/// clock and answers the session as `issues.list` carries it.
+/// clock and answers the session as `tasks.list` carries it.
 #[test]
 fn arriving_starts_a_session_on_the_bridge_clock() {
     let tmp = tempfile::tempdir().unwrap();
@@ -379,9 +379,9 @@ async fn a_new_session_on_one_client_is_pushed_to_another() {
         req(
             "changes.subscribe",
             json!({
-                "subscription_id": "s-issues",
+                "subscription_id": "s-tasks",
                 "scope": { "kind": "entity", "id": project_id },
-                "kinds": ["issues"],
+                "kinds": ["tasks"],
             }),
         ),
     );
@@ -393,23 +393,23 @@ async fn a_new_session_on_one_client_is_pushed_to_another() {
     let present = handler.call(phone.clone(), req("user.present", json!({})));
     assert_eq!(present["ok"], true, "{present:?}");
     let pushed = super::push::pushes_until(&mut rx, &key, |pushes| {
-        !issues_items(pushes, &project_id).is_empty()
+        !tasks_items(pushes, &project_id).is_empty()
     })
     .await;
-    assert_eq!(issues_items(&pushed, &project_id).len(), 1, "{pushed:?}");
+    assert_eq!(tasks_items(&pushed, &project_id).len(), 1, "{pushed:?}");
 
     let again = handler.call(phone, req("user.present", json!({})));
     assert_eq!(again["ok"], true, "{again:?}");
     let quiet = super::push::settled_pushes(&mut rx, &key).await;
-    assert_eq!(issues_items(&quiet, &project_id), Vec::<Value>::new());
+    assert_eq!(tasks_items(&quiet, &project_id), Vec::<Value>::new());
 }
 
 /// The answers the dashboard reads around an absence, end to end over two
-/// clients. The user left eight hours before an issue was finished; a laptop
+/// clients. The user left eight hours before a task was finished; a laptop
 /// holds that. The user comes back on a phone, and the laptop is pushed the
-/// new session and reads it. Then they comment on the finished issue.
+/// new session and reads it. Then they comment on the finished task.
 ///
-/// With `BUILD_PRINT_DONE_SINCE_LEFT` set it prints the three `issues.list`
+/// With `BUILD_PRINT_DONE_SINCE_LEFT` set it prints the three `tasks.list`
 /// answers and the push item, which `spa/test/doneSinceLeftWiring.test.js`
 /// paints.
 #[tokio::test]
@@ -422,7 +422,7 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
     let list = |who: &SessionSender| {
         let listed = handler.call(
             who.clone(),
-            req("issues.list", json!({ "project_id": project_id })),
+            req("tasks.list", json!({ "project_id": project_id })),
         );
         assert_eq!(listed["ok"], true, "{listed:?}");
         listed["result"].clone()
@@ -432,9 +432,9 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
         req(
             "changes.subscribe",
             json!({
-                "subscription_id": "s-issues",
+                "subscription_id": "s-tasks",
                 "scope": { "kind": "entity", "id": project_id },
-                "kinds": ["issues"],
+                "kinds": ["tasks"],
             }),
         ),
     );
@@ -442,13 +442,13 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
     let filed = handler.call(
         phone.clone(),
         req(
-            "issues.create",
+            "tasks.create",
             json!({ "project_id": project_id, "title": "Finished while you were out", "status": "done" }),
         ),
     );
     assert_eq!(filed["ok"], true, "{filed:?}");
-    let issue = filed["result"]["issue"].clone();
-    let done_ms = crate::session_summary::message_millis(issue["done_at"].as_str().unwrap())
+    let task = filed["result"]["task"].clone();
+    let done_ms = crate::session_summary::message_millis(task["done_at"].as_str().unwrap())
         .expect("done_at is a timestamp");
     // Filing it stands in for an agent: the user had left eight hours before.
     left(&mut state.lock().unwrap(), 10, 8);
@@ -459,7 +459,7 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
     let present = handler.call(phone.clone(), req("user.present", json!({})));
     assert_eq!(present["ok"], true, "{present:?}");
     let pushed = super::push::pushes_until(&mut rx, &key, |pushes| {
-        !issues_items(pushes, &project_id).is_empty()
+        !tasks_items(pushes, &project_id).is_empty()
     })
     .await;
     let back = list(&laptop);
@@ -472,8 +472,8 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
     let said = handler.call(
         phone,
         req(
-            "issues.comment",
-            json!({ "issue_id": issue["id"], "body": "Seen it" }),
+            "tasks.comment",
+            json!({ "task_id": task["id"], "body": "Seen it" }),
         ),
     );
     assert_eq!(said["ok"], true, "{said:?}");
@@ -491,7 +491,7 @@ async fn the_answers_the_dashboard_reads_around_an_absence() {
                 "away": away,
                 "back": back,
                 "commented": commented,
-                "pushed": issues_items(&pushed, &project_id)[0],
+                "pushed": tasks_items(&pushed, &project_id)[0],
             })
         );
     }

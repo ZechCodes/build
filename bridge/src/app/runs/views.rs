@@ -146,7 +146,7 @@ impl AppState {
         json!({
             "run_id": run_id,
             "implementation_id": run_id,
-            "issue_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
+            "task_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
             "plan_id": active.run.plan_id.as_ref().map(|p| p.0.clone()),
             "goal": active.run.goal,
             "state": run_state_str(&active.run.state),

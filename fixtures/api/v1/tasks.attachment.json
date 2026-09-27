@@ -1,0 +1,17 @@
+{
+  "method": "tasks.attachment",
+  "since": "2.0.0",
+  "params": {
+    "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+    "path": "/home/dev/.build/attachments/3d2a1f0b9c8e-board-after-reload.png",
+    "offset": 0
+  },
+  "result": {
+    "path": "/home/dev/.build/attachments/3d2a1f0b9c8e-board-after-reload.png",
+    "size": 11,
+    "mime": "image/png",
+    "offset": 0,
+    "content_b64": "iVBORw0KGgo="
+  },
+  "errors": ["not_found", "invalid_params", "internal"]
+}

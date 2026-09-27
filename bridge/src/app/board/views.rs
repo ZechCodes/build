@@ -455,7 +455,7 @@ impl AppState {
 
     /// The board: workspace branches and runs (each run carries a live
     /// diffstat), plus the ride-along external-worktree summaries. Legacy
-    /// issues remain available through their direct read
+    /// tasks remain available through their direct read
     /// APIs, but no longer participate in this active-work surface.
     ///
     /// `pub(crate)`, not `pub(in crate::app)`: `api::v1::board` serves
@@ -514,14 +514,14 @@ impl AppState {
                     || !row["run_id"].is_null()
             })
             .collect();
-        // The issues the user is watching, in the same list as the
+        // The tasks the user is watching, in the same list as the
         // conversations so the two interleave by `anchor` for free (spec:
-        // Issues → Watching). A row's absence is how unwatching shows.
-        items.extend(self.watched_issue_rows());
+        // Tasks → Watching). A row's absence is how unwatching shows.
+        items.extend(self.watched_task_rows());
         crate::branch::sort_by_anchor(&mut items);
         json!({
             // The active feed contains workspace-backed work only. Legacy
-            // issue records are intentionally absent from both the folded
+            // task records are intentionally absent from both the folded
             // items and the compatibility collections.
             "items": items,
             "projects": projects,
@@ -537,17 +537,17 @@ impl AppState {
             // again.
             "scanning": checkouts.scanning,
             "workspace_summaries": workspace_summaries,
-            // The harnesses out of usage on this device (issue #58). The board
+            // The harnesses out of usage on this device (task #58). The board
             // item carries the same list whole whenever it moves.
             "usage_limits": self.usage_limits_json(),
         })
     }
 
-    /// The feed's work items: one row per branch or issue.
+    /// The feed's work items: one row per branch or task.
     ///
     /// Branch rows fold the three ways a branch can be stored — a run, an
     /// adopted worktree, a worktree Build never cut — into one shape keyed
-    /// `(project_id, branch)`. An issue whose implementation is still in flight is
+    /// `(project_id, branch)`. A task whose implementation is still in flight is
     /// spoken for by that implementation's branch row and emits none of its
     /// own. Both rules live in [`crate::branch`].
     ///
@@ -569,7 +569,7 @@ impl AppState {
             .iter()
             .filter(|(_, active)| active.run.state != RunState::Archived)
             // A conversation nobody is watching is not in the inbox (spec:
-            // Issues → Watching). An agent an agent made is its own business
+            // Tasks → Watching). An agent an agent made is its own business
             // until it asks for the user, and a run whose every agent has been
             // unwatched is a row the user has already put down.
             //
@@ -660,7 +660,7 @@ impl AppState {
     ) -> crate::branch::WorkItemCandidate {
         let active = self.runs.get(run_id).expect("caller listed this run");
         let branch = active.worktree.branch();
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let sync = WorkItemStat::from_run_stat(stat);
         let thread = self.conversation_thread_for_run(active);
         let unread = self.unread_for(run_id, thread);
@@ -714,7 +714,7 @@ impl AppState {
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
-            "issue_id": issue_id,
+            "task_id": task_id,
         });
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
@@ -727,7 +727,7 @@ impl AppState {
                 branch: active.worktree.branch(),
             },
             source: Some(crate::branch::BranchSource::Run),
-            issue_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
+            task_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
             implementation_active: !active.run.state.is_terminal(),
             row,
         }
@@ -800,7 +800,7 @@ impl AppState {
             "worktree_path": path,
             "worktree_id": worktree_id.clone(),
             "run_id": Value::Null,
-            "issue_id": Value::Null,
+            "task_id": Value::Null,
         });
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
@@ -812,7 +812,7 @@ impl AppState {
                 None => crate::branch::WorkItemKey::Checkout { worktree_id },
             },
             source: Some(crate::branch::BranchSource::ExternalWorktree),
-            issue_id: None,
+            task_id: None,
             implementation_active: false,
             row,
         }

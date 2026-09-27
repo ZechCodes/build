@@ -109,7 +109,7 @@ const deviceRecovery = createDeviceRecoverySupervisor({
  * came back, the radio changed. A phone asleep for twenty minutes climbs the
  * back-off ladder out of its OWN absence, and the maintainer's was still
  * sitting on the top step when they picked it up — half a minute of nothing on
- * a device that was ready to connect (issue #60).
+ * a device that was ready to connect (task #60).
  *
  * `visibilitychange` is the one that matters most and the one the app already had
  * for other purposes; `online` and the Network Information `change` are cheap and
@@ -359,7 +359,7 @@ export function connectDevice(deviceId, { recoveryEpoch = null, reason = "unname
   // reach here — recovery's timer, the gate, a row's Retry, presence coming back,
   // and the stale-device guess — and when a phone woke on 2026-09-20 two dials
   // overlapped: the first completed, paid for a TURN allocation, and was discarded
-  // as superseded the instant its channels opened (issue #60 point 3). The attempt
+  // as superseded the instant its channels opened (task #60 point 3). The attempt
   // owner single-flights on its own `active`, so whichever two callers raced did
   // so around that guard rather than through it, and nothing in the record said
   // which they were. Now it does.
@@ -453,7 +453,7 @@ function loseTerminalWire(deviceId, lifetime, reason) {
  * that a terminal liveness timeout means the whole path is dead. The reasoning is
  * sound and the inference is not: on 2026-09-20 a phone's terminal probe timed out
  * while the app channel was carrying perfectly well on a host/host pair, and a
- * healthy direct session was closed at 49 seconds for it (issue #60). The terminals
+ * healthy direct session was closed at 49 seconds for it (task #60). The terminals
  * ride one channel and judge one channel; only the app session can speak for the
  * other.
  *
@@ -461,7 +461,7 @@ function loseTerminalWire(deviceId, lifetime, reason) {
  * the right question: it treats a frame on EITHER channel inside the proof window
  * as proof of life, and only pings when neither has carried. If it finds the path
  * dead it severs the session itself, with its own logged verdict — which is what
- * makes this the "failed probe with a logged verdict" the issue asks for rather
+ * makes this the "failed probe with a logged verdict" the task asks for rather
  * than a second, quieter way to close a connection.
  *
  * Either way the terminals are re-established immediately: that is the one thing

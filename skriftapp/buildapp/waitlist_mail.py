@@ -26,7 +26,7 @@ NOTIFY_ADDRESS_ENV = "WAITLIST_NOTIFY_ADDRESS"
 CONFIRMATION_SUBJECT = "You’re on the Build list"
 CONFIRMATION_HEADING = "You’re on the list."
 CONFIRMATION_PARAGRAPHS = (
-    "Build turns an issue into shipped code, on your machine. Invites go out as seats open.",
+    "Build turns a task into shipped code, on your machine. Invites go out as seats open.",
     "The next email you get from us is your invite. Nothing else.",
 )
 OWNER_SUBJECT_PREFIX = "Waitlist: "

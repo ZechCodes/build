@@ -19,6 +19,15 @@ const createRepository = (call = vi.fn(async () => ({}))) => {
   });
 };
 
+/** A greeting that names message context, and one that names post operations
+ *  beside the status verb the repository reads from its metadata. */
+const CONTEXT_GREETING = { api_version: "2.0.0", capabilities: ["messages.context"], message_context: { version: 1 } };
+const OPERATIONS_GREETING = {
+  api_version: "2.0.0",
+  capabilities: ["threads.postOperations"],
+  thread_post_operations: { version: 1, status_method: "thread.operation" },
+};
+
 const operationContract = JSON.parse(readFileSync(resolve("../fixtures/api/v1/thread.post.json"), "utf8")).operations;
 
 describe("chat controller ownership", () => {
@@ -122,7 +131,7 @@ describe("chat controller ownership", () => {
       createOperationId: () => "operation-context",
       viewingContext: { snapshot: () => context },
     });
-    repository.configureCapabilities({ api_version: "1.19.0", message_context: { version: 1 } });
+    repository.configureCapabilities(CONTEXT_GREETING);
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "look", attachments: [] });
     context.items[0].path = "src/later.js";
@@ -140,13 +149,13 @@ describe("chat controller ownership", () => {
     expect(call).toHaveBeenCalledWith("thread.post", expect.not.objectContaining({ viewing_context: expect.anything() }));
   });
 
-  it("uses 1.22 names for message context and post operations without legacy metadata", () => {
+  it("uses the named capabilities for message context and post operations without legacy metadata", () => {
     const context = { version: 1, items: [{ kind: "file", path: "src/a.js" }] };
     const viewingContext = { snapshot: () => context, setEnabled: vi.fn() };
     const repository = createChatRepository({ scope: {}, call: vi.fn(), viewingContext });
 
     repository.configureCapabilities({
-      api_version: "1.22.0",
+      api_version: "2.0.0",
       capabilities: ["messages.context", "threads.postOperations"],
     });
     expect(repository.contextualize({ body: "look" }).viewing_context).toEqual(context);
@@ -154,7 +163,7 @@ describe("chat controller ownership", () => {
     expect(viewingContext.setEnabled).toHaveBeenLastCalledWith(true);
 
     repository.configureCapabilities({
-      api_version: "1.22.0",
+      api_version: "2.0.0",
       capabilities: [],
       message_context: { version: 1 },
       thread_post_operations: { version: 1, status_method: "thread.operation" },
@@ -164,10 +173,10 @@ describe("chat controller ownership", () => {
     expect(viewingContext.setEnabled).toHaveBeenLastCalledWith(false);
   });
 
-  it("treats a missing 1.22 list as no chat capabilities", () => {
+  it("treats a missing capabilities list as no chat capabilities", () => {
     const repository = createChatRepository({ scope: {}, call: vi.fn() });
     repository.configureCapabilities({
-      api_version: "1.22.0",
+      api_version: "2.0.0",
       message_context: { version: 1 },
       thread_post_operations: { version: 1, status_method: "thread.operation" },
     });
@@ -295,7 +304,7 @@ describe("chat controller ownership", () => {
       posted_sequence: 2,
       operation_status: "queued",
     })));
-    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities(OPERATIONS_GREETING);
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "hello", attachments: [] });
 
@@ -349,7 +358,7 @@ describe("chat controller ownership", () => {
           operation_status: "queued",
         });
     const repository = createRepository(oldCall);
-    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities(OPERATIONS_GREETING);
     const controller = repository.controller(address());
     const submission = controller.captureSubmission({ body: "retry me", attachments: [] });
 
@@ -383,7 +392,7 @@ describe("chat controller ownership", () => {
       posted_sequence: 4,
       operation_status: "delivered",
     })));
-    repository.configureCapabilities({ api_version: "1.19.0", thread_post_operations: { version: 1, status_method: "thread.operation" } });
+    repository.configureCapabilities(OPERATIONS_GREETING);
     const controller = repository.controller(address());
 
     await controller.post(controller.captureSubmission({ body: "done" }));

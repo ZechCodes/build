@@ -29,13 +29,13 @@ pub(super) fn now_ms() -> i64 {
     i64::try_from(crate::agent::now_ms()).unwrap()
 }
 
-fn issue_id(issue: &Value) -> String {
-    issue["id"].as_str().unwrap().to_string()
+fn task_id(task: &Value) -> String {
+    task["id"].as_str().unwrap().to_string()
 }
 
 #[tokio::test]
 async fn shutdown_can_cancel_reclaim_while_the_app_mutex_is_held() {
-    let (_tmp, state, _project, _ws, _issue) = linked_workspace();
+    let (_tmp, state, _project, _ws, _task) = linked_workspace();
     let stop = AppState::spawn_workspace_reclaim(
         state.clone(),
         ReclaimPolicy {
@@ -50,7 +50,7 @@ async fn shutdown_can_cancel_reclaim_while_the_app_mutex_is_held() {
 }
 
 /// A project over a repository with an origin, one workspace in it, and one
-/// issue linked to that workspace: `(tempdir, state, project, workspace, issue)`.
+/// task linked to that workspace: `(tempdir, state, project, workspace, task)`.
 pub(super) fn linked_workspace() -> (
     tempfile::TempDir,
     Arc<Mutex<AppState>>,
@@ -62,15 +62,15 @@ pub(super) fn linked_workspace() -> (
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (mut state, project_id) = tracked_with_origin(&state_root);
     let ws = workspace(&mut state, &project_id, "quiet");
-    let issue = issue_id(&filed(&mut state, &project_id, "Quiet work"));
+    let task = task_id(&filed(&mut state, &project_id, "Quiet work"));
     let linked = state.handle(req(
-        "issues.link",
-        json!({ "issue_id": issue, "workspace_id": ws }),
+        "tasks.link",
+        json!({ "task_id": task, "workspace_id": ws }),
     ));
     assert_eq!(linked["ok"], true, "{linked:?}");
     // Deterministic terminals: plain bash, whatever the machine's login shell.
     state.term_shell = "/bin/bash".into();
-    (tmp, state.shared(), project_id, ws, issue)
+    (tmp, state.shared(), project_id, ws, task)
 }
 
 pub(super) fn call(state: &Arc<Mutex<AppState>>, method: &str, params: Value) -> Value {
@@ -88,8 +88,8 @@ pub(super) fn lifecycle(state: &Arc<Mutex<AppState>>, ws: &str) -> Value {
         .unwrap_or_else(|| panic!("no row for {ws}: {listed:?}"))
 }
 
-pub(super) fn timeline_kinds(state: &Arc<Mutex<AppState>>, issue: &str) -> Vec<Value> {
-    call(state, "issues.get", json!({ "issue_id": issue }))["result"]["timeline"]
+pub(super) fn timeline_kinds(state: &Arc<Mutex<AppState>>, task: &str) -> Vec<Value> {
+    call(state, "tasks.get", json!({ "task_id": task }))["result"]["timeline"]
         .as_array()
         .unwrap()
         .iter()
@@ -139,12 +139,12 @@ fn project_agent_notices(state: &Arc<Mutex<AppState>>, project_id: &str) -> Vec<
         .collect()
 }
 
-/// Move the linked issue to Done.
-pub(super) fn finish(state: &Arc<Mutex<AppState>>, issue: &str) {
+/// Move the linked task to Done.
+pub(super) fn finish(state: &Arc<Mutex<AppState>>, task: &str) {
     let moved = call(
         state,
-        "issues.update",
-        json!({ "issue_id": issue, "status": "done" }),
+        "tasks.update",
+        json!({ "task_id": task, "status": "done" }),
     );
     assert_eq!(moved["ok"], true, "{moved:?}");
 }
@@ -193,24 +193,24 @@ fn assert_says_everything(notice: &str, phrases: &[&str]) {
 /// Before any sweep there is no verdict, and the row says so with `null`.
 #[test]
 fn a_workspace_row_carries_no_verdict_before_the_first_sweep() {
-    let (_tmp, state, _project, ws, _issue) = linked_workspace();
+    let (_tmp, state, _project, ws, _task) = linked_workspace();
     assert_eq!(lifecycle(&state, &ws), Value::Null);
 }
 
-/// A quiet workspace whose issue is still open is announced, but held: the
-/// row names the open issue, the project agent is told once, and the issue's
+/// A quiet workspace whose task is still open is announced, but held: the
+/// row names the open task, the project agent is told once, and the task's
 /// timeline records Build noticing.
 #[test]
-fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_issue() {
-    let (_tmp, state, project_id, ws, issue) = linked_workspace();
+fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_task() {
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
 
     AppState::sweep_workspaces(&state, &impatient(), now_ms());
 
     let verdict = lifecycle(&state, &ws);
     assert_eq!(verdict["idle"], true, "{verdict:?}");
     assert_eq!(verdict["reclaimable"], false);
-    assert_eq!(verdict["holds"], json!(["issue_open"]));
-    assert_eq!(verdict["issues"][0]["number"], 1);
+    assert_eq!(verdict["holds"], json!(["task_open"]));
+    assert_eq!(verdict["tasks"][0]["number"], 1);
     assert!(verdict["noticed_at_ms"].is_i64(), "{verdict:?}");
     assert!(verdict["size_bytes"].as_u64().unwrap() > 0);
 
@@ -222,11 +222,11 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_issue() {
             "1 workspace has had no activity",
             "quiet (",
             "#1 Quiet work (Backlog)",
-            "an issue linked to it is not Done",
+            "a task linked to it is not Done",
         ],
     );
 
-    let entries = timeline_kinds(&state, &issue);
+    let entries = timeline_kinds(&state, &task);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "workspace_idle");
     assert_eq!(entries[0]["actor"], json!({ "kind": "build" }));
@@ -239,15 +239,15 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_issue() {
     // The next sweep inside the idle period says nothing more.
     AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), now_ms());
     assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
-    assert_eq!(timeline_kinds(&state, &issue).len(), 1);
+    assert_eq!(timeline_kinds(&state, &task).len(), 1);
 }
 
-/// Once its issue is Done and its work is pushed, a quiet workspace is
+/// Once its task is Done and its work is pushed, a quiet workspace is
 /// reclaimable. Its build output stays unless pruning is switched on.
 #[test]
 fn a_finished_quiet_workspace_is_reclaimable_and_keeps_its_build_output_by_default() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (_root, checkout) = root_and_checkout(&state, &ws);
     let output = build_output_in(&checkout);
 
@@ -260,11 +260,11 @@ fn a_finished_quiet_workspace_is_reclaimable_and_keeps_its_build_output_by_defau
 }
 
 /// With pruning switched on, the build output of a finished quiet workspace
-/// goes and its source stays, and the issue records it.
+/// goes and its source stays, and the task records it.
 #[test]
 fn with_pruning_on_a_finished_quiet_workspace_loses_its_build_output() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let output = build_output_in(&checkout);
 
@@ -287,7 +287,7 @@ fn with_pruning_on_a_finished_quiet_workspace_loses_its_build_output() {
         "the trash is emptied"
     );
     assert!(!state.lock().unwrap().workspace_reserved(&ws), "released");
-    let kinds: Vec<Value> = timeline_kinds(&state, &issue)
+    let kinds: Vec<Value> = timeline_kinds(&state, &task)
         .into_iter()
         .map(|entry| entry["kind"].clone())
         .collect();
@@ -301,11 +301,11 @@ fn with_pruning_on_a_finished_quiet_workspace_loses_its_build_output() {
 }
 
 /// Reclaim refuses in a sentence while anything holds the workspace, and
-/// removes nothing: an open issue at once, uncommitted work once Git has been
+/// removes nothing: an open task at once, uncommitted work once Git has been
 /// measured off the lock.
 #[test]
-fn reclaim_refuses_while_an_issue_is_open_or_work_is_only_here() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
+fn reclaim_refuses_while_a_task_is_open_or_work_is_only_here() {
+    let (_tmp, state, _project, ws, task) = linked_workspace();
     let (root, checkout) = root_and_checkout(&state, &ws);
 
     let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
@@ -313,10 +313,10 @@ fn reclaim_refuses_while_an_issue_is_open_or_work_is_only_here() {
     assert_eq!(refused["error_code"], "conflict");
     assert_eq!(
         refused["error"],
-        "Build cannot reclaim quiet yet: an issue linked to it is not Done."
+        "Build cannot reclaim quiet yet: a task linked to it is not Done."
     );
 
-    finish(&state, &issue);
+    finish(&state, &task);
     std::fs::write(checkout.join("unsaved.txt"), "mine\n").unwrap();
     let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
     assert_eq!(refused["error_code"], "conflict", "{refused:?}");
@@ -331,12 +331,12 @@ fn reclaim_refuses_while_an_issue_is_open_or_work_is_only_here() {
     );
 }
 
-/// A reclaim removes the workspace, logs itself on the linked issue with who
-/// did it, and leaves the issue where it was.
+/// A reclaim removes the workspace, logs itself on the linked task with who
+/// did it, and leaves the task where it was.
 #[test]
-fn reclaim_removes_the_workspace_and_logs_it_on_the_issue() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+fn reclaim_removes_the_workspace_and_logs_it_on_the_task() {
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let source = state
         .lock()
@@ -365,23 +365,23 @@ fn reclaim_removes_the_workspace_and_logs_it_on_the_issue() {
         .unwrap()
         .find_worktree(&name)
         .is_err());
-    let entries = timeline_kinds(&state, &issue);
+    let entries = timeline_kinds(&state, &task);
     assert_eq!(entries.len(), 1, "{entries:?}");
     assert_eq!(entries[0]["kind"], "workspace_reclaimed");
     assert_eq!(entries[0]["actor"], json!({ "kind": "user" }));
     assert_eq!(entries[0]["payload"]["workspace_name"], "quiet");
-    let read = call(&state, "issues.get", json!({ "issue_id": issue }));
+    let read = call(&state, "tasks.get", json!({ "task_id": task }));
     assert_eq!(
-        read["result"]["issue"]["state"], "open",
+        read["result"]["task"]["state"], "open",
         "reclaim closes nothing"
     );
 }
 
-/// The project agent reclaims through its own tool, and the issue names it.
+/// The project agent reclaims through its own tool, and the task names it.
 #[test]
 fn the_project_agent_reclaims_under_its_own_name() {
-    let (_tmp, state, project_id, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (owner, agent_id) =
         super::project_agent::project_agent(&mut state.lock().unwrap(), &project_id);
 
@@ -394,7 +394,7 @@ fn the_project_agent_reclaims_under_its_own_name() {
     );
 
     assert!(reclaimed.is_ok(), "{reclaimed:?}");
-    let entries = timeline_kinds(&state, &issue);
+    let entries = timeline_kinds(&state, &task);
     assert_eq!(entries[0]["actor"]["agent_id"], agent_id.as_str());
 }
 
@@ -403,7 +403,7 @@ fn the_project_agent_reclaims_under_its_own_name() {
 /// chosen after it started, makes a workspace a second old quiet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_service_sweeps_by_the_device_setting() {
-    let (_tmp, state, _project, ws, _issue) = linked_workspace();
+    let (_tmp, state, _project, ws, _task) = linked_workspace();
     let stop = AppState::spawn_workspace_reclaim(
         state.clone(),
         ReclaimPolicy {
@@ -444,7 +444,7 @@ async fn the_service_sweeps_by_the_device_setting() {
 /// workspace again on the way back up.
 #[test]
 fn the_verdict_is_kept_across_a_restart() {
-    let (tmp, state, _project, ws, _issue) = linked_workspace();
+    let (tmp, state, _project, ws, _task) = linked_workspace();
     AppState::sweep_workspaces(&state, &impatient(), now_ms());
     let before = lifecycle(&state, &ws);
     drop(state);

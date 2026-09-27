@@ -46,7 +46,7 @@ pub(in crate::app) fn observe_sections_for_test() -> (
 ///
 /// A worker parked on the lock behind a slow frame is a worker the I/O driver
 /// cannot run on, and with every worker parked the data channels stall, the
-/// terminals stop painting and `bridge.stats` cannot answer (issue #131). A
+/// terminals stop painting and `bridge.stats` cannot answer (task #131). A
 /// panic in `section` resumes here, as it would have had the section run on
 /// the caller's task.
 pub(in crate::app) async fn off_the_workers<T: Send + 'static>(

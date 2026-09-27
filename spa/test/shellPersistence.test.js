@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // One shell for every page.
 //
-// The maintainer, on their phone, opening an issue: "Chat bubble goes away as
-// does the entire bar except the status indicator." The issue page mounted no
+// The maintainer, on their phone, opening a task: "Chat bubble goes away as
+// does the entire bar except the status indicator." The task page mounted no
 // rail, and it could because each page mounted its own. This walks the routes
 // and holds the shell to the rule: the regions are the same DOM nodes across
 // every navigation, every place with a conversation shows the bubble strip, and
@@ -73,23 +73,23 @@ vi.mock("../src/core/taskFeed.js", () => ({
 
 // The tracker's own surfaces have their own files and their own suites; what
 // this file is about is the shell around them.
-vi.mock("../src/core/trackerIssuePage.js", () => ({
+vi.mock("../src/core/trackerTaskPage.js", () => ({
   // Intentionally draws nothing, unlike the pane below. What this page is
-  // handed IS the marker — `#issue-pane` on the tracker's route, `.issue-surface`
-  // inside a workspace's Issues tab — and both are drawn by the host before the
+  // handed IS the marker — `#task-pane` on the tracker's route, `.task-surface`
+  // inside a workspace's Tasks tab — and both are drawn by the host before the
   // mount is called. So the marker already answers "did the host stand the page
   // up", and a frame from here would only be this file drawing its own evidence.
-  // What the real page puts INSIDE that pane is core/trackerIssuePage.js's own
+  // What the real page puts INSIDE that pane is core/trackerTaskPage.js's own
   // suite to check (#39).
-  mountIssuePage: () => ({ feedMoved: () => {}, dispose: () => {} }),
+  mountTaskPage: () => ({ feedMoved: () => {}, dispose: () => {} }),
 }));
-vi.mock("../src/core/trackerIssuesPane.js", () => ({
+vi.mock("../src/core/trackerTasksPane.js", () => ({
   // It draws the frame the real pane draws. A stand-in that renders nothing
   // makes "did the page stand up" unanswerable, which is the one question this
   // file is built on (#36) — the mocked pane would have left the project's
-  // Issues tab looking exactly like a tab that never mounted.
-  mountIssuesPane: (host) => {
-    host.innerHTML = '<div class="issue-head"></div>';
+  // Tasks tab looking exactly like a tab that never mounted.
+  mountTasksPane: (host) => {
+    host.innerHTML = '<div class="task-head"></div>';
     return { feedMoved: () => {}, dispose: () => {} };
   },
 }));
@@ -105,13 +105,13 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const rpc = (method) => {
   if (method === "project.ensure_conversation") return { entity_id: "proj-conv-1" };
   if (method === "branch.get") return { kind: "branch", branch: "build/login", worktree_id: "wt-1", state: "building" };
-  if (method === "issue.get")
+  if (method === "task.get")
     return {
-      issue_id: "i-1", project_id: "p-1", goal: "Rebuild", state: "plan_review",
+      task_id: "i-1", project_id: "p-1", goal: "Rebuild", state: "plan_review",
       docs_available: false, stages: [{ id: "s1", state: "planned" }],
       implementation_lineage: [], thread: { items: [] },
     };
-  if (method === "issue.stages") return { stages: [{ id: "s1", title: "First half", state: "planned", approval: "planned", execution: "pending" }] };
+  if (method === "task.stages") return { stages: [{ id: "s1", title: "First half", state: "planned", approval: "planned", execution: "pending" }] };
   if (method === "workspace.get")
     return { workspace_id: "w-1", project_id: "p-1", name: "Login", status: "ready", directories: [{ source_id: "s-1", name: "Build", is_git: true, status: "ready" }] };
   if (method === "workspace.ensure_conversation") return { entity_id: "ws-conv-1" };
@@ -127,13 +127,13 @@ const PLACES = {
   // #46: a bare project link opens the tracker, and Workspaces names itself.
   project: { name: "project", deviceId: "dev-1", projectId: "p-1" },
   "project (workspaces tab)": { name: "project", deviceId: "dev-1", projectId: "p-1", tab: "workspaces" },
-  "issue (tracker)": { name: "trackerIssue", deviceId: "dev-1", projectId: "p-1", issueId: "i-1" },
+  "task (tracker)": { name: "trackerTask", deviceId: "dev-1", projectId: "p-1", taskId: "i-1" },
   workspace: { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1" },
-  // #29: the workspace's own issues, and one of them open. Both are still
+  // #29: the workspace's own tasks, and one of them open. Both are still
   // workspace routes, which is what keeps the rail standing across them.
-  "workspace (issues tab)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "issues" },
-  "workspace (issue open)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "issues", issueId: "i-1" },
-  "issue (legacy)": { name: "issue", deviceId: "dev-1", projectId: "p-1", id: "i-1" },
+  "workspace (tasks tab)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "tasks" },
+  "workspace (task open)": { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1", tab: "tasks", taskId: "i-1" },
+  "task (legacy)": { name: "task", deviceId: "dev-1", projectId: "p-1", id: "i-1" },
   "branch (legacy)": { name: "branch", deviceId: "dev-1", projectId: "p-1", branch: "build/login", tab: "changes" },
 };
 
@@ -146,7 +146,7 @@ const openDevice = () =>
     close: () => {},
     peer: () => {},
     onCarrier: () => {},
-  }), { version: "1.22.0" }, null);
+  }), { version: "2.0.0" }, null);
 
 /** Go to a route the way the app does, and let the reads that paint it land. */
 const visit = async (route) => {
@@ -165,19 +165,19 @@ const visit = async (route) => {
  * workspace case here ran for a while against a `loading…` frame (#32/#36).
  */
 const PAGE_CONTENT = {
-  project: ".issue-head",
+  project: ".task-head",
   "project (workspaces tab)": "[data-workspace]",
-  // The issue surface itself is core/trackerIssuePage.js, mocked at the top of
+  // The task surface itself is core/trackerTaskPage.js, mocked at the top of
   // this file because it has a suite of its own — so its host pane is what
   // there is to see, and seeing it is what says the route host ran.
-  "issue (tracker)": "#issue-pane",
+  "task (tracker)": "#task-pane",
   workspace: ".workspace-gitpane",
-  // #29. Both hosts are drawn by core/workspaceIssuesTab.js rather than by the
+  // #29. Both hosts are drawn by core/workspaceTasksTab.js rather than by the
   // tracker inside them, which is what makes them answerable with the pane and
   // the page both mocked: seeing the host is what says the TAB ran.
-  "workspace (issues tab)": ".workspace-issues-pane",
-  "workspace (issue open)": ".issue-surface",
-  "issue (legacy)": ".ivsplit",
+  "workspace (tasks tab)": ".workspace-tasks-pane",
+  "workspace (task open)": ".task-surface",
+  "task (legacy)": ".ivsplit",
   "branch (legacy)": ".gitpane",
 };
 
@@ -225,7 +225,7 @@ describe("every place stands in the same shell", () => {
       // The page first: a strip beside an empty frame proves nothing.
       expect([place, Boolean(pageContent(place))]).toEqual([place, true]);
       // Then the maintainer's report: the strip is there, on every page, at
-      // every width. An issue page that mounts no rail is what this catches.
+      // every width. A task page that mounts no rail is what this catches.
       expect([place, Boolean(strip())]).toEqual([place, true]);
     });
   }
@@ -245,13 +245,13 @@ describe("every place stands in the same shell", () => {
 });
 
 describe("a page swapping inside the shell", () => {
-  it("keeps the strip standing across a project's Issues and Workspaces tabs", async () => {
+  it("keeps the strip standing across a project's Tasks and Workspaces tabs", async () => {
     await visit(PLACES.project);
     const held = strip();
     expect(held).toBeTruthy();
     expect(pageContent("project")).toBeTruthy();
     await visit(PLACES["project (workspaces tab)"]);
-    // The page really swapped: the issues went, the workspaces came.
+    // The page really swapped: the tasks went, the workspaces came.
     expect(pageContent("project (workspaces tab)")).toBeTruthy();
     expect(pageContent("project")).toBeNull();
     // Same conversation, different page: the tabs are the shell's and the rail
@@ -259,10 +259,10 @@ describe("a page swapping inside the shell", () => {
     expect(strip()).toBe(held);
   });
 
-  // #29. The reader opens an issue, works on it, and talks to the agent
+  // #29. The reader opens a task, works on it, and talks to the agent
   // holding it — which only works if the agent is still there. The rail is
   // keyed on the workspace, so every one of these is the same standing.
-  it("keeps the WORKSPACE's strip standing across its tabs and one of its issues", async () => {
+  it("keeps the WORKSPACE's strip standing across its tabs and one of its tasks", async () => {
     await visit(PLACES.workspace);
     const held = strip();
     expect(held).toBeTruthy();
@@ -271,39 +271,39 @@ describe("a page swapping inside the shell", () => {
     // Each leg asserts the page REALLY swapped before it asserts the strip did
     // not: a marker that is present everywhere proves nothing, and a shell case
     // standing over a page that never mounted is the hole #36 closed.
-    await visit(PLACES["workspace (issues tab)"]);
-    expect(pageContent("workspace (issues tab)")).toBeTruthy();
+    await visit(PLACES["workspace (tasks tab)"]);
+    expect(pageContent("workspace (tasks tab)")).toBeTruthy();
     expect(pageContent("workspace")).toBeNull();
     expect(strip()).toBe(held);
 
-    await visit(PLACES["workspace (issue open)"]);
-    expect(pageContent("workspace (issue open)")).toBeTruthy();
-    expect(pageContent("workspace (issues tab)")).toBeNull();
+    await visit(PLACES["workspace (task open)"]);
+    expect(pageContent("workspace (task open)")).toBeTruthy();
+    expect(pageContent("workspace (tasks tab)")).toBeNull();
     expect(strip()).toBe(held);
 
     // …and back to the checkout, without the bubbles having moved once.
     await visit(PLACES.workspace);
     expect(pageContent("workspace")).toBeTruthy();
-    expect(pageContent("workspace (issue open)")).toBeNull();
+    expect(pageContent("workspace (task open)")).toBeNull();
     expect(strip()).toBe(held);
   });
 
-  it("keeps the strip standing when the Issues tab opens one of its issues", async () => {
+  it("keeps the strip standing when the Tasks tab opens one of its tasks", async () => {
     await visit(PLACES.project);
     const held = strip();
     expect(held).toBeTruthy();
-    await visit(PLACES["issue (tracker)"]);
-    // A tracker issue carries no conversation of its own: its page stands on
+    await visit(PLACES["task (tracker)"]);
+    // A tracker task carries no conversation of its own: its page stands on
     // the PROJECT's agent, the same standing the tab under it had. So pressing
-    // an issue swaps the page and leaves the bubbles exactly where they were.
+    // a task swaps the page and leaves the bubbles exactly where they were.
     expect(strip()).toBe(held);
   });
 
-  it("stands the legacy issue page on the issue's own conversation instead", async () => {
-    // The legacy multi-stage issue is the one issue that does carry one.
+  it("stands the legacy task page on the task's own conversation instead", async () => {
+    // The legacy multi-stage task is the one task that does carry one.
     await visit(PLACES.project);
     const held = strip();
-    await visit(PLACES["issue (legacy)"]);
+    await visit(PLACES["task (legacy)"]);
     expect(strip()).toBeTruthy();
     expect(strip()).not.toBe(held);
   });
@@ -369,8 +369,8 @@ describe("a modal over a page", () => {
     expect(strip()).toBe(held);
   });
 
-  it("keeps the bubbles beside an issue while its device settings are open", async () => {
-    await visit(PLACES["issue (tracker)"]);
+  it("keeps the bubbles beside a task while its device settings are open", async () => {
+    await visit(PLACES["task (tracker)"]);
     const held = strip();
     await visit({ name: "device", id: "dev-1" });
     expect(document.querySelector('[role="dialog"]')).toBeTruthy();
@@ -388,22 +388,22 @@ describe("a modal over a page", () => {
 });
 
 describe("what the reader is looking at, while a modal is over the page", () => {
-  // #21 has the issue page say which issue is on screen, so the project agent's
+  // #21 has the task page say which task is on screen, so the project agent's
   // rail beside it knows. The page sets it from its own read; the router clears
   // it on every navigation. A modal is not a navigation — the reader is still
-  // looking at the issue, with settings laid over it — and the page under does
+  // looking at the task, with settings laid over it — and the page under does
   // not read again on the way back, so a clear there is a clear for good.
-  it("keeps the issue named while settings open and close over it", async () => {
+  it("keeps the task named while settings open and close over it", async () => {
     // The context is off until a bridge says it takes one (core/viewingContext).
     App.viewingContext.setEnabled(true);
-    await visit(PLACES["issue (tracker)"]);
-    App.viewingContext.set({ version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] });
+    await visit(PLACES["task (tracker)"]);
+    App.viewingContext.set({ version: 1, items: [{ kind: "task", task_id: "i-1", title: "Rebuild", number: 3 }] });
     expect(App.viewingContext.snapshot()).toBeTruthy();
 
     await visit({ name: "account", page: "settings" });
     expect(App.viewingContext.snapshot()).toBeTruthy();
 
-    await visit(PLACES["issue (tracker)"]);
+    await visit(PLACES["task (tracker)"]);
     expect(App.viewingContext.snapshot()).toBeTruthy();
   });
 
@@ -413,8 +413,8 @@ describe("what the reader is looking at, while a modal is over the page", () => 
   // App.route and renders, so it would never reach that code at all.
   it("forgets it when the reader actually goes somewhere else", async () => {
     App.viewingContext.setEnabled(true);
-    await visit(PLACES["issue (tracker)"]);
-    App.viewingContext.set({ version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] });
+    await visit(PLACES["task (tracker)"]);
+    App.viewingContext.set({ version: 1, items: [{ kind: "task", task_id: "i-1", title: "Rebuild", number: 3 }] });
     expect(App.viewingContext.snapshot()).toBeTruthy();
 
     go(PLACES.workspace);
@@ -423,14 +423,14 @@ describe("what the reader is looking at, while a modal is over the page", () => 
 
   it("keeps it when the route taken up is the modal, or the page already under it", async () => {
     App.viewingContext.setEnabled(true);
-    await visit(PLACES["issue (tracker)"]);
-    const named = { version: 1, items: [{ kind: "issue", issue_id: "i-1", title: "Rebuild", number: 3 }] };
+    await visit(PLACES["task (tracker)"]);
+    const named = { version: 1, items: [{ kind: "task", task_id: "i-1", title: "Rebuild", number: 3 }] };
 
     App.viewingContext.set(named);
     go({ name: "account", page: "settings" }); // the modal going up
     expect(App.viewingContext.snapshot()).toBeTruthy();
 
-    go(PLACES["issue (tracker)"]); // …and closing back onto the page under it
+    go(PLACES["task (tracker)"]); // …and closing back onto the page under it
     expect(App.viewingContext.snapshot()).toBeTruthy();
   });
 });
@@ -453,8 +453,8 @@ describe("the strip on a page standing on the project", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it("draws it once on an issue of the project too, which stands on the same conversation", async () => {
-    await visit(PLACES["issue (tracker)"]);
+  it("draws it once on a task of the project too, which stands on the same conversation", async () => {
+    await visit(PLACES["task (tracker)"]);
     expect(strip()).toBeTruthy();
     expect(separators()).toHaveLength(0);
     const ids = bubbleIds();
@@ -481,7 +481,7 @@ describe("the page-content markers can fail", () => {
   // So every marker is walked against a machine that cannot answer, where the
   // page paints a device notice instead of a body, and held to going with it.
   // What that proves is that each marker follows its PAGE — not that the page
-  // drew anything inside it, which for the two issue markers is deliberately
+  // drew anything inside it, which for the two task markers is deliberately
   // the mocked page's own suite to say.
   for (const [place, route] of Object.entries(PLACES)) {
     it(`${place} loses its marker when the page cannot mount`, async () => {

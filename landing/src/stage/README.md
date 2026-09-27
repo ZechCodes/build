@@ -7,7 +7,7 @@ DOM but the canvas: the choreography drives it from GSAP timelines.
 const stage = createDeviceStage({ canvas, assetBase: "/landing/assets/devices", screenBase: "/landing/assets/screens" });
 await stage.load(["laptop", "phone"]);                   // laptop-low.glb, phone.glb, tablet.glb
 await stage.setScreen("laptop", "ui10-editor-macbook");  // <screenBase>/<name>.webp
-stage.preloadScreen("laptop", "ui12-issues-macbook");    // decode ahead of the beat
+stage.preloadScreen("laptop", "ui12-tasks-macbook");    // decode ahead of the beat
 stage.setPose("laptop", { x: 65, y: 57, w: 52, pitch: 4, lidOpen: 1 });
 stage.show("phone"); stage.hide("tablet");
 stage.resize(); stage.render(); stage.dispose();

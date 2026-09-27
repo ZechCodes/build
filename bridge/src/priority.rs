@@ -8,7 +8,7 @@
 //! keep the daemon ahead of its own children. On 2026-09-24 the user's phone
 //! lost its session every few seconds while ten vitest runs and a headless
 //! Chromium, all agents' work, ran at the bridge's own priority inside the
-//! bridge's own cgroup (issue #128).
+//! bridge's own cgroup (task #128).
 //!
 //! So the children are moved out, and every child goes the same way whatever
 //! spawns it: a PTY, a pipe, an agent's harness or the user's shell. The child

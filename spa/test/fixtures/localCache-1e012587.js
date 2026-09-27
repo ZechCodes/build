@@ -1,5 +1,7 @@
 // Frozen historical cache module for mixed-version compaction regressions.
-// Source: 1e012587:spa/src/core/localCache.js; only import paths are relocated.
+// Source: 1e012587:spa/src/core/localCache.js; only import paths and the store
+// version are relocated. The version follows the current one (4 since #190):
+// what this pins is the older compaction logic on the store both builds share.
 // Keep its module-local clock and real IndexedDB writers independent of current code.
 
 // The local cache: one IndexedDB store holding what each surface last saw.
@@ -28,7 +30,7 @@ const DB_NAME = "build-cache";
 // rules sweep. A format change is a cold start by design — the records a
 // previous version wrote are not this version's shapes, and one sync pass
 // refills what the reader is looking at.
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE = "records";
 // A board record and a row can be written in the same clock millisecond.
 // Keep their order beside the timestamp without changing the timestamp used

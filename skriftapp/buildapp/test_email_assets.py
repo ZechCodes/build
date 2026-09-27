@@ -23,7 +23,7 @@ from buildapp.root_controller import EMAIL_ASSET_CACHE_CONTROL, RootController
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMAIL_ASSETS = LANDING_DIR / EMAIL_ASSET_DIRECTORY
-#: The issue's budget for the laptop image; a mail client downloads it on every open.
+#: The task's budget for the laptop image; a mail client downloads it on every open.
 IMAGE_SIZE_LIMIT_BYTES = 250 * 1024
 HOSTED_FILES = (MARK_IMAGE.file, MARK_IMAGE.file_1x, LAPTOP_IMAGE.file)
 

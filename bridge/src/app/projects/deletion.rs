@@ -149,7 +149,7 @@ impl AppState {
             })
         }));
         // Fail before touching files if the configuration is not writable.
-        self.preserve_project_issue_identities(&project_id)?;
+        self.preserve_project_task_identities(&project_id)?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         self.persist_config(&config)?;
         let mut retirements = Vec::new();
@@ -213,7 +213,7 @@ impl AppState {
         for id in plan_ids {
             if let Some(store) = &self.store {
                 store.delete_plan(&id).map_err(|error| {
-                    format!("delete project issue: {error}; retry project deletion")
+                    format!("delete project task: {error}; retry project deletion")
                 })?;
             }
             self.plans.remove(&id);

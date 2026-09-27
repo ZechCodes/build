@@ -1,7 +1,7 @@
 //! The git family: every `git.*` verb, the `fs.*` reads and the one write,
 //! and the diff reads that render a checkout's uncommitted work
 //! (`worktree.diff`, `project.diff`, `run.diff`, `run.stage_diff`,
-//! `issue.diff`, `issue.stage_diff`).
+//! `task.diff`, `task.stage_diff`).
 //!
 //! This is the converted family — the pattern the other four follow. The git
 //! itself is untouched: each handler resolves its typed params, hands them to
@@ -104,11 +104,11 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             RunStageDiffParams,
             StageDiffResult
         ),
-        v1_method!("issue.diff", issue_diff, IssueDiffParams, RunDiffResult),
+        v1_method!("task.diff", task_diff, TaskDiffParams, RunDiffResult),
         v1_method!(
-            "issue.stage_diff",
-            issue_stage_diff,
-            IssueStageDiffParams,
+            "task.stage_diff",
+            task_stage_diff,
+            TaskStageDiffParams,
             StageDiffResult
         ),
     ]
@@ -444,15 +444,15 @@ pub struct RunStageDiffParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueDiffParams {
-    pub issue_id: String,
+pub struct TaskDiffParams {
+    pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub if_diff_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueStageDiffParams {
-    pub issue_id: String,
+pub struct TaskStageDiffParams {
+    pub task_id: String,
     pub stage_id: String,
 }
 
@@ -889,9 +889,9 @@ pub struct RunDiff {
     pub patch: Option<String>,
     pub file_edited_at: FileEditedAt,
     pub diff_key: String,
-    /// The issue that asked, when an issue surface did (`issue.diff`).
+    /// The task that asked, when a task surface did (`task.diff`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 /// What `git.changeset_diff` answers: the asked paths' rows and their hunks,
@@ -942,7 +942,7 @@ pub struct StageDiffUnavailable {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion_sha: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 /// One immutable stage boundary, sha to sha.
@@ -958,7 +958,7 @@ pub struct StageDiff {
     pub files: Vec<DiffFileRow>,
     pub patch: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1140,18 +1140,18 @@ fn run_stage_diff(
     answer(app.run_stage_diff(&params.wire()))
 }
 
-fn issue_diff(
+fn task_diff(
     app: &mut AppState,
-    params: IssueDiffParams,
+    params: TaskDiffParams,
 ) -> Result<Answer<RunDiffResult>, ApiError> {
-    answer(app.issue_run_action(&params.wire(), "diff"))
+    answer(app.task_run_action(&params.wire(), "diff"))
 }
 
-fn issue_stage_diff(
+fn task_stage_diff(
     app: &mut AppState,
-    params: IssueStageDiffParams,
+    params: TaskStageDiffParams,
 ) -> Result<Answer<StageDiffResult>, ApiError> {
-    answer(app.issue_stage_diff(&params.wire()))
+    answer(app.task_stage_diff(&params.wire()))
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ export const threadCacheAddress = ({ deviceId, entityId, agentId, conversationId
   entityId,
   kind: THREAD_RECORD_KIND,
   // A conversation is the transcript's canonical storage owner within the
-  // workspace. Issue and run views may intentionally point at the same one;
+  // workspace. Task and run views may intentionally point at the same one;
   // their agent ids must not fork that history into two browser caches.
   sub: conversationId || agentId || "",
 });

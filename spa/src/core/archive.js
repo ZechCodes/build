@@ -3,7 +3,7 @@
 //
 // The archive is the user's, not a project's — Done archives an inbox entry,
 // and this is where the entry goes. It reads `archived.list`'s items[], the
-// same two work items the feed speaks (branches and issues), so a row here is
+// same two work items the feed speaks (branches and tasks), so a row here is
 // the row you last saw in the inbox, told in the past tense.
 //
 // Nothing here is actionable: an archived record is history, and history has no
@@ -12,7 +12,7 @@
 import { esc } from "./text.js";
 import { clashingNames, dimDeviceHtml } from "./inbox.js";
 
-/** How the work ended, in words. The token is a run state, an issue state, or
+/** How the work ended, in words. The token is a run state, a task state, or
  *  the bare `archived` a finished checkout leaves behind. A token this client
  *  has never heard of is shown as it came: a new ending must read as SOMETHING,
  *  never as nothing. */
@@ -63,17 +63,17 @@ export function archiveDateLabel(iso) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(at));
 }
 
-const KIND_LABEL = { issue: "Issue", branch: "Branch", workspace: "Workspace" };
+const KIND_LABEL = { task: "Task", branch: "Branch", workspace: "Workspace" };
 
 // eslint-disable-next-line complexity -- ratchet: toRow is at 12, cap 10 — reduce it, then drop this line
 function toRow(item, index) {
-  const kind = item.kind === "issue" || item.kind === "workspace" ? item.kind : "branch";
+  const kind = item.kind === "task" || item.kind === "workspace" ? item.kind : "branch";
   const branch = text(item.branch);
   const state = text(item.state);
   const action = text(item.action);
   const finishedAt = text(item.finished_at);
   return {
-    key: text(item.workspace_id) || text(item.run_id) || text(item.issue_id) || text(item.worktree_id) || `row-${index}`,
+    key: text(item.workspace_id) || text(item.run_id) || text(item.task_id) || text(item.worktree_id) || `row-${index}`,
     kind,
     kindLabel: KIND_LABEL[kind],
     title: text(item.title) || branch || "(untitled)",
@@ -89,7 +89,7 @@ function toRow(item, index) {
     finishedMs: ms(finishedAt),
     finishedLabel: archiveDateLabel(finishedAt),
     runId: text(item.run_id),
-    issueId: text(item.issue_id),
+    taskId: text(item.task_id),
     stages: count(item.stages),
     worktreeId: text(item.worktree_id),
     worktreePath: text(item.worktree_path),
@@ -138,7 +138,7 @@ export function archiveRecordHtml(row) {
     factRow("Upstream", row.upstream),
     row.unpushed === null ? "" : factRow("Unpushed", plural(row.unpushed, "commit")),
     row.dirtyFiles === null ? "" : factRow("Uncommitted", plural(row.dirtyFiles, "file")),
-    factRow("Record", row.runId || row.issueId || row.worktreeId),
+    factRow("Record", row.runId || row.taskId || row.worktreeId),
   ].join("");
   return `<div class="panel archive-record">${facts}</div>`;
 }

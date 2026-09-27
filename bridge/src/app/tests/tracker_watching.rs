@@ -1,7 +1,7 @@
-//! What the USER watches (spec: Issues → Watching).
+//! What the USER watches (spec: Tasks → Watching).
 //!
 //! Tracking is the agents' — `trackers`, and the notices a change delivers.
-//! This is the person's: which issues are in their inbox, how far they have
+//! This is the person's: which tasks are in their inbox, how far they have
 //! read one, and the row the inbox draws for it.
 
 use super::project_agent::workspace;
@@ -9,8 +9,8 @@ use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::BridgeAction;
 
-fn issue_id(issue: &Value) -> String {
-    issue["id"].as_str().unwrap().to_string()
+fn task_id(task: &Value) -> String {
+    task["id"].as_str().unwrap().to_string()
 }
 
 /// A coding agent on a workspace of this project, as `(entity_id, agent_id)`.
@@ -29,19 +29,19 @@ fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, 
     (entity_id, agent_id)
 }
 
-fn issue(state: &mut AppState, issue_id: &str) -> Value {
-    state.handle(req("issues.get", json!({ "issue_id": issue_id })))["result"]["issue"].clone()
+fn task(state: &mut AppState, task_id: &str) -> Value {
+    state.handle(req("tasks.get", json!({ "task_id": task_id })))["result"]["task"].clone()
 }
 
-fn timeline(state: &mut AppState, issue_id: &str) -> Vec<Value> {
-    state.handle(req("issues.get", json!({ "issue_id": issue_id })))["result"]["timeline"]
+fn timeline(state: &mut AppState, task_id: &str) -> Vec<Value> {
+    state.handle(req("tasks.get", json!({ "task_id": task_id })))["result"]["timeline"]
         .as_array()
         .unwrap()
         .clone()
 }
 
-fn event_kinds(state: &mut AppState, issue_id: &str) -> Vec<String> {
-    timeline(state, issue_id)
+fn event_kinds(state: &mut AppState, task_id: &str) -> Vec<String> {
+    timeline(state, task_id)
         .iter()
         .filter(|entry| entry["type"] == "event")
         .map(|entry| entry["kind"].as_str().unwrap_or_default().to_string())
@@ -56,21 +56,21 @@ fn rows(state: &mut AppState) -> Vec<Value> {
         .clone()
 }
 
-fn issue_rows(state: &mut AppState) -> Vec<Value> {
+fn task_rows(state: &mut AppState) -> Vec<Value> {
     rows(state)
         .into_iter()
-        .filter(|row| row["kind"] == "tracker_issue")
+        .filter(|row| row["kind"] == "tracker_task")
         .collect()
 }
 
-fn row_for(state: &mut AppState, issue_id: &str) -> Value {
-    issue_rows(state)
+fn row_for(state: &mut AppState, task_id: &str) -> Value {
+    task_rows(state)
         .into_iter()
-        .find(|row| row["issue_id"] == json!(issue_id))
-        .unwrap_or_else(|| panic!("{issue_id} has an inbox row"))
+        .find(|row| row["task_id"] == json!(task_id))
+        .unwrap_or_else(|| panic!("{task_id} has an inbox row"))
 }
 
-/// An agent files an issue, with whatever it asked for.
+/// An agent files a task, with whatever it asked for.
 fn agent_files(
     state: &mut AppState,
     who: &(String, String),
@@ -81,7 +81,7 @@ fn agent_files(
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCreateIssue {
+            BridgeAction::TrackerCreateTask {
                 title: title.into(),
                 body: None,
                 status: None,
@@ -93,38 +93,38 @@ fn agent_files(
                 mention_user: None,
             },
         )
-        .expect("an agent may file an issue");
-    filed["issue"]["id"].as_str().unwrap().to_string()
+        .expect("an agent may file a task");
+    filed["task"]["id"].as_str().unwrap().to_string()
 }
 
-/// The user files an issue, so the user watches it: it is in the inbox before
+/// The user files a task, so the user watches it: it is in the inbox before
 /// anybody asks. Unwatching takes the row away and watching brings it back,
 /// each saying so once on the timeline.
 #[test]
-fn an_issue_the_user_filed_is_watched_and_unwatching_takes_the_row_away() {
+fn a_task_the_user_filed_is_watched_and_unwatching_takes_the_row_away() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
-    assert_eq!(issue(&mut state, &id)["watched"], true, "the user filed it");
+    assert_eq!(task(&mut state, &id)["watched"], true, "the user filed it");
     assert_eq!(row_for(&mut state, &id)["number"], 1);
 
-    let put_down = state.handle(req("issues.unwatch", json!({ "issue_id": id })));
+    let put_down = state.handle(req("tasks.unwatch", json!({ "task_id": id })));
     assert_eq!(put_down["ok"], true, "{put_down:?}");
     assert!(
-        put_down["result"]["issue"]["watched"].as_bool() != Some(true),
+        put_down["result"]["task"]["watched"].as_bool() != Some(true),
         "{put_down:?}"
     );
     assert!(
-        issue_rows(&mut state).is_empty(),
-        "an unwatched issue has no row"
+        task_rows(&mut state).is_empty(),
+        "an unwatched task has no row"
     );
 
-    let picked_up = state.handle(req("issues.watch", json!({ "issue_id": id })));
+    let picked_up = state.handle(req("tasks.watch", json!({ "task_id": id })));
     assert_eq!(picked_up["ok"], true, "{picked_up:?}");
-    assert_eq!(picked_up["result"]["issue"]["watched"], true);
-    assert_eq!(row_for(&mut state, &id)["issue_id"], json!(id));
+    assert_eq!(picked_up["result"]["task"]["watched"], true);
+    assert_eq!(row_for(&mut state, &id)["task_id"], json!(id));
     assert_eq!(
         event_kinds(&mut state, &id),
         vec!["created", "unwatched", "watched"],
@@ -138,88 +138,88 @@ fn watching_twice_writes_nothing_the_second_time() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
-    let again = state.handle(req("issues.watch", json!({ "issue_id": id })));
+    let again = state.handle(req("tasks.watch", json!({ "task_id": id })));
     assert_eq!(again["ok"], true, "{again:?}");
-    assert_eq!(again["result"]["issue"]["watched"], true);
+    assert_eq!(again["result"]["task"]["watched"], true);
     assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
 }
 
-/// Saying something on an issue is caring about it, and so is being handed it.
+/// Saying something on a task is caring about it, and so is being handed it.
 #[test]
-fn commenting_or_being_handed_an_issue_starts_the_user_watching() {
+fn commenting_or_being_handed_a_task_starts_the_user_watching() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
 
     let spoken = agent_files(&mut state, &who, "spoken on", Some(false));
-    state.handle(req("issues.unwatch", json!({ "issue_id": spoken })));
+    state.handle(req("tasks.unwatch", json!({ "task_id": spoken })));
     let said = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": spoken, "body": "which name did you want?" }),
+        "tasks.comment",
+        json!({ "task_id": spoken, "body": "which name did you want?" }),
     ));
     assert_eq!(said["ok"], true, "{said:?}");
-    assert_eq!(said["result"]["issue"]["watched"], true, "{said:?}");
+    assert_eq!(said["result"]["task"]["watched"], true, "{said:?}");
 
     let handed = agent_files(&mut state, &who, "handed over", Some(false));
-    state.handle(req("issues.unwatch", json!({ "issue_id": handed })));
+    state.handle(req("tasks.unwatch", json!({ "task_id": handed })));
     let assigned = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": handed, "assignee": { "kind": "user" } }),
+        "tasks.assign",
+        json!({ "task_id": handed, "assignee": { "kind": "user" } }),
     ));
     assert_eq!(assigned["ok"], true, "{assigned:?}");
-    assert_eq!(assigned["result"]["issue"]["watched"], true, "{assigned:?}");
+    assert_eq!(assigned["result"]["task"]["watched"], true, "{assigned:?}");
     assert_eq!(row_for(&mut state, &handed)["assigned_to_user"], true);
 }
 
-/// An agent's issue reaches the user because the device says so, or because
+/// An agent's task reaches the user because the device says so, or because
 /// the agent asked — and reaches nobody when neither is true.
 #[test]
-fn an_agents_issue_reaches_the_user_by_the_setting_or_by_asking() {
+fn an_agents_task_reaches_the_user_by_the_setting_or_by_asking() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
 
     let by_default = agent_files(&mut state, &who, "by default", None);
-    assert_ne!(issue(&mut state, &by_default)["watched"], true);
+    assert_ne!(task(&mut state, &by_default)["watched"], true);
 
     let enabled = state.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": true }),
+        json!({ "watch_agent_filed_tasks": true }),
     ));
     assert_eq!(enabled["ok"], true, "{enabled:?}");
-    assert_eq!(enabled["result"]["watch_agent_filed_issues"], true);
+    assert_eq!(enabled["result"]["watch_agent_filed_tasks"], true);
 
     let watched = agent_files(&mut state, &who, "saved setting", None);
-    assert_eq!(issue(&mut state, &watched)["watched"], true);
+    assert_eq!(task(&mut state, &watched)["watched"], true);
 
     let quieted = state.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": false }),
+        json!({ "watch_agent_filed_tasks": false }),
     ));
     assert_eq!(quieted["ok"], true, "{quieted:?}");
 
     let quiet = agent_files(&mut state, &who, "for another agent", None);
     assert!(
-        issue(&mut state, &quiet)["watched"].as_bool() != Some(true),
+        task(&mut state, &quiet)["watched"].as_bool() != Some(true),
         "not the user's business until somebody says it is"
     );
 
     let asked = agent_files(&mut state, &who, "the user asked for this", Some(true));
     assert_eq!(
-        issue(&mut state, &asked)["watched"],
+        task(&mut state, &asked)["watched"],
         true,
         "`notify_user` says so outright"
     );
 }
 
-/// `notify_user` on a write that touches an issue that already exists puts
-/// that issue in front of the user; without it, nothing moves.
+/// `notify_user` on a write that touches a task that already exists puts
+/// that task in front of the user; without it, nothing moves.
 #[test]
-fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
+fn notify_user_on_a_comment_or_an_assignment_puts_the_task_in_the_inbox() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -229,7 +229,7 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
     // moving.
     state.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": false }),
+        json!({ "watch_agent_filed_tasks": false }),
     ));
     let quiet = agent_files(&mut state, &who, "quiet", None);
     let loud = agent_files(&mut state, &who, "loud", None);
@@ -238,8 +238,8 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: quiet.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: quiet.clone(),
                 body: "noted".into(),
                 refs: Vec::new(),
                 track: None,
@@ -250,7 +250,7 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
         )
         .expect("an agent comments");
     assert!(
-        issue(&mut state, &quiet)["watched"].as_bool() != Some(true),
+        task(&mut state, &quiet)["watched"].as_bool() != Some(true),
         "a comment is not an ask"
     );
 
@@ -258,8 +258,8 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: loud.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: loud.clone(),
                 body: "which name did you want?".into(),
                 refs: Vec::new(),
                 track: None,
@@ -269,7 +269,7 @@ fn notify_user_on_a_comment_or_an_assignment_puts_the_issue_in_the_inbox() {
             },
         )
         .expect("an agent asks the user");
-    assert_eq!(told["issue"]["watched"], true, "{told:?}");
+    assert_eq!(told["task"]["watched"], true, "{told:?}");
     assert_eq!(row_for(&mut state, &loud)["number"], json!(2));
 }
 
@@ -287,8 +287,8 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
             .on_agent_mcp_action(
                 &who.0,
                 &who.1,
-                BridgeAction::TrackerCommentIssue {
-                    issue_id: id.clone(),
+                BridgeAction::TrackerCommentTask {
+                    task_id: id.clone(),
                     body: body.into(),
                     refs: Vec::new(),
                     track: None,
@@ -309,20 +309,20 @@ fn the_read_mark_never_moves_backwards_and_clears_the_count() {
     );
 
     let read = state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": id, "event_id": newest }),
+        "tasks.read_through",
+        json!({ "task_id": id, "event_id": newest }),
     ));
     assert_eq!(read["ok"], true, "{read:?}");
-    assert_eq!(read["result"]["issue"]["read_through"], json!(newest));
+    assert_eq!(read["result"]["task"]["read_through"], json!(newest));
     assert_eq!(row_for(&mut state, &id)["unread"], json!(0));
 
     let stale = state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": id, "event_id": oldest }),
+        "tasks.read_through",
+        json!({ "task_id": id, "event_id": oldest }),
     ));
     assert_eq!(stale["ok"], true, "{stale:?}");
     assert_eq!(
-        stale["result"]["issue"]["read_through"],
+        stale["result"]["task"]["read_through"],
         json!(newest),
         "reading the top of the page again does not unread the bottom"
     );
@@ -341,13 +341,13 @@ fn the_unread_count_leaves_out_the_users_own_words() {
     let entries = timeline(&mut state, &id);
     let newest = entries.last().unwrap()["id"].as_str().unwrap().to_string();
     state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": id, "event_id": newest }),
+        "tasks.read_through",
+        json!({ "task_id": id, "event_id": newest }),
     ));
 
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "do this one first" }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "do this one first" }),
     ));
     assert_eq!(
         row_for(&mut state, &id)["unread"],
@@ -359,8 +359,8 @@ fn the_unread_count_leaves_out_the_users_own_words() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "on it".into(),
                 refs: Vec::new(),
                 track: None,
@@ -374,7 +374,7 @@ fn the_unread_count_leaves_out_the_users_own_words() {
 }
 
 /// Done is a mark, not a flag: the row clears, and the next thing that
-/// happens to the issue brings it back on its own.
+/// happens to the task brings it back on its own.
 #[test]
 fn dismissing_clears_the_row_until_the_next_event() {
     let tmp = tempfile::tempdir().unwrap();
@@ -384,7 +384,7 @@ fn dismissing_clears_the_row_until_the_next_event() {
     let id = agent_files(&mut state, &who, "done with this", Some(true));
     assert_eq!(row_for(&mut state, &id)["done_until_next"], false);
 
-    let cleared = state.handle(req("issues.dismiss", json!({ "issue_id": id })));
+    let cleared = state.handle(req("tasks.dismiss", json!({ "task_id": id })));
     assert_eq!(cleared["ok"], true, "{cleared:?}");
     assert_eq!(
         row_for(&mut state, &id)["done_until_next"],
@@ -396,8 +396,8 @@ fn dismissing_clears_the_row_until_the_next_event() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "one more thing".into(),
                 refs: Vec::new(),
                 track: None,
@@ -428,8 +428,8 @@ fn an_inbox_row_says_what_last_happened_in_the_readers_voice() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "in_review".into(),
                 track: None,
             },
@@ -437,7 +437,7 @@ fn an_inbox_row_says_what_last_happened_in_the_readers_voice() {
         .expect("an agent moves what it holds");
 
     let row = row_for(&mut state, &id);
-    assert_eq!(row["kind"], "tracker_issue", "{row:?}");
+    assert_eq!(row["kind"], "tracker_task", "{row:?}");
     assert_eq!(row["project_id"], json!(project_id), "{row:?}");
     assert_eq!(row["title"], "Kanban drag does not persist", "{row:?}");
     assert_eq!(row["status"], "in_review", "{row:?}");
@@ -447,26 +447,26 @@ fn an_inbox_row_says_what_last_happened_in_the_readers_voice() {
     let said = row["last_event"]["text"].as_str().unwrap();
     assert!(said.starts_with("Moved to In review"), "{row:?}");
     assert!(
-        !said.contains("read_comment") && !said.contains("ic-"),
+        !said.contains("read_comment") && !said.contains("tc-"),
         "a person is reading this: {row:?}"
     );
 }
 
-/// Issue rows land in the same list as the conversations and are interleaved
-/// with them by `anchor`, which is what the inbox reads — so an issue that
+/// Task rows land in the same list as the conversations and are interleaved
+/// with them by `anchor`, which is what the inbox reads — so a task that
 /// moved after a conversation sits after it, and the client needs no special
 /// case for the kind.
 #[test]
-fn issue_rows_interleave_with_the_conversations_by_anchor() {
+fn task_rows_interleave_with_the_conversations_by_anchor() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let _conversation = coding_agent(&mut state, &project_id, "here");
-    let older = issue_id(&filed(&mut state, &project_id, "older"));
-    let newer = issue_id(&filed(&mut state, &project_id, "newer"));
+    let older = task_id(&filed(&mut state, &project_id, "older"));
+    let newer = task_id(&filed(&mut state, &project_id, "newer"));
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": newer, "body": "and one more thing" }),
+        "tasks.comment",
+        json!({ "task_id": newer, "body": "and one more thing" }),
     ));
 
     let all = rows(&mut state);
@@ -483,14 +483,14 @@ fn issue_rows_interleave_with_the_conversations_by_anchor() {
         "a conversation is in it too: {all:?}"
     );
 
-    let issues: Vec<String> = issue_rows(&mut state)
+    let tasks: Vec<String> = task_rows(&mut state)
         .iter()
-        .map(|row| row["issue_id"].as_str().unwrap().to_string())
+        .map(|row| row["task_id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(
-        issues,
+        tasks,
         vec![older, newer],
-        "each issue is anchored to when it last moved"
+        "each task is anchored to when it last moved"
     );
 }
 
@@ -576,28 +576,28 @@ fn an_agent_made_agent_is_not_in_the_inbox_unless_it_asks() {
     );
 }
 
-/// `issues.list` and `issues.get` say how much of a watched issue is unread
-/// (#104), by the same count the issue's inbox row carries: what the list holds is what the
-/// Issues tab and the rail badges read, and an `issues` push re-reads it.
-/// An unwatched issue says nothing at all, not zero.
+/// `tasks.list` and `tasks.get` say how much of a watched task is unread
+/// (#104), by the same count the task's inbox row carries: what the list holds is what the
+/// Tasks tab and the rail badges read, and an `tasks` push re-reads it.
+/// An unwatched task says nothing at all, not zero.
 #[test]
-fn the_list_carries_each_watched_issues_unread_count() {
+fn the_list_carries_each_watched_tasks_unread_count() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
     let id = agent_files(&mut state, &who, "watched", Some(true));
-    let quiet = issue_id(&filed(&mut state, &project_id, "put down"));
-    state.handle(req("issues.unwatch", json!({ "issue_id": quiet })));
-    let listed = |state: &mut AppState, issue_id: &str| -> Value {
-        let list = state.handle(req("issues.list", json!({ "project_id": project_id })));
-        list["result"]["issues"]
+    let quiet = task_id(&filed(&mut state, &project_id, "put down"));
+    state.handle(req("tasks.unwatch", json!({ "task_id": quiet })));
+    let listed = |state: &mut AppState, task_id: &str| -> Value {
+        let list = state.handle(req("tasks.list", json!({ "project_id": project_id })));
+        list["result"]["tasks"]
             .as_array()
-            .expect("the list answers issues")
+            .expect("the list answers tasks")
             .iter()
-            .find(|issue| issue["id"] == json!(issue_id))
+            .find(|task| task["id"] == json!(task_id))
             .cloned()
-            .unwrap_or_else(|| panic!("{issue_id} is listed"))
+            .unwrap_or_else(|| panic!("{task_id} is listed"))
     };
 
     let unread = row_for(&mut state, &id)["unread"].clone();
@@ -609,7 +609,7 @@ fn the_list_carries_each_watched_issues_unread_count() {
     assert_eq!(listed(&mut state, &id)["unread_count"], unread);
     assert!(
         listed(&mut state, &quiet).get("unread_count").is_none(),
-        "an unwatched issue carries no count"
+        "an unwatched task carries no count"
     );
 
     let newest = timeline(&mut state, &id).last().unwrap()["id"]
@@ -617,14 +617,14 @@ fn the_list_carries_each_watched_issues_unread_count() {
         .unwrap()
         .to_string();
     state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": id, "event_id": newest }),
+        "tasks.read_through",
+        json!({ "task_id": id, "event_id": newest }),
     ));
     assert_eq!(listed(&mut state, &id)["unread_count"], json!(0));
 
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "my own words" }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "my own words" }),
     ));
     assert_eq!(listed(&mut state, &id)["unread_count"], json!(0));
 
@@ -632,8 +632,8 @@ fn the_list_carries_each_watched_issues_unread_count() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "on it".into(),
                 refs: Vec::new(),
                 track: None,
@@ -645,20 +645,20 @@ fn the_list_carries_each_watched_issues_unread_count() {
         .expect("an agent answers");
     assert_eq!(listed(&mut state, &id)["unread_count"], json!(1));
     assert_eq!(
-        issue(&mut state, &id)["unread_count"],
+        task(&mut state, &id)["unread_count"],
         json!(1),
-        "reading the issue alone says the same"
+        "reading the task alone says the same"
     );
-    assert!(issue(&mut state, &quiet).get("unread_count").is_none());
+    assert!(task(&mut state, &quiet).get("unread_count").is_none());
     let paged = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "limit": 10 }),
     ));
-    let paged_row = paged["result"]["issues"]
+    let paged_row = paged["result"]["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|issue| issue["id"] == json!(id))
+        .find(|task| task["id"] == json!(id))
         .cloned()
         .unwrap();
     assert_eq!(paged_row["unread_count"], json!(1), "a page says it too");

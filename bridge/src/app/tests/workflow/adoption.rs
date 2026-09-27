@@ -263,7 +263,7 @@ async fn a_start_respawns_the_named_agents_harness_on_a_mixed_branch() {
 fn a_queued_turn_spends_the_agents_own_harness() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (_issue_id, run_id) = planned_run_in_review(&mut state, "review on two harnesses");
+    let (_task_id, run_id) = planned_run_in_review(&mut state, "review on two harnesses");
     let branch_choice = state.runs[&run_id].model_choice.clone();
     let planted = primary_agent_id(&state, &run_id);
     let added = state.handle(req(

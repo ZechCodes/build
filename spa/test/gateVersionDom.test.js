@@ -120,28 +120,28 @@ afterEach(() => {
  *  listening for the account running out of machines that can answer — which is
  *  what stands a version gate up. */
 const enterApp = () => {
-  greeted("d1", { major: 1, version: "1.0.0", unsupported: null });
+  greeted("d1", { major: 2, version: "2.0.0", unsupported: null });
   gate.holdAppWhileNoDeviceAnswers();
 };
 
 describe("the version gates", () => {
   it("gates a bridge above every adapter as the app being behind, naming the device", async () => {
     enterApp();
-    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    greeted("d1", { unsupported: "app", version: "3.0.0" });
     await flush();
 
     expect(App.gated).toBe(true);
     expect(document.body.classList.contains("gated")).toBe(true);
     expect(stopFeed).toHaveBeenCalled();
     expect(root().querySelector("h1").textContent).toBe("This app is behind the bridge on studio");
-    expect(root().textContent).toContain("2.0.0");
+    expect(root().textContent).toContain("3.0.0");
     expect(root().querySelector("#gate-reload")).toBe(null);
   });
 
   it("offers the reload only once the served-version watcher has something newer", async () => {
     enterApp();
     App.updateAvailable = true;
-    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    greeted("d1", { unsupported: "app", version: "3.0.0" });
     await flush();
 
     expect(root().querySelector("#gate-reload")).toBeTruthy();
@@ -176,7 +176,7 @@ describe("the version gates", () => {
 
     // The machine's bridge was updated: it re-greets, and this greeting is
     // claimed by an adapter this build carries.
-    adoptBridgeSelection(contextFor("d1"), { major: 1, version: "1.1.0", unsupported: null });
+    adoptBridgeSelection(contextFor("d1"), { major: 2, version: "2.0.0", unsupported: null });
     await flush();
 
     expect(App.gated).toBe(false);
@@ -194,9 +194,9 @@ describe("the version gates", () => {
       { id: "d1", name: "studio", status: "online" },
       { id: "d2", name: "laptop", status: "online" },
     ];
-    greeted("d2", { major: 1, version: "1.1.0", unsupported: null });
+    greeted("d2", { major: 2, version: "2.0.0", unsupported: null });
 
-    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    greeted("d1", { unsupported: "app", version: "3.0.0" });
     await flush();
 
     expect(App.gated).toBe(false);
@@ -210,8 +210,8 @@ describe("the version gates", () => {
       { id: "d1", name: "studio", status: "online" },
       { id: "d2", name: "laptop", status: "online" },
     ];
-    greeted("d2", { major: 1, version: "1.1.0", unsupported: null });
-    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    greeted("d2", { major: 2, version: "2.0.0", unsupported: null });
+    greeted("d1", { unsupported: "app", version: "3.0.0" });
     await flush();
     unmountView.mockClear();
 
@@ -227,7 +227,7 @@ describe("the version gates", () => {
   // while the app is still coming up — and nothing announces it a second time.
   // So the gate reads the account as it starts, not only when it next moves.
   it("stands a gate up for a greeting that settled before it started listening", async () => {
-    greeted("d1", { unsupported: "app", version: "2.0.0" });
+    greeted("d1", { unsupported: "app", version: "3.0.0" });
 
     gate.holdAppWhileNoDeviceAnswers();
     await flush();
@@ -251,7 +251,7 @@ describe("the version gates", () => {
 
     // The greeting of the session that was lost lands late, and no adapter
     // here speaks to the bridge that sent it.
-    adoptBridgeSelection(contextFor("d1"), { unsupported: "app", version: "2.0.0" });
+    adoptBridgeSelection(contextFor("d1"), { unsupported: "app", version: "3.0.0" });
     await flush();
 
     expect(App.gated).toBe(true);
@@ -260,7 +260,7 @@ describe("the version gates", () => {
 
   it("does nothing for a supported selection when no version gate is up", async () => {
     enterApp();
-    greeted("d1", { major: 1, version: "1.0.0", unsupported: null });
+    greeted("d1", { major: 2, version: "2.0.0", unsupported: null });
     await flush();
 
     expect(App.gated).toBe(false);

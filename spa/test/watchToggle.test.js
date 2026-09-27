@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
-// Watching an issue, from whichever surface offers the switch.
+// Watching a task, from whichever surface offers the switch.
 //
-// #65. The issue page's toggle and the inbox's Mute are the same verb, so the
+// #65. The task page's toggle and the inbox's Mute are the same verb, so the
 // optimistic rule lives once: the switch moves under the finger, and a refusal
 // puts it back rather than leaving the reader believing something the bridge
 // never agreed to.
@@ -27,7 +27,7 @@ describe("the switch moving", () => {
   it("moves before the bridge answers, and counts the reader in", async () => {
     const call = vi.fn(async () => ({}));
     const seen = [];
-    const toggle = createWatchToggle({ watching: false, watchers: 2, issueId: "i-1", call, onChange: (s) => seen.push({ ...s }) });
+    const toggle = createWatchToggle({ watching: false, watchers: 2, taskId: "i-1", call, onChange: (s) => seen.push({ ...s }) });
 
     const settledPromise = toggle.press();
     // Optimistic: the reader sees it on before the call resolves.
@@ -35,29 +35,29 @@ describe("the switch moving", () => {
     expect(seen[0]).toMatchObject({ watching: true, watchers: 3 });
 
     await settledPromise;
-    expect(call).toHaveBeenCalledWith("issues.watch", { issue_id: "i-1" });
+    expect(call).toHaveBeenCalledWith("tasks.watch", { task_id: "i-1" });
     expect(toggle.state()).toEqual({ watching: true, watchers: 3, pending: false });
   });
 
   it("asks to unwatch when it was on, and counts the reader out", async () => {
     const call = vi.fn(async () => ({}));
-    const toggle = createWatchToggle({ watching: true, watchers: 3, issueId: "i-1", call });
+    const toggle = createWatchToggle({ watching: true, watchers: 3, taskId: "i-1", call });
     await toggle.press();
-    expect(call).toHaveBeenCalledWith("issues.unwatch", { issue_id: "i-1" });
+    expect(call).toHaveBeenCalledWith("tasks.unwatch", { task_id: "i-1" });
     expect(toggle.state()).toMatchObject({ watching: false, watchers: 2 });
   });
 
   it("puts the switch back when the bridge refuses", async () => {
     const call = vi.fn(async () => {
-      throw new Error("no such issue");
+      throw new Error("no such task");
     });
     const failures = [];
-    const toggle = createWatchToggle({ watching: false, watchers: 2, issueId: "i-1", call, onFailure: (e) => failures.push(e) });
+    const toggle = createWatchToggle({ watching: false, watchers: 2, taskId: "i-1", call, onFailure: (e) => failures.push(e) });
 
     await toggle.press();
 
     expect(toggle.state()).toEqual({ watching: false, watchers: 2, pending: false });
-    expect(failures.map((error) => error.message)).toEqual(["no such issue"]);
+    expect(failures.map((error) => error.message)).toEqual(["no such task"]);
   });
 
   // A reader pressing twice while the first is in flight would otherwise send
@@ -65,7 +65,7 @@ describe("the switch moving", () => {
   it("ignores a second press while one is in flight", async () => {
     let release;
     const call = vi.fn(() => new Promise((resolve) => { release = resolve; }));
-    const toggle = createWatchToggle({ watching: false, watchers: 0, issueId: "i-1", call });
+    const toggle = createWatchToggle({ watching: false, watchers: 0, taskId: "i-1", call });
 
     const first = toggle.press();
     toggle.press();
@@ -79,7 +79,7 @@ describe("the switch moving", () => {
   // The push is the authority; a row arriving says what is true regardless of
   // what this switch last guessed.
   it("takes what the bridge says, and drops a guess that disagrees", () => {
-    const toggle = createWatchToggle({ watching: false, watchers: 0, issueId: "i-1", call: async () => ({}) });
+    const toggle = createWatchToggle({ watching: false, watchers: 0, taskId: "i-1", call: async () => ({}) });
     toggle.settle({ watching: true, watchers: 4 });
     expect(toggle.state()).toEqual({ watching: true, watchers: 4, pending: false });
   });
@@ -99,10 +99,10 @@ describe("what it is a watch of", () => {
     expect(call).toHaveBeenLastCalledWith("conversation.unwatch", { entity_id: "run-7", agent_id: "agent-2" });
   });
 
-  it("stays on the issue verbs when it is an issue, which is what the issue page imports", async () => {
+  it("stays on the task verbs when it is a task, which is what the task page imports", async () => {
     const call = vi.fn(async () => ({}));
-    await createWatchToggle({ watching: false, watchers: 0, issueId: "i-1", call }).press();
-    expect(call).toHaveBeenCalledWith("issues.watch", { issue_id: "i-1" });
+    await createWatchToggle({ watching: false, watchers: 0, taskId: "i-1", call }).press();
+    expect(call).toHaveBeenCalledWith("tasks.watch", { task_id: "i-1" });
   });
 });
 

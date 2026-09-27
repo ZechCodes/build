@@ -103,18 +103,18 @@ def test_push_payload_carries_only_id_kind_and_deep_link():
 
 def test_push_kinds_are_the_two_the_unread_counter_has():
     # #191: a push fires only for what adds to the unread counter — an agent's
-    # conversation and a watched issue (a "task" to the user, #190). The old
+    # conversation and a watched task (a "task" to the user, #190). The old
     # plan/run state labels are refused.
     assert web_push.ALLOWED_KINDS == {"agent", "task"}
 
 
 def test_each_kind_deep_links_to_what_it_names():
     # An agent's id is its conversation owner, which the SPA resolves by run id;
-    # a task's is the tracker issue's, which it resolves by issue id.
+    # a task's is the tracker task's, which it resolves by task id.
     agent = json.loads(web_push.push_payload("run-1", "agent"))
-    task = json.loads(web_push.push_payload("issue-1", "task"))
+    task = json.loads(web_push.push_payload("task-1", "task"))
     assert agent["url"] == "/app/#/task/run-1"
-    assert task["url"] == "/app/#/issue/issue-1"
+    assert task["url"] == "/app/#/tasks/task-1"
 
 
 # --- delivery + pruning -----------------------------------------------------------

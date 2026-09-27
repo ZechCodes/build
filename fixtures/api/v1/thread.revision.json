@@ -2,7 +2,7 @@
   "method": "thread.revision",
   "since": "1.0.0",
   "params": {
-    "entity_id": "issue-4",
+    "entity_id": "task-4",
     "revision_id": "revision-2",
     "agent_id": "agent-1"
   },

@@ -1,13 +1,13 @@
-//! `issues.list` over a project with a history (#128): every listed issue
-//! answers exactly what reading that issue alone answers, however the list
+//! `tasks.list` over a project with a history (#128): every listed task
+//! answers exactly what reading that task alone answers, however the list
 //! gathers the timelines and the agent records behind it.
 
 use super::project_agent::workspace;
 use super::tracker::{filed, tracked_with_origin};
 use super::*;
-use crate::tracker::{Actor, Assignee, IssueComment, IssueEvent, IssueEventKind};
+use crate::tracker::{Actor, Assignee, TaskComment, TaskEvent, TaskEventKind};
 
-const ISSUES: usize = 50;
+const TASKS: usize = 50;
 
 /// An agent on a checkout of its own, named so its identity has something to
 /// carry.
@@ -27,7 +27,7 @@ fn agent_on_checkout(state: &mut AppState, project_id: &str, name: &str) -> (Str
     (entity_id, agent_id)
 }
 
-/// Who an issue's history names, by where the name comes from: prose, an
+/// Who a task's history names, by where the name comes from: prose, an
 /// assignment, a comment's author, an event's actor.
 struct Cast {
     live: String,
@@ -56,14 +56,14 @@ impl Cast {
     }
 }
 
-/// A few comments and events per issue, stamped out of insertion order.
-fn activity(cast: &Cast, issue_id: &str, index: usize) -> (Vec<IssueComment>, Vec<IssueEvent>) {
+/// A few comments and events per task, stamped out of insertion order.
+fn activity(cast: &Cast, task_id: &str, index: usize) -> (Vec<TaskComment>, Vec<TaskEvent>) {
     let at = |minute: usize| format!("2026-09-01T10:{:02}:00Z", (index + minute) % 60);
     let comments = (0..1 + index % 3)
         .rev()
-        .map(|n| IssueComment {
+        .map(|n| TaskComment {
             id: crate::tracker::new_comment_id(),
-            issue_id: issue_id.to_string(),
+            task_id: task_id.to_string(),
             author: cast.author(index + n),
             body: format!("note {n}"),
             mentions_user: false,
@@ -76,10 +76,10 @@ fn activity(cast: &Cast, issue_id: &str, index: usize) -> (Vec<IssueComment>, Ve
         .collect();
     let events = (0..index % 3)
         .map(|n| {
-            IssueEvent::new(
-                issue_id,
+            TaskEvent::new(
+                task_id,
                 cast.author(index + n + 1),
-                IssueEventKind::Labelled,
+                TaskEventKind::Labelled,
                 json!({ "added": [format!("l{n}")], "removed": [] }),
                 &at(n * 3),
             )
@@ -88,63 +88,63 @@ fn activity(cast: &Cast, issue_id: &str, index: usize) -> (Vec<IssueComment>, Ve
     (comments, events)
 }
 
-/// Fifty issues whose records predate identities, so the list is also the
+/// Fifty tasks whose records predate identities, so the list is also the
 /// read that fills them in.
 fn history(state: &mut AppState, project_id: &str, cast: &Cast) -> Vec<String> {
-    (0..ISSUES)
+    (0..TASKS)
         .map(|index| {
-            let id = filed(state, project_id, &format!("issue {index}"))["id"]
+            let id = filed(state, project_id, &format!("task {index}"))["id"]
                 .as_str()
                 .unwrap()
                 .to_string();
             let store = state.tracker_store().unwrap();
-            let mut issue = store.load_tracker_issue(&id).unwrap().unwrap();
-            issue.body = cast.prose(index);
+            let mut task = store.load_tracker_task(&id).unwrap().unwrap();
+            task.body = cast.prose(index);
             if index.is_multiple_of(5) {
-                issue.labels = vec!["sweep".into()];
+                task.labels = vec!["sweep".into()];
             }
             if index.is_multiple_of(7) {
-                issue.assignee = Some(Assignee::Agent {
+                task.assignee = Some(Assignee::Agent {
                     agent_id: cast.departed.clone(),
                 });
             }
-            issue.identities.clear();
+            task.identities.clear();
             let (comments, events) = activity(cast, &id, index);
             store
-                .save_tracker_issue_activity(&issue, &comments, &events)
+                .save_tracker_task_activity(&task, &comments, &events)
                 .unwrap();
             id
         })
         .collect()
 }
 
-fn stored_records(state: &AppState, ids: &[String]) -> Vec<crate::tracker::Issue> {
+fn stored_records(state: &AppState, ids: &[String]) -> Vec<crate::tracker::Task> {
     let store = state.tracker_store().unwrap();
     ids.iter()
-        .map(|id| store.load_tracker_issue(id).unwrap().unwrap())
+        .map(|id| store.load_tracker_task(id).unwrap().unwrap())
         .collect()
 }
 
-/// The list's rows, and what `issues.get` answers for the same issues in the
-/// same order — the one-issue read, which loads its own timeline.
+/// The list's rows, and what `tasks.get` answers for the same tasks in the
+/// same order — the one-task read, which loads its own timeline.
 fn listed_and_each_alone(state: &mut AppState, params: Value) -> (Value, Value) {
-    let listed = state.handle(req("issues.list", params));
+    let listed = state.handle(req("tasks.list", params));
     assert_eq!(listed["ok"], true, "{listed:?}");
-    let rows = listed["result"]["issues"].clone();
+    let rows = listed["result"]["tasks"].clone();
     let alone = rows
         .as_array()
         .unwrap()
         .iter()
         .map(|row| {
-            let got = state.handle(req("issues.get", json!({ "issue_id": row["id"] })));
-            got["result"]["issue"].clone()
+            let got = state.handle(req("tasks.get", json!({ "task_id": row["id"] })));
+            got["result"]["task"].clone()
         })
         .collect();
     (rows, Value::Array(alone))
 }
 
 #[test]
-fn a_long_list_answers_what_each_issue_answers_alone() {
+fn a_long_list_answers_what_each_task_answers_alone() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (mut state, project_id) = tracked_with_origin(&state_root);
@@ -166,8 +166,8 @@ fn a_long_list_answers_what_each_issue_answers_alone() {
         .iter()
         .map(|row| row["id"].as_str().unwrap())
         .collect();
-    assert_eq!(listed_ids, newest_first, "newest first, every issue once");
-    assert_eq!(rows, alone, "each row is what reading the issue alone says");
+    assert_eq!(listed_ids, newest_first, "newest first, every task once");
+    assert_eq!(rows, alone, "each row is what reading the task alone says");
     let departed_name = rows.as_array().unwrap().iter().find_map(|row| {
         row["identities"][&cast.departed]["name"]
             .as_str()
@@ -181,15 +181,15 @@ fn a_long_list_answers_what_each_issue_answers_alone() {
     assert!(
         filled
             .iter()
-            .filter(|issue| !issue.identities.is_empty())
+            .filter(|task| !task.identities.is_empty())
             .count()
-            >= ISSUES / 2,
+            >= TASKS / 2,
         "the list fills identities into the records it read"
     );
     assert_eq!(
         stored_records(&state, &ids),
         filled,
-        "reading each issue alone found nothing the list had not already filled"
+        "reading each task alone found nothing the list had not already filled"
     );
 
     let (again, _) = listed_and_each_alone(&mut state, json!({ "project_id": project_id }));
@@ -199,14 +199,14 @@ fn a_long_list_answers_what_each_issue_answers_alone() {
         &mut state,
         json!({ "project_id": project_id, "label": "sweep" }),
     );
-    assert_eq!(labelled.as_array().unwrap().len(), ISSUES / 5);
+    assert_eq!(labelled.as_array().unwrap().len(), TASKS / 5);
     assert_eq!(labelled, labelled_alone);
 }
 
 /// Naming an agent no live roster holds reads the stored runs and plans. The
 /// list read them once per call (#128), but then cloned every stored run's
 /// roster — each agent's conversation tail — for every such agent it named:
-/// 450 ms held per `issues.list` on a real store (#131). An agent is found in
+/// 450 ms held per `tasks.list` on a real store (#131). An agent is found in
 /// the stored records without copying a conversation. Count those reads so
 /// host load cannot change whether this regression is caught.
 #[test]
@@ -225,13 +225,13 @@ fn naming_many_departed_agents_copies_no_conversation() {
             .unwrap()
             .to_string();
         let store = state.tracker_store().unwrap();
-        let mut issue = store.load_tracker_issue(&id).unwrap().unwrap();
-        issue.body = (0..8)
+        let mut task = store.load_tracker_task(&id).unwrap().unwrap();
+        task.body = (0..8)
             .map(|n| format!("@agent:agent-ghost-{} ", batch * 8 + n))
             .collect::<String>()
             + &format!("and @agent:{}", departed[batch % DEPARTED]);
-        issue.identities.clear();
-        store.save_tracker_issue_activity(&issue, &[], &[]).unwrap();
+        task.identities.clear();
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
     }
 
     let store = state.tracker_store().unwrap();
@@ -239,11 +239,11 @@ fn naming_many_departed_agents_copies_no_conversation() {
         store.load_all_run_rosters().unwrap().len() + store.load_all_plan_rosters().unwrap().len();
     assert_eq!(roster_reads, DEPARTED, "the fixture has eight stored runs");
     let before = crate::store::Store::agent_read_counts();
-    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
     let after = crate::store::Store::agent_read_counts();
 
     assert_eq!(listed["ok"], true, "{listed:?}");
-    let rows = listed["result"]["issues"].as_array().unwrap();
+    let rows = listed["result"]["tasks"].as_array().unwrap();
     assert_eq!(rows.len(), GHOSTS / 8);
     assert!(rows.iter().enumerate().all(|(index, row)| {
         let batch = GHOSTS / 8 - 1 - index;
@@ -252,12 +252,12 @@ fn naming_many_departed_agents_copies_no_conversation() {
     assert_eq!(
         after.0 - before.0,
         roster_reads,
-        "issues.list reads each stored roster once"
+        "tasks.list reads each stored roster once"
     );
     assert_eq!(
         after.1 - before.1,
         0,
-        "issues.list does not load departed agents' conversations"
+        "tasks.list does not load departed agents' conversations"
     );
 
     state.tracker_store().unwrap().load_all_runs().unwrap();

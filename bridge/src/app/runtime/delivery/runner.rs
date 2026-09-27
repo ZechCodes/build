@@ -26,7 +26,7 @@ impl DeliveryRunner {
     /// charged to `timer`, and deliver it off this thread. The one call every
     /// path that queues a turn makes once its own state change is durable.
     ///
-    /// A turn left settling (an issue notice waiting out its window) has
+    /// A turn left settling (a task notice waiting out its window) has
     /// nothing else to drain it when the window ends, so the same acquisition
     /// asks for a wake then.
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
@@ -238,7 +238,7 @@ impl DeliveryRunner {
                 }
             }
             match delivered {
-                // An issue whose session is over (approved, abandoned) holds no
+                // A task whose session is over (approved, abandoned) holds no
                 // workspace — and its checkout is the project's primary one,
                 // which is emphatically not a place to spawn a replacement for
                 // work nobody is doing. The turn stays on its thread; the
@@ -276,5 +276,5 @@ pub(in crate::app) const AGENT_DELIVERY_METHOD: &str = "agent.deliver";
 
 /// Where a settle window's wake is charged: a timer, not any client's frame.
 pub(in crate::app) const SETTLE_WAKE_METHOD: &str = "agent.settle_wake";
-/// The frame a usage limit's reset wakes the delivery queue under (issue #58).
+/// The frame a usage limit's reset wakes the delivery queue under (task #58).
 pub(in crate::app) const USAGE_LIMIT_WAKE_METHOD: &str = "agent.usage_limit_wake";

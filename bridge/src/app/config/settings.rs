@@ -16,7 +16,7 @@ impl AppState {
             "default_harness": self.default_harness,
             "project_agent": self.project_agent,
             "role_models": self.role_models,
-            "watch_agent_filed_issues": self.watch_agent_filed_issues,
+            "watch_agent_filed_tasks": self.watch_agent_filed_tasks,
             "compact_above_tokens": self.compact_above_tokens,
             "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
@@ -140,9 +140,9 @@ impl AppState {
             .role_models
             .clone()
             .unwrap_or_else(|| self.role_models.clone());
-        let watch_agent_filed_issues = patch
-            .watch_agent_filed_issues
-            .unwrap_or(self.watch_agent_filed_issues);
+        let watch_agent_filed_tasks = patch
+            .watch_agent_filed_tasks
+            .unwrap_or(self.watch_agent_filed_tasks);
         let compact_above_tokens = patch
             .compact_above_tokens
             .unwrap_or(self.compact_above_tokens);
@@ -156,7 +156,7 @@ impl AppState {
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
         config["role_models"] = json!(role_models);
-        config["watch_agent_filed_issues"] = json!(watch_agent_filed_issues);
+        config["watch_agent_filed_tasks"] = json!(watch_agent_filed_tasks);
         config["compact_above_tokens"] = json!(compact_above_tokens);
         config["workspace_idle_secs"] = json!(reclaim_settings.idle_after_secs);
         config["workspace_prune"] = json!(reclaim_settings.prune);
@@ -167,7 +167,7 @@ impl AppState {
         self.isolation = isolation;
         self.project_agent = project_agent;
         self.role_models = role_models;
-        self.watch_agent_filed_issues = watch_agent_filed_issues;
+        self.watch_agent_filed_tasks = watch_agent_filed_tasks;
         self.compact_above_tokens = compact_above_tokens;
         if reclaim_settings != self.reclaim_settings {
             self.reclaim_settings = reclaim_settings;

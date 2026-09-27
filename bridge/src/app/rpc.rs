@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
 /// The verbs that count as the human acting on an entity, and the param naming
-/// it. Deliberately asymmetric: opening a stage doc counts, because an issue is
+/// it. Deliberately asymmetric: opening a stage doc counts, because a task is
 /// a queue you triage by reading and reading one IS engaging with it — while a
 /// worktree needs an action, since looking at a diff is not the same as doing
 /// something about it. An agent's own work never appears here; if it did, the
@@ -41,7 +41,7 @@ pub(in crate::app) const INTERACTION_VERBS: &[(&str, &str)] = &[
     ("thread.post", "entity_id"),
 ];
 
-/// The verbs that are the user acting, for the user's session (spec: Issues
+/// The verbs that are the user acting, for the user's session (spec: Tasks
 /// dashboard → Done since you left). Broader than [`INTERACTION_VERBS`]: that
 /// table decides which entity rises in the rail, this one only whether the
 /// user was here. Reading counts, so the read marks are in it.
@@ -89,20 +89,20 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "git.stash",
     "git.stash_pop",
     "git.unstage",
-    "issues.assign",
-    "issues.attach",
-    "issues.close",
-    "issues.comment",
-    "issues.create",
-    "issues.dismiss",
-    "issues.link",
-    "issues.read_through",
-    "issues.reopen",
-    "issues.track",
-    "issues.untrack",
-    "issues.unwatch",
-    "issues.update",
-    "issues.watch",
+    "tasks.assign",
+    "tasks.attach",
+    "tasks.close",
+    "tasks.comment",
+    "tasks.create",
+    "tasks.dismiss",
+    "tasks.link",
+    "tasks.read_through",
+    "tasks.reopen",
+    "tasks.track",
+    "tasks.untrack",
+    "tasks.unwatch",
+    "tasks.update",
+    "tasks.watch",
     "project.add",
     "project.add_source",
     "project.clone",
@@ -182,7 +182,7 @@ pub(in crate::app) fn dispatch_frame(
 
     // Signaling first, and off the app mutex entirely: an offer or a candidate
     // touches the peers and nothing else, and an ICE restart that waits behind
-    // a busy app is a phone that gives up on the device (issue #128). Admission
+    // a busy app is a phone that gives up on the device (task #128). Admission
     // is not consulted either — a peer negotiating across an update handoff
     // reads and writes no state the handoff protects.
     if let Some(outcome) = signaling(peers, &sender, &method, &params) {
@@ -387,7 +387,7 @@ fn routed(
 ///
 /// One list rather than a per-verb table, because the surface addresses an
 /// entity three ways: by a bare `id` where the caller holds one entity and
-/// knows nothing else about it, by its kind (`issue_id` / `run_id` /
+/// knows nothing else about it, by its kind (`task_id` / `run_id` /
 /// `worktree_id`) where the verb is that kind's, and out of the result where
 /// the call is what minted it. `project_id` is deliberately absent: a project
 /// is not an entity a browser holds a detail view of.
@@ -395,7 +395,7 @@ pub(in crate::app) fn entity_ids_of(params: &Value, result: &Value) -> Vec<Strin
     const ENTITY_KEYS: [&str; 7] = [
         "id",
         "entity_id",
-        "issue_id",
+        "task_id",
         "plan_id",
         "run_id",
         "worktree_id",
@@ -473,13 +473,13 @@ fn allowed_during_project_deletion(method: &str) -> bool {
             | "git.show"
             | "git.status"
             | "git.unpushed"
-            | "issue.diff"
-            | "issue.stage_diff"
-            | "issue.doc"
-            | "issue.get"
-            | "issue.list"
-            | "issue.stage_doc"
-            | "issue.stages"
+            | "task.diff"
+            | "task.stage_diff"
+            | "task.doc"
+            | "task.get"
+            | "task.list"
+            | "task.stage_doc"
+            | "task.stages"
             | "plan.doc"
             | "plan.get"
             | "plan.list"
@@ -502,9 +502,9 @@ fn allowed_during_project_deletion(method: &str) -> bool {
 }
 
 /// Legacy documents remain readable, but workspaces no longer launch or
-/// mutate the retired issue/planning workflow.
+/// mutate the retired task/planning workflow.
 fn retired_planning_operation(method: &str) -> bool {
-    if method.starts_with("issue.") || method.starts_with("plan.") {
+    if method.starts_with("task.") || method.starts_with("plan.") {
         let action = method.split_once('.').map(|(_, action)| action);
         return !matches!(
             action,
@@ -639,7 +639,7 @@ impl AppState {
     /// The retirement guard runs before BOTH. Planning was retired upstream by
     /// keeping its verbs served and making the mutating ones refuse, so the
     /// check has to precede the facade that would otherwise run them: a
-    /// retired verb answers [`crate::app::issues::ISSUES_RETIRED_ERROR`], not
+    /// retired verb answers [`crate::app::tasks::TASKS_RETIRED_ERROR`], not
     /// `unknown_method`, and its reads (`get`, `list`, `doc`, the stage and
     /// diff reads) go on through v1 untouched.
     ///
@@ -656,7 +656,7 @@ impl AppState {
             // `unavailable`, not `internal`: the verb is served and its
             // refusal is understood — the capability behind it is gone.
             return Err(ApiError::unavailable(
-                crate::app::issues::ISSUES_RETIRED_ERROR,
+                crate::app::tasks::TASKS_RETIRED_ERROR,
             ));
         }
         if let Some(answered) = crate::api::v1::dispatch(self, method, params) {
@@ -713,7 +713,7 @@ impl AppState {
             .filter(|(verb, _)| *verb == method)
             .filter_map(|(_, key)| param(key))
             .collect();
-        // Implementing an issue is an interaction with BOTH: the plan you acted
+        // Implementing a task is an interaction with BOTH: the plan you acted
         // on and the run you just made.
         if method == "run.create" {
             touched.extend(param("plan_id"));

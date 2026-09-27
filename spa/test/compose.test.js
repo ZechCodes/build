@@ -142,7 +142,7 @@ describe("a capture as an inbox row", () => {
     const row = captureRow(
       capture({
         state: "routed",
-        routing: { project_id: "p1", kind: "issue", target_id: "plan-7", routed_at: "t", rationale: "no branch names this" },
+        routing: { project_id: "p1", kind: "task", target_id: "plan-7", routed_at: "t", rationale: "no branch names this" },
       }),
       { projectName: "relaydb" },
     );
@@ -150,7 +150,7 @@ describe("a capture as an inbox row", () => {
     expect(row.capture_id).toBe("capture-1");
     expect(row.project_id).toBe("p1");
     expect(row.project).toBe("relaydb");
-    expect(row.issue_id).toBe("plan-7");
+    expect(row.task_id).toBe("plan-7");
     expect(row.branch).toBeNull();
     expect(row.title).toBe("fix the login redirect");
     expect(row.state).toBe("routed");
@@ -174,7 +174,7 @@ describe("a capture as an inbox row", () => {
       capture({ state: "routed", routing: { project_id: "p1", kind: "branch", target_id: "build/login", routed_at: "t" } }),
     );
     expect(row.branch).toBe("build/login");
-    expect(row.issue_id).toBeNull();
+    expect(row.task_id).toBeNull();
   });
 
   it("reads a capture the client is still holding as a row of its own", () => {
@@ -223,9 +223,9 @@ describe("how long a routed capture stays visible", () => {
 // router entirely and speaks the same two verbs the router's own tools do.
 
 describe("the manual route", () => {
-  it("turns a retired issue choice into a branch dispatch", () => {
+  it("turns a retired task choice into a branch dispatch", () => {
     expect(
-      manualRoute({ kind: "issue", projectId: "p1", text: "add a /health endpoint", agentParams: { provider: "codex" } }),
+      manualRoute({ kind: "task", projectId: "p1", text: "add a /health endpoint", agentParams: { provider: "codex" } }),
     ).toEqual({
       method: "branch.dispatch",
       params: { instruction: "add a /health endpoint", project_id: "p1", provider: "codex" },
@@ -244,7 +244,7 @@ describe("the manual route", () => {
   });
 
   it("opens what it made", () => {
-    expect(manualRouteDestination("issue", { project_id: "p1", issue_id: "iss-3" }, "p1")).toBeNull();
+    expect(manualRouteDestination("task", { project_id: "p1", task_id: "iss-3" }, "p1")).toBeNull();
     expect(manualRouteDestination("branch", { project_id: "p1", branch: "build/login" }, "p1")).toEqual({
       name: "branch",
       projectId: "p1",
@@ -258,7 +258,7 @@ describe("the manual route", () => {
   // open leaves the capture where the board is already showing it.
   it("opens nothing when the reply names nothing", () => {
     expect(manualRouteDestination("branch", { project_id: "p1" }, "p1")).toBeNull();
-    expect(manualRouteDestination("issue", { project_id: "p1" }, "p1")).toBeNull();
+    expect(manualRouteDestination("task", { project_id: "p1" }, "p1")).toBeNull();
     expect(manualRouteDestination("branch", null, "p1")).toBeNull();
   });
 });
@@ -270,7 +270,7 @@ describe("the branches a project already has", () => {
       { kind: "branch", project_id: "p1", branch: "main" },
       { kind: "branch", project_id: "p1", branch: "build/login" },
       { kind: "branch", project_id: "p2", branch: "other" },
-      { kind: "issue", project_id: "p1", branch: null },
+      { kind: "task", project_id: "p1", branch: null },
     ];
     expect(branchOptions(items, "p1")).toEqual(["build/login", "main"]);
     expect(branchOptions(items, "p3")).toEqual([]);

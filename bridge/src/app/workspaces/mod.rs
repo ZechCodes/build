@@ -385,8 +385,8 @@ impl AppState {
     /// The workspace a conversation belongs to, if it belongs to one.
     ///
     /// The other direction of [`Self::workspace_conversation_owner`], asked by
-    /// assignment: handing an issue to an agent names a conversation, and what
-    /// the issue wants recorded is the checkout that conversation works in.
+    /// assignment: handing a task to an agent names a conversation, and what
+    /// the task wants recorded is the checkout that conversation works in.
     /// `None` for the project's own conversation, which has no workspace.
     pub(in crate::app) fn workspace_of_conversation(&self, entity_id: &str) -> Option<String> {
         self.workspaces

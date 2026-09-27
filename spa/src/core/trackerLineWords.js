@@ -1,4 +1,4 @@
-// The words an issue line says: what was done, and who did it.
+// The words a task line says: what was done, and who did it.
 //
 // One table for both lines — the tracking notice (#38) and the agent's own
 // action line (#18) — because the same verb reaching a reader two ways with
@@ -11,7 +11,7 @@
 // "Agent 01M2" — it is not an agent of any workspace, so the feed had no label
 // for it and it fell through to four characters of its id.
 //
-// Since #63 this is also the tracker's only naming function: the issue page,
+// Since #63 this is also the tracker's only naming function: the task page,
 // the board, the list and the rail all read an actor through `actorName`, so
 // the project's agent cannot be "Build agent" on a notice line and "Agent
 // 01M2" on its own comment two panes away.
@@ -33,11 +33,11 @@ const ACTION_WORDS = Object.freeze({
   "commented on": "commented on",
   "assign": "assigned",
   "assigned": "assigned",
-  // Handing an issue back is its own word. A line that called it "assigned"
+  // Handing a task back is its own word. A line that called it "assigned"
   // said the opposite of what happened.
   "unassign": "unassigned",
   "unassigned": "unassigned",
-  // The wire's word is `issues.update`; a reader calls it an edit, and the
+  // The wire's word is `tasks.update`; a reader calls it an edit, and the
   // reader's word is the one on screen.
   "update": "edited",
   "updated": "edited",

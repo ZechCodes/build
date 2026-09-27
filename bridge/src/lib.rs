@@ -86,6 +86,7 @@ pub mod reaper;
 pub mod reclaim;
 pub mod relay;
 pub mod relay_server;
+pub mod renamed_ids;
 pub mod resume;
 pub mod router;
 pub mod rtc;

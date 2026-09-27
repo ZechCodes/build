@@ -1,5 +1,5 @@
 The reviewer left notes on the plan at {plan_path}, under Build's scratch docs
-directory for this issue:
+directory for this task:
 
 {docs_dir}
 

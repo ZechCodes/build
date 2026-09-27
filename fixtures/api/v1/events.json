@@ -19,7 +19,7 @@
             "project": "build",
             "branch": "build/cache-first",
             "run_id": "run-7",
-            "issue_id": null,
+            "task_id": null,
             "worktree_id": "wt-d8b221956672",
             "worktree_path": "/home/dev/worktrees/cache-first",
             "muted": false,
@@ -292,9 +292,9 @@
       "items": [
         {
           "entity_id": "proj-1",
-          "issues": {
-            "issue_ids": [
-              "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
+          "tasks": {
+            "task_ids": [
+              "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D"
             ],
             "truncated": false
           }

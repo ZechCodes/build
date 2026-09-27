@@ -40,7 +40,7 @@ export async function seedChatOverview() {
     unread_count: 0, working: false, watched: true, ...extra,
   }));
   const rows = [
-    ["project-run", null, agentsOf("project-run", [["project-agent", "Build", "Orchestrate Build issues"]])],
+    ["project-run", null, agentsOf("project-run", [["project-agent", "Build", "Orchestrate Build tasks"]])],
     ["current-run", "workspace-current", agentsOf("current-run", [
       ["current-agent", "Chat overview", "Chat overview navigation", { working: true }],
     ])],
@@ -52,7 +52,7 @@ export async function seedChatOverview() {
       ["busy-1", "Bridge audit", "Audit bridge logic"],
       ["busy-2", "Flaky tests", "Fix flaky SPA tests", { unread_count: 2 }],
       ["busy-3", "Inbox order", "Inbox session order", { working: true }],
-      ["busy-4", "Issue unread", "Issue unread line"],
+      ["busy-4", "Task unread", "Task unread line"],
       ["busy-5", "Comment links", "Comment and commit links"],
     ])],
     ["idle-run", "workspace-idle", []],
@@ -62,7 +62,7 @@ export async function seedChatOverview() {
     "current-agent": "Rendering the overview scopes.",
     "quiet-agent": "Hero copy is down to two lines.",
     "quiet-review": "Two notes on the second paragraph.",
-    "busy-1": "Five findings in the audit, filed as issues.",
+    "busy-1": "Five findings in the audit, filed as tasks.",
     "busy-2": "Three fixed-turn waits replaced with conditions.",
     "busy-3": "Anchor is the first message after a 12h gap.",
     "busy-4": "The unread line sits above the first new comment.",

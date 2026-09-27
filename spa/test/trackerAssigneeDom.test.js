@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-// The assignee picker and the inline issue composer — the two surfaces that
+// The assignee picker and the inline task composer — the two surfaces that
 // ask the same question with the same control.
 //
 // Assigning IS dispatching, so the control says what the chosen option is about
@@ -9,9 +9,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { assignRefusalText, assigneeOptions, workspaceAgents } from "../src/core/trackerAssignee.js";
 import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
-import { attachmentsWentNowhere, composedIssueParams, openIssueComposer } from "../src/core/issueComposer.js";
+import { attachmentsWentNowhere, composedTaskParams, openTaskComposer } from "../src/core/taskComposer.js";
 import { labelsFromText } from "../src/core/trackerModel.js";
-import { issue } from "./trackerWireFixture.js";
+import { task } from "./trackerWireFixture.js";
 
 const PROJECT_KEY = "dev-1|proj-1";
 
@@ -46,7 +46,7 @@ const press = (selector) => document.querySelector(selector).click();
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  call = vi.fn(async () => ({ issue: issue({ id: "issue-1" }), dispatch: null }));
+  call = vi.fn(async () => ({ task: task({ id: "task-1" }), dispatch: null }));
 });
 
 afterEach(async () => {
@@ -57,7 +57,7 @@ afterEach(async () => {
 describe("the picker", () => {
   const open = (over = {}) => {
     handle = openAssigneePicker({
-      issue: issue({ id: "issue-1", number: 12 }),
+      task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",
       catalog: CATALOG,
@@ -79,9 +79,9 @@ describe("the picker", () => {
   // workspace.
   it("says what the chosen option is about to do", async () => {
     open();
-    expect(document.querySelector(".issue-assignee-hint").textContent).toBe("Nobody holds it. Nothing running is stopped.");
+    expect(document.querySelector(".task-assignee-hint").textContent).toBe("Nobody holds it. Nothing running is stopped.");
     await choose("new_workspace");
-    expect(document.querySelector(".issue-assignee-hint").textContent)
+    expect(document.querySelector(".task-assignee-hint").textContent)
       .toBe("Cuts a workspace in this project and starts an agent on it.");
   });
 
@@ -101,23 +101,23 @@ describe("the picker", () => {
     expect(document.querySelector(".agent-choice")).toBeNull();
     await choose("new_agent:ws-1");
     expect(document.querySelector(".agent-choice")).not.toBeNull();
-    expect(document.querySelector("#issue-assign-workspace")).toBeNull();
+    expect(document.querySelector("#task-assign-workspace")).toBeNull();
   });
 
   it("asks a new workspace for its name and isolation, and nothing else for it", async () => {
     open();
     await choose("new_workspace");
-    expect(document.querySelector("#issue-assign-workspace")).not.toBeNull();
-    expect(document.querySelector("#issue-assign-isolation")).not.toBeNull();
+    expect(document.querySelector("#task-assign-workspace")).not.toBeNull();
+    expect(document.querySelector("#task-assign-isolation")).not.toBeNull();
   });
 
-  it("assigns through issues.assign with the tagged shape", async () => {
+  it("assigns through tasks.assign with the tagged shape", async () => {
     open();
     await choose("agent:agent-1");
     press("[data-assign-go]");
     await flush();
-    expect(call).toHaveBeenCalledWith("issues.assign", {
-      issue_id: "issue-1", assignee: { kind: "agent", agent_id: "agent-1" },
+    expect(call).toHaveBeenCalledWith("tasks.assign", {
+      task_id: "task-1", assignee: { kind: "agent", agent_id: "agent-1" },
     });
   });
 
@@ -129,11 +129,11 @@ describe("the picker", () => {
   });
 
   // A hand-off note belongs in the conversation it was said in, not on the
-  // issue.
+  // task.
   it("carries a note when one was written, and nothing when it was not", async () => {
     open();
     await choose("project_agent");
-    const note = document.querySelector("#issue-assign-note");
+    const note = document.querySelector("#task-assign-note");
     note.value = "  look at the drag handler  ";
     note.dispatchEvent(new Event("input"));
     press("[data-assign-go]");
@@ -165,7 +165,7 @@ describe("the picker", () => {
 
   it("hands the whole answer back, the dispatch with it", async () => {
     const onAssigned = vi.fn();
-    call = vi.fn(async () => ({ issue: issue({ id: "issue-1" }), dispatch: { kind: "new_workspace", workspace_id: "ws-9" } }));
+    call = vi.fn(async () => ({ task: task({ id: "task-1" }), dispatch: { kind: "new_workspace", workspace_id: "ws-9" } }));
     open({ callRpc: call, onAssigned });
     await choose("project_agent");
     press("[data-assign-go]");
@@ -175,13 +175,13 @@ describe("the picker", () => {
   });
 });
 
-describe("the inline issue composer", () => {
+describe("the inline task composer", () => {
   let slot;
 
   const open = (over = {}) => {
     slot = document.createElement("div");
     document.body.append(slot);
-    handle = openIssueComposer(slot, {
+    handle = openTaskComposer(slot, {
       projectId: "proj-1",
       projectName: "Build",
       columns: null,
@@ -212,8 +212,8 @@ describe("the inline issue composer", () => {
 
   it("asks for a title, a body, a column, a priority, labels and an assignee", () => {
     open();
-    expect(document.querySelector("#issue-new-summary")).not.toBeNull();
-    expect(document.querySelector("#issue-new-body")).not.toBeNull();
+    expect(document.querySelector("#task-new-summary")).not.toBeNull();
+    expect(document.querySelector("#task-new-body")).not.toBeNull();
     for (const name of ["status", "priority", "labels"]) expect(menu(name)).not.toBeNull();
     expect(document.querySelector("[data-assignee-select]")).not.toBeNull();
   });
@@ -221,28 +221,28 @@ describe("the inline issue composer", () => {
   // #57: the same paperclip, paste and drop the chat composer has.
   it("takes files, with the conversation's own tray", () => {
     open();
-    expect(document.querySelector(".issue-compose .composer.attachable")).not.toBeNull();
+    expect(document.querySelector(".task-compose .composer.attachable")).not.toBeNull();
     expect(document.querySelector(".composer-attach")).not.toBeNull();
     expect(document.querySelector(".composer-dropmask")).not.toBeNull();
   });
 
   // A press that cannot work is worse than no press: a bridge with no
-  // `issues.attach` gets the plain box, not one that apologises afterwards.
+  // `tasks.attach` gets the plain box, not one that apologises afterwards.
   it("offers no paperclip at all against a bridge that cannot carry files", () => {
     open({ attachable: false });
     expect(document.querySelector(".composer-attach")).toBeNull();
     expect(document.querySelector(".composer-tray")).toBeNull();
     expect(document.querySelector(".composer-dropmask")).toBeNull();
-    expect(document.querySelector(".issue-compose .composer.attachable")).toBeNull();
+    expect(document.querySelector(".task-compose .composer.attachable")).toBeNull();
     // And the rest of the form is untouched — this is one affordance gone,
     // not a degraded composer.
-    expect(document.querySelector("#issue-new-summary")).not.toBeNull();
-    expect(document.querySelector("#issue-new-body")).not.toBeNull();
+    expect(document.querySelector("#task-new-summary")).not.toBeNull();
+    expect(document.querySelector("#task-new-body")).not.toBeNull();
   });
 
   it("still files, and carries no attachments, without the tray", async () => {
     open({ attachable: false });
-    type("#issue-new-summary", "Kanban drag");
+    type("#task-new-summary", "Kanban drag");
     press("[data-compose-file]");
     await flush();
     expect(call.mock.calls[0][1]).toEqual({ project_id: "proj-1", title: "Kanban drag" });
@@ -250,37 +250,37 @@ describe("the inline issue composer", () => {
 
   it("cancels without a confirm when there is nothing to throw away", async () => {
     open({ attachable: false });
-    slot.querySelector(".issue-compose").dispatchEvent(
+    slot.querySelector(".task-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
     await flush();
-    expect(slot.querySelector(".issue-compose")).toBeNull();
+    expect(slot.querySelector(".task-compose")).toBeNull();
   });
 
-  it("will not file an issue with no title", async () => {
+  it("will not file a task with no title", async () => {
     open();
     press("[data-compose-file]");
     await flush();
     expect(call).not.toHaveBeenCalled();
-    expect(document.querySelector(".issue-compose-error").textContent).toBe("An issue needs a title.");
+    expect(document.querySelector(".task-compose-error").textContent).toBe("A task needs a title.");
   });
 
   // A field nobody filled in is left off: the verb's own defaults are the
   // record's defaults, and an empty string would store one.
   it("sends only what was filled in", async () => {
     open();
-    type("#issue-new-summary", " Kanban drag does not persist ");
+    type("#task-new-summary", " Kanban drag does not persist ");
     press("[data-compose-file]");
     await flush();
-    expect(call).toHaveBeenCalledWith("issues.create", {
+    expect(call).toHaveBeenCalledWith("tasks.create", {
       project_id: "proj-1", title: "Kanban drag does not persist",
     });
   });
 
   it("sends the body, the labels, the priority and the column when they were", async () => {
     open();
-    type("#issue-new-summary", "Kanban drag");
-    type("#issue-new-body", "Dragging a card…");
+    type("#task-new-summary", "Kanban drag");
+    type("#task-new-body", "Dragging a card…");
     await pickInMenu("labels", "bug");
     await pickInMenu("labels", "ui");
     await pickInMenu("priority", "high");
@@ -294,10 +294,10 @@ describe("the inline issue composer", () => {
   });
 
   // A filter chooses from what is; a composer has to be able to name a label
-  // nobody has used yet, which is most of what labelling a new issue is.
+  // nobody has used yet, which is most of what labelling a new task is.
   it("invents a label that is not on the list yet", async () => {
     open();
-    type("#issue-new-summary", "Kanban drag");
+    type("#task-new-summary", "Kanban drag");
     menu("labels").querySelector(".fmenu-press").click();
     const search = menu("labels").querySelector(".fmenu-search");
     search.value = "kanban";
@@ -311,11 +311,11 @@ describe("the inline issue composer", () => {
     expect(call.mock.calls[0][1].labels).toEqual(["kanban"]);
   });
 
-  // `issues.create` runs the whole of `issues.assign` inside its own
+  // `tasks.create` runs the whole of `tasks.assign` inside its own
   // transaction, so filing and dispatching is one press.
   it("files and dispatches in one press", async () => {
     open();
-    type("#issue-new-summary", "Kanban drag");
+    type("#task-new-summary", "Kanban drag");
     await choose("project_agent");
     press("[data-compose-file]");
     await flush();
@@ -324,7 +324,7 @@ describe("the inline issue composer", () => {
 
   it("says as much on the press", async () => {
     open();
-    expect(document.querySelector("[data-compose-file]").textContent).toBe("File issue");
+    expect(document.querySelector("[data-compose-file]").textContent).toBe("File task");
     await choose("new_workspace");
     expect(document.querySelector("[data-compose-file]").textContent).toBe("File and start");
   });
@@ -335,37 +335,37 @@ describe("the inline issue composer", () => {
   it("keeps the workspace-name field while it is being typed in", async () => {
     open();
     await choose("new_workspace");
-    const name = document.querySelector("#issue-new-workspace");
+    const name = document.querySelector("#task-new-workspace");
     name.focus();
     name.value = "kanban-fix";
     name.dispatchEvent(new Event("input"));
     await flush();
-    expect(document.querySelector("#issue-new-workspace")).toBe(name);
+    expect(document.querySelector("#task-new-workspace")).toBe(name);
     expect(document.activeElement).toBe(name);
   });
 
   // #57's keys. Enter in a one-line field means "done with this line", and the
-  // next line is the description — a title is rarely the whole issue.
+  // next line is the description — a title is rarely the whole task.
   it("moves from the title to the body on enter, and does not file", async () => {
     open();
-    type("#issue-new-summary", "Kanban drag");
-    const title = document.querySelector("#issue-new-summary");
+    type("#task-new-summary", "Kanban drag");
+    const title = document.querySelector("#task-new-summary");
     title.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await flush();
-    expect(document.activeElement).toBe(document.querySelector("#issue-new-body"));
+    expect(document.activeElement).toBe(document.querySelector("#task-new-body"));
     expect(call).not.toHaveBeenCalled();
   });
 
   it("files on cmd/ctrl+enter, from either field", async () => {
-    for (const [field, modifier] of [["#issue-new-summary", "metaKey"], ["#issue-new-body", "ctrlKey"]]) {
-      call = vi.fn(async () => ({ issue: issue({ id: "issue-1" }) }));
+    for (const [field, modifier] of [["#task-new-summary", "metaKey"], ["#task-new-body", "ctrlKey"]]) {
+      call = vi.fn(async () => ({ task: task({ id: "task-1" }) }));
       open({ callRpc: call });
-      type("#issue-new-summary", "Kanban drag");
+      type("#task-new-summary", "Kanban drag");
       document.querySelector(field).dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", [modifier]: true, bubbles: true, cancelable: true }),
       );
       await flush();
-      expect(call.mock.calls[0][0]).toBe("issues.create");
+      expect(call.mock.calls[0][0]).toBe("tasks.create");
       handle = null;
     }
   });
@@ -374,39 +374,39 @@ describe("the inline issue composer", () => {
   // to throw. Confirming that you typed nothing is the confirm nobody reads.
   it("shuts on escape with an empty form, and asks first once there is text", async () => {
     open();
-    slot.querySelector(".issue-compose").dispatchEvent(
+    slot.querySelector(".task-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
     await flush();
-    expect(slot.querySelector(".issue-compose")).toBeNull();
+    expect(slot.querySelector(".task-compose")).toBeNull();
 
     open();
-    type("#issue-new-summary", "Kanban drag");
-    slot.querySelector(".issue-compose").dispatchEvent(
+    type("#task-new-summary", "Kanban drag");
+    slot.querySelector(".task-compose").dispatchEvent(
       new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
     );
     await flush();
     // Still there, behind a confirm that has not been answered.
-    expect(slot.querySelector(".issue-compose")).not.toBeNull();
+    expect(slot.querySelector(".task-compose")).not.toBeNull();
     expect(document.querySelector("[data-confirm-ok]")).not.toBeNull();
     document.querySelector("[data-confirm-ok]").click();
     await flush();
-    expect(slot.querySelector(".issue-compose")).toBeNull();
+    expect(slot.querySelector(".task-compose")).toBeNull();
   });
 
-  it("reads the issue out of either answer shape", async () => {
+  it("reads the task out of either answer shape", async () => {
     for (const answer of [
-      { issue: issue({ id: "issue-1" }) },
-      { issue: issue({ id: "issue-1" }), dispatch: null },
-      { issue: issue({ id: "issue-1" }), dispatch: { kind: "new_workspace", workspace_id: "ws-9" } },
+      { task: task({ id: "task-1" }) },
+      { task: task({ id: "task-1" }), dispatch: null },
+      { task: task({ id: "task-1" }), dispatch: { kind: "new_workspace", workspace_id: "ws-9" } },
     ]) {
       const onFiled = vi.fn();
       call = vi.fn(async () => answer);
       open({ callRpc: call, onFiled });
-      type("#issue-new-summary", "Kanban drag");
+      type("#task-new-summary", "Kanban drag");
       press("[data-compose-file]");
       await flush();
-      expect(onFiled.mock.calls[0][0].issue.id).toBe("issue-1");
+      expect(onFiled.mock.calls[0][0].task.id).toBe("task-1");
       handle = null; // the composer closed itself on success
     }
   });
@@ -422,7 +422,7 @@ describe("labels as a person types them", () => {
 describe("the create params on their own", () => {
   it("leaves the default priority off, because the verb's default is the record's", () => {
     const draft = { title: "x", body: "", labels: [], priority: [], status: [] };
-    expect(composedIssueParams(draft, { projectId: "p1" })).toEqual({ project_id: "p1", title: "x" });
+    expect(composedTaskParams(draft, { projectId: "p1" })).toEqual({ project_id: "p1", title: "x" });
   });
 
   // #57: the files ride as the same `{path, name}` the thread's own
@@ -430,12 +430,12 @@ describe("the create params on their own", () => {
   it("carries the attachments that went up, and none when there were none", () => {
     const draft = { title: "x", labels: [], priority: [], status: [] };
     const files = [{ path: ".build/attachments/abc-shot.png", name: "shot.png" }];
-    expect(composedIssueParams(draft, { projectId: "p1", attachments: files }).attachments).toEqual(files);
-    expect(composedIssueParams(draft, { projectId: "p1", attachments: [] })).toEqual({ project_id: "p1", title: "x" });
+    expect(composedTaskParams(draft, { projectId: "p1", attachments: files }).attachments).toEqual(files);
+    expect(composedTaskParams(draft, { projectId: "p1", attachments: [] })).toEqual({ project_id: "p1", title: "x" });
   });
 });
 
-// `issues.assign` with `new_workspace` defers: cutting a checkout is real git,
+// `tasks.assign` with `new_workspace` defers: cutting a checkout is real git,
 // and the agent cannot exist until it is ready. The reply shape is unchanged —
 // every id filled in, no pending placeholder — but the wait is seconds to
 // minutes, where every other kind answers in milliseconds.
@@ -449,7 +449,7 @@ describe("the one kind that makes you wait", () => {
 
   const open = (over = {}) => {
     handle = openAssigneePicker({
-      issue: issue({ id: "issue-1", number: 12 }),
+      task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",
       catalog: CATALOG,
@@ -468,7 +468,7 @@ describe("the one kind that makes you wait", () => {
     press("[data-assign-go]");
     await flush();
     expect(pressText()).toBe("cutting the workspace…");
-    expect(document.querySelector(".issue-assign-waiting").textContent)
+    expect(document.querySelector(".task-assign-waiting").textContent)
       .toContain("This can take a minute on a large repository");
   });
 
@@ -480,17 +480,17 @@ describe("the one kind that makes you wait", () => {
     press("[data-assign-go]");
     await flush();
     expect(pressText()).toBe("assigning…");
-    expect(document.querySelector(".issue-assign-waiting")).toBeNull();
+    expect(document.querySelector(".task-assign-waiting")).toBeNull();
   });
 
   it("says nothing about waiting before the press", async () => {
     open();
     await choose("new_workspace");
     expect(pressText()).toBe("Assign and start");
-    expect(document.querySelector(".issue-assign-waiting")).toBeNull();
+    expect(document.querySelector(".task-assign-waiting")).toBeNull();
   });
 
-  // A failed cut writes nothing at all — the issue stays unassigned, in its old
+  // A failed cut writes nothing at all — the task stays unassigned, in its old
   // column, with no events — so there is nothing to reconcile and pressing
   // again IS the retry.
   it("keeps the draft and the dialog when the cut is refused", async () => {
@@ -520,10 +520,10 @@ describe("the one kind that makes you wait", () => {
 
 // Three things the picker must NOT do, which the dispatch's shape makes easy
 // to get wrong later.
-describe("what the picker leaves to the issue", () => {
+describe("what the picker leaves to the task", () => {
   const openOn = (over = {}) => {
     handle = openAssigneePicker({
-      issue: issue({ id: "issue-1", number: 12 }),
+      task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",
       catalog: CATALOG,
@@ -536,10 +536,10 @@ describe("what the picker leaves to the issue", () => {
   it("never reads workspace_id off the dispatch", async () => {
     // It is null for every kind but `new_workspace` — only set when the
     // dispatch MADE the workspace. What a surface wants is
-    // `issue.links.workspace_ids`, which records what was made OR used.
+    // `task.links.workspace_ids`, which records what was made OR used.
     const onAssigned = vi.fn();
     call = vi.fn(async () => ({
-      issue: issue({ id: "issue-1" }),
+      task: task({ id: "task-1" }),
       dispatch: { kind: "agent", workspace_id: null, entity_id: "run-1", agent_id: "agent-1", operation_id: "op-1" },
     }));
     openOn({ callRpc: call, onAssigned });
@@ -552,9 +552,9 @@ describe("what the picker leaves to the issue", () => {
   });
 
   it("sends no status of its own, so a dispatch moves the card or does not", async () => {
-    // A dispatch moves an issue to In progress only from Backlog or Ready.
+    // A dispatch moves a task to In progress only from Backlog or Ready.
     // The picker never says where the card should land — it assigns, and the
-    // re-read says where the issue ended up.
+    // re-read says where the task ended up.
     openOn();
     await choose("project_agent");
     press("[data-assign-go]");
@@ -569,17 +569,17 @@ describe("what the picker leaves to the issue", () => {
 // files (#57) — on a bridge that does not take them answers ok with neither:
 // no error, and nothing in the answer that says so.
 describe("what a bridge dropped on the floor", () => {
-  const filed = (over = {}) => ({ issue: issue({ id: "issue-1", number: 12, ...over }) });
+  const filed = (over = {}) => ({ task: task({ id: "task-1", number: 12, ...over }) });
   const FILES = [{ path: ".build/attachments/abc-shot.png", name: "shot.png" }];
 
   const fileWith = async (over, onFiled) => {
     const slot = document.createElement("div");
     document.body.append(slot);
-    handle = openIssueComposer(slot, {
+    handle = openTaskComposer(slot, {
       projectId: "proj-1", projectName: "Build", columns: null, labels: [],
       options: options(), catalog: CATALOG, callRpc: call, onFiled, ...over,
     });
-    const title = document.querySelector("#issue-new-summary");
+    const title = document.querySelector("#task-new-summary");
     title.value = "Kanban drag";
     title.dispatchEvent(new Event("input"));
     await choose("project_agent");
@@ -593,7 +593,7 @@ describe("what a bridge dropped on the floor", () => {
     expect(attachmentsWentNowhere(FILES, filed())).toBe(true);
     // Asked for files and got them: fine.
     expect(attachmentsWentNowhere(FILES, filed({ attachments: FILES }))).toBe(false);
-    // Sent none: an issue with no files is what was wanted.
+    // Sent none: a task with no files is what was wanted.
     expect(attachmentsWentNowhere([], filed())).toBe(false);
     expect(attachmentsWentNowhere(null, filed())).toBe(false);
   });

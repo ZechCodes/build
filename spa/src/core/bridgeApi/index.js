@@ -25,7 +25,7 @@ export const PRE_ALPHA_API_VERSION = "0.0.0";
 export const ADAPTERS = Object.freeze([v1]);
 
 /** The range this SPA declares in `session.hello`, spanning every adapter. */
-export const SPA_API_RANGE = ">=1.2.0 <2.0.0";
+export const SPA_API_RANGE = ">=2.0.0 <3.0.0";
 
 /** The version a greeting reports — `0.0.0` for one that reports none, or for
  *  no greeting at all (a bridge that refused `session.hello`). */

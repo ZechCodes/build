@@ -60,7 +60,7 @@ function delimiterAlignments(line) {
  * Stamped here rather than styled through whichever wrapper a view happens to
  * use, because the views do not agree: some wrap the output in `.markdown` and
  * some do not, and a rule hung on that class would fix the chat and miss the
- * issue page's docs. A bare `pre` rule would reach further than markdown — the
+ * task page's docs. A bare `pre` rule would reach further than markdown — the
  * terminal, the diff view, the revision pane all use one.
  *
  * So the renderer marks its own output (#50). Wherever it is rendered, the

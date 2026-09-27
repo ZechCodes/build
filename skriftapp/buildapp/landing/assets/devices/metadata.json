@@ -410,8 +410,8 @@
       "file": "scene-03-desktop.webp",
       "width": 1440,
       "height": 900,
-      "bytes": 46150,
-      "sha256": "2aed78fa31b5039c0da8e0b3b99a4e1e80e6cbeb4a5f12dcce2dd02f49e5b05d",
+      "bytes": 46042,
+      "sha256": "d96e926ab7a6a7fc2129a7fc1c797c5651923f3fcfe914f777a438e3da362c08",
       "content_bounds_px_bottom_left": [
         264,
         52,
@@ -424,8 +424,8 @@
         "blender": "4.5.14 LTS",
         "screen_fixtures": {
           "laptop": {
-            "file": "screens/ui12-issues-macbook.webp",
-            "sha256": "66e0c16399ed659f27518380755712d0ad6e7598f97fbb46d4f220b983bbdf60"
+            "file": "screens/ui12-tasks-macbook.webp",
+            "sha256": "1b0dc16a2a7980a91d24a41e6f5af891c46f07fbd4ac6bfbf33f9ec66ce4c1e3"
           }
         }
       }
@@ -434,8 +434,8 @@
       "file": "scene-03-mobile.webp",
       "width": 720,
       "height": 960,
-      "bytes": 22218,
-      "sha256": "dbd0e4e9ac54dbca27aa8f84a2c9a4c174043ca6c4432695ab525369867a39bc",
+      "bytes": 22138,
+      "sha256": "d582be1b2c8a4bfb6c7df53c958f592f7ec86432f4a8b0843975af5639866d78",
       "content_bounds_px_bottom_left": [
         88,
         244,
@@ -448,8 +448,8 @@
         "blender": "4.5.14 LTS",
         "screen_fixtures": {
           "laptop": {
-            "file": "screens/ui12-issues-macbook.webp",
-            "sha256": "66e0c16399ed659f27518380755712d0ad6e7598f97fbb46d4f220b983bbdf60"
+            "file": "screens/ui12-tasks-macbook.webp",
+            "sha256": "1b0dc16a2a7980a91d24a41e6f5af891c46f07fbd4ac6bfbf33f9ec66ce4c1e3"
           }
         }
       }

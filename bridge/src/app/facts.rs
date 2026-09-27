@@ -346,11 +346,11 @@ impl AppState {
     /// its cache and repaints the feed without asking anything back.
     ///
     /// `None` for an id the board paints no row for: a project's primary
-    /// checkout, a run that has been archived, a legacy issue. Those items
+    /// checkout, a run that has been archived, a legacy task. Those items
     /// stay the bare "refetch" they have always been.
     pub(in crate::app) fn entity_state_item(&self, entity_id: &str) -> Option<Value> {
         self.board_row(entity_id)
-            .or_else(|| self.legacy_issue_digest(entity_id))
+            .or_else(|| self.legacy_task_digest(entity_id))
     }
 
     /// The row `board.list` carries for this entity: a run's folded feed row,
@@ -391,11 +391,11 @@ impl AppState {
         ))
     }
 
-    /// The three-field digest a legacy issue still answers with. Issues left
+    /// The three-field digest a legacy task still answers with. Tasks left
     /// the board, so nothing paints a row for one; a client watching an old
     /// record hears the same lifecycle, agent count and attention it always
     /// heard.
-    fn legacy_issue_digest(&self, entity_id: &str) -> Option<Value> {
+    fn legacy_task_digest(&self, entity_id: &str) -> Option<Value> {
         let lifecycle = super::plan_state_str(&self.plans.get(entity_id)?.plan.state);
         let agents = self
             .entity_agents(entity_id)

@@ -144,7 +144,7 @@ export function projectEntityIds(view, projectKey) {
   for (const field of FEED_COLLECTIONS) {
     for (const row of view?.[field] || []) {
       if (row.projectKey !== projectKey) continue;
-      for (const id of [row.entity_id, row.run_id, row.issue_id, row.worktree_id, row.workspace_id, row.id]) {
+      for (const id of [row.entity_id, row.run_id, row.task_id, row.worktree_id, row.workspace_id, row.id]) {
         if (id) ids.add(id);
       }
     }

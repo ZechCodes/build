@@ -438,7 +438,7 @@ pub(in crate::app) fn agent_open_request(
 }
 
 /// `Ok(None)`: the owner's session ended while the spawn was reserved (a merge
-/// pruned the checkout, an issue was approved). The reservation is released
+/// pruned the checkout, a task was approved). The reservation is released
 /// and nothing is written to disk, so the pruned directory is not resurrected
 /// by the scaffold a spawn would otherwise lay down.
 pub(in crate::app) fn open_agent_session(
@@ -519,7 +519,7 @@ pub(in crate::app) fn open_agent_session(
 /// Put the opened tab in the registry and start its pumps.
 ///
 /// `None` means the tab was stranded: the entity lost its session while this
-/// harness was starting — an issue approved under its own planning agent. The
+/// harness was starting — a task approved under its own planning agent. The
 /// insert is the instant the agent becomes addressable, so it is the instant
 /// the gate that closed has to reach it, and no earlier check is atomic with
 /// it.
@@ -694,10 +694,10 @@ pub(in crate::app) fn nudge_live_agent_tab(
     }
 }
 
-/// Where an issue's one agent is running right now — its checkout and its
-/// agent id — or `None` when the issue has no session. Read BEFORE a verb that
+/// Where a task's one agent is running right now — its checkout and its
+/// agent id — or `None` when the task has no session. Read BEFORE a verb that
 /// ends the session, since ending it is what clears the workspace.
-pub(in crate::app) fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
+pub(in crate::app) fn task_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
     let workspace = active.workspace.as_ref()?;
     Some((workspace.checkout.clone(), active.agents.sole().id.clone()))
 }

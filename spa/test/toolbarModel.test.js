@@ -29,12 +29,12 @@ const branchRow = (over = {}) => ({
   working_time: { since: ago(750), seconds: 750 },
   stat: { files_changed: 3, insertions: 42, deletions: 7 },
   resume_at: ago(60),
-  issue_id: null,
+  task_id: null,
   ...over,
 });
 
-const issueRow = (over = {}) => ({
-  kind: "issue",
+const taskRow = (over = {}) => ({
+  kind: "task",
   deviceId: "dev-1",
   projectKey: "dev-1/p1",
   project_id: "p1",
@@ -47,7 +47,7 @@ const issueRow = (over = {}) => ({
   working_time: null,
   stat: null,
   resume_at: ago(30),
-  issue_id: "plan-1",
+  task_id: "plan-1",
   ...over,
 });
 
@@ -61,7 +61,7 @@ const devices = [
 ];
 
 describe("what the toolbar says you are standing in", () => {
-  const feed = { items: [branchRow(), issueRow()], projects };
+  const feed = { items: [branchRow(), taskRow()], projects };
 
   it("names the project and the branch from the route, with the feed's words", () => {
     const identity = toolbarIdentity({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, feed);
@@ -69,9 +69,9 @@ describe("what the toolbar says you are standing in", () => {
     expect(identity.row).toBe(feed.items[0]);
   });
 
-  it("names an issue by its title", () => {
-    const identity = toolbarIdentity({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" }, feed);
-    expect(identity).toMatchObject({ kind: "issue", label: "Add a health endpoint", project: "relaydb" });
+  it("names a task by its title", () => {
+    const identity = toolbarIdentity({ name: "task", deviceId: "dev-1", projectId: "p1", id: "plan-1" }, feed);
+    expect(identity).toMatchObject({ kind: "task", label: "Add a health endpoint", project: "relaydb" });
   });
 
   it("still names a branch the feed has not caught up with", () => {
@@ -113,7 +113,7 @@ describe("what the toolbar says you are standing in", () => {
 });
 
 describe("the project selector's menu", () => {
-  const items = [branchRow(), issueRow(), branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", resume_at: ago(10) })];
+  const items = [branchRow(), taskRow(), branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", resume_at: ago(10) })];
 
   // The rail lists every machine's projects; so does this menu, and the scoped
   // one is named by the pair (device, project) — nothing else names one.
@@ -194,7 +194,7 @@ describe("the unread each menu counts", () => {
   it("counts a project as the sum of its own work's unread", () => {
     const items = [
       branchRow({ unread: true, unread_count: 2 }),
-      issueRow({ unread: true, unread_count: 3 }),
+      taskRow({ unread: true, unread_count: 3 }),
       branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", unread: true, unread_count: 4 }),
     ];
     expect(projectMenuModel({ projects, items, projectKey: "dev-1/p1" }).map((project) => [project.name, project.unreadCount])).toEqual([
@@ -204,14 +204,14 @@ describe("the unread each menu counts", () => {
   });
 
   it("counts nothing for a project whose work has all been read", () => {
-    expect(projectMenuModel({ projects, items: [branchRow(), issueRow()], projectKey: "dev-1/p1" }).map((project) => project.unreadCount)).toEqual([
+    expect(projectMenuModel({ projects, items: [branchRow(), taskRow()], projectKey: "dev-1/p1" }).map((project) => project.unreadCount)).toEqual([
       0, 0,
     ]);
     expect(projectMenuModel({ projects, projectKey: "dev-1/p1" }).map((project) => project.unreadCount)).toEqual([0, 0]);
   });
 
   it("counts an unread row the bridge sent no count for as one", () => {
-    const items = [branchRow({ unread: true, unread_count: 0 }), issueRow({ unread: true })];
+    const items = [branchRow({ unread: true, unread_count: 0 }), taskRow({ unread: true })];
     expect(projectMenuModel({ projects, items, projectKey: "dev-1/p1" })[0].unreadCount).toBe(2);
   });
 
@@ -350,9 +350,9 @@ describe("workspace navigation", () => {
       label: "payment-work",
       workspaceId: "ws-1",
     });
-    // The directories and the Issues are the workspace's navigation, drawn in
+    // The directories and the Tasks are the workspace's navigation, drawn in
     // its rail rather than carried into the bar (#174).
     expect(identity.directories).toBeUndefined();
-    expect(identity.workspaceIssues).toBeUndefined();
+    expect(identity.workspaceTasks).toBeUndefined();
   });
 });

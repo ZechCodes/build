@@ -1,4 +1,4 @@
-// The words an issue line says: what was done, and who did it (#40).
+// The words a task line says: what was done, and who did it (#40).
 //
 // The maintainer, on the rolled build: the rows read "commented_on #39" and
 // "created #39" with no actor, and the project's own agent came out as "Agent
@@ -39,7 +39,7 @@ describe("what was done", () => {
     expect(actionPhrase("some_new_verb")).not.toContain("_");
   });
 
-  // An edit is what a reader calls it; `issues.update` is what the wire calls
+  // An edit is what a reader calls it; `tasks.update` is what the wire calls
   // it, and the wire's word is not the one on screen.
   it("calls an update an edit", () => {
     expect(actionPhrase("update")).toBe("edited");
@@ -51,7 +51,7 @@ describe("what was done", () => {
   // that rewrote those would need to know every column and every agent.
   it("passes a phrase through as it reads", () => {
     expect(actionPhrase("moved to In review")).toBe("moved to In review");
-    expect(actionPhrase("assigned to issues-spa · Agent 1")).toBe("assigned to issues-spa · Agent 1");
+    expect(actionPhrase("assigned to tasks-spa · Agent 1")).toBe("assigned to tasks-spa · Agent 1");
   });
 
   it("says nothing for nothing", () => {
@@ -68,11 +68,11 @@ describe("what was done", () => {
 });
 
 describe("who did it", () => {
-  const LABELS = { "agent-01M2A": "issues-spa · Agent 1" };
+  const LABELS = { "agent-01M2A": "tasks-spa · Agent 1" };
 
   it("names a workspace agent the way the rest of the project names it", () => {
-    expect(actorName("agent-01M2A", { agentLabels: LABELS })).toBe("issues-spa · Agent 1");
-    expect(actorName({ kind: "agent", agent_id: "agent-01M2A" }, { agentLabels: LABELS })).toBe("issues-spa · Agent 1");
+    expect(actorName("agent-01M2A", { agentLabels: LABELS })).toBe("tasks-spa · Agent 1");
+    expect(actorName({ kind: "agent", agent_id: "agent-01M2A" }, { agentLabels: LABELS })).toBe("tasks-spa · Agent 1");
   });
 
   // The reported defect. A project agent is not an agent of any workspace, so

@@ -37,15 +37,15 @@ const workspaceItem = {
   worktree_path: "/work/clean",
 };
 
-const issueItem = {
-  kind: "issue",
+const taskItem = {
+  kind: "task",
   project_id: "p2",
   project: "dotfiles",
   title: "Split the prompt templates",
   branch: null,
   state: "approved",
   finished_at: "2026-08-12T18:00:00Z",
-  issue_id: "issue-1",
+  task_id: "task-1",
   stages: 3,
 };
 
@@ -112,7 +112,7 @@ beforeEach(async () => {
     { id: "dev-1", name: "workshop", status: "online" },
     { id: "dev-2", name: "laptop", status: "online" },
   ];
-  filed = { "dev-1": [workspaceItem, issueItem], "dev-2": [branchItem] };
+  filed = { "dev-1": [workspaceItem, taskItem], "dev-2": [branchItem] };
   sessions = {};
   answerGate = null;
   adoptDeviceSession(answering("dev-1"));
@@ -169,7 +169,7 @@ describe("the account archive page", () => {
     await renderArchive();
     await settle();
     // One list across the account, each row named by the machine it is on.
-    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1", "dev-2/run-1"]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/task-1", "dev-2/run-1"]);
     expect(rows()[2].textContent).toContain("relaydb");
     expect(rows()[2].textContent).toContain("Archived");
   });
@@ -188,11 +188,11 @@ describe("the account archive page", () => {
   });
 
   it("keeps the machines' records apart when both name a record the same", async () => {
-    filed = { "dev-1": [issueItem], "dev-2": [{ ...issueItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }] };
+    filed = { "dev-1": [taskItem], "dev-2": [{ ...taskItem, project: "relaydb", finished_at: "2026-08-11T09:30:00Z" }] };
     await renderArchive();
     await settle();
 
-    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/issue-1", "dev-2/issue-1"]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/task-1", "dev-2/task-1"]);
     rows()[1].click();
     expect(document.querySelectorAll(".archive-record")).toHaveLength(1);
     // The record opened is the one under the row that was pressed, not the
@@ -207,7 +207,7 @@ describe("the account archive page", () => {
   // words — and says nothing where the title is the account's own.
   it("says the machine after a title two machines both filed", async () => {
     filed = {
-      "dev-1": [{ ...workspaceItem, title: "repo" }, issueItem],
+      "dev-1": [{ ...workspaceItem, title: "repo" }, taskItem],
       "dev-2": [{ ...branchItem, title: "repo" }],
     };
     await renderArchive();
@@ -360,7 +360,7 @@ describe("the account archive page", () => {
     await renderArchive();
     await settle();
 
-    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/issue-1"]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["dev-1/workspace-1", "dev-1/task-1"]);
   });
 
   it("says so when no device can answer, and keeps what it has", async () => {

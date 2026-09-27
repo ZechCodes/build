@@ -227,12 +227,12 @@ impl PersistedRun {
     }
 }
 
-/// Canonical durable Issue aggregate. Planning state, stage-plan review,
+/// Canonical durable Task aggregate. Planning state, stage-plan review,
 /// implementation lineage, threads, and publication journals cross the crash
 /// boundary as one record instead of being reconstructed from mutable halves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistedIssue {
-    pub issue: PersistedPlan,
+pub struct PersistedTask {
+    pub task: PersistedPlan,
     #[serde(default)]
     pub implementations: Vec<PersistedRun>,
 }
@@ -458,7 +458,7 @@ impl Store {
     /// bodies — and only items that are new or have changed since are written.
     /// So appending one message writes one row, whatever the conversation
     /// already holds. That is the entire reason this store replaced a JSON
-    /// aggregate that rewrote every conversation on the Issue for every append;
+    /// aggregate that rewrote every conversation on the Task for every append;
     /// writing all N items here would have moved the amplification rather than
     /// removed it.
     pub(super) fn write_agents(
@@ -701,77 +701,76 @@ impl Store {
         )?;
         Ok(count as u64)
     }
-    /// Whether an Issue exists. The question `issue_record_path(..).is_file()`
+    /// Whether a Task exists. The question `task_record_path(..).is_file()`
     /// used to answer.
-    pub fn issue_exists(&self, issue_id: &str) -> bool {
+    pub fn task_exists(&self, task_id: &str) -> bool {
         self.connection()
-            .query_row("SELECT 1 FROM issues WHERE id = ?1", [issue_id], |_| Ok(()))
+            .query_row("SELECT 1 FROM tasks WHERE id = ?1", [task_id], |_| Ok(()))
             .optional()
             .map(|found| found.is_some())
             .unwrap_or(false)
     }
-    /// Write an Issue's own record and agents. Its implementations are separate
-    /// rows and are not touched here — which is the point: saving an Issue no
+    /// Write a Task's own record and agents. Its implementations are separate
+    /// rows and are not touched here — which is the point: saving a Task no
     /// longer rewrites every implementation inside it.
-    pub fn save_issue_plan(&self, record: &PersistedPlan) -> Result<(), StoreError> {
+    pub fn save_task_plan(&self, record: &PersistedPlan) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
-            write_issue(tx, record)?;
+            write_task(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)
         })
     }
-    /// Every Issue with its implementations, oldest first.
-    pub fn load_all_issues(&self) -> Result<Vec<PersistedIssue>, StoreError> {
+    /// Every Task with its implementations, oldest first.
+    pub fn load_all_tasks(&self) -> Result<Vec<PersistedTask>, StoreError> {
         let conn = self.connection();
-        let mut issues = Vec::new();
-        for issue in Store::read_issue_records(&conn, Store::read_agents)? {
-            let implementations = Store::read_runs(&conn, Some(&issue.id))?;
-            issues.push(PersistedIssue {
-                issue,
+        let mut tasks = Vec::new();
+        for task in Store::read_task_records(&conn, Store::read_agents)? {
+            let implementations = Store::read_runs(&conn, Some(&task.id))?;
+            tasks.push(PersistedTask {
+                task,
                 implementations,
             });
         }
-        Ok(issues)
+        Ok(tasks)
     }
-    /// Every Issue's own record, oldest first, its agents read by `read_agents`.
-    fn read_issue_records(
+    /// Every Task's own record, oldest first, its agents read by `read_agents`.
+    fn read_task_records(
         conn: &Connection,
         read_agents: ReadAgents,
     ) -> Result<Vec<PersistedPlan>, StoreError> {
-        let mut statement =
-            conn.prepare("SELECT id, record FROM issues ORDER BY created_at, id")?;
+        let mut statement = conn.prepare("SELECT id, record FROM tasks ORDER BY created_at, id")?;
         let rows: Vec<(String, String)> = statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<_, _>>()?;
         drop(statement);
-        let mut issues = Vec::with_capacity(rows.len());
+        let mut tasks = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
-            let mut issue: PersistedPlan =
+            let mut task: PersistedPlan =
                 serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
-                    path: PathBuf::from(format!("issues/{id}")),
+                    path: PathBuf::from(format!("{}/{id}", Store::PLANS_DIR)),
                     source,
                 })?;
-            let issue_choice = ModelChoice {
-                provider: issue.provider,
-                model: issue.model.clone(),
-                effort: issue.effort.clone(),
+            let task_choice = ModelChoice {
+                provider: task.provider,
+                model: task.model.clone(),
+                effort: task.effort.clone(),
             };
-            issue.agents = read_agents(conn, &id, &issue_choice, None)?;
-            issues.push(issue);
+            task.agents = read_agents(conn, &id, &task_choice, None)?;
+            tasks.push(task);
         }
-        Ok(issues)
+        Ok(tasks)
     }
-    /// Delete an Issue, its implementations, every conversation on them, and
+    /// Delete a Task, its implementations, every conversation on them, and
     /// its canonical plan docs.
     ///
     /// The docs are the filesystem half of the delete: they deliberately live
-    /// outside the database, so removing only rows would leave the Issue's
+    /// outside the database, so removing only rows would leave the Task's
     /// plan on disk forever with nothing referring to it.
     pub fn delete_plan(&self, plan_id: &str) -> Result<(), StoreError> {
-        remove_dir_if_present(&self.issue_dir(plan_id))?;
+        remove_dir_if_present(&self.task_dir(plan_id))?;
         self.in_transaction(|tx| {
-            let mut owned = tx.prepare("SELECT id FROM implementations WHERE issue_id = ?1")?;
+            let mut owned = tx.prepare("SELECT id FROM implementations WHERE task_id = ?1")?;
             let runs: Vec<String> = owned
                 .query_map([plan_id], |row| row.get::<_, String>(0))?
                 .flatten()
@@ -789,34 +788,34 @@ impl Store {
                 )?;
                 tx.execute("DELETE FROM agents WHERE owner_id = ?1", [&owner])?;
             }
-            tx.execute("DELETE FROM implementations WHERE issue_id = ?1", [plan_id])?;
-            tx.execute("DELETE FROM issues WHERE id = ?1", [plan_id])?;
+            tx.execute("DELETE FROM implementations WHERE task_id = ?1", [plan_id])?;
+            tx.execute("DELETE FROM tasks WHERE id = ?1", [plan_id])?;
             Ok(())
         })
     }
-    /// Write one run and its agents, whether or not it belongs to an Issue.
+    /// Write one run and its agents, whether or not it belongs to a Task.
     pub fn save_run(&self, record: &PersistedRun) -> Result<(), StoreError> {
         self.in_transaction(|tx| {
             write_run(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)
         })
     }
-    /// Runs belonging to `issue_id`, or every run when it is `None`.
+    /// Runs belonging to `task_id`, or every run when it is `None`.
     pub(super) fn read_runs(
         conn: &Connection,
-        issue_id: Option<&str>,
+        task_id: Option<&str>,
     ) -> Result<Vec<PersistedRun>, StoreError> {
-        Store::read_runs_with(conn, issue_id, Store::read_agents)
+        Store::read_runs_with(conn, task_id, Store::read_agents)
     }
 
     fn read_runs_with(
         conn: &Connection,
-        issue_id: Option<&str>,
+        task_id: Option<&str>,
         read_agents: ReadAgents,
     ) -> Result<Vec<PersistedRun>, StoreError> {
-        let (sql, bind): (&str, Vec<&str>) = match issue_id {
+        let (sql, bind): (&str, Vec<&str>) = match task_id {
             Some(id) => (
-                "SELECT id, record FROM implementations WHERE issue_id = ?1
+                "SELECT id, record FROM implementations WHERE task_id = ?1
                  ORDER BY created_at, id",
                 vec![id],
             ),
@@ -847,13 +846,13 @@ impl Store {
             let shared_primary = run
                 .plan_id
                 .as_deref()
-                .and_then(|issue_id| primary_agent_id(conn, issue_id).ok().flatten());
+                .and_then(|task_id| primary_agent_id(conn, task_id).ok().flatten());
             run.agents = read_agents(conn, &id, &run_choice, shared_primary.as_deref())?;
             runs.push(run);
         }
         Ok(runs)
     }
-    /// Every run, oldest first — an Issue's implementations and the planless
+    /// Every run, oldest first — a Task's implementations and the planless
     /// adopted ones alike. Boot reattaches from this one list.
     pub fn load_all_runs(&self) -> Result<Vec<PersistedRun>, StoreError> {
         let conn = self.connection();
@@ -866,19 +865,19 @@ impl Store {
         let conn = self.connection();
         Store::read_runs_with(&conn, None, Store::read_agent_records)
     }
-    /// Every Issue's own record with its agents but not their conversations,
+    /// Every Task's own record with its agents but not their conversations,
     /// and without its implementations — the
-    /// [`load_all_run_rosters`](Self::load_all_run_rosters) of Issues.
+    /// [`load_all_run_rosters`](Self::load_all_run_rosters) of Tasks.
     pub fn load_all_plan_rosters(&self) -> Result<Vec<PersistedPlan>, StoreError> {
         let conn = self.connection();
-        Store::read_issue_records(&conn, Store::read_agent_records)
+        Store::read_task_records(&conn, Store::read_agent_records)
     }
-    /// Every Issue's own record, oldest first, without its implementations.
+    /// Every Task's own record, oldest first, without its implementations.
     pub fn load_all_plans(&self) -> Result<Vec<PersistedPlan>, StoreError> {
         Ok(self
-            .load_all_issues()?
+            .load_all_tasks()?
             .into_iter()
-            .map(|issue| issue.issue)
+            .map(|task| task.task)
             .collect())
     }
     pub fn delete_run(&self, run_id: &str) -> Result<(), StoreError> {
@@ -1060,7 +1059,7 @@ pub(super) fn primary_agent_id(
 }
 
 /// Schema-v6 migration: freeze the model choice each legacy agent effectively
-/// used and turn the old first-agent Issue/run alias into an explicit
+/// used and turn the old first-agent Task/run alias into an explicit
 /// conversation id. The original skeleton is retained once before overwrite;
 /// conversation rows stay exactly where they are.
 pub(super) fn migrate_agents_to_v6(conn: &mut Connection) -> Result<(), StoreError> {
@@ -1084,10 +1083,10 @@ pub(super) fn migrate_agents_to_v6(conn: &mut Connection) -> Result<(), StoreErr
             continue;
         };
         let shared = context
-            .issue_id
+            .task_id
             .as_deref()
             .filter(|_| primary_agents.get(&owner_id) == Some(&agent_id))
-            .and_then(|issue_id| primary_agents.get(issue_id))
+            .and_then(|task_id| primary_agents.get(task_id))
             .map(String::as_str);
         if !materialize_agent_identity(&mut agent, &context.choice, shared) {
             continue;
@@ -1121,20 +1120,20 @@ pub(super) fn load_primary_agent_ids(
     rows.collect::<Result<_, _>>().map_err(StoreError::from)
 }
 
-pub(super) fn write_issue(
+pub(super) fn write_task(
     tx: &rusqlite::Transaction,
     record: &PersistedPlan,
 ) -> Result<(), StoreError> {
     let mut skeleton = record.clone();
     skeleton.agents.clear();
     tx.execute(
-        "INSERT INTO issues (id, created_at, updated_at, record) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO tasks (id, created_at, updated_at, record) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id) DO UPDATE SET created_at = ?2, updated_at = ?3, record = ?4",
         rusqlite::params![
             record.id,
             record.created_at,
             record.updated_at,
-            serde_json::to_string(&skeleton).expect("an Issue always serializes")
+            serde_json::to_string(&skeleton).expect("a Task always serializes")
         ],
     )?;
     Ok(())
@@ -1147,10 +1146,10 @@ pub(super) fn write_run(
     let mut skeleton = record.clone();
     skeleton.agents.clear();
     tx.execute(
-        "INSERT INTO implementations (id, issue_id, created_at, updated_at, record)
+        "INSERT INTO implementations (id, task_id, created_at, updated_at, record)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(id) DO UPDATE SET
-             issue_id = ?2, created_at = ?3, updated_at = ?4, record = ?5",
+             task_id = ?2, created_at = ?3, updated_at = ?4, record = ?5",
         rusqlite::params![
             record.id,
             record.plan_id,

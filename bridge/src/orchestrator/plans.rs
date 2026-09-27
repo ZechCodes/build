@@ -12,7 +12,7 @@ use crate::templates::{self, Vars, DEFAULT_PLAN_PATH, STAGES_MANIFEST_PATH};
 use crate::thread::DocComment;
 use std::path::{Path, PathBuf};
 
-/// Where an issue's planning agent works.
+/// Where a task's planning agent works.
 ///
 /// Planning never gets a worktree: the agent runs in the project's PRIMARY
 /// checkout (it reads the code as it stands on the base branch and writes no
@@ -36,7 +36,7 @@ pub struct PlanWorkspace {
 pub struct ActivePlan {
     pub plan: Plan,
     /// Where the planning agent works: the primary checkout plus its scratch
-    /// docs dir. `None` before the session starts (an inert issue) and once
+    /// docs dir. `None` before the session starts (an inert task) and once
     /// the workspace is dropped (approve / abandon) — the store docs are
     /// canonical either way.
     pub workspace: Option<PlanWorkspace>,
@@ -106,7 +106,7 @@ impl ActivePlan {
             .ok_or_else(|| format!("unknown stage_id: {stage_id}"))
     }
 
-    /// Open comments on one stage, insertion order. Read off the Issue
+    /// Open comments on one stage, insertion order. Read off the Task
     /// conversation, where the comments live as posts.
     pub fn open_comments_for(&self, stage_id: &str) -> Vec<DocComment> {
         self.agents.sole_thread().open_doc_comments_for(stage_id)
@@ -124,8 +124,8 @@ impl Orchestrator {
     /// File a plan and start nothing: a record in `Created` with its goal as the
     /// conversation's first message, no worktree and no session.
     ///
-    /// This is what an issue is before anyone has said anything to it — the
-    /// router files them this way, and so does the toolbar's New issue. The goal
+    /// This is what a task is before anyone has said anything to it — the
+    /// router files them this way, and so does the toolbar's New task. The goal
     /// is posted UNREAD: no agent exists to have read it, and
     /// [`start_plan_drafting`](Self::start_plan_drafting) is what marks it seen,
     /// because dispatching the session is the agent acting on it.
@@ -185,8 +185,8 @@ impl Orchestrator {
         let prompt = self.render_plan(&self.templates.plan, active, "");
         Ok(AgentTurn::dispatched(prompt, "plan"))
     }
-    /// Where this issue's planning agent works — the primary checkout, always,
-    /// plus the scratch docs dir that belongs to this issue alone.
+    /// Where this task's planning agent works — the primary checkout, always,
+    /// plus the scratch docs dir that belongs to this task alone.
     pub(super) fn plan_workspace(&self, plan_id: &str) -> PlanWorkspace {
         PlanWorkspace {
             checkout: self.repo_path.clone(),
@@ -195,7 +195,7 @@ impl Orchestrator {
     }
     /// Make that workspace real, and hold every disk touch a planning workspace
     /// needs: the scratch docs dir exists, it holds the docs as they stand, and
-    /// the primary checkout carries this issue's MCP config so its `done`
+    /// the primary checkout carries this task's MCP config so its `done`
     /// reports route back here.
     ///
     /// An empty docs dir — a restart, a workspace dropped at approve, a plan
@@ -206,7 +206,7 @@ impl Orchestrator {
     ///
     /// This is the only way a planning workspace is written, and it is a
     /// [`WorktreeMutation`](crate::lifecycle::WorktreeMutation)'s work — every
-    /// door to an Issue's planning agent reaches it with the app mutex
+    /// door to a Task's planning agent reaches it with the app mutex
     /// released.
     pub fn prepare_plan_workspace(
         &self,
@@ -393,7 +393,7 @@ impl Orchestrator {
         }
     }
     /// Submit a batch of plan notes: re-plan against them and hand the caller
-    /// the turn to deliver. An issue hosts exactly one agent, so the notes
+    /// the turn to deliver. A task hosts exactly one agent, so the notes
     /// reach the process the reviewer has been reading, never a replacement.
     /// The workspace is kept through the notes loop — this is handed the one
     /// [`prepare_plan_workspace`](Self::prepare_plan_workspace) just made.

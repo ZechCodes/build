@@ -23,6 +23,8 @@ export { default as ICON_PLAY } from "lucide-static/icons/play.svg?raw";
 export { default as ICON_X } from "lucide-static/icons/x.svg?raw";
 export { default as ICON_ARROW_RIGHT } from "lucide-static/icons/arrow-right.svg?raw";
 export { default as ICON_SQUARE } from "lucide-static/icons/square.svg?raw";
+export { default as ICON_SQUARE_CHECK } from "lucide-static/icons/square-check.svg?raw";
+export { default as ICON_SQUARE_SLASH } from "lucide-static/icons/square-slash.svg?raw";
 export { default as ICON_FOLDERS } from "lucide-static/icons/folders.svg?raw";
 export { default as ICON_PLUS } from "lucide-static/icons/plus.svg?raw";
 export { default as ICON_PIN } from "lucide-static/icons/pin.svg?raw";
@@ -42,7 +44,7 @@ export { default as ICON_CHECK } from "lucide-static/icons/check.svg?raw";
 // not a maximize — it shows every chat, it does not enlarge this one.
 export { default as ICON_CHAT_OVERVIEW } from "lucide-static/icons/messages-square.svg?raw";
 // From a narrowed view out to the project's whole one (#117): the chat
-// overview's workspace scope and the workspace Issues tab both wear it.
+// overview's workspace scope and the workspace Tasks tab both wear it.
 export { default as ICON_SCOPE_OUT } from "lucide-static/icons/arrow-up-right.svg?raw";
 export { default as ICON_REFRESH } from "lucide-static/icons/refresh-cw.svg?raw";
 export { default as ICON_HISTORY } from "lucide-static/icons/history.svg?raw";

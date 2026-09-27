@@ -14,7 +14,7 @@ import {
   inboxEmptyHtml,
   inboxEntries,
   inboxRowHtml,
-  issueDoneConfirm,
+  taskDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
@@ -59,13 +59,13 @@ const branch = (over = {}) => ({
   worktree_path: "/wt/login",
   worktree_id: "wt-1",
   run_id: "run-1",
-  issue_id: null,
+  task_id: null,
   primary: false,
   ...over,
 });
 
-const issue = (over = {}) => ({
-  kind: "issue",
+const task = (over = {}) => ({
+  kind: "task",
   deviceId: "dev-1",
   project_id: "p2",
   projectKey: "dev-1/p2",
@@ -89,7 +89,7 @@ const issue = (over = {}) => ({
   worktree_path: null,
   worktree_id: null,
   run_id: null,
-  issue_id: "iss-1",
+  task_id: "iss-1",
   implementing_branch: null,
   implementation_active: false,
   primary: false,
@@ -124,8 +124,8 @@ describe("why an entry needs you", () => {
     expect(unreadReasonText("agent_message", "branch")).toBe("The agent sent a message");
   });
 
-  it("speaks an issue's own vocabulary for the same event", () => {
-    expect(unreadReasonText("done", "issue")).toBe("The draft is ready to review");
+  it("speaks a task's own vocabulary for the same event", () => {
+    expect(unreadReasonText("done", "task")).toBe("The draft is ready to review");
   });
 
   it("falls back to something honest for a kind it has never heard of", () => {
@@ -143,7 +143,7 @@ describe("the order the list reads in", () => {
   it("is the anchor's, oldest first, whatever order the rows arrived in", () => {
     const entries = listed([
       branch({ branch: "build/new", run_id: "run-new", anchor: ago(1) }),
-      issue({ anchor: ago(200) }),
+      task({ anchor: ago(200) }),
       branch({ branch: "build/mid", run_id: "run-mid", anchor: ago(50) }),
     ]);
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1", "run-mid", "run-new"]);
@@ -153,30 +153,30 @@ describe("the order the list reads in", () => {
   // a diff landing and a doc being read must all leave a row exactly where it
   // is. The list is the same list after any of it.
   it("does not move a row because something happened to it", () => {
-    const before = listed([branch({ anchor: ago(9) }), issue({ anchor: ago(4) })]);
+    const before = listed([branch({ anchor: ago(9) }), task({ anchor: ago(4) })]);
     const after = listed([
       branch({ anchor: ago(9), working: true, unread: true, unread_count: 4, unread_reason: "done", last_activity: ago(0) }),
-      issue({ anchor: ago(4) }),
+      task({ anchor: ago(4) }),
     ]);
     expect(after.map((entry) => entry.key)).toEqual(before.map((entry) => entry.key));
   });
 
   // A capture hands its anchor to the work it becomes, so what you said and
   // what it turned into are one entry in the list, in one place.
-  it("keeps a routed capture's place for the issue it became", () => {
+  it("keeps a routed capture's place for the task it became", () => {
     const captured = ago(30);
     const entries = listed([
       branch({ anchor: ago(2) }),
-      issue({ anchor: captured, issue_id: "iss-from-capture" }),
+      task({ anchor: captured, task_id: "iss-from-capture" }),
     ]);
-    expect(entries[0].issueId).toBe("iss-from-capture");
+    expect(entries[0].taskId).toBe("iss-from-capture");
   });
 
   // Unknown age is not evidence of being old (the bridge's own rule).
   it("puts a row nobody can date under the ones somebody can", () => {
     const entries = listed([
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, anchor: null }),
-      issue({ anchor: ago(1) }),
+      task({ anchor: ago(1) }),
     ]);
     expect(entries.map((entry) => entry.key)).toEqual(["iss-1", "branch:dev-1/p1:main"]);
   });
@@ -185,31 +185,31 @@ describe("the order the list reads in", () => {
 // ---- what is a row at all ------------------------------------------------------
 
 describe("what the inbox lists", () => {
-  it("lists issues, branches and captures in one list across every project", () => {
-    const entries = listed([branch(), issue()]);
-    // The branch was taken on an hour before the issue, so it reads first.
-    expect(entries.map((entry) => entry.kind)).toEqual(["branch", "issue"]);
+  it("lists tasks, branches and captures in one list across every project", () => {
+    const entries = listed([branch(), task()]);
+    // The branch was taken on an hour before the task, so it reads first.
+    expect(entries.map((entry) => entry.kind)).toEqual(["branch", "task"]);
     expect(entries.map((entry) => entry.project)).toEqual(["relaydb", "dotfiles"]);
   });
 
-  // One piece of work, one row: while a branch is implementing an issue, the
+  // One piece of work, one row: while a branch is implementing a task, the
   // branch is where that work is.
-  it("hides an issue while a branch is implementing it", () => {
-    const entries = listed([issue({ implementing_branch: "build/cache", implementation_active: true })]);
+  it("hides a task while a branch is implementing it", () => {
+    const entries = listed([task({ implementing_branch: "build/cache", implementation_active: true })]);
     expect(entries).toEqual([]);
   });
 
-  // Delete that branch without merging and the issue is work again — the bridge
+  // Delete that branch without merging and the task is work again — the bridge
   // stops calling it implemented, and the row comes straight back.
-  it("brings the issue back when the branch that was implementing it is gone", () => {
-    const entries = listed([issue({ implementing_branch: "build/cache", implementation_active: false })]);
-    expect(entries.map((entry) => entry.issueId)).toEqual(["iss-1"]);
+  it("brings the task back when the branch that was implementing it is gone", () => {
+    const entries = listed([task({ implementing_branch: "build/cache", implementation_active: false })]);
+    expect(entries.map((entry) => entry.taskId)).toEqual(["iss-1"]);
   });
 
   it("never lists anything that is over", () => {
     expect(listed([branch({ state: "merged" })])).toEqual([]);
     expect(listed([branch({ state: "abandoned" })])).toEqual([]);
-    expect(listed([issue({ state: "archived" })])).toEqual([]);
+    expect(listed([task({ state: "archived" })])).toEqual([]);
   });
 
   it("carries a project's primary checkout — it is the project's own row", () => {
@@ -229,31 +229,31 @@ describe("what the inbox lists", () => {
     expect(html).toContain("data-menu");
   });
 
-  // An unread issue is not an agent that stopped: its dot stays grey and the
+  // An unread task is not an agent that stopped: its dot stays grey and the
   // badge carries the news. Agents keep amber for unread.
-  it("keeps an unread issue's dot grey while an unread agent row goes amber", () => {
+  it("keeps an unread task's dot grey while an unread agent row goes amber", () => {
     const entries = listed([
-      issue({ unread: true, unread_count: 2, unread_reason: "comment" }),
+      task({ unread: true, unread_count: 2, unread_reason: "comment" }),
       branch({ unread: true, unread_count: 1, unread_reason: "done" }),
     ]);
-    const issueEntry = entries.find((entry) => entry.kind === "issue");
-    const agentEntry = entries.find((entry) => entry.kind !== "issue");
-    expect(issueEntry.state).toBe("unread");
-    const issueHtml = inboxRowHtml(issueEntry, {});
-    expect(issueHtml).toContain("sdot-issue");
-    expect(issueHtml).not.toContain("sdot-unread");
-    expect(issueHtml).toContain('<span class="badge inbox-unread">2</span>');
+    const taskEntry = entries.find((entry) => entry.kind === "task");
+    const agentEntry = entries.find((entry) => entry.kind !== "task");
+    expect(taskEntry.state).toBe("unread");
+    const taskHtml = inboxRowHtml(taskEntry, {});
+    expect(taskHtml).toContain("sdot-task");
+    expect(taskHtml).not.toContain("sdot-unread");
+    expect(taskHtml).toContain('<span class="badge inbox-unread">2</span>');
     expect(inboxRowHtml(agentEntry, {})).toContain("sdot sdot-unread");
   });
 
-  it("routes an issue to its own surface", () => {
-    expect(entryRoute(issue())).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
+  it("routes a task to its own surface", () => {
+    expect(entryRoute(task())).toEqual({ name: "task", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
   });
 
   // Every machine mints a `proj-1`, so a route that names a project without
   // naming the machine names two projects. The row knows which machine
   // answered for it, and hands that to the route it opens.
-  it("entryRoute carries deviceId on branch and issue routes", () => {
+  it("entryRoute carries deviceId on branch and task routes", () => {
     expect(entryRoute({ kind: "branch", deviceId: "d", project_id: "p", branch: "b" })).toEqual({
       name: "branch",
       deviceId: "d",
@@ -261,8 +261,8 @@ describe("what the inbox lists", () => {
       branch: "b",
       tab: "changes",
     });
-    expect(entryRoute({ kind: "issue", deviceId: "d", project_id: "p", issue_id: "iss-2" })).toEqual({
-      name: "issue",
+    expect(entryRoute({ kind: "task", deviceId: "d", project_id: "p", task_id: "iss-2" })).toEqual({
+      name: "task",
       deviceId: "d",
       projectId: "p",
       id: "iss-2",
@@ -353,11 +353,11 @@ describe("the rows a lifecycle verb in flight leaves", () => {
   });
 
   // A planning workspace holds no checkout — it is written against the primary
-  // one — so its row names the issue and nothing else. The issue card is
+  // one — so its row names the task and nothing else. The task card is
   // already listed, and that is where it is said.
-  it("says on an issue's own card that its planning workspace is being cut", () => {
+  it("says on a task's own card that its planning workspace is being cut", () => {
     const items = mergePendingRows(
-      [issue()],
+      [task()],
       [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })],
     );
     expect(items).toHaveLength(1);
@@ -369,16 +369,16 @@ describe("the rows a lifecycle verb in flight leaves", () => {
   });
 
   // Three verbs put `creating` on a card that is already there and already
-  // openable: a plan workspace on its issue, an implementation on the run that
+  // openable: a plan workspace on its task, an implementation on the run that
   // owns the checkout, and a restore on its run. The card is the reader's, and
   // it keeps opening for the whole of that git.
   it("keeps a standing card openable while a verb runs on it", () => {
     const [entry] = listed(
-      mergePendingRows([issue()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
+      mergePendingRows([task()], [creating({ entity_id: "iss-1", checkout_id: null, title: "Ship the mascot" })]),
     );
     expect(entry.facts).toBe("Creating…");
     expect(entry.placeholder).toBe(false);
-    expect(entry.route).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
+    expect(entry.route).toEqual({ name: "task", deviceId: "dev-1", projectId: "p2", id: "iss-1" });
   });
 
   // The bridge says how the checkout a verb is cutting is isolated from the
@@ -519,7 +519,7 @@ describe("the Recent section", () => {
 
 describe("a row the user cleared", () => {
   it("moves from the list to Recent", () => {
-    const { entries, recent } = inboxEntries({ items: [branch({ dismissed: true }), issue()], nowMs: NOW });
+    const { entries, recent } = inboxEntries({ items: [branch({ dismissed: true }), task()], nowMs: NOW });
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
     expect(recent.map((entry) => entry.entityId)).toEqual(["run-1"]);
   });
@@ -532,7 +532,7 @@ describe("a row the user cleared", () => {
       last_activity: ago(30),
       dismissed: true,
     });
-    const { entries, recent } = inboxEntries({ items: [issue(), cleared], nowMs: NOW });
+    const { entries, recent } = inboxEntries({ items: [task(), cleared], nowMs: NOW });
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
     expect(recent.map((entry) => entry.entityId)).toEqual(["run-old"]);
   });
@@ -582,7 +582,7 @@ describe("a row the user cleared", () => {
     expect(html).not.toContain('data-done="');
   });
 
-  // Done destroys an entity: a branch's records, an issue's plans. A row that
+  // Done destroys an entity: a branch's records, a task's plans. A row that
   // names none has nothing to destroy and no id to say it with, so the feed
   // calling it finishable is not enough to put a Done on it.
   it("puts no Done on a row that names no entity, whatever the feed says", () => {
@@ -595,7 +595,7 @@ describe("a row the user cleared", () => {
   });
 
   it("is offered on a bare checkout row, which the bridge clears by its worktree id", () => {
-    const [entry] = listed([branch({ run_id: null, issue_id: null, worktree_id: "wt-9" })]);
+    const [entry] = listed([branch({ run_id: null, task_id: null, worktree_id: "wt-9" })]);
     const html = inboxRowHtml(entry, { openMenuKey: "wt-9" });
     expect(html).toContain('data-dismiss="wt-9"');
     expect(html).toContain('data-mute="wt-9"');
@@ -606,7 +606,7 @@ describe("a row the user cleared", () => {
   it("names the row being cleared the way the bridge expects", () => {
     const [run] = listed([branch()]);
     expect(dismissParamsOf(run)).toEqual({ entity_id: "run-1" });
-    const [bare] = listed([branch({ run_id: null, issue_id: null, worktree_id: null })]);
+    const [bare] = listed([branch({ run_id: null, task_id: null, worktree_id: null })]);
     expect(dismissParamsOf(bare)).toEqual({ project_id: "p1", branch: "build/login" });
   });
 
@@ -616,12 +616,12 @@ describe("a row the user cleared", () => {
 });
 
 describe("the active entry", () => {
-  const { entries, recent } = inboxEntries({ items: [branch(), issue()], nowMs: NOW });
+  const { entries, recent } = inboxEntries({ items: [branch(), task()], nowMs: NOW });
   const all = [...entries, ...recent];
 
   it("is the one the route is standing on", () => {
     expect(activeEntryKey({ name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" }, all)).toBe("run-1");
-    expect(activeEntryKey({ name: "issue", deviceId: "dev-1", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
+    expect(activeEntryKey({ name: "task", deviceId: "dev-1", projectId: "p2", id: "iss-1" }, all)).toBe("iss-1");
   });
 
   // Two machines both hold a `proj-1` with a `build/login` in it, and those are
@@ -659,8 +659,8 @@ describe("what a row says", () => {
     expect(html).toContain('data-entity="run-1"');
   });
 
-  it("names the issue on line one, and says nothing about an unread count it has none of", () => {
-    const [entry] = listed([issue()]);
+  it("names the task on line one, and says nothing about an unread count it has none of", () => {
+    const [entry] = listed([task()]);
     expect(entry.name).toBe("Rework the prompt cache");
     expect(inboxRowHtml(entry, {})).not.toContain("inbox-unread");
   });
@@ -690,9 +690,9 @@ describe("what a row says", () => {
     ).toBe("2 files · +3 −4");
   });
 
-  // An issue has no checkout and no commits: there is nothing to weigh yet.
+  // A task has no checkout and no commits: there is nothing to weigh yet.
   it("says Getting started when there is nothing for line two", () => {
-    const [entry] = listed([issue()]);
+    const [entry] = listed([task()]);
     expect(entry.facts).toBe("");
     expect(inboxRowHtml(entry, {})).toContain("Getting started");
     const [fresh] = listed([branch({ stat: { files_changed: 0, insertions: 0, deletions: 0, ahead: 0, behind: 0 } })]);
@@ -783,7 +783,7 @@ describe("what a row says", () => {
 });
 
 // ---- Done ------------------------------------------------------------------------
-// Done on a branch deletes it. Done on an issue archives it. Neither is refused:
+// Done on a branch deletes it. Done on a task archives it. Neither is refused:
 // what the destruction would cost travels with the row, and the confirmation is
 // where the user reads it.
 
@@ -823,39 +823,39 @@ describe("the Done confirmations", () => {
     expect(branchDoneConfirm(listed([branch()])[0]).warnings).toEqual([]);
   });
 
-  // Deleting an unmerged branch hands its issue back to the inbox, with an
+  // Deleting an unmerged branch hands its task back to the inbox, with an
   // event naming the branch it lost. The outline says so before the click.
-  it("says the issue it implements comes back to the inbox", () => {
-    const [entry] = listed([branch({ issue_id: "iss-7" })]);
+  it("says the task it implements comes back to the inbox", () => {
+    const [entry] = listed([branch({ task_id: "iss-7" })]);
     const outline = branchDoneConfirm({ ...entry, deletesBranch: true }).actions.join(" ");
-    expect(outline).toContain("issue");
+    expect(outline).toContain("task");
     expect(outline).toContain("build/login");
   });
 
   // A merged branch is not on the inbox — it is over — but the branch surface
-  // still stands in one, and there Done files the issue away with it.
-  it("says the issue is filed away instead once the work is merged", () => {
-    const merged = branchDoneConfirm({ branch: "build/login", issueId: "iss-7", merged: true, warnings: [] });
-    expect(merged.actions.join(" ")).toContain("Archive the issue");
+  // still stands in one, and there Done files the task away with it.
+  it("says the task is filed away instead once the work is merged", () => {
+    const merged = branchDoneConfirm({ branch: "build/login", taskId: "iss-7", merged: true, warnings: [] });
+    expect(merged.actions.join(" ")).toContain("Archive the task");
   });
 
-  it("says nothing about an issue when the branch implements none", () => {
+  it("says nothing about a task when the branch implements none", () => {
     const [entry] = listed([branch()]);
-    expect(branchDoneConfirm(entry).actions.some((action) => action.toLowerCase().includes("issue"))).toBe(false);
+    expect(branchDoneConfirm(entry).actions.some((action) => action.toLowerCase().includes("task"))).toBe(false);
   });
 
-  it("archives an issue with its stage plans", () => {
-    const [entry] = listed([issue()]);
-    const confirm = issueDoneConfirm(entry);
+  it("archives a task with its stage plans", () => {
+    const [entry] = listed([task()]);
+    const confirm = taskDoneConfirm(entry);
     expect(confirm.actions.join(" ")).toContain("stage plans");
     expect(confirm.danger).toBe(false);
   });
 
-  it("warns when no branch ever implemented the issue being filed away", () => {
+  it("warns when no branch ever implemented the task being filed away", () => {
     const [entry] = listed([
-      issue({ finish: { warnings: [{ code: "unimplemented", message: "No branch has implemented this issue" }] } }),
+      task({ finish: { warnings: [{ code: "unimplemented", message: "No branch has implemented this task" }] } }),
     ]);
-    expect(issueDoneConfirm(entry).warnings).toEqual(["No branch has implemented this issue"]);
+    expect(taskDoneConfirm(entry).warnings).toEqual(["No branch has implemented this task"]);
   });
 });
 
@@ -872,7 +872,7 @@ const captureItem = (over = {}) => ({
   project_id: "",
   project: "",
   branch: null,
-  issue_id: null,
+  task_id: null,
   title: "fix the login redirect",
   text: "fix the login redirect",
   state: "routing",
@@ -919,7 +919,7 @@ describe("capture rows", () => {
 
   it("name themselves by the capture, never by the destination it was routed to", () => {
     const entry = entryOf(
-      captureItem({ state: "routed", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" }, issue_id: "iss-9" }),
+      captureItem({ state: "routed", routing: { project_id: "p1", kind: "task", target_id: "iss-9" }, task_id: "iss-9" }),
     );
     expect(entry.key).toBe("capture:capture-1");
     expect(entry.entityId).toBeNull(); // a capture takes no attention cursor and no mute
@@ -942,12 +942,12 @@ describe("capture rows", () => {
       captureItem({
         state: "routed",
         project: "relaydb",
-        routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
-        issue_id: "iss-9",
+        routing: { project_id: "p1", kind: "task", target_id: "iss-9" },
+        task_id: "iss-9",
       }),
     );
     const html = inboxRowHtml(entry, {});
-    expect(html).toContain("→ relaydb as issue");
+    expect(html).toContain("→ relaydb as task");
     expect(html).toContain('data-capture-reroute="capture-1"');
   });
 
@@ -992,11 +992,11 @@ describe("capture rows", () => {
         captureItem({
           state: "routed",
           project_id: "p1",
-          issue_id: "iss-9",
-          routing: { project_id: "p1", kind: "issue", target_id: "iss-9" },
+          task_id: "iss-9",
+          routing: { project_id: "p1", kind: "task", target_id: "iss-9" },
         }),
       ).route,
-    ).toEqual({ name: "issue", deviceId: "dev-1", projectId: "p1", id: "iss-9" });
+    ).toEqual({ name: "task", deviceId: "dev-1", projectId: "p1", id: "iss-9" });
   });
 
   it("mark the row the decision page is standing on", () => {
@@ -1007,21 +1007,21 @@ describe("capture rows", () => {
 
   it("open the destination picker on the row that asked for it", () => {
     const entry = entryOf(
-      captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }),
+      captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }),
     );
     const projects = [
       { id: "p1", name: "relaydb" },
       { id: "p2", name: "dotfiles" },
     ];
     const html = inboxRowHtml(entry, { rerouteKey: entry.key, projects });
-    expect(html).not.toContain('data-reroute-kind="issue"');
+    expect(html).not.toContain('data-reroute-kind="task"');
     expect(html).toContain('data-reroute-branch-open="p2"');
     expect(inboxRowHtml(entry, { projects })).not.toContain("data-reroute-project");
   });
 
   it("take the branch's name in the picker, from the branches the project has", () => {
     const entry = entryOf(
-      captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }),
+      captureItem({ state: "routed", project: "relaydb", routing: { project_id: "p1", kind: "task", target_id: "iss-9" } }),
     );
     const projects = [
       { id: "p1", name: "relaydb" },
@@ -1084,8 +1084,8 @@ describe("what names a row", () => {
     const primary = branch({ run_id: null, worktree_id: null, branch: "main", primary: true });
     expect(entryKeyOf(primary)).toBe("branch:dev-1/p1:main");
     expect(entryKeyOf({ ...primary, deviceId: "dev-2", projectKey: "dev-2/p1" })).toBe("branch:dev-2/p1:main");
-    const plan = issue({ issue_id: null, run_id: null, worktree_id: null });
-    expect(entryKeyOf(plan)).toBe("issue:dev-1/p2");
+    const plan = task({ task_id: null, run_id: null, worktree_id: null });
+    expect(entryKeyOf(plan)).toBe("task:dev-1/p2");
   });
 
   it("keys a row that has an entity by that entity, whichever device it is on", () => {
@@ -1099,7 +1099,7 @@ describe("what names a row", () => {
   });
 
   it("carries deviceId and projectKey onto every entry", () => {
-    const entries = listed([branch(), issue(), captureItem()]);
+    const entries = listed([branch(), task(), captureItem()]);
     expect(entries.map((entry) => entry.deviceId)).toEqual(["dev-1", "dev-1", "dev-1"]);
     expect(entries.map((entry) => entry.projectKey)).toEqual(["dev-1/p1", "dev-1/p2", undefined]);
     // The wire's own field is untouched: the bridge still wants the bare id.
@@ -1145,20 +1145,20 @@ describe("cacheableEntityIds", () => {
       branch({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", anchor: ago(40), last_activity: ago(30) }),
       branch({ branch: "b3", run_id: "run-3", worktree_id: "wt-3", dismissed: true }),
       branch({ branch: "b4", run_id: "run-4", worktree_id: "wt-4", state: "merged" }),
-      issue(),
+      task(),
     ];
     expect(cacheableEntityIds({ items, nowMs: NOW }).sort()).toEqual(["iss-1", "run-1"]);
   });
 
-  it("keeps the issue an active branch is implementing, though it is not listed", () => {
-    const items = [issue({ implementation_active: true })];
+  it("keeps the task an active branch is implementing, though it is not listed", () => {
+    const items = [task({ implementation_active: true })];
     expect(inboxEntries({ items, nowMs: NOW }).entries).toEqual([]);
     expect(cacheableEntityIds({ items, nowMs: NOW })).toEqual(["iss-1"]);
   });
 
-  it("does not keep a finished or cleared issue even while marked implementing", () => {
-    expect(cacheableEntityIds({ items: [issue({ implementation_active: true, state: "archived" })], nowMs: NOW })).toEqual([]);
-    expect(cacheableEntityIds({ items: [issue({ implementation_active: true, dismissed: true })], nowMs: NOW })).toEqual([]);
+  it("does not keep a finished or cleared task even while marked implementing", () => {
+    expect(cacheableEntityIds({ items: [task({ implementation_active: true, state: "archived" })], nowMs: NOW })).toEqual([]);
+    expect(cacheableEntityIds({ items: [task({ implementation_active: true, dismissed: true })], nowMs: NOW })).toEqual([]);
   });
 
   it("names no entity for rows that hold none", () => {

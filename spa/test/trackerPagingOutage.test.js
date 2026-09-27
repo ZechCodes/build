@@ -3,8 +3,8 @@ import { IDBDatabase, IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-index
 
 const timing = { reopenDelaysMs: [0, 1, 2, 3], restMs: 20, openTimeoutMs: 200, giveUpAfterMs: 60000 };
 const count = { deviceId: "", entityId: "", kind: "review-count" };
-const list = { deviceId: "d", entityId: "p", kind: "tracker-issues" };
-const ledger = { deviceId: "d", entityId: "p", kind: "tracker-issue-reads" };
+const list = { deviceId: "d", entityId: "p", kind: "tracker-tasks" };
+const ledger = { deviceId: "d", entityId: "p", kind: "tracker-task-reads" };
 const lost = () => new DOMException("Connection to Indexed Database server lost", "UnknownError");
 let cache;
 
@@ -69,7 +69,7 @@ it("retries a joint merge atomically when a partial put loses connection", async
   let failures = 0;
   let callbacks = 0;
   vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (value, key) {
-    if (String(key).includes("tracker-issue-reads") && failures < 3) {
+    if (String(key).includes("tracker-task-reads") && failures < 3) {
       failures += 1;
       throw lost();
     }
@@ -117,7 +117,7 @@ it("keeps a newer tab's folded row when an older fold resumes after recovery", a
   const oldRow = { id: "same", number: 2, title: "old", updated_at: "2026-01-01" };
   const newRow = { ...oldRow, title: "new" };
   const stretch = (row, read) => ({
-    issues: [row], above: Infinity, through: -Infinity,
+    tasks: [row], above: Infinity, through: -Infinity,
     read, readAt: Date.parse("2026-01-01"), pullRead: read,
   });
   const transaction = IDBDatabase.prototype.transaction;
@@ -127,23 +127,23 @@ it("keeps a newer tab's folded row when an older fold resumes after recovery", a
     return transaction.apply(this, args);
   });
 
-  const older = oldPages.foldIssuesPage(list, stretch(oldRow, 1), () => []);
+  const older = oldPages.foldTasksPage(list, stretch(oldRow, 1), () => []);
   await vi.waitFor(() => expect(failures).toBe(timing.reopenDelaysMs.length), { interval: 1 });
-  expect(await otherPages.foldIssuesPage(list, stretch(newRow, 2), () => [])).toBe(true);
+  expect(await otherPages.foldTasksPage(list, stretch(newRow, 2), () => [])).toBe(true);
   expect(await older).toBe(true);
-  expect((await cache.readCached(list))?.value.issues[0].title).toBe("new");
+  expect((await cache.readCached(list))?.value.tasks[0].title).toBe("new");
 });
 
 it("does not skip a page whose canonical fold loses its connection through a retry round", async () => {
-  const { foldIssuesPage, pullIssuePages } = await import("../src/core/trackerPages.js");
+  const { foldTasksPage, pullTaskPages } = await import("../src/core/trackerPages.js");
   const transaction = IDBDatabase.prototype.transaction;
   let failures = 0;
   let folds = 0;
   const pages = [
-    { issues: [{ id: "first", number: 2, title: "first", updated_at: "2026-01-01" }], next_cursor: "second-page" },
-    { issues: [{ id: "second", number: 1, title: "second", updated_at: "2026-01-01" }] },
+    { tasks: [{ id: "first", number: 2, title: "first", updated_at: "2026-01-01" }], next_cursor: "second-page" },
+    { tasks: [{ id: "second", number: 1, title: "second", updated_at: "2026-01-01" }] },
   ];
-  const completed = await pullIssuePages({
+  const completed = await pullTaskPages({
     deviceId: "d", projectId: "p", params: {},
     ask: async () => pages.shift(),
     fold: async (stretch) => {
@@ -152,21 +152,21 @@ it("does not skip a page whose canonical fold loses its connection through a ret
         if (failures++ < 4) throw lost();
         return transaction.apply(this, args);
       });
-      return foldIssuesPage(list, stretch, () => []);
+      return foldTasksPage(list, stretch, () => []);
     },
   });
   expect(completed).toBe(true);
-  expect((await cache.readCached(list))?.value.issues.map((row) => row.id)).toEqual(["first", "second"]);
+  expect((await cache.readCached(list))?.value.tasks.map((row) => row.id)).toEqual(["first", "second"]);
 });
 
 it("stops at a page whose canonical fold was refused", async () => {
-  const { pullIssuePages } = await import("../src/core/trackerPages.js");
+  const { pullTaskPages } = await import("../src/core/trackerPages.js");
   const ask = vi.fn(async () => ({
-    issues: [{ id: "first", number: 2, title: "first", updated_at: "2026-01-01" }],
+    tasks: [{ id: "first", number: 2, title: "first", updated_at: "2026-01-01" }],
     next_cursor: "second-page",
   }));
 
-  expect(await pullIssuePages({
+  expect(await pullTaskPages({
     deviceId: "d", projectId: "p", params: {}, ask,
     fold: async () => false,
   })).toBe(false);

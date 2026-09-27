@@ -11,7 +11,7 @@ import { RUN_TERMINAL_STATES, PLAN_TERMINAL_STATES } from "./board.js";
 
 export { RUN_TERMINAL_STATES, PLAN_TERMINAL_STATES };
 
-// ---- Runs (worktree-scoped; "Tasks" in the UI) --------------------------------
+// ---- Runs (worktree-scoped) ---------------------------------------------------
 
 export const RUN_STATE_LABEL = {
   created: "CREATED",

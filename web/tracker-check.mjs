@@ -1,20 +1,20 @@
-// The issue tracker's browser pass: the SPA half driven against a real bridge.
+// The task tracker's browser pass: the SPA half driven against a real bridge.
 //
 // Seventeen checks over the tracker's surfaces, run against the compose stack.
 // Every check prints PASS or FAIL with a detail line and none of them aborts
 // the run, so one broken surface still reports on the other sixteen.
 //
-//   ISSUES_REPO=<a build-web checkout> APP_URL=http://localhost:8090 \
+//   TASKS_REPO=<a build-web checkout> APP_URL=http://localhost:8090 \
 //     node web/tracker-check.mjs
 //
 // It reads /tmp/live-seed.json, so run web/live-seed.mjs first and write its
-// SEED line there. Bridge calls go through the qa container of ISSUES_REPO's
+// SEED line there. Bridge calls go through the qa container of TASKS_REPO's
 // compose file; the browser drives the SPA by hash route.
 //
 // Two things this file is careful about, because both produced a false result
 // the first time it ran:
 //
-//   • ONE checkout. `ISSUES_REPO` is refused rather than defaulted — there is
+//   • ONE checkout. `TASKS_REPO` is refused rather than defaulted — there is
 //     more than one build-web checkout on this machine, and a forgotten
 //     variable would point the run at a different tree's compose file and pass
 //     against a bridge that was never under test.
@@ -41,14 +41,14 @@ const APP = process.env.APP_URL || "http://localhost:8090";
  * you get a green pass against a bridge that is not the one under test. The
  * bridge, the pairing, the seed and every check below must come off one tree.
  */
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 if (!REPO) {
-  console.error("set ISSUES_REPO to the checkout at the merged sha — this run must not mix checkouts");
+  console.error("set TASKS_REPO to the checkout at the merged sha — this run must not mix checkouts");
   process.exit(2);
 }
 const compose = `${REPO}/deploy/compose.real.yml`;
 if (!existsSync(compose)) {
-  console.error(`no compose file at ${compose} — is ISSUES_REPO a build-web checkout?`);
+  console.error(`no compose file at ${compose} — is TASKS_REPO a build-web checkout?`);
   process.exit(2);
 }
 console.log(`running off ${REPO}`);
@@ -114,10 +114,10 @@ async function appearsUntouched(page, needle, ms = 30000) {
   return null;
 }
 
-const issuesTab = (projectId) => `${APP}/app/#/device/${seed.deviceId}/project/${projectId}/issues`;
-const board = (projectId) => `${issuesTab(projectId)}?view=board`;
-const issuePage = (projectId, issueId) =>
-  `${APP}/app/#/device/${seed.deviceId}/project/${projectId}/issues/${issueId}`;
+const tasksTab = (projectId) => `${APP}/app/#/device/${seed.deviceId}/project/${projectId}/tasks`;
+const board = (projectId) => `${tasksTab(projectId)}?view=board`;
+const taskPage = (projectId, taskId) =>
+  `${APP}/app/#/device/${seed.deviceId}/project/${projectId}/tasks/${taskId}`;
 
 const browser = await chromium.launch({ executablePath: "/usr/bin/chromium", headless: true, args: ["--no-sandbox"] });
 // One explicit context, so the phone page later shares this one's session
@@ -140,8 +140,8 @@ const stamp = Date.now().toString(36);
 // ── 1. the verbs answer at all, and the columns are the bridge's ─────────────
 
 let columns = null;
-await check("issues.columns answers the five", async () => {
-  columns = call("issues.columns", { project_id: project });
+await check("tasks.columns answers the five", async () => {
+  columns = call("tasks.columns", { project_id: project });
   const ids = (columns.columns || []).map((one) => one.id);
   return { ok: ids.length >= 5 && ids.includes("in_review"), detail: ids.join(", ") };
 });
@@ -149,21 +149,21 @@ await check("issues.columns answers the five", async () => {
 // ── 2. the tab paints, cold then warm ────────────────────────────────────────
 
 let filed = null;
-await check("issues.create files an issue", async () => {
-  filed = call("issues.create", {
+await check("tasks.create files a task", async () => {
+  filed = call("tasks.create", {
     project_id: project,
     title: `Kanban drag does not persist ${stamp}`,
     body: "Dragging a card to **In review** leaves it where it was after a reload.",
     labels: ["bug", "ui"],
     priority: "high",
   });
-  return { ok: Boolean(filed.issue && filed.issue.number), detail: `#${filed.issue?.number}` };
+  return { ok: Boolean(filed.task && filed.task.number), detail: `#${filed.task?.number}` };
 });
 
-await check("the Issues tab paints the filed issue", async () => {
-  await page.goto(issuesTab(project), { waitUntil: "load" });
+await check("the Tasks tab paints the filed task", async () => {
+  await page.goto(tasksTab(project), { waitUntil: "load" });
   await page.waitForTimeout(6000);
-  return { ok: await has(page, stamp), detail: `#${filed?.issue?.number}` };
+  return { ok: await has(page, stamp), detail: `#${filed?.task?.number}` };
 });
 
 // The row used to carry a coloured state dot beside its column. It does not
@@ -173,22 +173,22 @@ await check("the Issues tab paints the filed issue", async () => {
 // This checks the shape that replaced it.
 await check("the row puts number and title on one line, and the facts on the next", async () => {
   const row = await page.evaluate(() => {
-    const one = document.querySelector(".issue-row");
+    const one = document.querySelector(".task-row");
     if (!one) return null;
-    const line = one.querySelector(".issue-row-open");
-    const facts = one.querySelector(".issue-row-facts");
+    const line = one.querySelector(".task-row-open");
+    const facts = one.querySelector(".task-row-facts");
     return {
       firstLine: [...(line?.children || [])].map((child) => child.classList[0]),
       facts: [...(facts?.children || [])].map((child) => child.classList[0]),
-      status: one.querySelector(".issue-status")?.textContent || "",
-      labels: [...one.querySelectorAll(".issue-label")].map((l) => l.textContent),
-      dots: one.querySelectorAll(".issue-state, .issue-sep").length,
-      closedChip: Boolean(one.querySelector(".issue-closed")),
+      status: one.querySelector(".task-status")?.textContent || "",
+      labels: [...one.querySelectorAll(".task-label")].map((l) => l.textContent),
+      dots: one.querySelectorAll(".task-state, .task-sep").length,
+      closedChip: Boolean(one.querySelector(".task-closed")),
     };
   });
   const ok = Boolean(
     row &&
-      JSON.stringify(row.firstLine) === JSON.stringify(["issue-number", "issue-title"]) &&
+      JSON.stringify(row.firstLine) === JSON.stringify(["task-number", "task-title"]) &&
       row.status &&
       row.dots === 0 &&
       // Open by default (#33), so no Closed chip on what the tab opens with.
@@ -197,13 +197,13 @@ await check("the row puts number and title on one line, and the facts on the nex
   return { ok, detail: JSON.stringify(row) };
 });
 
-// ── 3. the push: an issue moved by somebody else, with nothing touched ───────
+// ── 3. the push: a task moved by somebody else, with nothing touched ───────
 
 await check("a card moves on the push, with the page untouched", async () => {
   await page.goto(board(project), { waitUntil: "load" });
   await page.waitForTimeout(6000);
   const moved = `pushed-${stamp}`;
-  call("issues.create", { project_id: project, title: moved, status: "in_review" });
+  call("tasks.create", { project_id: project, title: moved, status: "in_review" });
   const ms = await appearsUntouched(page, moved);
   return { ok: ms !== null, detail: ms === null ? "not painted in 30 s" : `${ms} ms` };
 });
@@ -211,16 +211,16 @@ await check("a card moves on the push, with the page untouched", async () => {
 // ── 4. the filters are params, and the board ignores the column one ──────────
 
 await check("a state filter narrows the list", async () => {
-  await page.goto(issuesTab(project), { waitUntil: "load" });
+  await page.goto(tasksTab(project), { waitUntil: "load" });
   await page.waitForTimeout(5000);
-  call("issues.close", { issue_id: filed.issue.id });
+  call("tasks.close", { task_id: filed.task.id });
   await page.waitForTimeout(4000);
-  await page.selectOption('[data-issue-filter="state"]', "closed");
+  await page.selectOption('[data-task-filter="state"]', "closed");
   await page.waitForTimeout(3000);
   const onlyClosed = await page.evaluate(() =>
-    [...document.querySelectorAll(".issue-row .issue-state")].every((one) => one.className.includes("closed")));
-  const shown = await page.evaluate(() => document.querySelectorAll(".issue-row").length);
-  call("issues.reopen", { issue_id: filed.issue.id });
+    [...document.querySelectorAll(".task-row .task-state")].every((one) => one.className.includes("closed")));
+  const shown = await page.evaluate(() => document.querySelectorAll(".task-row").length);
+  call("tasks.reopen", { task_id: filed.task.id });
   return { ok: onlyClosed && shown > 0, detail: `${shown} rows, all closed: ${onlyClosed}` };
 });
 
@@ -229,32 +229,32 @@ await check("a state filter narrows the list", async () => {
 await check("the arrow keys move a card, and it sticks", async () => {
   await page.goto(board(project), { waitUntil: "load" });
   await page.waitForTimeout(6000);
-  const card = `.issue-card[data-issue="${filed.issue.id}"]`;
+  const card = `.task-card[data-task="${filed.task.id}"]`;
   const before = await page.getAttribute(card, "data-status");
   await page.focus(card);
   await page.keyboard.press("ArrowRight");
   await page.waitForTimeout(4000);
-  const after = call("issues.get", { issue_id: filed.issue.id }).issue.status;
+  const after = call("tasks.get", { task_id: filed.task.id }).task.status;
   return { ok: after !== before, detail: `${before} → ${after} (bridge says ${after})` };
 });
 
-// ── 6. the issue page: timeline interleave and a comment round trip ──────────
+// ── 6. the task page: timeline interleave and a comment round trip ──────────
 
 await check("the timeline interleaves comments and events", async () => {
-  call("issues.comment", { issue_id: filed.issue.id, body: `a comment ${stamp}` });
-  await page.goto(issuePage(project, filed.issue.id), { waitUntil: "load" });
+  call("tasks.comment", { task_id: filed.task.id, body: `a comment ${stamp}` });
+  await page.goto(taskPage(project, filed.task.id), { waitUntil: "load" });
   await page.waitForTimeout(6000);
   const kinds = await page.evaluate(() =>
-    [...document.querySelectorAll(".issue-entry")].map((one) => (one.classList.contains("issue-comment") ? "c" : "e")));
+    [...document.querySelectorAll(".task-entry")].map((one) => (one.classList.contains("task-comment") ? "c" : "e")));
   return { ok: kinds.includes("c") && kinds.includes("e"), detail: kinds.join("") };
 });
 
 await check("the composer round-trips a comment", async () => {
   const said = `from the composer ${stamp}`;
-  await page.fill("#issue-comment", said);
-  await page.click(".issue-composer button[type=submit]");
+  await page.fill("#task-comment", said);
+  await page.click(".task-composer button[type=submit]");
   await page.waitForTimeout(5000);
-  const onWire = call("issues.get", { issue_id: filed.issue.id })
+  const onWire = call("tasks.get", { task_id: filed.task.id })
     .timeline.some((one) => one.type === "comment" && String(one.body).includes(said));
   return { ok: onWire && (await has(page, said)), detail: onWire ? "on the wire and on screen" : "not on the wire" };
 });
@@ -263,8 +263,8 @@ await check("the composer round-trips a comment", async () => {
 
 let dispatch = null;
 await check("assigning a new workspace cuts one and starts an agent", async () => {
-  const answer = call("issues.assign", {
-    issue_id: filed.issue.id,
+  const answer = call("tasks.assign", {
+    task_id: filed.task.id,
     assignee: { kind: "new_workspace", name: `tracker-pass-${stamp}` },
   });
   const ms = lastCallMs;
@@ -279,36 +279,36 @@ await check("assigning a new workspace cuts one and starts an agent", async () =
   };
 });
 
-await check("the dispatch links the workspace and the conversation on the issue", async () => {
-  const links = call("issues.get", { issue_id: filed.issue.id }).issue.links;
+await check("the dispatch links the workspace and the conversation on the task", async () => {
+  const links = call("tasks.get", { task_id: filed.task.id }).task.links;
   return {
     ok: links.workspace_ids.length > 0 && links.conversation_ids.length > 0,
     detail: JSON.stringify(links),
   };
 });
 
-await check("the issue page draws those links", async () => {
+await check("the task page draws those links", async () => {
   await page.reload({ waitUntil: "load" });
   await page.waitForTimeout(6000);
-  const rows = await page.evaluate(() => [...document.querySelectorAll(".issue-link")].map((one) => one.textContent));
+  const rows = await page.evaluate(() => [...document.querySelectorAll(".task-link")].map((one) => one.textContent));
   return { ok: rows.length >= 2, detail: rows.join(" | ") };
 });
 
-// ── 8. the from_issue card on the message delivery actually produced ─────────
+// ── 8. the from_task card on the message delivery actually produced ─────────
 
-await check("the delivered message draws an issue card with its links", async () => {
-  const conversation = call("issues.get", { issue_id: filed.issue.id }).issue.links.conversation_ids[0];
+await check("the delivered message draws a task card with its links", async () => {
+  const conversation = call("tasks.get", { task_id: filed.task.id }).task.links.conversation_ids[0];
   await page.goto(
     `${APP}/app/#/device/${seed.deviceId}/project/${project}/workspace/${dispatch.workspace_id}?agent=${dispatch.agent_id}`,
     { waitUntil: "load" },
   );
   await page.waitForTimeout(8000);
   const card = await page.evaluate(() => {
-    const one = document.querySelector(".thread-issue");
+    const one = document.querySelector(".thread-task");
     return one && {
-      number: one.querySelector(".thread-issue-link")?.textContent,
-      href: one.querySelector(".thread-issue-link")?.getAttribute("href"),
-      links: [...one.querySelectorAll(".thread-issue-links a")].map((a) => a.textContent),
+      number: one.querySelector(".thread-task-link")?.textContent,
+      href: one.querySelector(".thread-task-link")?.getAttribute("href"),
+      links: [...one.querySelectorAll(".thread-task-links a")].map((a) => a.textContent),
     };
   });
   return {
@@ -322,20 +322,20 @@ await check("the delivered message draws an issue card with its links", async ()
 // Only half of this pair is reachable from here, and the half that is reachable
 // is the one that matters.
 //
-// The qa client IS the user, so an `issues.assign` from it produces a hand-off
+// The qa client IS the user, so an `tasks.assign` from it produces a hand-off
 // carrying no `from_agent` — this conversation's dialogue. A project agent's
 // conversation opens at Agent only, and the instruction the agent is working
 // from must survive that level; hiding it would be the damaging bug.
 //
 // The other half — a hand-off another AGENT assigned, which carries
 // `from_agent` and is hidden at that level — cannot be produced from here at
-// all. It needs an agent to call the `assign_issue` MCP tool, and the qa client
+// all. It needs an agent to call the `assign_task` MCP tool, and the qa client
 // cannot impersonate one. It stays covered by the unit tests over the real
 // `itemsAtDetailLevel`, and is called out as unverified rather than asserted.
 
 await check("a user-assigned hand-off survives the project agent's default level", async () => {
-  const handed = call("issues.create", { project_id: project, title: `handed-by-user ${stamp}` });
-  call("issues.assign", { issue_id: handed.issue.id, assignee: { kind: "project_agent" } });
+  const handed = call("tasks.create", { project_id: project, title: `handed-by-user ${stamp}` });
+  call("tasks.assign", { task_id: handed.task.id, assignee: { kind: "project_agent" } });
   await page.goto(`${APP}/app/#/device/${seed.deviceId}/project/${project}`, { waitUntil: "load" });
   await page.waitForTimeout(10000);
   const level = await page.evaluate(() =>
@@ -356,7 +356,7 @@ await check("the kanban scrolls sideways under 760px", async () => {
   await phone.goto(board(project), { waitUntil: "load" });
   await phone.waitForTimeout(10000);
   const measured = await phone.evaluate(() => {
-    const one = document.querySelector(".issue-board");
+    const one = document.querySelector(".task-board");
     return one && { scrollWidth: one.scrollWidth, clientWidth: one.clientWidth, overflowX: getComputedStyle(one).overflowX };
   });
   await phone.screenshot({ path: "/tmp/tracker-mobile.png" });
@@ -367,11 +367,11 @@ await check("the kanban scrolls sideways under 760px", async () => {
   };
 });
 
-// ── 11. the P0's own symptom, against a bridge that advertises `issues` ─────
+// ── 11. the P0's own symptom, against a bridge that advertises `tasks` ─────
 //
 // /tmp/push-check.mjs, folded in rather than run beside: a posted message must
 // paint in a watching browser with nothing touched. This is the regression test
-// for my own outage — the subscription guard exists so that naming `issues`
+// for my own outage — the subscription guard exists so that naming `tasks`
 // cannot cost this device its `state` and `thread` pushes, and this is the only
 // place that has ever been checked against a bridge which actually carries the
 // kind. Folded in so the whole session runs off one checkout's compose file.
@@ -394,7 +394,7 @@ await check("and is still there after a reload", async () => {
 });
 
 // No separate greeting check: whether the inbox subscription is really asking
-// for all three kinds is proved behaviourally by check 4 (an `issues` push
+// for all three kinds is proved behaviourally by check 4 (an `tasks` push
 // arrives) and the two above (a `thread` push arrives) on the same session. A
 // third check reading the greeting would assert the cause of what those two
 // already observe, and I have no clean way to read it from page scope anyway.

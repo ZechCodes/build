@@ -1,45 +1,45 @@
 //! Which timeline entries count as unread (#183): comments, changes to who
-//! holds an issue or where it stands, and agent-created asks. Other
+//! holds a task or where it stands, and agent-created asks. Other
 //! bookkeeping does not.
 //!
 //! One table of cases, answered by the real `unread_since_mark`. With
 //! `BUILD_PRINT_UNREAD_KINDS` set it prints them, and
-//! `spa/test/issueUnreadKinds183.test.js` holds the SPA's fallback count to
+//! `spa/test/taskUnreadKinds183.test.js` holds the SPA's fallback count to
 //! the same answers.
 
 use crate::app::tracker::unread_since_mark;
-use crate::tracker::{Issue, IssueEventKind, TimelineEntry};
+use crate::tracker::{Task, TaskEventKind, TimelineEntry};
 use serde_json::{json, Value};
 
 /// Every kind there is. The predicate's match is exhaustive, so a new kind
 /// cannot compile without a decision; this list puts each one in the table.
-const EVERY_KIND: [IssueEventKind; 18] = [
-    IssueEventKind::Created,
-    IssueEventKind::Assigned,
-    IssueEventKind::Unassigned,
-    IssueEventKind::Moved,
-    IssueEventKind::Labelled,
-    IssueEventKind::Linked,
-    IssueEventKind::Closed,
-    IssueEventKind::Reopened,
-    IssueEventKind::Dispatched,
-    IssueEventKind::Tracked,
-    IssueEventKind::Untracked,
-    IssueEventKind::Watched,
-    IssueEventKind::Unwatched,
-    IssueEventKind::BranchDeleted,
-    IssueEventKind::BranchKept,
-    IssueEventKind::WorkspaceIdle,
-    IssueEventKind::WorkspacePruned,
-    IssueEventKind::WorkspaceReclaimed,
+const EVERY_KIND: [TaskEventKind; 18] = [
+    TaskEventKind::Created,
+    TaskEventKind::Assigned,
+    TaskEventKind::Unassigned,
+    TaskEventKind::Moved,
+    TaskEventKind::Labelled,
+    TaskEventKind::Linked,
+    TaskEventKind::Closed,
+    TaskEventKind::Reopened,
+    TaskEventKind::Dispatched,
+    TaskEventKind::Tracked,
+    TaskEventKind::Untracked,
+    TaskEventKind::Watched,
+    TaskEventKind::Unwatched,
+    TaskEventKind::BranchDeleted,
+    TaskEventKind::BranchKept,
+    TaskEventKind::WorkspaceIdle,
+    TaskEventKind::WorkspacePruned,
+    TaskEventKind::WorkspaceReclaimed,
 ];
 
-const COUNTED: [IssueEventKind; 5] = [
-    IssueEventKind::Assigned,
-    IssueEventKind::Unassigned,
-    IssueEventKind::Moved,
-    IssueEventKind::Closed,
-    IssueEventKind::Reopened,
+const COUNTED: [TaskEventKind; 5] = [
+    TaskEventKind::Assigned,
+    TaskEventKind::Unassigned,
+    TaskEventKind::Moved,
+    TaskEventKind::Closed,
+    TaskEventKind::Reopened,
 ];
 
 /// An id `at` steps along one ULID clock; step 0 is the read mark.
@@ -53,35 +53,35 @@ fn agent() -> Value {
     json!({ "kind": "agent", "agent_id": "agent-01K5ZFILER" })
 }
 
-fn event(kind: IssueEventKind, actor: Value, at: u32) -> Value {
-    json!({ "type": "event", "id": id("ie", at), "issue_id": "issue-1", "at": "2026-09-27T02:00:00Z",
+fn event(kind: TaskEventKind, actor: Value, at: u32) -> Value {
+    json!({ "type": "event", "id": id("te", at), "task_id": "task-1", "at": "2026-09-27T02:00:00Z",
         "actor": actor, "kind": kind.as_str(), "payload": {} })
 }
 
 fn comment(author: Value, at: u32) -> Value {
-    json!({ "type": "comment", "id": id("ic", at), "issue_id": "issue-1", "author": author,
+    json!({ "type": "comment", "id": id("tc", at), "task_id": "task-1", "author": author,
         "body": "An update.", "created_at": "2026-09-27T02:00:00Z" })
 }
 
 /// One case: its name, the mark, the timeline, and what the bridge counts.
 fn case(name: &str, read_through: Option<String>, timeline: Vec<Value>) -> Value {
-    let issue: Issue = serde_json::from_value(json!({
-        "id": "issue-1", "project_path": "/p", "number": 1, "title": "t", "body": "", "state": "open",
+    let task: Task = serde_json::from_value(json!({
+        "id": "task-1", "project_path": "/p", "number": 1, "title": "t", "body": "", "state": "open",
         "status": "ready", "watched": true, "read_through": read_through, "created_by": agent(),
         "created_at": "2026-09-27T01:00:00Z", "updated_at": "2026-09-27T02:00:00Z",
     }))
-    .expect("an issue");
+    .expect("a task");
     let entries: Vec<TimelineEntry> = timeline
         .iter()
         .map(|entry| serde_json::from_value(entry.clone()).expect("a timeline entry"))
         .collect();
-    let unread = unread_since_mark(&issue, &entries);
-    json!({ "name": name, "read_through": issue.read_through, "timeline": timeline, "unread": unread })
+    let unread = unread_since_mark(&task, &entries);
+    json!({ "name": name, "read_through": task.read_through, "timeline": timeline, "unread": unread })
 }
 
 fn table() -> Vec<Value> {
-    let mark = || Some(id("ie", MARK));
-    let mut mentioned_creation = event(IssueEventKind::Created, agent(), MARK + 1);
+    let mark = || Some(id("te", MARK));
+    let mut mentioned_creation = event(TaskEventKind::Created, agent(), MARK + 1);
     mentioned_creation["mentions_user"] = json!(true);
     let mut cases: Vec<Value> = EVERY_KIND
         .iter()
@@ -101,15 +101,15 @@ fn table() -> Vec<Value> {
         ),
         case(
             "a read agent-created mention",
-            Some(id("ie", MARK + 1)),
+            Some(id("te", MARK + 1)),
             vec![mentioned_creation],
         ),
         case(
             "an agent filed and tracked it",
             mark(),
             vec![
-                event(IssueEventKind::Created, agent(), MARK + 1),
-                event(IssueEventKind::Tracked, agent(), MARK + 2),
+                event(TaskEventKind::Created, agent(), MARK + 1),
+                event(TaskEventKind::Tracked, agent(), MARK + 2),
             ],
         ),
         case(
@@ -117,7 +117,7 @@ fn table() -> Vec<Value> {
             mark(),
             vec![
                 comment(agent(), MARK + 1),
-                event(IssueEventKind::Moved, agent(), MARK + 2),
+                event(TaskEventKind::Moved, agent(), MARK + 2),
             ],
         ),
         case(
@@ -125,7 +125,7 @@ fn table() -> Vec<Value> {
             mark(),
             vec![
                 comment(json!({ "kind": "user" }), MARK + 1),
-                event(IssueEventKind::Moved, json!({ "kind": "user" }), MARK + 2),
+                event(TaskEventKind::Moved, json!({ "kind": "user" }), MARK + 2),
             ],
         ),
         case(
@@ -137,8 +137,8 @@ fn table() -> Vec<Value> {
             "never opened: filed, tracked, then a comment",
             None,
             vec![
-                event(IssueEventKind::Created, agent(), 1),
-                event(IssueEventKind::Tracked, agent(), 2),
+                event(TaskEventKind::Created, agent(), 1),
+                event(TaskEventKind::Tracked, agent(), 2),
                 comment(agent(), 3),
             ],
         ),

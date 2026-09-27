@@ -2,7 +2,7 @@
 // Telling a read that failed because the wire went away from a read the bridge
 // refused — and what a surface does about each.
 //
-// The distinction is the whole of issue #24. A phone whose session dies every
+// The distinction is the whole of task #24. A phone whose session dies every
 // few minutes fails every call in flight, and a page that had already painted
 // from the cache reported each one as an error about a copy still on screen.
 // A refusal is the opposite: the bridge answered, and the reader has to hear
@@ -36,13 +36,13 @@ describe("what counts as the wire going away", () => {
   // A deadline that expires while the call is queued behind a dead session is
   // the wire in doubt, which is what `timedOut` means (core/sessionRpc.js).
   it("is a call that ran out of time, and one whose delivery is unknown", () => {
-    expect(isTransientTransportError(thrown("issues.get timed out", { timedOut: true }))).toBe(true);
+    expect(isTransientTransportError(thrown("tasks.get timed out", { timedOut: true }))).toBe(true);
     expect(isTransientTransportError(thrown("the channel went", { uncertain: true }))).toBe(true);
   });
 
   it("is not a refusal, whatever the bridge called it", () => {
-    expect(isTransientTransportError(thrown("no such issue", { error_code: "not_found" }))).toBe(false);
-    expect(isTransientTransportError(thrown("issue_id is required", { error_code: "invalid_params" }))).toBe(false);
+    expect(isTransientTransportError(thrown("no such task", { error_code: "not_found" }))).toBe(false);
+    expect(isTransientTransportError(thrown("task_id is required", { error_code: "invalid_params" }))).toBe(false);
     expect(isTransientTransportError(thrown("the bridge is busy", { error_code: "busy", retryable: true }))).toBe(false);
   });
 
@@ -58,7 +58,7 @@ describe("what counts as the wire going away", () => {
   // TypeError would otherwise be swallowed into a silent wait forever, which
   // is a worse failure than one toast too many.
   it("is not anything it does not recognise", () => {
-    expect(isTransientTransportError(thrown("issues.get: result is not an object"))).toBe(false);
+    expect(isTransientTransportError(thrown("tasks.get: result is not an object"))).toBe(false);
     expect(isTransientTransportError(new TypeError("x is not a function"))).toBe(false);
     expect(isTransientTransportError(null)).toBe(false);
     expect(isTransientTransportError(undefined)).toBe(false);
@@ -122,7 +122,7 @@ describe("what a surface does about one", () => {
   });
 
   it("keeps a refusal out loud and waits for nothing", () => {
-    expect(guard.failed(thrown("no such issue", { error_code: "not_found" }))).toBe(false);
+    expect(guard.failed(thrown("no such task", { error_code: "not_found" }))).toBe(false);
     expect(guard.waiting()).toBe(false);
     expect(note()).toBeNull();
   });
@@ -213,7 +213,7 @@ describe("what a surface does about one", () => {
   it("waits even while the registry still thinks the machine is here", () => {
     away = false;
     reconnecting = false;
-    expect(guard.failed(thrown("issues.get timed out", { timedOut: true }))).toBe(true);
+    expect(guard.failed(thrown("tasks.get timed out", { timedOut: true }))).toBe(true);
     expect(guard.waiting()).toBe(true);
     expect(moved.size).toBe(1);
   });
@@ -222,7 +222,7 @@ describe("what a surface does about one", () => {
     away = false;
     reconnecting = false;
     guard.succeeded(Date.parse("2026-09-20T16:40:00Z"));
-    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    guard.failed(thrown("tasks.get timed out", { timedOut: true }));
     expect(note()).toBeNull();
     away = true;
     reconnecting = true;
@@ -233,7 +233,7 @@ describe("what a surface does about one", () => {
   it("reads again on the machine coming back, having gone after the read died", () => {
     away = false;
     reconnecting = false;
-    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    guard.failed(thrown("tasks.get timed out", { timedOut: true }));
     away = true;
     [...moved].forEach((fn) => fn());
     expect(retry).not.toHaveBeenCalled();
@@ -246,7 +246,7 @@ describe("what a surface does about one", () => {
   it("reads nothing on an announcement about a machine that never went", () => {
     away = false;
     reconnecting = false;
-    guard.failed(thrown("issues.get timed out", { timedOut: true }));
+    guard.failed(thrown("tasks.get timed out", { timedOut: true }));
     [...moved].forEach((fn) => fn());
     [...moved].forEach((fn) => fn());
     expect(retry).not.toHaveBeenCalled();
@@ -258,7 +258,7 @@ describe("what a surface does about one", () => {
     away = false;
     reconnecting = false;
     hasContent = () => false;
-    expect(guard.failed(thrown("issues.get timed out", { timedOut: true }))).toBe(false);
+    expect(guard.failed(thrown("tasks.get timed out", { timedOut: true }))).toBe(false);
     expect(guard.waiting()).toBe(true);
   });
 

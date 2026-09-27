@@ -5,7 +5,7 @@
 //!
 //! - an attention-class item on a **watched** agent's own conversation, unless
 //!   its entry is muted — every agent on the roster, not only the primary;
-//! - timeline news on a **watched**, unfinished issue that is not the user's
+//! - timeline news on a **watched**, unfinished task that is not the user's
 //!   own doing (`tracker::inbox::counts_as_unread`, #183/#189).
 //!
 //! Each push is content-free: the entity's opaque id and a generic kind
@@ -248,7 +248,7 @@ fn a_restart_with_a_turn_in_flight_pushes_nothing() {
     assert_eq!(sent(&mut state), vec![], "the first change after boot");
 }
 
-// ---- issues -----------------------------------------------------------------
+// ---- tasks -----------------------------------------------------------------
 
 /// A coding agent on a fresh workspace of `project_id`, as `(owner, agent)`.
 fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {
@@ -268,12 +268,12 @@ fn act(state: &mut AppState, who: &(String, String), action: BridgeAction) -> Va
         .unwrap_or_else(|error| panic!("the agent's tool call lands: {error}"))
 }
 
-fn agent_comments(state: &mut AppState, who: &(String, String), issue_id: &str) {
+fn agent_comments(state: &mut AppState, who: &(String, String), task_id: &str) {
     act(
         state,
         who,
-        BridgeAction::TrackerCommentIssue {
-            issue_id: issue_id.into(),
+        BridgeAction::TrackerCommentTask {
+            task_id: task_id.into(),
             body: "a question for you".into(),
             attachments: Vec::new(),
             refs: Vec::new(),
@@ -284,23 +284,21 @@ fn agent_comments(state: &mut AppState, who: &(String, String), issue_id: &str) 
     );
 }
 
-fn agent_moves(state: &mut AppState, who: &(String, String), issue_id: &str, status: &str) {
+fn agent_moves(state: &mut AppState, who: &(String, String), task_id: &str, status: &str) {
     act(
         state,
         who,
-        BridgeAction::TrackerMoveIssue {
-            issue_id: issue_id.into(),
+        BridgeAction::TrackerMoveTask {
+            task_id: task_id.into(),
             status: status.into(),
             track: Some(false),
         },
     );
 }
 
-/// An issue the user filed (so watched), with an agent to act on it and the
+/// A task the user filed (so watched), with an agent to act on it and the
 /// agents' own conversation pushes already drained.
-fn watched_issue(
-    root: &std::path::Path,
-) -> (tempfile::TempDir, AppState, (String, String), String) {
+fn watched_task(root: &std::path::Path) -> (tempfile::TempDir, AppState, (String, String), String) {
     let (home, state, project_id) = tracked(root);
     let mut state = listening(state);
     let id = filed(&mut state, &project_id, "push me")["id"]
@@ -312,13 +310,13 @@ fn watched_issue(
     (home, state, who, id)
 }
 
-/// A comment an agent leaves on a watched open issue is unread news: it
-/// pushes as a `task`, by the issue's opaque id.
+/// A comment an agent leaves on a watched open task is unread news: it
+/// pushes as a `task`, by the task's opaque id.
 #[test]
-fn an_agents_comment_on_a_watched_issue_pushes_a_task_notify() {
+fn an_agents_comment_on_a_watched_task_pushes_a_task_notify() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
+    let (_home, mut state, who, id) = watched_task(&root);
 
     agent_comments(&mut state, &who, &id);
 
@@ -331,10 +329,10 @@ fn an_agents_comment_on_a_watched_issue_pushes_a_task_notify() {
 
 /// A move and an assignment count on the badge (#183), so each pushes.
 #[test]
-fn a_move_and_an_assignment_on_a_watched_issue_push() {
+fn a_move_and_an_assignment_on_a_watched_task_push() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
+    let (_home, mut state, who, id) = watched_task(&root);
 
     agent_moves(&mut state, &who, &id, "in_progress");
     assert!(sent(&mut state).contains(&(id.clone(), TASK)), "a move");
@@ -343,9 +341,9 @@ fn a_move_and_an_assignment_on_a_watched_issue_push() {
     act(
         &mut state,
         &who,
-        BridgeAction::TrackerAssignIssue {
+        BridgeAction::TrackerAssignTask {
             assignee: json!({ "kind": "user" }),
-            issue_id: id.clone(),
+            task_id: id.clone(),
             note: None,
             track: Some(false),
             notify_user: None,
@@ -354,13 +352,13 @@ fn a_move_and_an_assignment_on_a_watched_issue_push() {
     assert!(sent(&mut state).contains(&(id, TASK)), "an assignment");
 }
 
-/// An issue the user is not watching has no badge to add to.
+/// A task the user is not watching has no badge to add to.
 #[test]
-fn an_unwatched_issue_pushes_nothing() {
+fn an_unwatched_task_pushes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
-    let unwatched = state.handle(req("issues.unwatch", json!({ "issue_id": id })));
+    let (_home, mut state, who, id) = watched_task(&root);
+    let unwatched = state.handle(req("tasks.unwatch", json!({ "task_id": id })));
     assert_eq!(unwatched["ok"], true, "{unwatched:?}");
     sent(&mut state);
 
@@ -369,13 +367,13 @@ fn an_unwatched_issue_pushes_nothing() {
     assert!(!sent(&mut state).iter().any(|(_, kind)| *kind == TASK));
 }
 
-/// A Done issue never counts in a total (#183) — neither the move that takes
+/// A Done task never counts in a total (#183) — neither the move that takes
 /// it there nor a comment made on it afterwards.
 #[test]
-fn a_done_issue_pushes_nothing() {
+fn a_done_task_pushes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
+    let (_home, mut state, who, id) = watched_task(&root);
 
     agent_moves(&mut state, &who, &id, "done");
     agent_comments(&mut state, &who, &id);
@@ -384,22 +382,22 @@ fn a_done_issue_pushes_nothing() {
 }
 
 /// What the user does is never unread to them, and filing is bookkeeping
-/// (#183): an agent filing an issue for the user to watch pushes nothing.
+/// (#183): an agent filing a task for the user to watch pushes nothing.
 #[test]
 fn the_users_own_change_and_a_filing_push_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
+    let (_home, mut state, who, id) = watched_task(&root);
 
     let said = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "my own words" }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "my own words" }),
     ));
     assert_eq!(said["ok"], true, "{said:?}");
     act(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "filed for the user".into(),
             body: None,
             status: None,
@@ -415,18 +413,18 @@ fn the_users_own_change_and_a_filing_push_nothing() {
     assert!(!sent(&mut state).iter().any(|(_, kind)| *kind == TASK));
 }
 
-/// An agent filing an issue that asks the user to read it is unread news
-/// (#189), so the new issue pushes as a `task`, by its own id.
+/// An agent filing a task that asks the user to read it is unread news
+/// (#189), so the new task pushes as a `task`, by its own id.
 #[test]
-fn an_agent_filing_an_issue_that_asks_the_user_pushes() {
+fn an_agent_filing_a_task_that_asks_the_user_pushes() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, _id) = watched_issue(&root);
+    let (_home, mut state, who, _id) = watched_task(&root);
 
     let filed = act(
         &mut state,
         &who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "which route should we take?".into(),
             body: None,
             status: None,
@@ -438,7 +436,7 @@ fn an_agent_filing_an_issue_that_asks_the_user_pushes() {
             mention_user: Some(true),
         },
     );
-    let asked = filed["issue"]["id"].as_str().unwrap().to_string();
+    let asked = filed["task"]["id"].as_str().unwrap().to_string();
 
     let pushed: Vec<_> = sent(&mut state)
         .into_iter()
@@ -447,19 +445,19 @@ fn an_agent_filing_an_issue_that_asks_the_user_pushes() {
     assert_eq!(pushed, vec![(asked, TASK)]);
 }
 
-/// Reading an issue takes from the badge; it never adds to it. The read after
+/// Reading a task takes from the badge; it never adds to it. The read after
 /// an agent's comment pushes nothing more, and the comment's own push is the
 /// only one.
 #[test]
-fn reading_an_issue_pushes_nothing() {
+fn reading_a_task_pushes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
-    let (_home, mut state, who, id) = watched_issue(&root);
+    let (_home, mut state, who, id) = watched_task(&root);
     agent_comments(&mut state, &who, &id);
     assert!(sent(&mut state).contains(&(id.clone(), TASK)));
     forget_debounce(&mut state);
 
-    let got = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let got = state.handle(req("tasks.get", json!({ "task_id": id })));
     let newest = got["result"]["timeline"]
         .as_array()
         .and_then(|timeline| timeline.last())
@@ -467,8 +465,8 @@ fn reading_an_issue_pushes_nothing() {
         .expect("the timeline has an entry")
         .to_string();
     let read = state.handle(req(
-        "issues.read_through",
-        json!({ "issue_id": id, "event_id": newest }),
+        "tasks.read_through",
+        json!({ "task_id": id, "event_id": newest }),
     ));
     assert_eq!(read["ok"], true, "{read:?}");
 

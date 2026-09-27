@@ -4,7 +4,7 @@
 // flush. A surface that answered each one with a fresh read — and kept only the
 // newest answer — starved itself whenever a read took longer than the gap
 // between pushes: every answer was overtaken before it landed, and every one
-// of them still crossed the wire (#119, a Done issue still under "Needs you"
+// of them still crossed the wire (#119, a Done task still under "Needs you"
 // for as long as the agents kept commenting). Here a read asked for while the
 // same read is out is folded into ONE read after it, which starts once the
 // current answer has landed, so every answer lands and the last word is always

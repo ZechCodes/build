@@ -200,10 +200,10 @@ describe("the bubble strip", () => {
     expect(bubbles[1].working).toBe(true);
   });
 
-  it("offers a second agent on a branch and never on an issue", () => {
+  it("offers a second agent on a branch and never on a task", () => {
     const types = (kind) => railBubbles({ agents: [agent()], selectedId: null, kind }).map((b) => b.type);
     expect(types("branch")).toContain("add");
-    expect(types("issue")).not.toContain("add");
+    expect(types("task")).not.toContain("add");
   });
 
   it("marks no bubble of its own while the chat overview is the selection", () => {
@@ -489,8 +489,8 @@ describe("which agent can be taken back off", () => {
     expect(canRemoveAgent({ agents: [agent()], agentId: "ag-1", kind: "branch" })).toBe(true);
   });
 
-  it("offers nothing on an issue, whose one agent is the issue's own conversation", () => {
-    expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "issue" })).toBe(false);
+  it("offers nothing on a task, whose one agent is the task's own conversation", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "task" })).toBe(false);
   });
 
   it("offers nothing for an agent that is not on this work item, or none at all", () => {
@@ -603,12 +603,12 @@ describe("what the rail is the rail of", () => {
     expect(canRemoveAgent({ agents: [agent()], agentId: "ag-1", kind: "project" })).toBe(false);
   });
 
-  it("reads an issue: its own id, its one agent, its own conversation", () => {
+  it("reads a task: its own id, its one agent, its own conversation", () => {
     const entity = railEntity(
-      { issue_id: "plan-2", project_id: "p1", agents: [agent()], thread: { items: [] } },
-      "issue",
+      { task_id: "plan-2", project_id: "p1", agents: [agent()], thread: { items: [] } },
+      "task",
     );
-    expect(entity).toMatchObject({ entityId: "plan-2", kind: "issue", adoptable: false, canAdd: false });
+    expect(entity).toMatchObject({ entityId: "plan-2", kind: "task", adoptable: false, canAdd: false });
     expect(entity.thread.items).toEqual([]);
   });
 

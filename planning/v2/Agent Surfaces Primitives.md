@@ -396,19 +396,19 @@ and this document is wrong — except for the one deviation named under
   anything.
 - **Where it is passed** A second parameter on `agent_digests` / `agent_digest`
   and on `plan_view` / `run_view`:
-  - `Detail` — `plan_get` (`bridge/src/app.rs:9628`, which `issue.get` aliases
+  - `Detail` — `plan_get` (`bridge/src/app.rs:9628`, which `task.get` aliases
     at `bridge/src/app.rs:5866`), `run_get` (`bridge/src/app.rs:10962`),
     `branch_get` (`bridge/src/app.rs:13214`), and every mutation answer that
     returns the same detail view (`answer_plan_mutation`,
-    `answer_run_mutation`, `issue_view_full`, `open_implementation_run`
+    `answer_run_mutation`, `task_view_full`, `open_implementation_run`
     (`bridge/src/app.rs:10959`), and the `run_view(.., thread_detail(params))`
     answers at `bridge/src/app.rs:11351`, `:11844`, `:11876`, `:11922`,
     `:11945`, `:12452`, `:12464`). See "Which payloads
     carry surfaces" in the Wire section for why the mutations are `Detail`.
   - `List` — `board_list` (`bridge/src/app.rs:12708`, `:12723`), `plan_list`
-    (`bridge/src/app.rs:9647`), `issue_list` (`bridge/src/app.rs:9656`), the
+    (`bridge/src/app.rs:9647`), `task_list` (`bridge/src/app.rs:9656`), the
     archived-plan list (`bridge/src/app.rs:13666`), the work-item candidates
-    (`branch_candidate_from_run`, `bridge/src/app.rs:12866`; `issue_candidate`,
+    (`branch_candidate_from_run`, `bridge/src/app.rs:12866`; `task_candidate`,
     `bridge/src/app.rs:13081`), `agent_list` (`bridge/src/app.rs:8320`),
     `agent_add` (`bridge/src/app.rs:8177`) and `agent_remove`
     (`bridge/src/app.rs:8275`).
@@ -484,16 +484,16 @@ and this document is wrong — except for the one deviation named under
   `run_view` / `agent_digests` at `DigestScope::Detail`
 - **Responsibility** Carry the snapshot, additively, on detail payloads.
 - **Which payloads carry surfaces** The four the spec pins — `branch.get`,
-  `issue.get`, `run.get`, `plan.get` — AND the mutation answers that return the
+  `task.get`, `run.get`, `plan.get` — AND the mutation answers that return the
   very same detail view (`thread.post`, which sends `MUTATION_THREAD_PAGE`,
-  `spa/src/core/thread.js:150`; `agent.start` and the other run/issue mutations
+  `spa/src/core/thread.js:150`; `agent.start` and the other run/task mutations
   listed under `DigestScope`). The mutations are in deliberately: the rail
   repaints from the answer to its own send, and an answer that dropped the pills
   would blank the viewer for one tick after every message. The payloads are the
   same bounded detail views either way, so this adds no unbounded poll.
 - **Reuses** the existing `agents[]` digest array — no new RPC, no new event.
 - **Never** appears on a list-shaped payload — `board.list`, `plan.list`,
-  `issue.list`, the archived list, `agent.list`, `agent.add`, `agent.remove`;
+  `task.list`, the archived list, `agent.list`, `agent.add`, `agent.remove`;
   never sends a key for a kind with no content; never sends `surfaces: {}`.
 
 ### `parent_sequence` on a thread event item

@@ -91,21 +91,21 @@ npm run e2e        # one encrypted round-trip over the `app` channel
 npm run qa         # workspaces, files, git and the terminal, end to end
 node wire-check.mjs  # the 1.1 wire surface, by hand from the host
 
-# The issue lines and the three incoming kinds, measured under the real
+# The task lines and the three incoming kinds, measured under the real
 # stylesheet at 390 px and on a desktop: gutter, row height, the gap between
 # consecutive lines and the gap a real message keeps. jsdom has no layout, so
 # this is the only thing that can check a claim about SPACE — it is what found
 # a 90px gutter, rows wrapping to three lines, and a rhythm 4px out. Reads the
-# committed fixture, which spa/test/issueLineFixture.test.js holds to the
+# committed fixture, which spa/test/taskLineFixture.test.js holds to the
 # renderer; needs a seed from live-seed.mjs; exits non-zero on a failed check.
-ISSUES_REPO=$PWD/.. node issue-line-measure.mjs
+TASKS_REPO=$PWD/.. node task-line-measure.mjs
 
 # A dropped session over an open surface: the cached copy is kept and marked,
 # and the read lands again on reconnect (#24). PAUSES the bridge rather than
 # stopping it — a stopped container deregisters the device, and a machine that
 # is gone is a different case from one being reconnected to. Needs a seed from
 # live-seed.mjs; exits non-zero on a failed check.
-ISSUES_REPO=$PWD/.. node dropped-read-check.mjs
+TASKS_REPO=$PWD/.. node dropped-read-check.mjs
 
 # A session whose path died with ICE still calling it connected (#30): the probe
 # asks the wire, judges it dead in ~15 s where SCTP took ~105 s, and the reconnect
@@ -113,14 +113,14 @@ ISSUES_REPO=$PWD/.. node dropped-read-check.mjs
 # `RTCPeerConnection` to keep reporting a reached state, because a paused
 # container stops answering ICE's consent checks too and the browser would
 # otherwise notice on its own — which is the symptom, not the fault.
-ISSUES_REPO=$PWD/.. node dead-path-check.mjs
+TASKS_REPO=$PWD/.. node dead-path-check.mjs
 
 # The bridge noticing its OWN frames are not leaving (#41). A paused bridge
 # cannot exercise this — a frozen container runs no code — so the fault is made
 # from the other end: a multi-megabyte attachment fetch in flight, then SIGSTOP on
 # the browser's whole process tree, so it stops draining its sockets while the
 # bridge writes. Seeds its own 4 MiB file and removes it. Thaws on any exit.
-ISSUES_REPO=$PWD/.. node stall-watch-check.mjs
+TASKS_REPO=$PWD/.. node stall-watch-check.mjs
 
 # The hold making a direct pair win a race a relay pair would have won (#31).
 # Builds the race the stack does not have: a coturn on the host, and every
@@ -135,7 +135,7 @@ ISSUES_REPO=$PWD/.. node stall-watch-check.mjs
 # Making the direct PATH slow (tc netem, or a NAT'd second bridge) is what this
 # would need, and both want root. Exit 0 the hold won, 1 it did not, 3 the
 # experiment could not be set up. Takes coturn down on any exit.
-ISSUES_REPO=$PWD/.. node relay-wins-check.mjs
+TASKS_REPO=$PWD/.. node relay-wins-check.mjs
 ```
 
 ## The liveness gate (#131)
@@ -147,7 +147,7 @@ brings up its own stack (`deploy/compose.liveness.yml` over
 18128) with a coturn on the stack's network, pairs, and then at once:
 
 - `liveness-soak.mjs`, in the qa image: one TURN-only session for ten
-  minutes, busy loops in a terminal and an `issues.list` hammer beside it;
+  minutes, busy loops in a terminal and an `tasks.list` hammer beside it;
   fails on any drop, any timeout, any ping at 500 ms or over;
 - `ice-restart-check.mjs`, four minutes in, in `mcr.microsoft.com/playwright`
   on the host's network: the real app over the same TURN, made to see its

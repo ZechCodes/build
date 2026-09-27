@@ -1,5 +1,5 @@
 // The composer's action row. The reported defect: Send floated mid-row because
-// the row reserved 150px of horizontal padding to dodge the New-issue FAB, and
+// the row reserved 150px of horizontal padding to dodge the New-task FAB, and
 // the paperclip sat orphaned at the far left. Actions belong together, at the
 // right, and the FAB is cleared vertically so nothing has to move sideways.
 

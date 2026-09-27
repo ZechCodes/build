@@ -53,13 +53,13 @@ const globalControls = () => `<header id="global-controls">
 // ---- the view column's chrome ---------------------------------------------
 
 /** The toolbar standing in a workspace: back to the project, the workspace
- *  switcher, its directory, and the workspace's Issues. */
+ *  switcher, its directory, and the workspace's Tasks. */
 export const workspaceToolbar = (name) => toolbarHtml({
   project: PROJECT.name,
   kind: "workspace",
   label: name,
   directories: [{ sourceId: DIRECTORY, label: DIRECTORY, current: true }],
-}).replace(/(data-workspace-issues[^>]*?) hidden>/, "$1>");
+}).replace(/(data-workspace-tasks[^>]*?) hidden>/, "$1>");
 
 /** The toolbar on a project page: its name, then its pages as tabs, then the
  *  page's verbs at the right. */

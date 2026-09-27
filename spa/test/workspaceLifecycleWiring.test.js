@@ -12,7 +12,7 @@ const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/app.js", () => ({ App }));
 
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "issues"] } }),
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "tasks"] } }),
   subscriptionsSettledFor: async () => {},
   onSubscriptionHeld: () => () => {},
   watchChanges: () => ({ dispose: () => {} }),
@@ -31,7 +31,7 @@ const verdict = {
   idle: true,
   reclaimable: false,
   holds: ["dirty", "terminal_open"],
-  issues: [{ issue_id: "issue-1", number: 135, title: "Lifecycle", status: "done", state: "open" }],
+  tasks: [{ task_id: "task-1", number: 135, title: "Lifecycle", status: "done", state: "open" }],
   dirty_files: 3,
   unpushed_commits: 0,
   behind_commits: 0,

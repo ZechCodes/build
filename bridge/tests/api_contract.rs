@@ -148,7 +148,7 @@ fn every_fixture_verb_has_an_advertised_capability() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "1.30.0");
+    assert_eq!(API_VERSION, "2.0.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -188,7 +188,7 @@ fn every_fixture_parses_and_its_result_round_trips_through_the_typed_result() {
 }
 
 /// A fixture's own params and result, then each of its further `examples`
-/// (a paged `issues.list`, #85), named by where it sits in the file.
+/// (a paged `tasks.list`, #85), named by where it sits in the file.
 fn examples_of(fixture: &Value) -> Vec<(String, &Value)> {
     let further = fixture["examples"].as_array().into_iter().flatten();
     std::iter::once((String::new(), fixture))
@@ -242,22 +242,81 @@ fn string_set(manifest: &Value, key: &str) -> BTreeSet<String> {
         .collect()
 }
 
-/// The registry against the previous minor's manifest
-/// (`fixtures/api/verbs-<minor>.json`, written by
-/// `scripts/api-verbs-manifest.mjs`): a minor only adds, so everything the
-/// previous minor served and announced is still here; and every verb or
-/// capability it did not have declares, in its fixture, the release that
-/// introduced it. The SPA's `apiContract.test.js` holds the fixtures to the
-/// same manifest.
+/// The one `fixtures/api/verbs-<minor>.json` there is, written by
+/// `scripts/api-verbs-manifest.mjs`: the release before this one.
+fn previous_release_manifest() -> Value {
+    let names: Vec<String> = std::fs::read_dir(fixtures_root())
+        .expect("fixtures/api")
+        .map(|entry| entry.expect("readable entry").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("verbs-") && name.ends_with(".json"))
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "one manifest, the previous release's: {names:?}"
+    );
+    read_json(&fixtures_root().join(&names[0]))
+}
+
+/// Whether `previous` is the release right before `current`: the minor before
+/// it, or for a new major's first minor, any release of the major before — or,
+/// for a later patch of that first minor, its own first release.
+fn directly_precedes(previous: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
+    match current {
+        (major, 0, patch) => {
+            previous.0 + 1 == major || (previous.0, previous.1) == (major, 0) && previous.2 < patch
+        }
+        (major, minor, _) => (previous.0, previous.1 + 1) == (major, minor),
+    }
+}
+
+/// Whether `current` may serve less than `previous` did: only the first
+/// release of a new major, which is what makes it one. A later patch of it
+/// compared against the major before would slip removals through unchecked.
+fn may_remove(previous: (u64, u64, u64), current: (u64, u64, u64)) -> bool {
+    previous.0 != current.0 && (current.1, current.2) == (0, 0)
+}
+
+#[test]
+fn a_new_major_follows_any_release_of_the_one_before() {
+    assert!(directly_precedes((1, 30, 0), (2, 0, 0)));
+    assert!(directly_precedes((1, 29, 2), (1, 30, 0)));
+    assert!(!directly_precedes((1, 28, 0), (1, 30, 0)));
+    assert!(!directly_precedes((1, 30, 0), (3, 0, 0)));
+    assert!(!directly_precedes((1, 30, 0), (2, 1, 0)));
+    assert!(directly_precedes((2, 0, 0), (2, 0, 1)));
+    assert!(!directly_precedes((2, 0, 1), (2, 0, 1)));
+}
+
+#[test]
+fn only_a_new_majors_first_release_may_remove() {
+    assert!(may_remove((1, 30, 0), (2, 0, 0)));
+    assert!(!may_remove((1, 30, 0), (2, 0, 1)), "2.0.1 is held to 2.0.0");
+    assert!(!may_remove((2, 0, 0), (2, 0, 1)));
+    assert!(!may_remove((1, 29, 0), (1, 30, 0)));
+}
+
+/// The registry against the previous release's manifest: a minor only adds,
+/// so everything the previous minor served and announced is still here (a new
+/// major may remove, which is what makes it one); and every verb or capability
+/// it did not have declares, in its fixture, the release that introduced it.
+/// The SPA's `apiContract.test.js` holds the fixtures to the same manifest.
 #[test]
 fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
-    let (major, minor, _) = version_parts(API_VERSION);
+    let (major, minor, patch) = version_parts(API_VERSION);
     let release = format!("{major}.{minor}.0");
-    let previous = format!("{major}.{}", minor - 1);
-    let manifest = read_json(&fixtures_root().join(format!("verbs-{previous}.json")));
-    let (manifest_major, manifest_minor, _) =
-        version_parts(manifest["api_version"].as_str().expect("api_version"));
-    assert_eq!((manifest_major, manifest_minor + 1), (major, minor));
+    let manifest = previous_release_manifest();
+    let previous = manifest["api_version"]
+        .as_str()
+        .expect("api_version")
+        .to_string();
+    let previous_parts = version_parts(&previous);
+    assert!(
+        directly_precedes(previous_parts, (major, minor, patch)),
+        "{previous} is not the release before {API_VERSION}"
+    );
+    let removals_allowed = may_remove(previous_parts, (major, minor, patch));
 
     let served: BTreeSet<&str> = v1::methods()
         .iter()
@@ -268,17 +327,20 @@ fn the_registry_adds_to_the_previous_minor_and_dates_what_it_added() {
     let announced: BTreeSet<&str> = capabilities(false).into_iter().collect();
     let verbs_before = string_set(&manifest, "verbs");
     let capabilities_before = string_set(&manifest, "capabilities");
-    for verb in &verbs_before {
-        assert!(
-            served.contains(verb.as_str()),
-            "{verb}: served at {previous}, gone at {API_VERSION}"
-        );
-    }
-    for capability in &capabilities_before {
-        assert!(
-            announced.contains(capability.as_str()),
-            "{capability}: announced at {previous}, gone at {API_VERSION}"
-        );
+    if !removals_allowed {
+        for verb in &verbs_before {
+            assert!(
+                served.contains(verb.as_str()),
+                "{verb}: served at {previous}, gone at {API_VERSION} (past a new major's \
+                 first release, write the manifest from that release)"
+            );
+        }
+        for capability in &capabilities_before {
+            assert!(
+                announced.contains(capability.as_str()),
+                "{capability}: announced at {previous}, gone at {API_VERSION}"
+            );
+        }
     }
 
     let fixtures: std::collections::BTreeMap<String, Value> =
@@ -454,35 +516,35 @@ fn check_changes_item(item: &Value) {
     if let Some(files) = object.get("files") {
         check_files(entity_id, files);
     }
-    if let Some(issues) = object.get("issues") {
-        check_issues(entity_id, issues);
+    if let Some(tasks) = object.get("tasks") {
+        check_tasks(entity_id, tasks);
     }
 }
 
-/// The `issues` item: the ids that moved, under the cap, and the flag that
+/// The `tasks` item: the ids that moved, under the cap, and the flag that
 /// says the list stopped naming them.
 ///
 /// Its `entity_id` is a PROJECT — the one item whose entity is not a work item,
 /// because a tracker belongs to a project and not to anything inside it.
-fn check_issues(entity_id: &str, issues: &Value) {
+fn check_tasks(entity_id: &str, tasks: &Value) {
     assert!(
         entity_id.starts_with("proj-"),
-        "{entity_id}: an issues item is about a project"
+        "{entity_id}: a tasks item is about a project"
     );
-    let ids = issues["issue_ids"]
+    let ids = tasks["task_ids"]
         .as_array()
-        .expect("issues.issue_ids is a list");
+        .expect("tasks.task_ids is a list");
     assert!(
         ids.iter().all(Value::is_string),
-        "{entity_id}: issues.issue_ids are strings"
+        "{entity_id}: tasks.task_ids are strings"
     );
     assert!(
-        ids.len() <= changes::ISSUES_PER_FLUSH,
-        "{entity_id}: issues.issue_ids is capped"
+        ids.len() <= changes::TASKS_PER_FLUSH,
+        "{entity_id}: tasks.task_ids is capped"
     );
     assert!(
-        issues["truncated"].is_boolean(),
-        "{entity_id}: issues.truncated is a bool"
+        tasks["truncated"].is_boolean(),
+        "{entity_id}: tasks.truncated is a bool"
     );
 }
 

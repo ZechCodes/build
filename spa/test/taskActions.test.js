@@ -51,7 +51,7 @@ describe("plan removal actions match the bridge contract", () => {
     for (const s of LIVE_PLAN_STATES) expect(planDeletable(s)).toBe(false);
   });
 
-  it("has no live Issue Abandon helper; only historical abandoned records can be deleted", () => {
+  it("has no live Task Abandon helper; only historical abandoned records can be deleted", () => {
     for (const s of LIVE_PLAN_STATES) expect(planDeletable(s)).toBe(false);
   });
 });
@@ -59,7 +59,7 @@ describe("plan removal actions match the bridge contract", () => {
 describe("planBackTarget — the plan chevron's return route", () => {
   it("returns to the originating run's stages tab when the marker matches the active run", () => {
     expect(planBackTarget({ returnRunId: "run-7", activeRunId: "run-7", projectId: "p1" })).toEqual({
-      name: "task",
+      name: "run",
       projectId: "p1",
       id: "run-7",
       tab: "stages",
@@ -106,7 +106,7 @@ describe("Implement availability", () => {
   it("is blocked (with a reason) while the plan is not yet approved", () => {
     const plan = { state: "plan_review", active_run_id: null, stages: approvedFirstStage };
     expect(canImplement(plan)).toBe(false);
-    expect(implementBlockReason(plan)).toMatch(/mark the issue ready/i);
+    expect(implementBlockReason(plan)).toMatch(/mark the task ready/i);
   });
 
   it("is blocked while the first stage doc is not approved", () => {
@@ -135,7 +135,7 @@ describe("Implement availability", () => {
 
   it("is still gated by plan approval and the single-active-writer rule when stages is empty", () => {
     expect(canImplement({ state: "plan_review", active_run_id: null, stages: [] })).toBe(false);
-    expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/mark the issue ready/i);
+    expect(implementBlockReason({ state: "plan_review", active_run_id: null, stages: [] })).toMatch(/mark the task ready/i);
     expect(canImplement({ state: "approved", active_run_id: "run-1", stages: [] })).toBe(false);
     expect(implementBlockReason({ state: "approved", active_run_id: "run-1", stages: [] })).toMatch(/implementation is already active/i);
   });
@@ -147,8 +147,8 @@ describe("Implement availability", () => {
 
 describe("stage-notes routing (which send-notes verb applies)", () => {
   it("routes through the plan while it is still under review", () => {
-    expect(stageNotesTarget({ state: "plan_review", issue_id: "pl-1", plan_id: "pl-1", active_run_id: null })).toEqual({
-      method: "issue.stage_revise",
+    expect(stageNotesTarget({ state: "plan_review", task_id: "pl-1", plan_id: "pl-1", active_run_id: null })).toEqual({
+      method: "task.stage_revise",
       entityId: "pl-1",
     });
   });
@@ -293,8 +293,8 @@ describe("run/plan removal confirmation plans", () => {
 
   it("deleting a plan removes the record (danger)", () => {
     expect(deletePlanConfirm()).toEqual({
-      title: "Delete this issue?",
-      actions: ["Remove the Issue record and stage plans permanently"],
+      title: "Delete this task?",
+      actions: ["Remove the Task record and stage plans permanently"],
       confirmLabel: "Delete",
       danger: true,
     });
@@ -304,9 +304,9 @@ describe("run/plan removal confirmation plans", () => {
 describe("plan gate confirmation plans (Approve / Implement)", () => {
   it("approve outlines the worktree teardown and the implement unlock", () => {
     expect(approvePlanConfirm()).toEqual({
-      title: "Mark this issue ready?",
+      title: "Mark this task ready?",
       actions: [
-        "The planning session ends — the Issue stage plans are already saved",
+        "The planning session ends — the Task stage plans are already saved",
         "Implementation unlocks for approved stage plans",
       ],
       confirmLabel: "Mark ready",
@@ -316,7 +316,7 @@ describe("plan gate confirmation plans (Approve / Implement)", () => {
 
   it("implement outlines the worktree, the agent session, and the notification", () => {
     expect(implementConfirm({ base: "main" })).toEqual({
-      title: "Implement this issue?",
+      title: "Implement this task?",
       intro: "A fresh agent session will execute the approved stage plans.",
       actions: [
         "Create a worktree on a new branch off main",

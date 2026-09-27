@@ -39,7 +39,7 @@ export const BACKGROUND_COOLDOWN_MS = 30000;
 /** The record one commit's patch is kept under. */
 export const PATCH_RECORD_KIND = "patch";
 
-/** The record one issue attachment's bytes are kept under, by path. */
+/** The record one task attachment's bytes are kept under, by path. */
 export const ATTACHMENT_RECORD_KIND = "attachment";
 
 /** The largest attachment body kept as one record: one bridge read's worth,

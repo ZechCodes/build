@@ -7,7 +7,7 @@ import {
 } from "../src/core/adoption.js";
 
 describe("createAdoptingCall", () => {
-  it("adopts on the first runCall, then issues the method with the minted run_id", async () => {
+  it("adopts on the first runCall, then tasks the method with the minted run_id", async () => {
     const call = vi.fn(async (method) => {
       if (method === "run.adopt") return { run_id: "run-7", state: "review", adopted: true };
       return { ok: true };

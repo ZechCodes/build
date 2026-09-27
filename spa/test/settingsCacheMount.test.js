@@ -15,7 +15,7 @@ const SETTINGS = {
   project_agent: { provider: "codex", model: "gpt-5", effort: "medium" },
   agent_modes: { claude: "tui", codex: "headless" },
   role_models: [{ model: "gpt-5", roles: ["reviewer"], capability: "scoped" }],
-  watch_agent_filed_issues: false,
+  watch_agent_filed_tasks: false,
   isolation: "rift",
   isolation_available: { rift: true },
 };
@@ -51,7 +51,7 @@ describe("bridge settings cached mounts", () => {
     ["fallback harness", defaultHarnessPanelHtml, mountDefaultHarness, "#defaultharness", "codex"],
     ["project agent", projectAgentPanelHtml, mountProjectAgentSetting, "#projectagentharness", "codex"],
     ["roles", agentRolesPanelHtml, mountAgentRoles, "[data-aroles-rows] tr th", "gpt-5"],
-    ["watching", watchSettingPanelHtml, mountWatchSetting, "#watchagentissues", "false"],
+    ["watching", watchSettingPanelHtml, mountWatchSetting, "#watchagenttasks", "false"],
     ["isolation", isolationPanelHtml, (host, options) => mountIsolation(host, { ...options, target: DEVICE_ISOLATION }), "[data-isolation=select]", "rift"],
   ])("paints cached %s while settings.get is absent", async (_name, html, mount, selector, shown) => {
     document.body.innerHTML = html();

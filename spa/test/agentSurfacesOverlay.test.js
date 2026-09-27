@@ -186,7 +186,7 @@ beforeEach(async () => {
   });
   // The machine the rail is mounted on, which is the one its harness catalog
   // comes from.
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null); // landed and greeted
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null); // landed and greeted
 });
 
 afterEach(() => {
@@ -415,7 +415,7 @@ describe("the agent's goal and observed checklist", () => {
 
     expect(panel().querySelector(".agent-observation-checklist")).toBe(null);
     const tasks = panel().querySelector('[data-surface-kind="checklist"]');
-    expect(tasks.textContent).toContain("Tasks");
+    expect(tasks.textContent).toContain("Checklist");
     expect(tasks.textContent).toContain("0/1");
   });
 

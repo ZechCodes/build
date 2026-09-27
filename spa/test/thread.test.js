@@ -86,7 +86,7 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-revision-view").textContent).toContain("+renamed");
   });
 
-  it("renders blockers and programmatic activity as issue timeline actions", () => {
+  it("renders blockers and programmatic activity as task timeline actions", () => {
     document.body.innerHTML = threadHtml({
       items: [
         { type: "event", data: { event: "blocked", summary: "Needs production credentials", created_at: "2026-07-24T12:00:00Z" } },
@@ -227,8 +227,8 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-empty")).toBeNull();
   });
 
-  // An initial message is a rendered item like any other: a plan opened from an
-  // issue has a conversation from its first frame.
+  // An initial message is a rendered item like any other: a plan opened from a
+  // task has a conversation from its first frame.
   it("is not empty when the only item is the initial message folded in", () => {
     document.body.innerHTML = threadHtml({ items: [] }, { initialMessage: "add a dark theme" });
     expect(document.querySelector(".thread-timeline").classList.contains("is-empty")).toBe(false);

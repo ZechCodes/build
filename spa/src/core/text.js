@@ -145,10 +145,10 @@ export const pinText = (pinned, subject) => `${pinned ? "Unpin" : "Pin"} the ${s
  *  One says what moved, the other says what is there. */
 export const changesTabLabel = "Changes";
 export const filesTabLabel = "Files";
-/** A workspace's third face: the issues its own agents are holding (#29). Not
+/** A workspace's third face: the tasks its own agents are holding (#29). Not
  *  the project's whole tracker — the word is the same because it is the same
  *  tracker, narrowed to the agents standing here. */
-export const issuesTabLabel = "Issues";
+export const tasksTabLabel = "Tasks";
 /** The cog at the foot of a workspace's rail: what the workspace is called,
  *  what its agents start on, and the one way to delete it. */
 export const workspaceSettingsLabel = "Workspace settings";

@@ -27,7 +27,7 @@ import {
   entryKeyOf,
   inboxEmptyHtml,
   inboxRowHtml,
-  issueDoneConfirm,
+  taskDoneConfirm,
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
@@ -36,7 +36,7 @@ import {
   workspaceIsRecent,
 } from "./inbox.js";
 import { projectAgentEntries } from "./inboxProjectAgent.js";
-import { NO_ISSUE_UNREAD } from "./issueUnread.js";
+import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchFinishNotice } from "./branchFinish.js";
 import { readBranchDelete } from "./branchDeleteSupport.js";
@@ -70,9 +70,9 @@ import { pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 import { publishInboxAttentionCount } from "./inboxAttention.js";
 import { messageOf } from "./text.js";
-import { followWatchedIssues } from "./watchedIssueFollower.js";
-import { issuesAddress } from "./trackerCache.js";
-import { noteWritten } from "./issueReadOrder.js";
+import { followWatchedTasks } from "./watchedTaskFollower.js";
+import { tasksAddress } from "./trackerCache.js";
+import { noteWritten } from "./taskReadOrder.js";
 import { mergeCachedAtomically } from "./localCache.js";
 
 let items = [];
@@ -124,16 +124,16 @@ const writeFolds = () => foldRecord?.write({ entries: [...folds] });
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
 const workspacesBeingFinished = new Set();
-// The watched issues that need the user (#125), followed through the cache
+// The watched tasks that need the user (#125), followed through the cache
 // while the rail is mounted.
-let watchedIssues = null;
-// Issues the user stopped watching from their row, by row key: null while the
+let watchedTasks = null;
+// Tasks the user stopped watching from their row, by row key: null while the
 // unwatch is in flight, then the time the bridge stamped it. A list the sync
 // layer asked for before the unwatch landed still says watched and writes
 // that over the row's optimistic move, so the row stays away until the cached
 // list has moved past the unwatch — a watch made after it brings it back.
 const unwatched = new Map();
-const watchedIssueRows = () => (watchedIssues?.entries() || []).filter((entry) => !heldAway(entry));
+const watchedTaskRows = () => (watchedTasks?.entries() || []).filter((entry) => !heldAway(entry));
 
 function heldAway(entry) {
   if (!unwatched.has(entry.key)) return false;
@@ -173,13 +173,13 @@ function publishAttentionCount(rows = railRows()) {
  *  the inbox's anchor order. On the projects face the project agent's row is
  *  its block's head rather than a row (core/inboxProjects.js). */
 function workRows(rows) {
-  // A watched issue's unread counts like an agent's (#104): on the workspace
+  // A watched task's unread counts like an agent's (#104): on the workspace
   // row whose agent holds it, and on the project agent's row otherwise.
-  const issueUnread = watchedIssues?.issueUnread() || NO_ISSUE_UNREAD;
-  const workspaceRows = watchedWorkspaceEntries(workspaces, projects, rows, runs, issueUnread);
+  const taskUnread = watchedTasks?.taskUnread() || NO_TASK_UNREAD;
+  const workspaceRows = watchedWorkspaceEntries(workspaces, projects, rows, runs, taskUnread);
   return [
     ...workspaceRows,
-    ...projectAgentEntries(projects, rows, runs, issueUnread.unheldBy(workspaceRows)),
+    ...projectAgentEntries(projects, rows, runs, taskUnread.unheldBy(workspaceRows)),
   ].sort(byAnchor);
 }
 
@@ -212,15 +212,15 @@ export function setInboxView(next) {
 /** Every row the rail paints, on either face. The captures first: they are
  *  the account's unfinished business and belong to no project, so they stand
  *  above the workspace rows on the flat face and above the blocks on the
- *  other. The watched issues asking for the user come next, and sit in their
+ *  other. The watched tasks asking for the user come next, and sit in their
  *  project's block on the projects face. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  return [...captureEntries(rows), ...watchedIssueRows(), ...workRows(rows)];
+  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)];
 }
 
 function draw() {
-  watchedIssues?.follow(projects);
+  watchedTasks?.follow(projects);
   const painted = railRows();
   publishAttentionCount(painted);
   const list = $("#inbox-list");
@@ -283,7 +283,7 @@ function rowUi(showProject) {
     rerouteBranches: branchOptions(destinations.items, picker.rerouteBranchProject),
     showProject,
     folded: new Set(),
-    // The block holding the branch or issue the route stands on. A capture's
+    // The block holding the branch or task the route stands on. A capture's
     // route names no project; the row it stands on does.
     activeProjectId: activeProjectKey(activeKey),
     finishingWorkspaces: workspacesBeingFinished,
@@ -462,7 +462,7 @@ const ROW_CONTROLS = [
   ["data-workspace-done", (control) => finishWorkspace(entryOf(control.dataset.workspaceDone))],
   ["data-done", (control) => finishRow(control.dataset.done)],
   ["data-mute", (control) => toggleMute(entryOf(control.dataset.mute))],
-  ["data-unwatch", (control) => unwatchIssue(entryOf(control.dataset.unwatch))],
+  ["data-unwatch", (control) => unwatchTask(entryOf(control.dataset.unwatch))],
   ["data-dismiss", (control) => dismissEntry(entryOf(control.dataset.dismiss))],
   ["data-menu", (control) => openMenu(control.dataset.menu)],
   // Recent is one disclosure, and pressing it is the user saying so — from then
@@ -742,11 +742,11 @@ async function toggleMute(entry) {
   });
 }
 
-/** Stop watching a watched issue's row (#125) — its Mute. The cached list
- *  says so at once, which takes the row away and says the same on the Issues
+/** Stop watching a watched task's row (#125) — its Mute. The cached list
+ *  says so at once, which takes the row away and says the same on the Tasks
  *  tab; the push that follows the unwatch confirms it, and a refusal puts the
  *  watch back. Until the list agrees the row is held away (`unwatched`). */
-async function unwatchIssue(entry) {
+async function unwatchTask(entry) {
   if (!entry) return;
   closeMenu();
   await optimisticVerb(entry, {
@@ -759,25 +759,25 @@ async function unwatchIssue(entry) {
       };
     },
     call: async () => {
-      const answer = await verbCall(entry, "stop watching this issue")("issues.unwatch", { issue_id: entry.issueId });
-      unwatched.set(entry.key, Date.parse(answer?.issue?.updated_at || "") || entry.anchorMs);
+      const answer = await verbCall(entry, "stop watching this task")("tasks.unwatch", { task_id: entry.taskId });
+      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.anchorMs);
     },
     failureSummary: `Couldn't stop watching ${entry.name}`,
   });
 }
 
-/** Set one issue's watch in its project's cached list; answers the undo.
+/** Set one task's watch in its project's cached list; answers the undo.
  *  Each is a list written here, so each takes its number from the read count
- *  (core/issueReadOrder.js) and the list carries it: newer than every read
- *  asked before it, the Issues tab's own answers included, and a page of an
+ *  (core/taskReadOrder.js) and the list carries it: newer than every read
+ *  asked before it, the Tasks tab's own answers included, and a page of an
  *  older pull does not put the old watch back (#129). */
 async function markCachedWatch(entry, watched) {
-  const address = issuesAddress(entry.deviceId, entry.projectId);
+  const address = tasksAddress(entry.deviceId, entry.projectId);
   const setWatched = async (value) => {
-    const writtenAs = await noteWritten([address], [entry.issueId]);
+    const writtenAs = await noteWritten([address], [entry.taskId]);
     return mergeCachedAtomically(address, (held) => held && {
       ...held,
-      issues: (held.issues || []).map((issue) => (issue.id === entry.issueId ? { ...issue, watched: value } : issue)),
+      tasks: (held.tasks || []).map((task) => (task.id === entry.taskId ? { ...task, watched: value } : task)),
       read_order: writtenAs,
     });
   };
@@ -816,18 +816,18 @@ async function dismissEntry(entry) {
 
 /** The RPC behind Done. On a branch it DELETES: the branch (where the bridge
  *  deletes it, `target.deletesBranch`), its checkout and its records go,
- *  which is what Done on a branch means. On an issue it archives. Neither is
+ *  which is what Done on a branch means. On a task it archives. Neither is
  *  refused for the state of the work — what the destruction costs came down
  *  with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   const call = verbCall(target, finishDoing(target));
-  if (target.kind === "issue") await call("plan.archive", { plan_id: target.issueId });
+  if (target.kind === "task") await call("plan.archive", { plan_id: target.taskId });
   else sayBranchFinishNotice(target, await sendBranchFinish(target, call, optionId));
   // Done ends the work, and an ending is an attention event. The user did this
-  // here, so this entry is already read. The issue an unmerged branch leaves
+  // here, so this entry is already read. The task an unmerged branch leaves
   // behind is NOT: it comes back to the inbox asking for somebody, and the
   // event naming the branch it lost is the whole point of it coming back.
-  await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
+  await noteSelfAction(target.entityId, target.taskEnded ? target.taskId : null);
 }
 
 /** The workspace is gone; say why a requested branch deletion was refused or
@@ -839,7 +839,7 @@ function sayBranchFinishNotice(target, answer) {
 
 /** What Done does, in the words a refusal names it by. */
 function finishDoing(target) {
-  if (target.kind === "issue") return "archive this issue";
+  if (target.kind === "task") return "archive this task";
   return target.deletesBranch ? "delete this branch" : "remove this checkout";
 }
 
@@ -865,8 +865,8 @@ async function sendBranchFinish(target, call, optionId) {
 async function finishEntry(entry) {
   if (!entry) return;
   // What Done on this machine does to the branch, from the cache (#87).
-  const target = entry.kind === "issue" ? entry : { ...entry, deletesBranch: await readBranchDelete(entry.deviceId) };
-  const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(target);
+  const target = entry.kind === "task" ? entry : { ...entry, deletesBranch: await readBranchDelete(entry.deviceId) };
+  const confirmation = entry.kind === "task" ? taskDoneConfirm(entry) : branchDoneConfirm(target);
   if (!(await confirmAction(confirmation))) return;
   // Confirmation is the decisive moment: the row goes now, and the git work
   // (and the push that confirms it) carries on behind it.
@@ -958,8 +958,8 @@ export function unmountInboxList() {
   foldRecord?.dispose();
   recentRecord?.dispose();
   menuRecord?.dispose();
-  watchedIssues?.dispose();
-  watchedIssues = null;
+  watchedTasks?.dispose();
+  watchedTasks = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
   foldRecord = null;
   recentRecord = null;
@@ -992,7 +992,7 @@ export function mountInboxList() {
     draw();
   });
   initCaptureRows({ onChange: draw, entryOf });
-  watchedIssues = followWatchedIssues({ onChange: drawFromFeed });
+  watchedTasks = followWatchedTasks({ onChange: drawFromFeed });
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost
   // device holds. Its verbs stay as they were; each refuses at the press.
@@ -1012,7 +1012,7 @@ export function mountInboxList() {
       const live = new Set([
         ...items.map(entryKeyOf),
         ...workspaces.map(workspaceEntryKey),
-        ...watchedIssueRows().map(keyOf),
+        ...watchedTaskRows().map(keyOf),
       ]);
       for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
       const merged = mergedItems();

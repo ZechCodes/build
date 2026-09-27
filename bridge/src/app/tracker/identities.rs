@@ -1,44 +1,44 @@
-//! Durable names for agents an issue mentions. A Done workspace loses its
-//! conversation, so these facts live on the issue before that happens.
+//! Durable names for agents a task mentions. A Done workspace loses its
+//! conversation, so these facts live on the task before that happens.
 
 use super::StoredAnswer;
 use crate::app::AppState;
 use crate::store::{PersistedPlan, PersistedRun};
-use crate::tracker::{Actor, Issue, IssueAgentIdentity, TimelineEntry};
+use crate::tracker::{Actor, Task, TaskAgentIdentity, TimelineEntry};
 use std::cell::OnceCell;
 use std::collections::{BTreeSet, HashMap};
 
 /// The store's word on agents no live roster holds, read at most once however
-/// many issues one call resolves identities for.
+/// many tasks one call resolves identities for.
 ///
 /// Telling who a departed agent was reads every run and every plan, each with
-/// its agents' conversation tails. Done again for every agent every issue
+/// its agents' conversation tails. Done again for every agent every task
 /// names, that read held the app lock for seconds at a time under
-/// `issues.list` (#128); looking each agent up by restoring every stored
+/// `tasks.list` (#128); looking each agent up by restoring every stored
 /// roster — each a copy of those tails — held it for another 450 ms on a real
 /// store (#131). So the records are read once, without their conversations,
 /// into an index of who every stored agent was. Nothing a call does
-/// between two issues changes those records — a backfill writes the issue,
+/// between two tasks changes those records — a backfill writes the task,
 /// never a run — so the index stands for the rest of the call. Build one per
 /// call, never keep one.
 #[derive(Default)]
 pub(super) struct StoredRosters {
-    known: OnceCell<Option<HashMap<String, IssueAgentIdentity>>>,
+    known: OnceCell<Option<HashMap<String, TaskAgentIdentity>>>,
 }
 
-fn mentioned(issue: &Issue, timeline: &[TimelineEntry]) -> BTreeSet<String> {
+fn mentioned(task: &Task, timeline: &[TimelineEntry]) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
-    add_actor(&mut ids, &issue.created_by);
-    collect_written_agent_ids(&issue.title, &mut ids);
-    collect_written_agent_ids(&issue.body, &mut ids);
-    if let Some(id) = issue
+    add_actor(&mut ids, &task.created_by);
+    collect_written_agent_ids(&task.title, &mut ids);
+    collect_written_agent_ids(&task.body, &mut ids);
+    if let Some(id) = task
         .assignee
         .as_ref()
         .and_then(|assignee| assignee.agent_id())
     {
         ids.insert(id.to_string());
     }
-    ids.extend(issue.trackers.iter().cloned());
+    ids.extend(task.trackers.iter().cloned());
     for entry in timeline {
         match entry {
             TimelineEntry::Comment(comment) => {
@@ -54,8 +54,8 @@ fn mentioned(issue: &Issue, timeline: &[TimelineEntry]) -> BTreeSet<String> {
     ids
 }
 
-/// Explicit `@agent:<id>` references in issue prose name agents even when
-/// they never acted on that issue. Agent ids contain letters, digits, `-` and
+/// Explicit `@agent:<id>` references in task prose name agents even when
+/// they never acted on that task. Agent ids contain letters, digits, `-` and
 /// `_`; stopping there also excludes sentence punctuation from the id.
 fn collect_written_agent_ids(text: &str, ids: &mut BTreeSet<String>) {
     for part in text.split("@agent:").skip(1) {
@@ -97,14 +97,11 @@ fn add_actor(ids: &mut BTreeSet<String>, actor: &Actor) {
     }
 }
 
-fn retain_known_fields(
-    prior: &IssueAgentIdentity,
-    current: IssueAgentIdentity,
-) -> IssueAgentIdentity {
+fn retain_known_fields(prior: &TaskAgentIdentity, current: TaskAgentIdentity) -> TaskAgentIdentity {
     if current.available {
         return current;
     }
-    IssueAgentIdentity {
+    TaskAgentIdentity {
         agent_id: current.agent_id,
         name: current.name.or_else(|| prior.name.clone()),
         ordinal: current.ordinal.or(prior.ordinal),
@@ -117,10 +114,10 @@ fn retain_known_fields(
     }
 }
 
-/// Every agent the stored plans name, as the identity an issue shows.
-fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = IssueAgentIdentity> + '_ {
+/// Every agent the stored plans name, as the identity a task shows.
+fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = TaskAgentIdentity> + '_ {
     plans.iter().flat_map(|plan| {
-        plan.members().into_iter().map(|member| IssueAgentIdentity {
+        plan.members().into_iter().map(|member| TaskAgentIdentity {
             agent_id: member.id,
             name: member.name,
             ordinal: Some(member.ordinal),
@@ -133,11 +130,11 @@ fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = IssueAgentId
 }
 
 impl AppState {
-    /// Migrate every issue before a roster can disappear. An old author's
-    /// only reference may be in a closed, unlinked issue's timeline; reads
+    /// Migrate every task before a roster can disappear. An old author's
+    /// only reference may be in a closed, unlinked task's timeline; reads
     /// and the workspace's automatic close operation cannot cover that case.
     /// A failed save refuses removal while the source records still exist.
-    pub(in crate::app) fn preserve_project_issue_identities(
+    pub(in crate::app) fn preserve_project_task_identities(
         &self,
         project_id: &str,
     ) -> Result<(), String> {
@@ -145,34 +142,34 @@ impl AppState {
             return Ok(());
         };
         let project_path = self.tracker_project_path(project_id)?;
-        let issues = store
-            .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
+        let tasks = store
+            .list_tracker_tasks(&project_path, crate::store::TaskFilter::default())
             .stored()?;
-        let ids: Vec<String> = issues.iter().map(|issue| issue.id.clone()).collect();
+        let ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
         let mut timelines = store.load_tracker_timelines(&ids).stored()?;
         let rosters = StoredRosters::default();
-        for issue in issues {
-            let timeline = timelines.remove(&issue.id).unwrap_or_default();
-            self.backfill_issue_identities(issue, &timeline, &rosters)?;
+        for task in tasks {
+            let timeline = timelines.remove(&task.id).unwrap_or_default();
+            self.backfill_task_identities(task, &timeline, &rosters)?;
         }
         Ok(())
     }
 
-    pub(in crate::app) fn preserve_entity_issue_identities(
+    pub(in crate::app) fn preserve_entity_task_identities(
         &self,
         entity_id: &str,
     ) -> Result<(), String> {
         if let Some(project_id) = self.projects.project_id_of(entity_id) {
-            self.preserve_project_issue_identities(project_id)?;
+            self.preserve_project_task_identities(project_id)?;
         }
         Ok(())
     }
 
     /// Resolve the invalidation before changing the roster: a store failure
-    /// must not remove an agent and then leave other clients' issue caches
+    /// must not remove an agent and then leave other clients' task caches
     /// pointing at it. Preservation has already filled historical identities,
-    /// including those on closed issues with no workspace link.
-    pub(in crate::app) fn issues_with_agent_identity(
+    /// including those on closed tasks with no workspace link.
+    pub(in crate::app) fn tasks_with_agent_identity(
         &self,
         entity_id: &str,
         agent_id: &str,
@@ -184,26 +181,26 @@ impl AppState {
             return Ok(None);
         };
         let project_path = self.tracker_project_path(project_id)?;
-        let issue_ids: Vec<_> = store
-            .list_tracker_issues(&project_path, crate::store::IssueFilter::default())
+        let task_ids: Vec<_> = store
+            .list_tracker_tasks(&project_path, crate::store::TaskFilter::default())
             .stored()?
             .into_iter()
-            .filter(|issue| issue.identities.contains_key(agent_id))
-            .map(|issue| issue.id)
+            .filter(|task| task.identities.contains_key(agent_id))
+            .map(|task| task.id)
             .collect();
-        Ok((!issue_ids.is_empty()).then(|| (project_id.to_string(), issue_ids)))
+        Ok((!task_ids.is_empty()).then(|| (project_id.to_string(), task_ids)))
     }
 
-    pub(super) fn issue_json_with_live_identities(
+    pub(super) fn task_json_with_live_identities(
         &self,
         project_id: &str,
-        issue: &Issue,
+        task: &Task,
     ) -> serde_json::Value {
-        let issue = self.issue_with_read_identities(issue.clone(), &[], &StoredRosters::default());
-        super::issue_json(project_id, &issue)
+        let task = self.task_with_read_identities(task.clone(), &[], &StoredRosters::default());
+        super::task_json(project_id, &task)
     }
 
-    fn live_issue_identity(&self, agent_id: &str) -> Option<IssueAgentIdentity> {
+    fn live_task_identity(&self, agent_id: &str) -> Option<TaskAgentIdentity> {
         let entity_id = self.entity_of_agent(agent_id)?;
         let agent = self.entity_agents(&entity_id).ok()?.by_id(agent_id)?;
         let workspace = if crate::agent::is_project_agent(agent_id) {
@@ -226,7 +223,7 @@ impl AppState {
         let available = workspace
             .is_some_and(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Ready)
             || crate::agent::is_project_agent(agent_id);
-        Some(IssueAgentIdentity {
+        Some(TaskAgentIdentity {
             agent_id: agent_id.to_string(),
             name: agent.name.clone(),
             ordinal: Some(agent.ordinal),
@@ -239,11 +236,11 @@ impl AppState {
 
     /// A run can have left the active roster while its agent row still lives
     /// in the store. Read that row before calling an older actor unknown.
-    fn stored_issue_identity(
+    fn stored_task_identity(
         &self,
         agent_id: &str,
         rosters: &StoredRosters,
-    ) -> Option<IssueAgentIdentity> {
+    ) -> Option<TaskAgentIdentity> {
         rosters
             .known
             .get_or_init(|| self.stored_identities())
@@ -255,7 +252,7 @@ impl AppState {
     /// Who every stored agent was: runs first, then plans, the first record
     /// naming an agent answering for it. A store whose runs cannot be read
     /// knows nobody.
-    fn stored_identities(&self) -> Option<HashMap<String, IssueAgentIdentity>> {
+    fn stored_identities(&self) -> Option<HashMap<String, TaskAgentIdentity>> {
         let store = self.tracker_store().ok()?;
         let runs = store.load_all_run_rosters().ok()?;
         let plans = store.load_all_plan_rosters().unwrap_or_default();
@@ -271,7 +268,7 @@ impl AppState {
     fn run_identities<'a>(
         &'a self,
         runs: &'a [PersistedRun],
-    ) -> impl Iterator<Item = IssueAgentIdentity> + 'a {
+    ) -> impl Iterator<Item = TaskAgentIdentity> + 'a {
         runs.iter().flat_map(|run| {
             let workspace = self.workspaces.list(None).into_iter().find(|workspace| {
                 crate::app::workspaces::same_path(
@@ -282,7 +279,7 @@ impl AppState {
             let workspace_id = workspace.map(|workspace| workspace.id.clone());
             run.members()
                 .into_iter()
-                .map(move |member| IssueAgentIdentity {
+                .map(move |member| TaskAgentIdentity {
                     agent_id: member.id,
                     name: member.name,
                     ordinal: Some(member.ordinal),
@@ -294,31 +291,30 @@ impl AppState {
         })
     }
 
-    fn resolved_issue_identity(
+    fn resolved_task_identity(
         &self,
         agent_id: &str,
         rosters: &StoredRosters,
-    ) -> Option<IssueAgentIdentity> {
-        self.live_issue_identity(agent_id)
-            .or_else(|| self.stored_issue_identity(agent_id, rosters))
+    ) -> Option<TaskAgentIdentity> {
+        self.live_task_identity(agent_id)
+            .or_else(|| self.stored_task_identity(agent_id, rosters))
     }
 
     /// Add the identities this write can still inspect before a workspace is
     /// removed. Existing snapshots stay when an agent is no longer present.
-    pub(super) fn capture_issue_identities(&self, issue: &mut Issue, timeline: &[TimelineEntry]) {
-        self.capture_identities_with(issue, timeline, &StoredRosters::default());
+    pub(super) fn capture_task_identities(&self, task: &mut Task, timeline: &[TimelineEntry]) {
+        self.capture_identities_with(task, timeline, &StoredRosters::default());
     }
 
     fn capture_identities_with(
         &self,
-        issue: &mut Issue,
+        task: &mut Task,
         timeline: &[TimelineEntry],
         rosters: &StoredRosters,
     ) {
-        for id in mentioned(issue, timeline) {
-            if let Some(identity) = self.resolved_issue_identity(&id, rosters) {
-                issue
-                    .identities
+        for id in mentioned(task, timeline) {
+            if let Some(identity) = self.resolved_task_identity(&id, rosters) {
+                task.identities
                     .entry(id)
                     .and_modify(|saved| {
                         *saved = retain_known_fields(saved, identity.clone());
@@ -331,45 +327,43 @@ impl AppState {
     /// Backfill all historical actors while their records can still be read.
     /// A read is a durable migration: the next workspace removal must not
     /// turn an older comment's author back into an opaque id.
-    pub(super) fn backfill_issue_identities(
+    pub(super) fn backfill_task_identities(
         &self,
-        mut issue: Issue,
+        mut task: Task,
         timeline: &[TimelineEntry],
         rosters: &StoredRosters,
-    ) -> Result<Issue, String> {
-        let before = issue.identities.clone();
-        self.capture_identities_with(&mut issue, timeline, rosters);
-        if issue.identities != before {
+    ) -> Result<Task, String> {
+        let before = task.identities.clone();
+        self.capture_identities_with(&mut task, timeline, rosters);
+        if task.identities != before {
             self.tracker_store()?
-                .save_tracker_issue_activity(&issue, &[], &[])
+                .save_tracker_task_activity(&task, &[], &[])
                 .stored()?;
         }
-        Ok(issue)
+        Ok(task)
     }
 
-    /// Fill old issues from living agents and mark departed ones unavailable.
+    /// Fill old tasks from living agents and mark departed ones unavailable.
     /// Missing agents still get a row, so the client has an honest fallback.
-    pub(super) fn issue_with_read_identities(
+    pub(super) fn task_with_read_identities(
         &self,
-        mut issue: Issue,
+        mut task: Task,
         timeline: &[TimelineEntry],
         rosters: &StoredRosters,
-    ) -> Issue {
-        let ids = mentioned(&issue, timeline);
+    ) -> Task {
+        let ids = mentioned(&task, timeline);
         for id in ids {
-            if let Some(identity) = self.resolved_issue_identity(&id, rosters) {
-                issue
-                    .identities
+            if let Some(identity) = self.resolved_task_identity(&id, rosters) {
+                task.identities
                     .entry(id)
                     .and_modify(|saved| {
                         *saved = retain_known_fields(saved, identity.clone());
                     })
                     .or_insert(identity);
             } else {
-                issue
-                    .identities
+                task.identities
                     .entry(id.clone())
-                    .or_insert_with(|| IssueAgentIdentity {
+                    .or_insert_with(|| TaskAgentIdentity {
                         agent_id: id,
                         name: None,
                         ordinal: None,
@@ -380,12 +374,12 @@ impl AppState {
                     });
             }
         }
-        for identity in issue.identities.values_mut() {
+        for identity in task.identities.values_mut() {
             identity.available = self
-                .live_issue_identity(&identity.agent_id)
+                .live_task_identity(&identity.agent_id)
                 .is_some_and(|live| live.available);
         }
-        issue
+        task
     }
 }
 
@@ -396,24 +390,24 @@ mod tests {
 
     #[test]
     fn assignment_history_keeps_agent_ids_after_reassignment() {
-        let mut issue = Issue::drafted("/repo", "one", Actor::User, "2026-01-01T00:00:00Z");
-        issue.assignee = Some(crate::tracker::Assignee::User);
-        let assigned = crate::tracker::IssueEvent::new(
-            &issue.id,
+        let mut task = Task::drafted("/repo", "one", Actor::User, "2026-01-01T00:00:00Z");
+        task.assignee = Some(crate::tracker::Assignee::User);
+        let assigned = crate::tracker::TaskEvent::new(
+            &task.id,
             Actor::User,
-            crate::tracker::IssueEventKind::Assigned,
+            crate::tracker::TaskEventKind::Assigned,
             json!({ "assignee": { "kind": "agent", "agent_id": "agent-before" } }),
             "2026-01-01T00:00:00Z",
         );
-        let dispatched = crate::tracker::IssueEvent::new(
-            &issue.id,
+        let dispatched = crate::tracker::TaskEvent::new(
+            &task.id,
             Actor::User,
-            crate::tracker::IssueEventKind::Dispatched,
+            crate::tracker::TaskEventKind::Dispatched,
             json!({ "agent_id": "agent-after" }),
             "2026-01-01T00:00:01Z",
         );
         let ids = mentioned(
-            &issue,
+            &task,
             &[
                 TimelineEntry::Event(assigned),
                 TimelineEntry::Event(dispatched),
@@ -427,10 +421,10 @@ mod tests {
 
     #[test]
     fn prose_reference_keeps_an_agent_who_never_acted() {
-        let mut issue = Issue::drafted("/repo", "one", Actor::User, "2026-01-01T00:00:00Z");
-        issue.body = "Ask @agent:agent-4. Then check @agent:project-7".into();
+        let mut task = Task::drafted("/repo", "one", Actor::User, "2026-01-01T00:00:00Z");
+        task.body = "Ask @agent:agent-4. Then check @agent:project-7".into();
         assert_eq!(
-            mentioned(&issue, &[]),
+            mentioned(&task, &[]),
             BTreeSet::from(["agent-4".to_string(), "project-7".to_string()])
         );
     }

@@ -45,9 +45,9 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const rpc = (method) => {
   if (method === "branch.get")
     return { kind: "branch", branch: "build/login", worktree_id: "wt-1", state: "building", stat: "+4 −1" };
-  if (method === "issue.get")
+  if (method === "task.get")
     return {
-      issue_id: "i-1",
+      task_id: "i-1",
       project_id: "p-1",
       goal: "Rebuild",
       state: "plan_review",
@@ -56,7 +56,7 @@ const rpc = (method) => {
       implementation_lineage: [],
       thread: { items: [] },
     };
-  if (method === "issue.stages")
+  if (method === "task.stages")
     return { stages: [{ id: "s1", title: "First half", state: "planned", approval: "planned", execution: "pending" }] };
   return {};
 };
@@ -264,9 +264,9 @@ describe("render dispatch", () => {
     expect(location.hash).toBe("#/device/dev-1/project/p-1/branch/build%2Flogin/files");
   });
 
-  it("keeps a legacy issue transcript reachable, as two columns with no tabs", async () => {
+  it("keeps a legacy task transcript reachable, as two columns with no tabs", async () => {
     openDevice();
-    App.route = { name: "issue", deviceId: "dev-1", projectId: "p-1", id: "i-1" };
+    App.route = { name: "task", deviceId: "dev-1", projectId: "p-1", id: "i-1" };
     render();
     await flush();
     expect(document.querySelector("#agent-rail .rail-strip")).not.toBeNull();

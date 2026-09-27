@@ -6,7 +6,7 @@
 // A phone's session dies at the network layer every few minutes (ICE
 // disconnected → failed, a new session minted over the relay). Every call in
 // flight when that happens fails, and every surface reported each one: "Could
-// not read this issue", over an issue that was on screen the whole time,
+// not read this task", over a task that was on screen the whole time,
 // painted from the cache a moment earlier. The read had failed; nothing the
 // reader could see had.
 //

@@ -63,7 +63,7 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) isolation: Option<Isolation>,
     pub(in crate::app) project_agent: Option<ProjectAgentPatch>,
     pub(in crate::app) role_models: Option<crate::models::RoleModels>,
-    pub(in crate::app) watch_agent_filed_issues: Option<bool>,
+    pub(in crate::app) watch_agent_filed_tasks: Option<bool>,
     pub(in crate::app) compact_above_tokens: Option<u64>,
     pub(in crate::app) workspace_idle_secs: Option<u64>,
     pub(in crate::app) workspace_prune: Option<bool>,
@@ -170,11 +170,11 @@ impl SettingsPatch {
             patch.role_models = Some(accepted_role_models(value)?);
             Ok(())
         }),
-        ("watch_agent_filed_issues", |patch, value, _| {
-            patch.watch_agent_filed_issues = Some(
+        ("watch_agent_filed_tasks", |patch, value, _| {
+            patch.watch_agent_filed_tasks = Some(
                 value
                     .as_bool()
-                    .ok_or_else(|| "watch_agent_filed_issues is true or false.".to_string())?,
+                    .ok_or_else(|| "watch_agent_filed_tasks is true or false.".to_string())?,
             );
             Ok(())
         }),
@@ -396,10 +396,11 @@ impl AppState {
         self.apply_project_agent_config(config);
         self.apply_role_models_config(config);
         if let Some(watching) = config
-            .get("watch_agent_filed_issues")
+            .get("watch_agent_filed_tasks")
+            .or_else(|| config.get(crate::renamed_ids::WATCH_SETTING_BEFORE_RENAME))
             .and_then(Value::as_bool)
         {
-            self.watch_agent_filed_issues = watching;
+            self.watch_agent_filed_tasks = watching;
         }
         if let Some(tokens) = config.get("compact_above_tokens").and_then(Value::as_u64) {
             self.compact_above_tokens = tokens;

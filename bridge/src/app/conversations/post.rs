@@ -65,26 +65,26 @@ impl AppState {
         self.post_to_thread(params, PostOrigin::asked_by(requester, sender))
     }
 
-    /// `thread.post`, carrying the issue that assigning one handed over.
+    /// `thread.post`, carrying the task that assigning one handed over.
     ///
     /// The same write, with the envelope added — and, when an AGENT did the
     /// assigning, the sender and the requester a hand-off already carries. The
-    /// human assigning an issue is the human speaking, so that case wears an
+    /// human assigning a task is the human speaking, so that case wears an
     /// envelope and no sender.
-    pub(in crate::app) fn thread_post_handing_over_issue(
+    pub(in crate::app) fn thread_post_handing_over_task(
         &mut self,
         params: &Value,
-        issue: crate::thread::IssueEnvelope,
+        task: crate::thread::TaskEnvelope,
         requester: Option<OperationRequester>,
     ) -> Result<Value, String> {
         let origin = match requester {
             Some(requester) => {
                 let sender = self.sender_identity(&requester.entity_id, &requester.agent_id);
                 let mut origin = PostOrigin::asked_by(requester, sender);
-                origin.from_issue = Some(issue);
+                origin.from_task = Some(task);
                 origin
             }
-            None => PostOrigin::handing_over(issue, None),
+            None => PostOrigin::handing_over(task, None),
         };
         self.post_to_thread(params, origin)
     }
@@ -94,7 +94,7 @@ impl AppState {
         let params = &normalized_params;
         let entity_id = require_str(params, "entity_id")?;
         if self.plans.contains_key(&entity_id) {
-            return Err(crate::app::issues::ISSUES_RETIRED_ERROR.to_string());
+            return Err(crate::app::tasks::TASKS_RETIRED_ERROR.to_string());
         }
         if !self.plans.contains_key(&entity_id) && !self.runs.contains_key(&entity_id) {
             return Err("unknown conversation owner".to_string());
@@ -197,7 +197,7 @@ impl AppState {
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
                 from_agent: None,
-                from_issue: None,
+                from_task: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -216,7 +216,7 @@ impl AppState {
         let implementation = named_agent_id(params)?
             .is_none()
             .then(|| {
-                self.current_issue_implementation_id(&entity_id)
+                self.current_task_implementation_id(&entity_id)
                     .and_then(|run_id| {
                         self.runs.get(&run_id).and_then(|run| {
                             run.agents
@@ -277,7 +277,7 @@ impl AppState {
         if operation_id.is_some() && delivery.is_none() {
             self.plans.insert(entity_id.clone(), active);
             return Err(
-                "thread.post: this Issue has no execution session; reopen or revise it before sending"
+                "thread.post: this Task has no execution session; reopen or revise it before sending"
                     .to_string(),
             );
         }
@@ -332,7 +332,7 @@ impl AppState {
             match self.reserve_plan_drafting(
                 &entity_id,
                 Box::new(PlanDraftingStarted {
-                    issue_id: entity_id.clone(),
+                    task_id: entity_id.clone(),
                     detail: thread_detail(params),
                     posted_sequence,
                     receipt: receipt.clone(),
@@ -394,7 +394,7 @@ impl AppState {
                 anchor: None,
                 viewing_context: parse_viewing_context(params.get("viewing_context"))?,
                 from_agent: None,
-                from_issue: None,
+                from_task: None,
             }],
             None => parse_thread_post_messages(
                 params,
@@ -403,13 +403,13 @@ impl AppState {
             )?,
         };
         let sender = origin.sender();
-        let handed_over = origin.issue();
+        let handed_over = origin.task();
         let messages: Vec<ReviewerMessage> = messages
             .into_iter()
             .map(|message| {
                 message
                     .sent_by(sender.as_ref())
-                    .about_issue(handed_over.as_ref())
+                    .about_task(handed_over.as_ref())
             })
             .collect();
         let resume = matches!(

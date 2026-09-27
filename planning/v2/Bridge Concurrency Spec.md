@@ -24,7 +24,7 @@ lock. Five paths still serialize the daemon.
    parser inside it. Contention scales with the number of streaming agents.
 2. **Worktree creation runs `git worktree add` under the lock.**
    `worktree.create`, `branch.dispatch` (`cut_branch_for_dispatch`),
-   `run.create` / `issue.implement_*` (`ensure_issue_implementation_worktree`,
+   `run.create` / `task.implement_*` (`ensure_task_implementation_worktree`,
    `open_implementation_run`), planning worktrees for `plan.create`,
    `run.abandon` / `run.adopt` / `run.release` (discard or claim a checkout),
    `project.add` / `project.clone`, and `undo_branch_dispatch` all shell out

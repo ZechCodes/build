@@ -1,5 +1,5 @@
-//! An agent saying, in its own conversation, what it just did to an issue
-//! (spec: Issues → An agent says what it did).
+//! An agent saying, in its own conversation, what it just did to a task
+//! (spec: Tasks → An agent says what it did).
 //!
 //! Separate from [`super::notices`] and deliberately so. A notice is Build
 //! telling somebody ELSE what happened, marked `from_build`, and nobody is
@@ -12,10 +12,10 @@
 //! every detail mode. What an agent did to the board is a thing it did, not a
 //! tool call it made on the way to doing something else.
 
-use super::IssueWrite;
+use super::TaskWrite;
 use crate::app::AppState;
-use crate::thread::IssueAction;
-use crate::tracker::{Actor, IssueEventKind};
+use crate::thread::TaskAction;
+use crate::tracker::{Actor, TaskEventKind};
 
 impl AppState {
     /// Post one message per write into the acting agent's own conversation.
@@ -28,20 +28,20 @@ impl AppState {
     ///
     /// Quiet about its own failure, for the reason every automatic write here
     /// is: the change landed and is durable before this runs.
-    pub(in crate::app) fn say_what_the_agent_did(&mut self, write: &IssueWrite) {
+    pub(in crate::app) fn say_what_the_agent_did(&mut self, write: &TaskWrite) {
         let Actor::Agent { agent_id } = &write.actor else {
             return;
         };
         let agent_id = agent_id.clone();
-        let Some(action) = issue_action(write) else {
+        let Some(action) = task_action(write) else {
             return;
         };
-        if let Err(why) = self.post_issue_action(&agent_id, action) {
-            eprintln!("say what {agent_id} did to #{}: {why}", write.issue.number);
+        if let Err(why) = self.post_task_action(&agent_id, action) {
+            eprintln!("say what {agent_id} did to #{}: {why}", write.task.number);
         }
     }
 
-    fn post_issue_action(&mut self, agent_id: &str, action: IssueAction) -> Result<(), String> {
+    fn post_task_action(&mut self, agent_id: &str, action: TaskAction) -> Result<(), String> {
         let entity_id = self
             .entity_of_agent(agent_id)
             .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
@@ -53,7 +53,7 @@ impl AppState {
         );
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(&entity_id, agent_id, |thread, _| {
-            thread.post_agent_issue_action(body, action, &now);
+            thread.post_agent_task_action(body, action, &now);
             Ok(serde_json::Value::Null)
         })?;
         // No queued turn: the agent is already in the turn that did this, and
@@ -67,48 +67,48 @@ impl AppState {
 ///
 /// There is no `created_and_assigned`: a create and an assignment are two
 /// writes (the number is minted inside the create's own transaction), and the
-/// agent surface's `create_issue` takes no assignee at all. A slug no path can
+/// agent surface's `create_task` takes no assignee at all. A slug no path can
 /// produce is a branch every client would carry for nothing.
-fn issue_action(write: &IssueWrite) -> Option<IssueAction> {
+fn task_action(write: &TaskWrite) -> Option<TaskAction> {
     let action = action_slug(write)?;
-    Some(IssueAction {
+    Some(TaskAction {
         action: action.to_string(),
-        issue_id: write.issue.id.clone(),
-        number: write.issue.number,
-        title: write.issue.title.clone(),
+        task_id: write.task.id.clone(),
+        number: write.task.number,
+        title: write.task.title.clone(),
         comment_id: (action == "commented_on")
             .then(|| write.comments.first().map(|comment| comment.id.clone()))
             .flatten(),
-        // Read off the ISSUE rather than off the event, because the issue is
+        // Read off the TASK rather than off the event, because the task is
         // what the assignment settled on: a creating kind resolves to the
         // agent it made, and the event that named it was written before that
         // agent existed.
         assignee: (action == "assigned")
-            .then(|| write.issue.assignee.clone())
+            .then(|| write.task.assignee.clone())
             .flatten(),
     })
 }
 
-fn action_slug(write: &IssueWrite) -> Option<&'static str> {
-    let kinds: Vec<IssueEventKind> = write.events.iter().map(|event| event.kind).collect();
-    let has = |kind: IssueEventKind| kinds.contains(&kind);
+fn action_slug(write: &TaskWrite) -> Option<&'static str> {
+    let kinds: Vec<TaskEventKind> = write.events.iter().map(|event| event.kind).collect();
+    let has = |kind: TaskEventKind| kinds.contains(&kind);
     if !write.comments.is_empty() {
         return Some("commented_on");
     }
     Some(match () {
-        _ if has(IssueEventKind::Created) => "created",
-        // Two words, not one: an issue handed to somebody and an issue handed
+        _ if has(TaskEventKind::Created) => "created",
+        // Two words, not one: a task handed to somebody and a task handed
         // back are opposite things, and a line that called both "assigned"
         // said the wrong one half the time.
-        _ if has(IssueEventKind::Assigned) => "assigned",
-        _ if has(IssueEventKind::Unassigned) => "unassigned",
-        _ if has(IssueEventKind::Closed) => "closed",
-        _ if has(IssueEventKind::Reopened) => "reopened",
-        _ if has(IssueEventKind::Moved) => "moved",
-        _ if has(IssueEventKind::Linked) => "linked",
-        _ if has(IssueEventKind::Labelled) => "updated",
+        _ if has(TaskEventKind::Assigned) => "assigned",
+        _ if has(TaskEventKind::Unassigned) => "unassigned",
+        _ if has(TaskEventKind::Closed) => "closed",
+        _ if has(TaskEventKind::Reopened) => "reopened",
+        _ if has(TaskEventKind::Moved) => "moved",
+        _ if has(TaskEventKind::Linked) => "linked",
+        _ if has(TaskEventKind::Labelled) => "updated",
         // Tracking is not something a reader of the agent's conversation needs
-        // a line about: the agent asked to hear about an issue, which is about
+        // a line about: the agent asked to hear about a task, which is about
         // what it will read rather than about what it did.
         _ => return None,
     })
@@ -133,11 +133,11 @@ fn label(action: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tracker::{Issue, IssueComment, IssueEvent};
+    use crate::tracker::{Task, TaskComment, TaskEvent};
     use serde_json::json;
 
-    fn write_with(events: Vec<IssueEventKind>, comment: bool) -> IssueWrite {
-        let mut issue = Issue::drafted(
+    fn write_with(events: Vec<TaskEventKind>, comment: bool) -> TaskWrite {
+        let mut task = Task::drafted(
             "/repo",
             "Kanban drag",
             Actor::Agent {
@@ -145,18 +145,18 @@ mod tests {
             },
             "2026-09-20T15:00:00Z",
         );
-        issue.number = 13;
-        let mut write = IssueWrite {
+        task.number = 13;
+        let mut write = TaskWrite {
             comments: Vec::new(),
             events: Vec::new(),
             actor: Actor::Agent {
                 agent_id: "agent-1".into(),
             },
-            issue,
+            task,
         };
         for kind in events {
-            write.events.push(IssueEvent::new(
-                &write.issue.id,
+            write.events.push(TaskEvent::new(
+                &write.task.id,
                 write.actor.clone(),
                 kind,
                 json!({}),
@@ -164,9 +164,9 @@ mod tests {
             ));
         }
         if comment {
-            write.comments.push(IssueComment {
-                id: "ic-9".into(),
-                issue_id: write.issue.id.clone(),
+            write.comments.push(TaskComment {
+                id: "tc-9".into(),
+                task_id: write.task.id.clone(),
                 author: write.actor.clone(),
                 body: "said".into(),
                 refs: Vec::new(),
@@ -185,13 +185,13 @@ mod tests {
     fn one_write_is_one_action_however_many_events_it_carried() {
         let write = write_with(
             vec![
-                IssueEventKind::Created,
-                IssueEventKind::Tracked,
-                IssueEventKind::Dispatched,
+                TaskEventKind::Created,
+                TaskEventKind::Tracked,
+                TaskEventKind::Dispatched,
             ],
             false,
         );
-        let action = issue_action(&write).unwrap();
+        let action = task_action(&write).unwrap();
         assert_eq!(action.action, "created");
         assert_eq!(label(&action.action), "Created");
         assert_eq!(action.number, 13);
@@ -201,31 +201,31 @@ mod tests {
     /// A comment carries the id that deep-links it.
     #[test]
     fn a_comment_carries_the_id_that_links_it() {
-        let action = issue_action(&write_with(Vec::new(), true)).unwrap();
+        let action = task_action(&write_with(Vec::new(), true)).unwrap();
         assert_eq!(action.action, "commented_on");
-        assert_eq!(action.comment_id.as_deref(), Some("ic-9"));
+        assert_eq!(action.comment_id.as_deref(), Some("tc-9"));
     }
 
     /// Tracking is about what the agent will READ, not what it did, so it says
     /// nothing in the agent's own conversation.
     #[test]
     fn tracking_alone_says_nothing() {
-        assert!(issue_action(&write_with(vec![IssueEventKind::Tracked], false)).is_none());
-        assert!(issue_action(&write_with(Vec::new(), false)).is_none());
+        assert!(task_action(&write_with(vec![TaskEventKind::Tracked], false)).is_none());
+        assert!(task_action(&write_with(Vec::new(), false)).is_none());
     }
 
     /// Each remaining kind reads as itself.
     #[test]
     fn every_other_kind_names_what_it_was() {
         for (kind, slug) in [
-            (IssueEventKind::Moved, "moved"),
-            (IssueEventKind::Closed, "closed"),
-            (IssueEventKind::Reopened, "reopened"),
-            (IssueEventKind::Linked, "linked"),
-            (IssueEventKind::Labelled, "updated"),
-            (IssueEventKind::Unassigned, "unassigned"),
+            (TaskEventKind::Moved, "moved"),
+            (TaskEventKind::Closed, "closed"),
+            (TaskEventKind::Reopened, "reopened"),
+            (TaskEventKind::Linked, "linked"),
+            (TaskEventKind::Labelled, "updated"),
+            (TaskEventKind::Unassigned, "unassigned"),
         ] {
-            let action = issue_action(&write_with(vec![kind], false)).unwrap();
+            let action = task_action(&write_with(vec![kind], false)).unwrap();
             assert_eq!(action.action, slug, "{kind:?}");
         }
     }

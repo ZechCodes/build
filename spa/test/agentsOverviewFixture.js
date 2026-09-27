@@ -66,26 +66,26 @@ export const OVERVIEW_WORKSPACES = [
   { id: "ws-soak", project_id: OVERVIEW_PROJECT, name: "relay-soak" },
 ];
 
-const issue = (number, title, status, over = {}) => ({
-  id: `issue-${number}`, project_id: OVERVIEW_PROJECT, number, title, body: "", state: "open", status,
+const task = (number, title, status, over = {}) => ({
+  id: `task-${number}`, project_id: OVERVIEW_PROJECT, number, title, body: "", state: "open", status,
   labels: [], priority: "normal", assignee: null,
-  links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_issue_id: null },
+  links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_task_id: null },
   created_by: { kind: "user" }, created_at: at(26, 9, 0), updated_at: at(27, 12, 0), closed_at: null, ...over,
 });
 
-/** The project's issues as the tracker cached them: one linked to a workspace,
+/** The project's tasks as the tracker cached them: one linked to a workspace,
  *  one held by an agent in another, one finished and so not shown. */
-export const OVERVIEW_ISSUES = [
-  issue(183, "Worker shutdown cancels running jobs on SIGTERM", "in_progress",
-    { links: { workspace_ids: ["ws-fixes"], branches: [], commits: [], conversation_ids: [], parent_issue_id: null } }),
-  issue(1, "Skrift issue pipeline", "in_progress", { assignee: { kind: "agent", agent_id: "pr-reviewer" } }),
-  issue(140, "Finished already", "done", { assignee: { kind: "agent", agent_id: "auditor" } }),
+export const OVERVIEW_TASKS = [
+  task(183, "Worker shutdown cancels running jobs on SIGTERM", "in_progress",
+    { links: { workspace_ids: ["ws-fixes"], branches: [], commits: [], conversation_ids: [], parent_task_id: null } }),
+  task(1, "Skrift issue pipeline", "in_progress", { assignee: { kind: "agent", agent_id: "pr-reviewer" } }),
+  task(140, "Finished already", "done", { assignee: { kind: "agent", agent_id: "auditor" } }),
 ];
 
 /** Put the whole project on disk. `writeCached` and `stampWorkspace` are the
  *  cache's own (core/localCache.js, core/feedMerge.js), and
- *  `writeIssuesRecord` the tracker's (core/trackerCache.js). */
-export async function writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord }) {
+ *  `writeTasksRecord` the tracker's (core/trackerCache.js). */
+export async function writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord }) {
   const deviceId = OVERVIEW_DEVICE;
   for (const { entityId, kind, workspaceId, agents } of OVERVIEW_ROWS) {
     await writeCached({ deviceId, entityId, kind: "row", sub: "" }, {
@@ -100,7 +100,7 @@ export async function writeAgentsOverviewFixture({ writeCached, stampWorkspace, 
     [{ id: OVERVIEW_PROJECT, project_id: OVERVIEW_PROJECT, name: "Skrift", entity_id: "project-run" }]);
   await writeCached({ deviceId, entityId: "", kind: "workspaces", sub: "" },
     OVERVIEW_WORKSPACES.map((workspace) => stampWorkspace(workspace, deviceId)));
-  await writeIssuesRecord(deviceId, OVERVIEW_PROJECT, { issues: OVERVIEW_ISSUES, columns: [
+  await writeTasksRecord(deviceId, OVERVIEW_PROJECT, { tasks: OVERVIEW_TASKS, columns: [
     { id: "backlog", name: "Backlog" }, { id: "in_progress", name: "In progress" }, { id: "done", name: "Done" },
   ] });
 }

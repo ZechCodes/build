@@ -422,7 +422,7 @@ describe("the projects face", () => {
     expect(blocks().map((block) => block.querySelector(".inbox-project-name").textContent)).toEqual(["Payments", "Website"]);
     expect(document.querySelector("#inbox-list .inbox-new-project")).toBeNull();
     expect(document.querySelectorAll("[data-project-create]")).toHaveLength(2);
-    expect(document.getElementById("inbox-list").textContent).not.toMatch(/branch|issue/i);
+    expect(document.getElementById("inbox-list").textContent).not.toMatch(/branch|task/i);
   });
 
   it("folds a project and preserves workspace row identity across refreshes", async () => {

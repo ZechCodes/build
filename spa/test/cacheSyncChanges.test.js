@@ -21,7 +21,7 @@ const branchItem = (over = {}) => ({
   last_activity: ago(1),
   worktree_id: "wt-1",
   run_id: "run-1",
-  issue_id: null,
+  task_id: null,
   agents: [],
   ...over,
 });
@@ -30,7 +30,7 @@ const bridge = { call: null };
 
 /** What this device's greeting says its subscriptions carry. A case that names
  *  a shorter list is an older bridge answering, not another machine. */
-const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "issues"];
+const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "tasks"];
 let carriedKinds = EVERY_KIND;
 /** Whether the greeting announced `bodies.pages` (#95). */
 let pagesBodies = false;
@@ -103,8 +103,8 @@ const ANSWERS = {
   "term.list": () => ({ terminals: [] }),
   "fs.tree": (params) => ({ path: params.path, entries: [] }),
   "thread.page": () => ({ items: [], has_more: false }),
-  "issues.list": () => ({ issues: [] }),
-  "issues.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
+  "tasks.list": () => ({ tasks: [] }),
+  "tasks.columns": () => ({ project_id: "p1", columns: [{ id: "backlog", name: "Backlog" }] }),
   "run.diff": () => ({ patch: "pulled", diff_key: "d2" }),
   "worktree.diff": () => ({ patch: "pulled", diff_key: "d2" }),
 };
@@ -173,10 +173,10 @@ describe("the three subscriptions", () => {
   it("takes out exactly three per device, and no more on a second pass", async () => {
     await boot([branchItem()], { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "build/login" });
     expect(live().map(shapeOf)).toEqual([
-      // `issues` rides the inbox subscription rather than one of its own: it
+      // `tasks` rides the inbox subscription rather than one of its own: it
       // is not a worktree kind, so nothing paces it and it costs this flush
-      // nothing, and an issue moving is news the reader is looking at.
-      ["s-inbox", "all", ["state", "thread", "issues"], "realtime", "foreground"],
+      // nothing, and a task moving is news the reader is looking at.
+      ["s-inbox", "all", ["state", "thread", "tasks"], "realtime", "foreground"],
       ["s-background", "all", ["git", "files", "terminals"], { batch_ms: sync.BACKGROUND_COOLDOWN_MS }, "background"],
       ["s-active", "run-1", ["git", "files", "terminals"], "realtime", "foreground"],
     ]);
@@ -207,7 +207,7 @@ describe("the three subscriptions", () => {
     expect(live()).toHaveLength(3);
   });
 
-  it("issues the active one for a workspace whose row arrived on a push", async () => {
+  it("tasks the active one for a workspace whose row arrived on a push", async () => {
     // The commonest way onto a new workspace: the reader makes a branch and
     // walks into it. Its row rides a `state` item — the last pass never saw
     // it — and the workspace on screen still owes realtime git and files.
@@ -289,7 +289,7 @@ describe("applying one item", () => {
     expect(bridge.call).not.toHaveBeenCalled();
   });
 
-  // A legacy issue left the board, so the bridge has no row to push for one:
+  // A legacy task left the board, so the bridge has no row to push for one:
   // its `state` item is the three-field digest it always answered with, whose
   // `agents` is a COUNT. Written as if it were a row, it is a work item whose
   // agents cannot be walked, and every reader of that record is handed one.
@@ -1084,20 +1084,20 @@ describe("an item for somewhere else", () => {
   });
 });
 
-// An `issues` item names a PROJECT, not a workspace — the one kind on these
+// An `tasks` item names a PROJECT, not a workspace — the one kind on these
 // subscriptions whose entity is not a board row.
-describe("an issues item", () => {
-  const issuesOf = (projectId) => read(projectId, "tracker-issues");
+describe("a tasks item", () => {
+  const tasksOf = (projectId) => read(projectId, "tracker-tasks");
   const moved = (projectId, over = {}) => [
-    { entity_id: projectId, issues: { issue_ids: ["issue-1"], truncated: false, ...over } },
+    { entity_id: projectId, tasks: { task_ids: ["task-1"], truncated: false, ...over } },
   ];
 
   it("re-reads the list of the project it names", async () => {
     await boot();
     bridge.call.mockClear();
-    script["issues.list"] = () => ({ issues: [{ id: "issue-1", number: 12, status: "ready" }] });
-    await deliver(moved("p1"), ["issues"]);
-    expect((await issuesOf("p1")).value.issues.map((one) => one.number)).toEqual([12]);
+    script["tasks.list"] = () => ({ tasks: [{ id: "task-1", number: 12, status: "ready" }] });
+    await deliver(moved("p1"), ["tasks"]);
+    expect((await tasksOf("p1")).value.tasks.map((one) => one.number)).toEqual([12]);
   });
 
   // Content-free beyond the ids, and dropped altogether past 200 of them: a
@@ -1105,16 +1105,16 @@ describe("an issues item", () => {
   it("re-reads the list the same way when the ids were dropped", async () => {
     await boot();
     bridge.call.mockClear();
-    await deliver(moved("p1", { issue_ids: [], truncated: true }), ["issues"]);
-    expect(calls("issues.list")).toHaveLength(1);
+    await deliver(moved("p1", { task_ids: [], truncated: true }), ["tasks"]);
+    expect(calls("tasks.list")).toHaveLength(1);
   });
 
   // The columns are the project's, not any one flush's.
   it("does not ask for the columns again", async () => {
     await boot();
     bridge.call.mockClear();
-    await deliver(moved("p1"), ["issues"]);
-    expect(calls("issues.columns")).toEqual([]);
+    await deliver(moved("p1"), ["tasks"]);
+    expect(calls("tasks.columns")).toEqual([]);
   });
 
   // Every other applier is handed a board row's entity; this one is handed a
@@ -1122,33 +1122,33 @@ describe("an issues item", () => {
   it("reads no workspace shape for the project it names", async () => {
     await boot([branchItem()]);
     bridge.call.mockClear();
-    await deliver(moved("p1"), ["issues"]);
+    await deliver(moved("p1"), ["tasks"]);
     expect(calls("git.status")).toEqual([]);
     expect(calls("thread.page")).toEqual([]);
   });
 });
 
-// `issues` is asked for only where the greeting says the bridge carries it.
+// `tasks` is asked for only where the greeting says the bridge carries it.
 //
 // This is not politeness. Every kind in one `changes.subscribe` shares that
 // call's fate, and `addDesired` abandons the subscriptions after a refused one
 // — so naming a kind an older bridge does not know would take `state` and
 // `thread` down with it, and every push this device would have delivered.
-describe("a bridge that does not carry issues", () => {
+describe("a bridge that does not carry tasks", () => {
   const kindsOfInbox = () => subscription("s-inbox")?.kinds;
 
-  it("asks for issues where the greeting advertises them", async () => {
+  it("asks for tasks where the greeting advertises them", async () => {
     await boot();
-    expect(kindsOfInbox()).toEqual(["state", "thread", "issues"]);
+    expect(kindsOfInbox()).toEqual(["state", "thread", "tasks"]);
   });
 
-  it("leaves issues off where it does not", async () => {
+  it("leaves tasks off where it does not", async () => {
     carriedKinds = ["state", "thread", "git", "files", "terminals"];
     await boot();
     expect(kindsOfInbox()).toEqual(["state", "thread"]);
   });
 
-  // The whole point: the inbox keeps working. An Issues tab filling from the
+  // The whole point: the inbox keeps working. A Tasks tab filling from the
   // pass alone is a degraded tracker; an inbox with no pushes is a dead client.
   it("keeps all three subscriptions, and the inbox's other kinds", async () => {
     carriedKinds = [];

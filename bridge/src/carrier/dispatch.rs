@@ -262,7 +262,7 @@ pub(super) struct Dispatcher {
     /// (`dispatch_to_pool`), so nothing can leave a fold in this map that no
     /// marker will ever drain — which is what an admitter aborted mid-wait
     /// used to leave, and every later twin of that read joined it and waited
-    /// forever (issue #128, round-2 review).
+    /// forever (task #128, round-2 review).
     folded_reads: Arc<Mutex<HashMap<ReadKey, FoldedRead>>>,
 }
 
@@ -2028,7 +2028,7 @@ mod dispatcher_tests {
         .expect("the condition was reached in time");
     }
 
-    /// The round-2 review's reproduction (issue #128): a wire's admitter is
+    /// The round-2 review's reproduction (task #128): a wire's admitter is
     /// aborted while it waits for a queue slot with a folded read in hand.
     /// What it was admitting must vanish with it — not stay in the fold map
     /// as an entry no marker will ever drain, which every later twin of the

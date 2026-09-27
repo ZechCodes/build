@@ -492,8 +492,8 @@ describe("readCachedMany", () => {
 });
 
 describe("records merged together", () => {
-  const list = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issues" };
-  const note = { deviceId: "dev-1", entityId: "p1", kind: "tracker-issue-reads", sub: "list" };
+  const list = { deviceId: "dev-1", entityId: "p1", kind: "tracker-tasks" };
+  const note = { deviceId: "dev-1", entityId: "p1", kind: "tracker-task-reads", sub: "list" };
   const other = { deviceId: "dev-1", entityId: "p1", kind: "status" };
 
   it("hands the merge every value as held and writes and announces what it changed", async () => {
@@ -510,7 +510,7 @@ describe("records merged together", () => {
     expect(seen).toEqual([{ count: 1 }, undefined, { head: "abc" }]);
     const records = await cache.readCachedMany([list, note, other]);
     expect(records.map((record) => record?.value)).toEqual([{ count: 2 }, { reads: 1 }, { head: "abc" }]);
-    expect(heard).toEqual(["tracker-issues", "tracker-issue-reads"]);
+    expect(heard).toEqual(["tracker-tasks", "tracker-task-reads"]);
   });
 
   it("writes none of them when one cannot be written", async () => {

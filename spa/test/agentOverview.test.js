@@ -204,25 +204,25 @@ describe("expanded agent overview", () => {
     reader.close();
   });
 
-  it("reads an issue agent's transcript through its cached execution context", async () => {
-    const issueAddress = { deviceId: "dev-overview", entityId: "issue-1", kind: "issue", sub: "get" };
-    const issueRow = { issue_id: "issue-1", agents: [agent("issue-agent", { name: "Issue agent", working: true })],
+  it("reads a task agent's transcript through its cached execution context", async () => {
+    const taskAddress = { deviceId: "dev-overview", entityId: "task-1", kind: "task", sub: "get" };
+    const taskRow = { task_id: "task-1", agents: [agent("task-agent", { name: "Task agent", working: true })],
       execution_context: { entity_id: "run-implementation", agent_id: "worker-1", conversation_id: "conversation-1",
         agent: agent("worker-1", { working: false, unread_count: 1, read_through_sequence: 6 }) } };
-    await cache.writeCached(issueAddress, issueRow);
+    await cache.writeCached(taskAddress, taskRow);
     await cache.writeCached({ deviceId: "dev-overview", entityId: "run-implementation", kind: "thread", sub: "conversation-1" },
       { items: [message(7, "agent", "Implementation ready")] });
     const paints = [];
     const reader = overview.createAgentOverview({ scope,
-      sources: () => [{ slot: "current", kind: "issue", entityId: "issue-1", address: issueAddress }],
+      sources: () => [{ slot: "current", kind: "task", entityId: "task-1", address: taskAddress }],
       onRows: (rows) => paints.push(rows),
     });
     reader.open();
     await settle();
-    expect(paints.at(-1)).toMatchObject([{ id: "issue-agent", name: "Issue agent",
+    expect(paints.at(-1)).toMatchObject([{ id: "task-agent", name: "Task agent",
       snippet: "Implementation ready", working: false, unread: true }]);
 
-    await cache.writeCached(issueAddress, { ...issueRow, execution_context: { ...issueRow.execution_context,
+    await cache.writeCached(taskAddress, { ...taskRow, execution_context: { ...taskRow.execution_context,
       agent: agent("worker-1", { working: true, unread_count: 0 }) } });
     await cache.writeCached({ deviceId: "dev-overview", entityId: "run-implementation", kind: "thread", sub: "conversation-1" },
       { items: [activity(8, "Applying changes")] });
@@ -231,15 +231,15 @@ describe("expanded agent overview", () => {
     reader.close();
   });
 
-  it("uses the execution agent's cache key when an issue has no conversation id", async () => {
-    const issueAddress = { deviceId: "dev-overview", entityId: "issue-2", kind: "issue", sub: "get" };
-    await cache.writeCached(issueAddress, { issue_id: "issue-2", agents: [agent("issue-agent")],
+  it("uses the execution agent's cache key when a task has no conversation id", async () => {
+    const taskAddress = { deviceId: "dev-overview", entityId: "task-2", kind: "task", sub: "get" };
+    await cache.writeCached(taskAddress, { task_id: "task-2", agents: [agent("task-agent")],
       execution_context: { entity_id: "run-2", agent_id: "worker-2" } });
     await cache.writeCached({ deviceId: "dev-overview", entityId: "run-2", kind: "thread", sub: "worker-2" },
       { items: [message(1, "agent", "Cached execution reply")] });
     const paints = [];
     const reader = overview.createAgentOverview({ scope,
-      sources: () => [{ slot: "current", kind: "issue", entityId: "issue-2", address: issueAddress }],
+      sources: () => [{ slot: "current", kind: "task", entityId: "task-2", address: taskAddress }],
       onRows: (rows) => paints.push(rows),
     });
     reader.open();

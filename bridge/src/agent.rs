@@ -6,8 +6,8 @@
 //!
 //! One stable conversation binding per agent (spec: UX Redesign Decisions,
 //! "Agents and conversations"). A branch can carry any number of agents working the same
-//! checkout — including none, which is what a branch starts with — while an
-//! issue carries exactly one. So an entity holds an [`AgentRoster`] rather
+//! checkout — including none, which is what a branch starts with — while a
+//! task carries exactly one. So an entity holds an [`AgentRoster`] rather
 //! than a thread, and the agent at index 0 is the PRIMARY: the one every
 //! entity-level event speaks to, and the one a verb that names no agent means.
 
@@ -47,7 +47,7 @@ pub fn is_project_agent(agent_id: &str) -> bool {
 /// the project surface, whoever asked for them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AgentKind {
-    /// An agent of a branch, an issue or a workspace. It works a checkout.
+    /// An agent of a branch, a task or a workspace. It works a checkout.
     #[default]
     Coding,
     /// An agent of a project's conversation owner. It holds no checkout and
@@ -70,7 +70,7 @@ impl AgentKind {
 /// owner has.
 ///
 /// A bare `&str` owner converts to the coding kind, which is what every branch,
-/// issue and workspace is; the project case has to be named, and is named where
+/// task and workspace is; the project case has to be named, and is named where
 /// the owner is recognized rather than where the agent is asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentOwner<'a> {
@@ -138,7 +138,7 @@ impl AgentLifecycle {
 pub struct Agent {
     pub id: String,
     /// The plan/run this agent belongs to. An agent is never free-floating: it
-    /// is reachable only through its branch or issue.
+    /// is reachable only through its branch or task.
     pub owner_id: String,
     #[serde(default)]
     pub choice: ModelChoice,
@@ -169,7 +169,7 @@ pub struct Agent {
     pub thread: Thread,
     /// Agent id whose thread stores this agent's conversation.
     ///
-    /// Usually this agent's own id. An implementation agent binds to the Issue
+    /// Usually this agent's own id. An implementation agent binds to the Task
     /// agent whose conversation it continues. `None` exists only while reading
     /// a legacy record and is materialized before that record is written again.
     #[serde(default)]
@@ -228,7 +228,7 @@ pub struct Agent {
     /// with the user's own words. Never set for an agent that has a name.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub name_asked: bool,
-    /// Whether the USER is watching this conversation (spec: Issues →
+    /// Whether the USER is watching this conversation (spec: Tasks →
     /// Watching).
     ///
     /// Every conversation used to be in the inbox whether the user had
@@ -237,7 +237,7 @@ pub struct Agent {
     /// Now the user watches what they made, and what an agent asked them to
     /// see.
     ///
-    /// Defaults TRUE, unlike an issue's. Every conversation that exists today
+    /// Defaults TRUE, unlike a task's. Every conversation that exists today
     /// is in the inbox, and a field that defaulted false would empty it on the
     /// first read after an upgrade. What narrows it is the creating paths
     /// setting it false for an agent an agent made.
@@ -426,7 +426,7 @@ pub struct RosterMember {
     pub provider: crate::models::AgentProvider,
 }
 
-/// A branch starts with no agents and may be emptied back to none; an issue
+/// A branch starts with no agents and may be emptied back to none; a task
 /// always holds exactly one. The agent at index 0 is the PRIMARY: the one
 /// entity-level events speak to, and the one a verb that names no agent means.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -441,7 +441,7 @@ impl AgentRoster {
         AgentRoster { agents: Vec::new() }
     }
 
-    /// A roster holding one freshly minted agent — what an issue gets, and
+    /// A roster holding one freshly minted agent — what a task gets, and
     /// what a dispatch that is about to speak gets.
     pub fn with_first(owner_id: &str, choice: ModelChoice, now: &str) -> AgentRoster {
         AgentRoster {
@@ -553,18 +553,18 @@ impl AgentRoster {
         self.primary().is_some_and(|primary| primary.id == agent_id)
     }
 
-    /// The one agent of an issue. An issue is created with its agent and can
+    /// The one agent of a task. A task is created with its agent and can
     /// neither gain nor lose one, so this holds by construction — named once
     /// here rather than spelled out at every plan site.
     pub fn sole(&self) -> &Agent {
-        self.primary().expect(ISSUE_HOLDS_ITS_ONE_AGENT)
+        self.primary().expect(TASK_HOLDS_ITS_ONE_AGENT)
     }
 
     pub fn sole_mut(&mut self) -> &mut Agent {
-        self.primary_mut().expect(ISSUE_HOLDS_ITS_ONE_AGENT)
+        self.primary_mut().expect(TASK_HOLDS_ITS_ONE_AGENT)
     }
 
-    /// An issue's conversation. Almost every caller of [`sole`](Self::sole)
+    /// A task's conversation. Almost every caller of [`sole`](Self::sole)
     /// wants the thread rather than the agent around it, so the walk is named
     /// once here instead of being spelled out at each of them.
     pub fn sole_thread(&self) -> &Thread {
@@ -743,8 +743,8 @@ impl AgentRoster {
     }
 }
 
-/// What an issue's roster holds, named where the unwrap that relies on it is.
-const ISSUE_HOLDS_ITS_ONE_AGENT: &str = "an issue always holds its one agent";
+/// What a task's roster holds, named where the unwrap that relies on it is.
+const TASK_HOLDS_ITS_ONE_AGENT: &str = "a task always holds its one agent";
 
 /// What a read of an agentless entity is told.
 const NO_AGENT_YET: &str = "no agent here yet — send a message to create one";
@@ -765,7 +765,7 @@ pub fn new_project_agent_id() -> String {
 /// bits of randomness, Crockford base32.
 ///
 /// Exposed because the ULID rule is the house rule for every minted id, and a
-/// record that is not an agent — a tracker issue, its comments, its events —
+/// record that is not an agent — a tracker task, its comments, its events —
 /// wants the same sortable body under its own prefix rather than a second
 /// spelling of the same idea.
 pub fn new_ulid_body() -> String {
@@ -1016,7 +1016,7 @@ mod roster_tests {
         roster
             .by_id_mut(&first)
             .unwrap()
-            .bind_conversation("agent-issue");
+            .bind_conversation("agent-task");
 
         roster.remove(&first).unwrap();
 

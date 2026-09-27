@@ -391,7 +391,7 @@ export function mountComposerModelMenu(root, { ids, onChoose, cacheKey = null })
 /// the next repaint, which on a polling surface is about a second away.
 ///
 /// `accepting()` says whether paste and drop take files right now. A surface
-/// that takes its paperclip off a box it keeps (the issue page, when a bridge
+/// that takes its paperclip off a box it keeps (the task page, when a bridge
 /// stops carrying files) answers false until it hangs it back on, and the box
 /// takes a paste or a drop the way a plain one would.
 ///

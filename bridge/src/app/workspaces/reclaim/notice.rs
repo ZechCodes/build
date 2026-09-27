@@ -1,7 +1,7 @@
 //! What the project agent is told about its quiet workspaces.
 
 use super::Quiet;
-use crate::reclaim::{LifecycleRecord, LinkedIssue, ReclaimPolicy, Subject};
+use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject};
 
 /// The phase a quiet-workspace notice's turn is queued under.
 pub(super) const PHASE: &str = "workspace_idle";
@@ -25,28 +25,21 @@ pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> 
         "{count} {these} had no activity for {hours} hours. This message is from Build, not from \
          the user.\n\n{}\n\nFor each one, decide: merge it (branch reviewed and green: merge to main, \
          then reclaim_workspace), delete it (abandoned or superseded: delete_workspace), or surface \
-         it (something needs the user: one question on the linked issue, and leave the workspace \
+         it (something needs the user: one question on the linked task, and leave the workspace \
          alone). Never delete a workspace with uncommitted or unpushed work without asking the user \
-         first. Record what you did on the linked issue.",
+         first. Record what you did on the linked task.",
         lines.join("\n")
     )
 }
 
 fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
-    let issues = if subject.issues.is_empty() {
-        "no linked issue".to_string()
+    let tasks = if subject.tasks.is_empty() {
+        "no linked task".to_string()
     } else {
         subject
-            .issues
+            .tasks
             .iter()
-            .map(|issue| {
-                format!(
-                    "#{} {} ({})",
-                    issue.number,
-                    issue.title,
-                    issue_column(issue)
-                )
-            })
+            .map(|task| format!("#{} {} ({})", task.number, task.title, task_column(task)))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -69,7 +62,7 @@ fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
         )
     };
     format!(
-        "- {} ({}): {issues}. Branch {}; {} uncommitted files, {} unpushed commits, {} behind. {} on \
+        "- {} ({}): {tasks}. Branch {}; {} uncommitted files, {} unpushed commits, {} behind. {} on \
          disk{}. Last activity {}. {verdict}.",
         subject.name,
         subject.workspace_id,
@@ -99,13 +92,13 @@ fn rfc3339_of_ms(ms: i64) -> Option<String> {
         .ok()
 }
 
-fn issue_column(issue: &LinkedIssue) -> String {
-    if issue.state == "closed" {
+fn task_column(task: &LinkedTask) -> String {
+    if task.state == "closed" {
         return "closed".to_string();
     }
     crate::tracker::COLUMNS
         .iter()
-        .find(|column| column.id == issue.status)
+        .find(|column| column.id == task.status)
         .map(|column| column.name.to_string())
-        .unwrap_or_else(|| issue.status.clone())
+        .unwrap_or_else(|| task.status.clone())
 }

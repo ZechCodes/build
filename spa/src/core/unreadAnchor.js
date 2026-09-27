@@ -1,4 +1,4 @@
-// Chat uses numbered agent replies; issue timelines use ULIDs and count any
+// Chat uses numbered agent replies; task timelines use ULIDs and count any
 // entry by somebody other than the reader. Both share the hold and grace rules.
 const sequenceOf = (item) => Number(item?.data?.sequence ?? NaN);
 export const isAgentMessage = (item) => item?.type === "message" && item.data?.role === "agent";

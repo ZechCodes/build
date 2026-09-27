@@ -1,7 +1,7 @@
 // #24 on a real stack: a read that fails because the session dropped keeps the
 // cached copy quietly, marks itself, and reads again on reconnect.
 //
-//   ISSUES_REPO=<this checkout> node web/dropped-read-check.mjs
+//   TASKS_REPO=<this checkout> node web/dropped-read-check.mjs
 //
 // Reads /tmp/live-seed.json, so run web/live-seed.mjs first and write its SEED
 // line there. Exits non-zero on a failed check: a regression harness that
@@ -35,9 +35,9 @@
 //
 // A cached copy also has content, so "something is on screen" cannot tell a
 // retry that landed from a mark that merely cleared over a copy that never
-// moved. So a comment is added with NO page open on the issue: nothing can
-// deliver it by push, and the per-issue cache record — written only by the
-// issue page itself — still holds the shorter timeline. A count that grows
+// moved. So a comment is added with NO page open on the task: nothing can
+// deliver it by push, and the per-task cache record — written only by the
+// task page itself — still holds the shorter timeline. A count that grows
 // after the reconnect can only have come from a read that landed.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -52,14 +52,14 @@ const BRIDGE = process.env.BRIDGE_CONTAINER || "deploy-bridge-1";
  *  build-web checkout on this machine, and a forgotten variable would point
  *  the run at another tree's compose file and pass against a bridge that was
  *  never under test. */
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 if (!REPO) {
-  console.error("set ISSUES_REPO to the checkout under test — this run must not mix checkouts");
+  console.error("set TASKS_REPO to the checkout under test — this run must not mix checkouts");
   process.exit(2);
 }
 const compose = `${REPO}/deploy/compose.real.yml`;
 if (!existsSync(compose)) {
-  console.error(`no compose file at ${compose} — is ISSUES_REPO a build-web checkout?`);
+  console.error(`no compose file at ${compose} — is TASKS_REPO a build-web checkout?`);
   process.exit(2);
 }
 
@@ -146,16 +146,16 @@ await Promise.all([
 ]);
 
 const stamp = Date.now().toString(36);
-const filed = call("issues.create", {
+const filed = call("tasks.create", {
   project_id: seed.projectId,
   title: `dropped-read-${stamp}`,
   body: "Filed by web/dropped-read-check.mjs.",
 });
-const issueId = filed.issue.id;
-const issuesTab = `${APP}/app/#/device/${seed.deviceId}/project/${seed.projectId}/issues`;
-const issuePage = `${issuesTab}/${issueId}`;
+const taskId = filed.task.id;
+const tasksTab = `${APP}/app/#/device/${seed.deviceId}/project/${seed.projectId}/tasks`;
+const taskPage = `${tasksTab}/${taskId}`;
 
-const entries = () => page.evaluate(() => document.querySelectorAll(".issue-entry").length);
+const entries = () => page.evaluate(() => document.querySelectorAll(".task-entry").length);
 const mark = () => page.evaluate(() => document.querySelector(".read-wait")?.textContent ?? null);
 const toasts = () => page.evaluate(() => window.__toasts || []);
 const watchToasts = () =>
@@ -170,15 +170,15 @@ const watchToasts = () =>
   });
 
 // ── 1. read it once with the bridge answering, so the cache is warm ─────────
-await page.goto(issuePage, { waitUntil: "load" });
+await page.goto(taskPage, { waitUntil: "load" });
 await page.waitForTimeout(8000);
 const cached = await entries();
-record("the issue page reads and paints with the bridge answering", cached > 0, `${cached} timeline entr${cached === 1 ? "y" : "ies"} cached`);
+record("the task page reads and paints with the bridge answering", cached > 0, `${cached} timeline entr${cached === 1 ? "y" : "ies"} cached`);
 
 // ── 2. move a comment onto it with no page open to hear about it ────────────
-await page.goto(issuesTab, { waitUntil: "load" });
+await page.goto(tasksTab, { waitUntil: "load" });
 await page.waitForTimeout(3000);
-call("issues.comment", { issue_id: issueId, body: `Written off-page by dropped-read-check ${stamp}.` });
+call("tasks.comment", { task_id: taskId, body: `Written off-page by dropped-read-check ${stamp}.` });
 
 // ── 3. the session dies under the page ──────────────────────────────────────
 await watchToasts();
@@ -194,7 +194,7 @@ let markText = null;
 pauseBridge();
 try {
   const pausedAt = Date.now();
-  await page.goto(issuePage, { waitUntil: "load" });
+  await page.goto(taskPage, { waitUntil: "load" });
 
   for (let step = 0; step < 16; step++) {
     await page.waitForTimeout(3000);

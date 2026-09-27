@@ -62,7 +62,7 @@ afterEach(() => events.resetChangeEvents());
 
 /** The machine's bridge, greeted as one that can cut pages. */
 const greetPaging = () =>
-  events.greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages", "diffs.perFile"] }), {
+  events.greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["bodies.pages", "diffs.perFile"] }), {
     deviceId: "dev-1",
   });
 

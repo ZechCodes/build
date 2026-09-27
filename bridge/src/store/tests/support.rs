@@ -9,11 +9,11 @@ use std::path::Path;
 pub(super) const NOW: &str = "2026-08-21T10:00:00Z";
 
 pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> OperationReceipt {
-    let agent_id = crate::agent::derived_agent_id("issue-1");
+    let agent_id = crate::agent::derived_agent_id("task-1");
     OperationReceipt {
         operation_id: operation_id.to_string(),
         method: THREAD_POST_METHOD.to_string(),
-        entity_id: "issue-1".to_string(),
+        entity_id: "task-1".to_string(),
         agent_id: agent_id.clone(),
         conversation_id: agent_id.clone(),
         choice_revision: 0,
@@ -24,7 +24,7 @@ pub(super) fn queued_operation(operation_id: &str, posted_sequence: u64) -> Oper
         request_hash: "same-request".to_string(),
         delivery: Some(DeliveryIntent {
             root: "/repo".into(),
-            owner_id: "issue-1".to_string(),
+            owner_id: "task-1".to_string(),
             agent_id,
             model_choice: ModelChoice::default(),
             choice_revision: 0,

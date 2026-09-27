@@ -1,7 +1,7 @@
 //! Turns that wait before they wake their agent (#67).
 //!
 //! Every turn re-reads the agent's whole context, so what a turn costs is that
-//! context times the number of turns. An issue notice is posted on its
+//! context times the number of turns. A task notice is posted on its
 //! tracker's thread the moment it lands, and the turn that tells the agent to
 //! read it waits here instead of going at once: a burst of changes wakes the
 //! agent once.

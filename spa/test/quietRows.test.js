@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-// #52: the quiet rows are ONE list — a notice, an issue action, a tool call,
+// #52: the quiet rows are ONE list — a notice, a task action, a tool call,
 // and a folded run of tool calls.
 //
 // The maintainer: "Activity entries should be styled like the notification
@@ -8,7 +8,7 @@
 // They were not. Measured in a browser at 390px, the notice and action lines
 // were 19px tall and sat 4px apart; the tool-call row was 28px tall — two
 // lines — and sat 22px from the line above and below it, because the rhythm
-// rule named one kind (`.thread-issue-line + .thread-issue-line`) and the box
+// rule named one kind (`.thread-task-line + .thread-task-line`) and the box
 // was written twice, once per kind, with different numbers.
 //
 // So the two things a row of either kind needs — its box and its pull-back —
@@ -16,7 +16,7 @@
 // hold that shape: the class is on every kind (and on nothing else), and no
 // rule sets a quiet row's vertical box by kind behind the shared one's back.
 // None of this can measure the gap — jsdom has no layout, and that is what
-// web/issue-line-measure.mjs is for — but it can keep the two kinds from
+// web/task-line-measure.mjs is for — but it can keep the two kinds from
 // drifting apart again the way they did.
 
 import { describe, expect, it } from "vitest";
@@ -34,15 +34,15 @@ const notice = (sequence) => ({
   type: "message",
   data: {
     id: `m-${sequence}`, sequence, role: "user", from_build: true,
-    from_issue: { issue_id: `issue-${sequence}`, number: sequence, title: "A notice" },
-    issue_notice: { actor: "user", action: "commented" }, body: "",
+    from_task: { task_id: `task-${sequence}`, number: sequence, title: "A notice" },
+    task_notice: { actor: "user", action: "commented" }, body: "",
   },
 });
 const action = (sequence) => ({
   type: "message",
   data: {
     id: `m-${sequence}`, sequence, role: "agent", body: "",
-    issue_action: { issue_id: `issue-${sequence}`, number: sequence, title: "An action", action: "closed" },
+    task_action: { task_id: `task-${sequence}`, number: sequence, title: "An action", action: "closed" },
   },
 });
 const toolCall = (sequence) => ({
@@ -67,8 +67,8 @@ describe("the class every quiet row carries", () => {
   // A table, because the point is that no kind is missing from it: the row
   // that gets forgotten is the one that drifts.
   const KINDS = [
-    { name: "a notice about an issue", items: [notice(41)], selector: ".thread-issue-line.thread-notice" },
-    { name: "an action line", items: [action(42)], selector: ".thread-issue-line.thread-action" },
+    { name: "a notice about a task", items: [notice(41)], selector: ".thread-task-line.thread-notice" },
+    { name: "an action line", items: [action(42)], selector: ".thread-task-line.thread-action" },
     { name: "a folded run of tool calls", items: [toolCall(43)], selector: ".thread-activity-group" },
     { name: "a tool call", items: [toolCall(44), toolCall(45)], selector: ".thread-activity" },
   ];
@@ -114,7 +114,7 @@ function rules() {
 /** The classes that name a quiet row or the line inside one. A rule whose
  *  SUBJECT is one of these is a rule about a quiet row's box. */
 const ROW_CLASSES = [
-  "thread-issue-line", "thread-issue-notice", "thread-issue-action",
+  "thread-task-line", "thread-task-notice", "thread-task-action",
   "thread-activity", "thread-activity-head", "thread-activity-group", "thread-activity-group-head",
 ];
 

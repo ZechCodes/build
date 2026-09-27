@@ -6,7 +6,7 @@ import {
 
 const PROJECT = "device-1/proj-1";
 const NOW = Date.parse("2026-09-22T20:00:00Z");
-const issue = (id, fields = {}) => ({ id, status: "backlog", assignee: null, ...fields });
+const task = (id, fields = {}) => ({ id, status: "backlog", assignee: null, ...fields });
 const move = (at, to = "done") => ({ type: "event", kind: "moved", at, payload: { from: "in_review", to } });
 const detail = (timeline) => ({ timeline });
 
@@ -26,7 +26,7 @@ describe("Dashboard cache projection", () => {
   });
 
   it("names assigned working agents from the project feed and uses only a supplied cached snippet", () => {
-    const work = issue("work", { assignee: { kind: "agent", agent_id: "agent-1" } });
+    const work = task("work", { assignee: { kind: "agent", agent_id: "agent-1" } });
     const feed = {
       workspaces: [{ projectKey: PROJECT, entity_id: "run-1", workspace_id: "ws-1", name: "Editor" }],
       items: [{ projectKey: PROJECT, entity_id: "run-1", agents: [
@@ -36,38 +36,38 @@ describe("Dashboard cache projection", () => {
     const sections = dashboardSections([work], {
       feed, projectKey: PROJECT, nowMs: NOW, activityByAgent: new Map([["agent-1", " Checking links "]]),
     });
-    expect(sections.active).toEqual([{ issue: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
+    expect(sections.active).toEqual([{ task: work, agentName: "Editor · Writer", activity: "Checking links", working: true }]);
     expect(dashboardSections([work], { feed, projectKey: PROJECT, nowMs: NOW }).active[0].activity).toBe("");
   });
 
   it("keeps only a mid-turn agent in Working and the other holders in Assigned", () => {
-    const parked = issue("parked", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-idle" } });
-    const busy = issue("busy", { status: "in_progress", assignee: { kind: "agent", agent_id: "agent-busy" } });
-    const stranger = issue("stranger", { assignee: { kind: "agent", agent_id: "agent-gone" } });
-    const mine = issue("mine", { assignee: { kind: "user" } });
-    const finished = issue("finished", { status: "done", assignee: { kind: "agent", agent_id: "agent-idle" } });
+    const parked = task("parked", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-idle" } });
+    const busy = task("busy", { status: "in_progress", assignee: { kind: "agent", agent_id: "agent-busy" } });
+    const stranger = task("stranger", { assignee: { kind: "agent", agent_id: "agent-gone" } });
+    const mine = task("mine", { assignee: { kind: "user" } });
+    const finished = task("finished", { status: "done", assignee: { kind: "agent", agent_id: "agent-idle" } });
     const feed = { items: [{ projectKey: PROJECT, agents: [
       { id: "agent-idle", working: false }, { id: "agent-busy", working: true },
     ] }] };
     const { activeGroups } = dashboardSections([parked, busy, stranger, mine, finished], { feed, projectKey: PROJECT, nowMs: NOW });
-    expect(activeGroups.map((group) => [group.title, group.entries.map((entry) => entry.issue.id)]))
+    expect(activeGroups.map((group) => [group.title, group.entries.map((entry) => entry.task.id)]))
       .toEqual([["Working", ["busy"]], ["Assigned", ["parked", "stranger", "mine"]]]);
   });
 
-  it("uses the list's shared Needs you reasons, including issues also assigned to working agents", () => {
-    const workingReview = issue("review", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-1" } });
-    const assigned = issue("mine", { assignee: { kind: "user" } });
+  it("uses the list's shared Needs you reasons, including tasks also assigned to working agents", () => {
+    const workingReview = task("review", { status: "in_review", assignee: { kind: "agent", agent_id: "agent-1" } });
+    const assigned = task("mine", { assignee: { kind: "user" } });
     const feed = { items: [{ projectKey: PROJECT, agents: [{ id: "agent-1", working: true }] }] };
     const sections = dashboardSections([workingReview, assigned], { feed, projectKey: PROJECT, nowMs: NOW });
-    expect(sections.active.map((row) => row.issue.id)).toEqual(["review", "mine"]);
+    expect(sections.active.map((row) => row.task.id)).toEqual(["review", "mine"]);
     expect(sections.needsYou).toEqual([
-      { issue: workingReview, reasons: ["in_review"], reasonLabels: ["In review"] },
-      { issue: assigned, reasons: ["assigned_to_user"], reasonLabels: ["Assigned to you"] },
+      { task: workingReview, reasons: ["in_review"], reasonLabels: ["In review"] },
+      { task: assigned, reasons: ["assigned_to_user"], reasonLabels: ["Assigned to you"] },
     ]);
   });
 
   it("names the project's own working agent after the project", () => {
-    const work = issue("work", { assignee: { kind: "project_agent" } });
+    const work = task("work", { assignee: { kind: "project_agent" } });
     const feed = {
       projects: [{ projectKey: PROJECT, name: "Build", entity_id: "project-run" }],
       items: [{ projectKey: PROJECT, entity_id: "project-run", agents: [{ id: "project-agent", working: true }] }],
@@ -77,21 +77,21 @@ describe("Dashboard cache projection", () => {
   });
 
   it("includes only cached moves into Done in the last 24 hours, with the latest linked SHA", () => {
-    const today = issue("today", { status: "done", links: { commits: ["abc123", "def456"] } });
-    const old = issue("old", { status: "done" });
-    const unknown = issue("unknown", { status: "done", updated_at: "2026-09-22T19:00:00Z" });
-    const movedAway = issue("moved-away", { status: "in_review" });
+    const today = task("today", { status: "done", links: { commits: ["abc123", "def456"] } });
+    const old = task("old", { status: "done" });
+    const unknown = task("unknown", { status: "done", updated_at: "2026-09-22T19:00:00Z" });
+    const movedAway = task("moved-away", { status: "in_review" });
     const details = new Map([
       [today.id, detail([move("2026-09-20T12:00:00Z"), move("2026-09-22T19:00:00Z")])],
       [old.id, detail([move("2026-09-21T19:59:59Z")])],
       [movedAway.id, detail([move("2026-09-22T19:00:00Z"), move("2026-09-22T19:30:00Z", "in_review")])],
     ]);
     expect(dashboardSections([today, old, unknown, movedAway], { detailById: details, nowMs: NOW }).done)
-      .toEqual([{ issue: today, movedAt: "2026-09-22T19:00:00Z", sha: "def456" }]);
+      .toEqual([{ task: today, movedAt: "2026-09-22T19:00:00Z", sha: "def456" }]);
   });
 
   it("treats the 24 hour boundary as inclusive and rejects future or invalid event times", () => {
-    const done = issue("done", { status: "done" });
+    const done = task("done", { status: "done" });
     expect(doneMoveToday(done, detail([move("2026-09-21T20:00:00Z")]), NOW)).toBe("2026-09-21T20:00:00Z");
     expect(doneMoveToday(done, detail([move("2026-09-22T20:00:01Z")]), NOW)).toBeNull();
     expect(doneMoveToday(done, detail([move("invalid")]), NOW)).toBeNull();
@@ -111,7 +111,7 @@ describe("Done since you left", () => {
     now_ms: bridgeNow,
   });
   const cutoff = (summary) => doneSinceCutoff(summary);
-  const finished = (id, iso) => issue(id, { status: "done", done_at: iso });
+  const finished = (id, iso) => task(id, { status: "done", done_at: iso });
 
   it("reaches back over a 15 hour night, before and after the arrival is recorded", () => {
     const leftAt = at("2026-09-21T18:00:00Z");
@@ -153,7 +153,7 @@ describe("Done since you left", () => {
     const duringVacation = finished("vacation", "2026-09-15T12:00:00Z");
     const thisMorning = finished("today", new Date(back + 30 * 60_000).toISOString());
     expect(dashboardSections([duringVacation], { doneCutoffMs: arrival }).done).toEqual([]);
-    expect(dashboardSections([duringVacation, thisMorning], { doneCutoffMs: arrival }).done.map((entry) => entry.issue.id))
+    expect(dashboardSections([duringVacation, thisMorning], { doneCutoffMs: arrival }).done.map((entry) => entry.task.id))
       .toEqual(["today"]);
   });
 
@@ -220,15 +220,15 @@ describe("Done since you left", () => {
     expect(doneSinceCutoff(null)).toBe(Infinity);
   });
 
-  it("lists only issues in Done whose done_at is at or after the cutoff, from the list record alone", () => {
+  it("lists only tasks in Done whose done_at is at or after the cutoff, from the list record alone", () => {
     const from = at("2026-09-22T08:00:00Z");
     expect(doneSince(finished("at", "2026-09-22T08:00:00Z"), from)).toBe("2026-09-22T08:00:00Z");
     expect(doneSince(finished("before", "2026-09-22T07:59:59Z"), from)).toBeNull();
-    expect(doneSince(issue("moved-away", { status: "in_review", done_at: "2026-09-22T09:00:00Z" }), from)).toBeNull();
-    expect(doneSince(issue("never", { status: "done" }), from)).toBeNull();
+    expect(doneSince(task("moved-away", { status: "in_review", done_at: "2026-09-22T09:00:00Z" }), from)).toBeNull();
+    expect(doneSince(task("never", { status: "done" }), from)).toBeNull();
     // No timeline was needed: the details map is empty.
     expect(dashboardSections([finished("x", "2026-09-22T09:00:00Z")], { doneCutoffMs: from }).done)
-      .toEqual([{ issue: finished("x", "2026-09-22T09:00:00Z"), movedAt: "2026-09-22T09:00:00Z", sha: null }]);
+      .toEqual([{ task: finished("x", "2026-09-22T09:00:00Z"), movedAt: "2026-09-22T09:00:00Z", sha: null }]);
   });
 });
 
@@ -236,8 +236,8 @@ describe("Done grouped by time", () => {
   const MINUTE = 60 * 1000;
   const HOUR = 60 * MINUTE;
   /** One Done entry that moved `ageMs` before NOW. */
-  const moved = (id, ageMs) => ({ issue: issue(id, { status: "done" }), movedAt: new Date(NOW - ageMs).toISOString(), sha: null });
-  const titled = (groups) => groups.map((group) => [group.title, group.entries.map((entry) => entry.issue.id)]);
+  const moved = (id, ageMs) => ({ task: task(id, { status: "done" }), movedAt: new Date(NOW - ageMs).toISOString(), sha: null });
+  const titled = (groups) => groups.map((group) => [group.title, group.entries.map((entry) => entry.task.id)]);
   const groupsOf = (entries, sessionStartedMs = null) => titled(doneGroups(entries, { nowMs: NOW, sessionStartedMs }));
 
   it("steps by 15 minutes for the first hour, then by the hour, newest first", () => {
@@ -292,8 +292,8 @@ describe("Done grouped by time", () => {
   });
 
   it("is what dashboardSections gives the Done tab to draw", () => {
-    const issues = [issue("done", { status: "done", done_at: new Date(NOW - 20 * MINUTE).toISOString() })];
-    const sections = dashboardSections(issues, { nowMs: NOW, doneCutoffMs: NOW - HOUR, sessionStartedMs: NOW - 30 * MINUTE });
+    const tasks = [task("done", { status: "done", done_at: new Date(NOW - 20 * MINUTE).toISOString() })];
+    const sections = dashboardSections(tasks, { nowMs: NOW, doneCutoffMs: NOW - HOUR, sessionStartedMs: NOW - 30 * MINUTE });
     expect(titled(sections.doneGroups)).toEqual([["15 minutes ago", ["done"]]]);
     expect(sections.doneGroups[0].entries).toEqual(sections.done);
   });
@@ -301,32 +301,32 @@ describe("Done grouped by time", () => {
 
 describe("Backlog", () => {
   const agent = { agent_id: "agent-7", name: "Still review", ordinal: 1, workspace_name: "Composer", available: true };
-  const backlogOf = (issues, options = {}) => dashboardSections(issues, { nowMs: NOW, ...options });
-  const rows = (entries) => entries.map((entry) => [entry.issue.id, entry.columnName]);
+  const backlogOf = (tasks, options = {}) => dashboardSections(tasks, { nowMs: NOW, ...options });
+  const rows = (entries) => entries.map((entry) => [entry.task.id, entry.columnName]);
 
-  it("takes every unheld open issue, whatever its column", () => {
-    const issues = [
-      issue("backlog"),
-      issue("ready", { status: "ready" }),
-      issue("working", { status: "in_progress" }),
-      issue("review", { status: "in_review" }),
-      issue("done", { status: "done" }),
-      issue("closed", { state: "closed" }),
+  it("takes every unheld open task, whatever its column", () => {
+    const tasks = [
+      task("backlog"),
+      task("ready", { status: "ready" }),
+      task("working", { status: "in_progress" }),
+      task("review", { status: "in_review" }),
+      task("done", { status: "done" }),
+      task("closed", { state: "closed" }),
     ];
-    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id)).toEqual(["backlog", "ready", "working", "review"]);
+    expect(backlogOf(tasks).backlog.map((entry) => entry.task.id)).toEqual(["backlog", "ready", "working", "review"]);
   });
 
-  it("leaves held issues in Active and gives Backlog a flat list", () => {
-    const issues = [
-      issue("loose", { status: "ready" }),
-      issue("agent", { assignee: { kind: "agent", agent_id: "agent-7" }, identities: { "agent-7": agent } }),
-      issue("mine", { status: "ready", assignee: { kind: "user" } }),
-      issue("project", { assignee: { kind: "project_agent" } }),
-      issue("filed"),
+  it("leaves held tasks in Active and gives Backlog a flat list", () => {
+    const tasks = [
+      task("loose", { status: "ready" }),
+      task("agent", { assignee: { kind: "agent", agent_id: "agent-7" }, identities: { "agent-7": agent } }),
+      task("mine", { status: "ready", assignee: { kind: "user" } }),
+      task("project", { assignee: { kind: "project_agent" } }),
+      task("filed"),
     ];
     const feed = { projects: [{ projectKey: PROJECT, name: "Build" }] };
-    const sections = backlogOf(issues, { feed, projectKey: PROJECT });
-    expect(sections.activeGroups.map((group) => [group.title, group.entries.map((entry) => [entry.issue.id, entry.holder, entry.columnName])])).toEqual([
+    const sections = backlogOf(tasks, { feed, projectKey: PROJECT });
+    expect(sections.activeGroups.map((group) => [group.title, group.entries.map((entry) => [entry.task.id, entry.holder, entry.columnName])])).toEqual([
       ["Assigned", [["agent", "Composer · Still review", "Backlog"], ["mine", "you", "Ready"], ["project", "Build", "Backlog"]]],
     ]);
     expect(rows(sections.backlog)).toEqual([["loose", "Ready"], ["filed", "Backlog"]]);
@@ -334,23 +334,23 @@ describe("Backlog", () => {
 
   it("orders unassigned rows most pressing first, preserving list order within a priority", () => {
     const mine = { assignee: { kind: "user" } };
-    const issues = [
-      issue("n9"), issue("l8", { priority: "low" }), issue("u7", { priority: "urgent" }), issue("h6", { priority: "high", ...mine }),
-      issue("m5", { priority: "medium" }), issue("h4", { priority: "high" }), issue("x3", { priority: "later" }),
-      issue("n2", mine), issue("u1", { priority: "urgent", ...mine }),
+    const tasks = [
+      task("n9"), task("l8", { priority: "low" }), task("u7", { priority: "urgent" }), task("h6", { priority: "high", ...mine }),
+      task("m5", { priority: "medium" }), task("h4", { priority: "high" }), task("x3", { priority: "later" }),
+      task("n2", mine), task("u1", { priority: "urgent", ...mine }),
     ];
-    expect(backlogOf(issues).backlog.map((entry) => entry.issue.id))
+    expect(backlogOf(tasks).backlog.map((entry) => entry.task.id))
       .toEqual(["u7", "h4", "m5", "l8", "n9", "x3"]);
   });
 
   it("names a column the way the cached columns do", () => {
     const columns = [{ id: "backlog", name: "Icebox" }, { id: "ready", name: "Up next" }];
-    expect(backlogOf([issue("x"), issue("y", { status: "ready" })], { columns }).backlog.map((entry) => entry.columnName))
+    expect(backlogOf([task("x"), task("y", { status: "ready" })], { columns }).backlog.map((entry) => entry.columnName))
       .toEqual(["Icebox", "Up next"]);
   });
 
   it("has no groups, including when empty", () => {
-    expect(backlogOf([issue("w", { assignee: { kind: "user" } })]).backlog).toEqual([]);
+    expect(backlogOf([task("w", { assignee: { kind: "user" } })]).backlog).toEqual([]);
     expect(backlogOf([]).backlogGroups).toBeUndefined();
   });
 });
@@ -360,20 +360,20 @@ describe("Active and unassigned Backlog", () => {
   const feed = { items: [{ projectKey: PROJECT, agents: [
     { id: "busy", working: true }, { id: "idle", working: false },
   ] }] };
-  const project = (issues, currentFeed = feed) => dashboardSections(issues, { feed: currentFeed, projectKey: PROJECT, nowMs: NOW });
-  const ids = (entries) => entries.map((entry) => entry.issue.id);
+  const project = (tasks, currentFeed = feed) => dashboardSections(tasks, { feed: currentFeed, projectKey: PROJECT, nowMs: NOW });
+  const ids = (entries) => entries.map((entry) => entry.task.id);
 
   it("puts a working agent's task in Working, including one in Ready", () => {
-    const task = issue("busy", { status: "ready", assignee: agent("busy") });
-    const sections = project([task]);
+    const held = task("busy", { status: "ready", assignee: agent("busy") });
+    const sections = project([held]);
     expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([["Working", ["busy"]]]);
-    expect(sections.active[0]).toMatchObject({ issue: task, working: true });
+    expect(sections.active[0]).toMatchObject({ task: held, working: true });
     expect(sections.backlog).toEqual([]);
   });
 
-  it("puts idle agent and user tasks in Assigned, including an issue in review", () => {
-    const idle = issue("idle", { status: "in_review", assignee: agent("idle") });
-    const mine = issue("mine", { status: "ready", assignee: { kind: "user" } });
+  it("puts idle agent and user tasks in Assigned, including a task in review", () => {
+    const idle = task("idle", { status: "in_review", assignee: agent("idle") });
+    const mine = task("mine", { status: "ready", assignee: { kind: "user" } });
     const sections = project([idle, mine]);
     expect(sections.activeGroups.map((group) => [group.title, ids(group.entries)])).toEqual([["Assigned", ["idle", "mine"]]]);
     expect(sections.active.map(({ holder, columnName }) => [holder, columnName])).toEqual([
@@ -383,23 +383,23 @@ describe("Active and unassigned Backlog", () => {
   });
 
   it("keeps an unheld Ready task in a flat Backlog with its column", () => {
-    const ready = issue("ready", { status: "ready" });
+    const ready = task("ready", { status: "ready" });
     const sections = project([ready]);
-    expect(sections.backlog).toEqual([{ issue: ready, columnName: "Ready" }]);
+    expect(sections.backlog).toEqual([{ task: ready, columnName: "Ready" }]);
     expect(sections.active).toEqual([]);
     expect(sections.backlogGroups).toBeUndefined();
   });
 
   it("shows every open task exactly once across Active and Backlog", () => {
     const tasks = [
-      issue("busy", { assignee: agent("busy") }),
-      issue("idle", { status: "in_progress", assignee: agent("idle") }),
-      issue("unknown-agent", { assignee: agent("gone") }),
-      issue("mine", { status: "ready", assignee: { kind: "user" } }),
-      issue("open-review", { status: "in_review" }),
-      issue("open-ready", { status: "ready" }),
-      issue("closed", { state: "closed" }),
-      issue("done", { status: "done" }),
+      task("busy", { assignee: agent("busy") }),
+      task("idle", { status: "in_progress", assignee: agent("idle") }),
+      task("unknown-agent", { assignee: agent("gone") }),
+      task("mine", { status: "ready", assignee: { kind: "user" } }),
+      task("open-review", { status: "in_review" }),
+      task("open-ready", { status: "ready" }),
+      task("closed", { state: "closed" }),
+      task("done", { status: "done" }),
     ];
     const sections = project(tasks);
     expect([...ids(sections.active), ...ids(sections.backlog)].sort()).toEqual([
@@ -411,21 +411,21 @@ describe("Active and unassigned Backlog", () => {
   });
 
   it("moves an agent task between groups as the cached feed working bit changes", () => {
-    const task = issue("moving", { assignee: agent("busy") });
-    expect(project([task]).activeGroups[0].title).toBe("Working");
+    const held = task("moving", { assignee: agent("busy") });
+    expect(project([held]).activeGroups[0].title).toBe("Working");
     const stopped = { items: [{ projectKey: PROJECT, agents: [{ id: "busy", working: false }] }] };
-    expect(project([task], stopped).activeGroups[0].title).toBe("Assigned");
-    expect(project([task]).activeGroups[0].title).toBe("Working");
+    expect(project([held], stopped).activeGroups[0].title).toBe("Assigned");
+    expect(project([held]).activeGroups[0].title).toBe("Working");
   });
 
   it("sorts each group by priority, then preserves list order", () => {
     const tasks = [
-      issue("idle-low", { priority: "low", assignee: agent("idle") }),
-      issue("busy-medium", { priority: "medium", assignee: agent("busy") }),
-      issue("idle-high-a", { priority: "high", assignee: agent("idle") }),
-      issue("busy-high", { priority: "high", assignee: agent("busy") }),
-      issue("idle-high-b", { priority: "high", assignee: { kind: "user" } }),
-      issue("ready-high", { priority: "high", status: "ready" }),
+      task("idle-low", { priority: "low", assignee: agent("idle") }),
+      task("busy-medium", { priority: "medium", assignee: agent("busy") }),
+      task("idle-high-a", { priority: "high", assignee: agent("idle") }),
+      task("busy-high", { priority: "high", assignee: agent("busy") }),
+      task("idle-high-b", { priority: "high", assignee: { kind: "user" } }),
+      task("ready-high", { priority: "high", status: "ready" }),
     ];
     const sections = project(tasks);
     expect(sections.activeGroups.map((group) => ids(group.entries))).toEqual([

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// A harness out of usage on a device (issue #58): what the bridge's board says,
+// A harness out of usage on a device (task #58): what the bridge's board says,
 // the words the banner wears as it counts down, the banner itself at the top of
 // a conversation.
 

@@ -2,7 +2,7 @@
 // #62. The maintainer, on their phone with an agent's chat open on a workspace
 // page: "On mobile, where the chat takes up the full width of the viewport,
 // tapping a tab should collapse the chat. So if I'm looking at this chat and
-// then tap 'Issues' it should collapse so I can see the issues." And then:
+// then tap 'Tasks' it should collapse so I can see the tasks." And then:
 // "That needs to go for deep links too. Very confusing that tapping them
 // doesn't collapse the chat."
 //
@@ -39,7 +39,7 @@ const DESKTOP = 1400;
 const widthIs = (px) => Object.defineProperty(window, "innerWidth", { configurable: true, value: px });
 
 const WORKSPACE = { name: "workspace", deviceId: "dev-1", projectId: "p-1", workspaceId: "w-1" };
-const ISSUE = { name: "trackerIssue", deviceId: "dev-1", projectId: "p-1", issueId: "i-1" };
+const TASK = { name: "trackerTask", deviceId: "dev-1", projectId: "p-1", taskId: "i-1" };
 
 beforeEach(() => {
   localStorage.clear();
@@ -71,24 +71,24 @@ describe("a navigation with the chat open", () => {
     widthIs(PHONE);
     standShell(WORKSPACE);
     expect(collapse).not.toHaveBeenCalled(); // arriving is not moving
-    standShell(ISSUE);
+    standShell(TASK);
     expect(collapse).toHaveBeenCalledTimes(1);
   });
 
   it("leaves it alone on a desktop, where it covers nothing", () => {
     widthIs(DESKTOP);
     standShell(WORKSPACE);
-    standShell(ISSUE);
+    standShell(TASK);
     expect(collapse).not.toHaveBeenCalled();
   });
 
-  // A deep link out of the conversation — an issue line, an action line, a
+  // A deep link out of the conversation — a task line, an action line, a
   // link the markdown renderer produced. The rule is at the route change, so a
   // link nobody thought of behaves like the rest.
   it("puts it away for a deep link, not only a tab", () => {
     widthIs(PHONE);
     standShell(WORKSPACE);
-    standShell({ ...ISSUE, issueId: "i-9" });
+    standShell({ ...TASK, taskId: "i-9" });
     expect(collapse).toHaveBeenCalledTimes(1);
   });
 

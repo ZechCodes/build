@@ -151,7 +151,7 @@ export function commentTrayHtml(comments) {
     <div class="cstrayfoot"><span class="hint">${count}</span><button class="btn mini cscancel">Clear</button></div></div>`;
 }
 
-/** The issue doc's tray: the same pending rows, and the surface's own note box
+/** The task doc's tray: the same pending rows, and the surface's own note box
  *  and actionbar under them.
  *
  *  A doc is read top to bottom once, not scrolled through a hundred times, so

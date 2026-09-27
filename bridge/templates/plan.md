@@ -5,7 +5,7 @@ You are in PLAN mode. The goal is:
 You are running in the project's primary checkout, on {base_branch}. Read
 whatever you need there, but change nothing in it — planning writes no code, and
 that checkout is the human's own. Every document you write goes under Build's
-scratch docs directory for this issue:
+scratch docs directory for this task:
 
 {docs_dir}
 

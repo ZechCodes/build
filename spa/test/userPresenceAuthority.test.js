@@ -16,7 +16,7 @@ const modules = { openSession, adoptDeviceConnection, greetLiveBridge };
 const flush = async () => {
   for (let i = 0; i < 12; i++) await new Promise((done) => setTimeout(done, 0));
 };
-const compatible = { api_version: SUPPORTED_API, capabilities: ["issues.doneSinceLeft"] };
+const compatible = { api_version: SUPPORTED_API, capabilities: ["tasks.doneSinceLeft"] };
 const sessionAnswer = { user_session: {
   session_started_ms: 50, last_activity_ms: 50, previous_session_ended_ms: 10, gap_ms: 21_600_000, now_ms: 50,
 } };

@@ -1,8 +1,8 @@
-//! The tracker's verbs, through the wire the browser calls (spec: Issues).
+//! The tracker's verbs, through the wire the browser calls (spec: Tasks).
 //!
-//! The scope rules and the refusals are the point: an issue belongs to one
+//! The scope rules and the refusals are the point: a task belongs to one
 //! project, a link names something of that project, and a typed reference is
-//! fenced by what the issue is about.
+//! fenced by what the task is about.
 
 use super::project_agent::{added_project, rooted, workspace};
 use super::*;
@@ -53,15 +53,15 @@ pub(super) fn tracked_with_origin(state_root: &Path) -> (AppState, String) {
 
 pub(super) fn filed(state: &mut AppState, project_id: &str, title: &str) -> Value {
     let created = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({ "project_id": project_id, "title": title }),
     ));
     assert_eq!(created["ok"], true, "{created:?}");
-    created["result"]["issue"].clone()
+    created["result"]["task"].clone()
 }
 
-fn issue_id(issue: &Value) -> String {
-    issue["id"].as_str().unwrap().to_string()
+fn task_id(task: &Value) -> String {
+    task["id"].as_str().unwrap().to_string()
 }
 
 /// The refusal one call answered with, as the client reads it.
@@ -71,29 +71,29 @@ pub(super) fn refused(state: &mut AppState, method: &str, params: Value) -> Stri
     answered["error"].as_str().unwrap_or_default().to_string()
 }
 
-/// A filed issue carries a per-project number, starts in Backlog, is open,
+/// A filed task carries a per-project number, starts in Backlog, is open,
 /// belongs to the user, and says so on the wire as a `project_id` — never as
 /// the path the record is keyed by.
 #[test]
-fn a_filed_issue_is_numbered_open_and_in_the_first_column() {
+fn a_filed_task_is_numbered_open_and_in_the_first_column() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
 
-    let issue = filed(&mut state, &project_id, "Kanban drag does not persist");
-    assert_eq!(issue["number"], 1);
-    assert_eq!(issue["state"], "open");
-    assert_eq!(issue["status"], "backlog");
-    assert_eq!(issue["priority"], "none");
-    assert_eq!(issue["assignee"], Value::Null);
-    assert_eq!(issue["closed_at"], Value::Null);
-    assert_eq!(issue["created_by"], json!({ "kind": "user" }));
-    assert_eq!(issue["project_id"], project_id.as_str());
+    let task = filed(&mut state, &project_id, "Kanban drag does not persist");
+    assert_eq!(task["number"], 1);
+    assert_eq!(task["state"], "open");
+    assert_eq!(task["status"], "backlog");
+    assert_eq!(task["priority"], "none");
+    assert_eq!(task["assignee"], Value::Null);
+    assert_eq!(task["closed_at"], Value::Null);
+    assert_eq!(task["created_by"], json!({ "kind": "user" }));
+    assert_eq!(task["project_id"], project_id.as_str());
     assert!(
-        issue.get("project_path").is_none(),
-        "the record's key never reaches the wire: {issue:?}"
+        task.get("project_path").is_none(),
+        "the record's key never reaches the wire: {task:?}"
     );
-    assert!(issue["id"].as_str().unwrap().starts_with("issue-"));
+    assert!(task["id"].as_str().unwrap().starts_with("task-"));
 
     let second = filed(&mut state, &project_id, "second");
     assert_eq!(second["number"], 2);
@@ -102,13 +102,13 @@ fn a_filed_issue_is_numbered_open_and_in_the_first_column() {
 /// The timeline is the spread form — the record itself with one more key
 /// naming which it is — ascending, with the `created` event first.
 #[test]
-fn a_new_issues_timeline_opens_with_the_event_that_created_it() {
+fn a_new_tasks_timeline_opens_with_the_event_that_created_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "one");
+    let task = filed(&mut state, &project_id, "one");
 
-    let read = state.handle(req("issues.get", json!({ "issue_id": issue_id(&issue) })));
+    let read = state.handle(req("tasks.get", json!({ "task_id": task_id(&task) })));
     assert_eq!(read["ok"], true, "{read:?}");
     let timeline = read["result"]["timeline"].as_array().unwrap();
     assert_eq!(timeline.len(), 1, "{timeline:?}");
@@ -116,11 +116,11 @@ fn a_new_issues_timeline_opens_with_the_event_that_created_it() {
     assert_eq!(timeline[0]["kind"], "created");
     assert_eq!(timeline[0]["actor"], json!({ "kind": "user" }));
     assert!(
-        timeline[0]["id"].as_str().unwrap().starts_with("ie-"),
+        timeline[0]["id"].as_str().unwrap().starts_with("te-"),
         "the entry carries the record's own fields: {:?}",
         timeline[0]
     );
-    assert_eq!(read["result"]["issue"]["id"], issue["id"]);
+    assert_eq!(read["result"]["task"]["id"], task["id"]);
 }
 
 /// An update applies only what it names, and writes an event only for the
@@ -130,18 +130,18 @@ fn an_update_writes_events_for_the_moves_and_not_for_the_wording() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "one");
-    let id = issue_id(&issue);
+    let task = filed(&mut state, &project_id, "one");
+    let id = task_id(&task);
 
     let worded = state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "title": "one, renamed", "body": "why", "priority": "high" }),
+        "tasks.update",
+        json!({ "task_id": id, "title": "one, renamed", "body": "why", "priority": "high" }),
     ));
     assert_eq!(worded["ok"], true, "{worded:?}");
-    assert_eq!(worded["result"]["issue"]["title"], "one, renamed");
-    assert_eq!(worded["result"]["issue"]["priority"], "high");
+    assert_eq!(worded["result"]["task"]["title"], "one, renamed");
+    assert_eq!(worded["result"]["task"]["priority"], "high");
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+        state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["timeline"]
             .as_array()
             .unwrap()
             .len(),
@@ -150,15 +150,15 @@ fn an_update_writes_events_for_the_moves_and_not_for_the_wording() {
     );
 
     let moved = state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "In review", "labels": ["bug"] }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "In review", "labels": ["bug"] }),
     ));
     assert_eq!(moved["ok"], true, "{moved:?}");
     assert_eq!(
-        moved["result"]["issue"]["status"], "in_review",
+        moved["result"]["task"]["status"], "in_review",
         "a display name normalizes to its slug"
     );
-    let timeline = state.handle(req("issues.get", json!({ "issue_id": id })));
+    let timeline = state.handle(req("tasks.get", json!({ "task_id": id })));
     let kinds: Vec<&str> = timeline["result"]["timeline"]
         .as_array()
         .unwrap()
@@ -169,11 +169,11 @@ fn an_update_writes_events_for_the_moves_and_not_for_the_wording() {
 
     // Moving where it already is changes nothing and says nothing.
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "in_review" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "in_review" }),
     ));
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+        state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["timeline"]
             .as_array()
             .unwrap()
             .len(),
@@ -189,57 +189,53 @@ fn closing_does_not_move_the_card_and_moving_to_done_does_not_close_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     let done = state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "done" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "done" }),
     ));
-    assert_eq!(done["result"]["issue"]["state"], "open", "still open");
+    assert_eq!(done["result"]["task"]["state"], "open", "still open");
 
     let closed = state.handle(req(
-        "issues.close",
-        json!({ "issue_id": id, "reason": "shipped" }),
+        "tasks.close",
+        json!({ "task_id": id, "reason": "shipped" }),
     ));
     assert_eq!(closed["ok"], true, "{closed:?}");
-    assert_eq!(closed["result"]["issue"]["state"], "closed");
+    assert_eq!(closed["result"]["task"]["state"], "closed");
     assert_eq!(
-        closed["result"]["issue"]["status"], "done",
+        closed["result"]["task"]["status"], "done",
         "left where it was"
     );
-    assert!(closed["result"]["issue"]["closed_at"].is_string());
+    assert!(closed["result"]["task"]["closed_at"].is_string());
 
-    assert!(
-        refused(&mut state, "issues.close", json!({ "issue_id": id })).contains("already closed")
-    );
+    assert!(refused(&mut state, "tasks.close", json!({ "task_id": id })).contains("already closed"));
 
-    let reopened = state.handle(req("issues.reopen", json!({ "issue_id": id })));
-    assert_eq!(reopened["result"]["issue"]["state"], "open");
-    assert_eq!(reopened["result"]["issue"]["closed_at"], Value::Null);
-    assert!(
-        refused(&mut state, "issues.reopen", json!({ "issue_id": id })).contains("already open")
-    );
+    let reopened = state.handle(req("tasks.reopen", json!({ "task_id": id })));
+    assert_eq!(reopened["result"]["task"]["state"], "open");
+    assert_eq!(reopened["result"]["task"]["closed_at"], Value::Null);
+    assert!(refused(&mut state, "tasks.reopen", json!({ "task_id": id })).contains("already open"));
 }
 
-/// Closing an issue that is already closed is a conflict rather than a
+/// Closing a task that is already closed is a conflict rather than a
 /// no-op, and the code says so.
 #[test]
 fn a_refused_state_change_is_a_conflict_and_not_an_internal_error() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
-    state.handle(req("issues.close", json!({ "issue_id": id })));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
+    state.handle(req("tasks.close", json!({ "task_id": id })));
 
-    let answered = state.handle(req("issues.close", json!({ "issue_id": id })));
+    let answered = state.handle(req("tasks.close", json!({ "task_id": id })));
     assert_eq!(answered["error_code"], "conflict", "{answered:?}");
 
-    let unknown = state.handle(req("issues.get", json!({ "issue_id": "issue-nobody" })));
+    let unknown = state.handle(req("tasks.get", json!({ "task_id": "task-nobody" })));
     assert_eq!(unknown["error_code"], "not_found", "{unknown:?}");
 
     let bad_column = state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "icebox" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "icebox" }),
     ));
     assert_eq!(bad_column["error_code"], "invalid_params", "{bad_column:?}");
     assert!(
@@ -257,85 +253,85 @@ fn the_list_is_one_projects_newest_first_and_every_filter_narrows_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let first = issue_id(&filed(&mut state, &project_id, "first"));
-    let second = issue_id(&filed(&mut state, &project_id, "second"));
+    let first = task_id(&filed(&mut state, &project_id, "first"));
+    let second = task_id(&filed(&mut state, &project_id, "second"));
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": first, "labels": ["bug"], "status": "ready" }),
+        "tasks.update",
+        json!({ "task_id": first, "labels": ["bug"], "status": "ready" }),
     ));
-    state.handle(req("issues.close", json!({ "issue_id": second })));
+    state.handle(req("tasks.close", json!({ "task_id": second })));
 
     let numbers = |answered: &Value| -> Vec<u64> {
-        answered["result"]["issues"]
+        answered["result"]["tasks"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|issue| issue["number"].as_u64().unwrap())
+            .map(|task| task["number"].as_u64().unwrap())
             .collect()
     };
 
-    let all = state.handle(req("issues.list", json!({ "project_id": project_id })));
+    let all = state.handle(req("tasks.list", json!({ "project_id": project_id })));
     assert_eq!(numbers(&all), vec![2, 1], "newest first");
 
     let open = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "state": "open" }),
     ));
     assert_eq!(numbers(&open), vec![1]);
 
     let ready = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "status": "Ready" }),
     ));
     assert_eq!(numbers(&ready), vec![1], "a display name filters too");
 
     let labelled = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "label": "BUG" }),
     ));
     assert_eq!(numbers(&labelled), vec![1], "labels match as they dedupe");
 
     let unassigned = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "assignee": "none" }),
     ));
     assert_eq!(numbers(&unassigned), vec![2, 1]);
     let held = state.handle(req(
-        "issues.list",
+        "tasks.list",
         json!({ "project_id": project_id, "assignee": "any" }),
     ));
     assert!(numbers(&held).is_empty(), "nobody holds one yet");
 }
 
-/// A link names something of the issue's own project, and nothing else.
+/// A link names something of the task's own project, and nothing else.
 #[test]
-fn a_link_must_name_something_of_this_issues_project() {
+fn a_link_must_name_something_of_this_tasks_project() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     let ws = workspace(&mut state, &project_id, "here");
 
     let linked = state.handle(req(
-        "issues.link",
-        json!({ "issue_id": id, "workspace_id": ws, "branch": "build/x" }),
+        "tasks.link",
+        json!({ "task_id": id, "workspace_id": ws, "branch": "build/x" }),
     ));
     assert_eq!(linked["ok"], true, "{linked:?}");
     assert_eq!(
-        linked["result"]["issue"]["links"]["workspace_ids"],
+        linked["result"]["task"]["links"]["workspace_ids"],
         json!([ws])
     );
     assert_eq!(
-        linked["result"]["issue"]["links"]["branches"],
+        linked["result"]["task"]["links"]["branches"],
         json!(["build/x"])
     );
 
     // Linking the same workspace again adds nothing and says nothing.
     state.handle(req(
-        "issues.link",
-        json!({ "issue_id": id, "workspace_id": ws }),
+        "tasks.link",
+        json!({ "task_id": id, "workspace_id": ws }),
     ));
-    let kinds: Vec<String> = state.handle(req("issues.get", json!({ "issue_id": id })))["result"]
+    let kinds: Vec<String> = state.handle(req("tasks.get", json!({ "task_id": id })))["result"]
         ["timeline"]
         .as_array()
         .unwrap()
@@ -346,82 +342,81 @@ fn a_link_must_name_something_of_this_issues_project() {
 
     assert!(refused(
         &mut state,
-        "issues.link",
-        json!({ "issue_id": id, "workspace_id": "ws-nobody" })
+        "tasks.link",
+        json!({ "task_id": id, "workspace_id": "ws-nobody" })
     )
     .contains("unknown workspace_id"));
     assert!(refused(
         &mut state,
-        "issues.link",
-        json!({ "issue_id": id, "commit": "nothex" })
+        "tasks.link",
+        json!({ "task_id": id, "commit": "nothex" })
     )
     .contains("commit link is invalid"));
     assert!(
-        refused(&mut state, "issues.link", json!({ "issue_id": id }))
-            .contains("name a workspace_id")
+        refused(&mut state, "tasks.link", json!({ "task_id": id })).contains("name a workspace_id")
     );
 }
 
-/// A parent is one issue of the same project, never itself, and never a link
+/// A parent is one task of the same project, never itself, and never a link
 /// that closes a loop.
 #[test]
 fn a_parent_link_refuses_itself_and_refuses_a_cycle() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let parent = issue_id(&filed(&mut state, &project_id, "parent"));
-    let child = issue_id(&filed(&mut state, &project_id, "child"));
+    let parent = task_id(&filed(&mut state, &project_id, "parent"));
+    let child = task_id(&filed(&mut state, &project_id, "child"));
 
     assert!(refused(
         &mut state,
-        "issues.link",
-        json!({ "issue_id": child, "parent_issue_id": child })
+        "tasks.link",
+        json!({ "task_id": child, "parent_task_id": child })
     )
     .contains("its own parent"));
 
     let linked = state.handle(req(
-        "issues.link",
-        json!({ "issue_id": child, "parent_issue_id": parent }),
+        "tasks.link",
+        json!({ "task_id": child, "parent_task_id": parent }),
     ));
     assert_eq!(linked["ok"], true, "{linked:?}");
     assert_eq!(
-        linked["result"]["issue"]["links"]["parent_issue_id"],
+        linked["result"]["task"]["links"]["parent_task_id"],
         parent.as_str()
     );
 
     let cycle = refused(
         &mut state,
-        "issues.link",
-        json!({ "issue_id": parent, "parent_issue_id": child }),
+        "tasks.link",
+        json!({ "task_id": parent, "parent_task_id": child }),
     );
     assert!(cycle.contains("close a loop"), "{cycle}");
 }
 
 /// A comment's typed references are fenced twice: by shape, then by what the
-/// issue is about.
+/// task is about.
 #[test]
-fn a_comments_references_are_fenced_by_shape_and_then_by_the_issue() {
+fn a_comments_references_are_fenced_by_shape_and_then_by_the_task() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     // Shape: a path that climbs out of a checkout is refused wherever it
     // arrives, in the same words a thread message gets.
     let escaping = refused(
         &mut state,
-        "issues.comment",
-        json!({ "issue_id": id, "body": "look", "refs": [
+        "tasks.comment",
+        json!({ "task_id": id, "body": "look", "refs": [
             { "kind": "file", "path": "../../etc/passwd" }
         ]}),
     );
     assert!(escaping.contains("escapes the worktree"), "{escaping}");
 
-    // Ownership: a file path means nothing until the issue says which checkout.
+    // Ownership: a file path means nothing until the task says which checkout.
     let unrooted = refused(
         &mut state,
-        "issues.comment",
-        json!({ "issue_id": id, "body": "look", "refs": [
+        "tasks.comment",
+        json!({ "task_id": id, "body": "look", "refs": [
             { "kind": "file", "path": "bridge/src/app.rs" }
         ]}),
     );
@@ -429,12 +424,12 @@ fn a_comments_references_are_fenced_by_shape_and_then_by_the_issue() {
 
     let ws = workspace(&mut state, &project_id, "here");
     state.handle(req(
-        "issues.link",
-        json!({ "issue_id": id, "workspace_id": ws }),
+        "tasks.link",
+        json!({ "task_id": id, "workspace_id": ws }),
     ));
     let accepted = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "look", "refs": [
+        "tasks.comment",
+        json!({ "task_id": id, "body": "look", "refs": [
             { "kind": "file", "path": "bridge/src/app.rs", "line_start": 1, "line_end": 4 }
         ]}),
     ));
@@ -443,28 +438,28 @@ fn a_comments_references_are_fenced_by_shape_and_then_by_the_issue() {
         accepted["result"]["comment"]["author"],
         json!({ "kind": "user" })
     );
-    assert_eq!(accepted["result"]["comment"]["issue_id"], id.as_str());
+    assert_eq!(accepted["result"]["comment"]["task_id"], id.as_str());
 
-    // A commit has to be one the issue links.
+    // A commit has to be one the task links.
     let sha = "c8381faa9b1d4e6f2a0c7b5e3d8f1a2c4b6d8e0f";
     let stray = refused(
         &mut state,
-        "issues.comment",
-        json!({ "issue_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
     );
-    assert!(stray.contains("not one this issue links"), "{stray}");
-    state.handle(req("issues.link", json!({ "issue_id": id, "commit": sha })));
+    assert!(stray.contains("not one this task links"), "{stray}");
+    state.handle(req("tasks.link", json!({ "task_id": id, "commit": sha })));
     let now_known = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "at", "refs": [{ "kind": "commit", "sha": sha }] }),
     ));
     assert_eq!(now_known["ok"], true, "{now_known:?}");
 
     // The plan flow's kinds are refused outright: the tracker does not extend it.
     let plan_link = refused(
         &mut state,
-        "issues.comment",
-        json!({ "issue_id": id, "body": "stage", "refs": [
+        "tasks.comment",
+        json!({ "task_id": id, "body": "stage", "refs": [
             { "kind": "run", "run_id": "run-1" }
         ]}),
     );
@@ -478,17 +473,17 @@ fn a_refused_comment_writes_neither_the_comment_nor_an_event() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     refused(
         &mut state,
-        "issues.comment",
-        json!({ "issue_id": id, "body": "look", "refs": [
+        "tasks.comment",
+        json!({ "task_id": id, "body": "look", "refs": [
             { "kind": "file", "path": "../escape" }
         ]}),
     );
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": id })))["result"]["timeline"]
+        state.handle(req("tasks.get", json!({ "task_id": id })))["result"]["timeline"]
             .as_array()
             .unwrap()
             .len(),
@@ -498,7 +493,7 @@ fn a_refused_comment_writes_neither_the_comment_nor_an_event() {
 }
 
 /// Two projects on one device keep two trackers, and neither verb reaches the
-/// other's issues.
+/// other's tasks.
 #[test]
 fn two_projects_keep_two_trackers() {
     let tmp = tempfile::tempdir().unwrap();
@@ -514,18 +509,18 @@ fn two_projects_keep_two_trackers() {
     assert_eq!(here["number"], 1);
     assert_eq!(there["number"], 1, "each project counts from its own start");
 
-    let listed = state.handle(req("issues.list", json!({ "project_id": first })));
-    let ids: Vec<&str> = listed["result"]["issues"]
+    let listed = state.handle(req("tasks.list", json!({ "project_id": first })));
+    let ids: Vec<&str> = listed["result"]["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|issue| issue["id"].as_str().unwrap())
+        .map(|task| task["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec![here["id"].as_str().unwrap()]);
 
-    // An issue names its own project whichever project asked for the list.
+    // A task names its own project whichever project asked for the list.
     assert_eq!(
-        state.handle(req("issues.get", json!({ "issue_id": issue_id(&there) })))["result"]["issue"]
+        state.handle(req("tasks.get", json!({ "task_id": task_id(&there) })))["result"]["task"]
             ["project_id"],
         second.as_str()
     );
@@ -539,7 +534,7 @@ fn the_columns_are_the_boards_and_an_unknown_project_is_refused() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
 
-    let answered = state.handle(req("issues.columns", json!({ "project_id": project_id })));
+    let answered = state.handle(req("tasks.columns", json!({ "project_id": project_id })));
     let slugs: Vec<&str> = answered["result"]["columns"]
         .as_array()
         .unwrap()
@@ -554,14 +549,14 @@ fn the_columns_are_the_boards_and_an_unknown_project_is_refused() {
 
     assert!(refused(
         &mut state,
-        "issues.columns",
+        "tasks.columns",
         json!({ "project_id": "proj-nobody" })
     )
     .contains("unknown project_id"));
 }
 
-/// The tracker and the retired plan flow do not touch: filing an issue leaves
-/// the plan tables alone, and the retirement guard does not catch `issues.*`.
+/// The tracker and the retired plan flow do not touch: filing a task leaves
+/// the plan tables alone, and the retirement guard does not catch `tasks.*`.
 #[test]
 fn the_tracker_does_not_reach_the_retired_plan_flow() {
     let tmp = tempfile::tempdir().unwrap();
@@ -569,25 +564,25 @@ fn the_tracker_does_not_reach_the_retired_plan_flow() {
     let (_home, mut state, project_id) = tracked(&state_root);
     filed(&mut state, &project_id, "one");
 
-    let plans = state.handle(req("issue.list", json!({})));
+    let plans = state.handle(req("task.list", json!({})));
     assert_eq!(plans["ok"], true, "{plans:?}");
     assert!(
-        plans["result"]["issues"]
+        plans["result"]["tasks"]
             .as_array()
-            .map(|issues| issues.is_empty())
+            .map(|tasks| tasks.is_empty())
             .unwrap_or(true),
-        "a tracker issue is not a plan: {plans:?}"
+        "a tracker task is not a plan: {plans:?}"
     );
 
     // And the plan flow's own mutating verbs are still retired.
-    let retired = state.handle(req("issue.create", json!({ "goal": "x" })));
+    let retired = state.handle(req("task.create", json!({ "goal": "x" })));
     assert_eq!(retired["ok"], false, "{retired:?}");
 }
 
 // ------------------------------------------------- attachments (#57) ---
 //
-// Files filed WITH an issue. The bytes go up first and the issue names them,
-// exactly as a message's do — so a filed issue can never point at an upload
+// Files filed WITH a task. The bytes go up first and the task names them,
+// exactly as a message's do — so a filed task can never point at an upload
 // that failed halfway, and a file that will not land is refused on its own
 // rather than failing the filing.
 
@@ -599,7 +594,7 @@ pub(super) fn attached(
     bytes: &[u8],
 ) -> Value {
     let answered = state.handle(req(
-        "issues.attach",
+        "tasks.attach",
         json!({
             "project_id": project_id,
             "filename": filename,
@@ -613,7 +608,7 @@ pub(super) fn attached(
 /// The upload names the file, types it, sizes it, and puts it somewhere that
 /// exists — content-addressed, so the same bytes twice cost one copy.
 #[test]
-fn a_file_filed_with_an_issue_lands_named_typed_and_sized() {
+fn a_file_filed_with_a_task_lands_named_typed_and_sized() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -628,7 +623,7 @@ fn a_file_filed_with_an_issue_lands_named_typed_and_sized() {
         "the bytes are on disk before anything names them: {path}"
     );
 
-    // The same bytes again are the same leaf: one screenshot on three issues
+    // The same bytes again are the same leaf: one screenshot on three tasks
     // costs one copy.
     let again = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
     assert_eq!(again["path"], stored["path"]);
@@ -650,17 +645,17 @@ fn a_filename_that_means_a_path_is_flattened_to_a_leaf() {
     );
 }
 
-/// The issue carries what was filed with it, described from the bytes on disk
+/// The task carries what was filed with it, described from the bytes on disk
 /// rather than from what the client said about them.
 #[test]
-fn an_issue_carries_the_files_it_was_filed_with() {
+fn a_task_carries_the_files_it_was_filed_with() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
 
     let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
     let created = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({
             "project_id": project_id,
             "title": "Kanban drag does not persist",
@@ -668,9 +663,7 @@ fn an_issue_carries_the_files_it_was_filed_with() {
         }),
     ));
     assert_eq!(created["ok"], true, "{created:?}");
-    let files = created["result"]["issue"]["attachments"]
-        .as_array()
-        .unwrap();
+    let files = created["result"]["task"]["attachments"].as_array().unwrap();
     assert_eq!(files.len(), 1, "{created:?}");
     assert_eq!(files[0]["name"], "board.png");
     assert_eq!(files[0]["mime"], "image/png");
@@ -678,39 +671,39 @@ fn an_issue_carries_the_files_it_was_filed_with() {
 
     // And it is still there on the next read — the record holds it, not the call.
     let read = state.handle(req(
-        "issues.get",
-        json!({ "issue_id": created["result"]["issue"]["id"] }),
+        "tasks.get",
+        json!({ "task_id": created["result"]["task"]["id"] }),
     ));
-    assert_eq!(read["result"]["issue"]["attachments"], json!(files.clone()));
+    assert_eq!(read["result"]["task"]["attachments"], json!(files.clone()));
 }
 
-/// An issue filed with nothing says so with an empty list rather than with a
+/// A task filed with nothing says so with an empty list rather than with a
 /// missing key: a client that sent files and got no key back is looking at a
 /// bridge that dropped them.
 #[test]
-fn an_issue_with_no_files_answers_an_empty_list() {
+fn a_task_with_no_files_answers_an_empty_list() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
 
-    let issue = filed(&mut state, &project_id, "one");
-    assert_eq!(issue["attachments"], json!([]));
+    let task = filed(&mut state, &project_id, "one");
+    assert_eq!(task["attachments"], json!([]));
 }
 
-/// A comment carries them too, which is how a file reaches an issue that was
+/// A comment carries them too, which is how a file reaches a task that was
 /// filed before anybody had it.
 #[test]
 fn a_comment_carries_the_files_said_with_it() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "one");
+    let task = filed(&mut state, &project_id, "one");
 
     let stored = attached(&mut state, &project_id, "trace.log", b"thread panicked");
     let said = state.handle(req(
-        "issues.comment",
+        "tasks.comment",
         json!({
-            "issue_id": issue["id"],
+            "task_id": task["id"],
             "body": "Here is the trace.",
             "attachments": [{ "path": stored["path"] }],
         }),
@@ -721,13 +714,13 @@ fn a_comment_carries_the_files_said_with_it() {
     assert_eq!(files[0]["size"], 15);
     // A caller that said no name gets the STORED leaf, hash and all — the same
     // fallback `thread.post` makes, kept the same on purpose. Every composer
-    // sends the name `issues.attach` answered, so this is the shape of a caller
+    // sends the name `tasks.attach` answered, so this is the shape of a caller
     // that passed a bare path.
     let named = files[0]["name"].as_str().unwrap();
     assert!(named.ends_with("-trace.log"), "{named}");
 
     // And on the timeline, where a reader meets it.
-    let read = state.handle(req("issues.get", json!({ "issue_id": issue["id"] })));
+    let read = state.handle(req("tasks.get", json!({ "task_id": task["id"] })));
     let commented = read["result"]["timeline"]
         .as_array()
         .unwrap()
@@ -739,25 +732,25 @@ fn a_comment_carries_the_files_said_with_it() {
 
 /// The bytes come back to a surface that cannot reach the disk.
 #[test]
-fn an_issues_attachment_reads_back_through_the_issue() {
+fn a_tasks_attachment_reads_back_through_the_task() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
 
     let stored = attached(&mut state, &project_id, "board.png", b"\x89PNG\r\n\x1a\nxx");
     let created = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({
             "project_id": project_id,
             "title": "one",
             "attachments": [{ "path": stored["path"] }],
         }),
     ));
-    let issue_id = created["result"]["issue"]["id"].clone();
+    let task_id = created["result"]["task"]["id"].clone();
 
     let read = state.handle(req(
-        "issues.attachment",
-        json!({ "issue_id": issue_id, "path": stored["path"] }),
+        "tasks.attachment",
+        json!({ "task_id": task_id, "path": stored["path"] }),
     ));
     assert_eq!(read["ok"], true, "{read:?}");
     assert_eq!(read["result"]["mime"], "image/png");
@@ -780,7 +773,7 @@ fn a_file_over_the_cap_is_refused_with_its_size() {
     let huge = vec![0u8; (crate::app::ATTACHMENT_MAX_BYTES + 1) as usize];
     let refusal = refused(
         &mut state,
-        "issues.attach",
+        "tasks.attach",
         json!({
             "project_id": project_id,
             "filename": "huge.bin",
@@ -791,7 +784,7 @@ fn a_file_over_the_cap_is_refused_with_its_size() {
 
     let empty = refused(
         &mut state,
-        "issues.attach",
+        "tasks.attach",
         json!({ "project_id": project_id, "filename": "nothing.txt", "content_b64": "" }),
     );
     assert!(empty.contains("attachment is empty"), "{empty}");
@@ -807,16 +800,16 @@ fn a_path_outside_the_store_is_not_an_attachment() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let issue = filed(&mut state, &project_id, "one");
+    let task = filed(&mut state, &project_id, "one");
 
     let outsider = state_root.join("secret.txt");
     std::fs::write(&outsider, b"not yours").unwrap();
 
-    // Filing with it refuses the whole call rather than filing an issue whose
+    // Filing with it refuses the whole call rather than filing a task whose
     // reason for being filed is missing from it.
     let refusal = refused(
         &mut state,
-        "issues.create",
+        "tasks.create",
         json!({
             "project_id": project_id,
             "title": "sneaky",
@@ -832,8 +825,8 @@ fn a_path_outside_the_store_is_not_an_attachment() {
     ] {
         let refusal = refused(
             &mut state,
-            "issues.attachment",
-            json!({ "issue_id": issue["id"], "path": path }),
+            "tasks.attachment",
+            json!({ "task_id": task["id"], "path": path }),
         );
         assert!(refusal.contains("not an attachment"), "{path}: {refusal}");
     }
@@ -855,7 +848,7 @@ fn a_worktree_relative_path_resolves_to_the_durable_copy() {
         .to_string();
 
     let created = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({
             "project_id": project_id,
             "title": "one",
@@ -863,9 +856,7 @@ fn a_worktree_relative_path_resolves_to_the_durable_copy() {
         }),
     ));
     assert_eq!(created["ok"], true, "{created:?}");
-    let files = created["result"]["issue"]["attachments"]
-        .as_array()
-        .unwrap();
+    let files = created["result"]["task"]["attachments"].as_array().unwrap();
     assert_eq!(files.len(), 1, "{created:?}");
     assert_eq!(files[0]["size"], 10);
 }

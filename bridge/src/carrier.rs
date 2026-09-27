@@ -796,7 +796,7 @@ impl FrameIntake {
         // candidate is answered from the peers alone, off the app lock
         // (`app/rpc.rs`), so nothing it could wait for in the queue is a wait
         // worth having — and an ICE restart queued behind a stranger's
-        // `issues.list` was a phone giving up on the device (issue #128).
+        // `tasks.list` was a phone giving up on the device (task #128).
         if writes_an_attachment(&frame) || is_signaling(&frame) {
             self.answer_without_queueing(sender, frame);
             return Ok(());
@@ -1990,7 +1990,7 @@ mod intake_tests {
         );
     }
 
-    /// The round-2 review's reproduction (issue #128), at the wire: a wire
+    /// The round-2 review's reproduction (task #128), at the wire: a wire
     /// closes while its admitter waits for a queue slot with a `board.list`
     /// in hand, the session lives on over a second wire, and that wire's own
     /// `board.list` must be answered — not folded into what the closed wire

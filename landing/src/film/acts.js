@@ -210,7 +210,7 @@ export function fullPose(pose = {}) {
 export const SCREEN_CUES = Object.freeze({
   laptop: [
     [at(1, 0), "ui10-editor-macbook"],
-    [at(3, 0), "ui12-issues-macbook"],
+    [at(3, 0), "ui12-tasks-macbook"],
     [at(4, 0), "ui13-team-macbook"],
     [at(5, 0), "ui16-builder-macbook"],
     [at(6, 0), "ui14-git-macbook"],

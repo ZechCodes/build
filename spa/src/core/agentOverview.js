@@ -14,8 +14,8 @@ import { EVENT_META } from "./threadEvents.js";
 import { unreadReasonText } from "./inbox.js";
 import { esc } from "./text.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
-import { issuesAddress } from "./trackerCache.js";
-import { assignedTo, isFinished } from "./trackerAgentIssues.js";
+import { tasksAddress } from "./trackerCache.js";
+import { assignedTo, isFinished } from "./trackerAgentTasks.js";
 import { plainPreview } from "./previewText.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
 
@@ -201,19 +201,19 @@ export function sectionRank(section) {
 const inScope = (scope, workspaceId) => scope?.kind !== "workspace" || workspaceId === scope.workspaceId;
 const rowsInScope = (rows, scope) => rows.filter((row) => row.section !== "workspace" || inScope(scope, row.workspaceId));
 
-/** The open issues that stand on a workspace: linked to it, or held by one of
+/** The open tasks that stand on a workspace: linked to it, or held by one of
  *  its agents; the one touched last first. Finished work is not an overview's
  *  business. */
-export function workspaceIssues(issues, workspaceId, agentIds = []) {
-  return (issues || []).filter((issue) => !isFinished(issue)
-    && ((issue?.links?.workspace_ids || []).includes(workspaceId) || agentIds.some((agentId) => assignedTo(issue, agentId))))
+export function workspaceTasks(tasks, workspaceId, agentIds = []) {
+  return (tasks || []).filter((task) => !isFinished(task)
+    && ((task?.links?.workspace_ids || []).includes(workspaceId) || agentIds.some((agentId) => assignedTo(task, agentId))))
     .sort((one, other) => Date.parse(other.updated_at || "") - Date.parse(one.updated_at || "") || (other.number || 0) - (one.number || 0));
 }
 
 /** Sections in reading order: the project's agents first, then by rank. Every
  *  workspace named gets its section, agents or none, so an empty one still has
  *  its way in and its +; the quiet ones go last. */
-function overviewSections(rows, showProjectAgents, workspaces, issues) {
+function overviewSections(rows, showProjectAgents, workspaces, tasks) {
   const sections = new Map();
   if (showProjectAgents) sections.set("project", { section: "project", name: "Project agents", workspaceId: "", rows: [] });
   for (const { workspaceId, name } of workspaces) {
@@ -225,8 +225,8 @@ function overviewSections(rows, showProjectAgents, workspaces, issues) {
     sections.get(key).rows.push(row);
   }
   for (const section of sections.values()) {
-    section.issues = section.section === "workspace"
-      ? workspaceIssues(issues, section.workspaceId, section.rows.map((row) => row.id)) : [];
+    section.tasks = section.section === "workspace"
+      ? workspaceTasks(tasks, section.workspaceId, section.rows.map((row) => row.id)) : [];
   }
   return [...sections.values()].sort((one, other) => {
     if (one.section === "project") return -1;
@@ -243,13 +243,13 @@ const addSlotHtml = (section) => (section.section === "workspace" ? addButtonHtm
 
 const seeAllHtml = (section, count) => `<button type="button" class="rail-overview-see-all" data-overview-scope="${esc(section.workspaceId)}" aria-label="See all ${count} agents in ${esc(section.name)}">See all ${count}</button>`;
 
-/** The issue a workspace is for, as its heading wears it: the number and the
+/** The task a workspace is for, as its heading wears it: the number and the
  *  title, and how many more stand on it. */
-const issueHtml = (issues) => {
-  if (!issues.length) return "";
-  const [first, ...rest] = issues;
-  const title = issues.map((issue) => `#${issue.number} ${issue.title || ""}`.trim()).join("\n");
-  return `<span class="rail-overview-issue" title="${esc(title)}"><span class="rail-overview-issue-number">#${esc(String(first.number))}</span><span class="rail-overview-issue-title">${esc(first.title || "")}</span>${rest.length ? `<span class="rail-overview-issue-more">+${rest.length}</span>` : ""}</span>`;
+const taskHtml = (tasks) => {
+  if (!tasks.length) return "";
+  const [first, ...rest] = tasks;
+  const title = tasks.map((task) => `#${task.number} ${task.title || ""}`.trim()).join("\n");
+  return `<span class="rail-overview-task" title="${esc(title)}"><span class="rail-overview-task-number">#${esc(String(first.number))}</span><span class="rail-overview-task-title">${esc(first.title || "")}</span>${rest.length ? `<span class="rail-overview-task-more">+${rest.length}</span>` : ""}</span>`;
 };
 
 /** The working dot, always drawn (#192): the pulse in the accent while any
@@ -287,7 +287,7 @@ function sectionHtml(section, projectScope) {
   const more = listed.length < sorted.length ? seeAllHtml(section, sorted.length) : "";
   const classes = ["rail-overview-section", section.rows.length ? "" : "rail-overview-section-empty"].filter(Boolean).join(" ");
   return `<section class="${classes}" aria-label="${esc(section.name)}" data-rank="${sectionRank(section)}">
-    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${issueHtml(section.issues || [])}<span class="rail-overview-sum">${summaryHtml(section)}</span>${addSlotHtml(section)}</div>
+    <div class="rail-overview-section-head">${sectionTitleHtml(section, capped)}${taskHtml(section.tasks || [])}<span class="rail-overview-sum">${summaryHtml(section)}</span>${addSlotHtml(section)}</div>
     ${listed.map(rowHtml).join("")}${more}</section>`;
 }
 
@@ -307,14 +307,14 @@ export function overviewAddFor(target) {
 /** `scope` is the rail's overview scope: `{ kind: "project" }` shows every
  *  workspace, each capped and opening its own overview; `{ kind: "workspace",
  *  workspaceId }` shows that one workspace beside the project's agents. Any
- *  other scope draws the rows as they are. `issues` is the project's cached
- *  issue list, which names the issue each workspace is for. */
-export function overviewHtml(rows, { showProjectAgents = false, scope = null, workspaces = [], issues = [] } = {}) {
+ *  other scope draws the rows as they are. `tasks` is the project's cached
+ *  task list, which names the task each workspace is for. */
+export function overviewHtml(rows, { showProjectAgents = false, scope = null, workspaces = [], tasks = [] } = {}) {
   const shown = rowsInScope(rows, scope);
   const named = workspaces.filter((workspace) => inScope(scope, workspace.workspaceId));
   if (!shown.length && !showProjectAgents && !named.length) return '<p class="rail-overview-empty">No agents here yet.</p>';
   const projectScope = scope?.kind === "project";
-  return overviewSections(shown, showProjectAgents, named, issues)
+  return overviewSections(shown, showProjectAgents, named, tasks)
     .map((section) => sectionHtml(section, projectScope)).join("");
 }
 
@@ -378,8 +378,8 @@ function threadEntries(entries, scope) {
   })).filter((entry) => entry.address);
 }
 
-/** The issues a cached tracker list carries; none for a project never read. */
-const cachedIssues = (record) => (record && record.value && record.value.issues) || [];
+/** The tasks a cached tracker list carries; none for a project never read. */
+const cachedTasks = (record) => (record && record.value && record.value.tasks) || [];
 
 /** The records at `addresses`, in the same places; undefined where the address
  *  is null (a list this pass does not read) or the cache has nothing. */
@@ -401,16 +401,16 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
   const includesWorkspaces = () => (typeof includeProjectWorkspaces === "function"
     ? includeProjectWorkspaces() : includeProjectWorkspaces);
   /** The machine's workspace list and feed, read only when the overview is
-   *  about more than its own sources; and the project's issue list, as the
-   *  tracker cached it, in every scope with a workspace heading to name an
-   *  issue on. Read, never fetched — a project whose issues this client has
+   *  about more than its own sources; and the project's task list, as the
+   *  tracker cached it, in every scope with a workspace heading to name a
+   *  task on. Read, never fetched — a project whose tasks this client has
    *  not read heads its workspaces by name alone. `listed` keeps the three
    *  places whether or not each is read this pass. */
   const listAddressesFor = (included) => {
     const workspaceAddress = included && scope?.address({ entityId: "", kind: "workspaces" });
     const feedAddress = workspaceAddress && scope?.address({ entityId: "", kind: "feed" });
-    const issuesRecordAddress = projectId && scope?.address(issuesAddress(scope.deviceId, projectId));
-    const listed = [workspaceAddress, feedAddress, issuesRecordAddress].map((address) => address || null);
+    const tasksRecordAddress = projectId && scope?.address(tasksAddress(scope.deviceId, projectId));
+    const listed = [workspaceAddress, feedAddress, tasksRecordAddress].map((address) => address || null);
     return { workspaceAddress, listed, listAddresses: listed.filter(Boolean) };
   };
 
@@ -429,7 +429,7 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     const stale = () => !active || current !== generation;
     const { workspaceAddress, listed, listAddresses } = listAddressesFor(includesWorkspaces());
     watch([...sources().map((source) => source.address).filter(Boolean), ...listAddresses]);
-    const [workspaceRecord, feedRecord, issuesRecord] = await readListed(listed);
+    const [workspaceRecord, feedRecord, tasksRecord] = await readListed(listed);
     if (stale()) return;
     const workspaces = workspaceAddress ? (workspaceRecord?.value || []) : [];
     const rosterSources = projectWorkspaceSources(workspaces, sources().filter((source) => source.address), projectId, scope);
@@ -441,7 +441,7 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     const threadRecords = await readCachedMany(addressed.map((entry) => entry.address));
     if (stale()) return;
     onRows(overviewRows(addressed, threadRecords.map((record) => record?.value)),
-      { workspaces: workspaceSections(rosterSources, workspaces, projectId), issues: cachedIssues(issuesRecord) });
+      { workspaces: workspaceSections(rosterSources, workspaces, projectId), tasks: cachedTasks(tasksRecord) });
   };
 
   return {

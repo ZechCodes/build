@@ -1,5 +1,5 @@
 // The assignment overlay: the fields that say where an implementation is handed
-// to, over the page instead of inside the issue rail.
+// to, over the page instead of inside the task rail.
 //
 // The rail is a list of stages. A form that unfolds inside it pushes the stages
 // off the column exactly when the reviewer is deciding which one to send, so the
@@ -12,7 +12,7 @@
 // written, so the select the reviewer just used is still the select they are in.
 
 import { patchElement } from "./domPatch.js";
-import { assignmentPanelHtml } from "./issueRender.js";
+import { assignmentPanelHtml } from "./taskRender.js";
 
 /** The width below which a panel anchored to anything is a panel squeezed
  *  against a frame edge — the same width the panes stack at. */

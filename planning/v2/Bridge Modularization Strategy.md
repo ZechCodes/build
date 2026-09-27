@@ -5,7 +5,7 @@
 > Build knows which phase a report closes from the session that sent it, and a
 > plan's stages are read from `.build/plan/stages.json` on disk when the plan
 > agent reports Complete. The per-stage validation gate (validate/fix-stage
-> sessions, `ValidationReport`, `run.stage_fix`/`issue.stage_fix`), diff triage
+> sessions, `ValidationReport`, `run.stage_fix`/`task.stage_fix`), diff triage
 > (`triage.override`, `triage_enabled`, `.build/review-rules.json`), the
 > branch-recovery agent (`RecoveryAttempt`, `phase=recover`) and agent-reported
 > comment resolutions are removed. A stage is `building` until its build
@@ -38,7 +38,7 @@ The problem is concentration of responsibilities, not only file length:
   terminal sessions, delivery, operation receipts, RTC, pushes, and telemetry
   (`bridge/src/app.rs:1877-2134`).
 - One string dispatcher has 119 literal RPC arms and mixes conversations,
-  filesystem access, git, settings, projects, board, captures, issues, runs,
+  filesystem access, git, settings, projects, board, captures, tasks, runs,
   branches, agents, streams, and terminals (`bridge/src/app.rs:7026-7174`).
 - Production helpers, off-lock job types, lifecycle settlements, session
   delivery, and recovery continue after that dispatcher; tests then exercise
@@ -101,7 +101,7 @@ bridge/src/app/
   projects.rs                     project add/create/clone/remote/isolation
   conversations.rs                thread read/post/attach and operation receipts
   captures.rs                     capture CRUD and routing coordination
-  issues.rs                       issue/plan RPC application service
+  tasks.rs                       task/plan RPC application service
   runs.rs                         run/stage/review/finish RPC application service
   worktrees.rs                    branch/worktree/adoption application service
   board.rs                        board views, attention, archive, diff-cache views
@@ -116,7 +116,7 @@ bridge/src/app/
     recovery.rs                   boot recovery and vanished-run reconciliation
   tests/
     mod.rs                        shared fixtures only
-    rpc.rs, conversations.rs, projects.rs, issues.rs, runs.rs
+    rpc.rs, conversations.rs, projects.rs, tasks.rs, runs.rs
     worktrees.rs, runtime.rs, recovery.rs
 ```
 
@@ -404,7 +404,7 @@ library tests passing. The only failure is the known `concurrency_load`
 output floor at 80,414 bytes; no threshold or timing behavior changed.
 
 Move one cohesive route family per PR into `app/conversations.rs`, then
-projects/config/captures, then issues/runs/worktrees/board. The central
+projects/config/captures, then tasks/runs/worktrees/board. The central
 dispatcher delegates to family dispatchers or a typed route table; it remains
 the only place that maps public method names. Use temporary child-module
 `impl AppState` blocks and `pub(super)` access rather than widening items to

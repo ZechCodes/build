@@ -1,6 +1,6 @@
 //! What can happen to a workspace while the reclaim service or
-//! `workspace.reclaim` has it reserved (#135 review): an agent starting, an
-//! issue reopening, a file changing, a terminal opening, the tracker failing,
+//! `workspace.reclaim` has it reserved (#135 review): an agent starting, a
+//! task reopening, a file changing, a terminal opening, the tracker failing,
 //! the daemon stopping, a Git verb or a file write arriving. Each race is run
 //! at a point it can hurt: after the reservation, before the second
 //! measurement; or after the build output is inspected, before the last look
@@ -91,7 +91,7 @@ fn at(phase: PrunePhase, race: impl Fn()) -> impl Fn(PrunePhase) {
 }
 
 /// A finished quiet workspace with build output: `(tmp, state, project, ws,
-/// issue, checkout, output)`.
+/// task, checkout, output)`.
 #[allow(clippy::type_complexity)]
 fn ready_to_prune() -> (
     tempfile::TempDir,
@@ -102,16 +102,16 @@ fn ready_to_prune() -> (
     PathBuf,
     PathBuf,
 ) {
-    let (tmp, state, project_id, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, project_id, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (_root, checkout) = root_and_checkout(&state, &ws);
     let output = build_output_in(&checkout);
-    (tmp, state, project_id, ws, issue, checkout, output)
+    (tmp, state, project_id, ws, task, checkout, output)
 }
 
 #[test]
 fn a_redirected_managed_root_never_launches_a_probe_or_prunes_the_target() {
-    let (tmp, state, _project, ws, _issue, checkout, _output) = ready_to_prune();
+    let (tmp, state, _project, ws, _task, checkout, _output) = ready_to_prune();
     let (root, _) = root_and_checkout(&state, &ws);
     let source = state
         .lock()
@@ -157,7 +157,7 @@ fn a_redirected_managed_root_never_launches_a_probe_or_prunes_the_target() {
 
 #[test]
 fn a_redirected_checkout_never_launches_a_probe_or_prunes_the_target() {
-    let (tmp, state, _project, ws, _issue, checkout, _output) = ready_to_prune();
+    let (tmp, state, _project, ws, _task, checkout, _output) = ready_to_prune();
     let outside = tmp.path().join("unrelated-clone");
     std::fs::rename(&checkout, &outside).unwrap();
     std::os::unix::fs::symlink(&outside, &checkout).unwrap();
@@ -179,7 +179,7 @@ fn a_redirected_checkout_never_launches_a_probe_or_prunes_the_target() {
 
 #[test]
 fn a_root_redirected_after_inspection_keeps_its_build_output() {
-    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let (root, _checkout) = root_and_checkout(&state, &ws);
     let outside = tmp.path().join("unrelated-clone");
     let redirected = std::cell::Cell::new(false);
@@ -205,7 +205,7 @@ fn a_root_redirected_after_inspection_keeps_its_build_output() {
 /// nothing is pruned.
 #[test]
 fn a_message_during_a_prune_waits_for_it_and_keeps_the_build_output() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let agent = agent_in(&state, &ws);
     let posted = std::cell::Cell::new(false);
 
@@ -242,7 +242,7 @@ fn a_message_during_a_prune_waits_for_it_and_keeps_the_build_output() {
 /// holds the prune at the last check, and holds `workspace.reclaim` too.
 #[test]
 fn an_agent_working_in_a_checkout_holds_the_prune_and_the_reclaim() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
     let agent = agent_in(&state, &ws);
 
     AppState::sweep_workspaces_racing(
@@ -264,11 +264,11 @@ fn an_agent_working_in_a_checkout_holds_the_prune_and_the_reclaim() {
     );
 }
 
-/// The issue reopening after the reservation keeps the build output, and the
+/// The task reopening after the reservation keeps the build output, and the
 /// verdict says why.
 #[test]
-fn reopening_the_issue_during_a_prune_keeps_the_build_output() {
-    let (_tmp, state, _project, ws, issue, _checkout, output) = ready_to_prune();
+fn reopening_the_task_during_a_prune_keeps_the_build_output() {
+    let (_tmp, state, _project, ws, task, _checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -277,21 +277,21 @@ fn reopening_the_issue_during_a_prune_keeps_the_build_output() {
         &at(PrunePhase::Inspected, || {
             let moved = call(
                 &state,
-                "issues.update",
-                json!({ "issue_id": issue, "status": "in_progress" }),
+                "tasks.update",
+                json!({ "task_id": task, "status": "in_progress" }),
             );
             assert_eq!(moved["ok"], true, "{moved:?}");
         }),
     );
 
     assert!(output.exists(), "{:?}", lifecycle(&state, &ws));
-    assert_eq!(holds(&lifecycle(&state, &ws)), ["issue_open"]);
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["task_open"]);
 }
 
 /// An edit after the reservation is found by the second measurement.
 #[test]
 fn an_edit_during_a_prune_keeps_the_build_output() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -310,7 +310,7 @@ fn an_edit_during_a_prune_keeps_the_build_output() {
 /// workspace again before the move, is found by the last look.
 #[test]
 fn an_edit_after_inspection_keeps_the_build_output() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -332,7 +332,7 @@ fn an_edit_after_inspection_keeps_the_build_output() {
 /// source now, and stays.
 #[test]
 fn a_forced_add_after_inspection_keeps_the_build_output() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -352,7 +352,7 @@ fn a_forced_add_after_inspection_keeps_the_build_output() {
 /// it: it is tracked now, and stays.
 #[test]
 fn build_output_committed_and_pushed_after_inspection_stays() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -376,7 +376,7 @@ fn build_output_committed_and_pushed_after_inspection_stays() {
 /// change to its directories answers busy, and nothing lands.
 #[test]
 fn no_git_verb_or_file_write_starts_during_a_prune() {
-    let (_tmp, state, _project, ws, _issue, checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, checkout, output) = ready_to_prune();
     let detail = call(&state, "workspace.get", json!({ "workspace_id": ws }));
     let directory = &detail["result"]["directories"][0];
     let source_id = directory["source_id"].as_str().unwrap().to_string();
@@ -457,7 +457,7 @@ fn no_git_verb_or_file_write_starts_during_a_prune() {
 /// released.
 #[test]
 fn a_stop_during_a_prune_keeps_the_build_output_and_releases_the_workspace() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -514,7 +514,7 @@ fn gone(pid: &Path) -> bool {
 /// is killed, the workspace is unmeasured, and nothing is pruned.
 #[test]
 fn a_stop_while_git_is_read_prunes_nothing() {
-    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
     std::fs::write(&hang, "").unwrap();
     let policy = ReclaimPolicy {
@@ -538,7 +538,7 @@ fn a_stop_while_git_is_read_prunes_nothing() {
 /// released.
 #[test]
 fn a_stop_while_the_prune_reads_git_again_prunes_nothing() {
-    let (tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
     let policy = ReclaimPolicy {
         git: probe_hanging_once(&hang, &pid),
@@ -564,7 +564,7 @@ fn a_stop_while_the_prune_reads_git_again_prunes_nothing() {
 /// finds it, and nothing moves.
 #[test]
 fn a_stop_after_inspection_prunes_nothing() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
 
     AppState::sweep_workspaces_racing(
         &state,
@@ -585,8 +585,8 @@ fn a_stop_after_inspection_prunes_nothing() {
 /// workspace is released and kept.
 #[test]
 fn a_reclaim_whose_git_reading_runs_out_is_refused() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, _checkout) = root_and_checkout(&state, &ws);
     let (hang, pid) = (tmp.path().join("hang"), tmp.path().join("reading.pid"));
     std::fs::write(&hang, "").unwrap();
@@ -611,7 +611,7 @@ fn a_reclaim_whose_git_reading_runs_out_is_refused() {
 /// A stopped service measures nothing more: the last verdict stands.
 #[test]
 fn a_stopped_service_keeps_the_last_verdict() {
-    let (_tmp, state, _project, ws, _issue) = linked_workspace();
+    let (_tmp, state, _project, ws, _task) = linked_workspace();
     AppState::sweep_workspaces(&state, &impatient(), now_ms());
     let before = lifecycle(&state, &ws);
 
@@ -625,7 +625,7 @@ fn a_stopped_service_keeps_the_last_verdict() {
 /// called idle, so it is neither pruned nor announced.
 #[test]
 fn a_measurement_over_budget_is_held_and_not_announced() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let starved = ReclaimPolicy {
         measure_entries: 2,
         ..pruning()
@@ -640,27 +640,27 @@ fn a_measurement_over_budget_is_held_and_not_announced() {
     assert!(output.exists());
 }
 
-/// Issues that cannot be read hold every workspace: none of them can be called
+/// Tasks that cannot be read hold every workspace: none of them can be called
 /// Done.
 #[test]
 fn an_unreadable_tracker_holds_the_workspace() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     state
         .lock()
         .unwrap()
         .store
         .as_ref()
         .unwrap()
-        .damage_tracker_issues();
+        .damage_tracker_tasks();
 
     AppState::sweep_workspaces(&state, &pruning(), now_ms());
 
     assert!(output.exists());
-    assert_eq!(holds(&lifecycle(&state, &ws)), ["issues_unread"]);
+    assert_eq!(holds(&lifecycle(&state, &ws)), ["tasks_unread"]);
     let refused = call(&state, "workspace.reclaim", json!({ "workspace_id": ws }));
     assert_eq!(
         refused["error"],
-        "Build cannot reclaim quiet yet: Build could not read the issues linked to it.",
+        "Build cannot reclaim quiet yet: Build could not read the tasks linked to it.",
         "{refused:?}"
     );
 }
@@ -669,7 +669,7 @@ fn an_unreadable_tracker_holds_the_workspace() {
 /// `workspace.reclaim`.
 #[tokio::test]
 async fn an_open_terminal_holds_the_workspace() {
-    let (_tmp, state, _project, ws, _issue, _checkout, output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, output) = ready_to_prune();
     let handler = AppState::handler(Arc::clone(&state));
     let opened = handler.call(
         SessionSender::detached("s1"),
@@ -698,7 +698,7 @@ async fn an_open_terminal_holds_the_workspace() {
 /// No terminal opens in a workspace while it is reserved.
 #[tokio::test]
 async fn no_terminal_opens_during_a_prune() {
-    let (_tmp, state, _project, ws, _issue, _checkout, _output) = ready_to_prune();
+    let (_tmp, state, _project, ws, _task, _checkout, _output) = ready_to_prune();
     let handler = AppState::handler(Arc::clone(&state));
     let refused = std::cell::RefCell::new(Value::Null);
 
@@ -727,8 +727,8 @@ async fn no_terminal_opens_during_a_prune() {
 /// workspace while it does, and only then hands over the removal.
 #[test]
 fn reclaim_measures_off_the_lock_and_holds_the_workspace_meanwhile() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, _checkout) = root_and_checkout(&state, &ws);
     let agent = agent_in(&state, &ws);
     let params = json!({ "workspace_id": ws });
@@ -776,8 +776,8 @@ fn reclaim_measures_off_the_lock_and_holds_the_workspace_meanwhile() {
 
 #[test]
 fn a_root_redirected_after_explicit_reclaim_decides_is_not_deleted() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let params = json!({ "workspace_id": ws });
     let (answered, deferred) = state
@@ -813,8 +813,8 @@ fn a_root_redirected_after_explicit_reclaim_decides_is_not_deleted() {
 
 #[test]
 fn a_real_directory_replacing_the_root_after_measurement_is_refused() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let params = json!({ "workspace_id": ws });
     let (answered, deferred) = state
@@ -845,8 +845,8 @@ fn a_real_directory_replacing_the_root_after_measurement_is_refused() {
 
 #[test]
 fn a_real_directory_replacing_the_registered_root_before_a_sweep_is_refused() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let source = state
         .lock()
@@ -896,8 +896,8 @@ fn a_real_directory_replacing_the_registered_root_before_a_sweep_is_refused() {
 /// did not start, is found by the last look before the removal.
 #[test]
 fn a_commit_after_the_reclaim_measured_keeps_the_workspace() {
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (root, checkout) = root_and_checkout(&state, &ws);
     let params = json!({ "workspace_id": ws });
     let (answered, deferred) = state
@@ -927,18 +927,18 @@ fn a_commit_after_the_reclaim_measured_keeps_the_workspace() {
     assert!(!state.lock().unwrap().workspace_reserved(&ws));
 }
 
-/// Reclaiming writes the issue's timeline and wakes nobody watching it.
+/// Reclaiming writes the task's timeline and wakes nobody watching it.
 #[test]
-fn a_reclaim_wakes_nobody_watching_the_issue() {
-    let (_tmp, state, project_id, ws, issue) = linked_workspace();
+fn a_reclaim_wakes_nobody_watching_the_task() {
+    let (_tmp, state, project_id, ws, task) = linked_workspace();
     let watcher = coding_agent(&mut state.lock().unwrap(), &project_id, "watcher");
     let tracked = call(
         &state,
-        "issues.track",
-        json!({ "issue_id": issue, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": task, "agent_id": watcher.1 }),
     );
     assert_eq!(tracked["ok"], true, "{tracked:?}");
-    finish(&state, &issue);
+    finish(&state, &task);
     {
         let mut app = state.lock().unwrap();
         app.delivery_queue.lapse_settle_windows();
@@ -957,6 +957,6 @@ fn a_reclaim_wakes_nobody_watching_the_issue() {
         woken.iter().all(|turn| turn.agent_id != watcher.1),
         "the watcher is not woken for a reclaim"
     );
-    let entries = timeline_kinds(&state, &issue);
+    let entries = timeline_kinds(&state, &task);
     assert_eq!(entries[0]["kind"], "workspace_reclaimed");
 }

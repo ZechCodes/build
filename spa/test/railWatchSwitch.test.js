@@ -8,7 +8,7 @@
 // greeting that never reaches the store, or a flag spelled differently from the
 // way the bridge spells it would all leave it green. So the first half here
 // greets a real bridge and asks the real gate — which is the shape of the break
-// issues-spa hit when its copy still exported `carriesWatch`.
+// tasks-spa hit when its copy still exported `carriesWatch`.
 //
 // The second half is the head's own half of that gate. I reported "the panel
 // head draws no switch on a bridge without watching" with nothing asserting it:
@@ -27,11 +27,16 @@ const { bridgeApiVersion, bridgeCapabilities, greetBridge, resetChangeEvents } =
 const { carriesWatching } = await import("../src/core/trackerWatch.js");
 const { panelHeadHtml } = await import("../src/core/agentRail.js");
 
-/** One machine saying what it is, through the real greeting path. `over` is
- *  whatever else that greeting states — `{ issues: { watching: false } }` for a
- *  bridge new enough to carry it that says it does not. */
-const greet = (apiVersion, { deviceId = "dev-1", ...over } = {}) =>
-  greetBridge(async () => ({ push_events: true, api_version: apiVersion, ...over }), { deviceId });
+/** The capabilities a bridge that carries watching names, and one that does not. */
+const WATCHING = ["tasks.watching"];
+const NO_WATCHING = [];
+
+/** One machine saying what it is, through the real greeting path: the
+ *  `capabilities` it names, and `over` for whatever else that greeting states —
+ *  `{ tasks: { watching: true } }` for the old boolean a 2.x adapter must not
+ *  read. */
+const greet = (capabilities, { deviceId = "dev-1", ...over } = {}) =>
+  greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities, ...over }), { deviceId });
 
 const head = (given) => {
   document.body.innerHTML = panelHeadHtml("claude", "chat", given);
@@ -46,46 +51,47 @@ afterEach(() => {
 });
 
 describe("the gate, asked of a bridge that actually greeted", () => {
-  it("offers watching to a machine that greeted 1.9.0", async () => {
-    await greet("1.9.0");
-    expect(bridgeApiVersion("dev-1")).toBe("1.9.0");
+  it("offers watching to a machine whose greeting names tasks.watching", async () => {
+    await greet(WATCHING);
+    expect(bridgeApiVersion("dev-1")).toBe("2.0.0");
     expect(carriesWatching("dev-1")).toBe(true);
   });
 
-  it("refuses the roll before it, which is the bridge live today", async () => {
-    await greet("1.8.0");
+  it("refuses a machine whose greeting does not name it", async () => {
+    await greet(NO_WATCHING);
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
   // The flag is the point of moving off the version compare: a bridge states
-  // what it can do, and is taken at its word in BOTH directions.
-  it("takes a stated flag over the minor, either way", async () => {
-    await greet("1.8.0", { deviceId: "dev-early", issues: { watching: true } });
-    await greet("1.9.0", { deviceId: "dev-withdrawn", issues: { watching: false } });
-    expect([carriesWatching("dev-early"), carriesWatching("dev-withdrawn")]).toEqual([true, false]);
+  // what it can do by name, and the old boolean beside it says nothing, in
+  // BOTH directions.
+  it("takes the named capability over the old tasks.watching flag, either way", async () => {
+    await greet(NO_WATCHING, { deviceId: "dev-stated", tasks: { watching: true } });
+    await greet(WATCHING, { deviceId: "dev-named", tasks: { watching: false } });
+    expect([carriesWatching("dev-stated"), carriesWatching("dev-named")]).toEqual([false, true]);
   });
 
   // The whole reason the gate reads a capability rather than a number: the
   // client asks what the bridge can do, and the flag is where that is said.
   it("is the capability the adapter derived, not a second opinion", async () => {
-    await greet("1.9.0");
-    expect(bridgeCapabilities("dev-1").issues.watching).toBe(true);
-    expect(carriesWatching("dev-1")).toBe(bridgeCapabilities("dev-1").issues.watching);
+    await greet(WATCHING);
+    expect(bridgeCapabilities("dev-1").tasks.watching).toBe(true);
+    expect(carriesWatching("dev-1")).toBe(bridgeCapabilities("dev-1").tasks.watching);
   });
 
   // Not a mocked null: this is the real floor a machine reads as before it has
   // ever been greeted, which is the state every machine starts in.
   it("refuses a machine that has never greeted at all", () => {
     expect(bridgeApiVersion("dev-1")).toBe("0.0.0");
-    expect(bridgeCapabilities("dev-1").issues.watching).toBe(false);
+    expect(bridgeCapabilities("dev-1").tasks.watching).toBe(false);
     expect(carriesWatching("dev-1")).toBe(false);
   });
 
   // The gate is per machine. A phone paired to two bridges must not be offered
-  // a switch on the older one because the newer one answered first.
+  // a switch on the one without it because the other answered first.
   it("answers per machine, not once for the client", async () => {
-    await greet("1.9.0", { deviceId: "dev-new" });
-    await greet("1.8.0", { deviceId: "dev-old" });
+    await greet(WATCHING, { deviceId: "dev-new" });
+    await greet(NO_WATCHING, { deviceId: "dev-old" });
     expect([carriesWatching("dev-new"), carriesWatching("dev-old")]).toEqual([true, false]);
   });
 });

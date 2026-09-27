@@ -32,7 +32,7 @@ beforeEach(async () => {
   ({ githubReposAddress } = await import("../src/core/githubRepos.js"));
   ({ projectSettingsAddress, workspaceSettingsAddress } = await import("../src/core/settingsRecords.js"));
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
-  await greetBridge(async () => ({ api_version: "1.22.0", capabilities: ["github.repos"] }), { deviceId: "dev-1" });
+  await greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["github.repos"] }), { deviceId: "dev-1" });
 });
 
 it("a project's Clone url searches the machine's repositories", async () => {
@@ -90,7 +90,7 @@ it("a closed settings sheet stops waiting: only the sheet on screen asks when th
   document.querySelector("#pscancel").click();
   const second = call();
   openProjectSettings("proj-1", { callRpc: second, deviceId: "dev-1" });
-  await greetBridge(async () => ({ api_version: "1.22.0", capabilities: ["github.repos"] }), { deviceId: "dev-1" });
+  await greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["github.repos"] }), { deviceId: "dev-1" });
   await vi.waitFor(() => expect(second.mock.calls.filter(([method]) => method === "github.repos")).toHaveLength(1));
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(first.mock.calls.filter(([method]) => method === "github.repos")).toHaveLength(0);

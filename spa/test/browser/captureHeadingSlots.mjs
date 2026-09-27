@@ -16,9 +16,9 @@ const output = process.argv[3] || join(homedir(), ".build/project-scratch/headin
 await mkdir(output, { recursive: true });
 
 const shellHtml = `<div id="shell"><div id="view">
-  <header id="toolbar">Skrift · Issues</header>
+  <header id="toolbar">Skrift · Tasks</header>
   <div id="view-body"><nav id="dir-rail"></nav>
-    <main id="root"><h1>Issues</h1><p>Board</p></main>
+    <main id="root"><h1>Tasks</h1><p>Board</p></main>
     <aside id="agent-rail" aria-label="Agents"></aside>
   </div><div id="console-region"></div>
 </div></div>`;
@@ -42,9 +42,9 @@ async function seed(page, basePath) {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { writeCached } = window.__layoutModules.cache;
     const { stampWorkspace } = window.__layoutModules.merge;
-    const { writeIssuesRecord } = window.__layoutModules.tracker;
+    const { writeTasksRecord } = window.__layoutModules.tracker;
     const { writeAgentsOverviewFixture, overviewRailContext, OVERVIEW_ROWS, OVERVIEW_DEVICE, OVERVIEW_PROJECT } = window.__layoutModules.fixture;
-    await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+    await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
     // skrift-fixes: the working agent alone, with an unread, for pill + working.
     const fixes = OVERVIEW_ROWS.find((row) => row.workspaceId === "ws-fixes");
     const fixer = fixes.agents.find((one) => one.id === "fixer");

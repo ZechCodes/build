@@ -889,7 +889,7 @@ export function createAdoptingCall(call, projectId, worktreeId) {
 }
 ```
 
-Unit tests (`spa/test/adoption.test.js`): first `taskCall` issues `task.adopt`
+Unit tests (`spa/test/adoption.test.js`): first `taskCall` tasks `task.adopt`
 then the method with the minted `task_id`; a second `taskCall` reuses the id
 (adopt called exactly once); an adopt rejection propagates and leaves
 `adoptedTaskId()` null so a retry re-adopts.

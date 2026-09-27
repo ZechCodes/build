@@ -3,7 +3,7 @@
 // Two sessions ride one peer connection — the app's and the terminals' — and
 // both have to answer "is this path carrying?" from the same evidence. The rule
 // lived in terminal/session.js, where it was the terminals' own; the app
-// session now asks it too (issue #30), and a rule two callers derive separately
+// session now asks it too (task #30), and a rule two callers derive separately
 // is a rule that can give two answers about one wire. So it is here, once.
 //
 // What is NOT shared is the verdict. The terminals treat ICE's word as reason

@@ -66,7 +66,7 @@ await withLayoutPage(async ({ page, basePath }) => {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { writeCached } = window.__layoutModules.cache;
     const { greetBridge } = window.__layoutModules.changes;
-    await greetBridge(async () => ({ push_events: true, api_version: "1.14.0" }), { deviceId: "review-device" });
+    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context", "tasks.attachments", "tasks.watching", "conversations.settings"] }), { deviceId: "review-device" });
     await writeCached({ deviceId: "review-device", entityId: "review-run", kind: "row" }, {
       run_id: "review-run", project_id: "review-project", agents: [{
         id: "review-agent", ordinal: 1, provider: "claude_adk", state: "live",

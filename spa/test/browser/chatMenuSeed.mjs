@@ -55,7 +55,7 @@ export async function seedChatMenu({ theme, bigCounts }) {
       checklist,
     },
   };
-  await greetBridge(async () => ({ push_events: false, api_version: "1.10.0" }), { deviceId });
+  await greetBridge(async () => ({ push_events: false, api_version: "2.0.0", capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context", "tasks.attachments", "tasks.watching", "conversations.settings"] }), { deviceId });
   await writeCached({ deviceId, entityId: "menu-run", kind: "row", sub: "" }, {
     kind: "workspace", entity_id: "menu-run", project_id: projectId, workspace_id: "menu-workspace", agents: [agent],
   });

@@ -81,7 +81,7 @@ pub(super) struct ProtocolState {
     pub(super) limit_said_last: Option<crate::harness::usage_limit::UsageLimitSaid>,
     /// The verdict: the turn ended because the harness has no usage left, which
     /// is not a crash and not a completion. Until this existed it was neither —
-    /// the agent simply went quiet and nothing above it was told (issue #58).
+    /// the agent simply went quiet and nothing above it was told (task #58).
     pub(super) usage_limited: Option<crate::harness::usage_limit::UsageLimitSaid>,
     /// When the harness's newest `rate_limit_event` said a rejected limit
     /// resets — an instant, which wins over any clock read from the sentence.
@@ -127,7 +127,7 @@ pub(super) struct ProtocolState {
     /// The last thing the child said on stderr, for a death with no result.
     pub(super) last_stderr_line: Option<String>,
     /// Why Build ended this child before it started — over its `init` line
-    /// (issue #72) or at the startup deadline (issue #73): the sentence the
+    /// (task #72) or at the startup deadline (task #73): the sentence the
     /// agent's `start_error` shows.
     pub(super) start_refused: Option<String>,
     /// The background work the child says is live right now — its task id

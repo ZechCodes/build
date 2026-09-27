@@ -12,7 +12,7 @@ import {
   columnName,
   columnNote,
   columnsOf,
-  issueLinks,
+  taskLinks,
   priorityIsMarked,
   priorityLabel,
   sameAssignee,
@@ -20,7 +20,7 @@ import {
 } from "../src/core/trackerModel.js";
 
 describe("the columns a board draws", () => {
-  it("draws the five of phase 1 before issues.columns has answered", () => {
+  it("draws the five of phase 1 before tasks.columns has answered", () => {
     expect(columnsOf(null).map((column) => column.id)).toEqual([
       "backlog", "ready", "in_progress", "in_review", "done",
     ]);
@@ -38,7 +38,7 @@ describe("the columns a board draws", () => {
     expect(columnsOf([{ id: "icebox" }])).toEqual([{ id: "icebox", name: "icebox" }]);
   });
 
-  it("drops a column with no slug at all — there is nothing to store on an issue", () => {
+  it("drops a column with no slug at all — there is nothing to store on a task", () => {
     expect(columnsOf([{ name: "Nowhere" }, { id: "ready", name: "Ready" }])).toEqual([{ id: "ready", name: "Ready" }]);
   });
 
@@ -73,7 +73,7 @@ describe("priorities", () => {
 describe("open and closed", () => {
   // Independent of the Done column: one says whether the work is live, the
   // other where it stands on the board.
-  it("says which of the two an issue is", () => {
+  it("says which of the two a task is", () => {
     expect(stateLabel("open")).toBe("Open");
     expect(stateLabel("closed")).toBe("Closed");
   });
@@ -88,7 +88,7 @@ describe("the tagged actor shape", () => {
     expect(sameAssignee({ kind: "agent", agent_id: "agent-7" }, { kind: "agent", agent_id: "agent-8" })).toBe(false);
   });
 
-  // `none` is the wire's own word for unassigned in issues.list, so the
+  // `none` is the wire's own word for unassigned in tasks.list, so the
   // filter's value and the param it becomes are one string.
   it("keys unassigned as the word the wire uses", () => {
     expect(UNASSIGNED).toBe("none");
@@ -115,17 +115,17 @@ describe("the tagged actor shape", () => {
   });
 });
 
-describe("an issue's links", () => {
+describe("a task's links", () => {
   it("answers every list, so a rail never asks whether it has one", () => {
-    expect(issueLinks({ links: { branches: ["build/x"] } })).toEqual({
-      workspace_ids: [], branches: ["build/x"], commits: [], conversation_ids: [], parent_issue_id: null,
+    expect(taskLinks({ links: { branches: ["build/x"] } })).toEqual({
+      workspace_ids: [], branches: ["build/x"], commits: [], conversation_ids: [], parent_task_id: null,
     });
-    expect(issueLinks(null).workspace_ids).toEqual([]);
+    expect(taskLinks(null).workspace_ids).toEqual([]);
   });
 });
 
 // The board is the one place the user meets rules the agents are told outright
-// and the user never is. Every sentence is the Issues Spec's own; nothing is
+// and the user never is. Every sentence is the Tasks Spec's own; nothing is
 // invented for a column the spec only names.
 describe("what a column means", () => {
   it("says of In review the thing a first-time reader gets wrong", () => {

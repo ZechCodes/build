@@ -23,8 +23,9 @@ const DB_NAME = "build-cache";
 // v3: the cache-first client's shapes, and the write-time index the lifetime
 // rules sweep. A format change is a cold start by design — the records a
 // previous version wrote are not this version's shapes, and one sync pass
-// refills what the reader is looking at.
-const DB_VERSION = 3;
+// refills what the reader is looking at. v4: the task rename (#190) — a
+// record keyed or shaped by the old names is dropped, not misread.
+const DB_VERSION = 4;
 const STORE = "records";
 // A board record and a row can be written in the same clock millisecond.
 // Keep their order beside the timestamp without changing the timestamp used
@@ -382,6 +383,45 @@ function openOnce() {
   });
 }
 
+/** Delete the database: `{}` once it is gone, or the error, or `blocked` when
+ *  another tab held it past the wait. */
+function deleteDatabase() {
+  return new Promise((resolve) => {
+    let request;
+    try {
+      request = indexedDB.deleteDatabase(DB_NAME);
+    } catch (error) {
+      return resolve({ error });
+    }
+    const timer = setTimeout(() => resolve({
+      blocked: true,
+      error: namedError("BlockedError", "another tab kept the newer database open"),
+    }), timing.blockedTimeoutMs);
+    timer?.unref?.();
+    request.onsuccess = () => {
+      clearTimeout(timer);
+      resolve({});
+    };
+    request.onerror = (event) => {
+      event?.preventDefault?.();
+      clearTimeout(timer);
+      resolve({ error: request.error });
+    };
+  });
+}
+
+/** Open this build's version. A database a newer build left behind — this
+ *  build was rolled back to — answers VersionError, which no reopen fixes: it
+ *  is dropped and the cache starts cold, rather than standing down on every
+ *  page load until someone clears the site's data. */
+async function openThisVersion() {
+  const opened = await openOnce();
+  if (opened.error?.name !== "VersionError") return opened;
+  cacheEvent("cache-dropped-newer", {});
+  const dropped = await deleteDatabase();
+  return dropped.error ? dropped : openOnce();
+}
+
 /** How long the cache has been failing in front of someone: since the outage
  *  began or the page was last shown, whichever is later. None while hidden. */
 function visibleFailingMs() {
@@ -412,7 +452,7 @@ async function reachDb() {
     const step = attempt + along;
     if (step > 0) await pause(delays[Math.min(step, delays.length - 1)]);
     if (disabled) return null;
-    const { db, error, blocked } = await openOnce();
+    const { db, error, blocked } = await openThisVersion();
     if (db) return db;
     if (blocked || faultOf(error, "open") !== "connection") {
       standDown(blocked ? "blocked" : "open-failed", error);

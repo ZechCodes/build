@@ -43,7 +43,7 @@ pub(in crate::app::tests) fn call(handler: &FrameHandler, method: &str, params: 
 }
 
 /// The tab key of the agent whose id is DERIVED from its owner — the one
-/// the pre-agent migration mints, and the one an issue holds. A branch
+/// the pre-agent migration mints, and the one a task holds. A branch
 /// whose agent was added rather than migrated has a minted id instead, and
 /// its key is `primary_agent_key`.
 pub(in crate::app::tests) fn derived_agent_key(root: &std::path::Path, entity_id: &str) -> TabKey {
@@ -125,8 +125,8 @@ pub(in crate::app::tests) fn planned_run_in_review(
     state: &mut AppState,
     goal: &str,
 ) -> (String, String) {
-    // Issue workflow RPCs are intentionally retired, but many non-workflow
-    // tests still need the durable shape an old Issue and its implementation
+    // Task workflow RPCs are intentionally retired, but many non-workflow
+    // tests still need the durable shape an old Task and its implementation
     // left behind. Build that shape through the domain seams so those tests do
     // not accidentally keep the retired public surface alive.
     let plan = state
@@ -167,14 +167,14 @@ pub(in crate::app::tests) fn planned_run_in_review(
         .expect("the legacy plan is approved");
 
     let plan = state.plans.get(&plan_id).expect("the plan remains live");
-    let issue = ImplementableIssue::judge(RunSource {
+    let task = ImplementableTask::judge(RunSource {
         plan,
         has_active_run: false,
     })
     .expect("the approved plan is implementable");
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
     let prepared = orch
-        .prepare_run_checkout(&issue, &plan.base_branch, &run_id, state.isolation, &store)
+        .prepare_run_checkout(&task, &plan.base_branch, &run_id, state.isolation, &store)
         .expect("the legacy implementation checkout is prepared");
     let (mut run, _turn) = orch
         .open_prepared_run(RunId::new(&run_id), plan, prepared, Default::default())

@@ -1,6 +1,6 @@
 // A floating jump control for any scroll surface with an unread divider.
 // The owner supplies the selector; the dock has zero height and cannot move
-// timeline content. Chat can adopt this without owning issue page markup.
+// timeline content. Chat can adopt this without owning task page markup.
 import { scrollWithin } from "./scrollWithin.js";
 
 export function mountNewMessagesPill(scroller, { targetSelector }) {

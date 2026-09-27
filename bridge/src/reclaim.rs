@@ -63,10 +63,10 @@ pub const BUSY: &str = "another filesystem operation is still running";
 /// What anything that would write inside a reserved workspace is told.
 pub const RESERVED: &str = "Build is measuring this workspace. Try again in a moment.";
 
-/// A linked issue that is neither Done nor closed.
-pub const HOLD_ISSUE_OPEN: &str = "issue_open";
-/// The linked issues could not be read, so none of them can be called Done.
-pub const HOLD_ISSUES_UNREAD: &str = "issues_unread";
+/// A linked task that is neither Done nor closed.
+pub const HOLD_TASK_OPEN: &str = "task_open";
+/// The linked tasks could not be read, so none of them can be called Done.
+pub const HOLD_TASKS_UNREAD: &str = "tasks_unread";
 /// The workspace is still provisioning, or failed to.
 pub const HOLD_NOT_READY: &str = "not_ready";
 /// One of the user's terminals is open somewhere in the workspace.
@@ -206,10 +206,10 @@ fn switched_on(raw: &str) -> bool {
     )
 }
 
-/// One issue that links a workspace, as the verdict names it.
+/// One task that links a workspace, as the verdict names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LinkedIssue {
-    pub issue_id: String,
+pub struct LinkedTask {
+    pub task_id: String,
     pub number: u64,
     pub title: String,
     pub status: String,
@@ -217,7 +217,7 @@ pub struct LinkedIssue {
     pub state: String,
 }
 
-impl LinkedIssue {
+impl LinkedTask {
     /// Done or closed: nobody is still working toward it.
     pub fn finished(&self) -> bool {
         self.status == crate::tracker::DONE_STATUS || self.state == "closed"
@@ -240,7 +240,7 @@ pub struct LifecycleRecord {
     pub reclaimable: bool,
     /// What keeps it from being reclaimed, in reading order.
     pub holds: Vec<String>,
-    pub issues: Vec<LinkedIssue>,
+    pub tasks: Vec<LinkedTask>,
     pub dirty_files: u64,
     pub unpushed_commits: u64,
     pub behind_commits: u64,
@@ -302,7 +302,7 @@ impl LifecycleRecord {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeDue {
     No,
-    /// The workspace just went quiet. The linked issues' timelines record it.
+    /// The workspace just went quiet. The linked tasks' timelines record it.
     First,
     /// Still quiet a whole idle period after the last notice.
     Again,
@@ -321,10 +321,10 @@ pub struct Subject {
     pub boundary: Option<WorkspaceBoundary>,
     /// `(path, branch)` of each Git directory.
     pub repositories: Vec<(PathBuf, Option<String>)>,
-    /// Holds read under the mutex: an agent working, a linked issue still
+    /// Holds read under the mutex: an agent working, a linked task still
     /// open, the workspace not ready or not Build's.
     pub holds: Vec<&'static str>,
-    pub issues: Vec<LinkedIssue>,
+    pub tasks: Vec<LinkedTask>,
     /// The newest message in the workspace's conversation.
     pub conversation_activity_ms: Option<i64>,
     pub previous: Option<LifecycleRecord>,
@@ -377,7 +377,7 @@ impl Subject {
             idle: last_activity_ms
                 .is_some_and(|at| now_ms.saturating_sub(at) >= policy.idle_after_ms()),
             holds: self.holds_with(&git.holds),
-            issues: self.issues.clone(),
+            tasks: self.tasks.clone(),
             dirty_files: git.dirty_files,
             unpushed_commits: git.unpushed_commits,
             behind_commits: git.behind_commits,
@@ -620,7 +620,7 @@ pub fn trash_of(root: &Path) -> Option<PathBuf> {
 }
 
 /// One order for every hold, whoever assembled the list: what is live, then
-/// what only this workspace has, then the issues, then not knowing.
+/// what only this workspace has, then the tasks, then not knowing.
 pub fn hold_order(hold: &str) -> usize {
     use crate::workspace::{
         FINISH_BLOCKER_AGENT_WORKING, FINISH_BLOCKER_DIRTY, FINISH_BLOCKER_PLAIN_DIRECTORY,
@@ -633,8 +633,8 @@ pub fn hold_order(hold: &str) -> usize {
         FINISH_BLOCKER_DIRTY,
         FINISH_BLOCKER_UNPUSHED,
         FINISH_BLOCKER_PLAIN_DIRECTORY,
-        HOLD_ISSUE_OPEN,
-        HOLD_ISSUES_UNREAD,
+        HOLD_TASK_OPEN,
+        HOLD_TASKS_UNREAD,
         FINISH_BLOCKER_UNKNOWN,
         HOLD_UNMEASURED,
     ];
@@ -648,8 +648,8 @@ pub fn hold_order(hold: &str) -> usize {
 /// the notice the project agent reads.
 pub fn hold_sentence(hold: &str) -> &'static str {
     match hold {
-        HOLD_ISSUE_OPEN => "an issue linked to it is not Done",
-        HOLD_ISSUES_UNREAD => "Build could not read the issues linked to it",
+        HOLD_TASK_OPEN => "a task linked to it is not Done",
+        HOLD_TASKS_UNREAD => "Build could not read the tasks linked to it",
         HOLD_NOT_READY => "it is not ready",
         HOLD_TERMINAL_OPEN => "a terminal is open in it",
         HOLD_UNMEASURED => "Build could not finish measuring it",

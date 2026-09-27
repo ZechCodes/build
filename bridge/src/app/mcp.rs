@@ -423,7 +423,7 @@ impl AppState {
 
     /// Route an agent's `done` to its owner's lifecycle transition, by owner
     /// lookup (plans map, then runs map), without draining: a report that
-    /// carries an Issue's scheduler on to its next stage hands that git back
+    /// carries a Task's scheduler on to its next stage hands that git back
     /// HERE, to the socket that can release the guard before running it. The
     /// `done` twin of [`AppState::dispatch_deferring`].
     #[cfg(test)]
@@ -469,18 +469,18 @@ impl AppState {
         report: DoneReport,
     ) -> Option<DeferredJob> {
         self.record_agent_working_since(entity_id, agent_id, None);
-        // A Complete hands the issue the agent holds on to In review (spec:
-        // Issues → Automatic activity), and then says what it still holds
-        // (spec: Issues → The Complete reminder). Both before the lifecycle
+        // A Complete hands the task the agent holds on to In review (spec:
+        // Tasks → Automatic activity), and then says what it still holds
+        // (spec: Tasks → The Complete reminder). Both before the lifecycle
         // routing below, which may end the run this agent belongs to and take
-        // the binding the issue is found through with it.
+        // the binding the task is found through with it.
         //
-        // The reminder runs second so that an issue this very report handed on
+        // The reminder runs second so that a task this very report handed on
         // is described as it now stands rather than as it stood a moment ago —
         // which is also what keeps it out of the list.
         if report.status == crate::mcp::DoneStatus::Completed {
-            self.move_held_issue_on_complete(entity_id, agent_id);
-            self.remind_of_open_issues(entity_id, agent_id);
+            self.move_held_task_on_complete(entity_id, agent_id);
+            self.remind_of_open_tasks(entity_id, agent_id);
         }
         self.done_deferring_for_resolved_agent(entity_id, Some(agent_id), report)
     }
@@ -488,7 +488,7 @@ impl AppState {
     /// Execute an MCP thread request against the conversation owner resolved
     /// from the agent identity baked into that session's MCP command. The
     /// authenticated agent resolves to its current plan or run; planned runs
-    /// resolve unread/reply actions to the owning Issue (legacy plan id), while
+    /// resolve unread/reply actions to the owning Task (legacy plan id), while
     /// planless adopted runs retain their independent worktree conversation.
     #[cfg(test)]
     pub(in crate::app) fn on_mcp_action(
@@ -686,10 +686,10 @@ impl AppState {
             };
             return self.agent_message_agent(sender, target, body);
         }
-        // The issue tracker, before the per-surface tables: it is the one
+        // The task tracker, before the per-surface tables: it is the one
         // family both working surfaces carry, so it is answered in one place
         // rather than once in each.
-        if let Some(answered) = self.issue_surface_action(entity_id, agent_id, &action) {
+        if let Some(answered) = self.task_surface_action(entity_id, agent_id, &action) {
             return answered;
         }
         if let Some(answered) = self.project_scoped_action(entity_id, agent_id, &action) {
@@ -709,7 +709,7 @@ impl AppState {
             return self.search_agent_conversations(entity_id, agent_id, query);
         }
         // The topic is the AGENT's, not the conversation's: two agents sharing
-        // an Issue's thread each name their own work, and the record is where
+        // a Task's thread each name their own work, and the record is where
         // the bubble reads it from.
         if let BridgeAction::SetTopic { topic } = &action {
             return self.set_agent_topic(entity_id, agent_id, topic);
@@ -725,7 +725,7 @@ impl AppState {
             _ => None,
         };
         let reads_unread = matches!(action, BridgeAction::ReadUnreadMessages);
-        // Where an agent speaks — its own conversation, or its Issue's when it
+        // Where an agent speaks — its own conversation, or its Task's when it
         // is the implementation's first — is one rule, and it is
         // `edit_agent_conversation`'s.
         let now = now_rfc3339();

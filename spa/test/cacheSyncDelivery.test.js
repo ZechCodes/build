@@ -22,7 +22,7 @@ const branchItem = (over = {}) => ({
   last_activity: ago(1),
   worktree_id: "wt-1",
   run_id: "run-1",
-  issue_id: null,
+  task_id: null,
   agents: [],
   ...over,
 });
@@ -202,7 +202,7 @@ describe("a flush arriving at the real subscriptions", () => {
     expect(calls("fs.tree").filter(([, params]) => params.path === "src")).toHaveLength(1);
   });
 
-  // Issue #58: the harnesses out of usage on the device, from the whole read
+  // Task #58: the harnesses out of usage on the device, from the whole read
   // and from the board item that says the list moved — through the real sync
   // path, so a key read from the wrong place fails here.
   it("holds the usage limits the board lists, and the ones a board item carries", async () => {
@@ -240,9 +240,10 @@ describe("a flush arriving at the real subscriptions", () => {
 // changed in between: not in the snapshot, and pushed to nobody.
 describe("a pass racing the wire", () => {
   const HELLO = {
-    api_version: "1.21.0",
+    api_version: "2.0.0",
+    capabilities: ["changes.subscriptions", "requests.priority", "errors.codes"],
     push_events: true,
-    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "issues"], items: "bodies" },
+    changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"], items: "bodies" },
   };
 
   /** A bridge that holds subscriptions the way the real one does, and a board

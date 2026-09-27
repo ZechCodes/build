@@ -1,8 +1,8 @@
-//! What an agent still holds when it says it is done (spec: Issues → The
+//! What an agent still holds when it says it is done (spec: Tasks → The
 //! Complete reminder).
 //!
-//! An agent reports Complete and walks away from three open issues assigned to
-//! it. Nobody is told, the issues sit in In progress forever, and whoever
+//! An agent reports Complete and walks away from three open tasks assigned to
+//! it. Nobody is told, the tasks sit in In progress forever, and whoever
 //! assigned them finds out by going to look. So on Complete — and only on
 //! Complete — Build says what is still open.
 //!
@@ -26,8 +26,8 @@
 //! and all three are one tool call.
 
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
-use crate::store::IssueFilter;
-use crate::tracker::{Issue, IssueState, STILL_TO_FINISH};
+use crate::store::TaskFilter;
+use crate::tracker::{Task, TaskState, STILL_TO_FINISH};
 
 impl AppState {
     /// An agent reported Complete: tell it what it still holds.
@@ -36,33 +36,33 @@ impl AppState {
     /// write here is: the report is the agent's and the turn is over, and a
     /// conversation that could not be written must not turn a finished piece
     /// of work into a failed one.
-    pub(in crate::app) fn remind_of_open_issues(&mut self, entity_id: &str, agent_id: &str) {
-        let held = self.open_issues_held_by(entity_id, agent_id);
+    pub(in crate::app) fn remind_of_open_tasks(&mut self, entity_id: &str, agent_id: &str) {
+        let held = self.open_tasks_held_by(entity_id, agent_id);
         if held.is_empty() {
             // Nothing held is also nothing to remember: an agent that finishes
             // everything and is later handed one more should hear about it.
             self.reminded_holdings.remove(agent_id);
             return;
         }
-        let holding: Vec<String> = held.iter().map(|issue| issue.id.clone()).collect();
+        let holding: Vec<String> = held.iter().map(|task| task.id.clone()).collect();
         if self.reminded_holdings.get(agent_id) == Some(&holding) {
             return;
         }
         self.reminded_holdings.insert(agent_id.to_string(), holding);
         if let Err(why) = self.deliver_reminder(entity_id, agent_id, &held) {
-            eprintln!("remind {agent_id} of its open issues: {why}");
+            eprintln!("remind {agent_id} of its open tasks: {why}");
         }
     }
 
-    /// The issues assigned to this agent that are still ITS to finish.
+    /// The tasks assigned to this agent that are still ITS to finish.
     ///
-    /// [`STILL_TO_FINISH`] is the test rather than "open and not closed": an
-    /// issue in In review has been handed on — the agent said so by reporting
+    /// [`STILL_TO_FINISH`] is the test rather than "open and not closed": a
+    /// task in In review has been handed on — the agent said so by reporting
     /// Complete — and one parked in Done is finished with whether or not
     /// anybody closed it. Naming either would make the reminder noise, and a
     /// reminder that is noise is one an agent learns to answer without
     /// reading.
-    fn open_issues_held_by(&mut self, entity_id: &str, agent_id: &str) -> Vec<Issue> {
+    fn open_tasks_held_by(&mut self, entity_id: &str, agent_id: &str) -> Vec<Task> {
         let Some(project_id) = self.projects.project_id_of(entity_id).map(str::to_string) else {
             return Vec::new();
         };
@@ -71,10 +71,10 @@ impl AppState {
         };
         let Ok(open) = self.tracker_store().and_then(|store| {
             store
-                .list_tracker_issues(
+                .list_tracker_tasks(
                     &project_path,
-                    IssueFilter {
-                        state: Some(IssueState::Open),
+                    TaskFilter {
+                        state: Some(TaskState::Open),
                         status: None,
                     },
                 )
@@ -83,9 +83,9 @@ impl AppState {
             return Vec::new();
         };
         open.into_iter()
-            .filter(|issue| {
-                STILL_TO_FINISH.contains(&issue.status.as_str())
-                    && issue
+            .filter(|task| {
+                STILL_TO_FINISH.contains(&task.status.as_str())
+                    && task
                         .assignee
                         .as_ref()
                         .and_then(crate::tracker::Assignee::agent_id)
@@ -98,7 +98,7 @@ impl AppState {
         &mut self,
         entity_id: &str,
         agent_id: &str,
-        held: &[Issue],
+        held: &[Task],
     ) -> Result<(), String> {
         let addressed = self.addressed_agent(&serde_json::json!({
             "id": entity_id,
@@ -124,7 +124,7 @@ impl AppState {
                     cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                     warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 }),
-                phase: "issue_reminder",
+                phase: "task_reminder",
                 wants_catch_up: true,
                 survives_refusal: false,
             });
@@ -134,30 +134,30 @@ impl AppState {
 
 /// What the reminder says.
 ///
-/// It names every issue rather than counting them, because "you still hold 3
-/// issues" makes the agent go and look and the looking is the part Build can
+/// It names every task rather than counting them, because "you still hold 3
+/// tasks" makes the agent go and look and the looking is the part Build can
 /// do. And it says the three ways out, because an agent told only that
 /// something is unfinished will pick one of them at random — most often
 /// reporting Complete again.
-fn reminder_body(held: &[Issue]) -> String {
+fn reminder_body(held: &[Task]) -> String {
     let listed: Vec<String> = held
         .iter()
-        .map(|issue| {
+        .map(|task| {
             format!(
                 "- #{} {} ({})",
-                issue.number,
-                issue.title,
-                column_name(&issue.status)
+                task.number,
+                task.title,
+                column_name(&task.status)
             )
         })
         .collect();
     let count = held.len();
-    let these = if count == 1 { "issue" } else { "issues" };
+    let these = if count == 1 { "task" } else { "tasks" };
     format!(
-        "You reported Complete, but {count} {these} assigned to you {} still open. This \
+        "You reported Complete, but {count} Build {these} assigned to you {} still open. This \
          message is from Build, not from the user — nobody is waiting on an answer to it.\n\n{}\n\n\
          Each one needs finishing, or a comment saying where it got to, or — if you cannot do it \
-         — handing back with a comment saying why, so whoever assigned it knows. Move an issue to \
+         — handing back with a comment saying why, so whoever assigned it knows. Move a task to \
          In review when it is ready to be looked at, and close it only when it is done with.",
         if count == 1 { "is" } else { "are" },
         listed.join("\n")
@@ -177,29 +177,26 @@ mod tests {
     use super::*;
     use crate::tracker::Actor;
 
-    fn issue(number: u64, title: &str, status: &str) -> Issue {
-        let mut issue = Issue::drafted("/repo", title, Actor::User, "2026-09-20T15:00:00Z");
-        issue.number = number;
-        issue.status = status.to_string();
-        issue
+    fn task(number: u64, title: &str, status: &str) -> Task {
+        let mut task = Task::drafted("/repo", title, Actor::User, "2026-09-20T15:00:00Z");
+        task.number = number;
+        task.status = status.to_string();
+        task
     }
 
-    /// It names every issue, with the column each is in, and says the three
+    /// It names every task, with the column each is in, and says the three
     /// ways out.
     #[test]
-    fn the_reminder_names_each_issue_and_what_to_do_about_it() {
+    fn the_reminder_names_each_task_and_what_to_do_about_it() {
         let body = reminder_body(&[
-            issue(13, "Issue tracking", "in_progress"),
-            issue(15, "The Complete reminder", "in_review"),
+            task(13, "Task tracking", "in_progress"),
+            task(15, "The Complete reminder", "in_review"),
         ]);
         assert!(
-            body.contains("2 issues assigned to you are still open"),
+            body.contains("2 Build tasks assigned to you are still open"),
             "{body}"
         );
-        assert!(
-            body.contains("- #13 Issue tracking (In progress)"),
-            "{body}"
-        );
+        assert!(body.contains("- #13 Task tracking (In progress)"), "{body}");
         assert!(
             body.contains("- #15 The Complete reminder (In review)"),
             "{body}"
@@ -208,12 +205,12 @@ mod tests {
         assert!(body.contains("handing back"), "{body}");
     }
 
-    /// One issue reads as one issue, not "1 issues".
+    /// One task reads as one task, not "1 tasks".
     #[test]
-    fn one_issue_reads_as_one() {
-        let body = reminder_body(&[issue(13, "Issue tracking", "in_progress")]);
+    fn one_task_reads_as_one() {
+        let body = reminder_body(&[task(13, "Task tracking", "in_progress")]);
         assert!(
-            body.contains("1 issue assigned to you is still open"),
+            body.contains("1 Build task assigned to you is still open"),
             "one reads as one: {body}"
         );
     }

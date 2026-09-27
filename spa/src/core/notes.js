@@ -40,7 +40,7 @@ export function diffCommentAnchor(comment, revisionId = null) {
 
 /**
  * The anchor for one stage-doc comment ({headingPath, snippet, lineStart,
- * lineEnd}) — what `issue.comment_add` takes. The doc's path is the stage's, so
+ * lineEnd}) — what `task.comment_add` takes. The doc's path is the stage's, so
  * the bridge fills it in; what the client knows is where in the doc the reader
  * was: the enclosing heading chain, the passage, and its lines in the SOURCE.
  */

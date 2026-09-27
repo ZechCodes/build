@@ -103,7 +103,7 @@ const STANDING = {
     label: (route, row, carried) =>
       (carried.workspace ? workspaceDisplayName(carried.workspace, route.workspaceId) : route.workspaceId) ?? "Workspace",
     // The picker is the bar's one control on a workspace: the directories, the
-    // Issues and the settings are the workspace's navigation, and stand in its
+    // Tasks and the settings are the workspace's navigation, and stand in its
     // rail (core/directoryRail.js), not here.
     carries: (route, { workspaces }) => ({
       workspaceId: route.workspaceId,
@@ -120,10 +120,10 @@ const STANDING = {
       item.branch === route.branch,
     label: (route) => route.branch || "",
   },
-  issue: {
-    // An issue id is a uuid: it names one issue wherever it is.
-    rowIs: (route) => (item) => item.kind === "issue" && item.issue_id === route.id,
-    label: (route, row) => (row && row.title) || "Issue",
+  task: {
+    // A task id is a uuid: it names one task wherever it is.
+    rowIs: (route) => (item) => item.kind === "task" && item.task_id === route.id,
+    label: (route, row) => (row && row.title) || "Task",
   },
   project: {
     // A project is the block the rows sit in rather than a row of its own, and
@@ -131,30 +131,30 @@ const STANDING = {
     // name through the project selector, then the project's two pages as tabs.
     rowIs: () => () => false,
     label: () => "",
-    carries: (route, { issuesUnread }) => ({ projectTabs: projectTabsModel(route.tab, issuesUnread) }),
+    carries: (route, { tasksUnread }) => ({ projectTabs: projectTabsModel(route.tab, tasksUnread) }),
   },
-  trackerIssue: {
-    // One issue of the tracker is a page OF the project's Issues tab: the bar
-    // says the project, and the tabs stand with Issues open, so the list is
-    // one press away from the issue — on a phone, the only press back.
+  trackerTask: {
+    // One task of the tracker is a page OF the project's Tasks tab: the bar
+    // says the project, and the tabs stand with Tasks open, so the list is
+    // one press away from the task — on a phone, the only press back.
     rowIs: () => () => false,
     label: () => "",
-    carries: (route, { issuesUnread }) => ({ projectTabs: projectTabsModel("issues", issuesUnread) }),
+    carries: (route, { tasksUnread }) => ({ projectTabs: projectTabsModel("tasks", tasksUnread) }),
   },
 };
 
-/** The two pages a project has, as tabs after its name in the bar: its issue
+/** The two pages a project has, as tabs after its name in the bar: its task
  *  tracker and the workspaces cut from it, marked with the one the route is on.
  *  They live in the bar rather than over the page so they stay reachable with
  *  the chat open over the page on a phone.
  *
- *  Issues first, and the one a route that names no tab is on (#46): "I think
- *  issues should be the first and primary project tab." Issues wears the
- *  unread of every watched issue in the project (#104). */
-export function projectTabsModel(current, issuesUnread = 0) {
+ *  Tasks first, and the one a route that names no tab is on (#46): "I think
+ *  tasks should be the first and primary project tab." Tasks wears the
+ *  unread of every watched task in the project (#104). */
+export function projectTabsModel(current, tasksUnread = 0) {
   const onWorkspaces = current === "workspaces";
   return [
-    { id: "issues", label: "Issues", current: !onWorkspaces, unread: issuesUnread },
+    { id: "tasks", label: "Tasks", current: !onWorkspaces, unread: tasksUnread },
     { id: "workspaces", label: "Workspaces", current: onWorkspaces, unread: 0 },
   ];
 }
@@ -163,15 +163,15 @@ export function projectTabsModel(current, issuesUnread = 0) {
 const NOWHERE = Object.freeze({ projectId: null, projectKey: null, project: "", kind: null, label: "", row: null });
 
 /** Where the toolbar says you are standing: the project, and the workspace,
- *  branch or issue inside it. The route is the authority on identity (it is what
+ *  branch or task inside it. The route is the authority on identity (it is what
  *  a deep link carries, machine included); the feed only supplies the names it
  *  knows, and the record it names is the one on the route's own machine. */
-export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [], issuesUnread = 0 } = {}) {
+export function toolbarIdentity(route = {}, { items = [], projects = [], workspaces = [], tasksUnread = 0 } = {}) {
   const standing = STANDING[route.name];
   if (!standing) return NOWHERE;
   const key = routeProjectKey(route);
   const row = items.find(standing.rowIs(route)) || null;
-  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces, issuesUnread }) : null;
+  const carried = standing.carries ? standing.carries(route, { items, projects, workspaces, tasksUnread }) : null;
   return {
     projectId: route.projectId,
     projectKey: key,

@@ -120,7 +120,7 @@ pub struct ConversationOwner {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 /// Which of the owner's conversations. Absent `agent_id` is the primary one;
@@ -306,7 +306,7 @@ pub struct AgentAddParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability: Option<String>,
     /// An AGENT asked for this one, not the person. Its conversation is that
-    /// agent's business and stays out of the user's inbox (spec: Issues →
+    /// agent's business and stays out of the user's inbox (spec: Tasks →
     /// Watching) unless `notify_user` says otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub made_by_agent: Option<bool>,
@@ -454,7 +454,7 @@ pub struct OperationReceipt {
 
 /// The entity view a post answers with — the same plan/run detail the
 /// lifecycle family serves, repainted after the append. Carried as fields
-/// rather than typed here: the shape belongs to `issue.get` / `run.get`, and
+/// rather than typed here: the shape belongs to `task.get` / `run.get`, and
 /// naming it twice would be two things to keep equal.
 pub type EntityView = BTreeMap<String, serde_json::Value>;
 

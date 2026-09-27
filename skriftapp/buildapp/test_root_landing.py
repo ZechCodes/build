@@ -90,7 +90,7 @@ HOST_ASSETS = (
         for profile in ("desktop", "mobile")
     ),
     "assets/screens/ui10-editor-macbook.webp",
-    "assets/screens/ui12-issues-macbook.webp",
+    "assets/screens/ui12-tasks-macbook.webp",
     "assets/screens/ui13-team-macbook.webp",
     "assets/screens/ui14-git-macbook.webp",
     "assets/screens/ui15-triage-ipad.webp",

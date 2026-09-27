@@ -7,7 +7,7 @@ const CHANNELS = [["app", 0], ["term", 1]];
 const OPEN_TIMEOUT_MS = 15000;
 
 /** How long a relayed session runs before it is worth one attempt at a direct
- *  pair (issue #31).
+ *  pair (task #31).
  *
  *  Late on purpose. An ICE restart on a live connection re-gathers and re-checks
  *  everything, and doing it early would put the cost on every session that
@@ -131,7 +131,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   const ensureActive = () => {
     if (torn) throw blockedBy("failed", "the peer connection closed");
   };
-  // Relay candidates are held behind the direct ones at BOTH doors (issue #31).
+  // Relay candidates are held behind the direct ones at BOTH doors (task #31).
   // One hold per direction, because the two check lists are different lists: ours
   // is built from the candidates the bridge sends us, and the bridge's from the
   // ones we send it. Holding only our own outgoing candidates would tidy the
@@ -213,7 +213,7 @@ export async function openPeerLink({ signal, fetchIceServers, onPush, onConnecte
   /**
    * This session landed on TURN. Is there a direct pair it could have had?
    *
-   * Asked once, late, and only on evidence (issue #31). ICE nominates the first
+   * Asked once, late, and only on evidence (task #31). ICE nominates the first
    * pair that connects and never re-nominates, so a session that lost the race on
    * a network where a direct pair also works is billed for TURN egress for its
    * whole life — and the only lever left after nomination is an ICE restart,

@@ -283,16 +283,16 @@ pub(in crate::app) fn session_hello(
             "items": "bodies",
             "batch_ms": { "min": MIN_BATCH_MS, "max": MAX_BATCH_MS },
         },
-        // Whether this bridge can carry files on an issue (spec: Issues →
+        // Whether this bridge can carry files on a task (spec: Tasks →
         // Attachments). Stated outright rather than left to the minor, because
         // a composer that offers a paperclip against a bridge with no
-        // `issues.attach` offers a press that cannot work.
-        // `watching`: the watch verbs, the read marks, and `tracker_issue`
+        // `tasks.attach` offers a press that cannot work.
+        // `watching`: the watch verbs, the read marks, and `tracker_task`
         // rows on the inbox. Stated beside `attachments` rather than left to
         // the minor, for the same reason — an inbox that offers a Done press
-        // against a bridge with no `issues.dismiss` offers one that cannot
+        // against a bridge with no `tasks.dismiss` offers one that cannot
         // work.
-        "issues": { "attachments": true, "watching": true },
+        "tasks": { "attachments": true, "watching": true },
         "thread_post_operations": {
             "version": 1,
             "status_method": "thread.operation",
@@ -869,7 +869,7 @@ impl AppState {
     }
 
     /// Whether an entity's agent went quiet because its harness ran out of
-    /// usage (issue #58). That is not an agent walking off without reporting:
+    /// usage (task #58). That is not an agent walking off without reporting:
     /// it is idle with the limit as its reason, which the wire already says,
     /// and it is started again when the limit lifts.
     fn stopped_at_usage_limit(&self, entity_id: &str, agents: &crate::agent::AgentRoster) -> bool {

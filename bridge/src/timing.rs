@@ -690,7 +690,7 @@ mod tests {
             Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
             Duration::from_secs(1),
         );
-        let burst: Vec<FrameTimer> = (0..50).map(|_| clock.frame("issues.list")).collect();
+        let burst: Vec<FrameTimer> = (0..50).map(|_| clock.frame("tasks.list")).collect();
         let other = clock.frame("board.list");
         std::thread::sleep(SLOW_FRAME + Duration::from_millis(10));
         let first_said = Instant::now();
@@ -699,11 +699,11 @@ mod tests {
 
         let said = lines.lock().unwrap().clone();
         assert_eq!(said.len(), 2, "one line per method: {said:?}");
-        assert!(said[0].starts_with("slow frame issues.list "), "{said:?}");
+        assert!(said[0].starts_with("slow frame tasks.list "), "{said:?}");
         assert!(said[1].starts_with("slow frame board.list "), "{said:?}");
         assert_eq!(clock.stats()["slow_frames"], 51, "every slow frame counted");
 
-        let late = clock.frame("issues.list");
+        let late = clock.frame("tasks.list");
         std::thread::sleep(
             (Duration::from_secs(1) + Duration::from_millis(20))
                 .saturating_sub(first_said.elapsed())
@@ -713,7 +713,7 @@ mod tests {
         let said = lines.lock().unwrap().clone();
         assert_eq!(said.len(), 3, "{said:?}");
         assert!(
-            said[2].starts_with("slow frame issues.list ")
+            said[2].starts_with("slow frame tasks.list ")
                 && said[2].ends_with(" (+49 alike in the last 1s)"),
             "the window's next line says what it stands for: {said:?}"
         );
@@ -740,7 +740,7 @@ mod tests {
         let (clock, _) = recording_clock();
         let state = Arc::new(Mutex::new(0u32));
         for _ in 0..3 {
-            let timer = clock.frame("issues.list");
+            let timer = clock.frame("tasks.list");
             {
                 let _held = timer.lock(&state);
                 std::thread::sleep(Duration::from_millis(3));
@@ -749,7 +749,7 @@ mod tests {
         }
 
         let stats = clock.stats();
-        let method = &stats["methods"]["issues.list"];
+        let method = &stats["methods"]["tasks.list"];
         let held_p99 = method["held_p99_ms"].as_f64().expect("a held p99");
         let held_max = method["held_max_ms"].as_f64().expect("a held max");
         assert!((3.0..25.0).contains(&held_max), "{method}");

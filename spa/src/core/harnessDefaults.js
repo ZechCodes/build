@@ -1,5 +1,5 @@
 // Settings → Browser agent defaults: one model and reasoning effort per
-// harness, and which harness a new issue or agent starts on.
+// harness, and which harness a new task or agent starts on.
 //
 // The catalog is the creation device's (models.list), and the panel offers what
 // every create surface offers: the two agents a person can create, never the
@@ -22,7 +22,7 @@ import {
 const FIELD_STYLE = "flex:1;min-width:150px";
 
 const ACCOUNT_BLURB =
-  "The model and reasoning effort each agent starts with, and which agent new work starts on. You can still change any of it per issue, under the harness button in the New issue sheet, or from the chat's model menu.";
+  "The model and reasoning effort each agent starts with, and which agent new work starts on. You can still change any of it per task, under the harness button in the New task sheet, or from the chat's model menu.";
 
 /** The panel, empty: `mountHarnessDefaults` fills it from the catalog.
  *

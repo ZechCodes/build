@@ -28,7 +28,7 @@ export function optionDestinationText(option, projects = []) {
   // A branch name says the option is a branch — the same rule the bridge
   // numbers options by.
   const kind = branch ? "branch" : option.kind;
-  const becomes = branch ? `branch ${branch}` : kind === "branch" ? "a new branch" : kind === "issue" ? "a new issue" : "";
+  const becomes = branch ? `branch ${branch}` : kind === "branch" ? "a new branch" : kind === "task" ? "a new task" : "";
   return [project, becomes].filter(Boolean).join(" · ");
 }
 
@@ -60,7 +60,7 @@ export function captureDecisionModel(capture, { projects = [] } = {}) {
     answer: question && question.answer ? String(question.answer) : "",
     awaitingAnswer,
     chosenOptionId: (question && question.chosen_option_id) || null,
-    options: (question?.options || []).filter((option) => option.kind !== "issue" || trimmed(option.branch)).map((option) => ({
+    options: (question?.options || []).filter((option) => option.kind !== "task" || trimmed(option.branch)).map((option) => ({
       id: option.id,
       label: String(option.label ?? ""),
       destination: optionDestinationText(option, projects),

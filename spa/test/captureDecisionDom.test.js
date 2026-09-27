@@ -52,8 +52,8 @@ let host;
 let surface;
 
 
-// Every destination the router can offer is a branch: filing an issue is
-// retired (core/captureDecision.js drops an issue option that names no branch),
+// Every destination the router can offer is a branch: filing a task is
+// retired (core/captureDecision.js drops a task option that names no branch),
 // so a fixture offering one would be asserting about a choice the page never
 // paints.
 const option = (over = {}) => ({
@@ -244,7 +244,7 @@ describe("the capture decision page", () => {
   });
 
   it("goes back to the inbox once the router has routed it", async () => {
-    record = capture({ state: "routed", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } });
+    record = capture({ state: "routed", routing: { project_id: "p1", kind: "task", target_id: "iss-9" } });
     await surface.load();
     expect(location.hash).toBe("#/inbox");
   });

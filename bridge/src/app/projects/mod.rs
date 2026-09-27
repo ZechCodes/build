@@ -408,7 +408,7 @@ impl AppState {
     pub(in crate::app) fn bound_worktree_paths(
         &self,
     ) -> std::collections::HashSet<std::path::PathBuf> {
-        // Run worktrees are Build's. Issues own no worktree at all — their
+        // Run worktrees are Build's. Tasks own no worktree at all — their
         // agents run in the primary checkout — so there is nothing to add here
         // for them.
         self.runs

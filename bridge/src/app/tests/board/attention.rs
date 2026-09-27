@@ -32,13 +32,13 @@ fn assert_entry_is_read(entry: &Value) {
 }
 
 /// Append one item to the active run conversation owned by a legacy plan.
-pub(in crate::app::tests) fn push_to_issue_conversation(
+pub(in crate::app::tests) fn push_to_task_conversation(
     state: &mut AppState,
-    issue_id: &str,
+    task_id: &str,
     write: impl FnOnce(&mut crate::thread::Thread),
 ) {
     let run_id = state
-        .current_issue_implementation(issue_id)
+        .current_task_implementation(task_id)
         .expect("the legacy plan has an active run")
         .run
         .id
@@ -61,9 +61,9 @@ pub(in crate::app::tests) fn push_to_issue_conversation(
 fn unread_follows_attention_events_and_entity_seen_clears_it() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "unread");
+    let (task_id, run_id) = planned_run_in_review(&mut state, "unread");
 
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     // An agent asked for input, and nobody has looked.
@@ -79,7 +79,7 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
     assert_entry_is_read(&entry);
 
     // The work carrying on is not news.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.push_event(
             crate::thread::ThreadEventKind::Committed,
             Some("Committed 3 files".to_string()),
@@ -102,7 +102,7 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
     );
 
     // The agent handing back is, and the entry says which handoff it was.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.push_event(
             crate::thread::ThreadEventKind::Done,
             Some("Implemented the change".to_string()),
@@ -117,7 +117,7 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
     assert_eq!(entry["unread_reason"], "done", "{entry:?}");
 
     // The newest one is what it says, and they accumulate.
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
     let entry = board_entry(&mut state, &run_id);
@@ -127,9 +127,9 @@ fn unread_follows_attention_events_and_entity_seen_clears_it() {
 
 /// How far the shared conversation has counted, for a test that wants to
 /// name one message by the sequence it landed on.
-fn issue_thread_last_sequence(state: &AppState, issue_id: &str) -> u64 {
+fn task_thread_last_sequence(state: &AppState, task_id: &str) -> u64 {
     state
-        .current_issue_implementation(issue_id)
+        .current_task_implementation(task_id)
         .expect("the legacy plan has an active run")
         .agents
         .sole_thread()
@@ -144,14 +144,14 @@ fn issue_thread_last_sequence(state: &AppState, issue_id: &str) -> u64 {
 fn entity_seen_reads_through_the_sequence_the_reader_names() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "read through");
+    let (task_id, run_id) = planned_run_in_review(&mut state, "read through");
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
 
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
-    let first_question = issue_thread_last_sequence(&state, &issue_id);
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let first_question = task_thread_last_sequence(&state, &task_id);
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("and which module does it go in?", None, now_rfc3339());
     });
     let entry = board_entry(&mut state, &run_id);
@@ -175,14 +175,14 @@ fn entity_seen_reads_through_the_sequence_the_reader_names() {
 fn a_read_through_report_behind_the_cursor_moves_nothing() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "no rewind");
+    let (task_id, run_id) = planned_run_in_review(&mut state, "no rewind");
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
 
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
-    let first_question = issue_thread_last_sequence(&state, &issue_id);
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let first_question = task_thread_last_sequence(&state, &task_id);
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("and which module does it go in?", None, now_rfc3339());
     });
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
@@ -202,12 +202,12 @@ fn a_read_through_report_behind_the_cursor_moves_nothing() {
 fn an_agent_bubble_carries_the_read_cursor() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "cursor on the wire");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let (task_id, run_id) = planned_run_in_review(&mut state, "cursor on the wire");
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("which name did you want?", None, now_rfc3339());
     });
-    let first_question = issue_thread_last_sequence(&state, &issue_id);
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    let first_question = task_thread_last_sequence(&state, &task_id);
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent("and which module does it go in?", None, now_rfc3339());
     });
 
@@ -236,7 +236,7 @@ fn an_agent_bubble_carries_the_read_cursor() {
 fn a_reviewers_own_message_and_an_agents_progress_note_leave_the_entry_read() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (issue_id, run_id) = planned_run_in_review(&mut state, "quiet posts");
+    let (task_id, run_id) = planned_run_in_review(&mut state, "quiet posts");
     state.handle(req("entity.seen", json!({ "entity_id": run_id })));
 
     let posted = state.handle(req(
@@ -244,7 +244,7 @@ fn a_reviewers_own_message_and_an_agents_progress_note_leave_the_entry_read() {
         json!({ "entity_id": run_id, "body": "please rename the helper" }),
     ));
     assert_eq!(posted["ok"], true, "{posted:?}");
-    push_to_issue_conversation(&mut state, &issue_id, |thread| {
+    push_to_task_conversation(&mut state, &task_id, |thread| {
         thread.post_agent_progress("still digging", None, now_rfc3339());
     });
 
@@ -253,14 +253,14 @@ fn a_reviewers_own_message_and_an_agents_progress_note_leave_the_entry_read() {
     assert!(entry["unread_reason"].is_null(), "{entry:?}");
 }
 
-/// What reaches the Issue from its implementation: the outcomes, never the
+/// What reaches the Task from its implementation: the outcomes, never the
 /// progress. The rule is the event class, over every kind there is — so a
 /// kind added later cannot quietly start (or stop) travelling.
 #[test]
-fn only_a_runs_attention_outcomes_reach_the_issue_that_owns_it() {
+fn only_a_runs_attention_outcomes_reach_the_task_that_owns_it() {
     for event in crate::thread::ThreadEventKind::ALL {
         assert_eq!(
-            run_outcome_mirrors_to_issue(event),
+            run_outcome_mirrors_to_task(event),
             event.class() == crate::thread::EventClass::Attention,
             "{event:?}"
         );
@@ -272,7 +272,7 @@ fn only_a_runs_attention_outcomes_reach_the_issue_that_owns_it() {
         crate::thread::ThreadEventKind::Merged,
         crate::thread::ThreadEventKind::Abandoned,
     ] {
-        assert!(run_outcome_mirrors_to_issue(outcome), "{outcome:?}");
+        assert!(run_outcome_mirrors_to_task(outcome), "{outcome:?}");
     }
     for progress in [
         crate::thread::ThreadEventKind::RunStarted,
@@ -281,7 +281,7 @@ fn only_a_runs_attention_outcomes_reach_the_issue_that_owns_it() {
         crate::thread::ThreadEventKind::RevisionCreated,
         crate::thread::ThreadEventKind::StageStarted,
     ] {
-        assert!(!run_outcome_mirrors_to_issue(progress), "{progress:?}");
+        assert!(!run_outcome_mirrors_to_task(progress), "{progress:?}");
     }
 }
 
@@ -332,7 +332,7 @@ fn a_reported_outcome_is_news_on_the_run() {
     assert_eq!(entry["unread_reason"], "blocked", "{entry:?}");
 }
 
-/// An issue whose conversation is buried under a session's worth of
+/// A task whose conversation is buried under a session's worth of
 /// activity, booted again: the tail the daemon reads holds nothing but
 /// tool calls, so the packet has to come from the store or the replacement
 /// agent is handed nothing at all.
@@ -363,8 +363,8 @@ fn run_buried_in_activity(
     run_id
 }
 
-/// The page a reviewer OPENS on is cut by the same gate a scroll is. An
-/// issue whose tail holds nothing but tool calls has its words under the
+/// The page a reviewer OPENS on is cut by the same gate a scroll is. A
+/// task whose tail holds nothing but tool calls has its words under the
 /// tail, so a detail poll that reads only memory hands the reviewer a
 /// conversation with nothing said in it — and digests a run it can only
 /// see the newest of.
@@ -523,18 +523,18 @@ fn the_catch_up_packet_is_composed_when_the_turn_is_delivered() {
 #[test]
 fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
     let (dir, repo) = init_repo();
-    let issue_id = {
+    let task_id = {
         let mut state = qa_state(&repo, dir.path());
-        let issue = state
+        let task = state
             .plan_create(&json!({
                 "goal": "trim the retry loop",
                 "dispatch": false,
             }))
             .expect("create a stored legacy plan below the retired RPC boundary");
-        let issue_id = issue["plan_id"].as_str().unwrap().to_string();
-        let agent_id = primary_agent_id(&state, &issue_id);
+        let task_id = task["plan_id"].as_str().unwrap().to_string();
+        let agent_id = primary_agent_id(&state, &task_id);
         state
-            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+            .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
                 for turn in 0..40 {
                     thread.post_user(format!("ask {turn}"), None, "2026-08-29T09:00:00Z");
                     for index in 0..6 {
@@ -550,11 +550,11 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
                 Ok(())
             })
             .expect("the conversation is written");
-        issue_id
+        task_id
     };
     let mut state = qa_state(&repo, dir.path());
     let held = state
-        .agent_conversation(&issue_id, None)
+        .agent_conversation(&task_id, None)
         .expect("the conversation")
         .total_item_count();
     assert!(
@@ -564,7 +564,7 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
 
     let first = state.handle(req(
         "thread.page",
-        json!({ "entity_id": issue_id, "limit": 5 }),
+        json!({ "entity_id": task_id, "limit": 5 }),
     ));
     let page = &first["result"];
     let said: Vec<&str> = page["items"]
@@ -595,7 +595,7 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
     let mut walked: Vec<u64> = Vec::new();
     let mut before: Option<u64> = None;
     loop {
-        let mut params = json!({ "entity_id": issue_id, "limit": 5 });
+        let mut params = json!({ "entity_id": task_id, "limit": 5 });
         if let Some(seek) = before {
             params["before_sequence"] = json!(seek);
         }
@@ -637,16 +637,16 @@ fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
 fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let issue = state
+    let task = state
         .plan_create(&json!({
             "goal": "trim the retry loop",
             "dispatch": false,
         }))
         .expect("create a stored legacy plan below the retired RPC boundary");
-    let issue_id = issue["plan_id"].as_str().unwrap().to_string();
-    let agent_id = primary_agent_id(&state, &issue_id);
+    let task_id = task["plan_id"].as_str().unwrap().to_string();
+    let agent_id = primary_agent_id(&state, &task_id);
     state
-        .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+        .edit_agent_conversation(&task_id, &agent_id, |thread, _| {
             for index in 0..12 {
                 thread.push_event(
                     crate::thread::ThreadEventKind::ToolUse,
@@ -671,7 +671,7 @@ fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     // the gate still says the history is down there, and nothing answers.
     state.store = None;
     let thread = state
-        .agent_conversation(&issue_id, None)
+        .agent_conversation(&task_id, None)
         .expect("the conversation");
     assert!(
         thread.page_reaches_stored_history(None, 5),
@@ -689,17 +689,17 @@ fn a_first_page_that_cannot_reach_the_store_ships_no_activity_digests() {
     );
 }
 
-/// A branch nobody planned has no Issue to tell. Its own conversation still
+/// A branch nobody planned has no Task to tell. Its own conversation still
 /// records the outcome.
 #[test]
-fn abandoning_a_run_with_no_issue_mirrors_nowhere() {
+fn abandoning_a_run_with_no_task_mirrors_nowhere() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-planless");
 
     let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
     assert_eq!(abandoned["ok"], true, "{abandoned:?}");
-    assert!(state.plans.is_empty(), "adoption mints no issue");
+    assert!(state.plans.is_empty(), "adoption mints no task");
     let own = primary_thread(&state.runs[&run_id].agents);
     assert!(
         own.items.iter().any(|item| matches!(

@@ -19,7 +19,6 @@ mod facts;
 mod fs;
 mod git;
 mod github;
-mod issues;
 mod mcp;
 mod projects;
 mod rpc;
@@ -28,6 +27,7 @@ mod runs;
 mod runtime;
 mod session_summaries;
 mod streams;
+mod tasks;
 mod tracker;
 mod transactions;
 mod updates;
@@ -50,13 +50,6 @@ pub(in crate::app) use self::board_index::{BoardIndex, CacheEffect, RefreshClaim
 pub(in crate::app) use self::fs::FS_READ_MAX_BYTES;
 pub(in crate::app) use self::git::deferred::{DeferredGit, GitCallScope, ScopedGitCall};
 pub(in crate::app) use self::git::diff_file_rows;
-pub(in crate::app) use self::issues::documents::{attach_plan_operation_turn, comment_json};
-pub(in crate::app) use self::issues::scheduler::scheduler_request;
-pub(in crate::app) use self::issues::sessions::PlanDraftingStarted;
-pub(in crate::app) use self::issues::views::{
-    dispatchable_next_run_stage, next_unsettled_stage, plan_stage_json, plan_state_str,
-    stage_doc_state_str,
-};
 pub(in crate::app) use self::mcp::AddressedSession;
 #[cfg(test)]
 pub(in crate::app) use self::mcp::MCP_CONTROL_METHOD;
@@ -73,7 +66,7 @@ pub(in crate::app) use self::rpc::{
 };
 pub(in crate::app) use self::rtc::{rtc_close, rtc_ice, rtc_offer, PeersSlot};
 #[cfg(test)]
-pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_issue;
+pub(in crate::app) use self::runs::reporting::run_outcome_mirrors_to_task;
 pub(in crate::app) use self::runs::reporting::{
     abandoned_branch_summary, append_plan_stage_announcements, close_abandoned_run_conversations,
     open_session_id, record_current_stage_started, record_idle_in_thread, record_report_in_thread,
@@ -150,7 +143,7 @@ pub(in crate::app) use self::runtime::spawning::{
     agent_open_request, inherit_waiting_clients, reserve_agent_spawn, SpawnClaim, AGENT_SPAWN_WAIT,
 };
 pub(in crate::app) use self::runtime::spawning::{
-    ensure_agent_tab, issue_session, open_session_lineage, SettlingHandle, Spawned,
+    ensure_agent_tab, open_session_lineage, task_session, SettlingHandle, Spawned,
 };
 pub(in crate::app) use self::runtime::terminals::{
     attach_to_tab, attach_view, no_terminal_here, session_hello, term_ack, term_attach,
@@ -161,6 +154,13 @@ pub(in crate::app) use self::runtime::terminals::{
     require_shell_kind, shell_harness_spec, terminal_size, MAX_USER_TERMINALS,
 };
 pub(in crate::app) use self::streams::{sha256_hex, stream_start, StreamState};
+pub(in crate::app) use self::tasks::documents::{attach_plan_operation_turn, comment_json};
+pub(in crate::app) use self::tasks::scheduler::scheduler_request;
+pub(in crate::app) use self::tasks::sessions::PlanDraftingStarted;
+pub(in crate::app) use self::tasks::views::{
+    dispatchable_next_run_stage, next_unsettled_stage, plan_stage_json, plan_state_str,
+    stage_doc_state_str,
+};
 
 #[cfg(test)]
 use crate::orchestrator::Orchestrator;
@@ -215,7 +215,7 @@ use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{ActivePlan, ActiveRun, Agent, ResumeIdProbe, SessionLocatorFactory};
 #[cfg(test)]
 use crate::orchestrator::{
-    AgentTurn, ImplementableIssue, PreparedAgentLaunch, RunSource, SpawnOptions,
+    AgentTurn, ImplementableTask, PreparedAgentLaunch, RunSource, SpawnOptions,
 };
 #[cfg(test)]
 use crate::plan::{PlanId, PlanState};
@@ -407,12 +407,12 @@ pub struct AppState {
     /// queued it has answered. The queue's in-flight counters let the idle
     /// sweep distinguish an agent on its way from one that never arrived.
     delivery_queue: self::runtime::delivery::queue::DeliveryQueue,
-    /// Whether an issue an AGENT files goes into the user's inbox without
-    /// being asked for (spec: Issues → Watching).
+    /// Whether a task an AGENT files goes into the user's inbox without
+    /// being asked for (spec: Tasks → Watching).
     ///
     /// Off by default: agent bookkeeping stays out of the user's inbox unless
     /// the agent explicitly asks or the user enables the setting.
-    watch_agent_filed_issues: bool,
+    watch_agent_filed_tasks: bool,
     /// How many tokens of context an agent's last turn may leave before its
     /// next warm turn is preceded by a compaction; 0 never compacts. An
     /// agent's own `max_context_tokens` overrides it.
@@ -421,19 +421,19 @@ pub struct AppState {
     /// Build sent and has not yet measured. See
     /// [`CompactionLedger`](self::runtime::delivery::compaction::CompactionLedger).
     compactions: self::runtime::delivery::compaction::CompactionLedger,
-    /// The issue each agent's CURRENT turn was dispatched under (spec: Issues
+    /// The task each agent's CURRENT turn was dispatched under (spec: Tasks
     /// → Automatic activity).
     ///
     /// A report says something about the work that turn was started for, and
     /// nothing about the rest of the agent's queue. Without this the Complete
-    /// move guessed — it took the newest open issue assigned to the agent —
-    /// and twice today moved an issue nobody had touched.
+    /// move guessed — it took the newest open task assigned to the agent —
+    /// and twice today moved a task nobody had touched.
     ///
     /// In memory, like the reminder's own marker: a restart forgets which turn
     /// was in flight, and a report that arrives after one moves nothing, which
     /// is the safe way round.
-    dispatched_issue: HashMap<String, String>,
-    /// What each agent was last told it still holds (spec: Issues → The
+    dispatched_task: HashMap<String, String>,
+    /// What each agent was last told it still holds (spec: Tasks → The
     /// Complete reminder), so the same list is not sent twice.
     ///
     /// In memory rather than on disk, and per agent id. A bridge restart
@@ -445,7 +445,7 @@ pub struct AppState {
     /// What the workspace reclaim service last concluded about each workspace
     /// (#135), by workspace id. Persisted in the store's `meta`.
     workspace_lifecycle: HashMap<String, crate::reclaim::LifecycleRecord>,
-    /// Wakes the reclaim service early, when an issue linking a workspace
+    /// Wakes the reclaim service early, when a task linking a workspace
     /// finishes.
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
     /// What the reclaim service runs under: its budgets, for
@@ -462,7 +462,7 @@ pub struct AppState {
     /// next entry.
     reclaim_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The harnesses out of usage on this device, and the agents whose turns
-    /// stopped at a limit (issue #58). In memory: a restart resumes every live
+    /// stopped at a limit (task #58). In memory: a restart resumes every live
     /// agent anyway, and one still limited says so again on its first turn.
     usage_limits: self::runtime::usage_limits::UsageLimits,
     /// Operation receipts cached only for Store-free execution, plus the one
@@ -643,10 +643,10 @@ impl AppState {
             streams: HashMap::new(),
             session_registry: SessionRegistry::new(),
             delivery_queue: Default::default(),
-            watch_agent_filed_issues: false,
+            watch_agent_filed_tasks: false,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
             compactions: Default::default(),
-            dispatched_issue: HashMap::new(),
+            dispatched_task: HashMap::new(),
             reminded_holdings: HashMap::new(),
             workspace_lifecycle: HashMap::new(),
             reclaim_nudge: Default::default(),

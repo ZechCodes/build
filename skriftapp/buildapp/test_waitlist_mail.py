@@ -59,7 +59,7 @@ def test_confirmation_subject_and_copy_are_verbatim():
     assert CONFIRMATION_SUBJECT == "You’re on the Build list"
     assert CONFIRMATION_HEADING == "You’re on the list."
     assert CONFIRMATION_PARAGRAPHS == (
-        "Build turns an issue into shipped code, on your machine. Invites go out as seats open.",
+        "Build turns a task into shipped code, on your machine. Invites go out as seats open.",
         "The next email you get from us is your invite. Nothing else.",
     )
     message = build_confirmation_email(

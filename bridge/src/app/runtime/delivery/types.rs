@@ -147,8 +147,8 @@ impl PendingAgentTurn {
     /// The same, for a caller that knows which of the run's agents it means:
     /// `run.request_changes` addresses the agent whose conversation the
     /// reviewer was reading, and — when that is the first one — swaps the run's
-    /// roster for its Issue's so the comments land on the conversation the
-    /// Issue renders. Either way the turn must reach the run's OWN agent.
+    /// roster for its Task's so the comments land on the conversation the
+    /// Task renders. Either way the turn must reach the run's OWN agent.
     pub(in crate::app) fn for_run_agent(
         owner: &str,
         agent_id: &str,
@@ -222,9 +222,9 @@ pub(in crate::app) struct TurnText {
     pub(in crate::app) warm: String,
 }
 
-/// The live implementation an Issue's conversation actually speaks to: the
-/// Issue owns the words, its implementation owns the checkout and the PTY they
-/// have to reach. Read off the run before the Issue is taken out of the map, so
+/// The live implementation a Task's conversation actually speaks to: the
+/// Task owns the words, its implementation owns the checkout and the PTY they
+/// have to reach. Read off the run before the Task is taken out of the map, so
 /// the agent can be woken — or brought back — without borrowing it again.
 pub(in crate::app) struct ImplementationTarget {
     pub(in crate::app) run_id: String,

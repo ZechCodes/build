@@ -91,7 +91,7 @@ fn subject(root: &Path, checkout: &Path) -> Subject {
         ),
         repositories: vec![(checkout.to_path_buf(), Some("main".into()))],
         holds: Vec::new(),
-        issues: Vec::new(),
+        tasks: Vec::new(),
         conversation_activity_ms: None,
         previous: None,
     }
@@ -557,13 +557,13 @@ fn holds_read_under_the_mutex_are_kept_in_reading_order() {
     std::fs::write(checkout.join("notes.md"), "mine\n").unwrap();
     let mut held = subject(&root, &checkout);
     held.holds = vec![
-        HOLD_ISSUE_OPEN,
+        HOLD_TASK_OPEN,
         crate::workspace::FINISH_BLOCKER_AGENT_WORKING,
     ];
 
     let record = held.measure(tomorrow(), &ReclaimPolicy::default(), &budget());
 
-    assert_eq!(record.holds, vec!["agent_working", "dirty", "issue_open"]);
+    assert_eq!(record.holds, vec!["agent_working", "dirty", "task_open"]);
 }
 
 /// A notice and a pruning carry over while the workspace stays quiet, and are

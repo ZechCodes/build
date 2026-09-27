@@ -41,7 +41,7 @@ const refsCalls = (call) => call.mock.calls.filter(([method]) => method === "git
 
 function greet(context, call) {
   contexts.adoptDeviceSession({ deviceId: "dev-a", call });
-  contexts.adoptBridgeSelection(context, { version: "1.22.0" }, null);
+  contexts.adoptBridgeSelection(context, { version: "2.0.0" }, null);
 }
 
 async function mountOver(context) {
@@ -94,7 +94,7 @@ describe("workspace ref picker across a reconnect", () => {
     expect(picker.status()).toBe("");
     await flush();
     expect(refsCalls(call)).toHaveLength(0);
-    contexts.adoptBridgeSelection(context, { version: "1.22.0" }, null);
+    contexts.adoptBridgeSelection(context, { version: "2.0.0" }, null);
     await vi.waitFor(() => expect(picker.label()).toBe("fresh"));
     expect(refsCalls(call)).toHaveLength(1);
 

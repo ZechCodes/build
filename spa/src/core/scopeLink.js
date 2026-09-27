@@ -1,5 +1,5 @@
 // The way out of a narrowed view to the project's whole one (#117): from one
-// workspace's chat overview to every workspace's, and from a workspace's Issues
+// workspace's chat overview to every workspace's, and from a workspace's Tasks
 // tab to the project's. One look for both, so the two read as one idea — the
 // words say where it goes and the arrow says it goes out.
 //

@@ -265,7 +265,7 @@ describe("the saved aggregate diff", () => {
   };
 
   it("reads the rest of a cut file by range as the reader reaches its end", async () => {
-    await greetBridge(async () => ({ api_version: "1.26.0", capabilities: ["bodies.pages", "diffs.perFile"] }), { deviceId: "dev-1" });
+    await greetBridge(async () => ({ api_version: "2.0.0", capabilities: ["bodies.pages", "diffs.perFile"] }), { deviceId: "dev-1" });
     const fetchFiles = vi.fn(cutHunks("+the rest of the file\n"));
     await mountCut(fetchFiles);
     await vi.waitFor(() => expect(host.textContent).toContain("the rest of the file"));

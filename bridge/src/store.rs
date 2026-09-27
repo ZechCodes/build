@@ -1,9 +1,9 @@
-//! Durable persistence for Issues, under the bridge state dir
+//! Durable persistence for Tasks, under the bridge state dir
 //! (`~/.build/tasks/` by default, next to the identity file):
 //!
 //! ```text
 //! build.db                 every record and every conversation
-//! issues/<issue_id>/docs/… canonical stage-plan docs
+//! issues/<task_id>/docs/… canonical stage-plan docs (named before #190)
 //! ```
 //!
 //! One SQLite database, and one table in it carries the design: `thread_items`,
@@ -13,10 +13,10 @@
 //! appended to constantly — so appending one message writes one row, and paging
 //! is a `LIMIT` rather than a full read.
 //!
-//! That is what this store replaced: one `record.json` per Issue holding the
-//! Issue, every implementation inside it, and every thread on all of them,
+//! That is what this store replaced: one `record.json` per Task holding the
+//! Task, every implementation inside it, and every thread on all of them,
 //! rewritten whole on every state transition. 593 KB per transition on the
-//! largest Issue in the one real installation.
+//! largest Task in the one real installation.
 //!
 //! Writes are transactional: a record and the conversation rows that belong to
 //! it land together or not at all. Everything is read back on boot so a restart
@@ -60,6 +60,7 @@ mod legacy;
 mod migrations;
 mod operations;
 mod schema;
+mod task_rename;
 mod tracker;
 mod user_session;
 mod workspace_lifecycle;
@@ -68,9 +69,9 @@ mod workspace_lifecycle;
 pub use conversations::items_decoded;
 pub use conversations::RESIDENT_CONVERSATION_TAIL;
 use conversations::{read_thread_page, stored_conversation_summary};
-use entities::{migrate_agents_to_v6, write_issue, write_run};
+use entities::{migrate_agents_to_v6, write_run, write_task};
 pub use entities::{
-    PersistedArchivedWorktree, PersistedIssue, PersistedPlan, PersistedRun, WorktreeFinishAction,
+    PersistedArchivedWorktree, PersistedPlan, PersistedRun, PersistedTask, WorktreeFinishAction,
     WorktreeFinishStatus,
 };
 use legacy::{
@@ -85,7 +86,7 @@ use schema::{
     THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL,
     THREAD_MESSAGE_PAGE_SQL, THREAD_PAGE_SQL, THREAD_TOOL_CALL_COUNT_SQL,
 };
-pub use tracker::{IssueFilter, IssueSeek, IssueStretch};
+pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -161,7 +162,10 @@ pub enum StoreError {
 ///
 /// 9 added retained inbox timestamps for finished workspaces. The table is
 /// empty on upgrade; older finished conversations were already deleted.
-pub const SCHEMA_VERSION: i64 = 9;
+///
+/// 10 is the task rename (#190): tables, columns, ids and record keys take the
+/// new word, after a copy of the whole database (`store/task_rename.rs`).
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -188,6 +192,9 @@ pub struct Store {
     /// the refusal is injected here instead of simulated.
     #[cfg(test)]
     fail_next_write: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this open ran the task rename (#190): the boot that did is
+    /// the one whose resumed agents remember tools that no longer exist.
+    renamed_tasks: bool,
 }
 
 impl Store {
@@ -239,6 +246,13 @@ impl Store {
         // Store share one connection, but the daemon is not the only process
         // that may ever open the file (a backup, a shell).
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The task rename BEFORE the schema batch, which would otherwise make
+        // the renamed tables empty beside the full ones they replace.
+        let renamed_tasks = stored.is_some_and(|found| found < task_rename::TASK_RENAME_VERSION);
+        if renamed_tasks {
+            let report = task_rename::migrate_to_task_names(&mut conn, &dir)?;
+            eprintln!("store: schema {SCHEMA_VERSION} migration: {report:?}");
+        }
         // The columns BEFORE the schema batch: `SCHEMA` indexes them, and an
         // older table has no such column for an index to name. A v1 database
         // arrives here needing all five, and reaches the current version in
@@ -277,14 +291,19 @@ impl Store {
             conn: Arc::new(Mutex::new(conn)),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            renamed_tasks,
         })
     }
-    /// Make every stored issue unreadable, the way a damaged record is: what
+    /// Whether opening this store ran the task rename (#190).
+    pub fn renamed_tasks_on_open(&self) -> bool {
+        self.renamed_tasks
+    }
+    /// Make every stored task unreadable, the way a damaged record is: what
     /// a test of a tracker read failure needs.
     #[cfg(test)]
-    pub(crate) fn damage_tracker_issues(&self) {
+    pub(crate) fn damage_tracker_tasks(&self) {
         self.connection()
-            .execute("UPDATE tracker_issues SET record = '{'", [])
+            .execute("UPDATE tracker_tasks SET record = '{'", [])
             .expect("the damage lands");
     }
 

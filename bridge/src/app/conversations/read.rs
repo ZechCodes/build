@@ -189,7 +189,7 @@ pub(in crate::app) fn required_sequence_param(params: &Value, key: &str) -> Resu
 /// name, and a detail surface's own id is accepted as well, so a client paging
 /// the view it is looking at does not have to rename the id it already holds.
 pub(in crate::app) fn conversation_owner_param(params: &Value) -> Result<String, String> {
-    ["entity_id", "run_id", "plan_id", "issue_id"]
+    ["entity_id", "run_id", "plan_id", "task_id"]
         .iter()
         .find_map(|key| {
             params
@@ -273,7 +273,7 @@ impl AppState {
 
     /// Answer a history query out of the conversations this agent may read.
     ///
-    /// That is its own, and — when it is implementing an Issue — the Issue's,
+    /// That is its own, and — when it is implementing a Task — the Task's,
     /// which is where its first agent's words are actually recorded. Never
     /// another entity's: an agent asking about work it was never given must
     /// come back empty, not informed.

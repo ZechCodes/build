@@ -80,7 +80,7 @@ impl AppState {
     /// Boot migration: give every stored entity the inbox anchor it would have
     /// had, and leave every anchored one exactly where it is.
     ///
-    /// Seeding at creation alone would file a two-week-old issue you picked
+    /// Seeding at creation alone would file a two-week-old task you picked
     /// back up yesterday under two weeks ago, so the seed is walked forward
     /// through the user messages its conversation already holds — the same rule
     /// a live message goes through, replayed over the history that predates it.
@@ -304,7 +304,7 @@ impl AppState {
     /// How far each of an entity's conversations has got, as
     /// `(agent_id, sequence)` — for one agent when the caller named one.
     ///
-    /// The entity-level conversation of a planned run is its Issue's, so its
+    /// The entity-level conversation of a planned run is its Task's, so its
     /// first agent is read through to the end of THAT thread; every other agent
     /// speaks in its own.
     ///
@@ -343,7 +343,7 @@ impl AppState {
     /// `(agent_id, last_attention_sequence)` in roster order — the lines a
     /// dismissal draws, and the lines it is judged against afterwards.
     ///
-    /// The entity-level conversation of a planned run is its Issue's, so the
+    /// The entity-level conversation of a planned run is its Task's, so the
     /// first agent's line is drawn in THAT thread; every other agent's in its
     /// own. The first pair is the roster's first agent — the only one the
     /// pre-agent dismissal folds onto.
@@ -488,7 +488,7 @@ impl AppState {
         }
         // The entry's badge is the union of its agents': the first agent's
         // count comes off the conversation the entity's own surfaces render
-        // (an Issue's, for a planned implementation), every other agent's off
+        // (a Task's, for a planned implementation), every other agent's off
         // its own.
         let Ok(roster) = self.entity_agents(entity_id) else {
             return match thread {
@@ -843,7 +843,7 @@ impl AppState {
     }
 
     /// The entity-less row an external worktree's id names, or `None` when the
-    /// id is a run's or an issue's. A checkout on a branch IS that branch's
+    /// id is a run's or a task's. A checkout on a branch IS that branch's
     /// row; one with no branch is only ever itself.
     pub(in crate::app) fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
         let project_ids: Vec<String> = self
@@ -926,7 +926,7 @@ impl AppState {
     }
 
     /// Whether `entity_id` names something the attention map keeps a record
-    /// for: a run, an issue, or a worktree the scan can still see. Anything
+    /// for: a run, a task, or a worktree the scan can still see. Anything
     /// else would be written and pruned in the same breath.
     pub(in crate::app) fn entity_takes_attention(&self, entity_id: &str) -> bool {
         self.runs.contains_key(entity_id)

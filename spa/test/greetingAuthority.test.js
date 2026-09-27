@@ -20,7 +20,7 @@ it("gives every greeting its own authority, and transfers existing waits to the 
   releaseGreeting(context, first);
   await Promise.resolve();
   expect(released).not.toHaveBeenCalled();
-  adoptBridgeSelection(context, { version: "1.22.0" }, {}, second);
+  adoptBridgeSelection(context, { version: "2.0.0" }, {}, second);
   await vi.waitFor(() => expect(released).toHaveBeenCalledTimes(1));
 });
 
@@ -30,7 +30,7 @@ it("does not install or dispatch on an obsolete greeting's compatible answer", a
   const second = greetingInFlight(context);
   const dispatch = vi.fn();
   const waiting = whenGreeted(context, dispatch);
-  adoptBridgeSelection(context, { version: "1.22.0" }, {}, first);
+  adoptBridgeSelection(context, { version: "2.0.0" }, {}, first);
   await Promise.resolve();
   expect(context.apiVersion).toBe(null);
   expect(dispatch).not.toHaveBeenCalled();
@@ -52,12 +52,12 @@ it("a released wait without a compatible verdict grants no dispatch authority", 
 it("revokes a sent request's authority as soon as a newer greeting starts", async () => {
   const context = adoptDeviceSession(fakeSession("dev-a"));
   const first = greetingInFlight(context);
-  adoptBridgeSelection(context, { version: "1.22.0" }, {}, first);
+  adoptBridgeSelection(context, { version: "2.0.0" }, {}, first);
   const asking = await whenGreeted(context, () => Promise.resolve("answer"));
   expect(asking.stands()).toBe(true);
   const second = greetingInFlight(context);
   expect(asking.stands()).toBe(false);
-  adoptBridgeSelection(context, { version: "1.22.0" }, {}, second);
+  adoptBridgeSelection(context, { version: "2.0.0" }, {}, second);
   expect(asking.stands()).toBe(false);
   expect((await whenGreeted(context, () => null)).stands()).toBe(true);
 });
@@ -67,7 +67,7 @@ it.each(["project.ensure_conversation", "workspace.ensure_conversation"])(
   async (method) => {
     const session = fakeSession("dev-a");
     const context = adoptDeviceSession(session);
-    adoptBridgeSelection(context, { version: "1.22.0" }, {});
+    adoptBridgeSelection(context, { version: "2.0.0" }, {});
     const pending = greetingInFlight(context);
     const sends = [context.rpc, context.chatRepository.currentCall()].map((call) =>
       call(method, {}).catch((error) => error));
@@ -85,7 +85,7 @@ it("does not return a minted owner after its greeting has been superseded", asyn
   let answer;
   session.call.mockImplementation(() => new Promise((resolve) => { answer = resolve; }));
   const context = adoptDeviceSession(session);
-  adoptBridgeSelection(context, { version: "1.22.0" }, {});
+  adoptBridgeSelection(context, { version: "2.0.0" }, {});
   const request = context.rpc("project.ensure_conversation", {}).catch((error) => error);
   await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
   const newer = greetingInFlight(context);

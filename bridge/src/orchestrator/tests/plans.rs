@@ -10,7 +10,7 @@ use crate::isolation::Isolation;
 use crate::mcp::{DoneReport, DoneStatus};
 use crate::orchestrator::{
     gate_plan_message, gate_plan_stage_notes, mcp_config_path, ActivePlan, ActiveRun,
-    AdoptableCheckout, AgentTurn, ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
+    AdoptableCheckout, AgentTurn, ImplementableTask, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{
     plan_transition, PlanEvent, PlanId, PlanState, StageDocState, StageManifestEntry,
@@ -23,7 +23,7 @@ use std::process::Command;
 
 /// `.git/info/exclude` is the human's own file, and every planning
 /// workspace of the same project appends Build's two rules to it with the
-/// app mutex released — so two Issues planned at once are two writers.
+/// app mutex released — so two Tasks planned at once are two writers.
 /// A reader must see the file whole at every instant, and the human's own
 /// rules must be there, once, when the writers are done.
 #[test]
@@ -114,7 +114,7 @@ pub(super) fn drafting_plan(
 ) -> ActivePlan {
     drafting_plan_and_turn(orch, store, id, goal).0
 }
-/// A door to an Issue's planning agent, driven the way the app drives it:
+/// A door to a Task's planning agent, driven the way the app drives it:
 /// gate it, prepare the workspace (the app does that with its mutex
 /// released), open the session. One helper per door, so a test says which
 /// door it is knocking on and nothing else has to know the order.
@@ -266,13 +266,13 @@ pub(super) fn dispatch_planned_run_and_turn(
     plan: &ActivePlan,
     id: &str,
 ) -> (ActiveRun, AgentTurn) {
-    let issue = ImplementableIssue::judge(RunSource {
+    let task = ImplementableTask::judge(RunSource {
         plan,
         has_active_run: false,
     })
     .unwrap();
     let prepared = orch
-        .prepare_run_checkout(&issue, "main", id, Isolation::Worktree, store)
+        .prepare_run_checkout(&task, "main", id, Isolation::Worktree, store)
         .unwrap();
     orch.open_prepared_run(RunId::new(id), plan, prepared, Default::default())
         .unwrap()
@@ -288,7 +288,7 @@ async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
     let workspace = plan.workspace.as_ref().expect("a planning workspace");
     assert_eq!(
         workspace.checkout, repo,
-        "an issue's planning agent works in the project's primary checkout"
+        "a task's planning agent works in the project's primary checkout"
     );
     assert_eq!(
         registered_checkouts(&repo).len(),
@@ -311,6 +311,27 @@ async fn a_drafting_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
     // and it lands in the checkout the agent actually runs in.
     let mcp = std::fs::read_to_string(repo.join(mcp_config_path("plan-1"))).unwrap();
     assert!(mcp.contains("plan-1"), "{mcp}");
+}
+/// The scratch docs dir keeps the name older builds gave it (#190), so a plan
+/// being drafted when the bridge was upgraded resumes on the revision it had in
+/// flight rather than on a fresh copy from the store.
+#[tokio::test]
+async fn a_plan_drafted_before_the_rename_resumes_in_its_own_scratch_docs() {
+    let (dir, repo) = init_repo();
+    let orch = orchestrator(&dir, &repo);
+    let store = split_store(&dir);
+    let in_flight = dir.path().join("worktrees/.issue-docs/plan-1");
+    std::fs::create_dir_all(&in_flight).unwrap();
+    std::fs::write(in_flight.join("plan.md"), "# half a revision").unwrap();
+
+    let plan = drafting_plan(&orch, &store, "plan-1", "Add a greeting");
+
+    let workspace = plan.workspace.as_ref().expect("a planning workspace");
+    assert_eq!(workspace.docs_dir, in_flight);
+    assert_eq!(
+        std::fs::read_to_string(workspace.docs_dir.join("plan.md")).unwrap(),
+        "# half a revision"
+    );
 }
 /// Planning runs in the human's own checkout, so it must leave no trace
 /// there: nothing to commit, and — critically — no untracked
@@ -344,7 +365,7 @@ async fn planning_leaves_the_primary_checkout_clean() {
         "planning dirties nothing in the primary checkout"
     );
 
-    // A second issue writes its own config and repeats no rule.
+    // A second task writes its own config and repeats no rule.
     let _second = drafting_plan(&orch, &store, "plan-2", "Add a farewell");
     let exclude = std::fs::read_to_string(&exclude_path).unwrap();
     assert_eq!(
@@ -645,7 +666,7 @@ async fn approve_plan_drops_the_scratch_docs_dir() {
     );
 }
 /// The reviewer-facing bug this guards: a planning checkout cleaned up
-/// outside Build made "Mark issue ready" fail, because removing something
+/// outside Build made "Mark task ready" fail, because removing something
 /// already absent was read as a failure. Approve only wants the scratch
 /// docs gone — and they are.
 #[tokio::test]
@@ -664,7 +685,7 @@ async fn approve_plan_succeeds_when_the_docs_dir_already_vanished() {
     assert!(plan.workspace.is_none(), "the plan lets the carcass go");
 }
 #[tokio::test]
-async fn an_implementable_issue_rejects_one_whose_first_stage_doc_is_unapproved() {
+async fn an_implementable_task_rejects_one_whose_first_stage_doc_is_unapproved() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
@@ -673,7 +694,7 @@ async fn an_implementable_issue_rejects_one_whose_first_stage_doc_is_unapproved(
     let mut plan = approved_multi_stage_plan(&orch, &store, "plan-1", 2);
     plan.stages[0].state = StageDocState::Planned;
 
-    let Err(error) = ImplementableIssue::judge(RunSource {
+    let Err(error) = ImplementableTask::judge(RunSource {
         plan: &plan,
         has_active_run: false,
     }) else {
@@ -823,13 +844,13 @@ async fn dispatch_planned_run_materializes_commits_and_baselines_the_diff() {
     assert_eq!(run.run.state, RunState::Review);
 }
 #[tokio::test]
-async fn an_implementable_issue_requires_an_approved_plan() {
+async fn an_implementable_task_requires_an_approved_plan() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
     let plan = plan_in_review(&orch, &store, "plan-1");
 
-    let err = match ImplementableIssue::judge(RunSource {
+    let err = match ImplementableTask::judge(RunSource {
         plan: &plan,
         has_active_run: false,
     }) {

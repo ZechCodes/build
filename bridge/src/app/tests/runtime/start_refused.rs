@@ -1,5 +1,5 @@
 //! A session Build ends before it runs a turn says why on the agent's record
-//! (issue #72): two agents asked for `opus` were ended over their `init` line
+//! (task #72): two agents asked for `opus` were ended over their `init` line
 //! and sat idle for a day with `start_error` empty and nothing in the log.
 
 use super::*;
@@ -55,7 +55,7 @@ async fn a_session_ended_over_its_start_puts_the_reason_on_the_agent() {
     assert_eq!(recorded, REFUSED);
 }
 
-/// Issue #73: a child handed a turn that never announces itself is ended at
+/// Task #73: a child handed a turn that never announces itself is ended at
 /// the startup deadline, and the agent's record says so in the same way a
 /// refused model does — through the real session and the real status pump,
 /// so the path from the watchdog to `start_error` is the one the daemon runs.

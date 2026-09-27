@@ -24,6 +24,14 @@ describe("task completion transitions", () => {
     expect(tracker.observe(agent([task("completed")]))).toEqual([]);
   });
 
+  it("names an untitled checklist item as one", () => {
+    const tracker = createTaskCompletionTracker();
+    tracker.observe(agent([task("in_progress", { subject: "" })]));
+    const finished = agent([task("completed", { subject: "" })]);
+    finished.surfaces.checklist_provenance.collection_epoch = 11;
+    expect(tracker.observe(finished)).toEqual([{ id: "turn-8:0", title: "Checklist item" }]);
+  });
+
   it("announces a provider-shaped completion when its collection epoch advances", () => {
     const tracker = createTaskCompletionTracker();
     tracker.observe(agent([task("in_progress")]));

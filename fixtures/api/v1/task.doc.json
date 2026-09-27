@@ -1,0 +1,15 @@
+{
+  "method": "task.doc",
+  "since": "2.0.0",
+  "params": {
+    "task_id": "task-7"
+  },
+  "result": {
+    "plan_path": ".build/plan/plan.md",
+    "contents": "# Add push subscriptions\n"
+  },
+  "errors": [
+    "not_found",
+    "internal"
+  ]
+}

@@ -592,7 +592,7 @@ async fn agent_start_refuses_retired_plan_entities_without_mutating_them() {
         json!({ "id": "plan-switch", "provider": "codex" }),
     );
     assert_eq!(started["ok"], false, "{started:?}");
-    assert_eq!(started["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+    assert_eq!(started["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
     assert_eq!(
         state.lock().unwrap().plans["plan-switch"]
             .agents

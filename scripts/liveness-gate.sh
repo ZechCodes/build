@@ -7,7 +7,7 @@
 # bridge. Then, at the same time:
 #
 #   - web/liveness-soak.mjs holds one TURN-only session for SOAK_MS (ten
-#     minutes) with busy loops spawned through term.create and an issues.list
+#     minutes) with busy loops spawned through term.create and a tasks.list
 #     hammer, and fails on any drop, any timeout, or any ping at 500 ms or over;
 #   - web/ice-restart-check.mjs, RESTART_AT_S into the soak, runs the real app
 #     in Chromium over the same TURN and puts it through an ICE restart, which
@@ -90,7 +90,7 @@ done
 say "soaking $((soak_ms / 1000)) s; the ICE restart comes at ${restart_at_s} s"
 "${compose[@]}" --profile qa run --rm --no-deps -T \
   -e TURN_HOST="$turn_ip" -e SOAK_MS="$soak_ms" -e LOAD_TERM_THREADS="$term_threads" \
-  -e HAMMER_ISSUES=1 -e PROBE_STATS=1 \
+  -e HAMMER_TASKS=1 -e PROBE_STATS=1 \
   qa node liveness-soak.mjs </dev/null >"$logs/soak.log" 2>&1 &
 soak=$!
 

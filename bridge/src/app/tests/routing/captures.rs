@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn capture_reroute_refuses_the_retired_issue_destination_without_mutating_the_capture() {
+fn capture_reroute_refuses_the_retired_task_destination_without_mutating_the_capture() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
@@ -10,11 +10,11 @@ fn capture_reroute_refuses_the_retired_issue_destination_without_mutating_the_ca
 
     let refused = state.handle(req(
         "capture.reroute",
-        json!({ "capture_id": capture_id, "project_id": project_id, "kind": "issue" }),
+        json!({ "capture_id": capture_id, "project_id": project_id, "kind": "task" }),
     ));
 
     assert_eq!(refused["ok"], false, "{refused:?}");
-    assert_eq!(refused["error"], crate::app::issues::ISSUES_RETIRED_ERROR);
+    assert_eq!(refused["error"], crate::app::tasks::TASKS_RETIRED_ERROR);
     assert!(state.plans.is_empty());
     assert_eq!(capture_record(&mut state, &capture_id), before);
 }
@@ -137,7 +137,7 @@ fn a_capture_being_routed_is_a_feed_row() {
     assert_eq!(row["working"], true, "the router has it");
     assert_eq!(row["branch"], Value::Null);
     assert_eq!(row["run_id"], Value::Null);
-    assert_eq!(row["issue_id"], Value::Null);
+    assert_eq!(row["task_id"], Value::Null);
     assert_eq!(row["worktree_id"], Value::Null);
     assert_eq!(row["agents"].as_array().unwrap().len(), 0);
     assert_eq!(row["can_finish"], false);
@@ -171,7 +171,7 @@ fn a_capture_says_whether_the_router_has_it_or_gave_up() {
     assert_eq!(failed["unread_reason"], "routing_failed");
 }
 
-/// Once a capture is routed and quiet, the issue or branch it became is its
+/// Once a capture is routed and quiet, the task or branch it became is its
 /// presence — a second row for one piece of work is a lie. An unanswered
 /// question is the exception: that is the capture itself asking.
 #[test]
@@ -187,7 +187,7 @@ fn a_routed_and_quiet_capture_leaves_the_feed() {
         capture.state = crate::capture::CaptureState::Routed;
         capture.routing = Some(crate::capture::CaptureRouting {
             project_id: project_id.clone(),
-            kind: crate::capture::CaptureTarget::Issue,
+            kind: crate::capture::CaptureTarget::Task,
             target_id: "plan-7".to_string(),
             routed_at: now_rfc3339(),
             rationale: Some("no branch names this work".to_string()),
@@ -203,8 +203,8 @@ fn a_routed_and_quiet_capture_leaves_the_feed() {
     assert_eq!(asking["unread_reason"], "router_question");
     assert_eq!(asking["question"]["text"], "which project is this?");
     assert_eq!(asking["project_id"], project_id.as_str());
-    assert_eq!(asking["issue_id"], "plan-7");
-    assert_eq!(asking["routing"]["kind"], "issue");
+    assert_eq!(asking["task_id"], "plan-7");
+    assert_eq!(asking["routing"]["kind"], "task");
 
     state
         .captures

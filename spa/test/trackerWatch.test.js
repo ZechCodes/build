@@ -1,9 +1,9 @@
-// #65: what an issue's record says about watching, and how far it has been read.
+// #65: what a task's record says about watching, and how far it has been read.
 //
 // The gate itself is NOT here. It moved to a capability at `ea3de439`
-// (`bridgeCapabilities(deviceId)?.issues?.watching === true`) and the shell
+// (`bridgeCapabilities(deviceId)?.tasks?.watching === true`) and the shell
 // agent's test/trackerWatchGate.test.js holds it, with
-// test/issueWatchGate.test.js holding this page on top of a real greeting.
+// test/taskWatchGate.test.js holding this page on top of a real greeting.
 // What is left here is the reading of the record — the two functions only this
 // page uses.
 
@@ -13,7 +13,7 @@ import { readThrough, watchStateOf } from "../src/core/trackerWatch.js";
 describe("what the record says about watching", () => {
   // Settled on #64 at 00:38Z: `watched` is the reader's own watch, `trackers`
   // stays the live array of agent-id strings, and the hover count is the
-  // agents following it. Not a mixed list — `core/trackerAgentIssues.js`
+  // agents following it. Not a mixed list — `core/trackerAgentTasks.js`
   // matches that array with `includes`, and actor objects would have stopped
   // matching without a word.
   it("reads the reader's watch off `watched` and counts the agents beside it", () => {
@@ -30,7 +30,7 @@ describe("what the record says about watching", () => {
 
 describe("how far the reader has read", () => {
   it("is the newest row, whichever kind it is", () => {
-    expect(readThrough([{ key: "ie-1" }, { key: "ic-2" }])).toBe("ic-2");
+    expect(readThrough([{ key: "te-1" }, { key: "tc-2" }])).toBe("tc-2");
   });
 
   // core/trackerTimeline.js keys a record the bridge wrote without an id by
@@ -40,10 +40,10 @@ describe("how far the reader has read", () => {
   // good, silently, because that refusal is a no-op on the bridge and this
   // page swallows read-mark failures on purpose.
   it("never sends a key the timeline invented for itself", () => {
-    expect(readThrough([{ key: "ic-01M30" }, { key: "comment-3" }])).toBe("");
+    expect(readThrough([{ key: "tc-01M30" }, { key: "comment-3" }])).toBe("");
     expect(readThrough([{ key: "event-0" }])).toBe("");
     // A real id that merely looks similar is still sent.
-    expect(readThrough([{ key: "ie-01M30" }])).toBe("ie-01M30");
+    expect(readThrough([{ key: "te-01M30" }])).toBe("te-01M30");
   });
 
   it("is nothing at all on an empty timeline", () => {

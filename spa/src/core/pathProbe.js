@@ -1,5 +1,5 @@
 // Is this path there? Asked when an RPC's own deadline stopped being able to
-// tell us (issue #30).
+// tell us (task #30).
 //
 // # The fault this exists for
 //
@@ -44,7 +44,7 @@ export { PING_TIMEOUT_MS };
 
 /** The diagnostic this writes under. Settings → Diagnostics shows the history
  *  as rows, so the next report from a phone arrives with the probe, what
- *  vouched for the path, and the verdict already in it (issue #30 point 4). */
+ *  vouched for the path, and the verdict already in it (task #30 point 4). */
 export const PATH_PROBE_EVENT = "path-probe";
 
 /**

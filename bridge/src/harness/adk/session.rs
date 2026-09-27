@@ -363,7 +363,7 @@ fn start_startup_watchdog(
             if !startup_deadline_elapsed(&state, deadline, Instant::now()) {
                 continue;
             }
-            // The same path as a child refused over its `init` line (issue
+            // The same path as a child refused over its `init` line (task
             // #73): the sentence is its last words and the agent's
             // `start_error`, or the row just looks idle.
             let reason = format!(

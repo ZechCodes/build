@@ -36,7 +36,7 @@ impl LifecycleSettlement<CreatedCheckout> for CreateWorktreeSettlement {
 
 pub struct OpenImplementationSettlement {
     pub project_id: String,
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
@@ -54,7 +54,7 @@ impl LifecycleSettlement<ImplementationPrepared> for OpenImplementationSettlemen
         let run_id = self.run_id.clone();
         match state.open_prepared_implementation(
             self.project_id,
-            self.issue_id,
+            self.task_id,
             self.run_id,
             prepared,
             self.model_choice,
@@ -67,7 +67,7 @@ impl LifecycleSettlement<ImplementationPrepared> for OpenImplementationSettlemen
 
 pub struct AdoptImplementationSettlement {
     pub project_id: String,
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
@@ -85,7 +85,7 @@ impl LifecycleSettlement<AdoptedImplementation> for AdoptImplementationSettlemen
         let run_id = self.run_id.clone();
         match state.open_adopted_implementation(
             self.project_id,
-            self.issue_id,
+            self.task_id,
             self.run_id,
             prepared,
             self.model_choice,
@@ -97,7 +97,7 @@ impl LifecycleSettlement<AdoptedImplementation> for AdoptImplementationSettlemen
 }
 
 pub struct RestoreImplementationSettlement {
-    pub issue_id: String,
+    pub task_id: String,
     pub run_id: String,
     pub caller: Box<dyn ImplementationCaller>,
 }
@@ -109,7 +109,7 @@ impl LifecycleSettlement<RestoredCheckout> for RestoreImplementationSettlement {
     ) -> Result<Value, String> {
         match result {
             Ok(restored) => {
-                state.settle_restored_checkout(self.issue_id, self.run_id, restored, self.caller)
+                state.settle_restored_checkout(self.task_id, self.run_id, restored, self.caller)
             }
             Err(error) => self.caller.settle(state, Err(error)),
         }
@@ -197,7 +197,7 @@ pub struct AbandonSettlement {
     pub active: Box<ActiveRun>,
     pub run_id: String,
     pub project_id: String,
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
     pub detail: ThreadDetail,
 }
 impl LifecycleSettlement<StagePublications> for AbandonSettlement {
@@ -210,7 +210,7 @@ impl LifecycleSettlement<StagePublications> for AbandonSettlement {
             Ok(published) => state.settle_abandoned_run(
                 self.run_id,
                 self.project_id,
-                self.issue_id,
+                self.task_id,
                 self.detail,
                 published,
                 *self.active,

@@ -19,7 +19,7 @@ To use the originally requested installation, set `PLAYWRIGHT_MODULE` to
 (expand `~` when setting the variable). `REPLAY_OUTPUT` changes the artifact
 directory, which defaults to `/tmp/phone134-replay`.
 
-The fixture creates a workspace, conversation agent and issue in the disposable
+The fixture creates a workspace, conversation agent and task in the disposable
 compose bridge. Vite serves the current SPA source on 8134 and proxies its API
 to the compose app. An observation-only transform logs RPC method names.
 After confirming a populated view, it marks the page hidden, takes Chromium

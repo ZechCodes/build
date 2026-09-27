@@ -27,7 +27,7 @@
 //! `workspace.reclaim` takes the branch each of the workspace's directories
 //! carries the same way (#167), measured only in the drain, once the checkout
 //! is gone: nobody asked for these branches by name, so one that has to stay
-//! never holds the reclaim up. It stays, and each issue linking the workspace
+//! never holds the reclaim up. It stays, and each task linking the workspace
 //! or the branch records why (`branch_kept`).
 
 mod checkouts;

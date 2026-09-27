@@ -1,0 +1,21 @@
+{
+  "method": "task.stage_diff",
+  "since": "2.0.0",
+  "params": {
+    "task_id": "task-4",
+    "stage_id": "stage-2"
+  },
+  "result": {
+    "run_id": "run-7",
+    "stage_id": "stage-2",
+    "status": "unavailable",
+    "reason": "stage_not_complete",
+    "start_sha": "aa11bb22cc33dd44ee55ff6677889900aabbccdd",
+    "task_id": "task-4"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ]
+}

@@ -293,7 +293,7 @@ describe("tab layout primitives", () => {
     "#planthread",
     ".cluster-pane",
     ".project-inbox",
-    ".issues",
+    ".tasks",
     ".plan",
     ".plan-summary",
     ".plan-feedback",
@@ -303,7 +303,7 @@ describe("tab layout primitives", () => {
     ".stagecomments",
   ];
 
-  /** Whole selector tokens, so `.issues` never reads out of `.issues-empty` and
+  /** Whole selector tokens, so `.tasks` never reads out of `.tasks-empty` and
    *  `.plan` never out of `.plan-summary`. */
   const selectorTokens = (selector) => selector.match(/[.#][-\w]+/g) || [];
   const rulesMentioning = (token) =>
@@ -710,8 +710,8 @@ describe("diff file headers", () => {
 
     const [singleColumn] = rulesFor(".surface #tabbody:not(.bare):not(.flush)");
     const [changesColumn] = rulesFor(".cdetail-host");
-    const [issueColumn] = rulesIn(strippedSurfaces).filter((rule) => rule.selector === ".ivviewer");
-    for (const scroller of [singleColumn, changesColumn, issueColumn]) {
+    const [taskColumn] = rulesIn(strippedSurfaces).filter((rule) => rule.selector === ".ivviewer");
+    for (const scroller of [singleColumn, changesColumn, taskColumn]) {
       expect(declaration(scroller.body, "--diff-sticky-top")).toBe("calc(0px - var(--pane-top))");
     }
   });
@@ -726,16 +726,16 @@ describe("the tail of a reading column", () => {
   const surfaceRules = () => rulesIn(strippedSurfaces);
   it("pays its scroll-end room on the tail, not on the column", () => {
     const changesColumn = surfaceRules().find((rule) => rule.selector === ".gitpane .cdetail-host");
-    const issueColumn = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer");
+    const taskColumn = surfaceRules().find((rule) => rule.selector === ".taskview .ivviewer");
     expect(changesColumn).toBeTruthy();
     expect(declaration(changesColumn.body, "padding-bottom")).toBeNull();
-    expect(issueColumn).toBeTruthy();
-    expect(declaration(issueColumn.body, "padding-bottom")).toBe("0");
-    // The issue viewer ends on whatever it was written with; the Changes column
+    expect(taskColumn).toBeTruthy();
+    expect(declaration(taskColumn.body, "padding-bottom")).toBe("0");
+    // The task viewer ends on whatever it was written with; the Changes column
     // ends on the keyed stack, which is the one block always at its foot.
     const [tail] = surfaceRules().filter((rule) => rule.selector.includes(":last-child:not(.actionbar)"));
     expect(tail).toBeTruthy();
-    expect(tail.selector).toContain(".issueview .ivviewer");
+    expect(tail.selector).toContain(".taskview .ivviewer");
     expect(declaration(tail.body, "margin-bottom")).toBe("var(--pane-bottom)");
     const [stack] = surfaceRules().filter((rule) => rule.selector === ".gitpane .dstack");
     expect(stack).toBeTruthy();
@@ -753,10 +753,10 @@ describe("the tail of a reading column", () => {
     // The changeset's bar lives in the tray it is painted with, and the tray is
     // no box of its own — so the rule names the tray, not the whole column.
     expect(bar.selector).toContain(".gitpane .cstray > .actionbar");
-    const issueBar = surfaceRules().find((rule) => rule.selector === ".issueview .ivviewer > .actionbar");
+    const taskBar = surfaceRules().find((rule) => rule.selector === ".taskview .ivviewer > .actionbar");
     // The fade is mixed from the panel it sits in: under the new near-black
     // --bg a shell-toned bar would read as a hole in the panel.
-    expect(declaration(issueBar.body, "background")).toBe("var(--panel)");
+    expect(declaration(taskBar.body, "background")).toBe("var(--panel)");
   });
 });
 
@@ -871,7 +871,7 @@ const shorthandSide = (shorthand, side) => {
 
 /** Both sheets a surface's left edge is written across: the shell's primitives
  *  and the panes in the shared source above, the work surfaces' own rows (the
- *  issue rail) in styles/surfaces.css. */
+ *  task rail) in styles/surfaces.css. */
 const everyRule = () => [...cssRules(), ...rulesIn(strippedSurfaces)];
 
 /** The rules for a selector that apply at a viewport, in cascade order. */
@@ -926,14 +926,14 @@ describe("the surface's text column", () => {
     "the Changes rail's empty section": inRail(".crail .empty"),
     "the Changes rail's show-more row": inRail(".gitmore"),
     "a file in the Files tree": inRail(".frow"),
-    "the issue rail's head": inRail(".ivhead"),
-    "a stage in the issue rail": inRail(".ivstages .stagerow"),
-    "the issue rail with no stages": inRail(".ivstages .empty"),
+    "the task rail's head": inRail(".ivhead"),
+    "a stage in the task rail": inRail(".ivstages .stagerow"),
+    "the task rail with no stages": inRail(".ivstages .empty"),
     // The assignment's fields are not a row of the rail at all — they are the
     // overlay that row opens, and an overlay stands on the frame, not the
     // column.
-    "the issue rail's assignment control": inRail(".ivassign-head"),
-    "the issue rail's lineage": inRail(".ivlineage"),
+    "the task rail's assignment control": inRail(".ivassign-head"),
+    "the task rail's lineage": inRail(".ivlineage"),
   };
 
   it.each(Object.keys(CHAIN))("stands %s on the gutter, and nowhere else", (row) => {
@@ -977,7 +977,7 @@ describe("the surface's text column", () => {
   });
 
   it("lets the flush pane's list column meet the frame", () => {
-    // The commit rail, the file tree and the issue's stage list are rails, not
+    // The commit rail, the file tree and the task's stage list are rails, not
     // cards: their fills and their divider run to the frame's edge the way the
     // inbox rail's do, so the column bleeds back through the split's gutter and
     // its rows carry that gutter inside them instead.

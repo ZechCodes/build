@@ -1,9 +1,9 @@
-//! Files an agent made itself, filed on an issue (#116).
+//! Files an agent made itself, filed on a task (#116).
 //!
 //! A reviewer's evidence used to be a list of `/tmp/...png` paths in a
-//! comment, which nobody reading the issue from the app could open. An agent's
-//! issue tools now take a file it produced by its full path; the bridge copies
-//! it into the attachment store at intake, so the issue holds the bytes and not
+//! comment, which nobody reading the task from the app could open. An agent's
+//! task tools now take a file it produced by its full path; the bridge copies
+//! it into the attachment store at intake, so the task holds the bytes and not
 //! a pointer to a file somebody may delete.
 
 use super::tracker::{attached, filed, refused, tracked};
@@ -15,7 +15,7 @@ const PNG: &[u8] = b"\x89PNG\r\n\x1a\nscreenshot";
 const MP4: &[u8] = b"\x00\x00\x00\x18ftypmp42recording";
 const WEBM: &[u8] = b"\x1a\x45\xdf\xa3webm-recording";
 
-/// A workspace agent of a tracked project, an issue it can comment on, and a
+/// A workspace agent of a tracked project, a task it can comment on, and a
 /// scratch folder outside every store to make files in.
 struct Scene {
     _root: tempfile::TempDir,
@@ -23,7 +23,7 @@ struct Scene {
     state: AppState,
     project_id: String,
     who: (String, String),
-    issue_id: String,
+    task_id: String,
     scratch: tempfile::TempDir,
 }
 
@@ -32,14 +32,14 @@ fn scene() -> Scene {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let issue = filed(&mut state, &project_id, "The board forgets a drag");
+    let task = filed(&mut state, &project_id, "The board forgets a drag");
     Scene {
         _root: tmp,
         _home: home,
         state,
         project_id,
         who,
-        issue_id: issue["id"].as_str().unwrap().to_string(),
+        task_id: task["id"].as_str().unwrap().to_string(),
         scratch: tempfile::tempdir().unwrap(),
     }
 }
@@ -55,8 +55,8 @@ impl Scene {
         call(
             &mut self.state,
             &self.who,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: self.issue_id.clone(),
+            BridgeAction::TrackerCommentTask {
+                task_id: self.task_id.clone(),
                 body: "Before and after.".into(),
                 attachments,
                 refs: Vec::new(),
@@ -69,8 +69,8 @@ impl Scene {
 
     fn bytes_of(&mut self, path: &Value) -> Vec<u8> {
         let read = self.state.handle(req(
-            "issues.attachment",
-            json!({ "issue_id": self.issue_id, "path": path }),
+            "tasks.attachment",
+            json!({ "task_id": self.task_id, "path": path }),
         ));
         assert_eq!(read["ok"], true, "{read:?}");
         crate::encoding::b64decode(read["result"]["content_b64"].as_str().unwrap()).unwrap()
@@ -99,14 +99,14 @@ fn an_agent_attaches_a_screenshot_and_a_recording_it_made() {
         let stored = file["path"].as_str().unwrap();
         assert!(
             !stored.starts_with(&scene.scratch.path().display().to_string()),
-            "the issue names the store's copy, not the agent's file: {stored}"
+            "the task names the store's copy, not the agent's file: {stored}"
         );
     }
     assert_eq!(scene.bytes_of(&files[1]["path"]), MP4.to_vec());
 }
 
 /// The copy is taken at intake: the agent cleaning up its scratch folder does
-/// not take the picture off the issue.
+/// not take the picture off the task.
 #[test]
 fn the_stored_copy_survives_the_source_being_deleted() {
     let mut scene = scene();
@@ -212,15 +212,15 @@ fn passing_through_a_users_attachment_still_works() {
     assert_eq!(said["comment"]["attachments"][0]["name"], "board.png");
 }
 
-/// `create_issue` takes them too, so an issue can be filed with its evidence.
+/// `create_task` takes them too, so a task can be filed with its evidence.
 #[test]
-fn an_agent_files_an_issue_with_a_file_it_made() {
+fn an_agent_files_a_task_with_a_file_it_made() {
     let mut scene = scene();
     let shot = scene.made("broken.png", PNG);
     let created = call(
         &mut scene.state,
         &scene.who,
-        BridgeAction::TrackerCreateIssue {
+        BridgeAction::TrackerCreateTask {
             title: "The rail overlaps the composer".into(),
             body: None,
             status: None,
@@ -233,8 +233,8 @@ fn an_agent_files_an_issue_with_a_file_it_made() {
         },
     )
     .unwrap();
-    assert_eq!(created["issue"]["attachments"][0]["name"], "broken.png");
-    assert_eq!(created["issue"]["attachments"][0]["mime"], "image/png");
+    assert_eq!(created["task"]["attachments"][0]["name"], "broken.png");
+    assert_eq!(created["task"]["attachments"][0]["mime"], "image/png");
 }
 
 /// The client verbs are unchanged: a path from a browser is hostile input, and
@@ -245,23 +245,23 @@ fn the_client_still_cannot_file_a_path_outside_the_store() {
     let shot = scene.made("board.png", PNG);
     let refusal = refused(
         &mut scene.state,
-        "issues.comment",
-        json!({ "issue_id": scene.issue_id, "body": "x", "attachments": [{ "path": shot }] }),
+        "tasks.comment",
+        json!({ "task_id": scene.task_id, "body": "x", "attachments": [{ "path": shot }] }),
     );
     assert!(refusal.contains("not an attachment"), "{refusal}");
 }
 
-/// The whole path, unmocked: a real MCP `comment_issue` frame naming a local
+/// The whole path, unmocked: a real MCP `comment_task` frame naming a local
 /// file, through the tool's parse, the agent's action and the store, to the
-/// issue the client reads.
+/// task the client reads.
 #[test]
-fn a_real_comment_issue_frame_files_a_local_file_the_client_reads() {
+fn a_real_comment_task_frame_files_a_local_file_the_client_reads() {
     let mut scene = scene();
     let shot = scene.made("lightbox-desktop.png", PNG);
     let frame = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": { "name": "comment_issue", "arguments": {
-            "issue_id": scene.issue_id, "body": "Desktop screenshot.",
+        "params": { "name": "comment_task", "arguments": {
+            "task_id": scene.task_id, "body": "Desktop screenshot.",
             "attachments": [{ "path": shot }]
         }}
     });
@@ -274,7 +274,7 @@ fn a_real_comment_issue_frame_files_a_local_file_the_client_reads() {
 
     let read = scene
         .state
-        .handle(req("issues.get", json!({ "issue_id": scene.issue_id })));
+        .handle(req("tasks.get", json!({ "task_id": scene.task_id })));
     let comment = read["result"]["timeline"]
         .as_array()
         .unwrap()
@@ -305,8 +305,8 @@ fn an_attachment_reads_back_in_ranges() {
     let path = said["comment"]["attachments"][0]["path"].clone();
 
     let first = scene.state.handle(req(
-        "issues.attachment",
-        json!({ "issue_id": scene.issue_id, "path": path }),
+        "tasks.attachment",
+        json!({ "task_id": scene.task_id, "path": path }),
     ));
     assert_eq!(first["ok"], true, "{first:?}");
     assert_eq!(first["result"]["size"], body.len());
@@ -320,16 +320,16 @@ fn an_attachment_reads_back_in_ranges() {
     );
 
     let rest = scene.state.handle(req(
-        "issues.attachment",
-        json!({ "issue_id": scene.issue_id, "path": path, "offset": head.len() }),
+        "tasks.attachment",
+        json!({ "task_id": scene.task_id, "path": path, "offset": head.len() }),
     ));
     assert_eq!(rest["result"]["offset"], head.len());
     let tail = crate::encoding::b64decode(rest["result"]["content_b64"].as_str().unwrap()).unwrap();
     assert_eq!([head, tail].concat(), body);
 
     let slice = scene.state.handle(req(
-        "issues.attachment",
-        json!({ "issue_id": scene.issue_id, "path": path, "offset": 3, "length": 4 }),
+        "tasks.attachment",
+        json!({ "task_id": scene.task_id, "path": path, "offset": 3, "length": 4 }),
     ));
     let piece =
         crate::encoding::b64decode(slice["result"]["content_b64"].as_str().unwrap()).unwrap();
@@ -512,7 +512,7 @@ fn one_bad_file_refuses_the_call_before_any_is_copied() {
 
 /// What is stored is exactly the bytes that were checked. The agent's file is
 /// rewritten in place — the same inode, so the open handle sees it — between
-/// the check and the copy; the issue still gets the picture that passed.
+/// the check and the copy; the task still gets the picture that passed.
 #[test]
 fn a_file_rewritten_between_the_check_and_the_copy_stores_what_was_checked() {
     for rewrite in [&b""[..], &b"MZ\x90\x00 not a picture any more"[..]] {

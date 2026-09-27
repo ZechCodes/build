@@ -1,0 +1,73 @@
+# What scripts/rename-issue-to-task.py leaves as "issue" (#190).
+#
+#   @group<TAB>why the group stays
+#   group<TAB>path glob<TAB>regex: the spans it protects (none: the whole file)
+#
+# A glob's `*` crosses `/`. `--kept` prints every remaining hit under its group,
+# and names any rule that no longer matches anything. Name a file the rename
+# moves by its new name: a glob matches a path as it is and as it will be.
+
+@script	The rename itself: this list and the script have to spell the word they rename.
+script	scripts/rename-issue-to-task.py
+script	scripts/rename-issue-to-task.keep
+
+@github	A GitHub issue: GitHub's tracker, its API, its workflow events and the repository's contribution terms.
+github	*	https?://github\.com/\S*
+github	.github/workflows/cla.yml	\bissue_comment\b|github\.event\.issue\b
+github	CLA.md
+github	CONTRIBUTING.md
+github	SECURITY.md
+github	scripts/refresh-landing-activity.py
+github	planning/v2/Tasks Spec.md	like GitHub issues
+github	spa/src/core/previewText.js	\| Issue \| Verdict \|
+github	spa/test/previewText.test.js	\| Issue \| Verdict \||Issue Verdict Evidence
+github	spa/test/agentsOverviewFixture.js	\| Issue \| Verdict \||Skrift issue pipeline|Issue (?:fixer|auditor)|issue-implementation-audit
+github	spa/test/agentOverviewDense.test.js	issue-implementation-audit|Issue Verdict Evidence
+github	spa/test/browser/agentOverviewLayout.test.js	issue-implementation-audit
+github	spa/test/browser/captureHeadingSlots.mjs	issue-implementation-audit
+
+@third-party	Another product's issue: vendored dependency code, Linear's MCP tool, and the Do documents the 2026-08 redesign was planned in.
+third-party	bridge/vendor/rtc/*
+third-party	bridge/vendor/webrtc/*
+third-party	bridge/src/harness/adk/tests/protocol_reader.rs	mcp__linear__create_issue
+third-party	planning/v2/UX Redesign Decisions.md	five Do issues|an issue doc|the issue doc|the issue docs
+
+@english	English that is not about the entity: the verb ("issue a request") or a problem ("zero issues").
+english	*	start_issue_only_one_turn_start
+english	spa/test/cacheSyncChanges.test.js	re-issues the active one
+english	*	cert-manager issues fresh certs
+english	*	Semgrep finds no issues
+english	*	system exclusions; zero issues
+english	*	may issue another greeting|can issue another|issues the subscribe|issues the ordinary typed|Do not issue another delivery
+english	skriftapp/*	(?:re)?issue_invite|\bissue(?=\(client)|(?<=def )issue(?=\()|issues_an_invite|invite_issues_one_invite|\bissues? (?:a fresh|an invite)
+english	design/landing-captures/capture.mjs	appHostIssues|(?<![-\w])issues?\b(?!-)
+english	design/landing-captures/capture-results.json	"issues": \[\]
+
+@history	Recorded history: gitleaks fingerprints of commits already on main, and the verbs the previous wire minor shipped.
+history	.gitleaksignore
+history	fixtures/api/verbs-*.json
+
+@compat	Old spellings that links and data written before the rename still carry: read, never written.
+compat	spa/src/core/router.js	LEGACY_TASKS_TAB = "issues"|LEGACY_PLAN_COLLECTION = "issue"|were `issues`, and a retired plan was `issue`|the old `issues` there
+compat	spa/test/router.test.js	(?s)// Everything a link could say before issues were renamed.*?\n\}\);
+compat	spa/src/core/renamedIds.js
+compat	spa/test/renamedIds.test.js
+compat	spa/test/trackerUnread.test.js	(?s)describe\("a mark cached before tasks were renamed \(#190\)".*?\n\}\);
+compat	bridge/src/store.rs	issues/<task_id>/docs
+compat	bridge/src/store/documents.rs	PLANS_DIR: &'static str = "issues"
+compat	bridge/src/store/tests/documents.rs	join\("issues"\)
+compat	bridge/src/store/tests/migrations.rs	issues/plan-1
+compat	bridge/tests/real_store_migration.rs	join\("issues"\)|"issues dir"
+compat	bridge/src/orchestrator/runs.rs	\.issue-docs
+compat	bridge/src/orchestrator/tests/plans.rs	\.issue-docs
+compat	bridge/src/resume.rs	`\*_issue`|comment_issue|old issue-…
+compat	bridge/src/app/tests/resume.rs	`\*_issue`|comment_issue|old issue-…
+compat	bridge/src/mcp.rs	"_issues?"|\b(?:comment|list|open)_issues?\b|"parent_issue_id"
+compat	spa/src/core/taskCache.js	`#/issue/<id>`
+compat	spa/src/views/taskView.js	#/issue/<id>
+compat	bridge/src/renamed_ids.rs
+compat	bridge/src/app/tests/renamed_ids.rs
+compat	bridge/src/store/task_rename.rs
+compat	bridge/src/store/tests/task_rename.rs
+compat	bridge/src/store/tests/schema_v9.sql
+compat	bridge/tests/task_rename_real_store.rs

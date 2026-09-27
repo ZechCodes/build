@@ -128,7 +128,7 @@ const activityRows = () => panel().querySelectorAll(".thread-activity-group, .th
 let rail;
 
 const mountWorkspaceRail = async () => {
-  await greetBridge(async () => ({ push_events: true, api_version: "1.10.0" }), { deviceId: DEVICE_ID });
+  await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities: ["conversations.settings"] }), { deviceId: DEVICE_ID });
   await writeRailBoard({
     projects: [{ project_id: PROJECT_ID, name: "build" }],
     workspaces: [{ id: WORKSPACE_ID, project_id: PROJECT_ID, name: "login", status: "ready", entity_id: WORKSPACE_OWNER }],
@@ -183,7 +183,7 @@ describe("the sections of the conversation's menu", () => {
     expect(groups().map((group) => group.getAttribute("aria-label"))).toEqual(["Show", "Detail", "Compact at"]);
     expect(rowsOf(groupNamed("Show")).map((each) => [each.dataset.action, rowLabel(each), each.querySelector(".md").textContent])).toEqual([
       ["shells", "Shells", "1 running"],
-      ["checklist", "Tasks", "1/2 completed"],
+      ["checklist", "Checklist", "1/2 completed"],
     ]);
     expect(rowsOf(groupNamed("Detail")).map(rowLabel)).toEqual(["All", "All messages", "Agent only"]);
     expect(rowsOf(groupNamed("Compact at")).map(rowLabel)).toEqual(["Default (200k)", "150k", "200k", "300k", "Off"]);

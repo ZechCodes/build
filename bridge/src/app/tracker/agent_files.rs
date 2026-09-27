@@ -1,12 +1,12 @@
-//! Files an agent made itself, filed on an issue (#116).
+//! Files an agent made itself, filed on a task (#116).
 //!
 //! An agent proves a claim with a screenshot, a recording or a log it just
 //! produced, and before this it could only list the paths in its text — which
-//! nobody reading the issue from the app, least of all from a phone, can open.
-//! So an agent's `create_issue` and `comment_issue` take a file by its full
+//! nobody reading the task from the app, least of all from a phone, can open.
+//! So an agent's `create_task` and `comment_task` take a file by its full
 //! path on this machine, and the bridge copies it into the attachment store at
-//! intake, exactly as a user's upload is saved: the issue holds the bytes, and
-//! the agent clearing out its scratch folder takes nothing off the issue.
+//! intake, exactly as a user's upload is saved: the task holds the bytes, and
+//! the agent clearing out its scratch folder takes nothing off the task.
 //!
 //! Only the agent's tools come through here. A path from a CLIENT is hostile
 //! input and stays fenced to the store (`attachments.rs`); an agent already
@@ -40,11 +40,11 @@ use std::path::Path;
 
 /// The largest file an agent may attach. Recordings are the reason it is well
 /// past a user upload's cap: a user's file crosses the DataChannel in one
-/// message, and an agent's is read back in pieces (`issues.attachment` ranges).
+/// message, and an agent's is read back in pieces (`tasks.attachment` ranges).
 pub const AGENT_ATTACHMENT_MAX_BYTES: u64 = 50 * 1_048_576;
 
 /// What a text file may be typed as. HTML and SVG are text too, and are left
-/// out on purpose: a file an issue carries is never markup a reader renders.
+/// out on purpose: a file a task carries is never markup a reader renders.
 const TEXT_MIMES: [&str; 3] = ["text/plain", "text/markdown", "application/json"];
 
 /// One media kind: the extensions that claim it, what to call it in a
@@ -103,9 +103,9 @@ enum Intake {
 }
 
 impl AppState {
-    /// The attachments an agent's issue tool named, with every file the agent
+    /// The attachments an agent's task tool named, with every file the agent
     /// made copied into the store and renamed to the copy. What comes out is
-    /// what `parse_issue_attachments` reads, the same as a client's list.
+    /// what `parse_task_attachments` reads, the same as a client's list.
     ///
     /// All or nothing: the count, and every file's type, size and contents,
     /// are checked before the first copy is written. A call holds at most ten
@@ -140,7 +140,7 @@ impl AppState {
             // Relative is only ever an attachment the agent was sent, named
             // against its checkout; the bridge does not guess at a folder.
             return self
-                .resolve_issue_attachment(path)
+                .resolve_task_attachment(path)
                 .map(|_| Intake::PassThrough(entry.clone()))
                 .map_err(|_| format!("Build cannot attach {path}: give the file's full path."));
         }

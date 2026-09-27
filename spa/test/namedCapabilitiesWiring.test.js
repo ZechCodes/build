@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 // Keep the bridge's real session.hello and the SPA's greeting, adapter, gate,
-// and issue page on one path. A names-only greeting must reach the watch
+// and task page on one path. A names-only greeting must reach the watch
 // control without a minor-version guess making up a missing capability.
 
 import { execFile } from "node:child_process";
@@ -8,7 +8,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { columns, comment, issue } from "./trackerWireFixture.js";
+import { columns, comment, task } from "./trackerWireFixture.js";
 import versions from "../../fixtures/api/versions.json";
 
 globalThis.indexedDB = new IDBFactory();
@@ -16,14 +16,14 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 const { bridgeCapabilities, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { carriesWatching } = await import("../src/core/trackerWatch.js");
-const { mountIssuePage } = await import("../src/core/trackerIssuePage.js");
-const { writeIssuesRecord } = await import("../src/core/trackerCache.js");
+const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+const { writeTasksRecord } = await import("../src/core/trackerCache.js");
 
 const run = promisify(execFile);
 const bridgeRoot = resolve(process.cwd(), "../bridge");
-const issueAnswer = {
-  issue: issue({ id: "issue-1", number: 122, watched: false }),
-  timeline: [comment({ id: "ic-1", issue_id: "issue-1" })],
+const taskAnswer = {
+  task: task({ id: "task-1", number: 122, watched: false }),
+  timeline: [comment({ id: "tc-1", task_id: "task-1" })],
 };
 let realGreeting;
 let host;
@@ -47,15 +47,15 @@ beforeAll(async () => {
   expect(envelope.ok).toBe(true);
   realGreeting = envelope.result;
   expect(realGreeting.api_version).toBe(versions.current);
-  expect(realGreeting.capabilities).toContain("issues.watching");
+  expect(realGreeting.capabilities).toContain("tasks.watching");
 }, 610_000);
 
 beforeEach(async () => {
   resetChangeEvents();
   globalThis.indexedDB = new IDBFactory();
-  document.body.innerHTML = '<div id="issue"></div>';
-  host = document.querySelector("#issue");
-  await writeIssuesRecord("dev-1", "proj-1", { issues: [], columns: columns() });
+  document.body.innerHTML = '<div id="task"></div>';
+  host = document.querySelector("#task");
+  await writeTasksRecord("dev-1", "proj-1", { tasks: [], columns: columns() });
   calls = [];
   page = null;
 });
@@ -69,39 +69,39 @@ async function mountWith(greeting) {
   const call = async (method, params) => {
     calls.push([method, params]);
     if (method === "session.hello") return greeting;
-    if (method === "issues.get") return issueAnswer;
+    if (method === "tasks.get") return taskAnswer;
     return {};
   };
   await greetBridge(call, { deviceId: "dev-1", strict: true });
-  page = mountIssuePage(host, {
-    projectId: "proj-1", deviceId: "dev-1", projectKey: "dev-1|proj-1", issueId: "issue-1",
+  page = mountTaskPage(host, {
+    projectId: "proj-1", deviceId: "dev-1", projectKey: "dev-1|proj-1", taskId: "task-1",
     callRpc: call,
     catalog: () => ({ providers: [] }),
     refreshCatalog: async () => ({ providers: [] }),
     feed: () => ({ workspaces: [], items: [], projects: [] }),
     navigate: () => {},
   });
-  await vi.waitFor(() => expect(host.querySelector(".issue-page-title")).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector(".task-page-title")).not.toBeNull());
 }
 
 it("renders and wires watching from the real names-only bridge greeting", async () => {
   await mountWith(realGreeting);
-  expect(bridgeCapabilities("dev-1").issues.watching).toBe(true);
+  expect(bridgeCapabilities("dev-1").tasks.watching).toBe(true);
   expect(carriesWatching("dev-1")).toBe(true);
   const button = host.querySelector(".rail-watch");
   expect(button).not.toBeNull();
   button.click();
-  await vi.waitFor(() => expect(calls).toContainEqual(["issues.watch", { issue_id: "issue-1" }]));
+  await vi.waitFor(() => expect(calls).toContainEqual(["tasks.watch", { task_id: "task-1" }]));
 });
 
 it("hides watching when the same bridge version omits its name", async () => {
   const greeting = {
     ...realGreeting,
-    capabilities: realGreeting.capabilities.filter((name) => name !== "issues.watching"),
+    capabilities: realGreeting.capabilities.filter((name) => name !== "tasks.watching"),
   };
   await mountWith(greeting);
-  expect(bridgeCapabilities("dev-1").issues.watching).toBe(false);
+  expect(bridgeCapabilities("dev-1").tasks.watching).toBe(false);
   expect(carriesWatching("dev-1")).toBe(false);
   expect(host.querySelector(".rail-watch")).toBeNull();
-  expect(calls.some(([method]) => method === "issues.read_through")).toBe(false);
+  expect(calls.some(([method]) => method === "tasks.read_through")).toBe(false);
 });

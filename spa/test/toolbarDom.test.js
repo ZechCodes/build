@@ -35,13 +35,13 @@ let feed = {
       resume_at: ago(60),
     },
     {
-      kind: "issue",
+      kind: "task",
       deviceId: "dev-1",
       projectKey: "dev-1/p1",
       project_id: "p1",
       project: "relaydb",
       branch: null,
-      issue_id: "plan-1",
+      task_id: "plan-1",
       title: "Add a health endpoint",
       state: "created",
       working: false,
@@ -186,8 +186,8 @@ describe("the sentence the toolbar prints", () => {
     expect(document.getElementById("tb-status")).toBeNull();
   });
 
-  it("names an issue by its title", async () => {
-    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
+  it("names a task by its title", async () => {
+    App.route = { name: "task", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
     expect(names()).toEqual(["relaydb", "Add a health endpoint"]);
   });
@@ -201,7 +201,7 @@ describe("the sentence the toolbar prints", () => {
 });
 
 // The project's two pages ride the bar after its name, so they are reachable
-// from an issue's page too, with the chat open over it on a phone.
+// from a task's page too, with the chat open over it on a phone.
 describe("the project's pages in the bar", () => {
   const projectTabs = () =>
     [...bar().querySelectorAll("[data-project-tab]")].map((tab) => [tab.textContent, tab.getAttribute("aria-selected")]);
@@ -210,22 +210,22 @@ describe("the project's pages in the bar", () => {
     toolbarRouteChanged();
   };
 
-  // Issues first, and the one a route that names no tab is standing on (#46).
-  it("follows the project's name with Issues and Workspaces, marking the page you are on", async () => {
+  // Tasks first, and the one a route that names no tab is standing on (#46).
+  it("follows the project's name with Tasks and Workspaces, marking the page you are on", async () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     expect(names()).toEqual(["relaydb"]);
-    expect(projectTabs()).toEqual([["Issues", "true"], ["Workspaces", "false"]]);
+    expect(projectTabs()).toEqual([["Tasks", "true"], ["Workspaces", "false"]]);
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "workspaces" });
-    expect(projectTabs()).toEqual([["Issues", "false"], ["Workspaces", "true"]]);
+    expect(projectTabs()).toEqual([["Tasks", "false"], ["Workspaces", "true"]]);
   });
 
-  it("keeps them over an issue's page with Issues open, and goes back to the list from either", async () => {
-    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
-    expect(projectTabs()).toEqual([["Issues", "true"], ["Workspaces", "false"]]);
-    bar().querySelector('[data-project-tab="issues"]').click();
+  it("keeps them over a task's page with Tasks open, and goes back to the list from either", async () => {
+    standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "task-1" });
+    expect(projectTabs()).toEqual([["Tasks", "true"], ["Workspaces", "false"]]);
+    bar().querySelector('[data-project-tab="tasks"]').click();
     // The default tab's own URL: the bare project link (#46).
     expect(location.hash).toBe("#/device/dev-1/project/p1");
-    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "issue-1" });
+    standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "task-1" });
     bar().querySelector('[data-project-tab="workspaces"]').click();
     expect(location.hash).toBe("#/device/dev-1/project/p1/workspaces");
   });
@@ -243,7 +243,7 @@ describe("the project's pages in the bar", () => {
     clearProjectTabHandler(opened);
     expect(opened).toHaveBeenCalledWith("workspaces");
     expect(location.hash).toBe(hash);
-    expect(projectTabs()).toEqual([["Issues", "false"], ["Workspaces", "true"]]);
+    expect(projectTabs()).toEqual([["Tasks", "false"], ["Workspaces", "true"]]);
   });
 
   it("draws none over a workspace", async () => {
@@ -251,13 +251,13 @@ describe("the project's pages in the bar", () => {
     expect(projectTabs()).toEqual([]);
   });
 
-  // #104: "For the project it is all unreads" — every watched issue's, off the
+  // #104: "For the project it is all unreads" — every watched task's, off the
   // cached list, moving when the record does. A finished one's never counts
   // (#183), though a 1.29 list carries it.
-  it("wears the unread of every watched issue in the project on Issues", async () => {
-    const { issuesAddress } = await import("../src/core/trackerCache.js");
-    const listed = (issues) => writeCached(issuesAddress("dev-1", "p1"), { issues, columns: [] });
-    const issuesBadge = () => bar().querySelector('[data-project-tab="issues"] .issue-unread')?.textContent || null;
+  it("wears the unread of every watched task in the project on Tasks", async () => {
+    const { tasksAddress } = await import("../src/core/trackerCache.js");
+    const listed = (tasks) => writeCached(tasksAddress("dev-1", "p1"), { tasks, columns: [] });
+    const tasksBadge = () => bar().querySelector('[data-project-tab="tasks"] .task-unread')?.textContent || null;
     await listed([
       { id: "i1", number: 1, watched: true, unread_count: 2, assignee: { kind: "agent", agent_id: "a1" } },
       { id: "i2", number: 2, watched: true, unread_count: 1, assignee: null },
@@ -266,20 +266,20 @@ describe("the project's pages in the bar", () => {
       { id: "i5", number: 5, watched: true, state: "closed", unread_count: 7, assignee: null },
     ]);
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
-    await vi.waitFor(() => expect(issuesBadge()).toBe("3"));
-    expect(bar().querySelector('[data-project-tab="workspaces"] .issue-unread')).toBeNull();
-    standOn({ name: "trackerIssue", deviceId: "dev-1", projectId: "p1", issueId: "i1" });
-    expect(issuesBadge()).toBe("3");
+    await vi.waitFor(() => expect(tasksBadge()).toBe("3"));
+    expect(bar().querySelector('[data-project-tab="workspaces"] .task-unread')).toBeNull();
+    standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "i1" });
+    expect(tasksBadge()).toBe("3");
     await listed([{ id: "i1", number: 1, watched: true, unread_count: 0 }]);
-    await vi.waitFor(() => expect(issuesBadge()).toBeNull());
+    await vi.waitFor(() => expect(tasksBadge()).toBeNull());
     standOn({ name: "project", deviceId: "dev-1", projectId: "p2" });
-    expect(issuesBadge()).toBeNull();
+    expect(tasksBadge()).toBeNull();
   });
 });
 
 // #174. The maintainer: "Move everything out of the nav except the
 // workspace/project picker. I also want the picker to show the project
-// 'project / workspace'." The directories, the Issues and the settings are the
+// 'project / workspace'." The directories, the Tasks and the settings are the
 // workspace's navigation now, in its rail (core/directoryRail.js).
 describe("the workspace picker", () => {
   const picker = () => bar().querySelector('[data-select="workspace"]');
@@ -298,7 +298,7 @@ describe("the workspace picker", () => {
   it("is the bar's only control on a workspace", async () => {
     await standOnWorkspace();
     expect([...bar().querySelectorAll("button")]).toEqual([picker()]);
-    for (const gone of [".tb-directories", "[data-directory]", "[data-workspace-issues]", "[data-workspace-settings]", ".tb-back", "[data-project-back]"]) {
+    for (const gone of [".tb-directories", "[data-directory]", "[data-workspace-tasks]", "[data-workspace-settings]", ".tb-back", "[data-project-back]"]) {
       expect([gone, bar().querySelector(gone)]).toEqual([gone, null]);
     }
     // No verb slot either: a failed workspace's Retry is on its surface.
@@ -319,9 +319,9 @@ describe("the workspace picker", () => {
     // so the navigation settles a tick later.
     await flush();
     expect(location.hash).toBe("#/device/dev-1/project/p1");
-    // …which is the Issues tab, the project's default (#46). The inbox's
+    // …which is the Tasks tab, the project's default (#46). The inbox's
     // project name writes this same link (core/projectModel.js mints both).
-    expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "issues" });
+    expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "tasks" });
   });
 
   it("keeps the other routes' bars as they were", async () => {
@@ -474,8 +474,8 @@ describe("the project's own checkout", () => {
 
 // The project menu, on main's chrome. Three things this bar used to carry are
 // retired with main's workspace toolbar, so their cases are gone rather than
-// restated: the item half's work menu on a legacy branch or issue route, the
-// branch and issue creates (a workspace is the only thing the bar creates now),
+// restated: the item half's work menu on a legacy branch or task route, the
+// branch and task creates (a workspace is the only thing the bar creates now),
 // and the ⋯ menu.
 describe("the project menu", () => {
   it("mounts its cached scope, open list and query without a click", async () => {
@@ -635,7 +635,7 @@ describe("the project you pick, against a feed that keeps ticking", () => {
     await waitMenuList("workspaces");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await waitMenuClosed();
-    App.route = { name: "issue", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
+    App.route = { name: "task", deviceId: "dev-1", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
     await vi.waitFor(async () => expect((await readCached(uiAddress({ view: "toolbar", kind: "filter", sub: "project" }))).value.projectKey).toBe("dev-1/p1"));
     expect((await openJump("project")).querySelector(".mi.current .mt").textContent).toBe("relaydb");

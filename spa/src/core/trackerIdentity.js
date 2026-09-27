@@ -1,10 +1,10 @@
-// An issue's durable agent identities are supplied by the bridge and cached
-// with the issue. Only identities marked available can open a conversation.
+// A task's durable agent identities are supplied by the bridge and cached
+// with the task. Only identities marked available can open a conversation.
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
 import { actorName } from "./trackerLineWords.js";
 import { harnessIconHtml } from "./harnessIcon.js";
-import { isProjectActor, issueAvatarHtml } from "./issueAvatar.js";
+import { isProjectActor, taskAvatarHtml } from "./taskAvatar.js";
 
 const agentIdOf = (actor) => typeof actor === "string" ? actor : actor?.agent_id || "";
 const projectActor = (actor, id) => isProjectActor(typeof actor === "string" ? { agent_id: id } : actor);
@@ -36,7 +36,7 @@ export function actorHref(actor, context = {}) {
 }
 
 const actorMarkHtml = (actor, context, id) => {
-  if (projectActor(actor, id)) return issueAvatarHtml({ kind: "project_agent" }, context);
+  if (projectActor(actor, id)) return taskAvatarHtml({ kind: "project_agent" }, context);
   const provider = context.identities?.[id]?.provider || context.agentProviders?.[id];
   return provider ? harnessIconHtml(provider) : "";
 };
@@ -46,8 +46,8 @@ export function actorIdentityHtml(actor, context = {}, { icon = false } = {}) {
   const name = esc(actorName(actor, context));
   const id = agentIdOf(actor);
   const artwork = icon ? actorMarkHtml(actor, context, id) : "";
-  const mark = artwork ? `<span class="issue-actor-icon" aria-hidden="true">${artwork}</span>` : "";
+  const mark = artwork ? `<span class="task-actor-icon" aria-hidden="true">${artwork}</span>` : "";
   const label = `${mark}${name}`;
   const href = actorHref(actor, context);
-  return href ? `<a class="issue-actor-link" href="${esc(href)}">${label}</a>` : label;
+  return href ? `<a class="task-actor-link" href="${esc(href)}">${label}</a>` : label;
 }

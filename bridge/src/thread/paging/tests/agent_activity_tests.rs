@@ -10,7 +10,7 @@ const ACTIVITY: [ThreadEventKind; 5] = [
 
 /// The fifth kind is the four's equal in every rule the roster of kinds
 /// already carries: it is on `ALL`, it is `Status`, and its wire token is
-/// the snake_case of its name — so the class split, the Issue mirror and
+/// the snake_case of its name — so the class split, the Task mirror and
 /// the counted predicate cover it with no new code.
 #[test]
 fn background_task_updates_join_the_activity_kinds() {

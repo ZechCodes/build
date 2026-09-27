@@ -1,10 +1,10 @@
 use super::*;
 
-/// Deleting an Issue takes its canonical plan docs with it. They live
+/// Deleting a Task takes its canonical plan docs with it. They live
 /// outside the database on purpose, so deleting only rows would leave the
 /// plan on disk forever with nothing referring to it.
 #[test]
-fn deleting_an_issue_removes_its_canonical_docs_too() {
+fn deleting_a_task_removes_its_canonical_docs_too() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("tasks");
     let store = Store::new(&root).expect("store opens");
@@ -15,7 +15,7 @@ fn deleting_an_issue_removes_its_canonical_docs_too() {
     store.delete_plan("plan-1").expect("the delete succeeds");
     assert!(
         !root.join("issues").join("plan-1").exists(),
-        "the Issue's docs outlived the Issue"
+        "the Task's docs outlived the Task"
     );
     store
         .delete_plan("plan-1")

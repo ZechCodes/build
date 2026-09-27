@@ -93,7 +93,7 @@ carries the machine beside it — on the rows themselves, in the rail's project
 headings and in the toolbar's project menu — so the two are never confused.
 The device dropdown at the foot of the rail, beside **Account**, **filters**
 that list — **All devices**, or one machine — and nothing else: it does not
-move where anything runs, and a branch or issue you have open stays open
+move where anything runs, and a branch or task you have open stays open
 whichever way the filter is set.
 
 A machine that goes offline keeps its place: its rows stay in the rail, greyed
@@ -455,10 +455,10 @@ Notes:
 
 ## Contributing
 
-- **Branch from `main`, one issue per branch.** Branches are named
+- **Branch from `main`, one task per branch.** Branches are named
   `build/<short-slug>`.
 - **Nothing merges without review.** Every change is reviewed before it lands
-  on `main`. A merge commit names the issue: `Merge #128: bridge liveness under
+  on `main`. A merge commit names the task: `Merge #128: bridge liveness under
   load`.
 - **Test first.** Write the failing test, then the code. Commit as you go, not
   in one lump at the end.
@@ -480,8 +480,8 @@ Notes:
   semgrep only scans files git tracks, so `git add` new files first. Features
   with a security surface have a checklist in `planning/v2/*Security
   Checklist.md`, and it must be fully met.
-- **Commit messages** say what is now true, in one sentence, with the issue
-  number at the end: `Issue list reads are single-flight under push churn
+- **Commit messages** say what is now true, in one sentence, with the task
+  number at the end: `Task list reads are single-flight under push churn
   (#119)`. An area prefix is common when the change stays in one tier:
   `bridge: keep liveness off the app lock; agents in their own slice (#128)`,
   `docs: …`, `web: …`. The body explains why. Version bumps are

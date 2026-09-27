@@ -38,7 +38,7 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": false,
+    "watch_agent_filed_tasks": false,
     "compact_above_tokens": 150000,
     "workspace_idle_secs": 172800,
     "workspace_prune": true
@@ -90,7 +90,7 @@
         "capability": "step_by_step"
       }
     ],
-    "watch_agent_filed_issues": false,
+    "watch_agent_filed_tasks": false,
     "compact_above_tokens": 150000,
     "workspace_idle_secs": 172800,
     "workspace_prune": true,

@@ -1,7 +1,7 @@
 // The model and reasoning effort each harness starts with, and the harness a
-// new issue or agent starts on.
+// new task or agent starts on.
 //
-// Filing an issue is the common act; picking a harness for it is the rare one.
+// Filing a task is the common act; picking a harness for it is the rare one.
 // So the sheet hides that choice behind an advanced panel and starts it here,
 // and this is what the Account page edits. An empty model or effort means
 // "whatever the harness's own config says" — a preference should be able to

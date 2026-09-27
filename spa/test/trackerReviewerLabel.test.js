@@ -1,15 +1,15 @@
 /** @vitest-environment jsdom */
-// #144: an issue in review is assigned to whoever is reviewing it, and its
+// #144: a task in review is assigned to whoever is reviewing it, and its
 // card and row say who that is — "In review · you" or the reviewer's name —
 // from the cached assignee alone.
 
 import { describe, expect, it } from "vitest";
-import { issueRowHtml } from "../src/core/trackerListRender.js";
-import { issueCardHtml } from "../src/core/trackerBoardRender.js";
-import { columns, issue } from "./trackerWireFixture.js";
+import { taskRowHtml } from "../src/core/trackerListRender.js";
+import { taskCardHtml } from "../src/core/trackerBoardRender.js";
+import { columns, task } from "./trackerWireFixture.js";
 
 const LABELS = { "agent-astra": "review · Astra reviewer" };
-const context = { columns: columns(), agentLabels: LABELS, href: (one) => `#/issues/${one.id}` };
+const context = { columns: columns(), agentLabels: LABELS, href: (one) => `#/tasks/${one.id}` };
 const astra = { kind: "agent", agent_id: "agent-astra" };
 
 const parsed = (html) => {
@@ -17,11 +17,11 @@ const parsed = (html) => {
   host.innerHTML = html;
   return host.firstElementChild;
 };
-const rowStatus = (over) => parsed(issueRowHtml(issue(over), context)).querySelector(".issue-status").textContent;
+const rowStatus = (over) => parsed(taskRowHtml(task(over), context)).querySelector(".task-status").textContent;
 const cardStatus = (over) =>
-  parsed(issueCardHtml(issue(over), context)).querySelector(".issue-card-status")?.textContent.trim() ?? null;
+  parsed(taskCardHtml(task(over), context)).querySelector(".task-card-status")?.textContent.trim() ?? null;
 
-describe("who an issue in review is with", () => {
+describe("who a task in review is with", () => {
   it("names the reviewing agent, or the user as you, on the list row", () => {
     expect(rowStatus({ status: "in_review", assignee: astra })).toBe("In review · review · Astra reviewer");
     expect(rowStatus({ status: "in_review", assignee: { kind: "user" } })).toBe("In review · you");

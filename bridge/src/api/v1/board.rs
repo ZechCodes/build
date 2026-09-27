@@ -11,11 +11,11 @@
 //! off-lock drain, so what those handlers return is the placeholder
 //! [`Answer`] documents; everything else here answers inline.
 //!
-//! Rows that belong to another family's entity — an issue view, a run view, a
-//! feed item — are carried here as [`IssueRow`], [`RunRow`] and
+//! Rows that belong to another family's entity — a task view, a run view, a
+//! feed item — are carried here as [`TaskRow`], [`RunRow`] and
 //! [`FeedItemRow`]: the keys the board itself is read by are named and typed,
 //! and the rest of the entity's shape rides in `rest` rather than being
-//! restated (and left to drift) in a second place. `issue.get` and `run.get`
+//! restated (and left to drift) in a second place. `task.get` and `run.get`
 //! are where those shapes are stated whole.
 
 use super::lifecycle::RunAgentChoiceParams;
@@ -135,10 +135,10 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 // ---------------------------------------------------------------- params ---
 
 /// What `user.present` answers: the user's session after the arrival, the
-/// same object `issues.list` carries.
+/// same object `tasks.list` carries.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UserPresent {
-    pub user_session: super::issues::UserSessionView,
+    pub user_session: super::tasks::UserSessionView,
 }
 
 /// Delete a project and its workspaces after explicit confirmation.
@@ -338,7 +338,7 @@ pub struct CaptureRerouteParams {
     /// again, which is what the one-tap retry on a failed route is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    /// `issue` (the default) or `branch`.
+    /// `task` (the default) or `branch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// The branch a branch reroute continues; named after what was said when
@@ -416,15 +416,15 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub project_agent: Named<ProjectAgentPatch>,
-    /// Whether an issue an AGENT files reaches the user's inbox without the
-    /// agent asking (spec: Issues → Watching). On until the device says
+    /// Whether a task an AGENT files reaches the user's inbox without the
+    /// agent asking (spec: Tasks → Watching). On until the device says
     /// otherwise.
     #[serde(
         default,
         deserialize_with = "named",
         skip_serializing_if = "Option::is_none"
     )]
-    pub watch_agent_filed_issues: Named<bool>,
+    pub watch_agent_filed_tasks: Named<bool>,
     /// The context size an agent's next warm turn is preceded by a compaction
     /// at, unless the conversation sets its own; 0 never compacts.
     #[serde(
@@ -597,14 +597,14 @@ pub struct BoardProjectRow {
 }
 
 /// The keys of an entity view that the board is read by, over the rest of the
-/// shape `issue.get` / `run.get` / `branch.get` state whole.
+/// shape `task.get` / `run.get` / `branch.get` state whole.
 pub type OtherKeys = BTreeMap<String, serde_json::Value>;
 
-/// One issue on the board (`board.list`'s `issues` and `plans`, and
+/// One task on the board (`board.list`'s `tasks` and `plans`, and
 /// `archive.list`'s `plans`).
 #[derive(Debug, Deserialize, Serialize)]
-pub struct IssueRow {
-    pub issue_id: String,
+pub struct TaskRow {
+    pub task_id: String,
     /// The same id under the name the pre-redesign SPA reads.
     pub plan_id: String,
     pub goal: String,
@@ -636,11 +636,11 @@ pub struct RunRow {
     pub rest: OtherKeys,
 }
 
-/// One row of the feed: a branch, an issue, or a capture still deciding where
+/// One row of the feed: a branch, a task, or a capture still deciding where
 /// it goes.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FeedItemRow {
-    /// `branch`, `issue` or `capture`.
+    /// `branch`, `task` or `capture`.
     pub kind: String,
     pub title: Option<String>,
     pub state: Option<String>,
@@ -663,46 +663,46 @@ pub struct FeedItemRow {
     pub rest: OtherKeys,
 }
 
-/// One watched issue in the inbox (spec: Issues → Watching).
+/// One watched task in the inbox (spec: Tasks → Watching).
 ///
-/// Every key is named: this row is the whole of what the inbox draws for an
-/// issue, and an undeclared one would be dropped on its way out of the facade
+/// Every key is named: this row is the whole of what the inbox draws for a
+/// task, and an undeclared one would be dropped on its way out of the facade
 /// rather than reach the client.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrackerIssueRow {
-    /// Always `tracker_issue`. Not `issue`, which the feed already spends on
+pub struct TrackerTaskRow {
+    /// Always `tracker_task`. Not `task`, which the feed already spends on
     /// the multi-stage kind and routes to another page.
     pub kind: String,
-    pub issue_id: String,
+    pub task_id: String,
     /// Per-project and sequential, for `#12`.
     pub number: u64,
     pub project_id: String,
     pub title: String,
-    /// The column slug — one of `issues.columns`' ids.
+    /// The column slug — one of `tasks.columns`' ids.
     pub status: String,
     /// `{"kind":"user"}`, `{"kind":"agent","agent_id":…}` or `null`.
     pub assignee: Option<serde_json::Value>,
     /// The row is the user's own work to do, which pins it above the rest.
     pub assigned_to_user: bool,
-    pub last_event: TrackerIssueEventView,
+    pub last_event: TrackerTaskEventView,
     /// Both the instant the last event happened, as the rows beside this one
     /// send them, so the interleave needs no special case.
     pub anchor: String,
     pub last_activity: String,
     /// How many events are past the user's read mark, their own left out. A
-    /// COUNT here, where a work row sends a flag: an issue's badge is how much
+    /// COUNT here, where a work row sends a flag: a task's badge is how much
     /// has happened, and the client shows the number it is given.
     pub unread: u64,
-    /// Always false. Mute is unwatch on an issue, and an unwatched issue sends
+    /// Always false. Mute is unwatch on a task, and an unwatched task sends
     /// no row at all.
     pub muted: bool,
     /// The user cleared the row and nothing has happened since.
     pub done_until_next: bool,
 }
 
-/// What last happened to a watched issue, in the reader's voice.
+/// What last happened to a watched task, in the reader's voice.
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrackerIssueEventView {
+pub struct TrackerTaskEventView {
     /// The line the row draws under the title, composed by the bridge. The
     /// same facts as the notice an agent gets, said to a person: no comment
     /// id, no tool to call.
@@ -712,7 +712,7 @@ pub struct TrackerIssueEventView {
     pub at: String,
 }
 
-/// One row of the feed: a piece of work, or a watched issue beside it.
+/// One row of the feed: a piece of work, or a watched task beside it.
 ///
 /// Untagged rather than one struct with everything optional: the two shapes
 /// share a list and nothing else, and a row that half-parsed as the other
@@ -720,7 +720,7 @@ pub struct TrackerIssueEventView {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum FeedItem {
-    TrackerIssue(TrackerIssueRow),
+    TrackerTask(TrackerTaskRow),
     Work(FeedItemRow),
 }
 
@@ -753,7 +753,7 @@ pub struct PendingRow {
     pub branch: Option<String>,
     pub state: String,
     pub checkout_id: Option<String>,
-    /// The issue this checkout is being cut for, where there is one.
+    /// The task this checkout is being cut for, where there is one.
     pub implements: Option<String>,
     /// How the checkout being made is isolated; `null` where the verb makes
     /// none.
@@ -783,7 +783,7 @@ pub struct BoardListResult {
     pub usage_limits: Vec<UsageLimitRow>,
 }
 
-/// A harness on this device that has run out of usage (issue #58). Present
+/// A harness on this device that has run out of usage (task #58). Present
 /// from the first turn that stopped at the limit until a turn on that harness
 /// runs again.
 #[derive(Debug, Deserialize, Serialize)]
@@ -861,7 +861,7 @@ pub struct ArchivedWorktreeRow {
 /// One project's archive, grouped by kind.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ArchiveListResult {
-    pub plans: Vec<IssueRow>,
+    pub plans: Vec<TaskRow>,
     pub worktrees: Vec<ArchivedWorktreeRow>,
 }
 
@@ -869,7 +869,7 @@ pub struct ArchiveListResult {
 /// finished thing in: the keys another kind fills are `null` here.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ArchivedItem {
-    /// `issue`, `branch`, or `workspace`.
+    /// `task`, `branch`, or `workspace`.
     pub kind: String,
     pub project_id: Option<String>,
     pub project: Option<String>,
@@ -879,7 +879,7 @@ pub struct ArchivedItem {
     pub action: Option<String>,
     pub finished_at: Option<String>,
     pub run_id: Option<String>,
-    pub issue_id: Option<String>,
+    pub task_id: Option<String>,
     pub stages: Option<u64>,
     pub worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -936,12 +936,12 @@ pub struct SettingsResult {
     /// then every create falls to `default_harness` as it always did.
     #[serde(default)]
     pub role_models: Vec<RoleModelView>,
-    /// Whether an issue an agent files reaches the user's inbox without the
-    /// agent asking (spec: Issues → Watching). On until the device says
+    /// Whether a task an agent files reaches the user's inbox without the
+    /// agent asking (spec: Tasks → Watching). On until the device says
     /// otherwise, so a device that has never been asked behaves as it did
     /// before watching existed: the user sees what was filed.
     #[serde(default)]
-    pub watch_agent_filed_issues: bool,
+    pub watch_agent_filed_tasks: bool,
     /// The context size an agent's next warm turn is preceded by a compaction
     /// at, unless its conversation sets its own. 0 never compacts.
     pub compact_above_tokens: u64,
@@ -1456,7 +1456,7 @@ mod tests {
                 "conflict",
             ),
             (
-                "capture.cancel: this capture already became issue; cancel that instead",
+                "capture.cancel: this capture already became task; cancel that instead",
                 "conflict",
             ),
             (

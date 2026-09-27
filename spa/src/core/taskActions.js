@@ -55,10 +55,10 @@ export function canImplement(plan) {
  *  canonical storage, its worktree pruned) can never be materialized into a run,
  *  so that block precedes the state gates. */
 export function implementBlockReason(plan) {
-  if (!plan) return "No Issue.";
-  if (plan.docs_available === false) return "This Issue's stage plans are unavailable, so it can't be implemented.";
-  if (plan.active_run_id) return "An implementation is already active for this Issue.";
-  if (plan.state !== "approved") return "Mark the Issue ready before implementing it.";
+  if (!plan) return "No Task.";
+  if (plan.docs_available === false) return "This Task's stage plans are unavailable, so it can't be implemented.";
+  if (plan.active_run_id) return "An implementation is already active for this Task.";
+  if (plan.state !== "approved") return "Mark the Task ready before implementing it.";
   if (!firstStageApproved(plan)) return "Approve the first stage before implementing.";
   return null;
 }
@@ -104,7 +104,7 @@ export function defaultRunTab(run) {
  *  view owns the sessionStorage read/removal. */
 export function planBackTarget({ returnRunId, activeRunId, projectId }) {
   if (returnRunId && returnRunId === activeRunId)
-    return { name: "task", projectId, id: returnRunId, tab: "stages" };
+    return { name: "run", projectId, id: returnRunId, tab: "stages" };
   if (projectId) return { name: "project", projectId };
   return { name: "notifications" };
 }
@@ -124,7 +124,7 @@ export function stageNotesTarget(plan) {
   if (plan.state === "approved") {
     return plan.active_run_id ? { method: "run.stage_send_notes", entityId: plan.active_run_id } : null;
   }
-  return { method: "issue.stage_revise", entityId: plan.issue_id || plan.plan_id };
+  return { method: "task.stage_revise", entityId: plan.task_id || plan.plan_id };
 }
 
 // ---- Confirmation plans (the modal-confirm step outlines) --------------------
@@ -196,8 +196,8 @@ export function deleteRunConfirm() {
 /** The confirmation plan for plan.delete (removes the abandoned plan's record). */
 export function deletePlanConfirm() {
   return {
-    title: "Delete this issue?",
-    actions: ["Remove the Issue record and stage plans permanently"],
+    title: "Delete this task?",
+    actions: ["Remove the Task record and stage plans permanently"],
     confirmLabel: "Delete",
     danger: true,
   };
@@ -207,9 +207,9 @@ export function deletePlanConfirm() {
  *  one: the outline frames what approval unlocks. */
 export function approvePlanConfirm() {
   return {
-    title: "Mark this issue ready?",
+    title: "Mark this task ready?",
     actions: [
-      "The planning session ends — the Issue stage plans are already saved",
+      "The planning session ends — the Task stage plans are already saved",
       "Implementation unlocks for approved stage plans",
     ],
     confirmLabel: "Mark ready",
@@ -221,7 +221,7 @@ export function approvePlanConfirm() {
  *  `base` may be a placeholder like "the base branch". */
 export function implementConfirm({ base, branch = null }) {
   return {
-    title: "Implement this issue?",
+    title: "Implement this task?",
     intro: "A fresh agent session will execute the approved stage plans.",
     actions: [
       // Targeting an existing checkout is a different first step, and the gate

@@ -4,7 +4,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-import { deviceShim } from "./issueIdentityHarness.mjs";
+import { deviceShim } from "./taskIdentityHarness.mjs";
 
 const output = process.argv[2] || "/tmp/done-groups.png";
 const width = Number(process.argv[3]) || 1440;
@@ -14,14 +14,14 @@ const fixture = (name) => readFile(fileURLToPath(new URL(`../../../fixtures/api/
 const hello = (await fixture("session.hello")).result;
 
 await withLayoutPage(async ({ page, basePath }) => {
-  await mountLayout(page, '<main id="issues"></main>', {
-    basePath, styles: `@import url("${basePath}src/styles/issues.css"); body{display:block} main{max-width:760px;margin:24px auto}`,
+  await mountLayout(page, '<main id="tasks"></main>', {
+    basePath, styles: `@import url("${basePath}src/styles/tasks.css"); body{display:block} main{max-width:760px;margin:24px auto}`,
   });
   await loadBrowserModules(page, {
-    changes: "src/core/changeEvents.js", issuesPane: "src/core/trackerIssuesPane.js",
+    changes: "src/core/changeEvents.js", tasksPane: "src/core/trackerTasksPane.js",
   }, basePath);
   await page.evaluate(async (hello) => {
-    const { changes, issuesPane } = window.__layoutModules;
+    const { changes, tasksPane } = window.__layoutModules;
     const now = Date.now();
     const minutes = (count) => new Date(now - count * 60_000).toISOString();
     const finished = [
@@ -33,11 +33,11 @@ await withLayoutPage(async ({ page, basePath }) => {
       [150, "Landing: scroll cue settles still", minutes(9 * 60), "e2d94b61a0c3"],
       [149, "Bridge: workspaces idle for 24 h notify the project agent", minutes(11 * 60), null],
     ].map(([number, title, doneAt, sha]) => ({
-      id: `issue-${number}`, number, title, status: "done", state: "closed", assignee: null, labels: [],
+      id: `task-${number}`, number, title, status: "done", state: "closed", assignee: null, labels: [],
       done_at: doneAt, links: { commits: sha ? [sha] : [] },
     }));
     const listed = {
-      issues: finished,
+      tasks: finished,
       user_session: {
         session_started_ms: now - 2 * 60 * 60_000, last_activity_ms: now - 60_000,
         previous_session_ended_ms: now - 12 * 60 * 60_000, gap_ms: 6 * 60 * 60_000, now_ms: now,
@@ -45,20 +45,20 @@ await withLayoutPage(async ({ page, basePath }) => {
     };
     const call = async (method) => {
       if (method === "session.hello") return hello;
-      if (method === "issues.list") return listed;
-      if (method === "issues.columns") return { columns: [] };
+      if (method === "tasks.list") return listed;
+      if (method === "tasks.columns") return { columns: [] };
       return {};
     };
     await changes.greetBridge(call, { deviceId: "dev-1" });
-    issuesPane.mountIssuesPane(document.querySelector("#issues"), {
+    tasksPane.mountTasksPane(document.querySelector("#tasks"), {
       deviceId: "dev-1", projectId: "proj-1", projectName: "Build", projectKey: "dev-1|proj-1",
       defaultView: "dashboard", feed: () => ({ projects: [], workspaces: [], items: [] }), callRpc: call,
       catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {},
     });
-  }, { ...hello, capabilities: [...hello.capabilities, "issues.doneSinceLeft"] });
+  }, { ...hello, capabilities: [...hello.capabilities, "tasks.doneSinceLeft"] });
   await page.locator('[data-dashboard-tab="done"]').click();
-  await page.waitForFunction(() => document.querySelectorAll(".issue-dashboard-group-title").length >= 4);
-  const titles = await page.locator(".issue-dashboard-group-title").allTextContents();
+  await page.waitForFunction(() => document.querySelectorAll(".task-dashboard-group-title").length >= 4);
+  const titles = await page.locator(".task-dashboard-group-title").allTextContents();
   console.log(titles.join(" | "));
   await page.screenshot({ path: output });
 }, { width, height, plugins: [deviceShim] });

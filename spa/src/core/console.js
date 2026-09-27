@@ -1,6 +1,6 @@
 // The console: the basement of every work surface.
 //
-// It sits at the bottom of the view column on the branch and issue surfaces.
+// It sits at the bottom of the view column on the branch and task surfaces.
 //
 // Terminals are the human's own shells and nothing else: an agent is Build's,
 // lives in the agent rail, and is never one of these. The panes ride the ONE
@@ -130,7 +130,7 @@ export function consoleHeadHtml(size) {
  * Mount the console for one work item.
  *
  * `context` is `{ kind: "branch", projectId, branch }` or
- * `{ kind: "issue", projectId, issueId }` — the same address the agent rail
+ * `{ kind: "task", projectId, taskId }` — the same address the agent rail
  * takes — plus the machine that checkout is on: its `deviceId`, its `call` and
  * its `cacheScope`, all handed down by the view the link opened. Returns
  * `{ dispose(), toggle(), size() }`; disposing tears down the client view only,
@@ -206,11 +206,11 @@ export function mountConsole(host, context) {
   };
 
   /** Where this console stands, off the device's own rows: the entity its
-   *  records are filed under, and the checkout its shells run in. An issue is
+   *  records are filed under, and the checkout its shells run in. A task is
    *  its own entity and its agent runs in the project's checkout, so neither
    *  answer needs a row. */
   const readPlace = async () => {
-    if (context.kind === "issue") return { entityId: context.issueId || null, scope: consoleScope(context, null) };
+    if (context.kind === "task") return { entityId: context.taskId || null, scope: consoleScope(context, null) };
     const view = await cachedFeedView(context.deviceId);
     const row = context.kind === "branch" ? branchRowIn(view, context.projectId, context.branch) : null;
     return { entityId: routedEntityId(consoleFeedRoute(context), view), scope: consoleScope(context, row) };

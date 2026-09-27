@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-// How the shell finds the conversation a project page — and an issue page of
+// How the shell finds the conversation a project page — and a task page of
 // that project — stands on.
 //
 // The owner comes off the cached project list first, the bridge is asked only
@@ -19,7 +19,7 @@ let standShell, stopShell, writeCached, scopeFor, clearCacheScope, stampProject,
 let scope, rpc;
 
 const route = { name: "project", deviceId: "dev-1", projectId: "proj-1" };
-const issueRoute = { name: "trackerIssue", deviceId: "dev-1", projectId: "proj-1", issueId: "i-1" };
+const taskRoute = { name: "trackerTask", deviceId: "dev-1", projectId: "proj-1", taskId: "i-1" };
 
 const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((done) => setTimeout(done, 0));
@@ -29,7 +29,7 @@ const flush = async () => {
  *  mint nothing before its bridge has said which API it speaks. */
 const land = () => {
   const context = adoptDeviceSession({ deviceId: "dev-1", call: (...args) => rpc(...args), close: () => {}, peer: () => {}, onCarrier: () => {} });
-  adoptBridgeSelection(context, { version: "1.22.0" }, null);
+  adoptBridgeSelection(context, { version: "2.0.0" }, null);
 };
 
 const listProjects = (rows) =>
@@ -157,13 +157,13 @@ describe("the conversation a project page stands on", () => {
   });
 });
 
-describe("an issue of the project", () => {
-  // A tracker issue carries no conversation of its own — the agents its page
+describe("a task of the project", () => {
+  // A tracker task carries no conversation of its own — the agents its page
   // names are workspace agents it can be assigned to — so its page stands on
   // the project's agent, exactly as the project page does.
-  it("stands on the project's conversation, not on one of the issue's own", async () => {
+  it("stands on the project's conversation, not on one of the task's own", async () => {
     await listProjects([{ project_id: "proj-1", name: "build", entity_id: "run-7" }]);
-    standShell(issueRoute);
+    standShell(taskRoute);
     await flush();
     expect(mountAgentRail.mock.calls[0][1]).toMatchObject({ kind: "project", projectId: "proj-1", entityId: "run-7" });
   });
@@ -174,9 +174,9 @@ describe("an issue of the project", () => {
     await flush();
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
 
-    // Pressing an issue on the Issues tab: the page swaps inside the shell and
+    // Pressing a task on the Tasks tab: the page swaps inside the shell and
     // the bubbles beside it do not move.
-    standShell(issueRoute);
+    standShell(taskRoute);
     await flush();
     expect(mountAgentRail).toHaveBeenCalledTimes(1);
   });

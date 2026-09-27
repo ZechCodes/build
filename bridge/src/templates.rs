@@ -97,7 +97,7 @@ const MESSAGE_AGENT_NOTE: &str = template!("notes/message_agent.md");
 /// outlive this prompt's compaction.
 const WORKSPACE_NOTE: &str = template!("notes/workspace.md");
 
-/// What every agent with the issue tools is told about them (spec: Issues →
+/// What every agent with the task tools is told about them (spec: Tasks →
 /// The prompt note).
 ///
 /// Appended rather than written into each template, for the reason
@@ -105,12 +105,12 @@ const WORKSPACE_NOTE: &str = template!("notes/workspace.md");
 /// surface and the project surface, and a project overriding one template
 /// still overrides only that one.
 ///
-/// It says the things an agent gets wrong without being told. An issue handed
-/// over is the WORK, not a note about it, so progress belongs on the issue and
+/// It says the things an agent gets wrong without being told. A task handed
+/// over is the WORK, not a note about it, so progress belongs on the task and
 /// not only in a conversation nobody else reads. In review is what Complete
 /// means on a board — ready to be looked at, not accepted — and an agent that
-/// moves its own issue to Done is marking its own homework. A hand-off is an
-/// assignment, because an assignment delivers the issue and leaves a record
+/// moves its own task to Done is marking its own homework. A hand-off is an
+/// assignment, because an assignment delivers the task and leaves a record
 /// while a message leaves only words. And work an agent notices and does not do
 /// exists nowhere unless it is filed.
 ///
@@ -119,15 +119,15 @@ const WORKSPACE_NOTE: &str = template!("notes/workspace.md");
 /// anything bigger than a correction is filed and assigned. A multi-step piece
 /// of work planned only in a conversation is invisible to the user and dies
 /// with the session, so an agent files and self-assigns its own. And a question
-/// about somebody else's issue asked anywhere but that issue reaches one person
+/// about somebody else's task asked anywhere but that task reaches one person
 /// when it needed to reach two.
-const ISSUE_TOOLS_NOTE: &str = template!("notes/issue_tools.md");
+const TASK_TOOLS_NOTE: &str = template!("notes/task_tools.md");
 
 /// The reference shapes an agent can write, so a link into Build costs a few
 /// characters rather than a route nobody can remember (#56).
 ///
-/// One note on every template that writes prose a reader opens — a message, an
-/// issue body, a comment — because the same shapes have to mean the same thing
+/// One note on every template that writes prose a reader opens — a message, a
+/// task body, a comment — because the same shapes have to mean the same thing
 /// wherever they are typed. The renderer that reads them is
 /// `spa/src/core/markdownRefs.js`; a test below holds this list to it.
 const LINK_MARKUP_NOTE: &str = template!("notes/link_markup.md");
@@ -140,7 +140,7 @@ fn phase_template(base: &str) -> String {
 /// agents on its project, and it can cut a checkout of its own to put one of
 /// them on.
 fn coding_template(base: &str) -> String {
-    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}\n\n{ISSUE_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}")
+    format!("{base}\n\n{MESSAGE_AGENT_NOTE}\n\n{WORKSPACE_NOTE}\n\n{TASK_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}")
 }
 
 /// A template whose phase ends in changed code, so its terminal message body is the
@@ -178,11 +178,11 @@ impl Default for Templates {
             review_changes: reporting_template(REVIEW_CHANGES),
             message: coding_template(MESSAGE),
             router: phase_template(ROUTER),
-            // The project agent gets the issue note and not the message note:
+            // The project agent gets the task note and not the message note:
             // its own prompt already says what messaging another agent means,
             // in its own words, and the tracker is the one thing it has that
             // that prompt predates.
-            project_agent: format!("{PROJECT_AGENT}\n\n{ISSUE_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}"),
+            project_agent: format!("{PROJECT_AGENT}\n\n{TASK_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}"),
         }
     }
 }
@@ -197,7 +197,7 @@ const MESSAGE: &str = template!("message.md");
 pub struct Vars<'a> {
     pub goal: &'a str,
     pub plan_path: &'a str,
-    /// Absolute path of an issue's scratch docs dir — where its planning agent
+    /// Absolute path of a task's scratch docs dir — where its planning agent
     /// writes plan documents, since it runs in the primary checkout and must
     /// not write there. Empty for every run-side template.
     pub docs_dir: &'a str,
@@ -474,7 +474,7 @@ mod tests {
             &Vars {
                 goal: "add a greeting",
                 plan_path: DEFAULT_PLAN_PATH,
-                docs_dir: "/tmp/build/issue-docs/plan-1",
+                docs_dir: "/tmp/build/task-docs/plan-1",
                 comments: "",
                 base_branch: "main",
                 ..Vars::default()
@@ -486,7 +486,7 @@ mod tests {
         assert!(out.contains("add a greeting"));
     }
 
-    /// An issue's agent runs in the primary checkout, so every plan-side
+    /// A task's agent runs in the primary checkout, so every plan-side
     /// template has to say where its documents go instead — and say that the
     /// checkout itself is not to be written to.
     #[test]
@@ -498,7 +498,7 @@ mod tests {
                 &Vars {
                     goal: "add a greeting",
                     plan_path: DEFAULT_PLAN_PATH,
-                    docs_dir: "/scratch/issue-docs/plan-1",
+                    docs_dir: "/scratch/task-docs/plan-1",
                     stage_path: ".build/plan/01-first.md",
                     comments: "",
                     base_branch: "main",
@@ -506,7 +506,7 @@ mod tests {
                 },
             ));
             assert!(
-                rendered.contains("/scratch/issue-docs/plan-1"),
+                rendered.contains("/scratch/task-docs/plan-1"),
                 "the agent is told where its docs go: {rendered}"
             );
             assert!(
@@ -633,9 +633,9 @@ mod tests {
             "the agent is told what it is for: {project}"
         );
         for sentence in [
-            "are delegated through assigned issues",
+            "are delegated through assigned tasks",
             "assigning one cuts the workspace and starts the agent",
-            "The issue is the record",
+            "The task is the record",
             "Parallelize independent work in separate workspaces",
             "give shared files one writer",
             "Your reach ends at this project, and you cannot read an agent's conversation.",
@@ -649,8 +649,8 @@ mod tests {
             "`create_workspace`",
             "`add_workspace_agent`",
             "`message_workspace_agent`",
-            "`create_issue`",
-            "`assign_issue`",
+            "`create_task`",
+            "`assign_task`",
             "`compact_agent`",
             "`compact_self`",
         ] {
@@ -660,7 +660,7 @@ mod tests {
             );
         }
         assert!(
-            project.contains("Your tools: the issue tools below;"),
+            project.contains("Your tools: the task tools below;"),
             "the inventory cannot leave out the tools appended under it: {project}"
         );
 
@@ -700,7 +700,7 @@ mod tests {
                 "{coding_tool} is not on the router's surface: {router}"
             );
         }
-        assert!(!router.contains("create_issue"), "{router}");
+        assert!(!router.contains("create_task"), "{router}");
         assert!(router.contains("You are not in a repository"), "{router}");
         assert!(router.contains("status=\"Complete\""), "{router}");
         assert!(!router.contains("phase="), "{router}");
@@ -768,18 +768,18 @@ mod tests {
     }
 
     /// The project agent reads the context line on what agents send it, and
-    /// before it hands a long-running agent its next issue it compacts that
-    /// agent — naming what the issue needs kept — or starts a fresh one when
-    /// the issue's resume notes are enough (#68).
+    /// before it hands a long-running agent its next task it compacts that
+    /// agent — naming what the task needs kept — or starts a fresh one when
+    /// the task's resume notes are enough (#68).
     #[test]
-    fn the_project_template_says_to_compact_or_replace_a_full_agent_before_its_next_issue() {
+    fn the_project_template_says_to_compact_or_replace_a_full_agent_before_its_next_task() {
         let project = collapse_whitespace(&Templates::default().project_agent);
         for words in [
             "how full their context is",
-            "before handing a long-running agent its next issue",
+            "before handing a long-running agent its next task",
             "`compact_agent`",
             "naming what to keep",
-            "the issue's notes",
+            "the task's notes",
             "fresh agent",
         ] {
             assert!(project.contains(words), "{words} missing from {project}");
@@ -835,7 +835,7 @@ mod tests {
             "Report outcomes as `Complete`",
             "Bring unresolved choices about irreversible actions, user-facing behavior or taste to the user as `Waiting`",
             "one question with the options and your recommendation",
-            "Everything else stays on the issue.",
+            "Everything else stays on the task.",
             "`Working` is only for",
             "`Blocked` for when you cannot proceed",
         ] {
@@ -928,52 +928,74 @@ mod tests {
         }
     }
 
-    /// Every template that carries the issue tools carries the same three rules
+    /// Every template that carries the task tools carries the same three rules
     /// about when to reach for them: file and assign rather than message, file
-    /// and self-assign to plan your own work, and ask on the issue you were
+    /// and self-assign to plan your own work, and ask on the task you were
     /// handed. One note, appended by `coding_template` and to the project
     /// agent's prompt, so the coding surface and the project surface cannot
     /// come to say different things.
     #[test]
-    fn every_template_with_the_issue_tools_says_when_to_reach_for_them() {
+    fn every_template_with_the_task_tools_says_when_to_reach_for_them() {
         let t = Templates::default();
-        for (name, template) in templates_with_the_issue_tools(&t) {
+        for (name, template) in templates_with_the_task_tools(&t) {
             let text = collapse_whitespace(template);
             for sentence in [
-                // Rule 1: a brief is an issue, not a message.
-                "Anything beyond a quick question or a one-line correction gets an issue",
+                // Rule 1: a brief is a task, not a message.
+                "Anything beyond a quick question or a one-line correction gets a task",
                 "a brief sent as a message is a brief only its reader has",
                 // Rule 2: plan your own work on the board.
-                "Use issues to plan your OWN work too.",
+                "Use Build tasks to plan your OWN work too.",
+                "file a Build task for it with `create_task`",
                 "assign it to yourself, and move it across the board as you go",
                 // Rule 3: ask where both readers are.
-                "When an issue came from outside this conversation, ask ON the issue.",
+                "When a task came from outside this conversation, ask ON the task.",
                 "not this thread and not a message to whoever assigned it",
             ] {
                 assert!(text.contains(sentence), "{name} does not say it: {text}");
             }
             // And the rules that were there before these three arrived.
             for kept in [
-                "read it with `get_issue` before you start",
-                "Comment your progress on it with `comment_issue` as you go",
-                "Move it to In review with `move_issue` when you report Complete.",
-                "Hand work off by ASSIGNING the issue, not by messaging.",
-                "File an issue for follow-up work you find and do not do.",
+                "read it with `get_task` before you start",
+                "Comment your progress on it with `comment_task` as you go",
+                "Move it to In review with `move_task` when you report Complete.",
+                "Hand work off by ASSIGNING the task, not by messaging.",
+                "File a Build task for follow-up work you find and do not do.",
             ] {
                 assert!(text.contains(kept), "{name} dropped an older rule: {text}");
             }
         }
     }
 
-    /// Every template the issue note is appended to: the coding phases and the
+    /// A Build task is a card on the project's board, and the harness has task
+    /// tools of its own (#190). The note says which is which before anything
+    /// else, so an agent never files steps on the board or thinks TaskCreate
+    /// put something there.
+    #[test]
+    fn the_task_tools_say_a_build_task_is_not_the_harness_own_list() {
+        let text = collapse_whitespace(TASK_TOOLS_NOTE);
+        assert!(
+            text.starts_with("Your project has a task board, and Build's task tools reach it:"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "A Build task is a card on that board. It is not your harness's own task or \
+                 todo list (TaskCreate, TodoWrite, update_plan): that one tracks the steps of \
+                 this conversation, and nothing in it reaches the board."
+            ),
+            "{text}"
+        );
+    }
+
+    /// Every template the task note is appended to: the coding phases and the
     /// project agent. The router has no project and gets none of it.
     /// Every agent that writes prose a reader will open carries the reference
-    /// syntax (#56): the same one note, so a message, an issue body and a
+    /// syntax (#56): the same one note, so a message, a task body and a
     /// comment cannot come to use different shapes for the same link.
     #[test]
     fn every_template_that_writes_prose_carries_the_reference_syntax() {
         let t = Templates::default();
-        for (name, template) in templates_with_the_issue_tools(&t) {
+        for (name, template) in templates_with_the_task_tools(&t) {
             assert!(
                 template.contains(LINK_MARKUP_NOTE),
                 "{name} carries something other than the one reference note: {template}"
@@ -999,7 +1021,7 @@ mod tests {
         }
     }
 
-    fn templates_with_the_issue_tools(t: &Templates) -> Vec<(&'static str, &String)> {
+    fn templates_with_the_task_tools(t: &Templates) -> Vec<(&'static str, &String)> {
         vec![
             ("plan", &t.plan),
             ("build", &t.build),

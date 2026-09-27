@@ -43,7 +43,7 @@ const checklistSnapshot = {
 describe("surfacePills", () => {
   it("gives one pill per kind that has content, counting what is running in it", () => {
     expect(surfacePills(checklistSnapshot)).toEqual([
-      { kind: "checklist", label: "Tasks", count: 1, progress: "1/3" },
+      { kind: "checklist", label: "Checklist", count: 1, progress: "1/3" },
     ]);
   });
 
@@ -80,7 +80,7 @@ describe("surfaceMenuOptions", () => {
   it("offers every kind with content, whatever the grace would say about its pill", () => {
     const settled = { shells: [{ id: "s1", state: "done" }], checklist: [{ id: "t1", state: "pending" }] };
     expect(surfacePills(settled)).toEqual([
-      { kind: "checklist", label: "Tasks", count: 0, progress: "0/1" },
+      { kind: "checklist", label: "Checklist", count: 0, progress: "0/1" },
     ]);
     expect(surfaceMenuOptions(settled).map((option) => option.id)).toEqual([SHELL_ENTRY_KIND, "checklist"]);
   });
@@ -91,7 +91,7 @@ describe("surfaceMenuOptions", () => {
       checklist: [{ id: "t1", state: "completed" }],
     });
     expect(shells).toEqual({ id: SHELL_ENTRY_KIND, label: "Shells", description: "2 running" });
-    expect(checklist).toEqual({ id: "checklist", label: "Tasks", description: "1/1 completed" });
+    expect(checklist).toEqual({ id: "checklist", label: "Checklist", description: "1/1 completed" });
   });
 
   it("offers nothing at all for a snapshot with no kinds", () => {
@@ -699,20 +699,20 @@ describe("the canned messages that are gone", () => {
 
 describe("the remembered open pill", () => {
   it("is null for a key nothing was written under", () => {
-    expect(readOpenSurface("issue-1:agent-1", memoryStorage())).toBe(null);
+    expect(readOpenSurface("task-1:agent-1", memoryStorage())).toBe(null);
   });
 
   it("round-trips the kind under the same key", () => {
     const storage = memoryStorage();
-    writeOpenSurface("issue-1:agent-1", "shells", storage);
-    expect(readOpenSurface("issue-1:agent-1", storage)).toBe("shells");
-    expect(readOpenSurface("issue-1:agent-2", storage)).toBe(null);
+    writeOpenSurface("task-1:agent-1", "shells", storage);
+    expect(readOpenSurface("task-1:agent-1", storage)).toBe("shells");
+    expect(readOpenSurface("task-1:agent-2", storage)).toBe(null);
   });
 
   it("forgets a stored value this client cannot render", () => {
     const storage = memoryStorage();
-    writeOpenSurface("issue-1:agent-1", "sonnets", storage);
-    expect(readOpenSurface("issue-1:agent-1", storage)).toBe(null);
+    writeOpenSurface("task-1:agent-1", "sonnets", storage);
+    expect(readOpenSurface("task-1:agent-1", storage)).toBe(null);
   });
 
   it("survives a storage that refuses to answer", () => {
@@ -724,15 +724,15 @@ describe("the remembered open pill", () => {
 
   it("clears the memory itself when no kind is open, so no caller spells the empty value", () => {
     const storage = memoryStorage();
-    writeOpenSurface("issue-1:agent-1", "shells", storage);
-    writeOpenSurface("issue-1:agent-1", null, storage);
-    expect(readOpenSurface("issue-1:agent-1", storage)).toBe(null);
+    writeOpenSurface("task-1:agent-1", "shells", storage);
+    writeOpenSurface("task-1:agent-1", null, storage);
+    expect(readOpenSurface("task-1:agent-1", storage)).toBe(null);
     expect([...storage.entries.keys()]).toEqual([]);
   });
 
   it("reaches storage only through the injected object", () => {
     const storage = memoryStorage();
-    writeOpenSurface("issue-1:agent-1", "shells", storage);
+    writeOpenSurface("task-1:agent-1", "shells", storage);
     expect([...storage.entries.keys()].length).toBe(1);
   });
 });

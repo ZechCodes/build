@@ -44,7 +44,7 @@ impl AppState {
     }
 
     /// Everything finished, across every project, newest first: archived
-    /// issues, archived runs, and the archived worktrees no run stands behind.
+    /// tasks, archived runs, and the archived worktrees no run stands behind.
     ///
     /// The archive is the user's, not a project's, which is why this cannot be
     /// `archive.list` with the project left off — and it speaks the feed's two
@@ -57,13 +57,13 @@ impl AppState {
             .plans
             .iter()
             .filter(|(_, active)| active.plan.archived_at.is_some())
-            .map(|(issue_id, active)| {
-                let mut row = self.archived_row("issue", issue_id);
+            .map(|(task_id, active)| {
+                let mut row = self.archived_row("task", task_id);
                 let object = row.as_object_mut().expect("archived_row is an object");
                 object.insert("title".into(), json!(active.plan.goal));
                 object.insert("state".into(), json!(plan_state_str(&active.plan.state)));
                 object.insert("finished_at".into(), json!(active.plan.archived_at));
-                object.insert("issue_id".into(), json!(issue_id));
+                object.insert("task_id".into(), json!(task_id));
                 object.insert("stages".into(), json!(active.stages.len()));
                 row
             })
@@ -104,7 +104,7 @@ impl AppState {
             );
             object.insert("run_id".into(), json!(run_id));
             object.insert(
-                "issue_id".into(),
+                "task_id".into(),
                 json!(active.run.plan_id.as_ref().map(|id| id.0.clone())),
             );
             object.insert(
@@ -140,7 +140,7 @@ impl AppState {
                 "state": "archived",
                 "finished_at": record.archived_at,
                 "run_id": Value::Null,
-                "issue_id": Value::Null,
+                "task_id": Value::Null,
                 "stages": Value::Null,
                 "worktree_path": record.worktree_path,
             });
@@ -181,7 +181,7 @@ impl AppState {
                 "action": "archive",
                 "finished_at": workspace.archived_at,
                 "run_id": Value::Null,
-                "issue_id": Value::Null,
+                "task_id": Value::Null,
                 "stages": Value::Null,
                 "worktree_id": Value::Null,
                 "worktree_path": workspace.root.display().to_string(),
@@ -214,7 +214,7 @@ impl AppState {
             "action": Value::Null,
             "finished_at": Value::Null,
             "run_id": Value::Null,
-            "issue_id": Value::Null,
+            "task_id": Value::Null,
             "stages": Value::Null,
             "worktree_id": Value::Null,
             "workspace_id": Value::Null,

@@ -70,11 +70,11 @@
     { "id": "ui05-approval", "order": 7, "checkpoint": "approval", "timer": "03:44", "description": "Tablet review triage (not in the app yet) with the finding open and Approve for merge." },
     { "id": "ui05-merged", "order": 8, "checkpoint": "merged", "timer": "03:44", "description": "After the merge: the Changes view on laptop and phone, the approved triage on the tablet." },
     { "id": "ui10-editor", "order": 10, "checkpoint": "editor", "timer": "03:45", "description": "Files view in archive-search with archive.test.ts open in Source, agent rail folded to its strip." },
-    { "id": "ui12-issues", "order": 12, "checkpoint": "issues", "timer": "03:46", "description": "Issues board with Make archived items searchable in Ready, unassigned." },
-    { "id": "ui13-team", "order": 13, "checkpoint": "team", "timer": "03:47", "description": "Issue #78 with the chat overview listing Implement, Review and Audit edge cases in their workspaces." },
+    { "id": "ui12-tasks", "order": 12, "checkpoint": "tasks", "timer": "03:46", "description": "Tasks board with Make archived items searchable in Ready, unassigned." },
+    { "id": "ui13-team", "order": 13, "checkpoint": "team", "timer": "03:47", "description": "Task #78 with the chat overview listing Implement, Review and Audit edge cases in their workspaces." },
     { "id": "ui14-git", "order": 14, "checkpoint": "git", "timer": "03:49", "description": "Changes view on build/archive-search with two uncommitted files and the commit box." },
     { "id": "ui15-triage", "order": 15, "checkpoint": "triage", "timer": "03:50", "description": "Tablet review triage (not in the app yet), drawn as a workspace tab beside Changes and Files." },
-    { "id": "ui16-builder", "order": 16, "checkpoint": "builder", "timer": "03:48", "description": "Workflow builder (not in the app yet), drawn as a third project page beside Issues and Workspaces." }
+    { "id": "ui16-builder", "order": 16, "checkpoint": "builder", "timer": "03:48", "description": "Workflow builder (not in the app yet), drawn as a third project page beside Tasks and Workspaces." }
   ],
   "filePatterns": {
     "appOnly": "{state}-{desktop|tablet|mobile}.{png|webp}",

@@ -158,14 +158,14 @@ pub struct RunSource<'a> {
 }
 
 /// The checkout an implementation opens in, as the git left it: on its own
-/// branch, scaffolded, with the Issue's canonical docs committed. `base_sha` is
+/// branch, scaffolded, with the Task's canonical docs committed. `base_sha` is
 /// that commit — the baseline the review diff is read against.
 pub struct PreparedImplementation {
     pub worktree: Worktree,
     pub base_sha: String,
 }
 
-/// An Issue cleared to have an implementation opened for it, and everything
+/// A Task cleared to have an implementation opened for it, and everything
 /// opening one needs before any git runs: the words its checkout is named
 /// after, and the plan whose canonical docs are committed into it as the
 /// review baseline.
@@ -174,18 +174,18 @@ pub struct PreparedImplementation {
 /// already writing for, or one whose first stage the human has not approved
 /// never becomes one — so nothing downstream can cut a checkout for work that
 /// was refused.
-pub struct ImplementableIssue {
+pub struct ImplementableTask {
     pub(super) plan_id: String,
     pub(super) goal: String,
     slug: String,
 }
 
-impl ImplementableIssue {
-    /// What every implementation of an Issue must be true of before any
+impl ImplementableTask {
+    /// What every implementation of a Task must be true of before any
     /// checkout is touched, whichever worktree it is going to run in: the plan
     /// is ready, nobody else is writing for it, and the stage the first session
     /// would build is one the human approved.
-    pub fn judge(source: RunSource<'_>) -> Result<ImplementableIssue, OrchestratorError> {
+    pub fn judge(source: RunSource<'_>) -> Result<ImplementableTask, OrchestratorError> {
         let RunSource {
             plan: plan_link,
             has_active_run,
@@ -215,7 +215,7 @@ impl ImplementableIssue {
                 )));
             }
         }
-        Ok(ImplementableIssue {
+        Ok(ImplementableTask {
             plan_id: plan_link.plan.id.0.clone(),
             goal: plan_link.plan.goal.clone(),
             slug: slugify(&plan_link.plan.goal),
@@ -245,6 +245,8 @@ impl Orchestrator {
         let repo_path = repo_path.into();
         let worktrees_root = worktrees_root.into();
         let worktrees = WorktreeManager::new(repo_path.clone(), worktrees_root.clone());
+        // Named before #190, and kept: a plan drafting across the upgrade
+        // resumes in the scratch docs it already has.
         let plan_docs_root = worktrees_root.join(".issue-docs");
         Orchestrator {
             repo_path: repo_path.clone(),
@@ -271,7 +273,7 @@ impl Orchestrator {
     /// that will do the work, and the turn that starts it.
     ///
     /// Pure bookkeeping — the git ran in [`prepare_run_checkout`], and the
-    /// refusals were made when the [`ImplementableIssue`] was judged.
+    /// refusals were made when the [`ImplementableTask`] was judged.
     ///
     /// A multi-stage plan's first session is its first stage's build — the
     /// plan-level `Approved` gate covers starting stage one; later stages
@@ -451,7 +453,7 @@ impl Orchestrator {
     /// `conversation_agent` names whose conversation the comments were posted
     /// to, for the catch-up packet a cold spawn opens on. `None` is the roster
     /// standing on the run — the first agent's, which the caller may have
-    /// swapped for the Issue's.
+    /// swapped for the Task's.
     pub fn run_request_changes(
         &self,
         active: &mut ActiveRun,

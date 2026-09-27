@@ -47,7 +47,7 @@ afterEach(() => {
 function device(deviceId, call = vi.fn(async () => ({}))) {
   App.devices = [...App.devices, { id: deviceId, name: deviceId, status: "online" }];
   const context = adoptDeviceSession({ deviceId, call, close: () => {}, peer: () => {}, onCarrier: () => {} });
-  adoptBridgeSelection(context, { major: 1, version: "1.0.0" }, {});
+  adoptBridgeSelection(context, { major: 2, version: "2.0.0" }, {});
   return context;
 }
 
@@ -63,7 +63,7 @@ async function writeDevice(deviceId, { items = [], projects = [], workspaces = [
   for (const item of items) await writeRow(deviceId, item);
 }
 
-const rowId = (item) => item.entity_id || item.run_id || item.issue_id || item.worktree_id || item.id;
+const rowId = (item) => item.entity_id || item.run_id || item.task_id || item.worktree_id || item.id;
 
 const writeRow = (deviceId, item) => writeCached({ deviceId, entityId: rowId(item), kind: "row" }, item);
 

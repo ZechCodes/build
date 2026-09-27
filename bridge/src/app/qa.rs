@@ -20,7 +20,7 @@ impl AppState {
     // ---- the scripted QA agent ------------------------------------------------
 
     /// Simulate a plan session: write the two-stage plan docs + manifest into
-    /// the issue's scratch docs dir and report Complete, so the orchestrator
+    /// the task's scratch docs dir and report Complete, so the orchestrator
     /// reads the manifest and ingests the docs exactly as it would for a real
     /// harness.
     pub(in crate::app) fn qa_simulate_plan(

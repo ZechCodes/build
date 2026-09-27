@@ -132,7 +132,7 @@ fn a_checkout_in_the_system_temp_directory_is_scratch_unless_its_repository_is_t
     let state_root = Path::new("/home/dev/.build");
     let temp = Path::new("/tmp");
     assert!(is_scratch_checkout(
-        Path::new("/tmp/build-issue-rail"),
+        Path::new("/tmp/build-task-rail"),
         Path::new("/home/dev/Projects/build"),
         state_root,
         temp,

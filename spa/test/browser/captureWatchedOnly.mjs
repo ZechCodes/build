@@ -27,7 +27,7 @@ await withLayoutPage(async ({ page, basePath }) => {
     const { mountAgentRail } = window.__layoutModules.rail;
     const { greetBridge } = window.__layoutModules.changes;
     const { writeRailBoard, writeRailThread } = window.__layoutModules.fixture;
-    await greetBridge(async () => ({ push_events: true, api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => ({ push_events: true, api_version: "2.0.0", capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context", "tasks.attachments", "tasks.watching", "conversations.settings"] }), { deviceId: "dev-1" });
     const agent = (id, ordinal, name, watched, over = {}) => ({ id, ordinal, name, topic: name, watched,
       provider: "claude_adk", state: "live", working: false, unread_count: 0, ...over });
     const said = (sequence, body, day) => ({ type: "message",

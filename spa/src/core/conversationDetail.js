@@ -78,16 +78,16 @@ const isMessage = (item) => item?.type === "message";
  *  drawn as such (core/thread.js `arrivedMessageHtml`, `sentMessageHtml`). */
 const isBetweenAgents = (item) => Boolean(item?.data?.from_agent || item?.data?.sent_to);
 
-/** An agent acting on an issue, narrated in its own conversation
+/** An agent acting on a task, narrated in its own conversation
  *  (core/trackerActionLine.js). It is this agent's own act rather than
  *  correspondence with anywhere else, so it is dialogue at every level — and
  *  said here rather than left to fall out of carrying no `from_agent`, because
  *  "what this agent did" is exactly what the narrowest level is for and it
  *  should not depend on which fields the bridge happens to set. One line, so
  *  it costs the narrowed view almost nothing. */
-const isOwnIssueAction = (item) => Boolean(item?.data?.issue_action);
+const isOwnTaskAction = (item) => Boolean(item?.data?.task_action);
 
-/** A tracking notice: Build saying somebody acted on an issue this agent
+/** A tracking notice: Build saying somebody acted on a task this agent
  *  follows (core/trackerNotice.js). One line, and news about the work rather
  *  than correspondence with anywhere else, so it is dialogue at every level.
  *
@@ -95,7 +95,7 @@ const isOwnIssueAction = (item) => Boolean(item?.data?.issue_action);
  *  same reason the action line above is: the narrowest level is for what is
  *  happening to this agent's work, and whether it survives should not depend
  *  on which fields the bridge happens to set on a notice. */
-const isTrackingNotice = (item) => Boolean(item?.data?.from_build && item?.data?.from_issue);
+const isTrackingNotice = (item) => Boolean(item?.data?.from_build && item?.data?.from_task);
 
 /** What each level admits. One predicate per level rather than a ladder of
  *  conditionals: a level is a way of reading the thread, and adding one should
@@ -104,7 +104,7 @@ const SHOWN_AT_LEVEL = {
   all: () => true,
   messages: isMessage,
   agent: (item) =>
-    isMessage(item) && (isOwnIssueAction(item) || isTrackingNotice(item) || !isBetweenAgents(item)),
+    isMessage(item) && (isOwnTaskAction(item) || isTrackingNotice(item) || !isBetweenAgents(item)),
 };
 
 const shownAt = (level) => SHOWN_AT_LEVEL[level] || SHOWN_AT_LEVEL[DEFAULT_LEVEL];

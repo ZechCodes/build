@@ -5,7 +5,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
-import { deviceShim } from "./issueIdentityHarness.mjs";
+import { deviceShim } from "./taskIdentityHarness.mjs";
 
 const out = process.argv[2] || "/tmp/new-project-flow";
 await mkdir(out, { recursive: true });
@@ -17,7 +17,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.evaluate(async () => {
     const { changes, newRepo } = window.__layoutModules;
     const call = async (method) => {
-      if (method === "session.hello") return { api_version: "1.22.0", capabilities: ["github.repos"] };
+      if (method === "session.hello") return { api_version: "2.0.0", capabilities: ["github.repos"] };
       if (method === "github.repos") return { repos: [] };
       if (method === "settings.get") return { projects_dir: "/home/zech/Projects" };
       return {};

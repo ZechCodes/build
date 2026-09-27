@@ -4,10 +4,10 @@ import { routeFromHash } from "../src/core/router.js";
 
 // One feed's worth of rows in the new items[] shape (bridge board.list).
 const items = [
-  { kind: "branch", project_id: "p1", branch: "main", primary: true, worktree_id: "wt-main", run_id: null, issue_id: null },
-  { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-1", worktree_id: "wt-1", issue_id: "issue-9" },
-  { kind: "branch", project_id: "p2", branch: "detached-head", run_id: "run-2", worktree_id: "wt-2", issue_id: null },
-  { kind: "issue", project_id: "p2", branch: null, issue_id: "issue-3", run_id: null, worktree_id: null },
+  { kind: "branch", project_id: "p1", branch: "main", primary: true, worktree_id: "wt-main", run_id: null, task_id: null },
+  { kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-1", worktree_id: "wt-1", task_id: "task-9" },
+  { kind: "branch", project_id: "p2", branch: "detached-head", run_id: "run-2", worktree_id: "wt-2", task_id: null },
+  { kind: "task", project_id: "p2", branch: null, task_id: "task-3", run_id: null, worktree_id: null },
 ];
 
 describe("resolveLegacyRoute", () => {
@@ -33,39 +33,39 @@ describe("resolveLegacyRoute", () => {
   it("has no primary-checkout kind to resolve", () => {
     expect(resolveLegacyRoute({ kind: "primary", projectId: "p1", tab: "files" }, { items })).toBeNull();
     expect(routeFromHash("#/project/p1")).toEqual({
-      name: "resolve", kind: "project", projectId: "p1", route: { name: "project", projectId: "p1", tab: "issues" },
+      name: "resolve", kind: "project", projectId: "p1", route: { name: "project", projectId: "p1", tab: "tasks" },
     });
   });
 
-  it("resolves an issue id to its issue, keeping the stage deep-link", () => {
-    expect(resolveLegacyRoute({ kind: "issue", id: "issue-3" }, { items })).toEqual({
-      name: "issue", projectId: "p2", id: "issue-3",
+  it("resolves a task id to its task, keeping the stage deep-link", () => {
+    expect(resolveLegacyRoute({ kind: "task", id: "task-3" }, { items })).toEqual({
+      name: "task", projectId: "p2", id: "task-3",
     });
-    expect(resolveLegacyRoute({ kind: "issue", id: "issue-3", stage: "s2" }, { items })).toEqual({
-      name: "issue", projectId: "p2", id: "issue-3", stage: "s2",
+    expect(resolveLegacyRoute({ kind: "task", id: "task-3", stage: "s2" }, { items })).toEqual({
+      name: "task", projectId: "p2", id: "task-3", stage: "s2",
     });
   });
 
-  // Dedup: an issue whose implementation is in flight has no row of its own —
-  // its branch row carries the issue id. The branch IS the nearest surface.
-  it("resolves an issue being implemented to the branch that carries it", () => {
-    expect(resolveLegacyRoute({ kind: "issue", id: "issue-9", stage: "s1" }, { items })).toEqual({
+  // Dedup: a task whose implementation is in flight has no row of its own —
+  // its branch row carries the task id. The branch IS the nearest surface.
+  it("resolves a task being implemented to the branch that carries it", () => {
+    expect(resolveLegacyRoute({ kind: "task", id: "task-9", stage: "s1" }, { items })).toEqual({
       name: "branch", projectId: "p1", branch: "build/login", tab: "changes",
     });
   });
 
-  // A task push deep-links by the tracker issue's id alone (#191): the board
-  // feed carries every watched issue as a `tracker_issue` row, and the one a
+  // A task push deep-links by the tracker task's id alone (#191): the board
+  // feed carries every watched task as a `tracker_task` row, and the one a
   // push names is watched, so the row is there to say its project.
-  it("resolves a watched tracker issue to its page on the tracker", () => {
+  it("resolves a watched tracker task to its page on the tracker", () => {
     const tracked = [
       ...items,
-      { kind: "tracker_issue", project_id: "p1", issue_id: "issue-01T", number: 7, deviceId: "dev-1" },
+      { kind: "tracker_task", project_id: "p1", task_id: "task-01T", number: 7, deviceId: "dev-1" },
     ];
-    expect(resolveLegacyRoute({ kind: "issue", id: "issue-01T" }, { items: tracked })).toEqual({
-      name: "trackerIssue", projectId: "p1", issueId: "issue-01T", deviceId: "dev-1",
+    expect(resolveLegacyRoute({ kind: "task", id: "task-01T" }, { items: tracked })).toEqual({
+      name: "trackerTask", projectId: "p1", taskId: "task-01T", deviceId: "dev-1",
     });
-    expect(routeFromHash("#/issue/issue-01T")).toMatchObject({ name: "resolve", kind: "issue", id: "issue-01T" });
+    expect(routeFromHash("#/tasks/task-01T")).toMatchObject({ name: "resolve", kind: "task", id: "task-01T" });
   });
 
   // An agent push deep-links by its conversation owner's run id (#191). A
@@ -106,7 +106,7 @@ describe("resolveLegacyRoute", () => {
   it("answers null when nothing in the feed carries that id", () => {
     expect(resolveLegacyRoute({ kind: "run", id: "gone" }, { items })).toBeNull();
     expect(resolveLegacyRoute({ kind: "worktree", projectId: "p9", id: "gone" }, { items })).toBeNull();
-    expect(resolveLegacyRoute({ kind: "issue", id: "nope" }, { items })).toBeNull();
+    expect(resolveLegacyRoute({ kind: "task", id: "nope" }, { items })).toBeNull();
     expect(resolveLegacyRoute({ kind: "run", id: "run-1" }, { items: [] })).toBeNull();
     expect(resolveLegacyRoute({ kind: "run", id: "run-1" }, { items: undefined })).toBeNull();
     expect(resolveLegacyRoute({ kind: "run", id: "run-1" }, {})).toBeNull();
@@ -195,10 +195,10 @@ describe("resolveLegacyRoute across devices", () => {
     expect(resolveLegacyRoute({ kind: "worktree", projectId: "proj-1", id: "wt-1", deviceId: "dev-z" }, collision, policy)).toBeNull();
   });
 
-  it("carries the device onto a resolved issue too", () => {
-    const issues = { items: [{ kind: "issue", project_id: "proj-1", issue_id: "i-1", branch: null, deviceId: "dev-b" }] };
-    expect(resolveLegacyRoute({ kind: "issue", id: "i-1", stage: "s2" }, issues, policy)).toEqual({
-      name: "issue", deviceId: "dev-b", projectId: "proj-1", id: "i-1", stage: "s2",
+  it("carries the device onto a resolved task too", () => {
+    const tasks = { items: [{ kind: "task", project_id: "proj-1", task_id: "i-1", branch: null, deviceId: "dev-b" }] };
+    expect(resolveLegacyRoute({ kind: "task", id: "i-1", stage: "s2" }, tasks, policy)).toEqual({
+      name: "task", deviceId: "dev-b", projectId: "proj-1", id: "i-1", stage: "s2",
     });
   });
 });
@@ -241,8 +241,8 @@ describe("resolveLegacyRoute for a project with no device named", () => {
   // the whole of what is missing — and a project nobody has cut a workspace in
   // yet has no row anywhere but the project list. It still has to open.
   it("resolves the project's own page off the projects alone", () => {
-    // A project route names its tab, and Issues is the one a bare link opens (#46).
-    const page = { name: "project", projectId: "proj-1", tab: "issues" };
+    // A project route names its tab, and Tasks is the one a bare link opens (#46).
+    const page = { name: "project", projectId: "proj-1", tab: "tasks" };
     const empty = { items: [], workspaces: [], projects: [{ project_id: "proj-1", deviceId: "dev-b" }] };
     expect(resolveLegacyRoute({ ...ref, route: page }, empty, policy)).toEqual({ ...page, deviceId: "dev-b" });
     expect(resolveLegacyRoute({ ...ref, route: page }, { items: [], projects: [] }, policy)).toBeNull();

@@ -16,11 +16,11 @@ vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openC
 const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 
-// The Issues tab is its own surface with its own reads and its own push; this
+// The Tasks tab is its own surface with its own reads and its own push; this
 // file is about the page that holds it, so it is mocked to the handle the page
 // keeps.
-const mountIssuesPane = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
-vi.mock("../src/core/trackerIssuesPane.js", () => ({ mountIssuesPane: (...args) => mountIssuesPane(...args) }));
+const mountTasksPane = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
+vi.mock("../src/core/trackerTasksPane.js", () => ({ mountTasksPane: (...args) => mountTasksPane(...args) }));
 
 let subscribers = [];
 let snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
@@ -86,7 +86,7 @@ const device = (deviceId, answer = async () => ({})) => {
   const call = vi.fn(answer);
   // Greeted, too: a project with no owner is minted one only once its
   // bridge has said which API it speaks (core/shell.js).
-  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession(deviceId), call }), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession({ ...fakeSession(deviceId), call }), { version: "2.0.0" }, null);
   return call;
 };
 
@@ -98,7 +98,7 @@ beforeEach(() => {
   document.body.innerHTML =
     '<div id="toolbar"><span id="tb-verb"></span></div><div id="root"></div><aside id="agent-rail"></aside><div id="console-region"></div>';
   mountAgentRail.mockClear();
-  mountIssuesPane.mockClear();
+  mountTasksPane.mockClear();
   openCreateWork.mockClear();
   openProjectSettings.mockClear();
   subscribers = [];
@@ -256,17 +256,17 @@ describe("the project surface", () => {
 
 
 // A project holds two kinds of thing: the workspaces the work happens in, and
-// the issues that say what the work IS.
+// the tasks that say what the work IS.
 // The two tabs themselves are the toolbar's (core/toolbar.js draws them after
 // the project's name, so they stay reachable with the chat open over the
 // page); a press on them is handed to this page to switch in place.
 describe("the project's two tabs", () => {
   // #46: a bare project link opens the tracker now, and Workspaces is the tab
   // that names itself.
-  it("opens on the issues, which is what a project URL opens on now", async () => {
+  it("opens on the tasks, which is what a project URL opens on now", async () => {
     await openProject();
     await flush();
-    expect(mountIssuesPane).toHaveBeenCalled();
+    expect(mountTasksPane).toHaveBeenCalled();
     expect(document.querySelector(".project-rows")).toBeNull();
   });
 
@@ -275,25 +275,25 @@ describe("the project's two tabs", () => {
     await openProject();
     await flush();
     expect(document.querySelector(".project-rows")).not.toBeNull();
-    expect(mountIssuesPane).not.toHaveBeenCalled();
+    expect(mountTasksPane).not.toHaveBeenCalled();
   });
 
-  it("mounts the Issues tab on the machine the project is on", async () => {
-    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+  it("mounts the Tasks tab on the machine the project is on", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "tasks" };
     await openProject();
     await flush();
-    const [host, given] = mountIssuesPane.mock.calls[0];
+    const [host, given] = mountTasksPane.mock.calls[0];
     expect(host.id).toBe("project-pane");
     expect([given.projectId, given.deviceId, given.projectKey]).toEqual(["proj-1", "dev-1", "dev-1/proj-1"]);
   });
 
   // Each tab owns the body outright, so the one leaving is torn down before
   // the one arriving is built.
-  it("tears the Issues tab down on the way back to the workspaces", async () => {
-    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+  it("tears the Tasks tab down on the way back to the workspaces", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "tasks" };
     await openProject();
     await flush();
-    const pane = mountIssuesPane.mock.results[0].value;
+    const pane = mountTasksPane.mock.results[0].value;
     pressProjectTab("workspaces");
     await flush();
     expect(pane.dispose).toHaveBeenCalled();
@@ -312,25 +312,25 @@ describe("the project's two tabs", () => {
   });
 
   it("keeps a board link a board link", async () => {
-    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues", view: "board" };
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "tasks", view: "board" };
     await openProject();
     await flush();
-    expect(mountIssuesPane.mock.calls[0][1].view).toBe("board");
+    expect(mountTasksPane.mock.calls[0][1].view).toBe("board");
   });
 
   it("writes the view the tab moved to into the hash", async () => {
-    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "tasks" };
     await openProject();
     await flush();
-    mountIssuesPane.mock.calls[0][1].onViewChange("board");
+    mountTasksPane.mock.calls[0][1].onViewChange("board");
     expect(location.hash).toBe("#/device/dev-1/project/proj-1?view=board");
   });
 
-  it("takes the Issues tab down with the page", async () => {
-    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "issues" };
+  it("takes the Tasks tab down with the page", async () => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "tasks" };
     await openProject();
     await flush();
-    const pane = mountIssuesPane.mock.results[0].value;
+    const pane = mountTasksPane.mock.results[0].value;
     App.viewDispose();
     App.viewDispose = null;
     expect(pane.dispose).toHaveBeenCalled();
@@ -342,7 +342,7 @@ describe("the project's two tabs", () => {
 // does.
 describe("a workspace's lifecycle on the Workspaces tab", () => {
   const verdict = (extra = {}) => ({
-    idle: true, reclaimable: false, holds: [], issues: [], dirty_files: 0, unpushed_commits: 0,
+    idle: true, reclaimable: false, holds: [], tasks: [], dirty_files: 0, unpushed_commits: 0,
     behind_commits: 0, size_bytes: 17_200_000_000, pruned_bytes: 0, pruned_at_ms: null, noticed_at_ms: null,
     measured_at_ms: 1, last_activity_ms: 0, ...extra,
   });
@@ -400,7 +400,7 @@ describe("a workspace's lifecycle on the Workspaces tab", () => {
 // every row, all from the cached workspace.list rows.
 describe("the Reclaimable filter and the size column", () => {
   const verdict = (reclaimable, size) => ({
-    idle: true, reclaimable, holds: reclaimable ? [] : ["dirty"], issues: [], dirty_files: 1,
+    idle: true, reclaimable, holds: reclaimable ? [] : ["dirty"], tasks: [], dirty_files: 1,
     unpushed_commits: 0, behind_commits: 0, size_bytes: size, pruned_bytes: 0, pruned_at_ms: null,
     noticed_at_ms: null, measured_at_ms: 1, last_activity_ms: 0,
   });

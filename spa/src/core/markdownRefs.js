@@ -1,7 +1,7 @@
 // The reference forms an agent can write, and how prose is read for them.
 //
-// #56. An agent writing a message, an issue body or a comment should be able to
-// point at an issue, a workspace, another agent or a file without knowing a
+// #56. An agent writing a message, a task body or a comment should be able to
+// point at a task, a workspace, another agent or a file without knowing a
 // route. This file is the SYNTAX — what a reference looks like and what it
 // names. Turning one into a link is core/markdownLinks.js, and the routes are
 // core/router.js's; nothing here builds a hash.
@@ -16,7 +16,7 @@
 // in this project's own notes and none of them is a link:
 //
 //   `# A heading`        a heading needs the space — `#42` has none
-//   `#fff`, `#aabbcc`    hex colours are letters; an issue is digits
+//   `#fff`, `#aabbcc`    hex colours are letters; a task is digits
 //   `hi@example.codes`   email has no LEADING `@`
 //   `@anthropic-ai/sdk`  an npm scope: a slash and no colon
 //   `gitleaks@8.30.1`    a version specifier
@@ -32,12 +32,12 @@
 // which is why the workspace is named inside the brackets rather than inferred
 // from where the message happens to be.
 
-/// An issue by its number: `#42`, or one comment on it: `#42/c/ic-7`.
+/// A task by its number: `#42`, or one comment on it: `#42/c/tc-7`.
 ///
-/// Digits only, so a hex colour is not an issue, and a boundary in front so
+/// Digits only, so a hex colour is not a task, and a boundary in front so
 /// `file.js#42` and `abc#42` stay prose. The renderer never sees a heading
 /// here — that is a line-level rule and this runs inline.
-const ISSUE = /(^|[^\w#&])#(\d+)(?:\/c\/([A-Za-z0-9_-]+))?\b/g;
+const TASK = /(^|[^\w#&])#(\d+)(?:\/c\/([A-Za-z0-9_-]+))?\b/g;
 
 /// A workspace or an agent: `@workspace:<name or id>`, `@agent:<id>`.
 ///
@@ -113,7 +113,7 @@ function matchesOf(text, pattern, read, { boundary = true } = {}) {
 export function referencesIn(text) {
   const source = text || "";
   const found = [
-    ...matchesOf(source, ISSUE, (match) => ({ kind: "issue", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })),
+    ...matchesOf(source, TASK, (match) => ({ kind: "task", number: Number(match[2]), ...(match[3] ? { commentId: match[3] } : null) })),
     ...matchesOf(source, NAMED, (match) =>
       match[2] === "workspace" ? { kind: "workspace", name: match[3] } : { kind: "agent", id: match[3] }),
     ...matchesOf(source, BRACKETED, (match) => bracketed(match[1].trim(), match[2].trim()), { boundary: false }),

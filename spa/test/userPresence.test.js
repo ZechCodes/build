@@ -10,7 +10,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 
 let carries = true;
 vi.mock("../src/core/changeEvents.js", () => ({
-  bridgeCapabilities: () => ({ issues: { doneSinceLeft: carries } }),
+  bridgeCapabilities: () => ({ tasks: { doneSinceLeft: carries } }),
 }));
 
 const contexts = [];

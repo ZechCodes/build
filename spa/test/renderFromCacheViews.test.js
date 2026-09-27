@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { issue as trackerIssue } from "./trackerWireFixture.js";
+import { task as trackerTask } from "./trackerWireFixture.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -60,12 +60,12 @@ import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { entityIdOf } from "../src/core/entityId.js";
 import { startFeed, stopFeed } from "../src/core/taskFeed.js";
 import { standShell, stopShell } from "../src/core/shell.js";
-import { issueAddress } from "../src/core/issueCache.js";
-import { writeIssueRecord } from "../src/core/trackerCache.js";
+import { taskAddress } from "../src/core/taskCache.js";
+import { writeTaskRecord } from "../src/core/trackerCache.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { renderBranch } from "../src/views/branchView.js";
-import { renderIssue } from "../src/views/issueView.js";
-import { renderTrackerIssue } from "../src/views/trackerIssueView.js";
+import { renderTask } from "../src/views/taskView.js";
+import { renderTrackerTask } from "../src/views/trackerTaskView.js";
 import { renderProject } from "../src/views/projectView.js";
 import { renderWorkspace } from "../src/views/workspaceView.js";
 
@@ -126,7 +126,7 @@ const workspace = {
 };
 const branchRow = {
   kind: "branch", project_id: "p1", project: "notes", branch: "build/login", worktree_id: "wt-1", agents: [],
-  state: "review", can_finish: true, finish: { warnings: [] }, primary: false, issue_id: null,
+  state: "review", can_finish: true, finish: { warnings: [] }, primary: false, task_id: null,
   stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
 };
 
@@ -156,30 +156,30 @@ const SURFACES = {
     // The Done the cached row offers, in the surface's bar.
     painted: () => document.querySelector("#tabbody .gitpane") && document.querySelector("#tb-verb")?.textContent.includes("Done"),
   },
-  issue: {
-    route: { name: "issue", deviceId: DEVICE, projectId: "p1", id: "issue-1" },
-    render: renderIssue,
+  task: {
+    route: { name: "task", deviceId: DEVICE, projectId: "p1", id: "task-1" },
+    render: renderTask,
     seed: async () => {
-      await writeCached(issueAddress(DEVICE, "issue-1", "get"), {
-        issue_id: "issue-1", plan_id: "issue-1", project_id: "p1", project: "notes",
-        goal: "Rebuild the issue view", state: "plan_review", base_branch: "main",
+      await writeCached(taskAddress(DEVICE, "task-1", "get"), {
+        task_id: "task-1", plan_id: "task-1", project_id: "p1", project: "notes",
+        goal: "Rebuild the task view", state: "plan_review", base_branch: "main",
         stages: [{ id: "s1", state: "planned" }], implementation_lineage: [],
         thread: { items: [], thread_last_sequence: 1 },
       });
-      await writeCached(issueAddress(DEVICE, "issue-1", "stages"), {
+      await writeCached(taskAddress(DEVICE, "task-1", "stages"), {
         stages: [{ id: "s1", title: "Cached stage", state: "planned", approval: "planned", execution: "pending", open_comments: 0, comments: [] }],
       });
     },
     painted: () => document.querySelector("#tabbody .ivstages")?.textContent.includes("Cached stage"),
   },
-  trackerIssue: {
-    route: { name: "trackerIssue", deviceId: DEVICE, projectId: "p1", issueId: "issue-1" },
-    render: renderTrackerIssue,
-    seed: () => writeIssueRecord(DEVICE, "p1", "issue-1", {
-      issue: trackerIssue({ id: "issue-1", number: 12, title: "The cached issue title" }),
+  trackerTask: {
+    route: { name: "trackerTask", deviceId: DEVICE, projectId: "p1", taskId: "task-1" },
+    render: renderTrackerTask,
+    seed: () => writeTaskRecord(DEVICE, "p1", "task-1", {
+      task: trackerTask({ id: "task-1", number: 12, title: "The cached task title" }),
       timeline: [],
     }),
-    painted: () => document.querySelector("#issue-pane")?.textContent.includes("The cached issue title"),
+    painted: () => document.querySelector("#task-pane")?.textContent.includes("The cached task title"),
   },
   project: {
     route: { name: "project", deviceId: DEVICE, projectId: "p1", tab: "workspaces" },

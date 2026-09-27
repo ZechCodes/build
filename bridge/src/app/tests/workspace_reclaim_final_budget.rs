@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn final_candidate_validation_times_out_off_lock_and_preserves_every_artifact() {
-    let (tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (_root, checkout) = root_and_checkout(&state, &ws);
     let first = build_output_in(&checkout);
     let data = checkout.join(".build/data");
@@ -83,8 +83,8 @@ fn final_candidate_validation_times_out_off_lock_and_preserves_every_artifact() 
 fn changing_ignore_rules_after_final_validation_preserves_the_candidate() {
     use crate::app::workspaces::PrunePhase;
     use std::cell::Cell;
-    let (_tmp, state, _project, ws, issue) = linked_workspace();
-    finish(&state, &issue);
+    let (_tmp, state, _project, ws, task) = linked_workspace();
+    finish(&state, &task);
     let (_root, checkout) = root_and_checkout(&state, &ws);
     let output = build_output_in(&checkout);
     let git_dir = git2::Repository::open(&checkout)

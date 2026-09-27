@@ -1,8 +1,8 @@
-//! An agent removed by another client changes issue destinations, even when
+//! An agent removed by another client changes task destinations, even when
 //! its workspace stays and neither agent is watched.
 
 use super::*;
-use crate::tracker::{Assignee, Issue};
+use crate::tracker::{Assignee, Task};
 
 struct Fixture {
     project: String,
@@ -33,12 +33,12 @@ fn add_unwatched_agent(app: &mut AppState, entity: &str, name: &str) -> String {
     id
 }
 
-fn comment_as(app: &mut AppState, entity: &str, agent: &str, issue: &str) {
+fn comment_as(app: &mut AppState, entity: &str, agent: &str, task: &str) {
     app.on_agent_mcp_action(
         entity,
         agent,
-        crate::mcp::BridgeAction::TrackerCommentIssue {
-            issue_id: issue.into(),
+        crate::mcp::BridgeAction::TrackerCommentTask {
+            task_id: task.into(),
             body: "The fix is here.".into(),
             refs: Vec::new(),
             track: Some(false),
@@ -65,24 +65,24 @@ fn seed(app: &mut AppState) -> Fixture {
     let removed = add_unwatched_agent(app, &entity, "Historian");
     let survivor = add_unwatched_agent(app, &entity, "Keeper");
     let created = app.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({
             "project_id": project, "title": "Remote agent removal",
             "body": format!("Ask @agent:{removed} or @agent:{survivor}."),
         }),
     ));
-    let open = created["result"]["issue"]["id"]
+    let open = created["result"]["task"]["id"]
         .as_str()
         .unwrap()
         .to_string();
     comment_as(app, &entity, &removed, &open);
     // Seed an existing assignment without starting a harness for this fixture.
     let store = app.tracker_store().unwrap();
-    let mut issue = store.load_tracker_issue(&open).unwrap().unwrap();
-    issue.assignee = Some(Assignee::Agent {
+    let mut task = store.load_tracker_task(&open).unwrap().unwrap();
+    task.assignee = Some(Assignee::Agent {
         agent_id: removed.clone(),
     });
-    store.save_tracker_issue_activity(&issue, &[], &[]).unwrap();
+    store.save_tracker_task_activity(&task, &[], &[]).unwrap();
 
     let closed = super::tracker::filed(app, &project, "Closed historical reference")["id"]
         .as_str()
@@ -90,7 +90,7 @@ fn seed(app: &mut AppState) -> Fixture {
         .to_string();
     comment_as(app, &entity, &removed, &closed);
     assert_eq!(
-        app.handle(req("issues.close", json!({ "issue_id": closed })))["ok"],
+        app.handle(req("tasks.close", json!({ "task_id": closed })))["ok"],
         true
     );
     let unrelated = super::tracker::filed(app, &project, "Unrelated")["id"]
@@ -109,10 +109,10 @@ fn seed(app: &mut AppState) -> Fixture {
     }
 }
 
-fn read_issue(app: &AppState, id: &str) -> Issue {
+fn read_task(app: &AppState, id: &str) -> Task {
     app.tracker_store()
         .unwrap()
-        .load_tracker_issue(id)
+        .load_tracker_task(id)
         .unwrap()
         .unwrap()
 }
@@ -121,25 +121,25 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path()).with_change_window(Duration::ZERO);
     let fixture = seed(&mut app);
-    let before_saved = read_issue(&app, &fixture.open);
+    let before_saved = read_task(&app, &fixture.open);
     let state = app.shared();
     let changes = state.lock().unwrap().changes();
     let handler = AppState::handler(Arc::clone(&state));
-    let (reader, mut rx, key) = SessionSender::observable("issue-reader");
+    let (reader, mut rx, key) = SessionSender::observable("task-reader");
     let greeting = handler.call(
         reader.clone(),
         req("session.hello", json!({ "changes": "subscriptions" })),
     );
     let read = || {
         json!({
-            "get": handler.call(reader.clone(), req("issues.get", json!({ "issue_id": fixture.open })))["result"],
-            "list": handler.call(reader.clone(), req("issues.list", json!({ "project_id": fixture.project, "state": "open" })))["result"],
+            "get": handler.call(reader.clone(), req("tasks.get", json!({ "task_id": fixture.open })))["result"],
+            "list": handler.call(reader.clone(), req("tasks.list", json!({ "project_id": fixture.project, "state": "open" })))["result"],
         })
     };
     let before = read();
     let subscribed = handler.call(reader.clone(), req("changes.subscribe", json!({
-        "subscription_id": "issue-identities", "scope": { "kind": "entity", "id": fixture.project },
-        "kinds": ["issues"],
+        "subscription_id": "task-identities", "scope": { "kind": "entity", "id": fixture.project },
+        "kinds": ["tasks"],
     })));
     assert_eq!(subscribed["ok"], true, "{subscribed:?}");
     // Drive the real flusher synchronously; no timer or fixed-turn waits.
@@ -181,13 +181,13 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
         .filter(|event| event["type"] == "changes")
         .flat_map(|event| event["items"].as_array().unwrap())
         .filter(|item| item["entity_id"] == fixture.project)
-        .flat_map(|item| item["issues"]["issue_ids"].as_array().into_iter().flatten())
+        .flat_map(|item| item["tasks"]["task_ids"].as_array().into_iter().flatten())
         .map(|id| id.as_str().unwrap().to_string())
         .collect();
     assert_eq!(
         ids,
         std::collections::BTreeSet::from([fixture.open.clone(), fixture.closed.clone()]),
-        "only issues naming the removed agent must refresh; unrelated {}: {events:?}",
+        "only tasks naming the removed agent must refresh; unrelated {}: {events:?}",
         fixture.unrelated
     );
     let app = state.lock().unwrap();
@@ -197,9 +197,9 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
         .unwrap()
         .by_id(&fixture.survivor)
         .is_some());
-    let saved = read_issue(&app, &fixture.open);
+    let saved = read_task(&app, &fixture.open);
     assert_eq!(saved.updated_at, before_saved.updated_at);
-    let identities = &after["get"]["issue"]["identities"];
+    let identities = &after["get"]["task"]["identities"];
     assert_eq!(identities[&fixture.removed]["available"], false);
     assert_eq!(identities[&fixture.removed]["name"], "Historian");
     assert_eq!(identities[&fixture.removed]["provider"], "pi");
@@ -207,17 +207,17 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
     trace
 }
 
-/// The browser wiring runner sets BUILD_ISSUE_AGENT_REMOVAL_TRACE to consume
+/// The browser wiring runner sets BUILD_TASK_AGENT_REMOVAL_TRACE to consume
 /// these real wire responses and encrypted/decrypted pushes in Chromium.
 #[test]
-fn remote_agent_removal_invalidates_issue_identities() {
+fn remote_agent_removal_invalidates_task_identities() {
     let trace = removing_an_agent(false);
-    if let Ok(path) = std::env::var("BUILD_ISSUE_AGENT_REMOVAL_TRACE") {
+    if let Ok(path) = std::env::var("BUILD_TASK_AGENT_REMOVAL_TRACE") {
         std::fs::write(path, serde_json::to_vec_pretty(&trace).unwrap()).unwrap();
     }
 }
 
 #[test]
-fn removed_live_agent_invalidates_issues_even_if_saving_roster_fails() {
+fn removed_live_agent_invalidates_tasks_even_if_saving_roster_fails() {
     removing_an_agent(true);
 }

@@ -1,5 +1,5 @@
 use super::{
-    PersistedArchivedWorktree, PersistedIssue, PersistedPlan, PersistedRun, Store, StoreError,
+    PersistedArchivedWorktree, PersistedPlan, PersistedRun, PersistedTask, Store, StoreError,
 };
 use crate::attention::Attention;
 use crate::models::ModelChoice;
@@ -44,16 +44,16 @@ impl Store {
         }
 
         let mut imported = 0usize;
-        // Issues, with the implementations nested inside each aggregate.
-        let issues_dir = self.dir.join("issues");
-        if issues_dir.is_dir() {
-            for entry in std::fs::read_dir(&issues_dir)? {
+        // Tasks, with the implementations nested inside each aggregate.
+        let tasks_dir = self.dir.join(Store::PLANS_DIR);
+        if tasks_dir.is_dir() {
+            for entry in std::fs::read_dir(&tasks_dir)? {
                 let record_path = entry?.path().join("record.json");
                 if !record_path.is_file() {
                     continue;
                 }
-                let aggregate: PersistedIssue = read_record(&record_path)?;
-                self.save_issue_plan(&aggregate.issue)?;
+                let aggregate: PersistedTask = read_record(&record_path)?;
+                self.save_task_plan(&aggregate.task)?;
                 imported += 1;
                 for implementation in &aggregate.implementations {
                     self.save_run(implementation)?;
@@ -228,22 +228,22 @@ pub(super) fn copy_tree(
 
 pub(super) struct LegacyOwnerContext {
     pub(super) choice: ModelChoice,
-    pub(super) issue_id: Option<String>,
+    pub(super) task_id: Option<String>,
 }
 
 pub(super) fn load_legacy_owner_context(
     conn: &Connection,
 ) -> Result<HashMap<String, LegacyOwnerContext>, StoreError> {
     let mut owners = HashMap::new();
-    let mut issues = conn.prepare("SELECT id, record FROM issues")?;
-    let issue_rows: Vec<(String, String)> = issues
+    let mut tasks = conn.prepare("SELECT id, record FROM tasks")?;
+    let task_rows: Vec<(String, String)> = tasks
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<_, _>>()?;
-    drop(issues);
-    for (id, raw) in issue_rows {
+    drop(tasks);
+    for (id, raw) in task_rows {
         let record: PersistedPlan =
             serde_json::from_str(&raw).map_err(|source| StoreError::Corrupt {
-                path: PathBuf::from(format!("issues/{id}")),
+                path: PathBuf::from(format!("{}/{id}", Store::PLANS_DIR)),
                 source,
             })?;
         owners.insert(
@@ -254,7 +254,7 @@ pub(super) fn load_legacy_owner_context(
                     model: record.model,
                     effort: record.effort,
                 },
-                issue_id: None,
+                task_id: None,
             },
         );
     }
@@ -277,7 +277,7 @@ pub(super) fn load_legacy_owner_context(
                     model: record.model,
                     effort: record.effort,
                 },
-                issue_id: record.plan_id,
+                task_id: record.plan_id,
             },
         );
     }

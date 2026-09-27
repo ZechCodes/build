@@ -15,6 +15,6 @@ on the archive.ts hunk.
 
 Round 2 (the maintainer's notes): every film frame is re-taken with the act's scene held at
 the named beat, since the scenes run on the clock now. New: `film-act3-played.webp`,
-the issue card in In progress after act 3's scene played through on its own, and
+the task card in In progress after act 3's scene played through on its own, and
 `film-act5-handoff.webp`, the handoff as a highlight on the Test step at 5/.655.
 

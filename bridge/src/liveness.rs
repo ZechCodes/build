@@ -5,11 +5,11 @@
 //! the blocking pool; it is fatal for anything that must answer within seconds
 //! and runs on a worker thread instead. On 2026-09-24 the per-agent pumps, the
 //! MCP control socket and the idle monitor — thirty-odd tasks, each taking the
-//! app lock on a worker — parked every worker behind a 44-second `issues.list`,
+//! app lock on a worker — parked every worker behind a 44-second `tasks.list`,
 //! and with the workers went the I/O driver: no ICE consent answered, no relay
 //! pong sent, no data-channel frame read, no presence beat posted. The phone
 //! saw ICE go `disconnected`, its 3-second ping went unanswered, and it severed
-//! the session, thirty times in thirty minutes (issue #128).
+//! the session, thirty times in thirty minutes (task #128).
 //!
 //! So the traffic whose whole meaning is "still here" runs on a runtime of its
 //! own, whose threads take no lock the app holds: the relay socket and its
@@ -28,7 +28,7 @@
 //! serializes and encrypts what the bridge pushes to its clients — the change
 //! bus's flusher, a frame per subscriber per window, and the terminals' byte
 //! pumps, a vt100 parse per chunk and a frame per attached client every 10 ms
-//! (issue #131). That is CPU, not waiting, and on the main runtime's workers
+//! (task #131). That is CPU, not waiting, and on the main runtime's workers
 //! it stood in line with the dispatcher that answers the clients' requests.
 //! It takes no lock the app holds on its own threads; a pump's death rites,
 //! which do, go to the blocking pool.

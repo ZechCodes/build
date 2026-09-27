@@ -3,7 +3,7 @@ import { esc } from "./text.js";
 
 const encoder = new TextEncoder();
 const DEFAULT_LIMITS = Object.freeze({ maxItems: 100, maxSelectionBytes: 32 * 1024, maxPathBytes: 4 * 1024 });
-const ITEM_KINDS = new Set(["file", "commit", "diff", "selection", "workspace", "issue"]);
+const ITEM_KINDS = new Set(["file", "commit", "diff", "selection", "workspace", "task"]);
 // What one word naming something may weigh, the bridge's own limit: a
 // workspace's id, a workspace's name. It reaches the agent as prose, not as a
 // document.
@@ -45,26 +45,26 @@ const normalizeWorkspace = (item) => {
 };
 
 /**
- * The issue the user has open.
+ * The task the user has open.
  *
- * A place rather than a thing on screen, like the workspace above it: the issue
- * page stands the project's agent beside the issue, and this is what tells that
+ * A place rather than a thing on screen, like the workspace above it: the task
+ * page stands the project's agent beside the task, and this is what tells that
  * agent which one is being looked at.
  *
  * The number is what a person says out loud, so it has to survive as a number —
  * `#0` and `#-1` name nothing, and a string would reach the agent as prose that
  * happens to look numeric.
  */
-const normalizeIssue = (item) => {
-  const issueId = validLabel(item.issue_id);
+const normalizeTask = (item) => {
+  const taskId = validLabel(item.task_id);
   const title = validLabel(item.title);
   // Strictly a number, not something that coerces into one. It comes off the
   // bridge's own record where it is an integer, so a string here means
   // something upstream is wrong — better refused than quietly coerced.
   const number = item.number;
-  if (!issueId || !title) return null;
+  if (!taskId || !title) return null;
   if (typeof number !== "number" || !Number.isInteger(number) || number <= 0) return null;
-  return { kind: "issue", issue_id: issueId, number, title };
+  return { kind: "task", task_id: taskId, number, title };
 };
 
 const normalizeCommit = (item) => {
@@ -103,7 +103,7 @@ const NORMALIZERS = {
   diff: (item, limits) => normalizeFile(item, limits),
   selection: normalizeSelection,
   workspace: (item) => normalizeWorkspace(item),
-  issue: (item) => normalizeIssue(item),
+  task: (item) => normalizeTask(item),
 };
 const normalizeItem = (item, limits, remaining) =>
   item && ITEM_KINDS.has(item.kind) ? NORMALIZERS[item.kind](item, limits, remaining) : null;
@@ -268,7 +268,7 @@ export function createViewingContext(options = {}) {
 
 const chipLabel = (item) => {
   if (item.kind === "workspace") return `from ${item.name}`;
-  if (item.kind === "issue") return `#${item.number} ${item.title}`;
+  if (item.kind === "task") return `#${item.number} ${item.title}`;
   if (item.kind === "commit") return `Commit ${item.sha.slice(0, 12)}`;
   if (item.kind === "selection") return `${item.path}${item.line_start ? `:${item.line_start}` : ""}`;
   if (item.kind === "diff") return `${item.mode === "all" ? "All changes" : "Uncommitted"}: ${item.path}`;
@@ -315,7 +315,7 @@ const fileGroupChip = ({ key, entries }, removable) => {
 /** Whether this chip offers to come off. Where the reader is standing is not
  *  something they attached, so the workspace chip never does. */
 const chipIsRemovable = (item, removable) =>
-  removable && item.kind !== "workspace" && item.kind !== "issue";
+  removable && item.kind !== "workspace" && item.kind !== "task";
 
 export function viewingContextChipsHtml(context, { removable = false } = {}) {
   return contextGroups(context?.items || []).map((group) => {

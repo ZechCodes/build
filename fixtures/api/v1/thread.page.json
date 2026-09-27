@@ -93,8 +93,8 @@
           "updated_sequence": 44,
           "role": "user",
           "from_build": true,
-          "from_issue": {
-            "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+          "from_task": {
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
             "number": 13,
             "title": "Kanban drag does not persist",
             "links": {
@@ -102,10 +102,10 @@
               "branches": [],
               "commits": [],
               "conversation_ids": [],
-              "parent_issue_id": null
+              "parent_task_id": null
             }
           },
-          "issue_notice": {
+          "task_notice": {
             "actor": { "kind": "agent", "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E", "name": "Rail scroll" },
             "action": "moved",
             "from": "in_progress",
@@ -123,7 +123,7 @@
           "updated_sequence": 45,
           "role": "user",
           "from_build": true,
-          "body": "You reported Complete, but 1 issue assigned to you is still open. This message is from Build, not from the user \u2014 nobody is waiting on an answer to it.\n\n- #13 Kanban drag does not persist (In progress)\n\nEach one needs finishing, or a comment saying where it got to, or \u2014 if you cannot do it \u2014 handing back with a comment saying why, so whoever assigned it knows. Move an issue to In review when it is ready to be looked at, and close it only when it is done with.",
+          "body": "You reported Complete, but 1 task assigned to you is still open. This message is from Build, not from the user \u2014 nobody is waiting on an answer to it.\n\n- #13 Kanban drag does not persist (In progress)\n\nEach one needs finishing, or a comment saying where it got to, or \u2014 if you cannot do it \u2014 handing back with a comment saying why, so whoever assigned it knows. Move a task to In review when it is ready to be looked at, and close it only when it is done with.",
           "created_at": "2026-09-20T15:06:00Z"
         }
       },
@@ -135,9 +135,9 @@
           "updated_sequence": 47,
           "role": "agent",
           "still_working": true,
-          "issue_action": {
+          "task_action": {
             "action": "assigned",
-            "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
             "number": 13,
             "title": "Kanban drag does not persist",
             "assignee": { "kind": "agent", "agent_id": "agent-01K5ZQ8M4T0J7WQ2R6X3YB9C4E" }
@@ -154,12 +154,12 @@
           "updated_sequence": 46,
           "role": "agent",
           "still_working": true,
-          "issue_action": {
+          "task_action": {
             "action": "commented_on",
-            "issue_id": "issue-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+            "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
             "number": 13,
             "title": "Kanban drag does not persist",
-            "comment_id": "ic-01K5ZQ8M4T0J7WQ2R6X3YB9C4F"
+            "comment_id": "tc-01K5ZQ8M4T0J7WQ2R6X3YB9C4F"
           },
           "body": "Commented on #13 Kanban drag does not persist",
           "created_at": "2026-09-20T15:07:00Z"

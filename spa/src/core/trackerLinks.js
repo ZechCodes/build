@@ -1,6 +1,6 @@
-// What an issue's links open.
+// What a task's links open.
 //
-// An issue says what should be done; the doing is a workspace, a branch, a
+// A task says what should be done; the doing is a workspace, a branch, a
 // commit and a conversation, each of which already has a surface. So nothing
 // here invents a destination — every row is a route the app already writes, or
 // it is not a link at all.
@@ -19,7 +19,7 @@
 
 import { conversationRoute } from "./router.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
-import { issueLinks } from "./trackerModel.js";
+import { taskLinks } from "./trackerModel.js";
 
 /** How much of a hash is enough to recognize it, and the length git itself
  *  abbreviates to. */
@@ -78,26 +78,26 @@ function conversationRow(conversationId, place, feed) {
   };
 }
 
-const parentRow = (parentIssueId, place) => ({
+const parentRow = (parentTaskId, place) => ({
   kind: "parent",
-  label: "Parent issue",
-  route: { name: "trackerIssue", projectId: place.projectId, deviceId: place.deviceId, issueId: parentIssueId },
+  label: "Parent task",
+  route: { name: "trackerTask", projectId: place.projectId, deviceId: place.deviceId, taskId: parentTaskId },
 });
 
 /**
- * Every link an issue carries, in one list, in the order the record holds them.
+ * Every link a task carries, in one list, in the order the record holds them.
  *
  * `place` is where the reader is standing — `{projectId, deviceId, projectKey}`
  * — because every route under a project is written against the machine that
  * project is on.
  */
-export function issueLinkRows(issue, place, feed = null) {
-  const links = issueLinks(issue);
+export function taskLinkRows(task, place, feed = null) {
+  const links = taskLinks(task);
   return [
-    ...links.workspace_ids.map((workspaceId) => workspaceRow(workspaceId, place, feed, issue.identities)),
+    ...links.workspace_ids.map((workspaceId) => workspaceRow(workspaceId, place, feed, task.identities)),
     ...links.branches.map((branch) => branchRow(branch, place)),
     ...links.conversation_ids.map((conversationId) => conversationRow(conversationId, place, feed)),
     ...links.commits.map(commitRow),
-    ...(links.parent_issue_id ? [parentRow(links.parent_issue_id, place)] : []),
+    ...(links.parent_task_id ? [parentRow(links.parent_task_id, place)] : []),
   ];
 }

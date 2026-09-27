@@ -8,7 +8,7 @@ export const EVENT_META = {
   idle_unreported: { label: "Agent went idle without reporting", icon: "…", tone: "blocked" },
   done: { label: "Agent reported done", icon: "✓", tone: "success" },
   revision_created: { label: "Revision created", icon: "↻" },
-  approved: { label: "Issue ready", icon: "✓", tone: "success" },
+  approved: { label: "Task ready", icon: "✓", tone: "success" },
   stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
   stage_started: { label: "Stage implementation started", icon: "▶" },
   implementation_started: { label: "Implementation started", icon: "▶" },

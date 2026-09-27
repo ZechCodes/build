@@ -48,7 +48,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // backoff reconnect in one function each — left the tree with both of their
 // exemptions.
 // 57 since the rail reads one work item per kind: `railEntity` is a lookup
-// over four small readers — an issue, a project, a workspace, a branch — rather
+// over four small readers — a task, a project, a workspace, a branch — rather
 // than one function that walks all of them.
 // 56 since the console paints from the cache: `ensureTerminals` — the cached
 // seed, the live listing, the unreachable machine and the unresolvable branch

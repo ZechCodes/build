@@ -13,7 +13,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { stampWorkspace } = await import("../src/core/feedMerge.js");
-const { writeIssuesRecord } = await import("../src/core/trackerCache.js");
+const { writeTasksRecord } = await import("../src/core/trackerCache.js");
 const fixture = await import("./agentsOverviewFixture.js");
 
 const markup = `<div id="shell"><div id="view"><header id="toolbar">Skrift</header>
@@ -36,7 +36,7 @@ beforeEach(async () => {
   localStorage.setItem("build.rail.expanded", "1");
   resetAgentRailMemory();
   await wipeCache();
-  await fixture.writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeIssuesRecord });
+  await fixture.writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
   rail = mountAgentRail(host(), fixture.overviewRailContext());
   await vi.waitFor(() => expect(host().querySelector(".rail-overview-toggle")).toBeTruthy());
   host().querySelector(".rail-overview-toggle").click();
@@ -110,19 +110,19 @@ describe("the agents overview (#186)", () => {
     expect([...summary("relay-soak").children].map((node) => node.className)).toEqual(["rail-overview-none", "rail-overview-idle"]);
   });
 
-  it("names the issue a workspace is for, linked or held, and never a finished one", () => {
-    const issue = (name) => sectionNamed(name).querySelector(".rail-overview-issue");
-    expect(issue("skrift-fixes").querySelector(".rail-overview-issue-number").textContent).toBe("#183");
-    expect(issue("skrift-fixes").querySelector(".rail-overview-issue-title").textContent)
+  it("names the task a workspace is for, linked or held, and never a finished one", () => {
+    const task = (name) => sectionNamed(name).querySelector(".rail-overview-task");
+    expect(task("skrift-fixes").querySelector(".rail-overview-task-number").textContent).toBe("#183");
+    expect(task("skrift-fixes").querySelector(".rail-overview-task-title").textContent)
       .toBe("Worker shutdown cancels running jobs on SIGTERM");
-    expect(issue("skrift-review").querySelector(".rail-overview-issue-number").textContent).toBe("#1");
-    expect(issue("issue-implementation-audit")).toBeNull();
-    expect(issue("relay-soak")).toBeNull();
+    expect(task("skrift-review").querySelector(".rail-overview-task-number").textContent).toBe("#1");
+    expect(task("issue-implementation-audit")).toBeNull();
+    expect(task("relay-soak")).toBeNull();
   });
 
-  it("names the issue on a workspace page's own scope too, and follows the issue as it changes", async () => {
+  it("names the task on a workspace page's own scope too, and follows the task as it changes", async () => {
     // The page of skrift-fixes: its own Agents scope reads no workspace list,
-    // and its heading still has to say which issue the workspace is for.
+    // and its heading still has to say which task the workspace is for.
     rail.dispose();
     document.body.innerHTML = markup;
     rail = mountAgentRail(host(), {
@@ -136,16 +136,16 @@ describe("the agents overview (#186)", () => {
     await vi.waitFor(() => expect(sectionNames()).toHaveLength(2));
     const section = () => host().querySelector('.rail-overview-add[data-overview-add="ws-fixes"]').closest(".rail-overview-section");
     expect(section().querySelector('[data-overview-agent="fixer"]')).toBeTruthy();
-    const chip = () => section().querySelector(".rail-overview-issue");
+    const chip = () => section().querySelector(".rail-overview-task");
     await vi.waitFor(() => expect(chip()).toBeTruthy());
-    expect(chip().querySelector(".rail-overview-issue-number").textContent).toBe("#183");
-    expect(chip().querySelector(".rail-overview-issue-title").textContent).toBe("Worker shutdown cancels running jobs on SIGTERM");
+    expect(chip().querySelector(".rail-overview-task-number").textContent).toBe("#183");
+    expect(chip().querySelector(".rail-overview-task-title").textContent).toBe("Worker shutdown cancels running jobs on SIGTERM");
 
     // The tracker learns a new title: the heading follows the cache.
-    const retitled = fixture.OVERVIEW_ISSUES.map((issue) => (issue.number === 183
-      ? { ...issue, title: "Worker shutdown: cancel on SIGTERM", updated_at: "2026-09-27T16:00:00Z" } : issue));
-    await writeIssuesRecord(fixture.OVERVIEW_DEVICE, fixture.OVERVIEW_PROJECT, { issues: retitled, columns: [] });
-    await vi.waitFor(() => expect(chip().querySelector(".rail-overview-issue-title").textContent)
+    const retitled = fixture.OVERVIEW_TASKS.map((task) => (task.number === 183
+      ? { ...task, title: "Worker shutdown: cancel on SIGTERM", updated_at: "2026-09-27T16:00:00Z" } : task));
+    await writeTasksRecord(fixture.OVERVIEW_DEVICE, fixture.OVERVIEW_PROJECT, { tasks: retitled, columns: [] });
+    await vi.waitFor(() => expect(chip().querySelector(".rail-overview-task-title").textContent)
       .toBe("Worker shutdown: cancel on SIGTERM"));
   });
 
@@ -169,7 +169,7 @@ describe("the agents overview (#186)", () => {
 
     sectionNamed("skrift-fixes").querySelector(".rail-overview-open").click();
     await vi.waitFor(() => expect(sectionNames()).toEqual(["Project agents", "skrift-fixes"]));
-    expect(sectionNamed("skrift-fixes").querySelector(".rail-overview-issue-number").textContent).toBe("#183");
+    expect(sectionNamed("skrift-fixes").querySelector(".rail-overview-task-number").textContent).toBe("#183");
     expect(document.activeElement).toBe(list());
     host().querySelector("#rail-panel .rail-overview-up").click();
     await vi.waitFor(() => expect(sectionNames()).toHaveLength(5));

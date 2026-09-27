@@ -13,6 +13,8 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 /** The one bridge this file's device answers through: a test that hands over
  *  a new `call` is that bridge answering differently, not another machine. */
 const bridge = { call: null };
+/** What a bridge that carries watching says in its greeting. */
+const WATCHING_GREETING = Object.freeze({ api_version: "2.0.0", capabilities: ["tasks.watching"] });
 
 // The device's conversations, as the registry holds them for this one machine:
 // the rail is handed one and writes every draft and message through it.
@@ -262,7 +264,7 @@ beforeEach(async () => {
     calls.push({ method, params });
     if (method === "models.list") return catalog;
     if (method === "branch.get") return payload;
-    if (method === "issue.get") return payload;
+    if (method === "task.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
     if (method === "agent.start") return { agent_id: params.agent_id || "ag-new", term_id: `agent:${params.agent_id || "ag-new"}` };
     if (method === "agent.add") return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
@@ -272,7 +274,7 @@ beforeEach(async () => {
   chatRepository = createChatRepository({ scope: scopeFor("dev-1"), call: (method, params) => bridge.call(method, params) });
   // The machine the rail is mounted on: its bridge is what the harness catalog
   // comes from, once it has greeted.
-  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "1.22.0" }, null);
+  adoptBridgeSelection(adoptDeviceSession(sessionAnswering(bridge)), { version: "2.0.0" }, null);
 });
 
 afterEach(async () => {
@@ -872,7 +874,7 @@ describe("the rail over a machine that is asked nothing", () => {
     await flush();
     await pushRow(branchRow({ agents: three().slice(0, 2) }));
 
-    const workItemReads = ["branch.get", "issue.get", "run.get", "workspace.get"];
+    const workItemReads = ["branch.get", "task.get", "run.get", "workspace.get"];
     expect(calls.filter((call) => workItemReads.includes(call.method))).toEqual([]);
     expect(callsTo("thread.page").map((call) => call.params)).toEqual([
       { entity_id: "run-3", agent_id: "ag-1", limit: LATEST_THREAD_ITEMS },
@@ -880,39 +882,39 @@ describe("the rail over a machine that is asked nothing", () => {
     ]);
   });
 
-  // An issue left the board (bridge board/views.rs), so nothing pushes one a
-  // row and nothing ever writes one: the cache holds no work item a rail on an
-  // issue could stand on. Its own read is what answers who its agents are, and
+  // A task left the board (bridge board/views.rs), so nothing pushes one a
+  // row and nothing ever writes one: the cache holds no work item a rail on a
+  // task could stand on. Its own read is what answers who its agents are, and
   // the rail makes it once — on mount, never on a clock. Stage 9 takes the
-  // issue surface cache-only and this goes with it.
-  it("asks an issue for its agents, because nothing writes an issue a row", async () => {
+  // task surface cache-only and this goes with it.
+  it("asks a task for its agents, because nothing writes a task a row", async () => {
     await wipeCache();
-    await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the issue")] });
-    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the issue")] } };
-    rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
+    await writeRailThread("plan-1", "ag-1", { items: [said(1, "on the task")] });
+    payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [said(1, "on the task")] } };
+    rail = mountAgentRail(railHost(), railAddress({ kind: "task", projectId: "p1", taskId: "plan-1" }));
     await flush();
 
-    // One bubble and no `+`: an issue carries exactly one agent.
+    // One bubble and no `+`: a task carries exactly one agent.
     expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-1"]);
-    expect(railHost().querySelector("#rail-body").textContent).toContain("on the issue");
-    expect(callsTo("issue.get")).toHaveLength(1);
+    expect(railHost().querySelector("#rail-body").textContent).toContain("on the task");
+    expect(callsTo("task.get")).toHaveLength(1);
     expect(calls.filter((call) => ["branch.get", "run.get", "workspace.get"].includes(call.method))).toEqual([]);
   });
 
   it("paints a remembered cached conversation before the roster arrives, then falls back in the same frame", async () => {
     await wipeCache();
-    chatRepository.railView("issue:plan-1").chooseAgent("ag-remembered");
+    chatRepository.railView("task:plan-1").chooseAgent("ag-remembered");
     await writeRailThread("plan-1", "ag-remembered", { items: [said(1, "remembered cached words")] });
     await writeRailThread("plan-1", "ag-first", { items: [said(1, "first delivered agent words")] });
     let deliverRoster;
     bridge.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "models.list") return CATALOG;
-      if (method === "issue.get") return new Promise((resolve) => { deliverRoster = resolve; });
+      if (method === "task.get") return new Promise((resolve) => { deliverRoster = resolve; });
       return {};
     });
 
-    rail = mountAgentRail(railHost(), railAddress({ kind: "issue", projectId: "p1", issueId: "plan-1" }));
+    rail = mountAgentRail(railHost(), railAddress({ kind: "task", projectId: "p1", taskId: "plan-1" }));
     await flush();
 
     const body = railHost().querySelector("#rail-body");
@@ -920,7 +922,7 @@ describe("the rail over a machine that is asked nothing", () => {
     expect(railHost().querySelector("#railinput")).toBeNull();
 
     deliverRoster({
-      issue_id: "plan-1",
+      task_id: "plan-1",
       project_id: "p1",
       agents: [agent({ id: "ag-first", ordinal: 1 })],
     });
@@ -980,7 +982,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("paints the selected agent's cached watch value and follows a push", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.9.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     try {
       payload = branchRow({ agents: [agent({ watched: false })] });
       await writeRailWorkItem(payload);
@@ -1002,7 +1004,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("keeps B's cached watch state when A's earlier watch is refused", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     const originalCall = bridge.call;
     let refuseA;
     bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-1"
@@ -1042,7 +1044,7 @@ describe("the rail over a machine that is asked nothing", () => {
 
   it("ignores a workspace watch refusal after the rail swaps to a watched project agent", async () => {
     const { greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
-    await greetBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
     const originalCall = bridge.call;
     let refuseWorkspace;
     bridge.call = vi.fn((method, params) => method === "conversation.watch" && params.agent_id === "ag-one"
@@ -1766,9 +1768,9 @@ describe("the bubble strip", () => {
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
   });
 
-  it("offers no second agent on an issue", async () => {
-    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
-    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
+  it("offers no second agent on a task", async () => {
+    payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
+    await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]);
   });
 
@@ -1882,7 +1884,7 @@ describe("the strip's watched agents (#105)", () => {
   };
 
   beforeEach(async () => {
-    await greetWatchingBridge(async () => ({ api_version: "1.14.0" }), { deviceId: "dev-1" });
+    await greetWatchingBridge(async () => WATCHING_GREETING, { deviceId: "dev-1" });
   });
   afterEach(() => forgetGreetings());
 
@@ -2291,9 +2293,9 @@ describe("taking an agent back off the branch", () => {
     expect(notifyError).not.toHaveBeenCalled();
   });
 
-  it("offers no removal on an issue's one agent", async () => {
-    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
-    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
+  it("offers no removal on a task's one agent", async () => {
+    payload = { task_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
+    await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
     expect(removeButton()).toBe(null);
   });
 
@@ -3601,9 +3603,9 @@ describe("the first message", () => {
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", body: "start here" });
   });
 
-  it("leaves an issue's first message to start its own planning agent", async () => {
-    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent({ state: "idle" })], thread: { items: [] } };
-    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
+  it("leaves a task's first message to start its own planning agent", async () => {
+    payload = { task_id: "plan-1", project_id: "p1", agents: [agent({ state: "idle" })], thread: { items: [] } };
+    await mount({ kind: "task", projectId: "p1", taskId: "plan-1" });
     panel().querySelector("#railinput").value = "plan this";
     panel().querySelector("#railsend").click();
     await flush();
@@ -4300,7 +4302,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     expect([...block.children].map((child) => child.id)).toEqual([
       "rail-surfaces-viewer",
       "rail-observation",
-      // No issues host: what this agent is carrying on the board is a surface
+      // No tasks host: what this agent is carrying on the board is a surface
       // now (#34), drawn behind a pill in the status row like every other
       // kind rather than as a block of its own above it.
       "rail-status",
@@ -4984,7 +4986,7 @@ describe("sending to an agent that is already there", () => {
     await flush();
   };
 
-  // Issue #58: the device's limit remains visible while the conversation
+  // Task #58: the device's limit remains visible while the conversation
   // still delivers messages.
   it("shows a usage limit without attributing a queued message to it", async () => {
     resetUsageLimits();
@@ -5908,7 +5910,7 @@ describe("the models a machine that has not answered yet offers", () => {
   /** The machine's session lands, and its bridge greets. */
   const land = async (standIn) => {
     adoptDeviceSession(sessionAnswering(bridge));
-    adoptBridgeSelection(standIn, { version: "1.22.0" }, null);
+    adoptBridgeSelection(standIn, { version: "2.0.0" }, null);
     await flush();
   };
 

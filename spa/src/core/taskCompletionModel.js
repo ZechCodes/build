@@ -52,7 +52,7 @@ const advance = (held, lineage, epoch, rows) => {
   const newlyCompleted = rows.filter((row) => isNewCompletion(held, lineage, row));
   held.states = new Map(rows.map((row) => [row.id, rememberedRow(row)]));
   for (const row of rows.filter(completed)) held.announced.add(completionToken(lineage, row));
-  return newlyCompleted.map((row) => ({ id: row.id, title: String(row.subject || row.description || "Task completed") }));
+  return newlyCompleted.map((row) => ({ id: row.id, title: String(row.subject || row.description || "Checklist item") }));
 };
 
 /**

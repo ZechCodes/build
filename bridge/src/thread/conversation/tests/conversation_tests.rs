@@ -773,13 +773,13 @@ fn message_and_event_links_round_trip_on_the_wire() {
     assert_eq!(wire["items"][1]["data"]["links"][0]["stage_id"], "parser");
 
     let canonical = vec![
-        ThreadLink::IssueStage {
-            issue_id: "issue-1".into(),
+        ThreadLink::TaskStage {
+            task_id: "task-1".into(),
             stage_id: "parser".into(),
             path: ".build/plan/01-parser.md".into(),
         },
         ThreadLink::Implementation {
-            issue_id: "issue-1".into(),
+            task_id: "task-1".into(),
             implementation_id: "run-1".into(),
         },
         ThreadLink::Worktree {
@@ -793,7 +793,7 @@ fn message_and_event_links_round_trip_on_the_wire() {
         },
     ];
     let value = serde_json::to_value(&canonical).unwrap();
-    assert_eq!(value[0]["kind"], "issue_stage");
+    assert_eq!(value[0]["kind"], "task_stage");
     assert_eq!(value[1]["kind"], "implementation");
     assert_eq!(value[2]["kind"], "worktree");
     assert_eq!(value[3]["kind"], "commit");

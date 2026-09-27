@@ -1,5 +1,5 @@
 use super::{
-    is_json_record, now_rfc3339, write_issue, write_run, PersistedPlan, PersistedRun, Store,
+    is_json_record, now_rfc3339, write_run, write_task, PersistedPlan, PersistedRun, Store,
     StoreError,
 };
 use crate::agent::Agent;
@@ -414,10 +414,10 @@ impl Store {
             Ok(changed == 1)
         })
     }
-    /// [`save_issue_plan`](Self::save_issue_plan) plus the operation receipt in
+    /// [`save_task_plan`](Self::save_task_plan) plus the operation receipt in
     /// one commit. Used by `thread.post`, where acknowledging the operation
     /// without its message (or vice versa) would make a retry unsafe.
-    pub fn save_issue_plan_accepting_operation(
+    pub fn save_task_plan_accepting_operation(
         &self,
         record: &PersistedPlan,
         receipt: &OperationReceipt,
@@ -426,14 +426,14 @@ impl Store {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
-            write_issue(tx, record)?;
+            write_task(tx, record)?;
             Store::write_agents(tx, &record.id, &record.agents)?;
             insert_operation(tx, receipt)?;
             Ok(receipt.clone())
         })
     }
     /// Run-owned counterpart of
-    /// [`save_issue_plan_accepting_operation`](Self::save_issue_plan_accepting_operation).
+    /// [`save_task_plan_accepting_operation`](Self::save_task_plan_accepting_operation).
     pub fn save_run_accepting_operation(
         &self,
         record: &PersistedRun,
@@ -477,7 +477,7 @@ impl Store {
                 }
             }
         };
-        if let Ok(entries) = std::fs::read_dir(self.dir.join("issues")) {
+        if let Ok(entries) = std::fs::read_dir(self.dir.join(Store::PLANS_DIR)) {
             for entry in entries.flatten() {
                 look(entry.path().join("record.json"));
             }

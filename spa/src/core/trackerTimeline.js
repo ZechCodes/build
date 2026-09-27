@@ -1,6 +1,6 @@
-// An issue's timeline: comments and events, interleaved.
+// A task's timeline: comments and events, interleaved.
 //
-// `issues.get` answers them as one ascending list already ordered by
+// `tasks.get` answers them as one ascending list already ordered by
 // `(timestamp, id)` — ids are time-ordered, so two entries stamped in the same
 // second still have one order every reader agrees on. Nothing here re-sorts:
 // re-sorting on the timestamp alone would scramble exactly those pairs.
@@ -73,15 +73,15 @@ const labelChange = (payload) => {
 };
 
 /** What a `linked` event linked. The payload carries the link that was added,
- *  which is one of the five keys `issues.link` takes. */
+ *  which is one of the five keys `tasks.link` takes. */
 const linkChange = (payload) => {
-  const named = ["workspace_id", "branch", "commit", "conversation_id", "parent_issue_id"]
+  const named = ["workspace_id", "branch", "commit", "conversation_id", "parent_task_id"]
     .map((key) => (payload[key] ? `${key.replace(/_/g, " ")} ${payload[key]}` : ""))
     .find(Boolean);
   return named ? `linked ${named}` : "linked this";
 };
 
-/** Done deleted the branch the issue's work was on (#87), or a reclaim did
+/** Done deleted the branch the task's work was on (#87), or a reclaim did
  *  (#167, `reclaimed`). */
 /** The branch, and the repository it was in when the event names one: a
  *  reclaim over several sources says which (#167). */
@@ -107,7 +107,7 @@ const branchKeptSentence = (payload) => {
 const closedSentence = (payload) =>
   payload.reason === "workspace_finished" ? "closed this when the workspace was finished" : "closed this";
 
-/** A dispatching assign moves the issue itself; an agent reporting Complete
+/** A dispatching assign moves the task itself; an agent reporting Complete
  *  moves it too, and says so. The `by` on the payload is what tells them
  *  apart — the reader should not have to guess why a card moved on its own. */
 const movedSentence = (payload, columns) => {
@@ -116,7 +116,7 @@ const movedSentence = (payload, columns) => {
 };
 
 /** What the workspace reclaim service (#135) recorded about a workspace this
- *  issue links: it went quiet, its build output was dropped, it was reclaimed. */
+ *  task links: it went quiet, its build output was dropped, it was reclaimed. */
 const workspaceNamed = (payload) => `workspace ${payload.workspace_name || payload.workspace_id || ""}`.trim();
 /** The idle threshold a `workspace_idle` was written under (#167), in the
  *  largest whole unit: "a day", "6 hours", "90 minutes". Events from before

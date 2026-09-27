@@ -104,7 +104,7 @@ pub(super) fn reports_already_sent(
 
 /// A reader whose published status a test can watch. The ordinary fixture drops
 /// the receiver, which is fine until what a case is about IS the status — a
-/// session that went idle because its harness ran out of usage, say (issue #58).
+/// session that went idle because its harness ran out of usage, say (task #58).
 #[cfg(test)]
 pub(super) fn reader_and_its_status(
     activity: ActivitySlot,

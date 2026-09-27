@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn routing_hands_the_captures_anchor_to_the_work() {
         let mut work = Attention::default();
-        work.seed_anchor(WED_09); // the issue was minted just now
+        work.seed_anchor(WED_09); // the task was minted just now
         work.inherit_anchor(MON_09, None);
         assert_eq!(work.anchor_at.as_deref(), Some(MON_09));
         assert_eq!(work.last_user_message_at.as_deref(), Some(MON_09));

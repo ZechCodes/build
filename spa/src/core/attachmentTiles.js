@@ -1,5 +1,5 @@
 // The tiles a list of attachments is drawn as, wherever one is drawn: under a
-// chat message, on an issue's body, and under an issue's comments (#116).
+// chat message, on a task's body, and under a task's comments (#116).
 //
 // One markup for all of them, down to the classes and `data-attachment-path`,
 // so `wireThreadAttachments` (core/thread.js) fills and opens every one of them

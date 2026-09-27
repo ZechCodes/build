@@ -494,7 +494,7 @@ noted below.
   checkout directory, and `WorktreeManager::restore`'s `git worktree add`
   refuses a path that reappeared under it (worktree.rs:342) — which
   `settle_restored_checkout` reads as a lost branch and answers by handing a
-  healthy run to the verified recovery agent, blocking the Issue. The row is
+  healthy run to the verified recovery agent, blocking the Task. The row is
   already the claim on that directory, so it is the claim here too; the drain
   that runs after the job's epilogue takes what was left, and every frame
   drains.
@@ -711,7 +711,7 @@ noted below.
   verb that ever spoke to an agent. The clock travels in `PendingTurns`, taken
   under the acquisition that took the turns: the runner's first act is never a
   bare acquisition of the app mutex to find the clock it will time itself by.
-- **The session gate is asked where the answer is atomic.** An issue whose
+- **The session gate is asked where the answer is atomic.** A task whose
   session is over (approved, abandoned) holds no workspace, and its checkout is
   the project's primary one — no place to spawn a replacement for work nobody is
   doing. **Deviation:** the declared design filtered the queue in
@@ -727,7 +727,7 @@ noted below.
   the frame that queued the router's first turn and the delivery that would
   spawn it leaves nothing spawned and no scratch scaffolded back
   (`a_capture_cancelled_before_its_router_spawns_gets_no_router`). As first
-  shipped the gate answered `true` for every non-Issue owner, routers named
+  shipped the gate answered `true` for every non-Task owner, routers named
   among them, and the cancelled capture's harness came up anyway. A reroute
   re-fires under the same capture id, so a turn queued for the session it
   replaced still passes; that turn spawns the retired agent id and is the
@@ -737,7 +737,7 @@ noted below.
   by the spawn that delivery makes — and the delivery gives its in-flight mark
   back only after settling the claim it became, so the mark covers the claim's
   whole lifetime and the states leave no window. `agent_is_on_its_way` is the
-  only way to ask; the revive/nudge guard and `start_routed_issue_agent` used
+  only way to ask; the revive/nudge guard and `start_routed_task_agent` used
   to compute it by hand from the queue and the claim alone, which since this
   step's split reads false for the whole of a delivery. A second message
   landing there queued a duplicate turn: the claim still stops a second
@@ -1304,7 +1304,7 @@ build settled differently, and why:
 - **`run.delete`'s durable record is deleted in the settlement, not the decide
   phase.** The fused verb deleted the store row first because nothing after it
   could fail; a decide phase that reserves can be refused — `run.adopt` and
-  `issue.implement_*` claim the same checkout id, and a terminal run is exactly
+  `task.implement_*` claim the same checkout id, and a terminal run is exactly
   the owner an adoption walks past — so the delete now writes where the refusal
   cannot reach it. `DiscardCheckout::perform` cannot fail, so reaching
   `RunDeleted::settle` is what says the delete is happening; a crash in between
@@ -1329,7 +1329,7 @@ build settled differently, and why:
   the one card that most needs deleting undeletable.
 - **What each discard still owes is a `DiscardSettlement`, and it says what
   git it needs.** `RunAbandoned` writes the verdict, the stage reconciliation
-  and the Issue's lineage; `RunDeleted` clears the card. `settle` takes only
+  and the Task's lineage; `RunDeleted` clears the card. `settle` takes only
   the `ActiveRun`, which the git phase carried; the stage verdict is
   `RunAbandoned`'s own, asked through `judge_before_removal` — a trait method
   with an empty default body, so a settlement that judges nothing declares
@@ -1406,7 +1406,7 @@ build settled differently, and why:
   `bound_worktree_paths` doing it under the app mutex, one `fs::canonicalize`
   per run, at every decide phase that hands a scan its exclusions (the
   external-scan refresh builder, the finish planner, `run.adopt`,
-  `issue.implement_*`, `branch.dispatch`). Every one of those sets reaches
+  `task.implement_*`, `branch.dispatch`). Every one of those sets reaches
   `discover_external_worktrees` and nothing else, so that function
   canonicalizes the set it is given — off the lock, where it already
   canonicalizes the repository path — and `bound_worktree_paths` reads the
@@ -1442,8 +1442,8 @@ build settled differently, and why:
   than at eleven decide phases, and a new verb cannot forget one.
 - **`settle_abandoned_run` is three functions.** The run's own verdict stays;
   `close_abandoned_run_conversations(&mut ActiveRun)` takes the primary
-  thread's close and the per-agent death loop, and `record_abandon_on_issue`
-  takes both halves of the Issue write, so the `Option<issue_id>` is
+  thread's close and the per-agent death loop, and `record_abandon_on_task`
+  takes both halves of the Task write, so the `Option<task_id>` is
   destructured once at the call site instead of twice in a row.
 - **`DiscardedCheckout::Pruned` is defensive, not reachable from today's board.**
   `run.delete` prunes only a run that is plan-less AND not adopted, and every
@@ -1491,7 +1491,7 @@ them a lifecycle verb, each one somebody else's migration:
 
 Two more the grep finds and neither is a hold anybody waits on:
 `recover_run`'s failed-recovery arm (`classify_stages_now`, app.rs:2437) and
-`advance_issue_scheduler_here` (10395) are boot-only, before the first frame
+`advance_task_scheduler_here` (10395) are boot-only, before the first frame
 is served; `scan_external_worktrees_now` (4183) is `#[cfg(test)]`.
 `sweep_vanished_runs`'s `classify_stage_publication` was the open gate note's
 question and has been off the lock since §4 (`VanishedRunSweep` is an
@@ -1640,12 +1640,12 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
                           /// one (adopt, abandon, dispatch onto a branch): the
                           /// state is rendered on it, not as a second row.
                           checkout_id: Option<String>,
-                          /// The Issue an implementation is being opened for.
-                          /// `ImplementableIssue::judge` reads the run map, and
+                          /// The Task an implementation is being opened for.
+                          /// `ImplementableTask::judge` reads the run map, and
                           /// the run it is about to open is not there until the
                           /// git lands; the row is the single-writer gate for
                           /// that window, so a second implementation of one
-                          /// Issue is refused where a second create of one slug
+                          /// Task is refused where a second create of one slug
                           /// and a second adopt of one checkout already are.
                           implements: Option<String>,
                           since: Instant }
@@ -1705,16 +1705,16 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   | --- | --- | --- | --- |
   | `worktree.create` | `CreateWorktree` | `WorktreeCreated` | record the row, reply with the worktree |
   | `branch.dispatch` | `DispatchCheckout` | `BranchDispatched` | `RunAdopted`'s work on the `AdoptableCheckout` it was handed, then mint the agent and queue its first turn |
-  | `run.create` / `issue.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its issue |
+  | `run.create` / `task.implement_*` | `OpenImplementation` | `ImplementationOpened` | open the run on the checkout that was cut, bind it to its task |
   | `run.create` into an existing checkout | `AdoptImplementation` | `ImplementationAdopted` | reset the branch's run onto the baseline the checkpoint made (a checkout no run owns yet is adopted first, in the same run phase — `ImplementationCheckout::Unowned`, second half) |
-  | `issue.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
-  | every door to a planning agent — `plan.create`, the first `thread.post` to an inert Issue, a route, `plan.send_notes`, `plan.stage_send_notes`, `plan.message` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` / `PlanWorkspaceRefused`, over that door's `PlanSessionOpening` | apply the plan event the door was gated on, render its prompt, queue the turn |
+  | `task.implement_*` with its checkout gone | `RestoreImplementationCheckout` | `RestoredCheckout` | write the recreated checkout onto the run, or hand the run to the recovery agent |
+  | every door to a planning agent — `plan.create`, the first `thread.post` to an inert Task, a route, `plan.send_notes`, `plan.stage_send_notes`, `plan.message` | `OpenPlanWorkspace` | `PlanWorkspaceOpened` / `PlanWorkspaceRefused`, over that door's `PlanSessionOpening` | apply the plan event the door was gated on, render its prompt, queue the turn |
   | `run.adopt` | `AdoptCheckout` over `AdoptionTarget::Card` / `::Primary` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
-  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` (a `DiscardSettlement`) | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the mutation carried — close the lineage, mirror the affected stages to the issue |
+  | `run.abandon` | `DiscardCheckout` | `RunAbandoned` (a `DiscardSettlement`) | `abandon_run_keeping_checkout`, `reconcile_missing_run_worktree` over the `StagePublications` `perform` decided — written onto the `ActiveRun` the mutation carried — close the lineage, mirror the affected stages to the task |
   | `run.delete` | `DiscardCheckout` | `RunDeleted` (a `DiscardSettlement`) | the store delete, `forget_run`, the card off the board |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
   | `run.finish` | `FinishWorktree` | `RunFinished` | retire the run (`active: Box<ActiveRun>`) |
-  | `branch.finish` | `FinishWorktree` | `BranchFinished` | retire the run and settle the issue |
+  | `branch.finish` | `FinishWorktree` | `BranchFinished` | retire the run and settle the task |
   | `project.add` | `OpenRepo` | `ProjectAdded` | `register_project`, `persist` |
   | `project.clone` | `CloneRepo` | `ProjectAdded` | the same |
 
@@ -1723,7 +1723,7 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   `WorktreeChange` carries no `reply`.
 - **What an apply-phase failure leaves on disk.** `perform` removes what it
   cut in its own error path, but an epilogue can fail after the git returned
-  `Ok` — the Issue was deleted while the git ran, a store write failed — and
+  `Ok` — the Task was deleted while the git ran, a store write failed — and
   the removal is git, which the epilogue may not run. So the checkout stays,
   and the rule is that it stays VISIBLE: `OpenImplementation::perform`
   describes the checkout it cut as `WorktreeChange::appeared`, and
@@ -1732,8 +1732,8 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   checkout on the board as the unbound card it is. That is the same end state
   the `PendingRow` deviation argues for: nothing is left that git and the next
   scan cannot re-derive. `plan.create` is the one that leaves something no
-  board shows — `IssueOpened` failing after `OpenPlanWorkspace` leaves
-  the Issue's scratch docs dir and the `.build/` config in the primary
+  board shows — `TaskOpened` failing after `OpenPlanWorkspace` leaves
+  the Task's scratch docs dir and the `.build/` config in the primary
   checkout. Neither is a checkout or a branch: the config is overwritten by the
   next plan the project drafts, and the docs dir is `discard_plan_docs_dir`'s
   (orchestrator.rs:1268), which every approve and every abandon runs. A
@@ -1759,8 +1759,8 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   }
   ```
 
-  Six impls: `IssueOpened` (`plan.create`), `PlanDraftingStarted` (the first
-  message to an inert Issue), `RoutedIssueDrafting` (a router or a reroute),
+  Six impls: `TaskOpened` (`plan.create`), `PlanDraftingStarted` (the first
+  message to an inert Task), `RoutedTaskDrafting` (a router or a reroute),
   `PlanNotesSent`, `StageNotesSent`, `PlanMessaged`. The orchestrator's five
   session verbs split the same way — `send_plan_notes` /
   `send_plan_stage_notes` / `message_plan` / `resume_plan` /
@@ -1771,14 +1771,14 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   `PlanWorkspace` by value. The gate runs in the decide phase, so an illegal
   revise still scaffolds nothing.
 
-  The row a door reserves stands on the Issue itself: what it holds is the one
+  The row a door reserves stands on the Task itself: what it holds is the one
   workspace every door writes into, so a second door waits rather than racing
   this one's `.build/` config. `run.release`'s neighbour rule applies —
-  `checkout_is_in_flight` holds that Issue's queued turns back for the length
+  `checkout_is_in_flight` holds that Task's queued turns back for the length
   of the write, and `apply_lifecycle` releases the row before the epilogue
   queues its own.
 - **An implementation's epilogue answers to whoever asked, not to a verb.**
-  `run.create` and `issue.implement_*` cut the same checkout by the same three
+  `run.create` and `task.implement_*` cut the same checkout by the same three
   mutations; what differs is who is waiting. That is one object, carried by the
   mutation into the epilogue:
 
@@ -1792,32 +1792,32 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   ```
 
   `RunOpenedView` answers with the run and refuses with the error unchanged;
-  `IssueSchedulerWaiting` carries on to the stage the checkout was cut for
-  (`dispatch_ready_stage`), answers with the Issue, and on a refusal blocks the
-  Issue's scheduler — an Issue left saying `Preparing` with nothing preparing
+  `TaskSchedulerWaiting` carries on to the stage the checkout was cut for
+  (`dispatch_ready_stage`), answers with the Task, and on a refusal blocks the
+  Task's scheduler — a Task left saying `Preparing` with nothing preparing
   it is a spinner nothing will ever clear.
 
   These three mutations therefore hand a **failure to the apply phase as an
   epilogue** (`ImplementationRefused`, and `RestoredCheckout`'s `Err`) rather
   than returning it from `perform`: what a refusal leaves behind is state — a
-  blocked Issue, a verified recovery agent started on a run whose branch is
+  blocked Task, a verified recovery agent started on a run whose branch is
   gone — and state is written under the mutex. `Reservation::roll_back` is for
   registry writes, and it cannot see the error that caused them to be undone.
-- **The Issue scheduler hands its git back rather than running it.**
-  `advance_issue_scheduler` returns `Result<Option<WorktreeLifecycleJob>>`, and
+- **The Task scheduler hands its git back rather than running it.**
+  `advance_task_scheduler` returns `Result<Option<WorktreeLifecycleJob>>`, and
   every caller that has a drain reaches it through one call,
-  `defer_issue_scheduler`: put the job on the drain, or block the Issue on a
-  refusal. Three callers have one — `issue.implement_*`, the stage approval
+  `defer_task_scheduler`: put the job on the drain, or block the Task on a
+  refusal. Three callers have one — `task.implement_*`, the stage approval
   that wakes a scheduler parked on an unapproved stage (`plan_stage_approve`,
-  which serves both `issue.stage_approve` and `plan.stage_approve`), and an
+  which serves both `task.stage_approve` and `plan.stage_approve`), and an
   agent's own recovery report on the MCP `done` socket. The approval's is an
   ordinary frame, and the report's socket already releases its guard for a
   router tool's git; both cut whole implementation checkouts, so neither may
   run one under the mutex. What each answers with is unchanged: the approval
-  answers with the Issue view it was going to answer with anyway, read after
+  answers with the Task view it was going to answer with anyway, read after
   the hop rather than before it, and the report answers with nothing.
-  `advance_issue_scheduler_here` is left to boot (app.rs:2173), which
-  reconciles every armed Issue before the first frame is served and has no
+  `advance_task_scheduler_here` is left to boot (app.rs:2173), which
+  reconciles every armed Task before the first frame is served and has no
   drain to hand git to. The pass resumes from the job's own epilogue
   (`dispatch_ready_stage`), so no caller decides anything but where the git
   runs, and no epilogue ever defers a second job into a drain that has already
@@ -1827,7 +1827,7 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   (orchestrator.rs:2276) runs under the app mutex. It is `run.stage_dispatch`'s
   own git, bounded in practice and not in spec finding 2, and moving it is
   `run.stage_dispatch`'s migration to make, not this step's — so an
-  `issue.implement_stage` still ends in one git subprocess under the lock,
+  `task.implement_stage` still ends in one git subprocess under the lock,
   after its checkout was cut with the lock free.
 
   The `done` socket gets `dispatch_frame`'s shape for it: `done_deferring`
@@ -1847,7 +1847,7 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   calls the removal best-effort. A child still writing into a directory
   `remove_dir_all` is walking fails the walk (a file created behind it leaves a
   non-empty directory), so the order that makes the removal reliable is kill,
-  reap, remove. The decide phase issues the kill (`retire_agent_tabs`,
+  reap, remove. The decide phase tasks the kill (`retire_agent_tabs`,
   receipts returned); `DiscardCheckout::perform` waits each receipt out with
   `CHECKOUT_REAP_WAIT` (5 s, declared beside `HARNESS_READY_GRACE` in
   orchestrator.rs) and then removes. On expiry it logs the tab that would not
@@ -1871,7 +1871,7 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   `RunAbandoned` epilogue it builds. The epilogue takes the `ActiveRun` back
   from `TakenRun`, runs `reconcile_missing_run_worktree` over the decided
   publications (pure bookkeeping: `publication` and `invalidation_reason` on
-  each stage), and mirrors the affected stages to the issue (12425-12461). So
+  each stage), and mirrors the affected stages to the task (12425-12461). So
   `perform` never reaches the run, and the verdict is written by the same
   acquisition that writes everything else. A refusal or a failed removal
   rolls `TakenRun` back with the stages as they were — the publications were
@@ -1902,18 +1902,18 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   own error path; what the decide phase wrote, `Reservation::roll_back`
   removes. `bare_checkout_on_branch` (13663) folds into
   `DispatchCheckout::perform`. `worktree_create`, `cut_branch_for_dispatch`,
-  `ensure_issue_implementation_worktree`, `open_implementation_run`,
+  `ensure_task_implementation_worktree`, `open_implementation_run`,
   `plan_create`'s planning worktree, every other door to a planning agent
-  (`plan_send_notes`, `plan_stage_send_notes`, `plan_message`, `route_to_issue`
-  and `thread.post` to an inert Issue — `start_inert_plan` and
-  `start_routed_issue_agent` are deleted for `reserve_plan_drafting` beside
+  (`plan_send_notes`, `plan_stage_send_notes`, `plan_message`, `route_to_task`
+  and `thread.post` to an inert Task — `start_inert_plan` and
+  `start_routed_task_agent` are deleted for `reserve_plan_drafting` beside
   `open_inert_plan_drafting`), `run_adopt`, `run_abandon`, `project_add`
   and `project_clone` each stop calling git and return a job.
   `Orchestrator::dispatch_run`, `adopt_implementation` and `dispatch_plan` are
   deleted: each was the two halves of one of those verbs composed under its
   caller's lock, and each is now a `prepare_*` (the git) beside an `open_*`
   (the record) — with the refusals they opened with lifted into
-  `ImplementableIssue::judge`, whose construction is the gate.
+  `ImplementableTask::judge`, whose construction is the gate.
   `open_implementation_run` keeps the tail every implementation shares and
   stops building the answer, which is the caller's.
 - **Lock discipline** decide (validate without disk, mint the id, reserve the
@@ -1940,12 +1940,12 @@ Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
   `project_clone_registers_its_project_from_the_landed_path`,
   `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`,
   `run_create_opens_its_implementation_with_the_state_lock_free`,
-  `issue_implement_all_opens_its_implementation_with_the_state_lock_free`,
+  `task_implement_all_opens_its_implementation_with_the_state_lock_free`,
   `implement_stage_restores_a_missing_checkout_with_the_state_lock_free`,
   `plan_create_prepares_its_workspace_with_the_state_lock_free`,
   `a_stage_revision_writes_its_workspace_with_the_state_lock_free`,
   `plan_notes_write_their_workspace_with_the_state_lock_free`,
-  `an_inert_issues_first_message_starts_its_session_off_the_lock`,
+  `an_inert_tasks_first_message_starts_its_session_off_the_lock`,
   `run_create_into_an_existing_checkout_checkpoints_it_with_the_state_lock_free`,
   `a_stage_approval_that_implements_cuts_its_checkout_with_the_state_lock_free`,
   `a_recovery_report_advances_its_scheduler_with_the_state_lock_free`,
@@ -1991,7 +1991,7 @@ call, and a refusal still raises — beside the 12 s timer, which is unchanged. 
 predicate that reads the rejection is the module's own and is not exported: one
 rule, one answer, so no call site can re-derive it and reach a different verdict.
 Six verbs read it: `worktree.create` and `branch.dispatch` shut their form and
-let the board carry the work, `issue.implement_*` refreshes the issue rather than
+let the board carry the work, `task.implement_*` refreshes the task rather than
 reporting a refusal the daemon never made, `thread.post` leaves the message on
 the thread and the draft box empty — the turn is durable the moment the daemon
 answers, and handing the draft back would have the human send it again and the
@@ -2013,14 +2013,14 @@ or the checkout it holds (`checkout_id`, an `external_worktree_id` hash, while
 the card is keyed by its run id) — so a card matching either is the card the verb
 is running on and wears the state; only a row matching no card stands on its own.
 One listed card carries no id at all: a project's primary checkout is the
-repository, with a null `worktree_id`, `run_id` and `issue_id`. Adopting it is a
+repository, with a null `worktree_id`, `run_id` and `task_id`. Adopting it is a
 verb that acts on that card, so `AdoptionTarget::reserve` marks its row
 `primary` beside the checkout id and the merge matches it by project — the
 alternative was a second row for the repo root standing beside the card for the
 whole of `describe_primary_checkout` plus the checkpoint and the scaffold, while
 that card went on offering verbs the row refuses.
 An adopt that leaves its run on the board and a `plan.create` that names only its
-issue both settle onto the card that is already there, which is what keeps two
+task both settle onto the card that is already there, which is what keeps two
 entries from patching one key. So `createBranch` needs no provisional row of its
 own and the placeholder needs no `rekey`: there is one row, and the record
 replaces it in place — `apply_lifecycle` releases the row and runs the epilogue
@@ -2028,8 +2028,8 @@ under one acquisition, so no snapshot ever carries both. A row with a verb in
 flight offers no verbs; every one of them would race the verb already running.
 Only a PLACEHOLDER opens nowhere, and that is a question about the row rather
 than about the verb: a merged row is a card that already exists, and a plan
-workspace being cut in an issue or a checkout being restored to a run must not
-stop the reader opening their own issue or run. The state string is never
+workspace being cut in a task or a checkout being restored to a run must not
+stop the reader opening their own task or run. The state string is never
 branched on — `pendingItem` marks the row it invents, and `entryRoute` reads
 that mark.
 

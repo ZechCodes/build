@@ -15,7 +15,7 @@ const shellMarkup = readFileSync(resolve("index.html"), "utf8")
   .match(/<body>([\s\S]*)<\/body>/)[1]
   .replace('<div id="toolbar"></div>', `<div id="toolbar"><div class="toolbar">
     <button class="tb-sel tb-project" type="button"><span class="tb-name">Build</span></button>
-    <button class="tb-sel" type="button">Issues</button></div></div>`);
+    <button class="tb-sel" type="button">Tasks</button></div></div>`);
 
 // Landscape with the inbox pinned or away; portrait, where it is away at rest
 // (open, it is an overlay whose scrim is the top edge, as it should be).

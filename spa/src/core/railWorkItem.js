@@ -25,7 +25,7 @@ import {
   subscribeCache,
   updateCachedFeed,
 } from "./localCache.js";
-import { issueAddress, readIssueRecord } from "./issueCache.js";
+import { taskAddress, readTaskRecord } from "./taskCache.js";
 
 /** The other record read here: the machine's workspace list, which is the only
  *  thing that says what a workspace is mounted out of. */
@@ -78,8 +78,8 @@ export function createRailWorkItem({
   let rereadAgain = false;
 
   const rowAddress = (entityId) =>
-    (entityId && (context.kind === "issue"
-      ? cacheScope?.address(issueAddress(context.deviceId, entityId, "get"))
+    (entityId && (context.kind === "task"
+      ? cacheScope?.address(taskAddress(context.deviceId, entityId, "get"))
       : cacheScope?.address({ entityId, kind: ROW_RECORD_KIND }))) || null;
 
   const feedAddress = () => cacheScope.address({ entityId: "", kind: "feed" });
@@ -158,24 +158,24 @@ export function createRailWorkItem({
   /// Which row in this device's cache is this rail's.
   ///
   /// A context handed its entity knows outright — a project's conversation is
-  /// minted by the page, and an issue IS its own entity. Everything else is
+  /// minted by the page, and a task IS its own entity. Everything else is
   /// named by a route and resolved against the device's own rows: a branch by
   /// its project and name, a workspace by the conversation it holds, which is
   /// not the workspace's id (core/cachedRows.js).
   const entityIdFor = async (standing) => {
     if (standing.entityId) return standing.entityId;
-    if (standing.kind === "issue") return standing.issueId || null;
+    if (standing.kind === "task") return standing.taskId || null;
     const entry = await cachedRouteEntry(context.deviceId, standing.feedRoute());
     learnWorkspaceFacts(standing, entry);
     return entry?.entityId || null;
   };
 
-  /// Issues have no board row. Their detail pull is a writer to the issue's
+  /// Tasks have no board row. Their detail pull is a writer to the task's
   /// durable get record; its announcement makes this reader take it up. A
   /// warm record is returned immediately while that pull is still in flight.
   const read = async (entityId) => {
     if (!railContext.workItem) return cachedRow(entityId);
-    void readIssueRecord({ deviceId: context.deviceId, issueId: entityId, sub: "get",
+    void readTaskRecord({ deviceId: context.deviceId, taskId: entityId, sub: "get",
       read: () => railContext.workItem(callFor()), force: true }).catch(() => null);
     return cachedRow(entityId);
   };

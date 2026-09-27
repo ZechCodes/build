@@ -1,4 +1,4 @@
-//! Who is watching an issue, and what one agent is on (spec: Issues →
+//! Who is watching a task, and what one agent is on (spec: Tasks →
 //! Tracking).
 
 use super::project_agent::{added_project, project_agent, workspace};
@@ -6,8 +6,8 @@ use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::{DoneReport, DoneStatus};
 
-fn issue_id(issue: &Value) -> String {
-    issue["id"].as_str().unwrap().to_string()
+fn task_id(task: &Value) -> String {
+    task["id"].as_str().unwrap().to_string()
 }
 
 /// A coding agent on a workspace of this project, as `(entity_id, agent_id)`.
@@ -26,8 +26,8 @@ fn coding_agent(state: &mut AppState, project_id: &str, name: &str) -> (String, 
     (entity_id, agent_id)
 }
 
-fn trackers(state: &mut AppState, issue_id: &str) -> Vec<String> {
-    state.handle(req("issues.get", json!({ "issue_id": issue_id })))["result"]["issue"]["trackers"]
+fn trackers(state: &mut AppState, task_id: &str) -> Vec<String> {
+    state.handle(req("tasks.get", json!({ "task_id": task_id })))["result"]["task"]["trackers"]
         .as_array()
         .unwrap()
         .iter()
@@ -35,8 +35,8 @@ fn trackers(state: &mut AppState, issue_id: &str) -> Vec<String> {
         .collect()
 }
 
-fn event_kinds(state: &mut AppState, issue_id: &str) -> Vec<String> {
-    state.handle(req("issues.get", json!({ "issue_id": issue_id })))["result"]["timeline"]
+fn event_kinds(state: &mut AppState, task_id: &str) -> Vec<String> {
+    state.handle(req("tasks.get", json!({ "task_id": task_id })))["result"]["timeline"]
         .as_array()
         .unwrap()
         .iter()
@@ -52,7 +52,7 @@ fn tracking_adds_the_agent_and_untracking_takes_it_off() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let (_entity, watcher) = coding_agent(&mut state, &project_id, "here");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     assert_eq!(
         trackers(&mut state, &id),
@@ -61,19 +61,19 @@ fn tracking_adds_the_agent_and_untracking_takes_it_off() {
     );
 
     let tracking = state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     assert_eq!(tracking["ok"], true, "{tracking:?}");
-    assert_eq!(tracking["result"]["issue"]["trackers"], json!([watcher]));
+    assert_eq!(tracking["result"]["task"]["trackers"], json!([watcher]));
     assert_eq!(event_kinds(&mut state, &id), vec!["created", "tracked"]);
 
     let untracking = state.handle(req(
-        "issues.untrack",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.untrack",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     assert_eq!(untracking["ok"], true, "{untracking:?}");
-    assert_eq!(untracking["result"]["issue"]["trackers"], json!([]));
+    assert_eq!(untracking["result"]["task"]["trackers"], json!([]));
     assert_eq!(
         event_kinds(&mut state, &id),
         vec!["created", "tracked", "untracked"]
@@ -88,23 +88,23 @@ fn tracking_twice_and_untracking_nothing_write_no_event() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let (_entity, watcher) = coding_agent(&mut state, &project_id, "here");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     // Untracking one that was never tracked changes nothing.
     let never = state.handle(req(
-        "issues.untrack",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.untrack",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     assert_eq!(never["ok"], true, "a no-op is legible, not a refusal");
     assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
 
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher }),
     ));
     assert_eq!(trackers(&mut state, &id), vec![watcher], "one entry");
     assert_eq!(
@@ -114,7 +114,7 @@ fn tracking_twice_and_untracking_nothing_write_no_event() {
     );
 }
 
-/// The agent an issue is assigned to is subscribed by the assignment, and the
+/// The agent a task is assigned to is subscribed by the assignment, and the
 /// event says the tracking was a consequence rather than a request.
 #[test]
 fn assignment_tracks_the_agent_it_hands_the_work_to() {
@@ -122,11 +122,11 @@ fn assignment_tracks_the_agent_it_hands_the_work_to() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let ws = workspace(&mut state, &project_id, "here");
-    let id = issue_id(&filed(&mut state, &project_id, "hand this over"));
+    let id = task_id(&filed(&mut state, &project_id, "hand this over"));
 
     let handed = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": id, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+        "tasks.assign",
+        json!({ "task_id": id, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
     ));
     assert_eq!(handed["ok"], true, "{handed:?}");
     let assignee = handed["result"]["dispatch"]["agent_id"]
@@ -134,12 +134,12 @@ fn assignment_tracks_the_agent_it_hands_the_work_to() {
         .unwrap()
         .to_string();
     assert_eq!(
-        handed["result"]["issue"]["trackers"],
+        handed["result"]["task"]["trackers"],
         json!([assignee]),
-        "the agent that gets the work hears about the issue"
+        "the agent that gets the work hears about the task"
     );
 
-    let tracked_event = state.handle(req("issues.get", json!({ "issue_id": id })))["result"]
+    let tracked_event = state.handle(req("tasks.get", json!({ "task_id": id })))["result"]
         ["timeline"]
         .as_array()
         .unwrap()
@@ -156,25 +156,25 @@ fn assignment_tracks_the_agent_it_hands_the_work_to() {
     // And unassigning leaves it watching: handing work on is exactly when the
     // previous holder still wants to know how it went.
     let unassigned = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": id, "assignee": Value::Null }),
+        "tasks.assign",
+        json!({ "task_id": id, "assignee": Value::Null }),
     ));
     assert_eq!(unassigned["ok"], true, "{unassigned:?}");
     assert_eq!(
-        unassigned["result"]["issue"]["trackers"],
+        unassigned["result"]["task"]["trackers"],
         json!([assignee]),
         "unassigning does not untrack"
     );
 }
 
-/// An agent of another project cannot be made to watch, and the issue is left
+/// An agent of another project cannot be made to watch, and the task is left
 /// as it was.
 #[test]
-fn an_agent_outside_the_issues_project_cannot_be_made_to_watch() {
+fn an_agent_outside_the_tasks_project_cannot_be_made_to_watch() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     let elsewhere = tempfile::tempdir().unwrap();
     let other_repo = init_repo_named(elsewhere.path(), "other");
@@ -183,8 +183,8 @@ fn an_agent_outside_the_issues_project_cannot_be_made_to_watch() {
     let (_owner, foreign) = project_agent(&mut state, &other_project);
 
     let refused = state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": foreign }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": foreign }),
     ));
     assert_eq!(refused["ok"], false, "{refused:?}");
     assert!(
@@ -197,8 +197,8 @@ fn an_agent_outside_the_issues_project_cannot_be_made_to_watch() {
     assert_eq!(trackers(&mut state, &id), Vec::<String>::new());
 
     let nobody = state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": "agent-nobody" }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": "agent-nobody" }),
     ));
     assert!(
         nobody["error"]
@@ -209,8 +209,8 @@ fn an_agent_outside_the_issues_project_cannot_be_made_to_watch() {
     );
 }
 
-/// `issues.for_agent` answers digests in two lists, newest-updated first, and
-/// an assigned issue is in both.
+/// `tasks.for_agent` answers digests in two lists, newest-updated first, and
+/// an assigned task is in both.
 #[test]
 fn the_per_agent_read_answers_what_it_holds_and_what_it_watches() {
     let tmp = tempfile::tempdir().unwrap();
@@ -219,38 +219,38 @@ fn the_per_agent_read_answers_what_it_holds_and_what_it_watches() {
     let ws = workspace(&mut state, &project_id, "here");
     let (_entity, other) = coding_agent(&mut state, &project_id, "elsewhere");
 
-    let held = issue_id(&filed(&mut state, &project_id, "held"));
+    let held = task_id(&filed(&mut state, &project_id, "held"));
     let handed = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": held, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+        "tasks.assign",
+        json!({ "task_id": held, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
     ));
     let holder = handed["result"]["dispatch"]["agent_id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let watched = issue_id(&filed(&mut state, &project_id, "watched"));
+    let watched = task_id(&filed(&mut state, &project_id, "watched"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": watched, "agent_id": holder }),
+        "tasks.track",
+        json!({ "task_id": watched, "agent_id": holder }),
     ));
     filed(&mut state, &project_id, "neither");
 
-    let read = state.handle(req("issues.for_agent", json!({ "agent_id": holder })));
+    let read = state.handle(req("tasks.for_agent", json!({ "agent_id": holder })));
     assert_eq!(read["ok"], true, "{read:?}");
     let ids = |key: &str| -> Vec<String> {
         read["result"][key]
             .as_array()
             .unwrap()
             .iter()
-            .map(|entry| entry["issue_id"].as_str().unwrap().to_string())
+            .map(|entry| entry["task_id"].as_str().unwrap().to_string())
             .collect()
     };
     assert_eq!(ids("assigned"), vec![held.clone()]);
     assert_eq!(
         ids("tracking"),
         vec![watched.clone(), held.clone()],
-        "assignment tracks too, so the held issue is in BOTH lists"
+        "assignment tracks too, so the held task is in BOTH lists"
     );
 
     // A digest is enough to recognise and to order by, and not the body.
@@ -263,7 +263,7 @@ fn the_per_agent_read_answers_what_it_holds_and_what_it_watches() {
     assert!(entry.get("body").is_none(), "a digest carries no body");
 
     // Another agent of the same project holds and watches nothing.
-    let empty = state.handle(req("issues.for_agent", json!({ "agent_id": other })));
+    let empty = state.handle(req("tasks.for_agent", json!({ "agent_id": other })));
     assert_eq!(empty["result"]["assigned"], json!([]));
     assert_eq!(empty["result"]["tracking"], json!([]));
 }
@@ -289,11 +289,11 @@ fn notices(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> 
 
 /// A change reaches every tracker and never the agent that made it.
 fn assert_moved_notice_identity(notice: &Value, agent_id: &str) {
-    assert_eq!(notice["issue_notice"]["actor"]["agent_id"], agent_id);
-    assert_eq!(notice["issue_notice"]["action"], "moved");
-    assert_eq!(notice["issue_notice"]["from"], "backlog");
-    assert_eq!(notice["issue_notice"]["to"], "in_review");
-    let identity = &notice["issue_notice"]["actor"]["identity"];
+    assert_eq!(notice["task_notice"]["actor"]["agent_id"], agent_id);
+    assert_eq!(notice["task_notice"]["action"], "moved");
+    assert_eq!(notice["task_notice"]["from"], "backlog");
+    assert_eq!(notice["task_notice"]["to"], "in_review");
+    let identity = &notice["task_notice"]["actor"]["identity"];
     assert_eq!(identity["agent_id"], agent_id);
     assert_eq!(identity["workspace_name"], "actor");
     assert_eq!(identity["provider"], "claude_adk");
@@ -307,12 +307,12 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let actor = coding_agent(&mut state, &project_id, "actor");
     let watcher = coding_agent(&mut state, &project_id, "watcher");
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
     for who in [&actor, &watcher] {
         state.handle(req(
-            "issues.track",
-            json!({ "issue_id": id, "agent_id": who.1 }),
+            "tasks.track",
+            json!({ "task_id": id, "agent_id": who.1 }),
         ));
     }
 
@@ -321,30 +321,30 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
         .on_agent_mcp_action(
             &actor.0,
             &actor.1,
-            crate::mcp::BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "in_review".into(),
                 track: None,
             },
         )
-        .expect("the actor moves its issue");
+        .expect("the actor moves its task");
 
     let told = notices(&mut state, &watcher.0, &watcher.1);
     assert_eq!(told.len(), 1, "one notice per change: {told:?}");
     let notice = &told[0];
     assert_eq!(notice["from_build"], true, "Build's own words");
     assert_eq!(notice["role"], "user", "an instruction arrives inbound");
-    assert_eq!(notice["from_issue"]["issue_id"], id.as_str());
-    assert_eq!(notice["from_issue"]["number"], 1);
-    assert_eq!(notice["from_issue"]["title"], "Kanban drag");
+    assert_eq!(notice["from_task"]["task_id"], id.as_str());
+    assert_eq!(notice["from_task"]["number"], 1);
+    assert_eq!(notice["from_task"]["title"], "Kanban drag");
     let body = notice["body"].as_str().unwrap();
     assert_eq!(
         body, "#1 moved to In review by the actor agent.",
-        "one line, no title: the number is what an issue is called"
+        "one line, no title: the number is what a task is called"
     );
 
     // And the same thing structured, so a client draws that line with a link
-    // rather than parsing it back out of prose (spec: Issues → Tracking).
+    // rather than parsing it back out of prose (spec: Tasks → Tracking).
     assert_moved_notice_identity(notice, &actor.1);
 
     assert!(
@@ -354,31 +354,31 @@ fn a_change_reaches_every_tracker_but_the_agent_that_made_it() {
 }
 
 #[test]
-fn a_notice_names_an_actor_who_was_not_tracking_the_issue() {
+fn a_notice_names_an_actor_who_was_not_tracking_the_task() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let actor = coding_agent(&mut state, &project_id, "author workspace");
     let watcher = coding_agent(&mut state, &project_id, "reader workspace");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
     state
         .on_agent_mcp_action(
             &actor.0,
             &actor.1,
-            crate::mcp::BridgeAction::TrackerMoveIssue {
-                issue_id: id,
+            crate::mcp::BridgeAction::TrackerMoveTask {
+                task_id: id,
                 status: "in_review".into(),
                 track: None,
             },
         )
-        .expect("author moves the issue");
+        .expect("author moves the task");
 
     let told = notices(&mut state, &watcher.0, &watcher.1);
-    let identity = &told[0]["issue_notice"]["actor"]["identity"];
+    let identity = &told[0]["task_notice"]["actor"]["identity"];
     assert_eq!(identity["agent_id"], actor.1);
     assert_eq!(identity["workspace_name"], "author workspace");
     assert_eq!(identity["provider"], "claude_adk");
@@ -391,20 +391,20 @@ fn an_assignment_notice_names_an_unwatched_target_agent() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let target = coding_agent(&mut state, &project_id, "target workspace");
     let watcher = coding_agent(&mut state, &project_id, "reader workspace");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     let tracked = state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
     assert_eq!(tracked["ok"], true, "{tracked:?}");
     let assigned = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": id, "assignee": { "kind": "agent", "agent_id": target.1 } }),
+        "tasks.assign",
+        json!({ "task_id": id, "assignee": { "kind": "agent", "agent_id": target.1 } }),
     ));
     assert_eq!(assigned["ok"], true, "{assigned:?}");
 
     let told = notices(&mut state, &watcher.0, &watcher.1);
-    let identity = &told[0]["issue_notice"]["assignee_identity"];
+    let identity = &told[0]["task_notice"]["assignee_identity"];
     assert_eq!(identity["agent_id"], target.1);
     assert_eq!(identity["workspace_name"], "target workspace");
     assert_eq!(identity["provider"], "claude_adk");
@@ -413,7 +413,7 @@ fn an_assignment_notice_names_an_unwatched_target_agent() {
 
 /// A comment's body does NOT ride the notice (#61).
 ///
-/// A notice is a notification: an agent watching an issue for a column move
+/// A notice is a notification: an agent watching a task for a column move
 /// used to pay for every comment anybody wrote on it. Now it pays for a line
 /// naming the comment, and reads the words with `read_comment` if it decides
 /// it cares.
@@ -423,21 +423,21 @@ fn a_comment_notice_names_the_comment_and_carries_none_of_it() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
 
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "The drop handler races the column read." }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "The drop handler races the column read." }),
     ));
 
     let told = notices(&mut state, &watcher.0, &watcher.1);
     assert_eq!(told.len(), 1, "{told:?}");
     let body = told[0]["body"].as_str().unwrap();
-    assert!(body.starts_with("New comment ic-"), "{body}");
+    assert!(body.starts_with("New comment tc-"), "{body}");
     assert!(body.contains("on #1 from the user"), "{body}");
     assert!(body.ends_with("read_comment for their message."), "{body}");
     assert!(
@@ -451,7 +451,7 @@ fn a_comment_notice_names_the_comment_and_carries_none_of_it() {
         .split_whitespace()
         .nth(2)
         .expect("the line names the comment");
-    assert_eq!(told[0]["issue_notice"]["comment_id"], named, "{told:?}");
+    assert_eq!(told[0]["task_notice"]["comment_id"], named, "{told:?}");
 }
 
 /// The notice starts the tracker's turn, so an idle agent wakes to it.
@@ -461,17 +461,17 @@ fn a_notice_starts_the_tracking_agents_turn() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
     // Nothing queued yet: the tracking call itself woke nobody.
     assert!(state.delivery_queue.take_ready(|_| false).is_empty());
 
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "ready" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "ready" }),
     ));
 
     // It waits out the settle window first (#67), so a burst wakes it once.
@@ -481,7 +481,7 @@ fn a_notice_starts_the_tracking_agents_turn() {
     let turn = &queued[0];
     assert_eq!(turn.agent_id, watcher.1, "the tracker's turn, not anyone's");
     assert_eq!(turn.owner, watcher.0);
-    assert_eq!(turn.phase, "issue_notice");
+    assert_eq!(turn.phase, "task_notice");
     assert!(
         turn.says_something(),
         "it tells the agent to go and read, which is what starts an idle one"
@@ -492,22 +492,22 @@ fn a_notice_starts_the_tracking_agents_turn() {
     );
 }
 
-/// A watcher tracking `title`, as `(watcher, issue_id)`, with nothing queued.
+/// A watcher tracking `title`, as `(watcher, task_id)`, with nothing queued.
 fn watching(state: &mut AppState, project_id: &str, title: &str) -> ((String, String), String) {
     let watcher = coding_agent(state, project_id, "watcher");
-    let id = issue_id(&filed(state, project_id, title));
+    let id = task_id(&filed(state, project_id, title));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
     state.delivery_queue.take_ready(|_| false);
     (watcher, id)
 }
 
-fn move_to(state: &mut AppState, issue_id: &str, status: &str) {
+fn move_to(state: &mut AppState, task_id: &str, status: &str) {
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": issue_id, "status": status }),
+        "tasks.update",
+        json!({ "task_id": task_id, "status": status }),
     ));
 }
 
@@ -536,8 +536,8 @@ fn changes_inside_the_settle_window_wake_the_tracker_once() {
     move_to(&mut state, &id, "ready");
     move_to(&mut state, &id, "in_progress");
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "Half done." }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "Half done." }),
     ));
 
     let told = notices(&mut state, &watcher.0, &watcher.1);
@@ -550,7 +550,7 @@ fn changes_inside_the_settle_window_wake_the_tracker_once() {
     state.delivery_queue.lapse_settle_windows();
     let woken = state.delivery_queue.take_ready(|_| false);
     assert_eq!(woken.len(), 1, "three notices, one turn");
-    assert_eq!(woken[0].phase, "issue_notice");
+    assert_eq!(woken[0].phase, "task_notice");
     assert!(woken[0].reads_unread_thread());
     let carried = unread_lines(&state, &watcher.0, &watcher.1);
     for notice in &told {
@@ -643,10 +643,10 @@ fn an_assignment_goes_now_and_takes_the_settling_notice() {
     let (watcher, id) = watching(&mut state, &project_id, "one");
     move_to(&mut state, &id, "ready");
 
-    let work = issue_id(&filed(&mut state, &project_id, "two"));
+    let work = task_id(&filed(&mut state, &project_id, "two"));
     let handed = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": work, "assignee": { "kind": "agent", "agent_id": watcher.1 } }),
+        "tasks.assign",
+        json!({ "task_id": work, "assignee": { "kind": "agent", "agent_id": watcher.1 } }),
     ));
     assert_eq!(handed["ok"], true, "{handed:?}");
 
@@ -656,7 +656,7 @@ fn an_assignment_goes_now_and_takes_the_settling_notice() {
         "the assignment is not held by the window"
     );
     assert!(
-        woken.iter().any(|turn| turn.phase == "issue_notice"),
+        woken.iter().any(|turn| turn.phase == "task_notice"),
         "the settling notice goes with it, not thirty seconds later"
     );
     state.delivery_queue.lapse_settle_windows();
@@ -671,31 +671,31 @@ fn a_change_that_changes_nothing_wakes_nobody() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let watcher = coding_agent(&mut state, &project_id, "watcher");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": watcher.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": watcher.1 }),
     ));
 
     // It is already in Backlog.
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "backlog" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "backlog" }),
     ));
     assert!(
         notices(&mut state, &watcher.0, &watcher.1).is_empty(),
         "moving a card where it already is is not news"
     );
 
-    // And somebody else starting to watch is not a change to the issue.
+    // And somebody else starting to watch is not a change to the task.
     let other = coding_agent(&mut state, &project_id, "other");
     state.handle(req(
-        "issues.track",
-        json!({ "issue_id": id, "agent_id": other.1 }),
+        "tasks.track",
+        json!({ "task_id": id, "agent_id": other.1 }),
     ));
     assert!(
         notices(&mut state, &watcher.0, &watcher.1).is_empty(),
-        "who else is watching is not a change to the issue"
+        "who else is watching is not a change to the task"
     );
 }
 
@@ -709,19 +709,19 @@ fn the_track_tool_subscribes_whoever_called_it() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let caller = coding_agent(&mut state, &project_id, "caller");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     let tracked_by_tool = state
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerTrackIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerTrackTask {
+                task_id: id.clone(),
             },
         )
-        .expect("an agent tracks an issue of its own project");
+        .expect("an agent tracks a task of its own project");
     assert_eq!(
-        tracked_by_tool["issue"]["trackers"],
+        tracked_by_tool["task"]["trackers"],
         json!([caller.1]),
         "the caller, and nobody it might have named"
     );
@@ -730,18 +730,18 @@ fn the_track_tool_subscribes_whoever_called_it() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerUntrackIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerUntrackTask {
+                task_id: id.clone(),
             },
         )
         .expect("and stops");
     assert_eq!(trackers(&mut state, &id), Vec::<String>::new());
 }
 
-/// An issue of another project is unknown to the tool, the way every other
+/// A task of another project is unknown to the tool, the way every other
 /// tracker tool reads it.
 #[test]
-fn the_track_tool_refuses_an_issue_outside_the_callers_project() {
+fn the_track_tool_refuses_a_task_outside_the_callers_project() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -751,18 +751,18 @@ fn the_track_tool_refuses_an_issue_outside_the_callers_project() {
     let other_repo = init_repo_named(elsewhere.path(), "other");
     let other_repo = std::fs::canonicalize(&other_repo).unwrap();
     let other_project = added_project(&mut state, &other_repo);
-    let theirs = issue_id(&filed(&mut state, &other_project, "not yours"));
+    let theirs = task_id(&filed(&mut state, &other_project, "not yours"));
 
     let refused = state
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerTrackIssue {
-                issue_id: theirs.clone(),
+            crate::mcp::BridgeAction::TrackerTrackTask {
+                task_id: theirs.clone(),
             },
         )
-        .expect_err("another project's issue");
-    assert!(refused.contains("unknown issue_id"), "{refused}");
+        .expect_err("another project's task");
+    assert!(refused.contains("unknown task_id"), "{refused}");
     assert_eq!(trackers(&mut state, &theirs), Vec::<String>::new());
 }
 
@@ -780,7 +780,7 @@ fn the_prompt_says_what_tracking_does_and_does_not_do() {
         ("project_agent", &templates.project_agent),
     ] {
         let text = flat(text);
-        assert!(text.contains("`track_issue`"), "{name} does not offer it");
+        assert!(text.contains("`track_task`"), "{name} does not offer it");
         assert!(
             text.contains("tracked automatically on anything assigned to you"),
             "{name} does not say assignment tracks for you"
@@ -811,27 +811,27 @@ fn reported(
     holding: &[(&str, &str)],
 ) -> (String, String) {
     let ws = workspace(state, project_id, "here");
-    let first = issue_id(&filed(state, project_id, holding[0].0));
+    let first = task_id(&filed(state, project_id, holding[0].0));
     let handed = state.handle(req(
-        "issues.assign",
-        json!({ "issue_id": first, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
+        "tasks.assign",
+        json!({ "task_id": first, "assignee": { "kind": "new_agent", "workspace_id": ws } }),
     ));
     let dispatch = &handed["result"]["dispatch"];
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": first, "status": holding[0].1 }),
+        "tasks.update",
+        json!({ "task_id": first, "status": holding[0].1 }),
     ));
     for (title, column) in &holding[1..] {
-        let id = issue_id(&filed(state, project_id, title));
+        let id = task_id(&filed(state, project_id, title));
         state.handle(req(
-            "issues.assign",
-            json!({ "issue_id": id, "assignee": { "kind": "agent", "agent_id": agent_id } }),
+            "tasks.assign",
+            json!({ "task_id": id, "assignee": { "kind": "agent", "agent_id": agent_id } }),
         ));
         state.handle(req(
-            "issues.update",
-            json!({ "issue_id": id, "status": column }),
+            "tasks.update",
+            json!({ "task_id": id, "status": column }),
         ));
     }
     state.done_deferring_for_agent(
@@ -846,9 +846,9 @@ fn reported(
     (entity_id, agent_id)
 }
 
-/// Complete with open assigned issues delivers the list, and names every one.
+/// Complete with open assigned tasks delivers the list, and names every one.
 #[test]
-fn complete_with_open_issues_lists_every_one_of_them() {
+fn complete_with_open_tasks_lists_every_one_of_them() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -856,7 +856,7 @@ fn complete_with_open_issues_lists_every_one_of_them() {
         &mut state,
         &project_id,
         DoneStatus::Completed,
-        // The report moves the NEWEST issue the agent holds to In review, so
+        // The report moves the NEWEST task the agent holds to In review, so
         // the last one listed is the one this Complete hands over.
         &[
             ("first", "in_progress"),
@@ -878,7 +878,7 @@ fn complete_with_open_issues_lists_every_one_of_them() {
         "In review is not held open: {body}"
     );
     assert!(
-        body.contains("2 issues assigned to you are still open"),
+        body.contains("2 Build tasks assigned to you are still open"),
         "{body}"
     );
 }
@@ -902,7 +902,7 @@ fn the_reminder_rides_the_agents_next_delivery() {
     state.delivery_queue.lapse_settle_windows();
     let woken = state.delivery_queue.take_ready(|_| false);
     assert!(
-        woken.iter().all(|turn| turn.phase != "issue_reminder"),
+        woken.iter().all(|turn| turn.phase != "task_reminder"),
         "the reminder wakes nobody: {:?}",
         woken.iter().map(|turn| turn.phase).collect::<Vec<_>>()
     );
@@ -927,7 +927,7 @@ fn the_reminder_rides_the_agents_next_delivery() {
 /// deciding it is done is somebody else's. So it is not held, and an agent
 /// that reports Complete holding nothing else hears nothing at all.
 #[test]
-fn an_issue_in_review_is_not_held_open_by_the_agent() {
+fn a_task_in_review_is_not_held_open_by_the_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -988,10 +988,10 @@ fn complete_holding_nothing_open_delivers_no_reminder() {
     assert!(reminders(&mut state, &entity_id, &agent_id).is_empty());
 }
 
-/// An issue parked in Done is one the agent is finished with, so it is not
+/// A task parked in Done is one the agent is finished with, so it is not
 /// named — a reminder that is noise is one an agent answers without reading.
 #[test]
-fn an_issue_in_the_done_column_is_not_reminded_about() {
+fn a_task_in_the_done_column_is_not_reminded_about() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -1019,12 +1019,12 @@ fn an_issue_in_the_done_column_is_not_reminded_about() {
         "and so is In review: {body}"
     );
     assert!(
-        body.contains("1 issue assigned to you is still open"),
+        body.contains("1 Build task assigned to you is still open"),
         "{body}"
     );
 }
 
-/// Answering a reminder with another Complete while holding the SAME issues
+/// Answering a reminder with another Complete while holding the SAME tasks
 /// says nothing the second time.
 ///
 /// The reminder is delivered as a turn, so an agent that answers it reports
@@ -1032,7 +1032,7 @@ fn an_issue_in_the_done_column_is_not_reminded_about() {
 /// loop ran five times on #27 before the agent stopped replying. The nudge is
 /// worth sending when the set changes and worth nothing when it has not.
 #[test]
-fn a_second_complete_holding_the_same_issues_says_nothing() {
+fn a_second_complete_holding_the_same_tasks_says_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -1060,7 +1060,7 @@ fn a_second_complete_holding_the_same_issues_says_nothing() {
     );
 }
 
-/// But a set that CHANGED is news again: an agent handed a second issue after
+/// But a set that CHANGED is news again: an agent handed a second task after
 /// being reminded about the first is told about both.
 #[test]
 fn a_complete_holding_a_different_set_reminds_again() {
@@ -1080,18 +1080,18 @@ fn a_complete_holding_a_different_set_reminds_again() {
     assert_eq!(reminders(&mut state, &entity_id, &agent_id).len(), 1);
 
     // One of the two it was told about is finished with, so the set has moved.
-    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
-    let done = listed["result"]["issues"]
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
+    let done = listed["result"]["tasks"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|issue| issue["title"] == "b")
-        .and_then(|issue| issue["id"].as_str())
+        .find(|task| task["title"] == "b")
+        .and_then(|task| task["id"].as_str())
         .unwrap()
         .to_string();
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": done, "status": "done" }),
+        "tasks.update",
+        json!({ "task_id": done, "status": "done" }),
     ));
 
     state.done_deferring_for_agent(
@@ -1111,7 +1111,7 @@ fn a_complete_holding_a_different_set_reminds_again() {
 
 // ------------------------------------------ the agent says what it did ---
 
-/// The `issue_action` messages on one agent's own conversation.
+/// The `task_action` messages on one agent's own conversation.
 fn said(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
     let page = state.handle(req(
         "thread.page",
@@ -1124,7 +1124,7 @@ fn said(state: &mut AppState, entity_id: &str, agent_id: &str) -> Vec<Value> {
         .into_iter()
         .filter(|item| item["type"] == "message")
         .map(|item| item["data"].clone())
-        .filter(|message| message["issue_action"].is_object())
+        .filter(|message| message["task_action"].is_object())
         .collect()
 }
 
@@ -1141,7 +1141,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            crate::mcp::BridgeAction::TrackerCreateIssue {
+            crate::mcp::BridgeAction::TrackerCreateTask {
                 title: "Kanban drag".into(),
                 body: None,
                 status: None,
@@ -1153,21 +1153,21 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
                 mention_user: None,
             },
         )
-        .expect("an agent files an issue");
-    let id = filed_by_agent["issue"]["id"].as_str().unwrap().to_string();
+        .expect("an agent files a task");
+    let id = filed_by_agent["task"]["id"].as_str().unwrap().to_string();
 
     for (action, expected) in [
         (
-            crate::mcp::BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "in_review".into(),
                 track: None,
             },
             "moved",
         ),
         (
-            crate::mcp::BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
                 track: None,
@@ -1178,8 +1178,8 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
             "commented_on",
         ),
         (
-            crate::mcp::BridgeAction::TrackerCloseIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerCloseTask {
+                task_id: id.clone(),
                 reason: None,
                 track: None,
             },
@@ -1194,7 +1194,7 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
     let messages = said(&mut state, &who.0, &who.1);
     let actions: Vec<&str> = messages
         .iter()
-        .map(|message| message["issue_action"]["action"].as_str().unwrap())
+        .map(|message| message["task_action"]["action"].as_str().unwrap())
         .collect();
     assert_eq!(
         actions,
@@ -1208,9 +1208,9 @@ fn each_tool_posts_one_message_saying_what_the_agent_did() {
         first["from_build"] != true,
         "not Build's sentence: {first:?}"
     );
-    assert_eq!(first["issue_action"]["issue_id"], id.as_str());
-    assert_eq!(first["issue_action"]["number"], 1);
-    assert_eq!(first["issue_action"]["title"], "Kanban drag");
+    assert_eq!(first["task_action"]["task_id"], id.as_str());
+    assert_eq!(first["task_action"]["number"], 1);
+    assert_eq!(first["task_action"]["title"], "Kanban drag");
     assert_eq!(first["body"], "Created #1 Kanban drag");
 }
 
@@ -1221,14 +1221,14 @@ fn a_comment_message_carries_its_comment_id() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     let commented = state
         .on_agent_mcp_action(
             &who.0,
             &who.1,
-            crate::mcp::BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
                 track: None,
@@ -1243,9 +1243,9 @@ fn a_comment_message_carries_its_comment_id() {
     let messages = said(&mut state, &who.0, &who.1);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert_eq!(
-        messages[0]["issue_action"]["comment_id"],
+        messages[0]["task_action"]["comment_id"],
         comment_id.as_str(),
-        "the id that links the comment rather than the issue"
+        "the id that links the comment rather than the task"
     );
     assert_eq!(messages[0]["body"], "Commented on #1 one");
 }
@@ -1258,15 +1258,15 @@ fn the_api_path_posts_no_action_message() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "here");
-    let id = issue_id(&filed(&mut state, &project_id, "one"));
+    let id = task_id(&filed(&mut state, &project_id, "one"));
 
     state.handle(req(
-        "issues.update",
-        json!({ "issue_id": id, "status": "in_review" }),
+        "tasks.update",
+        json!({ "task_id": id, "status": "in_review" }),
     ));
     state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "from the board" }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "from the board" }),
     ));
 
     assert!(
@@ -1283,14 +1283,14 @@ fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let actor = coding_agent(&mut state, &project_id, "actor");
     let target = coding_agent(&mut state, &project_id, "target");
-    let id = issue_id(&filed(&mut state, &project_id, "hand this over"));
+    let id = task_id(&filed(&mut state, &project_id, "hand this over"));
 
     state
         .on_agent_mcp_action(
             &actor.0,
             &actor.1,
-            crate::mcp::BridgeAction::TrackerAssignIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerAssignTask {
+                task_id: id.clone(),
                 assignee: json!({ "kind": "agent", "agent_id": target.1 }),
                 note: None,
                 track: None,
@@ -1301,24 +1301,24 @@ fn the_message_lands_on_the_actor_and_not_on_the_assignee() {
 
     let by_actor = said(&mut state, &actor.0, &actor.1);
     assert_eq!(by_actor.len(), 1, "{by_actor:?}");
-    assert_eq!(by_actor[0]["issue_action"]["action"], "assigned");
+    assert_eq!(by_actor[0]["task_action"]["action"], "assigned");
     assert_eq!(by_actor[0]["body"], "Assigned #1 hand this over");
 
     assert!(
         said(&mut state, &target.0, &target.1).is_empty(),
-        "the assignee gets the ISSUE, not a note about somebody assigning it"
+        "the assignee gets the TASK, not a note about somebody assigning it"
     );
 }
 
 // ------------------------------------------- track in the same call ---
 
-/// An issue an agent FILES tracks it, without being asked.
+/// A task an agent FILES tracks it, without being asked.
 ///
-/// The default that matters (spec: Issues → Tracking). An agent that files an
-/// issue almost always wants to know how it goes, and the one that filed and
+/// The default that matters (spec: Tasks → Tracking). An agent that files a
+/// task almost always wants to know how it goes, and the one that filed and
 /// assigned twelve in an afternoon heard nothing about any of them.
 #[test]
-fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
+fn a_task_an_agent_files_tracks_it_unless_it_says_otherwise() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -1328,7 +1328,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerCreateIssue {
+            crate::mcp::BridgeAction::TrackerCreateTask {
                 title: "Kanban drag".into(),
                 body: None,
                 status: None,
@@ -1340,11 +1340,11 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
                 mention_user: None,
             },
         )
-        .expect("an agent may file an issue");
-    let id = filed["issue"]["id"].as_str().unwrap().to_string();
+        .expect("an agent may file a task");
+    let id = filed["task"]["id"].as_str().unwrap().to_string();
     assert_eq!(trackers(&mut state, &id), vec![caller.1.clone()]);
     assert_eq!(
-        filed["issue"]["trackers"],
+        filed["task"]["trackers"],
         json!([caller.1]),
         "and the answer says so, rather than making the caller read it back"
     );
@@ -1354,7 +1354,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerCreateIssue {
+            crate::mcp::BridgeAction::TrackerCreateTask {
                 title: "not my problem".into(),
                 body: None,
                 status: None,
@@ -1367,7 +1367,7 @@ fn an_issue_an_agent_files_tracks_it_unless_it_says_otherwise() {
             },
         )
         .expect("an agent may file one it does not want to hear about");
-    let quiet_id = quiet["issue"]["id"].as_str().unwrap().to_string();
+    let quiet_id = quiet["task"]["id"].as_str().unwrap().to_string();
     assert_eq!(trackers(&mut state, &quiet_id), Vec::<String>::new());
 }
 
@@ -1379,15 +1379,15 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let caller = coding_agent(&mut state, &project_id, "caller");
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
     // Without the flag, nothing is followed.
     state
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "ready".into(),
                 track: None,
             },
@@ -1400,25 +1400,25 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerMoveIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerMoveTask {
+                task_id: id.clone(),
                 status: "in_progress".into(),
                 track: Some(true),
             },
         )
         .expect("a move that follows");
-    assert_eq!(moved["issue"]["trackers"], json!([caller.1]));
+    assert_eq!(moved["task"]["trackers"], json!([caller.1]));
     assert_eq!(trackers(&mut state, &id), vec![caller.1.clone()]);
 
-    // Idempotent, the way track_issue is: asking twice is not two trackers,
+    // Idempotent, the way track_task is: asking twice is not two trackers,
     // and writes no second `tracked` event.
     let before = event_kinds(&mut state, &id).len();
     state
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerCommentIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerCommentTask {
+                task_id: id.clone(),
                 body: "still on it".into(),
                 refs: Vec::new(),
                 track: Some(true),
@@ -1437,7 +1437,7 @@ fn any_other_write_can_start_tracking_in_the_same_call() {
 }
 
 /// The api path is a human on the board, who is not an agent and cannot be
-/// put on an issue's trackers. It carries no such field: asking for one is
+/// put on a task's trackers. It carries no such field: asking for one is
 /// refused by name, and nothing is filed.
 #[test]
 fn the_api_path_tracks_nobody() {
@@ -1445,27 +1445,27 @@ fn the_api_path_tracks_nobody() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let refused = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({ "project_id": project_id, "title": "filed by the user", "track": true }),
     ));
     assert_eq!(refused["ok"], false, "{refused:?}");
     assert_eq!(refused["error"], "unknown param: track", "{refused:?}");
-    let listed = state.handle(req("issues.list", json!({ "project_id": project_id })));
-    assert_eq!(listed["result"]["issues"], json!([]), "{listed:?}");
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
+    assert_eq!(listed["result"]["tasks"], json!([]), "{listed:?}");
 
     let made = state.handle(req(
-        "issues.create",
+        "tasks.create",
         json!({ "project_id": project_id, "title": "filed by the user" }),
     ));
     assert_eq!(made["ok"], true, "{made:?}");
     assert_eq!(
-        made["result"]["issue"]["trackers"],
+        made["result"]["task"]["trackers"],
         json!([]),
         "the user is not a tracker"
     );
 }
 
-/// An agent's own line says who it handed the issue TO, not just that it
+/// An agent's own line says who it handed the task TO, not just that it
 /// assigned it.
 #[test]
 fn an_assignment_the_agent_made_records_who_got_it() {
@@ -1474,7 +1474,7 @@ fn an_assignment_the_agent_made_records_who_got_it() {
     let (_home, mut state, project_id) = tracked(&state_root);
     let ws = workspace(&mut state, &project_id, "here");
     let caller = coding_agent(&mut state, &project_id, "caller");
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
     // Handed to a new agent on an existing workspace: a creating kind, which
     // resolves to the agent it makes.
@@ -1482,8 +1482,8 @@ fn an_assignment_the_agent_made_records_who_got_it() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerAssignIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerAssignTask {
+                task_id: id.clone(),
                 assignee: json!({ "kind": "new_agent", "workspace_id": ws }),
                 note: None,
                 track: None,
@@ -1495,9 +1495,9 @@ fn an_assignment_the_agent_made_records_who_got_it() {
     let lines = said(&mut state, &caller.0, &caller.1);
     let assigned = lines
         .iter()
-        .find(|line| line["issue_action"]["action"] == "assigned")
+        .find(|line| line["task_action"]["action"] == "assigned")
         .unwrap_or_else(|| panic!("no assignment line: {lines:?}"));
-    let got = assigned["issue_action"]["assignee"].clone();
+    let got = assigned["task_action"]["assignee"].clone();
     assert_eq!(got["kind"], "agent", "{assigned:?}");
     assert!(
         got["agent_id"]
@@ -1511,8 +1511,8 @@ fn an_assignment_the_agent_made_records_who_got_it() {
         .on_agent_mcp_action(
             &caller.0,
             &caller.1,
-            crate::mcp::BridgeAction::TrackerAssignIssue {
-                issue_id: id.clone(),
+            crate::mcp::BridgeAction::TrackerAssignTask {
+                task_id: id.clone(),
                 assignee: Value::Null,
                 note: None,
                 track: None,
@@ -1525,9 +1525,9 @@ fn an_assignment_the_agent_made_records_who_got_it() {
         .last()
         .cloned()
         .unwrap_or_else(|| panic!("no line: {lines:?}"));
-    assert_eq!(handed_back["issue_action"]["action"], "unassigned");
+    assert_eq!(handed_back["task_action"]["action"], "unassigned");
     assert!(
-        handed_back["issue_action"]["assignee"].is_null(),
+        handed_back["task_action"]["assignee"].is_null(),
         "nobody has it: {handed_back:?}"
     );
     assert_eq!(handed_back["body"], "Unassigned #1 Kanban drag");
@@ -1540,11 +1540,11 @@ fn read_comment_answers_the_one_comment_a_notice_named() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let caller = coding_agent(&mut state, &project_id, "caller");
-    let id = issue_id(&filed(&mut state, &project_id, "Kanban drag"));
+    let id = task_id(&filed(&mut state, &project_id, "Kanban drag"));
 
     let said = state.handle(req(
-        "issues.comment",
-        json!({ "issue_id": id, "body": "The drop handler races the column read." }),
+        "tasks.comment",
+        json!({ "task_id": id, "body": "The drop handler races the column read." }),
     ));
     assert_eq!(said["ok"], true, "{said:?}");
     let comment_id = said["result"]["comment"]["id"]
@@ -1565,10 +1565,10 @@ fn read_comment_answers_the_one_comment_a_notice_named() {
     assert_eq!(read["body"], "The drop handler races the column read.");
     assert_eq!(read["author"], json!({ "kind": "user" }));
     assert!(read["created_at"].is_string(), "{read:?}");
-    // Enough of the issue to answer about it: the notice gave a number.
+    // Enough of the task to answer about it: the notice gave a number.
     assert_eq!(read["number"], 1);
     assert_eq!(read["title"], "Kanban drag");
-    assert_eq!(read["issue_id"], id.as_str());
+    assert_eq!(read["task_id"], id.as_str());
 
     // An id nobody answers to is refused in a sentence.
     let refused = state
@@ -1576,17 +1576,17 @@ fn read_comment_answers_the_one_comment_a_notice_named() {
             &caller.0,
             &caller.1,
             crate::mcp::BridgeAction::TrackerReadComment {
-                comment_id: "ic-nobody".into(),
+                comment_id: "tc-nobody".into(),
             },
         )
         .expect_err("no such comment");
     assert_eq!(
         refused,
-        "There is no comment ic-nobody on this project's issues."
+        "There is no comment tc-nobody on this project's tasks."
     );
 }
 
-/// The prompt says what a notice is, and where a question on your own issue
+/// The prompt says what a notice is, and where a question on your own task
 /// is answered.
 #[test]
 fn the_prompt_says_a_notice_is_one_line_and_where_to_answer() {
@@ -1611,7 +1611,7 @@ fn the_prompt_says_a_notice_is_one_line_and_where_to_answer() {
             "{name} does not say it may be ignored"
         );
         assert!(
-            text.contains("answered on the issue with `comment_issue`, not in this conversation"),
+            text.contains("answered on the task with `comment_task`, not in this conversation"),
             "{name} does not say where to answer"
         );
     }

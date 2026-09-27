@@ -109,10 +109,10 @@ describe("the level a conversation opens at", () => {
     expect(defaultDetailLevel("project")).toBe("agent");
   });
 
-  it("is everything on a workspace, a branch and an issue", () => {
+  it("is everything on a workspace, a branch and a task", () => {
     expect(defaultDetailLevel("workspace")).toBe("all");
     expect(defaultDetailLevel("branch")).toBe("all");
-    expect(defaultDetailLevel("issue")).toBe("all");
+    expect(defaultDetailLevel("task")).toBe("all");
     expect(defaultDetailLevel(undefined)).toBe("all");
   });
 });

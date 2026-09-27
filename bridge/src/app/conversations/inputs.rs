@@ -14,9 +14,9 @@ pub(in crate::app) struct ReviewerMessage {
     /// `None` — the human is what a post is until something says otherwise —
     /// and only [`ReviewerMessage::sent_by`] fills it in.
     pub from_agent: Option<crate::thread::AgentIdentity>,
-    /// The issue these words handed over, when assigning one is what sent
+    /// The task these words handed over, when assigning one is what sent
     /// them. Every parser leaves it `None`; only a dispatch fills it in.
-    pub from_issue: Option<crate::thread::IssueEnvelope>,
+    pub from_task: Option<crate::thread::TaskEnvelope>,
 }
 
 impl ReviewerMessage {
@@ -27,13 +27,10 @@ impl ReviewerMessage {
         self
     }
 
-    /// Say which issue these words handed over. The role stays the user's for
-    /// the same reason: an issue arriving is an instruction arriving.
-    pub(in crate::app) fn about_issue(
-        mut self,
-        issue: Option<&crate::thread::IssueEnvelope>,
-    ) -> Self {
-        self.from_issue = issue.cloned();
+    /// Say which task these words handed over. The role stays the user's for
+    /// the same reason: a task arriving is an instruction arriving.
+    pub(in crate::app) fn about_task(mut self, task: Option<&crate::thread::TaskEnvelope>) -> Self {
+        self.from_task = task.cloned();
         self
     }
 }
@@ -51,11 +48,11 @@ pub(in crate::app) struct PostOrigin {
     pub from_agent: Option<crate::thread::AgentIdentity>,
     /// The agent that asked for this post, when an agent did.
     pub requested_by: Option<crate::operation::OperationRequester>,
-    /// The issue this post handed over, when assigning one is what sent it.
+    /// The task this post handed over, when assigning one is what sent it.
     ///
-    /// Independent of the two above: the human assigning an issue carries an
+    /// Independent of the two above: the human assigning a task carries an
     /// envelope and no sender, an agent assigning one carries both.
-    pub from_issue: Option<crate::thread::IssueEnvelope>,
+    pub from_task: Option<crate::thread::TaskEnvelope>,
 }
 
 impl PostOrigin {
@@ -65,23 +62,23 @@ impl PostOrigin {
         PostOrigin {
             operation_id,
             from_agent: None,
-            from_issue: None,
+            from_task: None,
             requested_by: None,
         }
     }
 
-    /// A post that hands an issue over. The sender, if any, is added by the
+    /// A post that hands a task over. The sender, if any, is added by the
     /// caller that knows there was one: a dispatch the human asked for has
     /// none, and a dispatch an agent asked for wears it.
     pub(in crate::app) fn handing_over(
-        issue: crate::thread::IssueEnvelope,
+        task: crate::thread::TaskEnvelope,
         operation_id: Option<String>,
     ) -> Self {
         PostOrigin {
             operation_id,
             from_agent: None,
             requested_by: None,
-            from_issue: Some(issue),
+            from_task: Some(task),
         }
     }
 
@@ -96,7 +93,7 @@ impl PostOrigin {
             operation_id: None,
             from_agent: Some(sender),
             requested_by: Some(requester),
-            from_issue: None,
+            from_task: None,
         }
     }
 
@@ -105,9 +102,9 @@ impl PostOrigin {
         self.from_agent.clone()
     }
 
-    /// The issue a post hands over, as a message wears it.
-    pub(in crate::app) fn issue(&self) -> Option<crate::thread::IssueEnvelope> {
-        self.from_issue.clone()
+    /// The task a post hands over, as a message wears it.
+    pub(in crate::app) fn task(&self) -> Option<crate::thread::TaskEnvelope> {
+        self.from_task.clone()
     }
 }
 
@@ -207,7 +204,7 @@ pub(in crate::app) fn parse_thread_inputs(
                     anchor,
                     viewing_context,
                     from_agent: None,
-                    from_issue: None,
+                    from_task: None,
                 })
             })
             .collect();
@@ -226,7 +223,7 @@ pub(in crate::app) fn parse_thread_inputs(
         anchor: None,
         viewing_context: parse_viewing_context(params.get("viewing_context"))?,
         from_agent: None,
-        from_issue: None,
+        from_task: None,
     }])
 }
 
@@ -316,7 +313,7 @@ pub(in crate::app) fn parse_thread_post_input(
             anchor,
             viewing_context: parse_viewing_context(params.get("viewing_context"))?,
             from_agent: None,
-            from_issue: None,
+            from_task: None,
         }]);
     }
     parse_thread_inputs(
@@ -486,7 +483,7 @@ pub(in crate::app) fn append_user_thread_messages_with_attachments(
     let last = messages.len().saturating_sub(1);
     for (index, message) in messages.into_iter().enumerate() {
         let from_agent = message.from_agent;
-        let from_issue = message.from_issue;
+        let from_task = message.from_task;
         if index == last && !attachments.is_empty() {
             thread.post_user_with_context_and_attachments(
                 message.body,
@@ -509,8 +506,8 @@ pub(in crate::app) fn append_user_thread_messages_with_attachments(
         if let Some(from_agent) = from_agent {
             thread.wear_sender(from_agent);
         }
-        if let Some(from_issue) = from_issue {
-            thread.wear_issue(from_issue);
+        if let Some(from_task) = from_task {
+            thread.wear_task(from_task);
         }
     }
     last_appended_sequence(thread)

@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-// An agent acting on an issue, narrated in its own conversation as one line.
+// An agent acting on a task, narrated in its own conversation as one line.
 //
 // It is a message like any other — it reads in sequence and counts as unread —
 // and it is the agent saying what it just did, so it survives every detail
@@ -8,15 +8,15 @@
 import { describe, expect, it } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
 import { itemsAtDetailLevel } from "../src/core/conversationDetail.js";
-import { actionHref, actionWord, issueActionLineHtml } from "../src/core/trackerActionLine.js";
+import { actionHref, actionWord, taskActionLineHtml } from "../src/core/trackerActionLine.js";
 
 const HERE = { deviceId: "dev-1", projectId: "proj-1" };
 
 const action = (over = {}) => ({
   action: "commented",
-  issue_id: "issue-01M2ZN6P",
+  task_id: "task-01M2ZN6P",
   number: 14,
-  title: "Activity entry for issues in the conversation",
+  title: "Activity entry for tasks in the conversation",
   ...over,
 });
 
@@ -27,14 +27,14 @@ const acted = (over = {}, message = {}) => ({
     sequence: 9,
     role: "agent",
     body: "",
-    issue_action: action(over),
+    task_action: action(over),
     ...message,
   },
 });
 
 const paint = (items, place = HERE) => {
   document.body.innerHTML = threadHtml({ id: "conversation-3", items }, { place });
-  return document.querySelector(".thread-issue-action");
+  return document.querySelector(".thread-task-action");
 };
 
 /// The same paint, with what the conversation knows about the project's agents
@@ -44,7 +44,7 @@ const paintWith = (items, { agentLabels = {}, projectName = "" } = {}) => {
     { id: "conversation-3", items },
     { place: { ...HERE, projectName }, agentLabels },
   );
-  return document.querySelector(".thread-issue-action");
+  return document.querySelector(".thread-task-action");
 };
 
 describe("the line", () => {
@@ -77,8 +77,8 @@ describe("the line", () => {
     expect(text({ action: "created", title: "Ghost rows survive" })).toBe("Created #14 Ghost rows survive");
     expect(text({ action: "create", title: "Ghost rows survive" })).toBe("Created #14 Ghost rows survive");
     expect(text({ action: "created", title: "" })).toBe("Created #14");
-    expect(paint([acted({ action: "created", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).not.toBeNull();
-    expect(paint([acted({ action: "commented", title: "Ghost rows survive" })]).querySelector(".thread-issue-title")).toBeNull();
+    expect(paint([acted({ action: "created", title: "Ghost rows survive" })]).querySelector(".thread-task-title")).not.toBeNull();
+    expect(paint([acted({ action: "commented", title: "Ghost rows survive" })]).querySelector(".thread-task-title")).toBeNull();
   });
 
   // #59. An assignment's news is WHO got it, so it reads verb first like a
@@ -93,9 +93,9 @@ describe("the line", () => {
     expect(
       text(
         { action: "assigned", assignee: { kind: "agent", agent_id: "agent-1" } },
-        { agentLabels: { "agent-1": "issues-spa · Rail scroll" } },
+        { agentLabels: { "agent-1": "tasks-spa · Rail scroll" } },
       ),
-    ).toBe("Assigned #14 to issues-spa · Rail scroll");
+    ).toBe("Assigned #14 to tasks-spa · Rail scroll");
 
     // Handing it back is its own word and names nobody.
     expect(text({ action: "unassigned" })).toBe("Unassigned #14");
@@ -124,20 +124,20 @@ describe("the line", () => {
 });
 
 describe("where it goes", () => {
-  it("opens the issue on this machine", () => {
+  it("opens the task on this machine", () => {
     expect(paint([acted({ comment_id: null })]).getAttribute("href"))
-      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P");
+      .toBe("#/device/dev-1/project/proj-1/tasks/task-01M2ZN6P");
   });
 
-  // A comment is a place in the issue, not just the issue.
+  // A comment is a place in the task, not just the task.
   it("lands on the comment when the action was one", () => {
-    expect(paint([acted({ comment_id: "ic-01M2ZNVB" })]).getAttribute("href"))
-      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P/c/ic-01M2ZNVB");
+    expect(paint([acted({ comment_id: "tc-01M2ZNVB" })]).getAttribute("href"))
+      .toBe("#/device/dev-1/project/proj-1/tasks/task-01M2ZN6P/c/tc-01M2ZNVB");
   });
 
   it("encodes a comment id that carries a separator", () => {
     expect(actionHref(action({ comment_id: "a/b" }), HERE))
-      .toBe("#/device/dev-1/project/proj-1/issues/issue-01M2ZN6P/c/a%2Fb");
+      .toBe("#/device/dev-1/project/proj-1/tasks/task-01M2ZN6P/c/a%2Fb");
   });
 
   // A conversation rendered with nowhere to stand points nowhere rather than
@@ -148,9 +148,9 @@ describe("where it goes", () => {
     expect(line.textContent).toContain("#14");
   });
 
-  it("draws nothing for an action naming no issue", () => {
-    expect(issueActionLineHtml(null)).toBe("");
-    expect(issueActionLineHtml({ number: 14 })).toBe("");
+  it("draws nothing for an action naming no task", () => {
+    expect(taskActionLineHtml(null)).toBe("");
+    expect(taskActionLineHtml({ number: 14 })).toBe("");
   });
 });
 
@@ -166,7 +166,7 @@ describe("it is a message like any other", () => {
   it("survives all three detail levels", () => {
     for (const level of ["all", "messages", "agent"]) {
       const kept = itemsAtDetailLevel(items(), level);
-      expect(kept.some((one) => one.data?.issue_action)).toBe(true);
+      expect(kept.some((one) => one.data?.task_action)).toBe(true);
     }
   });
 
@@ -188,18 +188,18 @@ describe("it is a message like any other", () => {
       { id: "conversation-3", items: [{ type: "message", data: { id: "m1", sequence: 1, role: "agent", body: "hello" } }] },
       { place: HERE },
     );
-    expect(document.querySelector(".thread-issue-action")).toBeNull();
+    expect(document.querySelector(".thread-task-action")).toBeNull();
     expect(document.querySelector(".thread-body").textContent).toContain("hello");
   });
 });
 
 describe("the comment it points at", () => {
-  it("is a row the issue page answers to by id", async () => {
-    const { issuePageHtml } = await import("../src/core/trackerIssueRender.js");
+  it("is a row the task page answers to by id", async () => {
+    const { taskPageHtml } = await import("../src/core/trackerTaskRender.js");
     const { timelineRows } = await import("../src/core/trackerTimeline.js");
-    const { issue, comment } = await import("./trackerWireFixture.js");
-    const rows = timelineRows([comment({ id: "ic-01M2ZNVB" })]);
-    document.body.innerHTML = issuePageHtml(issue(), { columns: null, rows, links: [], draft: "", labelsDraft: "" });
-    expect(document.querySelector("#comment-ic-01M2ZNVB")).not.toBeNull();
+    const { task, comment } = await import("./trackerWireFixture.js");
+    const rows = timelineRows([comment({ id: "tc-01M2ZNVB" })]);
+    document.body.innerHTML = taskPageHtml(task(), { columns: null, rows, links: [], draft: "", labelsDraft: "" });
+    expect(document.querySelector("#comment-tc-01M2ZNVB")).not.toBeNull();
   });
 });

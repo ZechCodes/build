@@ -433,16 +433,16 @@ fn project_set_isolation_refuses_an_unknown_project_and_an_unnamed_choice() {
 }
 
 /// Every summary the conversation of `run_id` carries, whoever wrote it:
-/// an Issue's implementation talks on the Issue's thread and a branch's
+/// a Task's implementation talks on the Task's thread and a branch's
 /// agent talks on its own, and a fallback note is legible on either.
 fn conversation_summaries(state: &AppState, run_id: &str) -> Vec<String> {
     let thread = match state.runs[run_id]
         .run
         .plan_id
         .as_ref()
-        .and_then(|issue_id| state.plans.get(&issue_id.0))
+        .and_then(|task_id| state.plans.get(&task_id.0))
     {
-        Some(issue) => issue.agents.sole_thread(),
+        Some(task) => task.agents.sole_thread(),
         None => {
             &state.runs[run_id]
                 .agents

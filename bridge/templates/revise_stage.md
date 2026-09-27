@@ -1,5 +1,5 @@
 The reviewer left comments on the plan document for stage "{stage_title}" at
-{stage_path}, under Build's scratch docs directory for this issue:
+{stage_path}, under Build's scratch docs directory for this task:
 
 {docs_dir}
 

@@ -14,6 +14,10 @@ impl Store {
     /// is what tells the person looking at the directory why there are two
     /// copies of their work in it.
     pub(super) const SUPERSEDED_NOTE: &'static str = "SUPERSEDED-BY-build.db.md";
+    /// The directory the JSON-era records and every retired plan's docs live
+    /// in. It keeps the name older builds wrote (#190): the schema 10
+    /// migration renames rows, never files.
+    pub(super) const PLANS_DIR: &'static str = "issues";
     pub(super) fn write_superseded_note(&self, imported: usize) -> Result<(), StoreError> {
         let note = format!(
             "# These records were imported into `build.db`\n\n             {imported} records were read out of this tree and into the SQLite              database beside it. Build no longer reads them.\n\n             They are kept, not deleted, for two reasons:\n\n             - They are the backup of the migration. Deleting `build.db` makes              Build import them again from scratch, which is the whole recovery              if the database ever turns out to be wrong.\n             - They are yours to delete once you are satisfied. Build never will.\n\n             **Do not run an older build-bridge against this directory.** It              would read these files and serve state frozen at the moment of the              import, silently, and anything you did in the meantime would be              invisible. A build that understands the database refuses to start              if these files change after this point.\n"
@@ -27,12 +31,12 @@ impl Store {
     pub fn attachments_dir(&self) -> PathBuf {
         self.dir.join("attachments")
     }
-    pub(super) fn issue_dir(&self, issue_id: &str) -> PathBuf {
-        self.dir.join("issues").join(issue_id)
+    pub(super) fn task_dir(&self, task_id: &str) -> PathBuf {
+        self.dir.join(Store::PLANS_DIR).join(task_id)
     }
-    /// Where an Issue's canonical docs live (worktree-relative layout inside).
+    /// Where a Task's canonical docs live (worktree-relative layout inside).
     pub(super) fn plan_docs_dir(&self, plan_id: &str) -> PathBuf {
-        self.issue_dir(plan_id).join("docs")
+        self.task_dir(plan_id).join("docs")
     }
     /// Ingest a worktree's plan docs into the plan's canonical store docs —
     /// the single plan doc (`plan_path`, worktree-relative) and every file in

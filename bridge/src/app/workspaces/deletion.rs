@@ -5,7 +5,7 @@
 //! The same three steps `project.delete` takes over a whole project's
 //! workspaces at once (`app/projects/deletion.rs`), narrowed to one — and
 //! narrowed deliberately rather than shared, because the project verb also
-//! rewrites the config, unbinds that project's issues and captures, and drops
+//! rewrites the config, unbinds that project's tasks and captures, and drops
 //! the project itself, none of which a single workspace owns.
 //!
 //! Split the same way every filesystem verb here is: the decide half runs under
@@ -18,7 +18,7 @@ use super::branch_delete::{self, BranchDeleteFailure, BranchDeletion};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
 use crate::reclaim::containment::WorkspaceBoundary;
-use crate::tracker::{Actor, IssueEventKind};
+use crate::tracker::{Actor, TaskEventKind};
 use crate::workspace::{Workspace, WorkspaceStatus};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -50,7 +50,7 @@ pub(super) enum Removal {
     /// files go, and deletes the branches it was asked to.
     Finish(Finishing),
     /// `workspace.reclaim`: takes the branch each directory carries once the
-    /// checkouts are gone, and records on the issues how each went.
+    /// checkouts are gone, and records on the tasks how each went.
     Reclaim(Reclaiming),
 }
 
@@ -63,7 +63,7 @@ pub(super) struct Finishing {
 }
 
 /// What a reclaim does beyond a delete: the branches it takes, and who
-/// reclaimed, whom the issues name.
+/// reclaimed, whom the tasks name.
 pub(super) struct Reclaiming {
     pub(super) actor: Actor,
     pub(super) branches: Vec<BranchDeletion>,
@@ -318,14 +318,14 @@ impl AppState {
         removal: Removal,
         boundary: WorkspaceBoundary,
     ) -> Result<(), String> {
-        self.preserve_project_issue_identities(&workspace.project_id)?;
-        // A merged Done closes linked open issues only after identity
+        self.preserve_project_task_identities(&workspace.project_id)?;
+        // A merged Done closes linked open tasks only after identity
         // preservation succeeds. Do this before retiring agents, so
         // retirement also drops any notices the automatic close queues for
         // this workspace. Eligibility has been accepted; a later disk failure
-        // does not undo the completed work or reopen its issues.
+        // does not undo the completed work or reopen its tasks.
         if matches!(&removal, Removal::Finish(finishing) if finishing.merged) {
-            self.close_issues_of_finished_workspace(&workspace.project_id, &workspace.id);
+            self.close_tasks_of_finished_workspace(&workspace.project_id, &workspace.id);
         }
         let root = boundary
             .validate_removal()
@@ -463,7 +463,7 @@ impl AppState {
     }
 
     /// What a reclaim did with each branch the workspace carried, on every
-    /// issue linking the workspace or that branch, quietly and under whoever
+    /// task linking the workspace or that branch, quietly and under whoever
     /// reclaimed, like the reclaim itself: the answer's own entry for that
     /// branch and repository, as `branch_deleted` or `branch_kept`.
     fn note_reclaimed_branches(
@@ -475,17 +475,17 @@ impl AppState {
         for entry in branches {
             let (kind, payload) = reclaimed_branch_event(workspace, entry);
             let branch = entry["branch"].as_str().unwrap_or_default();
-            let issues = self.issues_linking_workspace_or_branch(
+            let tasks = self.tasks_linking_workspace_or_branch(
                 &workspace.project_id,
                 &workspace.id,
                 branch,
             );
-            for issue in issues {
-                if let Err(error) = self.record_quiet_event(&issue.id, actor, kind, payload.clone())
+            for task in tasks {
+                if let Err(error) = self.record_quiet_event(&task.id, actor, kind, payload.clone())
                 {
                     eprintln!(
                         "note reclaimed branch {branch} on #{}: {error}",
-                        issue.number
+                        task.number
                     );
                 }
             }
@@ -555,15 +555,15 @@ fn reclaimed_branch(deletion: &BranchDeletion, outcome: &Result<(), BranchDelete
 /// The timeline entry for one of those: the same fields, and the workspace.
 /// A branch whose restoration failed is gone, so it reads as deleted, with
 /// the reason.
-fn reclaimed_branch_event(workspace: &Workspace, entry: &Value) -> (IssueEventKind, Value) {
+fn reclaimed_branch_event(workspace: &Workspace, entry: &Value) -> (TaskEventKind, Value) {
     let mut payload = entry.clone();
     payload["workspace_id"] = json!(workspace.id);
     payload["workspace_name"] = json!(workspace.name);
     payload["reclaimed"] = json!(true);
     let kind = if entry["outcome"] == BRANCH_KEPT {
-        IssueEventKind::BranchKept
+        TaskEventKind::BranchKept
     } else {
-        IssueEventKind::BranchDeleted
+        TaskEventKind::BranchDeleted
     };
     (kind, payload)
 }
@@ -616,7 +616,7 @@ mod tests {
     }
 
     /// Restoration that failed left the ref gone: the answer says so, and the
-    /// issue reads it as deleted, with the reason naming what to restore.
+    /// task reads it as deleted, with the reason naming what to restore.
     #[test]
     fn a_failed_restoration_is_reported_as_such_and_logged_as_deleted() {
         let failed = said(Err(BranchDeleteFailure::RecoveryFailed(
@@ -631,7 +631,7 @@ mod tests {
         }))
         .unwrap();
         let (kind, payload) = reclaimed_branch_event(&workspace, &failed);
-        assert_eq!(kind, IssueEventKind::BranchDeleted);
+        assert_eq!(kind, TaskEventKind::BranchDeleted);
         assert_eq!(payload["outcome"], "restore_failed");
         assert_eq!(payload["repository"], "/repos/second");
         assert_eq!(payload["workspace_name"], "pair");
@@ -641,6 +641,6 @@ mod tests {
             &workspace,
             &said(Err(BranchDeleteFailure::Refused("no".into()))),
         );
-        assert_eq!(kind, IssueEventKind::BranchKept);
+        assert_eq!(kind, TaskEventKind::BranchKept);
     }
 }

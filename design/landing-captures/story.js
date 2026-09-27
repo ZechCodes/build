@@ -1,5 +1,5 @@
 // The demonstration data every landing screen draws: one project, the
-// archive-search issue, and the three workspaces its agents run in. Plain
+// archive-search task, and the three workspaces its agents run in. Plain
 // data, shaped the way the SPA's own renderers read it.
 
 export const PROJECT = { id: "project-build", name: "build", projectKey: "workshop/project-build" };
@@ -54,7 +54,7 @@ export const CONVERSATIONS = {
 };
 
 // Board order: the columns the tracker draws, and the card in each.
-export const ISSUES = [
+export const TASKS = [
   { number: 76, title: "Explain local host pairing", status: "backlog", labels: ["docs"] },
   { number: 78, title: "Make archived items searchable", status: "ready", labels: ["search", "bug"], priority: "high" },
   { number: 74, title: "Persist terminal sessions", status: "in_progress", labels: ["shell"], assignee: "Codex" },
@@ -68,7 +68,7 @@ export const COLUMNS = [
   ["in_review", "In review"],
 ];
 
-// The three agents act 4 fans the issue out to, one per workspace.
+// The three agents act 4 fans the task out to, one per workspace.
 export const TEAM = [
   { name: "Implement", harness: "claude", workspace: "archive-search", snippet: "Patching archiveItem so archived entries stay indexed." },
   { name: "Review", harness: "codex", workspace: "archive-review", snippet: "Reading the search index flow before the patch lands." },

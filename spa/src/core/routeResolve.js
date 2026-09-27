@@ -1,8 +1,8 @@
 // Turning a URL that does not say enough into a work item.
 //
 // Two kinds of URL end up here. The old ones addressed runs, worktrees and
-// plans by id; the new ones address a branch by (project, branch name) and an
-// issue by (project, issue id), so the ids that survived need a lookup.
+// plans by id; the new ones address a branch by (project, branch name) and a
+// task by (project, task id), so the ids that survived need a lookup.
 //
 // And any work URL that names no device needs a lookup too: every device mints
 // a `proj-1`, so a bare project id names a project only once something says
@@ -56,14 +56,14 @@ const branchRouteFor = (row, ref) => {
   return row.branch ? { name: "branch", projectId: row.project_id, branch: row.branch, tab: ref.tab || "changes" } : null;
 };
 
-/** An issue whose implementation is in flight has no row of its own — the
+/** A task whose implementation is in flight has no row of its own — the
  *  branch row carries its id, and the branch is the nearest surface the URL can
- *  open. A watched tracker issue's row says its project, which is all its page
- *  needs: a task push names the issue and nothing else (#191). */
-function issueRouteFor(row, ref) {
+ *  open. A watched tracker task's row says its project, which is all its page
+ *  needs: a task push names the task and nothing else (#191). */
+function taskRouteFor(row, ref) {
   if (row.kind === "branch") return branchRouteFor(row, ref);
-  if (row.kind === "tracker_issue") return { name: "trackerIssue", projectId: row.project_id, issueId: ref.id };
-  const route = { name: "issue", projectId: row.project_id, id: ref.id };
+  if (row.kind === "tracker_task") return { name: "trackerTask", projectId: row.project_id, taskId: ref.id };
+  const route = { name: "task", projectId: row.project_id, id: ref.id };
   if (ref.stage) route.stage = ref.stage;
   return route;
 }
@@ -99,7 +99,7 @@ const REFERENCE_KINDS = Object.freeze({
     route: runRouteFor,
   },
   worktree: { rows: byId("worktree_id"), route: branchRouteFor },
-  issue: { rows: byId("issue_id"), route: issueRouteFor },
+  task: { rows: byId("task_id"), route: taskRouteFor },
   // A plain folder has no work row at all, and neither has a project nobody has
   // cut a workspace in yet, so the projects answer for both; a workspace link
   // that named no device is answered by the workspaces. Each is only asked which
@@ -137,7 +137,7 @@ const onItsDevice = (route, row) => (route && row.deviceId ? { ...route, deviceI
  * that id (deleted, or not yet polled — the caller decides whether to wait or
  * land on the inbox).
  *
- * @param ref {kind: 'run'|'worktree'|'issue'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
+ * @param ref {kind: 'run'|'worktree'|'task'|'project', id?, projectId?, deviceId?, route?, tab?, stage?}
  *            — a `project` ref carries the route it meant, which may be the
  *              project's own page
  * @param feed {items, projects, workspaces} — the merge, every device's rows at once

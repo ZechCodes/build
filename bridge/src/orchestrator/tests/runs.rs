@@ -12,7 +12,7 @@ use crate::mcp::DoneStatus;
 use crate::models::ModelChoice;
 use crate::orchestrator::{
     conversation_prompt, mcp_config_path, ActivePlan, ActiveRun, Agent, AgentTurn,
-    ImplementableIssue, Orchestrator, OrchestratorError, RunSource,
+    ImplementableTask, Orchestrator, OrchestratorError, RunSource,
 };
 use crate::plan::{StageDocState, StageManifestEntry};
 use crate::pty::HarnessSpec;
@@ -96,7 +96,7 @@ pub(super) fn split_store(dir: &tempfile::TempDir) -> Store {
     Store::new(dir.path().join("store")).expect("store opens")
 }
 /// Leave a reviewer comment on one stage. A comment is a post on the
-/// Issue's conversation and nowhere else, so this is how a test makes one.
+/// Task's conversation and nowhere else, so this is how a test makes one.
 /// Returns the comment's id.
 pub(super) fn comment_on(plan: &mut ActivePlan, stage_id: &str) -> String {
     let path = plan
@@ -105,9 +105,9 @@ pub(super) fn comment_on(plan: &mut ActivePlan, stage_id: &str) -> String {
         .find(|stage| stage.id == stage_id)
         .map(|stage| stage.path.clone())
         .unwrap_or_default();
-    let issue_id = plan.plan.id.0.clone();
+    let task_id = plan.plan.id.0.clone();
     plan.agents.primary_mut().unwrap().thread.post_doc_comment(
-        &issue_id,
+        &task_id,
         stage_id,
         &path,
         None,
@@ -265,13 +265,13 @@ async fn dispatch_single_stage_run_goes_straight_to_building() {
     assert!(diff.files().iter().any(|f| f.path == "fix.txt"));
 }
 #[tokio::test]
-async fn an_implementable_issue_enforces_the_single_active_writer_rule() {
+async fn an_implementable_task_enforces_the_single_active_writer_rule() {
     let (dir, repo) = init_repo();
     let orch = orchestrator(&dir, &repo);
     let store = split_store(&dir);
     let plan = approved_plan(&orch, &store, "plan-1");
 
-    let err = match ImplementableIssue::judge(RunSource {
+    let err = match ImplementableTask::judge(RunSource {
         plan: &plan,
         has_active_run: true,
     }) {
@@ -301,7 +301,7 @@ async fn dispatch_multi_stage_run_starts_the_first_stage() {
     assert!(prompt.contains("Execute ONE stage"), "{prompt}");
     assert!(prompt.contains(".build/plan/01-first.md"), "{prompt}");
     assert!(
-        prompt.contains("Ordered Issue stage-plan catalog"),
+        prompt.contains("Ordered Task stage-plan catalog"),
         "{prompt}"
     );
     let first = prompt
@@ -315,7 +315,7 @@ async fn dispatch_multi_stage_run_starts_the_first_stage() {
         turn.cold.contains(
             "Act on the current instruction and exact accepted messages in the native payload"
         ),
-        "cold Issue agents learn how native reviewer messages are delivered: {}",
+        "cold Task agents learn how native reviewer messages are delivered: {}",
         turn.cold
     );
     assert!(!turn.cold.contains("read_unread_messages"), "{}", turn.cold);
@@ -483,8 +483,18 @@ fn conversation_prompt_uses_available_native_progress_tools_for_long_running_wor
         "multi-step work should be visible to the user: {prompt}"
     );
     assert!(
-        prompt.contains("native task, checklist, or plan tool available in this session"),
+        prompt.contains("native checklist or plan tool available in this session"),
         "each provider should use its own supported progress surface: {prompt}"
+    );
+    // Build's tasks are cards on the board (#190). A progress rule that said
+    // "task" would send an agent to TaskCreate thinking it filed one.
+    let progress = prompt
+        .lines()
+        .find(|line| line.contains("long-running work with several meaningful steps"))
+        .unwrap();
+    assert!(
+        !progress.to_lowercase().contains("task"),
+        "the progress rule must not say task: {progress}"
     );
     assert!(
         prompt.contains("brief, one-step work"),

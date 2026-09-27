@@ -375,12 +375,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 
 /* The three states the dot says, in the inbox's own vocabulary: a pulse ONLY
    while an agent works, amber while something waits on you, quiet once read.
-   Issues never use amber: their dot is always the quiet grey, so an unread
-   issue cannot read as an agent that stopped (its badge carries the news).
+   Tasks never use amber: their dot is always the quiet grey, so an unread
+   task cannot read as an agent that stopped (its badge carries the news).
    (sdot-pulse is defined beside the shared dot in styles.css.) */
 .sdot-working { background:var(--accent); animation:sdot-pulse 1.6s ease-in-out infinite; }
 .sdot-unread { background:var(--amber); }
-.sdot-inactive, .sdot-issue { background:var(--line); border:1px solid var(--dim); }
+.sdot-inactive, .sdot-task { background:var(--line); border:1px solid var(--dim); }
 @media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
 
 /* Done and the ⋯ menu: overlaid on the row's top-right, present only while
@@ -470,7 +470,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* ---- the projects face ----
    The inbox, grouped by project. Each block is a box: its head — fold, name,
    unread, the + that creates — and its rows; the block holding the branch or
-   issue the route stands on wears the composer's focused look. The unrouted
+   task the route stands on wears the composer's focused look. The unrouted
    captures stand above every block on their own. */
 .inbox-unsorted:not(:empty) { display:flex; flex-direction:column; gap:4px; }
 /* Empty, it leaves the list's flow: a 0px child still costs the list a gap,
@@ -609,10 +609,10 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .dirtab.active::before { content:""; position:absolute; left:-5px; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
 .dirtab svg { width:18px; height:18px; display:block; }
-/* A face the surface hides (Issues, on a bridge that carries none) — the cell's
+/* A face the surface hides (Tasks, on a bridge that carries none) — the cell's
    own display beats the UA's [hidden] rule, so it needs one of its own. */
 .dirtab[hidden] { display:none; }
-/* The open issues the workspace's agents hold, as the bubble the inbox rows
+/* The open tasks the workspace's agents hold, as the bubble the inbox rows
    wear, on the icon's shoulder. Nothing waiting draws nothing. */
 .dirtab-count { position:absolute; top:1px; right:-3px; line-height:14px; }
 .dirtab-count:empty { display:none; }
@@ -684,7 +684,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .device-strip .device-retry { flex:none; margin-left:auto; }
 
 /* ---- the view area's toolbar ----
-   Where you are standing, said as one sentence: project / branch-or-issue, each
+   Where you are standing, said as one sentence: project / branch-or-task, each
    half opening the list of its own kind. The right side carries the two facts about the
    work that are true wherever you are in it — how long its agent has been at it
    and what the diff weighs — plus the ⋯ the tab row's right cluster used to be.
@@ -727,10 +727,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   bottom:0; height:2px; border-radius:2px 2px 0 0; background:var(--accent-fill, var(--accent)); }
 /* The project's two pages as tabs after its name (core/toolbarRender.js),
    never collapsed — two short words fit a phone, where they are the way back
-   to the list from an issue with the chat open over the page. */
+   to the list from a task with the chat open over the page. */
 .tb-project-tabs { display:flex; flex:none; align-self:stretch; align-items:stretch; margin-left:10px; }
-/* Issues wears its watched issues' unread after the word (#104). */
-.tb-project-tab .issue-unread { margin-left:5px; vertical-align:1px; }
+/* Tasks wears its watched tasks' unread after the word (#104). */
+.tb-project-tab .task-unread { margin-left:5px; vertical-align:1px; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
@@ -809,7 +809,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   min-height:0; overflow-y:auto; padding:calc(var(--surface-head) + 8px) 8px 18px; }
 .rail-overview-list:focus { outline:none; }
 .rail-overview-section { display:flex; flex-direction:column; gap:0; }
-/* A workspace's heading: its name (the way into its own overview), the issue
+/* A workspace's heading: its name (the way into its own overview), the task
    it is for, what is happening in it, and its +. One line, 36px. */
 .rail-overview-section-head { display:flex; align-items:center; gap:8px; min-height:36px;
   padding:0 8px; }
@@ -823,13 +823,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-overview-open:hover, .rail-overview-open:hover svg { color:var(--accent); }
 .rail-overview-open:focus-visible, .rail-overview-see-all:focus-visible {
   outline:2px solid var(--accent); outline-offset:2px; border-radius:4px; }
-/* The issue the workspace is for: its number in the accent, its title dim,
+/* The task the workspace is for: its number in the accent, its title dim,
    and it gives way before the name does. */
-.rail-overview-issue { flex:1 1 auto; display:inline-flex; align-items:baseline; gap:5px; min-width:0;
+.rail-overview-task { flex:1 1 auto; display:inline-flex; align-items:baseline; gap:5px; min-width:0;
   font-size:12px; line-height:1.2; color:var(--ink2); }
-.rail-overview-issue-number { flex:none; color:var(--accent); font-weight:650; font-family:var(--mono); font-size:11px; }
-.rail-overview-issue-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.rail-overview-issue-more { flex:none; color:var(--dim); font-size:11px; }
+.rail-overview-task-number { flex:none; color:var(--accent); font-weight:650; font-family:var(--mono); font-size:11px; }
+.rail-overview-task-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rail-overview-task-more { flex:none; color:var(--dim); font-size:11px; }
 /* What is happening in the workspace, at a glance (#192): three fixed slots on
    the rows' 8px gap — the unread pill (a mark before it where something
    failed), the working dot, the + — right-aligned, so the dot and the + stand
@@ -1148,8 +1148,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-body .review-thread { padding:0; }
 .rail-body .thread-title { display:none; }
 .rail-body .thread-revision-view { margin-left:0; }
-/* The gap and `--thread-gap` are declared together, always: the issue lines
-   pull back against this number to sit tight (styles/issues.css), and a rule
+/* The gap and `--thread-gap` are declared together, always: the task lines
+   pull back against this number to sit tight (styles/tasks.css), and a rule
    that set one without the other is how they drifted — the rail said 22 and
    the variable said 18, so the lines sat 8 px apart instead of 4. */
 .rail-body .thread-timeline { --thread-gap:22px; gap:var(--thread-gap); padding:4px 12px 16px; }

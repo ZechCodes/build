@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mountTaskCompletionToast } from "../src/core/taskCompletionToast.js";
 
+// The toast fires for an agent's own checklist items, not tasks on the board
+// (#190), so it says so: the pill beside it is labelled "Checklist" too.
 describe("task completion toast", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -19,7 +21,7 @@ describe("task completion toast", () => {
     toast.getBoundingClientRect = () => ({ width: 180, height: 36 });
     window.dispatchEvent(new Event("resize"));
     expect(toast.getAttribute("role")).toBe("status");
-    expect(toast.textContent).toBe("Task completed: Ship the fix");
+    expect(toast.textContent).toBe("Checklist item completed: Ship the fix");
     expect(parseFloat(toast.style.left)).toBeLessThan(900);
     vi.advanceTimersByTime(4000);
     expect(document.querySelector(".task-completion-toast")).toBe(null);
@@ -34,7 +36,7 @@ describe("task completion toast", () => {
     const toast = document.querySelector(".task-completion-toast");
     toast.getBoundingClientRect = () => ({ width: 240, height: 40 });
     window.dispatchEvent(new Event("resize"));
-    expect(toast.textContent).toBe("2 tasks completed: One, Two");
+    expect(toast.textContent).toBe("2 checklist items completed: One, Two");
     expect(parseFloat(toast.style.top)).toBeLessThan(620);
     expect(parseFloat(toast.style.left)).toBe(10);
     mounted.dispose();

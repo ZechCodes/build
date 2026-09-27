@@ -223,7 +223,7 @@ describe("local UI cache wiring", () => {
   it("opens a filter menu from cache and repaints an external close", async () => {
     const host = document.createElement("div");
     document.body.append(host);
-    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "project-1", view: "issues", kind: "menu", sub: "labels" });
+    const address = ui.uiAddress({ deviceId: "dev-1", entityId: "project-1", view: "tasks", kind: "menu", sub: "labels" });
     await cache.writeCached(address, { open: true, query: "bug" });
     const menu = menus.mountFilterMenu(host, { name: "labels", label: "Labels", onChange: () => {}, cacheAddress: address });
     menu.update([{ value: "bug", label: "Bug" }], []);

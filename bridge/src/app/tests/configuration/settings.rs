@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn agent_filed_issue_watching_defaults_off_but_preserves_saved_true() {
+fn agent_filed_task_watching_defaults_off_but_preserves_saved_true() {
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("config.json");
     let new_app = || {
@@ -17,18 +17,18 @@ fn agent_filed_issue_watching_defaults_off_but_preserves_saved_true() {
 
     let mut initial = new_app();
     assert_eq!(
-        initial.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_issues"],
+        initial.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_tasks"],
         false
     );
     let saved = initial.handle(req(
         "settings.set",
-        json!({ "watch_agent_filed_issues": true }),
+        json!({ "watch_agent_filed_tasks": true }),
     ));
     assert_eq!(saved["ok"], true, "{saved:?}");
 
     let mut restarted = new_app();
     assert_eq!(
-        restarted.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_issues"],
+        restarted.handle(req("settings.get", json!({})))["result"]["watch_agent_filed_tasks"],
         true
     );
 }

@@ -16,7 +16,7 @@ const REPOS = [
 ];
 const REFUSAL = "Build cannot list GitHub repositories on desk because gh is not signed in. Run `gh auth login` on desk.";
 
-const greet = (capabilities) => greetBridge(async () => ({ api_version: "1.22.0", capabilities }), { deviceId: "desk" });
+const greet = (capabilities) => greetBridge(async () => ({ api_version: "2.0.0", capabilities }), { deviceId: "desk" });
 
 /** How the desk's bridge refuses github.repos on the wire, through the v1
  *  adapter: the sentence, with the code the bridge sent. */

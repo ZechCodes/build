@@ -12,7 +12,7 @@ const catalog = { default_provider: "claude", providers: [{ id: "claude", label:
 const baseAssignment = { worktree: "new", agent: "new", base: "", provider: "claude", model: "", effort: "" };
 
 /** Open the overlay over a live anchor, holding the assignment the way the
- *  issue view does: the caller owns it, the overlay only hands back the next. */
+ *  task view does: the caller owns it, the overlay only hands back the next. */
 function open(overrides = {}) {
   const anchor = document.createElement("button");
   document.body.appendChild(anchor);

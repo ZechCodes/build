@@ -1,7 +1,7 @@
 // #31 on a real stack: the hold makes a direct pair win a race a relay pair
 // would otherwise have won.
 //
-//   ISSUES_REPO=<this checkout> node web/relay-wins-check.mjs
+//   TASKS_REPO=<this checkout> node web/relay-wins-check.mjs
 //
 // Reads /tmp/live-seed.json, so run web/live-seed.mjs first and write its SEED
 // line there. Brings coturn up and takes it down again; touches nothing else
@@ -68,13 +68,13 @@ const APP = process.env.APP_URL || "http://localhost:8090";
 const CHROMIUM = "/usr/bin/chromium";
 const RUNS = Number(process.env.RUNS || 4);
 
-const REPO = process.env.ISSUES_REPO;
+const REPO = process.env.TASKS_REPO;
 if (!REPO) {
-  console.error("set ISSUES_REPO to the checkout under test — this run must not mix checkouts");
+  console.error("set TASKS_REPO to the checkout under test — this run must not mix checkouts");
   process.exit(2);
 }
 if (!existsSync(`${REPO}/deploy/compose.real.yml`)) {
-  console.error(`no compose file under ${REPO} — is ISSUES_REPO a build-web checkout?`);
+  console.error(`no compose file under ${REPO} — is TASKS_REPO a build-web checkout?`);
   process.exit(2);
 }
 

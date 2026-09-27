@@ -765,7 +765,7 @@ async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
 const LIMIT_SAID: &str = "You've hit your session limit · resets 6:20pm (America/New_York)";
 
 /// The message the CLI writes when a request is refused for usage, in the shape
-/// Claude's own transcript recorded on 2026-09-20 (issue #58): a synthetic
+/// Claude's own transcript recorded on 2026-09-20 (task #58): a synthetic
 /// assistant message, marked `error: "rate_limit"`.
 fn rate_limited_line(text: &str) -> String {
     json!({
@@ -1035,7 +1035,7 @@ fn an_alias_matches_its_family_and_a_full_id_only_itself() {
     }
 }
 
-/// Issue #72's second suspect, cleared: a window that is still open is not a
+/// Task #72's second suspect, cleared: a window that is still open is not a
 /// limit. An `allowed_warning` event with a reset ahead, then a turn that ran,
 /// leaves nothing held and no reset owed.
 #[tokio::test]

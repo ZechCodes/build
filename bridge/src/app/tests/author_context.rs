@@ -3,7 +3,7 @@
 //! A message an agent sends wears the author's last reading on `from_agent`,
 //! and a comment it leaves wears it as `author_context` — both snapshotted at
 //! write time and absent without a reading. The project agent, which decides
-//! who takes the next issue, is also told it in a sentence: on the delivery of
+//! who takes the next task, is also told it in a sentence: on the delivery of
 //! a message, and in `read_comment`, because a comment reaches it as a notice
 //! that carries only the comment's id.
 
@@ -16,7 +16,7 @@ use crate::mcp::BridgeAction;
 const LINE: &str = "Rail scroll is at 190k of 200k (95%, compacts at 200k).";
 
 /// A project with a project agent and one workspace agent it handed work to,
-/// over a task store so issues can be filed and commented on.
+/// over a task store so tasks can be filed and commented on.
 fn staffed(state_root: &Path) -> (tempfile::TempDir, AppState, String, HandedOver) {
     let (home, mut state, project_id) = tracked(state_root);
     let handed = handed_over(&mut state, &project_id, "read the router");
@@ -148,13 +148,13 @@ fn only_the_project_agent_is_told_the_line() {
     assert!(!prompts[0].contains("is at 190k"), "{}", prompts[0]);
 }
 
-fn worker_comments(state: &mut AppState, handed: &HandedOver, issue_id: &str) -> String {
+fn worker_comments(state: &mut AppState, handed: &HandedOver, task_id: &str) -> String {
     let commented = state
         .on_agent_mcp_action(
             &handed.entity_id,
             &handed.worker,
-            BridgeAction::TrackerCommentIssue {
-                issue_id: issue_id.to_string(),
+            BridgeAction::TrackerCommentTask {
+                task_id: task_id.to_string(),
                 body: "Reproduced it.".into(),
                 refs: Vec::new(),
                 track: None,
@@ -167,8 +167,8 @@ fn worker_comments(state: &mut AppState, handed: &HandedOver, issue_id: &str) ->
     commented["comment"]["id"].as_str().unwrap().to_string()
 }
 
-fn timeline_comment(state: &mut AppState, issue_id: &str) -> Value {
-    let got = state.handle(req("issues.get", json!({ "issue_id": issue_id })));
+fn timeline_comment(state: &mut AppState, task_id: &str) -> Value {
+    let got = state.handle(req("tasks.get", json!({ "task_id": task_id })));
     got["result"]["timeline"]
         .as_array()
         .unwrap()
@@ -184,7 +184,7 @@ fn a_comment_wears_its_authors_context_and_read_comment_says_it() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id, handed) = staffed(&state_root);
     rail_scroll_at_190k(&mut state, &handed.entity_id, &handed.worker);
-    let issue_id = filed(&mut state, &project_id, "rail")["id"]
+    let task_id = filed(&mut state, &project_id, "rail")["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -192,15 +192,15 @@ fn a_comment_wears_its_authors_context_and_read_comment_says_it() {
         .on_agent_mcp_action(
             &handed.owner,
             &handed.agent_id,
-            BridgeAction::TrackerTrackIssue {
-                issue_id: issue_id.clone(),
+            BridgeAction::TrackerTrackTask {
+                task_id: task_id.clone(),
             },
         )
-        .expect("the project agent watches the issue");
+        .expect("the project agent watches the task");
 
-    let comment_id = worker_comments(&mut state, &handed, &issue_id);
+    let comment_id = worker_comments(&mut state, &handed, &task_id);
 
-    let comment = timeline_comment(&mut state, &issue_id);
+    let comment = timeline_comment(&mut state, &task_id);
     assert_eq!(comment["author_context"]["tokens"], 190_000, "{comment:?}");
     assert_eq!(
         comment["author_context"]["window"], 1_000_000,
@@ -241,14 +241,14 @@ fn without_a_reading_a_comment_wears_no_context() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id, handed) = staffed(&state_root);
-    let issue_id = filed(&mut state, &project_id, "rail")["id"]
+    let task_id = filed(&mut state, &project_id, "rail")["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    let comment_id = worker_comments(&mut state, &handed, &issue_id);
+    let comment_id = worker_comments(&mut state, &handed, &task_id);
 
-    let comment = timeline_comment(&mut state, &issue_id);
+    let comment = timeline_comment(&mut state, &task_id);
     assert!(comment.get("author_context").is_none(), "{comment:?}");
     let read = state
         .on_agent_mcp_action(

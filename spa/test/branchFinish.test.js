@@ -26,7 +26,7 @@ const branchRow = (over = {}) => ({
   state: "review",
   worktree_id: "wt-1",
   run_id: null,
-  issue_id: null,
+  task_id: null,
   primary: false,
   can_finish: true,
   finish: { warnings: [] },
@@ -134,14 +134,14 @@ describe("the facts Done speaks about", () => {
   it("reads them off the row, and names the URL's branch when the read has not answered", () => {
     const facts = branchFinishFacts(
       branchRow({
-        issue_id: "issue-1",
+        task_id: "task-1",
         finish: { warnings: [{ code: "unpushed", message: "build/login has 2 commits that origin/build/login does not" }] },
       }),
       "build/fallback",
     );
     expect(facts).toEqual({
       branch: "build/login",
-      issueId: "issue-1",
+      taskId: "task-1",
       merged: false,
       warnings: ["build/login has 2 commits that origin/build/login does not"],
     });
@@ -167,7 +167,7 @@ describe("what the confirmation promises", () => {
 
   it("says the bridge is too old, and promises only the checkout, where it keeps the branch", () => {
     const plan = branchFinishConfirm({
-      ...branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"),
+      ...branchFinishFacts(branchRow({ task_id: "task-1" }), "build/login"),
       deviceName: "studio",
     });
     expect(plan.intro).toBe(
@@ -176,7 +176,7 @@ describe("what the confirmation promises", () => {
     expect(plan.actions).toEqual([
       "Remove its checkout",
       "Take its conversation off the inbox",
-      "Return the issue it implements to the inbox",
+      "Return the task it implements to the inbox",
     ]);
     expect(plan.confirmLabel).toBe("Remove");
   });
@@ -195,19 +195,19 @@ describe("what the confirmation promises", () => {
     expect(plan.warnings).toEqual(["build/login has 2 uncommitted files — removing the checkout discards them"]);
   });
 
-  // Deleting an unmerged branch hands its issue back to the inbox; merging
-  // first files the issue away with it. The outline says which, before the click.
-  it("says where the issue it implements ends up", () => {
-    const back = branchFinishConfirm(deleting(branchRow({ issue_id: "issue-1" })));
-    expect(back.actions.join(" ")).toContain("Return the issue it implements to the inbox, noting that build/login was deleted");
+  // Deleting an unmerged branch hands its task back to the inbox; merging
+  // first files the task away with it. The outline says which, before the click.
+  it("says where the task it implements ends up", () => {
+    const back = branchFinishConfirm(deleting(branchRow({ task_id: "task-1" })));
+    expect(back.actions.join(" ")).toContain("Return the task it implements to the inbox, noting that build/login was deleted");
 
-    const archived = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1", state: "merged" }), "build/login"));
-    expect(archived.actions.join(" ")).toContain("Archive the issue");
+    const archived = branchFinishConfirm(branchFinishFacts(branchRow({ task_id: "task-1", state: "merged" }), "build/login"));
+    expect(archived.actions.join(" ")).toContain("Archive the task");
   });
 
-  it("leaves the issue out when the branch implements none", () => {
+  it("leaves the task out when the branch implements none", () => {
     const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
-    expect(plan.actions.some((action) => action.includes("issue"))).toBe(false);
+    expect(plan.actions.some((action) => action.includes("task"))).toBe(false);
   });
 });
 
